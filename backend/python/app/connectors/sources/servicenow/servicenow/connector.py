@@ -2256,10 +2256,8 @@ class ServiceNowConnector(BaseConnector):
                 # instance and terminate all their active sessions" (https://www.servicenow.com/docs/bundle/
                 # zurich-platform-administration/page/administer/users-and-groups/task/t_CreateAUser.html). Emails
                 # are not unique here, so linked, a locked-out duplicate of an active user's address would read as
-                # that address changing hands. Withdrawn like an inactive user; unlocking changes the row, so the
-                # next delta links it again.
-                # shortcut: a user locked out and linked before this check is withdrawn only once its row changes;
-                # the reconcile query reads `active` alone, so add locked_out there if that gap matters.
+                # that address changing hands. Withdrawn like an inactive user, here or by the reconcile (_users_gone)
+                # when its row does not change; unlocking changes the row, so the next delta links it again.
                 if (not self._is_active(user_data)
                         or str(user_data.get(ServiceNowFields.LOCKED_OUT) or "").lower() == "true"
                         or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME):
@@ -2318,11 +2316,15 @@ class ServiceNowConnector(BaseConnector):
         )
 
     async def _users_gone(self, stored: set[str]) -> set[str]:
-        """The ``stored`` user sys_ids that are no active user with an email at the source (nor the guest): deleted,
-        or changed without a delta seeing it. Under an ACL that hides some users, only those
+        """The ``stored`` user sys_ids that are no active, unlocked user with an email at the source (nor the guest):
+        deleted, or changed without a delta seeing it. Under an ACL that hides some users, only those
         ServiceNow counts no such row for."""
+        # Not locked out, as the delta reads it: an empty value is not locked. The docs do not say whether `!=`
+        # matches an empty field, so ISEMPTY is added; "^OR binds only to the single condition immediately before
+        # and after it" (https://servicenow.github.io/sdk/guides/encoded-query-guide).
         live_query = (f"{ServiceNowFields.ACTIVE}=true^{ServiceNowFields.EMAIL}ISNOTEMPTY"
-                      f"^{ServiceNowFields.USER_NAME}!={ServiceNowDefaults.GUEST_USER_NAME}")
+                      f"^{ServiceNowFields.USER_NAME}!={ServiceNowDefaults.GUEST_USER_NAME}"
+                      f"^{ServiceNowFields.LOCKED_OUT}!=true^OR{ServiceNowFields.LOCKED_OUT}ISEMPTY")
         live: set[str] = set()
         listing = _Listing()
         async for rows in self._iter_table(

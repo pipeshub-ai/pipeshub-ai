@@ -1386,6 +1386,39 @@ class TestBoxRunIncrementalSync:
             "u-active", "u-cannot_delete_edit", "u-cannot_delete_edit_upload",
         ]
 
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_a_linked_user_listed_inactive_is_withdrawn(self, box_connector, complete: bool) -> None:
+        """Linked before it was made inactive, it keeps no grant; a user list cut by a failed page withdraws nobody."""
+        from types import SimpleNamespace
+
+        entries = [
+            {"id": "u-ok", "login": "maya@test.com", "name": "Maya", "status": "active"},
+            {"id": "u-frozen", "login": "ivo@test.com", "name": "Ivo", "status": "inactive"},
+        ]
+        if not complete:  # a full page, then a failed one
+            entries += [{"id": f"u-{i}", "login": f"p{i}@test.com", "status": "active"} for i in range(998)]
+        box_connector.data_source.users_get_users = AsyncMock(side_effect=[
+            MagicMock(success=True, data={"entries": entries}), MagicMock(success=False, error="500"),
+        ])
+        box_connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[
+            SimpleNamespace(id=f"n-{sid}", source_user_id=sid, email=None) for sid in ("u-ok", "u-frozen")
+        ])
+        box_connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        box_connector._ensure_virtual_groups = AsyncMock()
+        box_connector._sync_user_groups = AsyncMock()
+        box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={"cursor": "pos-123"})
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [], "next_stream_position": "pos-124"})
+        )
+
+        await box_connector.run_incremental_sync()
+
+        withdraw = box_connector.data_entities_processor.withdraw_app_user_access
+        if complete:
+            assert [u.source_user_id for u in withdraw.await_args.args[1]] == ["u-frozen"]
+        else:
+            withdraw.assert_not_awaited()
+
     async def test_incremental_sync_with_events(self, box_connector):
         box_connector._sync_users = AsyncMock(return_value=[
             MagicMock(source_user_id="u1")

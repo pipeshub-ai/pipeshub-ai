@@ -712,3 +712,26 @@ class TestSyncUsersFromProjectsGroups:
 
         linked = c.data_entities_processor.on_new_app_users.call_args[0][0]
         assert [u.full_name for u in linked] == ["active", "plain"]
+
+    async def test_a_linked_account_listed_blocked_is_withdrawn(self) -> None:
+        """Linked before it was blocked, banned or deactivated, it keeps no grant; an awaiting membership alone
+        withdraws nobody, as the user may be an active member elsewhere."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+        rows = {1: ("active", None), 2: ("blocked", None), 3: ("banned", None), 4: ("deactivated", None),
+                5: ("active", "awaiting")}
+        dict_member = {
+            i: SimpleNamespace(id=i, username=f"u{i}", name=f"u{i}", public_email=f"u{i}@example.com", email="",
+                               state=state, **({"membership_state": membership} if membership else {}))
+            for i, (state, membership) in rows.items()
+        }
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[
+            SimpleNamespace(id=f"n-{i}", source_user_id=str(i), email=None) for i in rows
+        ])
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+
+        await UsersSync(c)._sync_users_from_projects_groups(dict_member)
+
+        gone = c.data_entities_processor.withdraw_app_user_access.await_args.args[1]
+        assert sorted(u.source_user_id for u in gone) == ["2", "3", "4"]

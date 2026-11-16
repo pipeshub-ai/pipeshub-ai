@@ -3663,9 +3663,9 @@ class SharePointConnector(BaseConnector):
 
     async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> bool:
         """Take the connector away from stored users (guest accounts included) the complete
-        user read no longer lists and that Microsoft confirms are gone (a 404 on the user
-        itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
-        of the user. Only called after a complete read; an empty list withdraws nobody (the
+        user read lists disabled, or no longer lists and that Microsoft confirms are gone (a 404
+        on the user itself): a stale listing cannot withdraw anyone unlisted, nor can a failed or
+        throttled read of the user. Only called after a complete read; an empty list withdraws nobody (the
         directory always has users), and so does a failed read of the stored users.
         Restoring the account saves the user again.
 
@@ -3679,11 +3679,17 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
             return False
-        kept = {u.source_user_id for u in listed}
+        # A disabled account ("`true` if the account is enabled; otherwise, `false`", accountEnabled,
+        # https://learn.microsoft.com/en-us/graph/api/resources/user) is withdrawn as in OneDrive: the listing says so.
+        kept = {u.source_user_id for u in listed if u.is_active is not False}
+        disabled = {u.source_user_id for u in listed} - kept
         gone = []
         trusted = True
         for u in stored:
             if not u.source_user_id or u.source_user_id in kept:
+                continue
+            if u.source_user_id in disabled:
+                gone.append(u)
                 continue
             try:
                 if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
@@ -3723,7 +3729,7 @@ class SharePointConnector(BaseConnector):
         # https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-syncservice-duplicate-attribute-resiliency)
         # but says nothing of one account's mail against another's UPN, and the address here is either. Linked, a
         # disabled account sharing an enabled one's address reads as that address changing hands. Enabled again, it
-        # is linked on the next listing; one linked before stays, with its access held back (_inactive_emails).
+        # is linked on the next listing; one linked before is withdrawn after a complete listing.
         enabled = [u for u in users if u.is_active is not False]
         if enabled:
             await self.data_entities_processor.on_new_app_users(enabled)
