@@ -1,0 +1,42 @@
+# Run parsing in its own container (laptop demo of the split used on Kubernetes).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.parsing.yml up -d
+#
+# The app container is pointed at the parsing container and no longer starts a
+# local Parsing service. The parsing container runs the same image with
+# PIPESHUB_ROLE=parsing and shares the app's configuration store.
+services:
+  pipeshub-ai:
+    environment:
+      - USE_PARSING_SERVICE=true
+      - PARSING_SERVICE_URL=http://parsing:8092
+    depends_on:
+      parsing:
+        condition: service_healthy
+
+  parsing:
+    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    restart: always
+    environment:
+      - PIPESHUB_ROLE=parsing
+      - PARSING_SERVICE_PORT=8092
+      # The configuration store and secrets are the app's: same values, same stores.
+      - SECRET_KEY=${SECRET_KEY:-}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - ETCD_URL=http://etcd:2379
+      - ETCD_HOST=etcd
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8092/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    depends_on:
+      - redis
+    networks:
+      - pipeshub

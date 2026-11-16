@@ -53,6 +53,7 @@ LOCAL=(-f values-local.yaml)
 # variant can override one of them.
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
+  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
@@ -117,6 +118,24 @@ if [[ -f "$OUT/cloud.yaml" ]]; then
   expect cloud 'publishNotReadyAddresses: true' present 'name: ci-pipeshub-ai-zookeeper-headless'
   expect cloud 'ZOO_SERVERS' absent
   expect local-neo4j-kafka 'ZOOKEEPER_SERVERS' absent
+fi
+# Parsing in its own pods: nothing renders by default; enabled, the Deployment,
+# Service and PDB use the names and labels add-on autoscalers target, and the
+# app pods are pointed at the Service.
+if [[ -f "$OUT/local-parsing.yaml" ]]; then
+  expect local-neo4j-kafka 'ci-pipeshub-ai-parsing' absent
+  expect local-neo4j-kafka 'PIPESHUB_ROLE' absent
+  expect local-neo4j-kafka 'USE_PARSING_SERVICE' absent
+  expect local-parsing 'name: ci-pipeshub-ai-parsing' present
+  expect local-parsing 'pipeshub.ai/workload: parsing' present
+  expect local-parsing 'replicas: 3' present 'kind: Deployment'
+  expect local-parsing 'value: parsing' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'path: /health' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'cpu: "1"' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'pool: parse' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'kind: PodDisruptionBudget' present 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'HorizontalPodAutoscaler' absent 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'http://ci-pipeshub-ai-parsing:8092' present 'name: PARSING_SERVICE_URL'
 fi
 if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'ReadWriteMany' absent
