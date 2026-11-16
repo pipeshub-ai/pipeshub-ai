@@ -40376,8 +40376,9 @@ paths:
 
         **Request:** unknown query parameters are ignored.
 
-        **Caching and ranges.** A request without `If-None-Match`, `Range` or the header
-        `X-Record-Content-Open: 1` is answered as it always was. A request that carries
+        **Caching and ranges.** A request without `If-None-Match` and without the header
+        `X-Record-Content-Open: 1` is answered as it always was, whatever other headers it
+        carries (a bare `Range` or `If-Range` is ignored and the whole file is sent). A request that carries
         `If-None-Match` or that header gets `Cache-Control: private, no-store`, and for a file
         stored in the platform's own storage an `ETag` that changes when the stored file changes
         (a converted PDF has a weak `ETag`). A client may send that value back in
@@ -40387,7 +40388,8 @@ paths:
         Content from a connected source and artifact content carry no `ETag` and never answer
         `304`.
 
-        The original bytes of a stored file can be read in parts: a request with one range,
+        The original bytes of a stored file can be read in parts, on a request that also carries
+        `If-None-Match` or `X-Record-Content-Open: 1`: a request with one range,
         `Range: bytes=a-b` or `bytes=a-`, of at most 8 MiB is answered `206` with `Content-Range`,
         and `Accept-Ranges: bytes` says so. A range that starts at or after the end of the file is
         answered `416` with `Content-Range: bytes */<length>`. Any other `Range` (a suffix, several

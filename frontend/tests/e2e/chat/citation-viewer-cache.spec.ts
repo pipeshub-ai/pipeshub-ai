@@ -22,10 +22,10 @@ import {
 } from '../helpers/record-stream.helper';
 import {
   askCitedQuestion,
-  chip,
   holdRenderer,
   isAttached,
   isInView,
+  jumpTo,
   logoutViaUi,
   rendererNode,
   scrollViewer,
@@ -80,19 +80,19 @@ test.describe('Citation viewer cache', () => {
     const log = recordStreamLog(page);
     await askCitedQuestion(page, cites);
 
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     const handle = await holdRenderer(page);
     await expect.poll(() => visiblePdfPage(page), { timeout: 60_000 }).toBe(1);
 
     for (const n of [4, 7, 2]) {
-      await chip(page, n).click();
+      await jumpTo(page, n);
       await expect.poll(() => visiblePdfPage(page), { timeout: 15_000 }).toBe(n);
     }
     // The same chip twice, after scrolling away.
-    await chip(page, 5).click();
+    await jumpTo(page, 5);
     await expect.poll(() => visiblePdfPage(page)).toBe(5);
     await scrollViewer(page, 'bottom');
-    await chip(page, 5).click();
+    await jumpTo(page, 5);
     await expect.poll(() => visiblePdfPage(page), { timeout: 15_000 }).toBe(5);
     // The preview's own citation cards.
     for (const n of [9, 3]) {
@@ -118,12 +118,12 @@ test.describe('Citation viewer cache', () => {
     const since = new Date();
 
     // Chip 2 while chip 1's load is running: no second load, and the viewer ends on slide 2.
-    await chip(page, 1).click();
-    await chip(page, 2).click();
+    await jumpTo(page, 1);
+    await jumpTo(page, 2);
     await holdRenderer(page);
     await expect.poll(() => visiblePdfPage(page), { timeout: 120_000 }).toBe(2);
 
-    for (let n = 3; n <= 10; n++) await chip(page, n).click();
+    for (let n = 3; n <= 10; n++) await jumpTo(page, n);
     await expect.poll(() => visiblePdfPage(page), { timeout: 15_000 }).toBe(10);
 
     await log.settled();
@@ -139,7 +139,7 @@ test.describe('Citation viewer cache', () => {
     const log = recordStreamLog(page);
     await askCitedQuestion(page, cites);
     for (let i = 0; i < rows.length; i++) {
-      await chip(page, i + 1).click();
+      await jumpTo(page, i + 1);
       await expect(rendererNode(page).locator(`tr[data-row="${rows[i] + 1}"], tr[data-row="${rows[i]}"]`).first()).toBeVisible({ timeout: 60_000 });
     }
     await log.settled();
@@ -154,26 +154,26 @@ test.describe('Citation viewer cache', () => {
     await askCitedQuestion(page, [
       { record: docx, claim: 'Docx claim', content: 'PARA-80', blockNum: [80] },
     ]);
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     const para = rendererNode(page).getByText('PARA-80', { exact: false }).first();
     await expect(para).toBeVisible({ timeout: 60_000 });
     await scrollViewer(page, 'top');
     await expect.poll(() => isInView(para), { timeout: 10_000 }).toBe(false);
     const before = log.calls.length;
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect.poll(() => isInView(para), { timeout: 15_000 }).toBe(true);
     expect(log.calls.length, 'no new request for the same chip').toBe(before);
 
     await askCitedQuestion(page, [
       { record: sheet, claim: 'Sheet claim', content: 'ROW-250', blockNum: [250] },
     ]);
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     const row = rendererNode(page).locator('tr[data-row="250"], tr[data-row="251"]').first();
     await expect(row).toBeVisible({ timeout: 60_000 });
     await scrollViewer(page, 'top');
     await expect.poll(() => isInView(row), { timeout: 10_000 }).toBe(false);
     const beforeSheet = log.calls.length;
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect.poll(() => isInView(row), { timeout: 15_000 }).toBe(true);
     expect(log.calls.length).toBe(beforeSheet);
   });
@@ -189,12 +189,12 @@ test.describe('Citation viewer cache', () => {
       { record: b, claim: 'Claim in B', content: 'The cited passage sits here.' },
     ]);
     const since = new Date();
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect(rendererNode(page)).toBeVisible({ timeout: 60_000 });
-    await chip(page, 2).click();
+    await jumpTo(page, 2);
     await expect.poll(async () => { await log.settled(); return log.forRecord(b.id).length; }, { timeout: 30_000 }).toBeGreaterThan(0);
     log.reset();
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect.poll(async () => { await log.settled(); return log.forRecord(a.id).length; }, { timeout: 30_000 }).toBe(1);
 
     const [call] = log.forRecord(a.id);
@@ -213,7 +213,7 @@ test.describe('Citation viewer cache', () => {
       { record: a, claim: 'Claim reindex', content: 'The cited passage sits here.' },
       { record: other, claim: 'Claim other', content: 'The cited passage sits here.' },
     ]);
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect(rendererNode(page)).toBeVisible({ timeout: 60_000 });
     await log.settled();
     const first = log.forRecord(a.id)[0];
@@ -221,7 +221,7 @@ test.describe('Citation viewer cache', () => {
     expect(first.etag, 'a 200 should carry an ETag').toBeTruthy();
     expect(first.cacheControl ?? '').toContain('private');
     expect(first.cacheControl ?? '').toContain('no-store');
-    await chip(page, 2).click();
+    await jumpTo(page, 2);
     await expect(page.getByText(other.name).first()).toBeVisible({ timeout: 30_000 });
 
     const reindex = await apiContext.post(`/api/v1/knowledgeBase/reindex/record/${a.id}`);
@@ -229,7 +229,7 @@ test.describe('Citation viewer cache', () => {
     await waitForIndexed(apiContext, a.id);
 
     log.reset();
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect.poll(async () => { await log.settled(); return log.forRecord(a.id).length; }, { timeout: 30_000 }).toBe(1);
     const [call] = log.forRecord(a.id);
     expect(call.status, 'unchanged bytes after a re-index should still answer 304').toBe(304);
@@ -250,7 +250,7 @@ test.describe('Citation viewer cache', () => {
       await loginViaUI(page, email!, password!);
       const log = recordStreamLog(page);
       await askCitedQuestion(page, [{ record: a, claim: 'Claim logout', content: 'The cited passage sits here.' }]);
-      await chip(page, 1).click();
+      await jumpTo(page, 1);
       await expect(rendererNode(page)).toBeVisible({ timeout: 60_000 });
       await log.settled();
       expect(log.bodies(a.id)).toHaveLength(1);
@@ -259,7 +259,7 @@ test.describe('Citation viewer cache', () => {
       await loginViaUI(page, email!, password!);
       log.reset();
       await askCitedQuestion(page, [{ record: a, claim: 'Claim logout again', content: 'The cited passage sits here.' }]);
-      await chip(page, 1).click();
+      await jumpTo(page, 1);
       await expect(rendererNode(page)).toBeVisible({ timeout: 60_000 });
       await log.settled();
       const [call] = log.forRecord(a.id);
@@ -288,7 +288,7 @@ test.describe('Citation viewer cache', () => {
         const page = await context.newPage();
         await loginViaUI(page, email!, password!);
         await askCitedQuestion(page, [{ record: secret, claim: 'Claim private', content: `PRIVATE-${stamp}` }]);
-        await chip(page, 1).click();
+        await jumpTo(page, 1);
         await expect(page.getByText(`PRIVATE-${stamp}`).first()).toBeVisible({ timeout: 60_000 });
         await logoutViaUi(page, orgName);
 
@@ -297,7 +297,7 @@ test.describe('Citation viewer cache', () => {
         await loginViaUI(page, member.email, member.password);
         const log = recordStreamLog(page);
         await askCitedQuestion(page, [{ record: secret, claim: 'Claim private again', content: `PRIVATE-${stamp}` }]);
-        await chip(page, 1).click();
+        await jumpTo(page, 1);
         // The details call refuses first, so no stream request is expected; give any stray one time to show.
         await page.waitForTimeout(5_000);
         await log.settled();
@@ -345,11 +345,11 @@ test.describe('Citation viewer cache', () => {
       { record: b, claim: 'Other record claim', content: 'other' },
     ];
     await askCitedQuestion(page, cites);
-    for (const n of [1, 2, 1, 2, 1]) await chip(page, n).click();
+    for (const n of [1, 2, 1, 2, 1]) await jumpTo(page, n);
     await expect(rendererNode(page)).toBeVisible({ timeout: 60_000 });
-    await chip(page, 3).click();
+    await jumpTo(page, 3);
     await expect(page.getByText(b.name).first()).toBeVisible({ timeout: 60_000 });
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect(rendererNode(page)).toBeVisible({ timeout: 15_000 });
     await log.settled();
     expect(log.bodies(a.id), 'ten jumps and an A, B, A re-open inside the window should stream A once').toHaveLength(1);
@@ -362,10 +362,10 @@ test.describe('Citation viewer cache', () => {
     expect(resync.ok(), `resync answered ${resync.status()}`).toBe(true);
     await expect.poll(() => currentRevision(apiContext, a.id), { timeout: 180_000, intervals: [5_000] }).not.toBe(revisionBefore);
 
-    await chip(page, 3).click();
+    await jumpTo(page, 3);
     await expect(page.getByText(b.name).first()).toBeVisible({ timeout: 60_000 });
     log.reset();
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect.poll(async () => { await log.settled(); return log.bodies(a.id).length; }, { timeout: 60_000 }).toBe(1);
   });
 
@@ -421,13 +421,13 @@ test.describe('Citation viewer cache', () => {
 
     let peakHeap = 0;
     for (let i = 0; i < records.length; i++) {
-      await chip(page, i + 1).click();
+      await jumpTo(page, i + 1);
       await expect.poll(async () => { await log.settled(); return log.bodies(records[i].id).length; }, { timeout: 60_000 }).toBe(1);
       peakHeap = Math.max(peakHeap, await usedHeap(page));
     }
     log.reset();
     // 30 x 10 MB is far over the budget: the first record was evicted and comes back in full.
-    await chip(page, 1).click();
+    await jumpTo(page, 1);
     await expect.poll(async () => { await log.settled(); return log.bodies(records[0].id).length; }, { timeout: 60_000 }).toBe(1);
     const [again] = log.forRecord(records[0].id);
     expect(again.ifNoneMatch, 'an evicted record has no validator to send').toBeNull();

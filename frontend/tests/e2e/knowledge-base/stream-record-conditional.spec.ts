@@ -25,8 +25,8 @@ test.describe('Conditional record stream', () => {
         buffer: Buffer.from(`conditional secret ${'x'.repeat(2000)}`),
       });
 
-      // The owner reads it: the answer carries the validator.
-      const owner = await apiContext.get(`/api/v1/knowledgeBase/stream/record/${recordId}`);
+      // The owner reads it as the viewer does (a content open): the answer carries the validator.
+      const owner = await apiContext.get(`/api/v1/knowledgeBase/stream/record/${recordId}`, { headers: { 'X-Record-Content-Open': '1' } });
       expect(owner.status()).toBe(200);
       const etag = owner.headers()['etag'];
       expect(etag, 'a stored file should be served with an ETag').toBeTruthy();

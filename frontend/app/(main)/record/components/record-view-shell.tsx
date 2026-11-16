@@ -78,6 +78,9 @@ function recordTypeIcon(recordType: string): string {
   }
 }
 
+/** How long the object URL of a download stays valid after the click. */
+const DOWNLOAD_URL_LIFETIME_MS = 5 * 60 * 1000;
+
 export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -376,18 +379,23 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const handleDownload = useCallback(async () => {
     let url = fileUrl;
     let created = false;
-    let lease: RecordLease | null = null;
-    if (!url && !fileBlob && rangeTransport) {
-      // A range-mode document holds only the pages viewed: a download reads the whole file.
+    let source = fileBlob;
+    if (!url && !source && rangeTransport) {
+      // A range-mode document holds only the pages viewed: a download reads the whole file. The bytes are taken
+      // out of the cache entry and the page's hold on it is let go at once; the download reads from its own object
+      // URL, so evicting or revoking the entry cannot cut a large file short.
+      let lease: RecordLease | null = null;
       try {
         lease = await openRecordContent(recordId, 'original').promise;
-        url = lease.url;
+        source = lease.blob;
       } catch {
         return;
+      } finally {
+        lease?.release();
       }
     }
-    if (!url && fileBlob) {
-      url = URL.createObjectURL(fileBlob);
+    if (!url && source) {
+      url = URL.createObjectURL(source);
       created = true;
     }
     if (!url) return;
@@ -397,8 +405,8 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    if (created) setTimeout(() => URL.revokeObjectURL(url), 100);
-    if (lease) setTimeout(() => lease?.release(), 1000);
+    // The browser reads the object URL after the click returns; a large file needs far longer than a moment.
+    if (created) setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
   }, [fileUrl, fileBlob, fileName, rangeTransport, recordId]);
 
   const handleReindexClick = () => {

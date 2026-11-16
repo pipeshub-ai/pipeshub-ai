@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage, jwtExpiringIn } from '@/lib/api/__tests__/sse-response';
@@ -79,6 +79,7 @@ vi.mock('@/lib/record-content/pdf-range-transport', async () => {
 
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { clearRecordContent } = await import('@/lib/record-content');
+const { getRecordContentCache } = await import('@/lib/record-content/cache');
 const { RecordViewShell } = await import('../record-view-shell');
 
 const transport = { length: 200 * 1024 * 1024, destroy: rangeOpen.destroy };
@@ -152,5 +153,24 @@ describe('a large PDF on the record page', () => {
     await waitFor(() => expect(calls).toEqual([{ variant: 'original' }]));
     expect(rangeOpen.calls).toBe(0);
     useFeatureFlagsStore.setState({ flags: null });
+  });
+
+  it('downloads a range-mode file from its own object URL and holds no cache entry while the browser reads it', async () => {
+    let n = 0;
+    URL.createObjectURL = vi.fn(() => `blob:r/${(n += 1)}`);
+    const hrefs: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      hrefs.push(this.href);
+    });
+    mount();
+    await waitFor(() => expect(rendered.some((r) => r.rangeTransport === transport)).toBe(true));
+    fireEvent.click(screen.getAllByRole('button', { name: /download/i })[0]);
+    await waitFor(() => expect(hrefs).toHaveLength(1));
+    click.mockRestore();
+    expect(calls).toEqual([{ variant: 'original' }]);
+    // The page's hold on the entry is gone as soon as the bytes are taken, and the URL the download reads is
+    // never revoked by that release.
+    expect(getRecordContentCache().snapshot().entries.filter((e) => e.pins > 0)).toEqual([]);
+    expect(vi.mocked(URL.revokeObjectURL).mock.calls.map((c) => c[0])).not.toContain(hrefs[0]);
   });
 });

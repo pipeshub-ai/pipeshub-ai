@@ -102,15 +102,44 @@ export function chip(page: Page, n: number): Locator {
   return page.getByRole('button', { name: String(n), exact: true }).first();
 }
 
+/**
+ * Click citation chip `n`. The first click opens a card whose Preview button opens the viewer; when the card
+ * appears its button is pressed, and when the viewer is already open the click just jumps.
+ */
+export async function jumpTo(page: Page, n: number): Promise<void> {
+  await chip(page, n).click();
+  const preview = page.getByRole('button', { name: 'Preview', exact: true }).first();
+  try {
+    await preview.waitFor({ state: 'visible', timeout: 1_500 });
+  } catch {
+    return;
+  }
+  await preview.click({ timeout: 5_000 }).catch(() => undefined);
+}
+
 /** The viewer's renderer node. The test fails, not skips, when the preview has not mounted one. */
 export function rendererNode(page: Page): Locator {
   return page.locator('[data-preview-renderer]').first();
 }
 
-/** A handle to the renderer's document node, to prove later that it was never replaced. */
+/**
+ * A handle to the renderer's document node, to prove later that it was never replaced.
+ * The first citation click opens a card whose Preview button opens the viewer; once the viewer is open, later
+ * clicks jump inside it. So the card's button is pressed when it is showing and the renderer is not.
+ */
 export async function holdRenderer(page: Page) {
   const node = rendererNode(page);
-  await expect(node, 'the preview should show a renderer').toBeVisible({ timeout: 60_000 });
+  const preview = page.getByRole('button', { name: 'Preview', exact: true }).first();
+  await expect
+    .poll(
+      async () => {
+        if (await node.isVisible()) return true;
+        if (await preview.isVisible()) await preview.click({ timeout: 5_000 }).catch(() => undefined);
+        return node.isVisible();
+      },
+      { message: 'the preview should show a renderer', timeout: 60_000, intervals: [250, 500, 1000] },
+    )
+    .toBe(true);
   return node.elementHandle();
 }
 
