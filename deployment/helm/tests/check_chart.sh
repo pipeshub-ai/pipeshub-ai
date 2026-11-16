@@ -19,6 +19,7 @@ set -euo pipefail
 
 # Run from inside the chart so every path below is relative and space-free.
 cd "$(dirname "${BASH_SOURCE[0]}")/../pipeshub-ai"
+AWS_DIR="$(cd ../aws && pwd)"
 read -r -a K8S_VERSIONS <<<"${K8S_VERSIONS:-1.24.0 1.37.0}"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/pipeshub-chart.XXXXXX")"
 trap 'rm -rf "$OUT"' EXIT
@@ -64,6 +65,7 @@ VARIANTS=(
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-parsing|-f values-eks.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
 )
 
@@ -170,6 +172,22 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'whenUnsatisfiable: ScheduleAnyway' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'requiredDuringSchedulingIgnoredDuringExecution' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
+fi
+# The EKS preset puts parsing on its own tainted node group, sized for the
+# c7i.2xlarge in aws/cluster.yaml. Off, nothing renders; on, three 2 CPU pods
+# fit a node, and the application is told how many parses it may keep in flight.
+if [[ -f "$OUT/eks-parsing.yaml" ]]; then
+  expect eks 'ci-pipeshub-ai-parsing' absent
+  expect eks 'USE_PARSING_SERVICE' absent
+  expect eks-parsing 'name: ci-pipeshub-ai-parsing' present
+  expect eks-parsing 'replicas: 2' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'pipeshub/role: parsing' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'effect: NoSchedule' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'cpu: "2"' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'memory: 8Gi' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'value: "2"' present 'name: PARSING_MAX_CONCURRENT'
+  expect eks-parsing 'value: "4"' present 'name: PARSING_SERVICE_CONCURRENCY'
+  expect eks-parsing 'HorizontalPodAutoscaler' absent 'name: ci-pipeshub-ai-parsing'
 fi
 if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'alb.ingress.kubernetes.io/scheme: internal' present
@@ -307,6 +325,40 @@ if helm template ci . "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteM
 else
   echo "ok refused: docker sandbox without a daemon suggests no socket mount"
 fi
+
+# The eksctl config: it parses, the parsing node group carries the taint, label
+# and autoscaler discovery tags, its max fits the pods the chart sizes for it,
+# and deploy.sh rewrites the cluster name inside the discovery tag.
+if python3 - "$AWS_DIR" "$OUT" <<'PY'; then echo "ok cluster.yaml: parsing node group"; else failed=1; fi
+import subprocess, sys, yaml
+aws_dir, out = sys.argv[1:3]
+render = subprocess.run(
+    ["bash", f"{aws_dir}/deploy.sh", "--render-cluster-config", "--region", "eu-west-1",
+     "--zones", "eu-west-1a,eu-west-1b,eu-west-1c", "--kms-key-arn", "arn:aws:kms:eu-west-1:111122223333:key/x",
+     "--k8s-version", "1.36", "--cluster", "acme"],
+    capture_output=True, text=True)
+errors = []
+if render.returncode:
+    errors.append(f"render-cluster-config failed: {render.stderr}")
+else:
+    cfg = yaml.safe_load(render.stdout)
+    groups = {g["name"]: g for g in cfg["managedNodeGroups"]}
+    g = groups.get("parsing")
+    if not g:
+        errors.append("no parsing node group")
+    else:
+        if g["instanceType"] != "c7i.2xlarge": errors.append(f"instance type {g['instanceType']}")
+        if (g["minSize"], g["desiredCapacity"]) != (1, 1) or g["maxSize"] < 2: errors.append("min/desired must be 1, max at least 2")
+        if g["labels"] != {"pipeshub/role": "parsing"}: errors.append(f"labels {g['labels']}")
+        if g["taints"] != [{"key": "pipeshub/role", "value": "parsing", "effect": "NoSchedule"}]: errors.append(f"taints {g['taints']}")
+        if g["tags"] != {"k8s.io/cluster-autoscaler/enabled": "true", "k8s.io/cluster-autoscaler/acme": "owned"}: errors.append(f"tags {g['tags']}")
+        if g["availabilityZones"] != ["eu-west-1a", "eu-west-1b", "eu-west-1c"]: errors.append("zones not rewritten")
+    for n, g in groups.items():
+        if n != "parsing" and "tags" in g: errors.append(f"{n} carries autoscaler tags")
+for e in errors:
+    print("!! cluster.yaml:", e)
+sys.exit(1 if errors else 0)
+PY
 
 if [[ "$failed" -ne 0 ]]; then
   echo "check_chart: FAILED" >&2

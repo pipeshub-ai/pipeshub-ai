@@ -12,6 +12,12 @@ nodeSelector:
 tolerations: []
 spreadAcrossNodes: true
 
+# No parsing node group on a cluster you already run.
+parsing:
+  nodeSelector:
+    pipeshub/role: null
+  tolerations: []
+
 ingress:
   annotations:
     alb.ingress.kubernetes.io/scheme: internal

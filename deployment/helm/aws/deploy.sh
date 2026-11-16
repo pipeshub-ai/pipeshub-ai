@@ -155,6 +155,7 @@ render_cluster_config() {
     -e "s|region: us-east-1\$|region: ${REGION}|" \
     -e "s|value: us-east-1\$|value: ${REGION}|" \
     -e "s|^  name: pipeshub\$|  name: ${CLUSTER}|" \
+    -e "s|^\(      k8s.io/cluster-autoscaler/\)pipeshub:|\1${CLUSTER}:|" \
     -e "s|^  version: \".*\"\$|  version: \"${K8S_VERSION}\"|" \
     -e "s|keyARN: .*|keyARN: ${KMS_KEY_ARN}|" \
     "${AWS_DIR}/cluster.yaml"
@@ -687,7 +688,7 @@ if $EXISTING_CLUSTER; then
 elif cluster_exists; then
   note "Cluster ${CLUSTER} already exists. Finished steps are skipped, and the Helm release is upgraded."
 else
-  note "Creates 8 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
+  note "Creates 9 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
   note "A new cluster takes about an hour, mostly waiting for EKS."
 fi
 confirm "Continue?"
