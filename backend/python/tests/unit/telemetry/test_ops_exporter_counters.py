@@ -400,6 +400,9 @@ def test_a_connection_that_is_being_answered_is_not_evicted(tmp_path: Path) -> N
         d.settimeout(ox.ADMIT_WAIT_S + 5)
         assert d.recv(100).startswith(b"HTTP/1.1 503")  # a short reply, then the close
         assert a in server._conns and server._conns[a][1] is True  # the answer went on, uncut
+        end = time.monotonic() + 5
+        while c.fileno() != -1 and time.monotonic() < end:  # the 503 is sent first, the close follows it
+            time.sleep(0.005)
         assert c.fileno() == -1
         a.close()
         b.close()
