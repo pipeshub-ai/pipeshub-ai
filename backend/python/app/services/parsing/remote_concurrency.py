@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-from collections import deque
 import os
+from collections import deque
 
 from app.services.resource_governor.models import Ceilings
 from app.services.resource_governor.policy import (
