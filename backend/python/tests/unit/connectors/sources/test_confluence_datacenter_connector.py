@@ -343,6 +343,7 @@ class TestSyncUsers:
             ],
         }
         connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
@@ -372,6 +373,7 @@ class TestSyncUsers:
             ],
         }
         connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -385,6 +387,7 @@ class TestSyncUsers:
         connector = _make_connector()
         mock_ds = MagicMock()
         connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -407,6 +410,7 @@ class TestSyncUsers:
             ],
         }
         connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
@@ -453,6 +457,7 @@ class TestSyncUsers:
             return _make_mock_response(200, {"results": page2_users})
 
         connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         mock_ds.get_active_users_v1 = AsyncMock(side_effect=mock_user_list)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
@@ -3375,6 +3380,7 @@ class TestSyncUsersCoverage:
         c = _conn()
         ds = MagicMock()
         c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         ds.get_active_users_v1 = AsyncMock(return_value=None)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
@@ -3384,6 +3390,7 @@ class TestSyncUsersCoverage:
         c = _conn()
         ds = MagicMock()
         c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         ds.get_active_users_v1 = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
@@ -3393,6 +3400,7 @@ class TestSyncUsersCoverage:
         c = _conn()
         ds = MagicMock()
         c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
         ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
