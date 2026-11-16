@@ -16,7 +16,7 @@ def _facts(cpus: float | None, affinity: int = 64, mem: int | None = 64 << 30) -
 
 @pytest.mark.parametrize("cpus", [0.25, 0.5, 1.5, 16, 17, 64, 128, 512, None])
 def test_threads_do_not_depend_on_size(cpus) -> None:
-    """S1a changes no sizing: the thread env is 2 at every size, above 16 CPUs too."""
+    """The thread env is 2 at every size, above 16 CPUs too (the plan sizes no threads yet)."""
     plan = plan_capacity(_facts(cpus, affinity=max(1, int(cpus or 512))), {"PIPESHUB_OMP_DEFAULT": "2"})
     assert {s.threads_env["OMP_NUM_THREADS"] for s in plan.services.values()} == {"2"}
     assert plan.profile == "legacy" and plan.cells == 1

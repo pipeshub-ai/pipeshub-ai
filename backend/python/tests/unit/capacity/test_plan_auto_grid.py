@@ -26,7 +26,7 @@ def _facts(cpus: float, mem_gib: float, **kw) -> CapacityFacts:
 
 def _snap(cpus: float) -> ResourceSnapshot:
     return ResourceSnapshot(cpu_quota=cpus, cpu_utilisation=0.0, cpu_throttled_ratio=0.0, cpu_pressure=0.0,
-                            mem_limit_bytes=64 * GIB, mem_working_set_bytes=0, source="qa")
+                            mem_limit_bytes=64 * GIB, mem_working_set_bytes=0, source="grid")
 
 
 def test_auto_equals_the_live_governor_up_to_16_cpus_on_a_fresh_grid() -> None:
