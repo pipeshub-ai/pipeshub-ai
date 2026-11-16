@@ -40,6 +40,7 @@ from app.services.base_client import (
     ServiceUnavailableError,
 )
 from app.services.extraction.client import ExtractionClientError
+from app.services.llm_gateway.gateway import current_pause_fields
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 # Bump when the classification prompt or its output mapping changes. 2: cacheable instructions
@@ -153,14 +154,20 @@ class ClassifyStage:
             return StageResult(outcome=StageOutcome.SKIPPED, reason=f"Extraction skipped: {exc}", record_view=job.view)
         except LLMUnavailableError as exc:
             # The model provider is down, not the document: wait without burning attempts.
-            return StageResult(
-                outcome=StageOutcome.PAUSED,
-                reason=f"Model provider unavailable: {exc}",
-                retry_after_s=exc.retry_after,
-            )
+            return StageResult.paused_for(exc, f"Model provider unavailable: {exc}", traced=current_pause_fields())
         except (ServiceUnavailableError, ServiceBackpressureError) as exc:
-            # The Extraction service is down, its breaker is open, or it asked callers to slow down.
-            return StageResult(outcome=StageOutcome.PAUSED, reason=f"Extraction service unavailable: {exc}")
+            # The Extraction service is down, its breaker is open, or it asked callers to slow down. Its 429 comes
+            # before any model work (the slot wait), and an open circuit or a refused connection sent nothing; a request
+            # it may have received and never answered may have reached the model, so it counts as one failed send,
+            # never charged (whether the provider failed is not known here).
+            # The client has charged the job for a request the service may have received (``_charge_lost_reply``).
+            reason = f"Extraction service unavailable: {exc}"
+            if getattr(exc, "delivered", False):
+                traced = current_pause_fields()
+                if traced:
+                    return StageResult.paused_for(None, reason, traced=traced)
+                return StageResult(outcome=StageOutcome.PAUSED, reason=reason, sent=True, requests=1)
+            return StageResult(outcome=StageOutcome.PAUSED, reason=reason, sent=False)
         except (ExtractionLLMError, ExtractionClientError) as exc:
             return StageResult(outcome=StageOutcome.RETRY, reason=f"Classification failed: {exc}")
         except ServiceCallError as exc:
@@ -186,3 +193,4 @@ class ClassifyStage:
             record_view=job.view,
             output=metadata.model_dump_json(),
         )
+

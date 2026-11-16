@@ -6,6 +6,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_fleet_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests stand in for the services' collaborators; the fleet Redis binding is exercised, unpatched, in
+    tests/unit/services/messaging/test_fleet_state_startup.py and the spend integration tests."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("app.parsing_main.bind_service_fleet", AsyncMock(return_value=MagicMock(aclose=AsyncMock())))
+
+
+
 class TestHealthCheck:
     async def test_governor_stats_failure_is_not_echoed(self) -> None:
         """Still healthy; the exception goes to the log and the payload says only that stats are unavailable."""
@@ -35,7 +45,9 @@ class TestHealthCheck:
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
-        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes", "admission"}
+        assert set(body) == {
+            "status", "service", "formats", "resource_governor", "llm_gateway", "llm_wire_hooks", "cpu", "lanes", "admission",
+        }
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error
