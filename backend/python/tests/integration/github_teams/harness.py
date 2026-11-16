@@ -126,14 +126,18 @@ class Producer:
         return [m for _, m in self.events if isinstance(m, dict) and m.get("eventType") == event_type]
 
 
-class ConfigService:
+class ConfigService(InMemoryConfigService):
+    """The shared in-memory store (every key the processor writes, such as the source-account state, is kept), with the connector's
+    config and the platform settings this world sets."""
+
     def __init__(self, connector_id: str, config: dict[str, Any]) -> None:
+        super().__init__()
         self.connector_id = connector_id
         self.config = config
         self.platform: dict[str, Any] = {}
         self.fail_reads = 0  # the next N reads of the connector config raise
 
-    async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
+    async def get_config(self, path: str, default: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             if self.fail_reads:
                 self.fail_reads -= 1
@@ -141,7 +145,7 @@ class ConfigService:
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
-        return default
+        return await super().get_config(path, default, **kwargs)
 
 
 class LogCapture(logging.Handler):
