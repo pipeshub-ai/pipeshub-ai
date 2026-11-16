@@ -131,6 +131,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Labels of the parsing pods. Their application name differs from the main Deployment's, so
 nothing that selects the main pods (its autoscaler, its policies) also selects these.
 */}}
+{{/*
+Name of the parsing Deployment, Service and PDB, and the host in PARSING_SERVICE_URL: the full name with
+"-parsing" appended, kept within the 63-character DNS label limit by shortening the full name, not the suffix.
+*/}}
+{{- define "pipeshub-ai.parsingName" -}}
+{{- printf "%s-parsing" (include "pipeshub-ai.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- end }}
+
 {{- define "pipeshub-ai.parsingSelectorLabels" -}}
 app.kubernetes.io/name: {{ printf "%s-parsing" (include "pipeshub-ai.name" . | trunc 55 | trimSuffix "-") }}
 app.kubernetes.io/instance: {{ .Release.Name }}

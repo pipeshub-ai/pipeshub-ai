@@ -83,7 +83,7 @@ spec:
             - name: USE_PARSING_SERVICE
               value: "true"
             - name: PARSING_SERVICE_URL
-              value: {{ printf "http://%s-parsing:%d" (include "pipeshub-ai.fullname" .) (.Values.parsing.port | int) | quote }}
+              value: {{ printf "http://%s:%d" (include "pipeshub-ai.parsingName" .) (.Values.parsing.port | int) | quote }}
             {{- if ne (toString .Values.parsing.clientConcurrency) "" }}
             - name: PARSING_SERVICE_CONCURRENCY
               value: {{ .Values.parsing.clientConcurrency | quote }}

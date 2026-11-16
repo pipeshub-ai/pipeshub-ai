@@ -5,7 +5,7 @@ PIPESHUB_ROLE=parsing. The Deployment is named <fullname>-parsing and its pods
 carry the label pipeshub.ai/workload=parsing; add-on charts (for example a scaler)
 target those two and nothing else. There is deliberately no HPA here.
 */ -}}
-{{- $name := printf "%s-parsing" (include "pipeshub-ai.fullname" .) }}
+{{- $name := include "pipeshub-ai.parsingName" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
