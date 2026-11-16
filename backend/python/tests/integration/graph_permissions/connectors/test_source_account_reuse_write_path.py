@@ -6,6 +6,8 @@ holds the address now: a re-read listing the deleted account, or naming no accou
 while the new account's own grants and group memberships are written. Nobody else's access changes.
 """
 
+import os
+
 import pytest
 
 from app.config.constants.arangodb import Connectors
@@ -19,6 +21,9 @@ from .test_onedrive_inheritance_write_path import Drive
 drive = onedrive.drive      # the fixture: Ana's OneDrive, shared with Ben and Cal; Ben is the account u-ben
 
 pytestmark = pytest.mark.integration
+# With the accounts kept as nodes, an address listed for a new account while the old one is still stored links neither until the old one
+# is withdrawn (test_source_account_writers.py); these cases read the registry's immediate hand-over.
+registry_only = pytest.mark.skipif(os.environ.get("PERM_SOURCE_ACCOUNTS") == "1", reason="the registry's hand-over; accounts are covered by test_source_account_writers")
 
 
 def _grant(email: str, source_id: str | None, role: PermissionType = PermissionType.READ) -> Permission:
@@ -37,6 +42,7 @@ async def _ben_reused(drive: Drive) -> None:
     ])
 
 
+@registry_only
 async def test_a_reread_writes_the_grant_only_for_the_account_that_holds_the_address(drive: Drive) -> None:
     await drive.write()
     await _ben_reused(drive)
@@ -54,6 +60,7 @@ async def test_a_reread_writes_the_grant_only_for_the_account_that_holds_the_add
     assert await drive.readers("budget.pdf") == {"ana", "cal"}
 
 
+@registry_only
 async def test_a_group_lists_the_new_account_and_not_the_deleted_one(drive: Drive) -> None:
     await drive.write()
     group = AppUserGroup(source_user_group_id=f"g:{_suffix()}", app_name=Connectors.ONEDRIVE,

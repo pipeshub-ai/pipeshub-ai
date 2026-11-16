@@ -18,6 +18,7 @@ Three substitutions are needed and only three:
   per-connector state there (which source account holds each address).
 """
 
+import os
 from unittest.mock import MagicMock
 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -54,10 +55,20 @@ class RecordingProducer:
         return types
 
 
+class _AccountsOnConfig(InMemoryConfigService):
+    """Every connector keeps its accounts as SourceAccount nodes (``PERM_SOURCE_ACCOUNTS=1``): the write-path suites then run with the
+    writers on, and must still read what they read with them off."""
+
+    async def get_config(self, key: str, default=None, use_cache: bool = True, **kw):  # noqa: ANN001, ANN201
+        if key.endswith("/sourceAccounts/graph") and key not in self.values:
+            return {"enabled": True}
+        return await super().get_config(key, default, use_cache, **kw)
+
+
 def build_processor(provider, org_id: str) -> tuple[DataSourceEntitiesProcessor, RecordingProducer]:
     """A processor writing through `provider` into the live graph."""
     logger = MagicMock()
-    config_service = InMemoryConfigService()
+    config_service = _AccountsOnConfig() if os.environ.get("PERM_SOURCE_ACCOUNTS") == "1" else InMemoryConfigService()
     data_store = GraphDataStore(logger, provider)
 
     processor = DataSourceEntitiesProcessor(logger, data_store, config_service)

@@ -74,9 +74,8 @@ class TestArango:
             if AGENT_KNOWLEDGE in (c.args[0] if c.args else c.kwargs.get("query", ""))
         )
         assert lookup.kwargs == {"bind_vars": {"connector_id": "c1"}, "txn_id": "txn1"}
-        provider.delete_nodes_and_edges.assert_awaited_once_with(
-            ["k1", "k2"], AGENT_KNOWLEDGE, transaction="txn1"
-        )
+        # the connector's source accounts go in the same transaction too
+        provider.delete_nodes_and_edges.assert_any_await(["k1", "k2"], AGENT_KNOWLEDGE, transaction="txn1")
         assert AGENT_KNOWLEDGE in provider.begin_transaction.await_args.kwargs["write"]
         provider.commit_transaction.assert_awaited_once_with("txn1")
 
