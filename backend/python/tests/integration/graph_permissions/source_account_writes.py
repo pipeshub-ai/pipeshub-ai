@@ -97,3 +97,30 @@ async def state(provider: Any, connector_id: str, users: dict[str, str], records
     holders = {e.get("_from") or f"{e.get('from_collection')}/{e.get('from_id')}" for r in records.values()
                for e in await provider.get_edges_to_node(f"{CollectionNames.RECORDS.value}/{r.id}", CollectionNames.PERMISSION.value, raise_on_error=True)}
     return accounts, links, holders
+
+
+async def delete_and_restore(provider: Any, config_service: Any, org_id: str, email: str, user_id: str,  # noqa: ANN401
+                             check: Callable[[], Awaitable[None]], check_restored: Callable[[], Awaitable[None]]) -> None:
+    """The user is soft-deleted and restored through the entity events, with ``check`` run while deleted and ``check_restored`` after."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+    container = MagicMock()
+    container.config_service = lambda: config_service
+    service = EntityEventService(logging.getLogger("source-accounts"), provider, container)
+    # the side effects these events also have (caches, the user's own collection, the All team, other connectors) are not under test
+    with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()), \
+         patch.object(service, "_get_or_create_knowledge_base", AsyncMock()), \
+         patch.object(service, "_get_or_create_all_team_and_add_user", AsyncMock()), \
+         patch.object(service, "_schedule_connector_link", MagicMock()):
+        assert await service._handle_user_deleted({"email": email, "orgId": org_id})
+        await check()
+        assert await service._handle_user_added({"email": email, "orgId": org_id, "userId": user_id})
+        await check_restored()
+
+
+async def mark_indexed(provider: Any, record: FileRecord) -> None:  # noqa: ANN401
+    """The search scope holds indexed records only; a new record is written queued for indexing."""
+    await provider.batch_upsert_nodes([{"_key": record.id, "indexingStatus": "COMPLETED", "virtualRecordId": record.id}], CollectionNames.RECORDS.value)

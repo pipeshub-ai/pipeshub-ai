@@ -106,3 +106,57 @@ async def test_an_address_passed_to_a_new_account_links_it_once_the_old_one_is_w
     assert (await world.readers(records))["by-id"] == set(), "the old account's grant is not the new holder's"
     await world.processor.on_updated_record_permissions(records["by-id"], [scenario.grant(world.emails["ana"], "s-ana-new")])
     assert (await world.readers(records))["by-id"] == {"ana"}, "the new account's own grant"
+
+
+async def test_a_deleted_user_reads_nothing_through_its_account_and_a_restore_gives_it_back(world: World) -> None:
+    """Soft delete and restore through the entity events: while deleted, neither the user's check nor its search scope reaches its account's
+    grants; restored, both do again. The account itself is kept."""
+    await scenario.enable(world.processor, world.connector_id)
+    records = await world.write()
+    cal, user_id = world.users["cal"], f"uid-cal-{uuid.uuid4().hex[:6]}"
+    await world.backend.provider.batch_upsert_nodes([{"_key": cal, "userId": user_id, "email": world.emails["cal"], "orgId": ORG, "isActive": True,
+                                                      "createdAtTimestamp": TS, "updatedAtTimestamp": TS}], collection=CollectionNames.USERS.value)
+    grant_of_account = records["by-group"].id
+
+    async def reads() -> tuple[bool, bool]:
+        checked = grant_of_account in set((await world.backend.provider.check_access(cal, ORG, node_ids=[grant_of_account])).node_ids)
+        scope = await world.backend.provider.get_accessible_virtual_record_ids(user_id, ORG)
+        return checked, grant_of_account in (scope or {}).values()
+
+    await scenario.mark_indexed(world.backend.provider, records["by-group"])
+    assert await reads() == (True, True)
+
+    async def deleted() -> None:
+        assert await reads() == (False, False)
+
+    async def restored() -> None:
+        assert await reads() == (True, True)
+
+    await scenario.delete_and_restore(world.backend.provider, world.processor.config_service, ORG, world.emails["cal"], user_id, deleted, restored)
+    accounts, _, _ = await scenario.state(world.backend.provider, world.connector_id, world.users, records)
+    assert "s-cal" in {a["sourceUserId"] for a in accounts}
+
+
+async def test_a_mail_thread_owned_by_a_linked_account_is_the_users(world: World) -> None:
+    from app.config.constants.arangodb import Connectors, OriginTypes
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+    from app.models.entities import MailRecord, RecordType
+
+    await scenario.enable(world.processor, world.connector_id)
+    await world.write()
+    mail = MailRecord(id=str(uuid.uuid4()), org_id=ORG, record_name="thread", external_record_id=f"m-{_suffix()}", version=1,
+                      origin=OriginTypes.CONNECTOR, connector_name=Connectors.CONFLUENCE, connector_id=world.connector_id,
+                      record_type=RecordType.MAIL, thread_id="t1", conversation_index=f"ci-{_suffix()}")
+    await world.backend.provider.batch_upsert_records([mail])
+    await world.backend.provider.batch_create_edges([{
+        "from_id": account_node_id(ORG, world.connector_id, "s-cal"), "from_collection": CollectionNames.SOURCE_ACCOUNTS.value,
+        "to_id": mail.id, "to_collection": CollectionNames.RECORDS.value, "type": "USER", "role": "OWNER", "createdAtTimestamp": TS,
+    }], collection=CollectionNames.PERMISSION.value)
+    ids = {person: f"uid-{person}-{_suffix()}" for person in ("cal", "ana")}
+    for person, uid in ids.items():
+        await world.backend.provider.batch_upsert_nodes([{"_key": world.users[person], "userId": uid, "email": world.emails[person], "orgId": ORG,
+                                                          "isActive": True, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}],
+                                                        collection=CollectionNames.USERS.value)
+    owned = await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["cal"])
+    assert owned is not None and owned.id == mail.id, "cal is linked to the account that owns the thread"
+    assert await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["ana"]) is None

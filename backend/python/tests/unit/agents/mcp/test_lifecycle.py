@@ -159,7 +159,9 @@ class TestDeletionEventsCleanUp:
         graph.batch_upsert_nodes = AsyncMock()
         container = MagicMock()
         container.config_service.return_value = store
-        return EntityEventService(MagicMock(), graph, container)
+        service = EntityEventService(MagicMock(), graph, container)
+        service._unlink_source_accounts = AsyncMock()      # the graph's own step, not what these tests check
+        return service
 
     async def test_user_deleted_removes_their_mcp_data(self, refresh_service: MagicMock) -> None:
         store = _store()

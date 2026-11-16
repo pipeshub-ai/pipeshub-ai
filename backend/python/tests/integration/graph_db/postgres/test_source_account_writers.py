@@ -6,6 +6,7 @@ delete-right check: the setting on gives each listed account a node of its own; 
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -88,6 +89,7 @@ async def test_with_the_setting_on_each_account_holds_its_own_grants(setup: Setu
     assert (await setup.readers(records))["by-id"] == {"ana2"}, "the renamed account's grant follows its new address"
 
 
+@pytest.mark.skipif(os.environ.get("PERM_SOURCE_ACCOUNTS") == "1", reason="the in-memory configuration turns the setting on for every connector")
 async def test_with_the_setting_off_nothing_new_is_written_and_everyone_reads_what_they_did(setup: Setup) -> None:
     records = await setup.write()
 
@@ -119,3 +121,28 @@ async def test_an_address_passed_to_a_new_account_links_it_once_the_old_one_is_w
     assert (await setup.readers(records))["by-id"] == set(), "the old account's grant is not the new holder's"
     await setup.processor.on_updated_record_permissions(records["by-id"], [scenario.grant(setup.emails["ana"], "s-ana-new")])
     assert (await setup.readers(records))["by-id"] == {"ana"}, "the new account's own grant"
+
+
+async def test_a_deleted_user_reads_nothing_through_its_account_and_a_restore_gives_it_back(setup: Setup) -> None:
+    """Soft delete and restore through the entity events: while deleted, neither the user's check nor its search scope reaches its account's
+    grants; restored, both do again. The account itself is kept."""
+    await scenario.enable(setup.processor, APP)
+    records = await setup.write()
+    cal, grant_of_account = setup.users["cal"], records["by-group"].id
+
+    async def reads() -> tuple[bool, bool]:
+        scope = await setup.w.p.get_accessible_virtual_record_ids("uid-cal", setup.w.org)
+        return bool(await setup.w.allowed(cal, grant_of_account)), grant_of_account in (scope or {}).values()
+
+    await scenario.mark_indexed(setup.w.p, records["by-group"])
+    assert await reads() == (True, True)
+
+    async def deleted() -> None:
+        assert await reads() == (False, False)
+
+    async def restored() -> None:
+        assert await reads() == (True, True)
+
+    await scenario.delete_and_restore(setup.w.p, setup.processor.config_service, setup.w.org, setup.emails["cal"], "uid-cal", deleted, restored)
+    accounts, _, _ = await scenario.state(setup.w.p, APP, setup.users, records)
+    assert "s-cal" in {a["sourceUserId"] for a in accounts}

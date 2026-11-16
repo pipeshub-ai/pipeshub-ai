@@ -386,7 +386,7 @@ class SourceAccountGraph:
     async def withdraw(self, tx_store: "TransactionStore", users: list["AppUser"]) -> None:
         """Mark the stored accounts of ``users`` withdrawn (kept: they hold the grants, and the addresses they had), then
         link their addresses again: a withdrawn account links nobody."""
-        nodes = [n for n in (self.node_id(u.source_user_id) for u in users) if n]
+        nodes = [n for n in (self.node_id(getattr(u, "source_user_id", None)) for u in users) if n]
         if not nodes:
             return
         stored = await self.stored(tx_store, nodes)

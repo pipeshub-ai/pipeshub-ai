@@ -40,6 +40,9 @@ on:
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
       - 'backend/python/tests/integration/graph_permissions/test_record_property_projection.py'
       - 'backend/python/tests/integration/graph_permissions/write_path_support.py'
+      - 'backend/python/tests/integration/graph_permissions/source_account_writes.py'
+      - 'backend/python/tests/support/in_memory_config.py'
+      - 'backend/python/app/connectors/core/base/data_processor/**'
       - 'backend/python/app/modules/record_metadata/**'
       - 'backend/python/pyproject.toml'
       - 'backend/nodejs/apps/src/libs/db/**'
@@ -201,6 +204,20 @@ jobs:
           if [ -n "$GRAPH_K" ]; then args+=(-k "$GRAPH_K"); fi
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
           python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+
+      # The PostgreSQL suites that write through the processor again, with every connector keeping its accounts as SourceAccount nodes
+      # (PERM_SOURCE_ACCOUNTS=1, tests/support/in_memory_config.py): what anyone reads must not change. Its skips are designed (the address
+      # registry's immediate hand-over, the case of the setting off). Under a minute, in shard 4.
+      - name: PostgreSQL processor suites with the source-account writers on
+        if: ${{ matrix.shard == 4 }}
+        working-directory: backend/python
+        env:
+          PERM_SOURCE_ACCOUNTS: '1'
+        run: |
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_accounts)"
+          python -m pytest tests/integration/graph_db/postgres/test_identity.py tests/integration/graph_db/postgres/test_source_account_writers.py \
+            -m integration -p no:cacheprovider --timeout=600 -rs
 
       # One job is enough: the split is the same in every job. Collecting the folder and every shard takes a few minutes.
       - name: Every graph case runs in exactly one shard

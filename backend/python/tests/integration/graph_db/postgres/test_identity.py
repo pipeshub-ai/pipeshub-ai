@@ -9,6 +9,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -460,6 +461,8 @@ async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_a
     assert await w.allowed("m", "mine") == set()
 
 
+@pytest.mark.skipif(os.environ.get("PERM_SOURCE_ACCOUNTS") == "1",
+                    reason="the registry's hand-over; with accounts the address links the new one once the old one is withdrawn (test_source_account_writers)")
 async def test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_account_holding_it(w: World) -> None:
     """After the processor saw m@x.com pass to a new account, a group listing the deleted account does not make the
     PipesHub user a member again; the same group listing the new account does."""

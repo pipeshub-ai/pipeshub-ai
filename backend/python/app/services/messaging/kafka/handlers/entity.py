@@ -393,6 +393,9 @@ class EntityEventService(BaseEventService):
                 CollectionNames.BELONGS_TO.value,
             )
 
+            # A restored user gets back the source accounts its address holds, as a new one gets those already synced.
+            await self._relink_source_accounts(payload["orgId"], payload["email"])
+
             # Adopt anything this email already accumulated as an external
             # collaborator. Never fatal: the account itself is what this event is for, and
             # letting a failed adoption bubble up would make Kafka redeliver forever while
@@ -597,6 +600,7 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+            await self._unlink_source_accounts(existing_user_id)
             # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
             await notify_principals_changed(org_id)
             self.logger.info("Soft-deleted graph user %s", existing_user_id)
@@ -611,6 +615,34 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
             raise
+
+    async def _unlink_source_accounts(self, user_key: str) -> None:
+        """A deleted user reads nothing through the source accounts it was linked to. The accounts stay (they are the connector's and hold
+        its grants): a restore links them again (``_relink_source_accounts``). A failed delete raises, so the event is redelivered."""
+        async with self.graph_data_store.transaction() as tx_store:
+            await tx_store.delete_edges_between_collections(
+                user_key, CollectionNames.USERS.value, CollectionNames.AUTHENTICATED_AS.value, CollectionNames.SOURCE_ACCOUNTS.value,
+            )
+
+    async def _relink_source_accounts(self, org_id: str, email: str) -> None:
+        """Link the user with this address to the source accounts that hold it, in every connector that keeps its accounts in the graph
+        (the same rule as a user sync: one live account per connector, or none). A connector with the setting off is not touched."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            SourceAccountGraph,
+            graph_mode_key,
+        )
+
+        address = email.lower()
+        found = await self.graph_provider.get_nodes_by_filters(
+            CollectionNames.SOURCE_ACCOUNTS.value, {"email": address}, raise_on_error=True,
+        )
+        config = self.app_container.config_service()
+        for connector_id in sorted({a.get("connectorId") for a in found if a.get("connectorId")}):
+            mode = await config.get_config(graph_mode_key(connector_id), use_cache=False)
+            if not (isinstance(mode, dict) and mode.get("enabled") is True):
+                continue
+            async with self.graph_data_store.transaction() as tx_store:
+                await SourceAccountGraph(connector_id, org_id, self.logger).relink(tx_store, [address])
 
     async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
         """MCP servers and credentials go with their user or org, so nothing keeps refreshing

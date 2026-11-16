@@ -17,6 +17,7 @@ on:
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/**'
       - 'backend/python/tests/unit/services/permissions/**'
+      - 'backend/python/tests/support/in_memory_config.py'
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'scripts/assert_no_skips.py'
@@ -251,6 +252,18 @@ jobs:
           args=()
           for a in "${allows[@]}"; do args+=(--allow "$a"); done
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-junit.xml" --collected "$RUNNER_TEMP/graph.collected" "${args[@]}"
+
+      # The connector write-path suites again, with every connector keeping its accounts as SourceAccount nodes (PERM_SOURCE_ACCOUNTS=1,
+      # tests/support/in_memory_config.py): what anyone reads must not change. Its skips are designed: the address registry's immediate
+      # hand-over, and the case of the setting off. A few minutes in the shard that already runs this folder.
+      - name: Write-path suites with the source-account writers on
+        if: ${{ matrix.shard == 2 }}
+        env:
+          KH_PERM_ARANGO_DB: kh_perm_conformance
+          PERM_SOURCE_ACCOUNTS: '1'
+        run: |
+          cd backend/python
+          pytest tests/integration/graph_permissions/connectors -m integration -q --timeout=300 -rs -p no:logging
 
       - name: Upload the regressions the generator filed
         if: failure()
