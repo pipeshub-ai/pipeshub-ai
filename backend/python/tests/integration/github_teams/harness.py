@@ -132,6 +132,7 @@ class ConfigService:
         self.config = config
         self.platform: dict[str, Any] = {}
         self.fail_reads = 0  # the next N reads of the connector config raise
+        self.other: dict[str, Any] = {}  # every other key (the processor's per-connector account state), kept
 
     async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
@@ -141,12 +142,17 @@ class ConfigService:
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
-        return default
+        return json.loads(json.dumps(self.other[path])) if path in self.other else default
+
+    async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401
+        self.other[path] = json.loads(json.dumps(value))
+        return True
 
     async def compare_and_set_config(self, key, expected, new) -> bool:
-        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts); nothing is
-        # kept here, as with every other key this fake answers.
-        return await self.get_config(key) == expected
+        # The connector processor keeps its per-connector account state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        return await self.set_config(key, new)
 
 
 class LogCapture(logging.Handler):
