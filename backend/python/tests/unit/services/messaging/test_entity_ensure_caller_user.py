@@ -10,12 +10,14 @@ knowledge base, because both are keyed by (org, userId) and the stores upsert on
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.kafka.handlers.entity import (
     EntityEventService,
     _login_user_key,
@@ -232,8 +234,12 @@ def _no_connector() -> Any:  # noqa: ANN401
 NEW_USER = _login_user_key(ORG, USER)
 
 
+def _pending(key: str, ms_ago: int = 0) -> str:
+    return f"pending:{key}:{int(time.time() * 1000) - ms_ago}"
+
+
 class TestDefaultKnowledgeBase:
-    async def test_two_writers_of_one_users_default_create_the_same_one_and_build_one_connector(self) -> None:
+    async def test_two_writers_of_one_users_default_make_one_and_build_one_connector(self) -> None:
         svc, state = _kb_service([])
 
         async def start(**kwargs: Any) -> MagicMock:  # noqa: ANN401
@@ -244,24 +250,23 @@ class TestDefaultKnowledgeBase:
             "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
             AsyncMock(side_effect=start),
         ) as create:
-            first, second = await asyncio.gather(
+            await asyncio.gather(
                 svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private"),
                 svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private"),
             )
-        kb_id = first.get("kb_id") or first.get("id")
-        assert kb_id == (second.get("kb_id") or second.get("id"))
-        assert [a["id"] for a in state["apps"]] == [kb_id]
-        assert state["marker"] == kb_id
+        (app,) = state["apps"]
+        assert state["marker"] == app["id"]
         create.assert_awaited_once()
-        assert list(svc.app_container.connectors_map) == [kb_id]
+        assert list(svc.app_container.connectors_map) == [app["id"]]
 
-    @pytest.mark.parametrize("left", [[{"id": "gone", "isDeleted": True}], []], ids=["deleted", "removed"])
-    async def test_a_deleted_default_is_never_written_again_under_its_key(self, left: list[dict]) -> None:
-        # Cleanup queued for the deleted one is keyed by its id; a new default under that id would be cleaned up too.
-        svc, state = _kb_service(left, marker="gone")
+    @pytest.mark.parametrize("left", [[{"id": "gone", "status": APP_STATUS_DELETING}], []], ids=["deleting", "removed"])
+    async def test_a_named_default_that_is_gone_is_replaced_under_a_fresh_key_never_by_a_sibling(self, left: list[dict]) -> None:
+        # Cleanup queued for the deleted one is keyed by its id; a collection the user made is not their default.
+        sibling = {"id": "own-kb", "name": "First", "createdBy": USER}
+        svc, state = _kb_service([*left, sibling], marker="gone")
         with _no_connector():
-            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
-        assert result["kb_id"] != "gone"
+            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private")
+        assert result["kb_id"] not in ("gone", "own-kb")
         assert [c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list] == [result["kb_id"]]
         assert state["marker"] == result["kb_id"]
 
@@ -269,9 +274,9 @@ class TestDefaultKnowledgeBase:
         svc, state = _kb_service([])
         with _no_connector():
             first = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
-            state["apps"] = []  # deleted, its row removed; cleanup keyed by its id may still be queued
+            state["apps"] = [{"id": "own-kb", "createdBy": USER}]  # deleted with its row; cleanup may still be queued
             second = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
-        assert second["kb_id"] != first["kb_id"]
+        assert second["kb_id"] not in (first["kb_id"], "own-kb")
 
     async def test_a_new_user_who_already_made_a_knowledge_base_still_gets_the_default(self) -> None:
         # Their first create can land between their user and their default being written.
@@ -283,12 +288,34 @@ class TestDefaultKnowledgeBase:
         (call,) = svc.graph_provider.batch_upsert_nodes.await_args_list
         assert call.args[0][0]["name"] == "Admin's Private"
 
-    async def test_a_default_another_writer_claimed_is_finished_under_its_key(self) -> None:
-        svc, state = _kb_service([], marker="pending:claimed-kb")
+    async def test_a_default_another_writer_is_writing_is_left_to_that_writer(self) -> None:
+        # Writing it here too could put back one deleted meanwhile, under a key cleanup is queued for.
+        claim = _pending("claimed-kb")
+        svc, state = _kb_service([], marker=claim)
+        with _no_connector():
+            assert await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG) == {}
+        svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        assert state["marker"] == claim
+
+    @pytest.mark.parametrize(
+        ("left", "ms_ago"),
+        [([{"id": "claimed-kb", "status": APP_STATUS_DELETING}], 0), ([], 60 * 60 * 1000)],
+        ids=["deleted-mid-claim", "abandoned-claim"],
+    )
+    async def test_a_claim_whose_collection_is_gone_is_replaced_under_a_fresh_key(self, left: list[dict], ms_ago: int) -> None:
+        svc, state = _kb_service(left, marker=_pending("claimed-kb", ms_ago))
         with _no_connector():
             result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
-        assert result["kb_id"] == "claimed-kb"
+        assert result["kb_id"] != "claimed-kb"
+        assert [c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list] == [result["kb_id"]]
+        assert state["marker"] == result["kb_id"]
+
+    async def test_a_claim_written_by_a_writer_that_stopped_is_taken_as_the_default(self) -> None:
+        svc, state = _kb_service([{"id": "claimed-kb", "createdBy": USER}], marker=_pending("claimed-kb"))
+        result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
+        assert result["id"] == "claimed-kb"
         assert state["marker"] == "claimed-kb"
+        svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
 
     async def test_the_default_the_user_names_is_found(self) -> None:
         svc, _ = _kb_service([{"id": "own-kb", "createdBy": USER}, {"id": "the-default", "createdBy": USER}], marker="the-default")

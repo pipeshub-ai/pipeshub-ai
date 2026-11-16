@@ -20,6 +20,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from tests.integration.graph_db.fresh_org_support import (
+    a_claim_whose_collection_is_gone_is_replaced,
     a_first_request_after_add_and_delete_writes_nothing,
     a_new_users_writers_race,
     a_readded_user_keeps_one_node,
@@ -89,3 +90,8 @@ async def test_a_first_request_after_add_and_delete_writes_nothing(graph: tuple[
 
 async def test_a_removed_default_is_not_made_again_under_its_key(graph: tuple[Any, str]) -> None:
     await a_removed_default_is_not_made_again_under_its_key(*graph)
+
+
+@pytest.mark.parametrize("abandoned", [False, True], ids=["deleted-mid-claim", "abandoned-claim"])
+async def test_a_claim_whose_collection_is_gone_is_replaced(graph: tuple[Any, str], abandoned: bool) -> None:
+    await a_claim_whose_collection_is_gone_is_replaced(*graph, abandoned=abandoned)

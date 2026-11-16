@@ -12,8 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.core.org_context import OrgContext, bind
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils import user_lookup
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger("fresh-org-first-call-it")
 
@@ -214,13 +216,66 @@ async def a_removed_default_is_not_made_again_under_its_key(graph: Any, org_id: 
         assert await events.process_event("userAdded", dict(event))
         (first,) = await defaults()
         first_key = first.get("id") or first.get("_key")
+        (user,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        user_key = user.get("id") or user.get("_key")
+        # A collection of their own, which must not be taken for their default.
+        sibling_key = f"sibling-{run}"
+        assert await graph.batch_upsert_nodes([{
+            "id": sibling_key, "createdBy": user_id, "orgId": org_id, "name": "Sibling",
+            "type": Connectors.KNOWLEDGE_BASE.value, "appGroup": first["appGroup"], "authType": "NONE",
+            "scope": first["scope"], "isActive": True, "isAgentActive": True, "isConfigured": True, "isAuthenticated": True,
+            "vectorMembershipBackfilled": True, "hideConnector": True, "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }], CollectionNames.APPS.value)
         await graph.delete_nodes_and_edges([first_key], CollectionNames.APPS.value)
-        assert await defaults() == []
 
         assert await events.process_event("userAdded", dict(event))
-        (second,) = await defaults()
-        second_key = second.get("id") or second.get("_key")
-        assert second_key != first_key
+        keys = {kb.get("id") or kb.get("_key") for kb in await defaults()}
+        (second_key,) = keys - {sibling_key}
+        assert second_key not in (first_key, sibling_key)
         (user,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
         assert user.get("defaultKnowledgeBaseId") == second_key
-        assert await graph.get_user_kb_permission(second_key, user.get("id") or user.get("_key")) == "OWNER"
+        assert await graph.get_user_kb_permission(second_key, user_key) == "OWNER"
+
+
+async def a_claim_whose_collection_is_gone_is_replaced(graph: Any, org_id: str, *, abandoned: bool) -> None:  # noqa: ANN401
+    """A writer claimed the user's default and wrote it, and the collection was deleted before the claim was marked
+    written (or the claim was abandoned before anything was written). The next userAdded claims a fresh key and never
+    writes the claimed one again: cleanup queued for it is keyed by its id."""
+    run = uuid.uuid4().hex[:10]
+    user_id = f"uid-claim-{run}"
+    events = _worker(graph)
+    event = {"orgId": org_id, "userId": user_id, "email": f"claim-{run}@example.com", "fullName": "Claim", "syncAction": "none"}
+    with (
+        patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()),
+        bind(OrgContext(org_id, None, "job", "job:test", "t")),
+    ):
+        assert await events.process_event("orgCreated", {"orgId": org_id, "accountType": "business", "registeredName": "Claim"})
+        assert await events.process_event("userAdded", dict(event))
+        (user,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        user_key = user.get("id") or user.get("_key")
+        (default,) = await graph.get_nodes_by_filters(
+            CollectionNames.APPS.value, {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            raise_on_error=True,
+        )
+        claimed_key = default.get("id") or default.get("_key")
+        claimed_at = 1 if abandoned else get_epoch_timestamp_in_ms()
+        assert await graph.update_node_fields_if_match(
+            user_key, CollectionNames.USERS.value, {"defaultKnowledgeBaseId": f"pending:{claimed_key}:{claimed_at}"},
+            {"defaultKnowledgeBaseId": claimed_key},
+        )
+        if abandoned:
+            await graph.delete_nodes_and_edges([claimed_key], CollectionNames.APPS.value)
+        else:
+            await graph.batch_upsert_nodes([{"id": claimed_key, "status": APP_STATUS_DELETING}], CollectionNames.APPS.value)
+
+        assert await events.process_event("userAdded", dict(event))
+        kbs = await graph.get_nodes_by_filters(
+            CollectionNames.APPS.value, {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            raise_on_error=True,
+        )
+        live = [kb.get("id") or kb.get("_key") for kb in kbs if kb.get("status") != APP_STATUS_DELETING]
+        assert len(live) == 1 and live[0] != claimed_key, kbs
+        if abandoned:
+            assert claimed_key not in {kb.get("id") or kb.get("_key") for kb in kbs}
+        (user,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        assert user.get("defaultKnowledgeBaseId") == live[0]
