@@ -17,6 +17,7 @@ from app.utils.streaming import (
     _ainvoke_throttled,
     invoke_with_structured_output_and_reflection,
 )
+from tests.support.loop_clock import virtual_loop_time
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -53,6 +54,13 @@ def _fresh_gateway(monkeypatch: pytest.MonkeyPatch) -> LLMGateway:
     return fresh
 
 
+@pytest.fixture(autouse=True)
+async def _loop_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every timeout here is on a loop clock the test controls. On the wall clock a busy runner's stall inside a 0.1 s
+    # budget timed out a call that had already returned, and the slot test failed although the slot wait was not timed.
+    virtual_loop_time(monkeypatch)
+
+
 @pytest.fixture
 def no_structured_output() -> Iterator[None]:
     with patch.object(streaming, "_apply_structured_output", side_effect=lambda llm, schema: llm):
@@ -69,8 +77,11 @@ class TestAinvokeThrottled:
         gateway = _fresh_gateway(monkeypatch)
         monkeypatch.setattr(gateway.limiter, "slot", lambda: _slow_slot(0.2))
         llm = _Llm(["ok"], [0.0])
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         result = await _ainvoke_throttled(llm, [HumanMessage(content="q")], call_timeout=0.1)
         assert result.content == "ok"
+        assert loop.time() - started == pytest.approx(0.2)  # the whole 0.2 s slot wait, past the 0.1 s call budget
 
     async def test_no_timeout_by_default(self) -> None:
         llm = _Llm(["ok"], [0.05])
@@ -130,7 +141,7 @@ class TestStructuredOutputTimeout:
             llm, [HumanMessage(content="q")], _Answer, max_retries=1, call_timeout=0.05,
         )
         assert result is None
-        assert loop.time() - started < 0.5
+        assert loop.time() - started == pytest.approx(0.05)  # the retry was cut at its 0.05 s budget, not after 1 s
 
     async def test_without_timeout_behaviour_is_unchanged(self, no_structured_output) -> None:
         llm = _Llm(['{"value": 3}'], [0.05])
