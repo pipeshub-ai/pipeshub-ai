@@ -37,6 +37,7 @@ from app.services.parsing.interface import (
     ParseResult,
     ParserProvider,
 )
+from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.utils.converters.caption_map import apply_caption_map
 
 if TYPE_CHECKING:
@@ -119,6 +120,9 @@ class ParsingClient(BaseServiceClient):
             backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
             config_service=config_service,
             service_scope=TokenScopes.DOCUMENT_PARSE,
+            # One connection per parse the indexing side may have in flight; the default pool
+            # of 10 would hold the rest back whatever PARSING_SERVICE_CONCURRENCY says.
+            max_connections=max(10, remote_parse_concurrency() or 0),
         )
         # Docling-backed providers defer block construction to keep the Parsing
         # service stateless; this client completes that phase locally on demand.

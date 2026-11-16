@@ -46,7 +46,7 @@ class TestHealthCheck:
             "resource_governor": {"error": "unavailable"},
         }
         assert set(body) == {
-            "status", "service", "formats", "resource_governor", "llm_gateway", "llm_wire_hooks", "cpu", "lanes", "admission",
+            "status", "service", "formats", "resource_governor", "llm_gateway", "llm_wire_hooks", "cpu", "lanes", "admission", "load",
         }
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
@@ -330,3 +330,44 @@ class TestLifespan:
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         }
         assert lines["parse_pool.shutdown_parse_pool"] < lines["governor.stop"] < lines["governor.close"]
+
+
+class TestReadiness:
+    """/health/ready asks the Docling service the pod calls; /health stays a liveness signal that does not."""
+
+    async def test_ready_when_docling_answers(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from app.parsing_main import readiness
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(return_value=SimpleNamespace(status_code=200))):
+            result = await readiness()
+        assert result.status_code == 200
+
+    @pytest.mark.parametrize("failure", ["ConnectError", "ReadTimeout"])
+    async def test_not_ready_when_docling_does_not_answer(self, failure: str) -> None:
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from app.parsing_main import readiness
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(side_effect=getattr(httpx, failure)("down"))):
+            result = await readiness()
+        assert result.status_code == 503
+        assert json.loads(result.body)["docling"] == "unavailable"
+
+    async def test_not_ready_when_docling_is_unhealthy(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from app.parsing_main import readiness
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(return_value=SimpleNamespace(status_code=503))):
+            result = await readiness()
+        assert result.status_code == 503

@@ -25,6 +25,7 @@ from app.connectors.services.stored_content_heal import (
     StoredContentHeal,
     StoredContentHealState,
 )
+from app.core.org_context import instrument_org_methods
 
 APPS = CollectionNames.APPS.value
 RECORDS = CollectionNames.RECORDS.value
@@ -38,9 +39,16 @@ class HealGraph:
         self.records: dict[str, dict[str, Any]] = {}
         self.unreadable: set[str] = set()
 
-    async def get_all_documents(self, collection, transaction=None) -> list[dict[str, Any]]:
-        assert collection == APPS
-        return [copy.deepcopy(doc) for doc in self.apps.values()]
+    async def get_all_orgs(self, **_kw) -> list[dict[str, Any]]:
+        return [{"_key": ORG}, {"_key": OTHER_ORG}]
+
+    async def get_documents_paginated(
+        self, collection, skip=0, limit=50, filters=None, sort_field=None, transaction=None, *,
+        raise_on_error=False, after_key=None, return_fields=None,
+    ) -> list[dict[str, Any]]:
+        assert collection == APPS and sort_field == "_key" and not skip and not filters
+        keys = sorted(k for k in self.apps if after_key is None or k > after_key)[:limit]
+        return [copy.deepcopy(self.apps[k]) for k in keys]
 
     async def page_records_for_vector_membership_backfill(
         self, connector_id, after_key, limit, transaction=None,
@@ -402,6 +410,51 @@ class TestMissingContentIsRebuilt:
         assert world.events == []
         assert world.graph.apps["conn-a"][StoredContentHealState.HEALED] == 0
         assert world.graph.apps["conn-a"][StoredContentHealState.ORPHANED] == 0
+
+
+class StrictOrgGraph(HealGraph):
+    """Checks each read's org argument against the bound org, as the providers do."""
+
+    async def get_records_by_record_ids(self, record_ids, org_id, visibility=None) -> list[dict[str, Any]]:
+        return await super().get_records_by_record_ids(record_ids, org_id, visibility)
+
+
+instrument_org_methods(StrictOrgGraph)
+
+
+class TestTheWindowCountsEveryOrgsHolders:
+    @pytest.mark.parametrize("mode", ["shadow", "enforce"])
+    async def test_each_orgs_holders_are_read_in_that_org_and_all_of_them_count(self, world, monkeypatch, mode: str) -> None:
+        monkeypatch.setenv("ORG_CONTEXT_MODE", mode)
+        strict = StrictOrgGraph()
+        strict.apps, strict.records = world.graph.apps, world.graph.records
+        world.graph = world.helper.graph_provider = strict
+        world.record("h-own", "conn-held", None, status="QUEUED")
+        world.record("h-other", "conn-held", None, status="QUEUED", org=OTHER_ORG)
+        world.record("a1", "conn-a", "v1", doc="d1", exists=False)
+        heal = world.heal(max_in_flight=2)
+        heal._in_flight = {"h-own": ORG, "h-other": OTHER_ORG}
+
+        # Both orgs' holders are still being indexed: the window is full.
+        assert await heal.tick() == "waiting"
+        assert heal._in_flight == {"h-own": ORG, "h-other": OTHER_ORG}
+        assert world.reindexed() == []
+
+        world.graph.records["h-other"]["indexingStatus"] = "COMPLETED"
+        assert await heal.tick() == "waiting"      # the other org is read after this org's page
+        assert heal._in_flight == {"h-own": ORG}
+        assert await heal.tick() == "page"
+        assert world.reindexed() == ["a1"]
+
+    async def test_a_holder_of_an_org_no_longer_listed_frees_its_slot(self, world) -> None:
+        world.record("a1", "conn-a", "v1", doc="d1", exists=False)
+        heal = world.heal(max_in_flight=1)
+        heal._in_flight = {"h-gone": "65f0000000000000000000ff"}
+
+        assert await heal.tick() == "waiting"
+        assert heal._in_flight == {}
+        assert await heal.tick() == "page"
+        assert world.reindexed() == ["a1"]
 
 
 class TestRunsOncePerVersion:
