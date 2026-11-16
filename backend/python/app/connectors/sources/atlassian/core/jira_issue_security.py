@@ -448,6 +448,10 @@ def _email_of(user_by_id: dict[str, Any], identifier: str | None) -> str | None:
     return None
 
 
+def _account_of(user: object) -> str | None:
+    return (user.get("accountId") or user.get("key")) if isinstance(user, dict) else None
+
+
 def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool]:
     """Return ``(email, skip_because_inactive)``."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
@@ -486,7 +490,7 @@ def _permissions_for_holder(
     def add_user(email: str | None, account_id: str | None = None) -> None:
         if not email:
             return
-        key = f"user:{email.lower()}"
+        key = f"user:{account_id or email.lower()}"
         if key in seen:
             return
         seen.add(key)
@@ -521,8 +525,7 @@ def _permissions_for_holder(
         email, inactive = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        named = holder.get("user") if isinstance(holder.get("user"), dict) else {}
-        add_user(email, named.get("accountId") or named.get("key") or parameter)
+        add_user(email, _account_of(holder.get("user")) or parameter)
         # A person who resolves to no e-mail is unread, not outside the level.
         return grants, False, None if email else HOLDER_USER
 
@@ -536,11 +539,11 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email)
+        add_user(reporter_email, _account_of(fields.get("reporter")))
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email)
+        add_user(assignee_email, _account_of(fields.get("assignee")))
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -587,7 +590,7 @@ def _permissions_for_holder(
             else:
                 email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email)
+                    add_user(email, _account_of(entry))
                     unresolved = unresolved or not email
         return grants, False, holder_type if unresolved else None
 
