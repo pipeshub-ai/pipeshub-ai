@@ -2540,7 +2540,7 @@ class DataSourceEntitiesProcessor:
         there, so "could not be read" answered as None took a grant or a membership
         away without an error or a retry.
         """
-        user = await tx_store.get_user_by_email(email, raise_on_error=True)
+        user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
         if user:
             if account and not await self._holds_address(account[0], email, account[1], user.id):
                 return None
@@ -5565,7 +5565,7 @@ class DataSourceEntitiesProcessor:
                 return
             async def link() -> None:
                 async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.batch_upsert_app_users(users)
+                    await tx_store.batch_upsert_app_users(users, self.org_id)
 
             if users[0].app_name in NOT_SOURCE_ACCOUNTS:
                 await link()
@@ -5593,13 +5593,23 @@ class DataSourceEntitiesProcessor:
                               f"next sync: {e}", exc_info=True)
 
     @retry_on_deadlock()
-    async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
+    async def withdraw_app_user_access(
+        self, connector_id: str, users: list[AppUser], *, drop_grants: bool = False,
+    ) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
-        the user's node). Without it no grant of the connector reaches the user."""
+        the user's node). Without it no grant of the connector reaches the user, unless the gate is
+        passed another way (the org's All team), so ``drop_grants`` also removes the user's own grants
+        on the connector's records, record groups, user groups and roles in the same transaction.
+        The connector then writes them again for a user it lists again."""
         if users and getattr(users[0], "app_name", None) not in NOT_SOURCE_ACCOUNTS:
             await self.source_accounts(connector_id).note_withdrawn(users)
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
+                # Grants first: where each statement commits alone (Neo4j without explicit transactions), a
+                # failure in between leaves a linked user short of grants until the retry, never grants
+                # without the withdrawal that should have taken them.
+                if drop_grants:
+                    await tx_store.remove_user_access_to_connector(connector_id, user_id)
                 await tx_store.delete_edge(
                     user_id, CollectionNames.USERS.value,
                     connector_id, CollectionNames.APPS.value,
@@ -5625,14 +5635,14 @@ class DataSourceEntitiesProcessor:
             elif (authenticator.get("email") or "").lower() == email.lower():
                 link_changed = await tx_store.remove_authenticated_as(connector_id)
             else:
-                source_user = await tx_store.get_user_by_email(email)
+                source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     # Same inactive stub + userAppRelation the user sync would create for this email
                     await tx_store.batch_upsert_app_users([AppUser(
                         app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
                         email=email, full_name=email, org_id=self.org_id,
-                    )])
-                    source_user = await tx_store.get_user_by_email(email)
+                    )], self.org_id)
+                    source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
 
@@ -5971,7 +5981,7 @@ class DataSourceEntitiesProcessor:
                         if member.email:
                             # Find the user's internal DB ID. A read that fails is raised:
                             # answered as "no such user", the rewrite below dropped the member.
-                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True)
+                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True, org_id=self.org_id)
                             if user and not await self._holds_address(
                                 role.connector_id, member.email, member.source_user_id, user.id
                             ):
@@ -6098,7 +6108,7 @@ class DataSourceEntitiesProcessor:
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
         """``raise_on_error`` raises a failed read instead of answering None."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error)
+            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error, org_id=self.org_id)
 
     async def get_user_group_by_external_id(
         self, connector_id: str, external_id: str, *, raise_on_error: bool = False
@@ -6410,7 +6420,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # A user or group that could not be read is not one that is not there:
             # returning False on a failed read would leave the user in the group.
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 self.logger.warning(
                     f"Cannot remove member from group {external_group_id}: "
@@ -6472,7 +6482,7 @@ class DataSourceEntitiesProcessor:
             async with self._drop_access_after({connector_id}), grant_fence().shared(), \
                     self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
+                user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
                 if not user:
                     self.logger.warning(
                         f"Cannot add member to group {external_group_id}: "
@@ -6807,7 +6817,7 @@ class DataSourceEntitiesProcessor:
         user_email: str,
         connector_id: str,
         tx_store: TransactionStore | None = None
-    ) -> None:
+    ) -> bool:
         """
         Migrate all permissions from a group to a user.
 
@@ -6824,6 +6834,10 @@ class DataSourceEntitiesProcessor:
             connector_id: Connector ID for logging
             tx_store: Optional transaction store to participate in caller's transaction.
                      If not provided, a new transaction will be created.
+
+        Returns:
+            True when every grant of the group is now the user's (or it had none); False when the
+            user is not found in this org or a grant could not be moved, so the group must be kept.
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
@@ -6833,27 +6847,30 @@ class DataSourceEntitiesProcessor:
                 )
 
         # Get the user object
-        user = await tx_store.get_user_by_email(user_email)
+        user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
         if not user:
             self.logger.warning(
                 f"User {user_email} not found in users collection, "
                 f"cannot migrate permissions. Skipping."
             )
-            return None
+            return False
 
         # Get all permission edges FROM the group
         group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
+        # raise_on_error: an unread list is not an empty one, and "nothing to move" lets the caller delete the group
         permission_edges = await tx_store.get_edges_from_node(
             from_node_id=group_node_id,
-            edge_collection=CollectionNames.PERMISSION.value
+            edge_collection=CollectionNames.PERMISSION.value,
+            raise_on_error=True,
         )
 
         if not permission_edges:
             self.logger.debug(f"No permissions found for group {group_id}")
-            return None
+            return True
 
         migrated_count = 0
         skipped_count = 0
+        failed_count = 0
         new_permission_edges = []
 
         # Process each permission edge
@@ -6943,6 +6960,7 @@ class DataSourceEntitiesProcessor:
                     f"for user {user_email}: {e}",
                     exc_info=True
                 )
+                failed_count += 1
                 continue
 
         # Batch create all new permission edges
@@ -6957,8 +6975,7 @@ class DataSourceEntitiesProcessor:
                 f"Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
-            return None
-        return None
+        return failed_count == 0
 
     @retry_on_deadlock()
     async def migrate_group_to_user_by_external_id(
@@ -7000,12 +7017,17 @@ class DataSourceEntitiesProcessor:
             )
 
             # Migrate permissions (using the same transaction)
-            await self.migrate_group_permissions_to_user(
+            if not await self.migrate_group_permissions_to_user(
                 group_id=group.id,
                 user_email=user_email,
                 connector_id=connector_id,
                 tx_store=tx_store
-            )
+            ):
+                # deleting the group now would drop grants nobody received; the next sync retries
+                self.logger.warning(
+                    f"Kept group '{group.name}' ({group.id}): its permissions were not all moved to the user"
+                )
+                return
 
             # Delete the group (this will also delete all its edges)
             await tx_store.delete_user_group_by_id(group.id)
@@ -7224,7 +7246,7 @@ class DataSourceEntitiesProcessor:
     async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
-        async with self.data_store_provider.transaction() as tx_store:
+        async with grant_fence().shared(), self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
 
     @retry_on_deadlock()
@@ -7277,7 +7299,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # A user who could not be read is not a user who is not there: returning
             # here on a failed read would leave the permission in place unreported.
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return
@@ -7385,7 +7407,7 @@ class DataSourceEntitiesProcessor:
         """Take away everything the user was granted directly on this connector's content and groups, for a
         person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
         async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 return 0
             removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)

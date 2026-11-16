@@ -12,6 +12,7 @@ import pytest
 from app.config.constants.arangodb import EventTypes
 from app.modules.code_graph import edge_build_trigger as trigger
 from app.modules.pipeline.leases import RecordBusy, RecordLeases
+from app.services.messaging import config as messaging_config
 from app.services.messaging.config import (
     IndexingEvent,
     MessageBrokerType,
@@ -160,13 +161,31 @@ async def test_a_paused_stage_is_handed_back_without_costing_an_attempt(stage, m
     assert await stage.q.backlog("stage_g", [stage.topic]) == {}      # acked, never dead
 
 
-async def test_a_record_event_waits_for_a_stage_holding_the_record_and_is_not_charged(stage) -> None:
+async def test_a_record_event_waits_for_a_stage_holding_the_record_and_is_not_charged(stage, monkeypatch) -> None:
     """a stage that rewrites the stored record holds ``record:<id>`` (RecordLeases); the record consumer takes the same lease, so a
     re-index never writes beside it. The delivery that finds it held is handed back with its attempt returned, and runs once released."""
+    # Short hand-back delays, so the record is handed back more times than it has attempts (3) while the stage holds it. At the
+    # defaults one hand-back waits 15 s, which left a 15 s poll for the run about one second of slack on a loaded runner.
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.05")
+    monkeypatch.setattr(messaging_config, "RETRY_BACKOFF_BASE_SECONDS", 0.05)
+    held_back: list[bool] = []
+    # set by the fourth hand-back, by a charged one, or by a run: whichever comes first, the assertions below tell them apart
+    decided, ran_once = asyncio.Event(), asyncio.Event()
+    real_nack = stage.q.nack
+
+    async def recording_nack(group_id, d, delay_s, error="", *, refund=False) -> bool:
+        held_back.append(refund)
+        if len(held_back) >= 4 or not refund:
+            decided.set()
+        return await real_nack(group_id, d, delay_s, error, refund=refund)
+
+    monkeypatch.setattr(stage.q, "nack", recording_nack)
     ran: list[str] = []
 
     async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
         ran.append(m.payload["recordId"])
+        ran_once.set()
+        decided.set()
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
 
     leases = RecordLeases()
@@ -178,9 +197,12 @@ async def test_a_record_event_waits_for_a_stage_holding_the_record_and_is_not_ch
     async with leases.hold(f"rec-{stage.uid}", owner="stage", wait_s=1.0, still_current=current):
         await stage.consumer(handler)          # an indexing consumer, no stage admission
         await stage.producer.send_event(stage.topic, "record", {"recordId": f"rec-{stage.uid}"})
-        await asyncio.sleep(1.2)               # several hand-backs (wait 0.3 s each)
-        assert ran == []
-    await until(lambda: ran == [f"rec-{stage.uid}"], timeout=15.0)
+        await asyncio.wait_for(decided.wait(), 60)     # bounds a hang only
+        assert ran == []                               # not run beside the stage
+    # every hand-back gave its attempt back: charged, the fourth would have dead-lettered the event and it would never run
+    assert len(held_back) >= 4 and all(held_back), held_back
+    await asyncio.wait_for(ran_once.wait(), 60)
+    assert ran == [f"rec-{stage.uid}"]
     for _ in range(100):
         if not await stage.q.backlog("stage_g", [stage.topic]):
             break
@@ -309,10 +331,18 @@ async def test_hand_backs_back_off_per_message_and_a_backstopped_one_is_charged(
     so the delivery limit ends it."""
     monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.05")
     monkeypatch.setenv("PG_QUEUE_HANDBACK_LIMIT", "3")
-    stamps: list[float] = []
+    nacks: list[tuple[float, bool]] = []
+    real_nack = stage.q.nack
+
+    async def recording_nack(group_id, d, delay_s, error="", *, refund=False) -> bool:
+        nacks.append((delay_s, refund))
+        return await real_nack(group_id, d, delay_s, error, refund=refund)
+
+    # The delay each hand-back asks the queue for, not the gaps between deliveries: those also hold the consumer's
+    # wake-up and claim, and one slow wake on a busy runner made the first gap twice the fourth.
+    monkeypatch.setattr(stage.q, "nack", recording_nack)
 
     async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
-        stamps.append(asyncio.get_running_loop().time())
         raise RequeueWithoutAttempt("held elsewhere", delay_s=0.0)
         yield  # pragma: no cover
 
@@ -323,8 +353,9 @@ async def test_hand_backs_back_off_per_message_and_a_backstopped_one_is_charged(
             break
         await asyncio.sleep(0.05)
     assert (await stage.q.backlog("stage_g", [stage.topic])).get("dead") == 1       # charged after 3 hand-backs, then 3 attempts
-    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
-    assert gaps[3] > gaps[0]                                                         # 0.05, 0.1, 0.2 ...: it grows
+    # the delay doubles with every hand-back of the message; after 3 the backstop charges it, and 3 charged attempts end it
+    assert [delay for delay, _ in nacks] == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8, 1.6])
+    assert [refund for _, refund in nacks] == [True, True, True, False, False, False]
 
 
 # -- the code graph ---------------------------------------------------------------------------------------------------------

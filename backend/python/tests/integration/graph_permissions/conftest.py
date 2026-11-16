@@ -105,6 +105,18 @@ def _assert_disposable(url: str, label: str) -> None:
         )
 
 
+def _assert_one_worker() -> None:
+    """The stores are one Neo4j database and one Arango database for the whole run, wiped when a module starts. Under
+    pytest-xdist each worker would wipe and refill them while the others read them, so a world vanishes mid-check and
+    reads as an under-admit (or "database not found"): refuse it rather than report results that are not true."""
+    workers = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
+    if workers and workers != "1":
+        raise RuntimeError(
+            f"{workers} pytest-xdist workers would share the KH_PERM_* stores, which each module wipes. Run the "
+            f"store-backed tests without -n, or the store-free ones with -m 'not integration'."
+        )
+
+
 def _logger() -> logging.Logger:
     return logging.getLogger("kh_perm_harness")
 
@@ -187,6 +199,7 @@ async def _wipe_neo4j(settings: dict) -> None:
     """
     from neo4j import AsyncGraphDatabase
 
+    _assert_one_worker()
     _assert_disposable(settings["uri"], "NEO4J_URI")
     driver = AsyncGraphDatabase.driver(
         settings["uri"], auth=(settings["username"], settings["password"])
@@ -203,6 +216,7 @@ async def _drop_arango_db(settings: dict) -> None:
     """Drop the test database so provider.connect() recreates it empty."""
     import aiohttp
 
+    _assert_one_worker()
     _assert_disposable(settings["url"], "ARANGO_URL")
     # The URL check is not enough on its own: this drops whatever database the
     # env var names, so KH_PERM_ARANGO_DB=pipeshub against a local Arango on a

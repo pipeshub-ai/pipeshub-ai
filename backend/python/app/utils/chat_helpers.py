@@ -75,6 +75,7 @@ from app.utils.text_fragments import (  # noqa: F401  (re-exported for existing 
     SourceFormat,
     build_text_fragment_url,
 )
+from app.utils.user_lookup import get_caller_user
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -1932,7 +1933,7 @@ async def accessible_node_ids(
     if not node_ids or not user_id or not org_id:
         return set()
     try:
-        user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+        user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as exc:
         raise PermissionVerificationUnavailableError(str(exc)) from exc
     user_key = (user or {}).get("id") or (user or {}).get("_key")
