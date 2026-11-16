@@ -34,10 +34,12 @@ export function usePreparingRetry(currentKey: string | null) {
   useEffect(() => {
     current.current = currentKey;
     tries.current = 0;
-    if (timer.current && timer.current.key !== currentKey) stop();
+    // On a new key and on unmount: no listing is current until the next key is set, so a retry still in flight neither shows its answer nor starts a timer.
+    return () => {
+      current.current = null;
+      stop();
+    };
   }, [currentKey, stop]);
-
-  useEffect(() => stop, [stop]);
 
   const isCurrent = useCallback((key: string) => current.current === key, []);
 

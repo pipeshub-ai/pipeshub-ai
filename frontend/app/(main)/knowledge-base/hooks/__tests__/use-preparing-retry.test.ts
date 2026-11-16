@@ -64,6 +64,20 @@ describe('usePreparingRetry', () => {
     expect(retry).not.toHaveBeenCalled();
   });
 
+  it('takes no answer and starts no timer for a retry that comes back after the page is gone', () => {
+    const { result, unmount } = renderHook(() => usePreparingRetry(A));
+    const retry = vi.fn();
+    act(() => result.current.settle(A, true, retry));
+    act(() => vi.advanceTimersByTime(PREPARING_RETRY_FIRST_MS));      // the retry is sent
+    expect(retry).toHaveBeenCalledTimes(1);
+    const { settle, isCurrent } = result.current;
+    unmount();      // and its answer comes back after this
+    expect(isCurrent(A)).toBe(false);
+    act(() => settle(A, true, retry));
+    act(() => vi.advanceTimersByTime(PREPARING_RETRY_MAX_MS * 2));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
   it('keys a listing by its view and node', () => {
     expect(preparingKey(false, 'app', 'kb-1')).toBe('collections:app:kb-1');
     expect(preparingKey(false, null, null)).toBeNull();
