@@ -2446,6 +2446,44 @@ class TestSharedPages:
         assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
 
     @pytest.mark.asyncio
+    async def test_a_full_sync_that_cannot_list_an_open_space_keeps_a_shared_pages_stored_grants(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # A full sync cleared the share memory and every checkpoint; open space 13, which may
+        # still share the page stored OPEN, cannot be listed. Its stored grants stay as they
+        # are this run, and the page is reported until a listing decides it.
+        self.wiki(
+            connector, processor, {12: [self.PAGE], 13: response(status=500), 14: [], 15: []},
+            settled=(), stored_open=True,
+        )
+
+        await connector._sync_pages(self.SPACES)
+
+        assert self.rewrites(processor) == []
+        assert self.page_writes(processor, "page:1") == []
+        [kept] = [c.args[0] for c in processor.on_record_content_update.await_args_list]
+        assert (kept.external_record_id, kept.access_rule.value, kept.inherit_permissions) == ("page:1", "OPEN", False)
+        assert [f for f in connector._failures if "page 1" in f]
+
+    @pytest.mark.asyncio
+    async def test_a_full_sync_that_lists_every_open_space_unshares_a_page_no_longer_shared(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The same full sync with open space 13 listed: the share is gone, so the page is plain.
+        self.wiki(connector, processor, {12: [self.PAGE], 13: [], 14: [], 15: []}, settled=(), stored_open=True)
+
+        await connector._sync_pages(self.SPACES)
+
+        writes = [
+            (r.access_rule.value, r.inherit_permissions, keys(p))
+            for name, args, _ in processor.mock_calls
+            for r, p in (args[0] if name == "on_new_records" else [args] if name == "on_updated_record_permissions" else [])
+            if r.external_record_id == "page:1"
+        ]
+        assert writes[-1] == ("STRICT", True, [])
+        assert connector._failures == []
+
+    @pytest.mark.asyncio
     async def test_a_share_into_a_space_that_did_not_list_stays(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:

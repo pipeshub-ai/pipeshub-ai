@@ -1236,6 +1236,17 @@ class DrupalWikiConnector(BaseConnector):
                 # own that the memory lost, or still holds as plain (its save failed after the
                 # grant), is compared as unknown, so it is written again.
                 before_grants = had.get("grants") or ("" if page_id not in listing.stored_shared else None)
+                if (
+                    permissions is None and page_id not in listing.written_as
+                    and self._share_unconfirmed(page_id, home, listing)
+                ):
+                    self._fail(
+                        f"Kept the stored access of the shared Drupal Wiki page {page_id}: an open space "
+                        "it may be shared into could not be listed"
+                    )
+                    if had:
+                        now[str(page_id)] = had
+                    continue
                 if written != listing.written_as.get(page_id, before_grants):
                     record = record or await self._stored_page(page_id)
                     if record is None:
@@ -1287,6 +1298,18 @@ class DrupalWikiConnector(BaseConnector):
         ):
             return shares, None
         return shares, [Permission(external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG)]
+
+    def _share_unconfirmed(self, page_id: int, home: int | None, listing: PageListing) -> bool:
+        """True for a page stored with grants of its own (``OPEN``) that the share memory does
+        not record as shared (a full sync clears it) while an open space other than its home
+        is not listed in full yet: the share it was granted for can be neither confirmed nor
+        ruled out, so its stored grants stay."""
+        if page_id not in listing.stored_shared or (listing.shares_before.get(str(page_id)) or {}).get("grants"):
+            return False
+        return any(
+            status in OPEN_SPACE_ACCESS_STATUSES and space != home and space not in listing.home
+            for space, status in self._space_status.items()
+        )
 
     @staticmethod
     def _apply_page_access(record: Record, permissions: list[Permission] | None) -> list[Permission]:
@@ -1355,9 +1378,8 @@ class DrupalWikiConnector(BaseConnector):
                 if page is not None and _as_int(page.get("homeSpace")) == space_id:
                     # Still there: the listing skipped it, or it is in the trash; the next
                     # complete listing decides.
-                    await self.data_entities_processor.on_new_records(
-                        await self._build_page_records(page, None, listing)
-                    )
+                    if records := await self._build_page_records(page, None, listing):
+                        await self.data_entities_processor.on_new_records(records)
                     continue
                 await self.data_entities_processor.delete_record_by_external_id(
                     self.connector_id, page_external_id(page_id)
@@ -1436,9 +1458,17 @@ class DrupalWikiConnector(BaseConnector):
             record.parent_external_record_id = stored.parent_external_record_id
             record.parent_record_type = RecordType.WEBPAGE
 
-        _, permissions = self._page_access(page_id, _as_int(page.get("homeSpace")), listing)
-        listing.written_as[page_id] = _grants_digest(permissions)
-        records: list[tuple[Record, list[Permission]]] = [(record, self._apply_page_access(record, permissions))]
+        home = _as_int(page.get("homeSpace"))
+        _, permissions = self._page_access(page_id, home, listing)
+        records: list[tuple[Record, list[Permission]]] = []
+        if permissions is None and self._share_unconfirmed(page_id, home, listing):
+            # Written in the form it is stored in, its grants left as they are; the share
+            # pass decides it once the open spaces have been listed.
+            record.access_rule, record.inherit_permissions = AccessRule.OPEN, False
+            await self.data_entities_processor.on_record_content_update(record)
+        else:
+            listing.written_as[page_id] = _grants_digest(permissions)
+            records.append((record, self._apply_page_access(record, permissions)))
         # Search annotates a dependent hit with its parent, so an attachment has to
         # name the page's *stored* node id -- the id it was built with is discarded
         # when the processor matches an existing page.
