@@ -170,3 +170,40 @@ async def another_orgs_user_is_not_linked(provider: Any, org_id: str, connector_
 
     assert await links_of(provider, foreign_key) == set(), "another org's user with the address is linked to nothing here"
     assert (f"{ACCOUNTS_COLL}/{account_node_id(org_id, connector_id, 's-ana')}", "directory") in await links_of(provider, users["ana"])
+
+
+async def role_memberships_stay_with_the_old_account(processor: Any, provider: Any, connector_id: str, org_id: str,  # noqa: ANN401
+                                                     emails: dict[str, str], users: dict[str, str]) -> None:
+    """After ``write`` with the setting on: ana's account is a member of a role. When a new account takes ana's address, the membership
+    stays on the old account, which nobody is linked to while both are stored or once it is withdrawn; the new holder gets none of it."""
+    from app.config.constants.arangodb import CollectionNames
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+    from app.models.entities import AppRole
+
+    role = AppRole(app_name=APP, connector_id=connector_id, source_role_id=f"r-{uuid.uuid4().hex[:8]}", name="Reviewers", org_id=org_id)
+    await processor.on_new_app_roles([(role, [account(connector_id, emails, "s-ana")])])
+
+    async def roles_of(node: str) -> set[str]:
+        edges = await provider.get_edges_from_node(node, CollectionNames.PERMISSION.value, raise_on_error=True)
+        return {e.get("_to") or f"{e.get('to_collection')}/{e.get('to_id')}" for e in edges
+                if CollectionNames.ROLES.value in str(e.get("_to") or e.get("to_collection"))}
+
+    async def linked_to(node: str) -> set[str]:
+        edges = await provider.get_edges_to_node(node, CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True)
+        return {e.get("_from") or f"{e.get('from_collection')}/{e.get('from_id')}" for e in edges}
+
+    ana = f"{CollectionNames.USERS.value}/{users['ana']}"
+    old, new = (f"{ACCOUNTS_COLL}/{account_node_id(org_id, connector_id, sid)}" for sid in ("s-ana", "s-ana-new"))
+    held = await roles_of(old)
+    assert held and await roles_of(ana) == set() and ana in await linked_to(old), "the membership is the account's, read through ana's link"
+
+    newcomer = account(connector_id, emails, "s-ana-new", "ana")
+    await processor.on_new_app_users([newcomer])
+    assert await linked_to(old) == set() and await linked_to(new) == set(), "two live accounts hold the address: neither is linked"
+    assert await roles_of(new) == set() and await roles_of(ana) == set() and await roles_of(old) == held
+
+    await processor.withdraw_app_user_access(connector_id, [account(connector_id, emails, "s-ana").model_copy(update={"id": users["ana"]})])
+    await processor.on_new_app_users([newcomer])
+    assert await linked_to(old) == set(), "a withdrawn account's memberships grant nobody"
+    assert ana in await linked_to(new), "the address now links the new account"
+    assert await roles_of(new) == set() and await roles_of(ana) == set(), "the new holder has none of the old account's memberships"

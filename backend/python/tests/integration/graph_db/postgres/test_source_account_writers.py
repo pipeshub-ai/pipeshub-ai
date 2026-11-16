@@ -184,3 +184,9 @@ async def test_a_user_of_another_org_with_the_same_address_is_never_linked(setup
         assert await in_other_org(lambda: scenario.links_of(setup.w.p, "a0-foreign")) == set()
     finally:
         await in_other_org(drop)
+
+
+async def test_an_old_accounts_role_memberships_never_reach_the_new_holder_of_its_address(setup: Setup) -> None:
+    await scenario.enable(setup.processor, APP)
+    await setup.write()
+    await scenario.role_memberships_stay_with_the_old_account(setup.processor, setup.w.p, APP, setup.w.org, setup.emails, setup.users)

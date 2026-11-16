@@ -187,3 +187,9 @@ async def test_a_user_of_another_org_with_the_same_address_is_never_linked(world
         assert "ana" in (await world.readers(records))["by-id"]
     finally:
         await provider.delete_nodes_and_edges([foreign], CollectionNames.USERS.value)
+
+
+async def test_an_old_accounts_role_memberships_never_reach_the_new_holder_of_its_address(world: World) -> None:
+    await scenario.enable(world.processor, world.connector_id)
+    await world.write()
+    await scenario.role_memberships_stay_with_the_old_account(world.processor, world.backend.provider, world.connector_id, ORG, world.emails, world.users)
