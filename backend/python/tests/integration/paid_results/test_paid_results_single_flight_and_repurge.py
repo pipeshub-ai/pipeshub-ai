@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config.constants.arangodb import EventTypes
+from app.core.org_context import OrgContext, bind
 from app.services.messaging.config import IndexingEvent
 from app.services.paid_cache import access
 from app.services.paid_cache import cache as cache_module
@@ -97,7 +98,8 @@ async def test_a_late_write_after_redis_loses_the_fence_is_removed_by_the_delaye
     handler._hand_over_shared_copy = AsyncMock()
 
     async def deliver(event_type: str, payload: dict) -> list:
-        return [e async for e in handler.process_event(event_type, payload) if e.event != IndexingEvent.START_DOWNLOAD]
+        with bind(OrgContext(org, None, "service", "envelope", "req-1")):
+            return [e async for e in handler.process_event(event_type, payload) if e.event != IndexingEvent.START_DOWNLOAD]
 
     try:
         await deliver(EventTypes.DELETE_RECORD.value, {"recordId": rec, "orgId": org, "virtualRecordId": "vr"})

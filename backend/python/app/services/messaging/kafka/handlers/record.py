@@ -30,6 +30,7 @@ from app.config.constants.service import (
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
+from app.core.org_context import current_org_id
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
@@ -1773,10 +1774,12 @@ class RecordEventHandler(BaseEventService):
                 return
 
             if event_type == EventTypes.PURGE_PAID_RESULTS.value:
-                purge_org, purge_record_id = payload.get("orgId"), payload.get("recordId")
-                if not purge_org or not purge_record_id:
+                # The org is the signed envelope's (bound by the consumer), never a field of the body; an unbound
+                # message fails closed.
+                purge_org, purge_record_id = current_org_id(), payload.get("recordId")
+                if not purge_record_id:
                     raise ProcessingError(
-                        "purgePaidResults carries no orgId or recordId",
+                        "purgePaidResults carries no recordId",
                         details={"payload_keys": sorted(payload.keys())},
                     )
                 # A storage failure raises, so the broker redelivers until the purge succeeds.

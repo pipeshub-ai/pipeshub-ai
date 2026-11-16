@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import EventTypes
+from app.core.org_context import MissingOrgContext, OrgContext, bind
 from app.exceptions.indexing_exceptions import ProcessingError
 from app.services.messaging.config import IndexingEvent
 from app.services.paid_cache import access
@@ -54,6 +55,12 @@ def _handler(producer: Any = None) -> Any:  # noqa: ANN401 - a RecordEventHandle
 
 async def _events(handler: Any, event_type: str, payload: dict) -> list:  # noqa: ANN401
     return [e async for e in handler.process_event(event_type, payload) if e.event != IndexingEvent.START_DOWNLOAD]
+
+
+async def _signed(handler: Any, event_type: str, payload: dict, org: str = ORG) -> list:  # noqa: ANN401
+    """Delivered as the consumer does: inside the org of the verified envelope."""
+    with bind(OrgContext(org, None, "service", "envelope", "req-1")):
+        return await _events(handler, event_type, payload)
 
 
 # -- the fence: the handler's delete refuses later writes (QA-S7a-16) ---------------------------------------------
@@ -126,7 +133,7 @@ async def test_a_late_write_after_redis_loses_the_fence_is_removed_by_the_repurg
     assert len(store.paths(ORG, REC)) == 5                # 4 pages and the manifest landed
 
     delivered = producer.send_event.await_args.kwargs
-    events = await _events(_handler(), delivered["event_type"], delivered["payload"])
+    events = await _signed(_handler(), delivered["event_type"], delivered["payload"])
 
     assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
     assert store.paths(ORG, REC) == []
@@ -138,7 +145,7 @@ async def test_the_repurge_leaves_other_records_and_orgs_alone(world: Any) -> No
         store.files[(org, rec, KEY.relative_path())] = (b"{}", 1)
     store.files[(ORG, REC, KEY.relative_path())] = (b"{}", 1)
 
-    await _events(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
+    await _signed(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
 
     assert store.paths(ORG, REC) == []
     assert store.paths(ORG, "rec-2") != [] and store.paths("org-2", REC) != []
@@ -150,16 +157,30 @@ async def test_a_repurge_whose_storage_fails_raises_so_the_broker_redelivers(wor
     store.failing = {"purge"}
 
     with pytest.raises(ConnectionError):
-        await _events(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
+        await _signed(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
     store.failing = set()
-    await _events(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
+    await _signed(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
     assert store.paths(ORG, REC) == []
 
 
-@pytest.mark.parametrize("payload", [{"recordId": REC}, {"orgId": ORG}, {}])
-async def test_a_repurge_without_its_org_or_record_is_refused(world: Any, payload: dict) -> None:  # noqa: ANN401
+async def test_a_repurge_without_a_record_is_refused(world: Any) -> None:  # noqa: ANN401
     with pytest.raises(ProcessingError):
-        await _events(_handler(), "purgePaidResults", payload)
+        await _signed(_handler(), "purgePaidResults", {"orgId": ORG})
+
+
+async def test_a_repurge_takes_its_org_from_the_envelope_not_the_body(world: Any) -> None:  # noqa: ANN401
+    store, _locks, _cache = world
+    store.files[(ORG, REC, KEY.relative_path())] = (b"{}", 1)
+    store.files[("org-2", REC, KEY.relative_path())] = (b"{}", 1)
+
+    await _signed(_handler(), "purgePaidResults", {"orgId": ORG, "recordId": REC}, org="org-2")
+
+    assert store.paths("org-2", REC) == [] and store.paths(ORG, REC) != []
+
+
+async def test_an_unsigned_repurge_fails_closed(world: Any) -> None:  # noqa: ANN401
+    with pytest.raises(MissingOrgContext):
+        await _events(_handler(), "purgePaidResults", repurge_event_payload(ORG, REC))
 
 
 async def test_no_producer_means_the_delete_is_not_acknowledged(world: Any) -> None:  # noqa: ANN401
