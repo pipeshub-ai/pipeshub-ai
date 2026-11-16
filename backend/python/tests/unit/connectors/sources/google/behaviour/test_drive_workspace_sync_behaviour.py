@@ -3005,8 +3005,9 @@ async def test_a_writer_group_split_on_a_relist_with_an_empty_list_keeps_its_pas
     ws.world.drives["sd-1"]["members"]["fay@example.com"] = "reader"
     await ws.sync()
 
-    assert (BOB, "USER", "READ") not in ws.grants("f1"), "the fallback's read grant does not replace Bob's write grant"
-    assert {g for g in ws.grants("f1") if g[0] == DEE} == {(DEE, "USER", "WRITE")}
+    assert {g for g in ws.grants("f1") if g[0] in (BOB, DEE)} == {(BOB, "USER", "WRITE"), (DEE, "USER", "WRITE")}, (
+        "the fallback's read grant does not replace Bob's write grant"
+    )
 
 
 async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a_reader_reads_it_again(
