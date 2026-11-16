@@ -10,8 +10,7 @@ Code and SQL kinds, forced reindexes, vector-store rebuilds and named-stage re-r
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,6 +25,9 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 OLD = b"a,b\n1,2\n"
 NEW = b"a,b\n1,3\n"
