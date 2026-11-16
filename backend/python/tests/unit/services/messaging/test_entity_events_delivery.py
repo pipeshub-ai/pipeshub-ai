@@ -63,6 +63,15 @@ class InMemoryGraph:
             bucket[key] = {**bucket.get(key, {}), **node}
         return True
 
+    async def update_node_fields_if_match(
+        self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, **_: Any,  # noqa: ANN401
+    ) -> bool:
+        node = self.nodes.get(collection, {}).get(key)
+        if node is None or any(node.get(f) != v for f, v in expected.items()):
+            return False
+        node.update(updates)
+        return True
+
     async def update_node(self, key: str, collection: str, node_updates: dict, transaction: str | None = None) -> bool:
         self._maybe_fail(f"update:{collection}")
         bucket = self.nodes.setdefault(collection, {})

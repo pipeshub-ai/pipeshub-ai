@@ -95,6 +95,9 @@ user_schema = {
             # survive one. Absent means not disabled, so a node that predates
             # this field, or a person, reads as usable.
             "isDisabled": {"type": "boolean"},
+            # The user's default knowledge base. Claimed here, in one conditional write, before the knowledge base is
+            # written, so two writers of one user's default agree on its key and a key is never used twice.
+            "defaultKnowledgeBaseId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
