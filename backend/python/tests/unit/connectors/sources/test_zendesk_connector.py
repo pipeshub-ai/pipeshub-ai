@@ -53,8 +53,10 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
 from tests.support.data_store import runs_in_its_transaction
-from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 from tests.support.in_memory_config import InMemoryConfigService
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
