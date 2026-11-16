@@ -525,6 +525,11 @@ class TestNotionFullSync:
         """TC-ACCESS-001: a workspace member, linked to the app by the user sync, is refused
         every kind of Notion record: being a member says nothing about who may open a page."""
         connector_id = notion_connector["connector_id"]
+        # A refusal proves something only when the reader is the member the user sync linked to the app.
+        relation = await graph_provider.principal_app_relation(connector_id, notion_reader.email)
+        assert relation == {"label": "User", "isExternalUser": False}, (
+            f"{notion_reader.email} is not linked to the Notion app as a user of this org: {relation}"
+        )
         targets = {
             "page": notion_seed.rich_page_id,
             "data source": notion_seed.fixture_data_source_id,
