@@ -100,7 +100,7 @@ class TestRetrievalCountsTheLinkedAccount:
         query = provider.client.execute_query.await_args.args[0]
         assert "(caller)-[:AUTHENTICATED_AS {connectorId: $connectorId}]->(source_account:User)" in query
         assert "UNWIND [caller] + source_accounts AS userDoc" in query
-        assert query.count("{userId: $userId}") == 1
+        assert query.count("{userId: $userId, orgId: $orgId}") == 1
 
     async def test_the_bulk_gate_runs_one_task_per_connector(self) -> None:
         provider = _arango()

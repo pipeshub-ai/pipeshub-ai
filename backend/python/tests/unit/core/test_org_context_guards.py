@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from tests.support.app_tree import may_contain_name, sources
+from tests.support.edition_defaults import org_context_baseline_extra
 
 APP = Path(__file__).resolve().parents[3] / "app"
 BASELINE = Path(__file__).with_name("org_context_baseline.json")
@@ -102,10 +103,14 @@ def _scan() -> dict[str, dict[str, int]]:
 
 def _check(guard: str, hint: str) -> None:
     found = _scan()
+    extra = org_context_baseline_extra()
     if os.environ.get("ORG_CONTEXT_UPDATE_BASELINE"):
-        BASELINE.write_text(json.dumps(found, indent=1, sort_keys=True) + "\n")
+        # The shared file records only what the shared tree needs: a build's own entries live in its overlay.
+        shared = {g: {f: n for f, n in files.items() if f not in extra.get(g, {})} for g, files in found.items()}
+        BASELINE.write_text(json.dumps(shared, indent=1, sort_keys=True) + "\n")
     base = json.loads(BASELINE.read_text())
-    grown = {f: (base[guard].get(f, 0), n) for f, n in found[guard].items() if n > base[guard].get(f, 0)}
+    allowed = {**base[guard], **extra.get(guard, {})}
+    grown = {f: (allowed.get(f, 0), n) for f, n in found[guard].items() if n > allowed.get(f, 0)}
     assert not grown, f"{guard}: new sites (baseline, now) {grown}. {hint}"
 
 

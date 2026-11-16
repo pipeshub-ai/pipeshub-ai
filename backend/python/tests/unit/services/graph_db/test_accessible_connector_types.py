@@ -145,7 +145,7 @@ class TestNeo4jResolvesTheUserKey:
     async def test_the_gate_is_asked_with_the_graph_key_and_the_org(self) -> None:
         provider = _neo4j_provider([{"id": "a1", "type": "DRIVE"}], user={"id": "graph-key-7"})
         assert await provider.get_accessible_connector_types("user-7", "org-1") == ["DRIVE"]
-        provider.get_user_by_user_id.assert_awaited_once_with("user-7")
+        provider.get_user_by_user_id.assert_awaited_once_with("user-7", org_id="org-1")
         provider.get_gated_apps.assert_awaited_once_with("graph-key-7", "org-1")
 
     async def test_an_unknown_user_yields_nothing(self) -> None:
