@@ -108,7 +108,6 @@ class CancelToken:
     def cancel(self) -> None:
         self._event.set()
 
-    @property
     def cancelled(self) -> bool:
         return self._event.is_set()
 
@@ -653,7 +652,7 @@ class MemberBudget:
                     return permit
                 if head is None:
                     head = self.register_head(d)
-                if cancel is not None and cancel.cancelled:
+                if cancel is not None and cancel.cancelled():
                     raise Cancelled("reserve cancelled")
                 if end is not None and time.monotonic() >= end:
                     raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
@@ -676,7 +675,7 @@ class MemberBudget:
                     return permit
                 if head is None:
                     head = self.register_head(d)
-                if cancel is not None and cancel.cancelled:
+                if cancel is not None and cancel.cancelled():
                     raise Cancelled("reserve cancelled")
                 if end is not None and time.monotonic() >= end:
                     raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
