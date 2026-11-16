@@ -49,6 +49,7 @@ from app.services.parsing.interface import (
     ParserProvider,
 )
 from app.services.parsing.registry import ParserRegistry
+from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
     classify,
@@ -121,6 +122,35 @@ class _StageDeadlineExceeded(Exception):
     def __init__(self, limit_s: float) -> None:
         super().__init__(limit_s)
         self.limit_s = limit_s
+
+
+#: A conversion still running this long after the deadline is logged once.
+THREAD_OVERRUN_WARN_SECONDS = 30.0
+
+
+def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, record_name: str) -> None:  # noqa: ANN401
+    """Keep the gate permit and the memory reservation until the conversion's threads return, then free them once.
+
+    The 504 has been answered, but the cancelled parse may still be running in a thread on the memory those stand
+    for; releasing them now would admit the next parse beside it. The release runs on the event loop.
+    """
+    loop = asyncio.get_running_loop()
+    done = threading.Event()
+    logger.warning(
+        "Parse stopped at its deadline with %d conversion(s) still running; the permit is held until they return",
+        work.running(),
+    )
+
+    def free() -> None:
+        if done.is_set():
+            return
+        done.set()
+        over = time.monotonic() - deadline_at
+        if over > THREAD_OVERRUN_WARN_SECONDS:
+            logger.warning("A conversion for '%s' ended %.0f s after the parse deadline", record_name, over)
+        release()
+
+    work.when_idle(lambda: loop.call_soon_threadsafe(free))
 
 
 def _count_rejection(tier: ParseTier, reason: str) -> None:
@@ -280,6 +310,8 @@ async def parse_file(
 
     parse_start = time.monotonic()
     excess_held = 0
+    deadline_work: ThreadWork | None = None
+    deadline_at = 0.0
     covers = set_permit_covers() if tier is ParseTier.HEAVY else None
     try:
         # The permit's base covers the parent's fixed part for the PdfPlumber parse only; a kind
@@ -327,11 +359,16 @@ async def parse_file(
                 stage_limit = lock_limits.stage_deadline_s()
                 stage_timer = asyncio.timeout(stage_limit)
                 try:
-                    async with stage_timer:
-                        result = await parser.parse(content, record_name, config)
+                    with track() as thread_work:
+                        async with stage_timer:
+                            result = await parser.parse(content, record_name, config)
                 except TimeoutError as exc:
                     if not stage_timer.expired():
                         raise
+                    # The cancel does not stop a conversion running in a thread: the permit and the memory it
+                    # holds are kept until that thread returns (see the ``finally``).
+                    deadline_work = thread_work
+                    deadline_at = time.monotonic()
                     raise _StageDeadlineExceeded(stage_limit) from exc
                 await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
@@ -437,13 +474,20 @@ async def parse_file(
             )
     finally:
         reset_permit_covers(covers)
-        if excess_held:
-            governor.memory_budget.release(excess_held)
-        gate.release(cost)
-        _ORG_SHARE.leave(pool, org_key, cost)
-        SemaphoreLogger.log_semaphore_release(
-            f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
-        )
+
+        def release_admission() -> None:
+            if excess_held:
+                governor.memory_budget.release(excess_held)
+            gate.release(cost)
+            _ORG_SHARE.leave(pool, org_key, cost)
+            SemaphoreLogger.log_semaphore_release(
+                f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
+            )
+
+        if deadline_work is not None and deadline_work.running():
+            _release_when_work_ends(release_admission, deadline_work, deadline_at, record_name)
+        else:
+            release_admission()
 
     parse_ms = (time.monotonic() - parse_start) * 1000
     if parse_ms >= SLOW_PARSE_WARN_SECONDS * 1000:

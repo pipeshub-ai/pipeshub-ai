@@ -65,3 +65,52 @@ def test_the_route_deadline_is_never_shorter_than_the_clients_read_timeout(monke
         monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", pdf)
         assert locks.stage_deadline_s() >= messaging_env.pdf_record_processing_timeout * PARSE_SHARE_OF_RECORD_BUDGET
         assert locks.stage_deadline_s() >= messaging_env.record_processing_timeout * PARSE_SHARE_OF_RECORD_BUDGET
+
+
+async def test_after_a_504_the_permit_is_held_until_the_conversion_thread_returns_and_freed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the await does not stop a thread, so the gate permit stays held until the thread really returns."""
+    import threading
+
+    from app.api.routes import parsing
+    from app.services.paid_cache import locks
+    from app.services.resource_governor.tiers import gate_pool
+
+    monkeypatch.setattr(locks, "STAGE_DEADLINE_S", 0.2)
+    monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "0.2")
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "0.2")
+    monkeypatch.setattr(parsing, "PARSE_GATE_TIMEOUT_SECONDS", 30.0)    # the second parse waits for the permit
+    monkeypatch.setattr(parsing, "parse_admission_cap", lambda *_a, **_k: 1)   # one conversion's worth of memory
+    release_thread = threading.Event()
+    calls: list[int] = []
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        calls.append(1)
+        if len(calls) == 1:
+            await asyncio.to_thread(release_thread.wait, 20)             # the conversion, in a thread
+        return _ok_result()
+
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=MagicMock(parse=parse))
+    app = _build_app(registry, heavy_limit=1, light_limit=1)
+    gate = app.state.governor.gate(gate_pool(parsing.classify("pdf", "application/pdf")))
+    post_args = {
+        "files": {"file": ("s.pdf", b"%PDF-1.4 x", "application/pdf")},
+        "data": {"record_name": "s.pdf", "mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://p.test") as client:
+        first = await client.post("/api/v1/parse", **post_args)
+        assert first.status_code == 504
+        assert gate.in_use == 1, "the permit was freed while the conversion still runs"
+        second = asyncio.ensure_future(client.post("/api/v1/parse", **post_args))
+        await asyncio.sleep(0.5)
+        assert not second.done() and len(calls) == 1, "a second parse was admitted on the memory the conversion still uses"
+        assert gate.in_use == 1
+        release_thread.set()                                              # the conversion returns
+        assert (await second).status_code == 200                          # now it is admitted
+        for _ in range(100):
+            if gate.in_use == 0:
+                break
+            await asyncio.sleep(0.02)
+        assert gate.in_use == 0, "the permit was freed more than once or not at all"
