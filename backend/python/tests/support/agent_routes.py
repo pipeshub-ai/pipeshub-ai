@@ -325,7 +325,7 @@ class InMemoryGraph:
         if role is None:
             return None
         return {**copy.deepcopy(self.nodes[TEMPLATES][template_id]), "user_role": role,
-                "can_edit": role in _EDIT_ROLES, "can_delete": role == "OWNER"}
+                "can_edit": role == "OWNER", "can_delete": role == "OWNER"}
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         # The real provider reads the template with no permission check.

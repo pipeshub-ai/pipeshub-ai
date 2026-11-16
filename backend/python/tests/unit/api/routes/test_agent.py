@@ -2426,6 +2426,7 @@ class TestDeleteAgentTemplate:
         from app.api.routes.agent import delete_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].delete_agent_template = AsyncMock(return_value=True)
 
         request = MagicMock()
@@ -2444,6 +2445,7 @@ class TestDeleteAgentTemplate:
         from app.api.routes.agent import delete_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].delete_agent_template = AsyncMock(return_value=False)
 
         request = MagicMock()
@@ -2463,6 +2465,7 @@ class TestUpdateAgentTemplate:
         from app.api.routes.agent import update_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].update_agent_template = AsyncMock(return_value=True)
 
         request = MagicMock()
