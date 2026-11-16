@@ -370,23 +370,33 @@ class SourceAccounts:
                 return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
-    async def before_link(self, users: list["AppUser"]) -> bool:
+    async def before_link(
+        self, users: list["AppUser"], write: "Callable[[], Awaitable[None]] | None" = None,
+    ) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
         to a different account than the one it was linked to before. False when the stored links could not be read:
         then nobody is linked and no grant is written this run (``ensure_loaded`` raises)."""
         try:
-            return await self._admit(users, fenced=False)
+            return await self._admit(users, fenced=False, write=write)
         except _NeedsFence:
             # Taken before this connector's lock, as grant writes take them: a write holding the fence may be waiting
             # for the lock to load a bucket.
             async with grant_fence().exclusive():
-                return await self._admit(users, fenced=True)
+                return await self._admit(users, fenced=True, write=write)
 
-    async def _admit(self, users: list["AppUser"], *, fenced: bool) -> bool:
+    async def _admit(
+        self, users: list["AppUser"], *, fenced: bool, write: "Callable[[], Awaitable[None]] | None",
+    ) -> bool:
         async with self._lock:
             for _ in range(_SAVE_ATTEMPTS):
                 try:
-                    return await self._before_link(users, fenced=fenced)
+                    admitted = await self._before_link(users, fenced=fenced)
+                    # ``write`` (the link itself) runs under the same lock: another admission for one of these addresses
+                    # cannot link a different account between this check and that write.
+                    # shortcut: one process; across processes the later link write can still name the older account.
+                    if admitted and write is not None:
+                        await write()
+                    return admitted
                 except _Conflict as conflict:
                     # Another process saved this bucket meanwhile: read it again and decide again (removing a
                     # grant twice is harmless).
