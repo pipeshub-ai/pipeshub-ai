@@ -33,6 +33,7 @@ from app.connectors.core.base.data_processor.source_accounts import (
     NOT_SOURCE_ACCOUNTS,
     SourceAccountGraph,
     SourceAccounts,
+    grant_fence,
     graph_mode_key,
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
@@ -533,11 +534,12 @@ class DataSourceEntitiesProcessor:
             return True
         accounts = self.source_accounts(connector_id)
         await accounts.ensure_loaded([email])
-        if accounts.holds(email, source_id):
+        if accounts.admits(email, source_id):
             return True
         self.logger.info(
-            "Skipped a grant on connector %s to user %s: its address belonged to another account before, and the "
-            "grant does not name the account that holds it now", connector_id, user_id,
+            "Skipped a grant on connector %s to user %s: its address belonged to another account (re-used, or a "
+            "deleted account still listed with it), and the grant does not name the account that holds it now",
+            connector_id, user_id,
         )
         return False
 
@@ -598,7 +600,8 @@ class DataSourceEntitiesProcessor:
         stats_token = _PENDING_RUN_STATS.set(pending_stats)
         try:
             options = {} if explicit is None else {"explicit": explicit}
-            async with self.data_store_provider.transaction(**options) as tx_store:
+            # Grants are judged and written inside: an address's change of hands waits for it (GrantFence).
+            async with grant_fence().shared(), self.data_store_provider.transaction(**options) as tx_store:
                 yield tx_store
         finally:
             _PENDING_FULL_SYNC_SEEN.reset(token)
@@ -6519,7 +6522,8 @@ class DataSourceEntitiesProcessor:
     ) -> bool:
         try:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
-            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after({connector_id}), grant_fence().shared(), \
+                    self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
                 user = await tx_store.get_user_by_email(user_email)
                 if not user:

@@ -98,6 +98,7 @@ def _sys_user_row(**fields: object) -> dict:
         "department": None,
         "location": None,
         "cost_center": None,
+        "locked_out": "false",
     }
     base.update(fields)
     return base
@@ -898,6 +899,48 @@ class TestSyncUsers:
             servicenow_connector.connector_id, [stored])
         fields = mock_datasource.get_now_table_tableName.call_args.kwargs["sysparm_fields"]
         assert "locked_out" in fields
+
+    async def test_a_user_this_run_listed_as_unusable_gets_no_group_or_grant_from_its_stored_link(
+        self, servicenow_connector,
+    ) -> None:
+        """A failed withdrawal leaves the locked user's stored link: the user list groups and grants read must not
+        include it."""
+        servicenow_connector._app_users = None
+        servicenow_connector._unusable_user_ids = {"u2"}
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(
+            return_value=[MagicMock(source_user_id="u1"), MagicMock(source_user_id="u2")])
+        assert [u.source_user_id for u in await servicenow_connector._all_app_users()] == ["u1"]
+
+    async def test_a_user_whose_lock_status_is_not_returned_is_neither_linked_nor_withdrawn(
+        self, servicenow_connector,
+    ) -> None:
+        """A row without locked_out (a field ACL can hide it) is unknown, not unlocked: a locked duplicate of an active
+        user's address must not be linked. Its stored link stays, the checkpoint stays, and the admin is told."""
+        servicenow_connector.user_sync_point = AsyncMock()
+        servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
+        servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value=set())
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(
+            return_value=[MagicMock(source_user_id="u2")])
+        servicenow_connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        servicenow_connector._note_problem = MagicMock()
+        rows = [_sys_user_row(sys_id="u1", user_name="u1", email="maya@example.com", first_name="Maya", last_name="A",
+                              active="true", title=None, sys_created_on=None, sys_updated_on="2024-01-01"),
+                _sys_user_row(sys_id="u2", user_name="u2", email="maya@example.com", first_name="Maya", last_name="B",
+                              active="true", title=None, sys_created_on=None, sys_updated_on="2024-01-02")]
+        del rows[1]["locked_out"]
+        mock_datasource = AsyncMock()
+        mock_datasource.get_now_table_tableName = AsyncMock(side_effect=_listing(rows))
+        with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
+                          return_value=mock_datasource):
+            await servicenow_connector._sync_users()
+
+        linked = servicenow_connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in linked] == ["u1"]
+        servicenow_connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        keys = [c.args[0] for c in servicenow_connector.user_sync_point.update_sync_point.await_args_list]
+        assert "users" not in keys
+        assert any("locked out" in str(c) for c in servicenow_connector._note_problem.call_args_list)
 
     async def test_a_user_locked_out_without_a_row_change_is_withdrawn_by_the_reconcile(
         self, servicenow_connector

@@ -20,6 +20,7 @@ from app.connectors.core.base.data_processor.source_accounts import (
     BUCKETS,
     SourceAccounts,
     _bucket,
+    grant_fence,
     source_accounts_key,
 )
 from app.models.entities import AppUser
@@ -400,7 +401,8 @@ async def test_a_large_directory_never_writes_a_large_value_and_one_change_rewri
     config.set_config = counting
     people[123] = _user("person123@x.com", "acc-123-new")
     await _admit(directory, accounts, people)
-    assert writes == [source_accounts_key(CONNECTOR, _bucket("person123@x.com")), source_accounts_key(CONNECTOR)]
+    marker = source_accounts_key(CONNECTOR)
+    assert writes == [marker, source_accounts_key(CONNECTOR, _bucket("person123@x.com")), marker]
     assert len(json.dumps(config.saved[source_accounts_key(CONNECTOR)])) < 100     # the marker: a version bump
     assert accounts.reused == {"person123@x.com": "acc-123-new"}
 
@@ -717,6 +719,40 @@ async def test_an_address_with_unreconciled_deleted_evidence_takes_only_its_link
 
 
 @pytest.mark.asyncio
+async def test_an_address_still_linked_to_its_deleted_account_takes_no_grant_until_listed_again(world) -> None:
+    """The link and the deleted evidence name the same account (another listing read the deleted accounts before this
+    address was listed again): its grants are refused, by the gate and by recheck, until a listing shows it, which
+    clears the evidence for a restored account."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ not in this listing
+    await accounts.ensure_loaded()
+    assert not accounts.admits("ana@x.com", "old-oid")
+    assert await accounts.recheck([_grant("ana@x.com", "old-oid")]) == []
+
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])   # restored
+    assert accounts.admits("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_the_processor_gate_applies_the_deleted_evidence_too(world) -> None:
+    """ana@ is linked to new-oid and the deleted accounts still list old-oid with it, with no re-used entry: a grant
+    naming old-oid must not reach the PipesHub user linked to new-oid through the gate every connector's grants use."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ not in this listing
+    processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
+    processor.logger = logging.getLogger("t")
+    processor.source_accounts = lambda _connector_id: accounts
+
+    assert not await processor._holds_address(CONNECTOR, "ana@x.com", "old-oid", "node-ana")
+    assert not await processor._holds_address(CONNECTOR, "ana@x.com", None, "node-ana")
+    assert await processor._holds_address(CONNECTOR, "ana@x.com", "new-oid", "node-ana")
+
+
+@pytest.mark.asyncio
 async def test_recheck_does_not_refuse_a_site_principal_id_at_an_address_nobody_else_held(world) -> None:
     """A SharePoint principal's grant carries its site user id, not the Entra object id: recheck refuses it only where
     the address passed to another account, not because the ids differ in kind."""
@@ -769,3 +805,207 @@ async def test_a_replica_with_nothing_to_change_never_writes_an_older_marker_ver
     marker = config.saved[source_accounts_key(CONNECTOR)]
     assert marker["version"] == accounts._version, "replica A's version stands"
     assert marker["deletedChecked"] is True
+
+
+def _other_bucket(email: str) -> str:
+    return next(f"o{i}@x.com" for i in range(10_000) if _bucket(f"o{i}@x.com") != _bucket(email))
+
+
+@pytest.mark.asyncio
+async def test_a_newer_version_seen_while_rechecking_other_addresses_reloads_every_loaded_bucket(world) -> None:
+    """Process P loaded ana's bucket; process Q gives ana to a new account; P's recheck of another address takes Q's
+    version. P must still read ana's bucket again before judging a grant to her."""
+    directory, p, config = world
+    other = _other_bucket("ana@x.com")
+    await _admit(directory, p, [_user("ana@x.com", "old-oid"), _user(other, "o-oid")])
+    await p.ensure_loaded(["ana@x.com", other])
+    assert p.may_grant("ana@x.com", "old-oid")
+    q = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await _admit(directory, q, [_user("ana@x.com", "new-oid")])
+
+    await p.recheck([_grant(other, "o-oid")])
+    await p.ensure_loaded(["ana@x.com"])
+
+    assert not p.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reload_after_a_newer_version_is_tried_again(world) -> None:
+    """The newer version is taken, then the bucket read fails: the next check must read the bucket again rather than
+    trust the copy loaded under the older version."""
+    directory, p, config = world
+    await _admit(directory, p, [_user("ana@x.com", "old-oid")])
+    await p.ensure_loaded(["ana@x.com"])
+    q = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await _admit(directory, q, [_user("ana@x.com", "new-oid")])
+    real_get = config.get_config
+    bucket_key = source_accounts_key(CONNECTOR, _bucket("ana@x.com"))
+
+    async def bucket_down(key: str, *a: object, **kw: object) -> object:
+        if key == bucket_key:
+            raise ConnectionError("down")
+        return await real_get(key, *a, **kw)
+
+    config.get_config = bucket_down
+    p.loaded_at = 0.0
+    with pytest.raises(ConnectionError):
+        await p.ensure_loaded(["ana@x.com"])
+    config.get_config = real_get
+    await p.ensure_loaded(["ana@x.com"])
+
+    assert not p.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_change_of_hands_waits_for_a_grant_write_under_way_and_removes_after_it(world) -> None:
+    """A write judged ana's grant for the old account and has not committed yet; the new account is admitted meanwhile.
+    The removal must come after that write, or the old account's grant is committed onto the new holder's user."""
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    directory.calls.clear()
+    judged, release = asyncio.Event(), asyncio.Event()
+
+    async def write() -> None:
+        async with grant_fence().shared():
+            await accounts.ensure_loaded(["ana@x.com"])
+            assert accounts.holds("ana@x.com", "old-oid")
+            judged.set()
+            await asyncio.wait_for(release.wait(), 1)
+            directory.calls.append(("write", "ana@x.com"))
+
+    async def admit() -> None:
+        await judged.wait()
+        admission = asyncio.ensure_future(_admit(directory, accounts, [_user("ana@x.com", "new-oid")]))
+        await asyncio.sleep(0.05)       # the admission has had every chance to remove first
+        release.set()
+        await admission
+
+    await asyncio.gather(write(), admit())
+
+    assert [c[0] for c in directory.calls] == ["write", "remove", "link"]
+
+
+@pytest.mark.asyncio
+async def test_a_listing_with_no_change_of_hands_does_not_wait_for_grant_writes(world) -> None:
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
+    async with grant_fence().shared():
+        await asyncio.wait_for(_admit(directory, accounts, [_user("ana@x.com", "ana-oid")]), 1)
+
+
+@pytest.mark.asyncio
+async def test_a_grant_write_waits_for_a_change_of_hands_under_way() -> None:
+    fence, order = grant_fence(), []
+    admitting = asyncio.Event()
+
+    async def admission() -> None:
+        async with fence.exclusive():
+            admitting.set()
+            await asyncio.sleep(0.05)
+            order.append("admitted")
+
+    async def write() -> None:
+        await admitting.wait()
+        async with fence.shared():
+            order.append("write")
+
+    await asyncio.gather(admission(), write())
+    assert order == ["admitted", "write"]
+
+
+
+
+def _stale_worker(directory: _Directory, config: _Config, monkeypatch) -> tuple[SourceAccounts, list[float]]:
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    return SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t")), now
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_keeps_the_changed_state_unread(world, monkeypatch) -> None:
+    """The marker moved and the bucket read that follows it fails: the old copy must not pass a later check."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    real_get = config.get_config
+
+    async def bucket_down(key: str, *a: object, **kw: object) -> object:
+        if key != source_accounts_key(CONNECTOR):
+            raise RuntimeError("kv down")
+        return await real_get(key, *a, **kw)
+
+    config.get_config = bucket_down
+    with pytest.raises(RuntimeError):
+        await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid")
+    config.get_config = real_get
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")
+
+
+@pytest.mark.asyncio
+async def test_reading_one_bucket_under_a_newer_marker_does_not_vouch_for_the_others(world, monkeypatch) -> None:
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+    bo = Permission(external_id="bo-oid", email="bo@x.com", type=PermissionType.READ, entity_type=EntityType.USER)
+    assert await worker.recheck([bo]) == [bo]             # reads bo@'s bucket only
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_linking_one_address_under_a_newer_marker_does_not_vouch_for_the_others(world, monkeypatch) -> None:
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    await worker.before_link([_user("bo@x.com", "bo-oid")])       # reads bo@'s bucket only
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_marker_save_that_failed_after_the_bucket_save_is_published_by_the_retry(world, monkeypatch) -> None:
+    """The bucket holds the new account but the marker save failed; the retry finds nothing left to change in the
+    bucket and must still tell other instances to read it again."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    _withdraw(directory, "old-oid")
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    real_set = config.set_config
+
+    async def marker_down(key: str, value: object, **kw: object) -> bool:
+        if key == source_accounts_key(CONNECTOR) and not value.get("saving"):
+            return False
+        return await real_set(key, value, **kw)
+
+    config.set_config = marker_down
+    with pytest.raises(RuntimeError):
+        await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    config.set_config = real_set
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    assert not config.saved[source_accounts_key(CONNECTOR)].get("saving")
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")

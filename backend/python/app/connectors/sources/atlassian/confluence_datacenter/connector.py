@@ -709,6 +709,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
 
                 if not users_data:
+                    # An empty page that still links a next one is not the end: the rest was not read.
+                    links = response_data.get("_links")
+                    if isinstance(links, dict) and links.get("next"):
+                        read_complete = False
                     break
 
                 # Transform users (skip users without email)

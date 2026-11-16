@@ -15,16 +15,19 @@ only the address fails closed, since nothing in it tells the old account from th
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import hashlib
 import time
 import uuid
+import weakref
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
@@ -92,6 +95,76 @@ class _Conflict(Exception):
     """A bucket changed between this run's read and its save."""
 
 
+class _NeedsFence(Exception):
+    """An address changes hands: the admission starts again holding the grant fence."""
+
+
+class GrantFence:
+    """Grant writes (``shared``: from judging a grant to committing it) against an admission that removes an address's
+    old account's grants (``exclusive``). The admission waits for the writes under way, which commit before it removes,
+    and holds back new ones until the new holder is saved, so none commits a grant judged before the change after the
+    removal. shortcut: one event loop of one process; across processes a write judged before another process admits
+    the address can still commit after its removal (STATE_MAX_AGE_SECONDS plus one transaction), until a shared fence
+    (a lock in the store) closes that."""
+
+    def __init__(self) -> None:
+        self._cond = asyncio.Condition()
+        self._writes = 0
+        self._admitting = 0        # admissions waiting or running: new writes wait behind them
+        self._admission_running = False
+        self._held: contextvars.ContextVar[bool] = contextvars.ContextVar(f"grant_fence_{id(self)}", default=False)
+
+    @contextlib.asynccontextmanager
+    async def shared(self) -> "AsyncIterator[None]":
+        if self._held.get():       # nested in a write this task already counts
+            yield
+            return
+        async with self._cond:
+            await self._cond.wait_for(lambda: not self._admitting)
+            self._writes += 1
+        token = self._held.set(True)
+        try:
+            yield
+        finally:
+            self._held.reset(token)
+            async with self._cond:
+                self._writes -= 1
+                self._cond.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def exclusive(self) -> "AsyncIterator[None]":
+        if self._held.get():
+            raise RuntimeError("an admission cannot run inside a grant write: it would wait for itself")
+        async with self._cond:
+            self._admitting += 1
+            try:
+                await self._cond.wait_for(lambda: not self._writes and not self._admission_running)
+            except BaseException:
+                self._admitting -= 1
+                self._cond.notify_all()
+                raise
+            self._admission_running = True
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._admission_running = False
+                self._admitting -= 1
+                self._cond.notify_all()
+
+
+_FENCES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, GrantFence]" = weakref.WeakKeyDictionary()
+
+
+def grant_fence() -> GrantFence:
+    """This event loop's fence (an asyncio primitive serves one loop)."""
+    loop = asyncio.get_running_loop()
+    fence = _FENCES.get(loop)
+    if fence is None:
+        fence = _FENCES[loop] = GrantFence()
+    return fence
+
+
 def _mapping(value: object, connector_id: str) -> dict:
     if not isinstance(value, dict):
         raise TypeError(f"the saved account state of connector {connector_id} is not a mapping")
@@ -130,7 +203,8 @@ class SourceAccounts:
         self.admission_failed = False         # the stored links could not be read this run: no grant is written
         self.deleted_pending = False          # deleted accounts not read yet: an address may still be a moved one
         self._version: object = None
-        self._read: set[int] = set()
+        self._read: set[int] = set()          # buckets loaded since the marker last changed
+        self._epoch = 0                       # bumped when the marker changes: a load begun before marks nothing read
         self._linked: dict[int, dict[str, str]] = {}
         self._reused: dict[int, dict[str, str]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
@@ -169,6 +243,7 @@ class SourceAccounts:
     async def _load(self, buckets: Iterable[int]) -> dict[int, dict[str, str]]:
         """Read these buckets; returns each one's kept deleted-account evidence."""
         deleted: dict[int, dict[str, str]] = {}
+        epoch = self._epoch
 
         async def one(bucket: int) -> None:
             raw = await self.config_service.get_config(
@@ -177,12 +252,20 @@ class SourceAccounts:
             self._stored[bucket] = raw or None
             self._linked[bucket], self._reused[bucket] = _lower(stored.get("linked")), _lower(stored.get("reused"))
             deleted[bucket] = self._deleted[bucket] = _lower(stored.get("deleted"))
-            self._read.add(bucket)
+            if self._epoch == epoch:   # else read before a change this process has seen: read again when wanted
+                self._read.add(bucket)
         await asyncio.gather(*(one(b) for b in set(buckets)))
         return deleted
 
-    def _take_marker(self, marker: dict) -> None:
-        self._version = marker.get("version")
+    def _take_marker(self, marker: dict, fresh: Iterable[int] = ()) -> None:
+        # ``saving``: a save that may have stopped between its buckets and its marker, so no loaded copy is current.
+        version = object() if marker.get("saving") else marker.get("version")
+        if version != self._version:
+            # Some bucket changed: only those read after this marker (``fresh``) are current; the rest are read again.
+            self._read &= set(fresh)
+            self.loaded = len(self._read) == BUCKETS
+            self._epoch += 1
+        self._version = version
         self.deleted_pending = marker.get("deletedChecked") is False
         self._legacy = {} if marker.get("seeded") else _lower(_legacy_reused(marker))
         self.loaded_at = time.monotonic()
@@ -195,15 +278,11 @@ class SourceAccounts:
         if self.admission_failed:
             raise RuntimeError(f"the stored users of connector {self.connector_id} could not be read this run")
         wanted = set(range(BUCKETS)) if emails is None else {_bucket(e.lower()) for e in emails}
-        stale: set[int] = set()
         if not self.loaded_at or time.monotonic() - self.loaded_at > STATE_MAX_AGE_SECONDS:
-            marker = await self._get(source_accounts_key(self.connector_id))
-            if self.loaded_at and marker.get("version") != self._version:
-                stale = set(self._read)
-            self._take_marker(marker)
-        if self.loaded and not stale:
+            self._take_marker(await self._get(source_accounts_key(self.connector_id)))
+        if self.loaded:
             return
-        missing = (wanted - self._read) | stale
+        missing = wanted - self._read
         if missing:
             async with self._lock:
                 await self._load(missing)
@@ -221,8 +300,7 @@ class SourceAccounts:
         # Not may_grant: a SharePoint principal's grant carries its site user id, which never equals the Entra object
         # id the address is linked to. What matters here is an admission made meanwhile, which re-used addresses and
         # deleted-account evidence record.
-        refused = {id(p) for p in users if not self.holds(p.email, p.external_id)
-                   or not self._evidence_allows(p.email.lower(), p.external_id)}
+        refused = {id(p) for p in users if not self.admits(p.email, p.external_id)}
         return [p for p in permissions if id(p) not in refused]
 
     async def _save(self, buckets: Iterable[int], deleted: dict[int, dict[str, str]]) -> None:
@@ -245,21 +323,30 @@ class SourceAccounts:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
 
-    async def _update_marker(self, *, changed: bool, deleted_checked: bool | None) -> None:
+    async def _update_marker(
+        self, *, changed: bool, deleted_checked: bool | None, fresh: Iterable[int], saving: bool = False,
+    ) -> None:
         """Merge this run into the marker by compare-and-set against what is stored now, not what the run read at its
         start: another replica may have written a newer version meanwhile, and writing an older one back would stop
         other processes from reloading. A change writes a new version; otherwise the stored one stands. The flags
-        only ever turn on."""
+        only ever turn on. ``saving`` flags the marker before a run saves its buckets: if the save after them fails,
+        the next run still writes a new version, though the buckets then already hold what it would save."""
         key = source_accounts_key(self.connector_id)
         for _ in range(_SAVE_ATTEMPTS):
             raw = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
             stored = _mapping(raw or {}, self.connector_id)
             # A token, not a counter: two processes bumping one counter would write one number for different changes.
-            noted = {"seeded": True, "version": uuid.uuid4().hex if changed else stored.get("version")}
-            if deleted_checked is not None or "deletedChecked" in stored:
-                noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
+            if saving:
+                noted = {**stored, "version": uuid.uuid4().hex, "saving": True}
+            else:
+                # shortcut: another run's final save clears a flag set by a run still saving; that run's own final save
+                # then publishes, so only both failing at once is missed. Key the flag by run if that shows up.
+                noted = {"seeded": True,
+                         "version": uuid.uuid4().hex if changed or stored.get("saving") else stored.get("version")}
+                if deleted_checked is not None or "deletedChecked" in stored:
+                    noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
             if noted == stored or await self.config_service.compare_and_set_config(key, raw or None, noted):
-                self._take_marker(noted)
+                self._take_marker(noted, fresh)
                 return
         raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
@@ -277,18 +364,21 @@ class SourceAccounts:
         if not noted:
             return
         async with self._lock:
+            buckets = {_bucket(e) for e in noted}
             for _ in range(_SAVE_ATTEMPTS):
-                deleted = await self._load({_bucket(e) for e in noted})
+                deleted = await self._load(buckets)
                 changed = set()
                 for email, sid in noted.items():
                     if self._linked.setdefault(_bucket(email), {}).setdefault(email, sid) == sid:
                         changed.add(_bucket(email))
+                if changed:
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets, saving=True)
                 try:
                     await self._save(changed, deleted)
                 except _Conflict:
                     continue
                 if changed:
-                    await self._update_marker(changed=True, deleted_checked=None)
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets)
                 return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
@@ -302,10 +392,19 @@ class SourceAccounts:
         to a different account than the one it was linked to before. False when the stored links could not be read:
         then nobody is linked and no grant is written this run (``ensure_loaded`` raises). ``then`` (the link write)
         runs after a successful check under the same lock, so no other listing of the connector runs in between."""
+        try:
+            return await self._admit(users, then, fenced=False)
+        except _NeedsFence:
+            # Taken before this connector's lock, as grant writes take them: a write holding the fence may be waiting
+            # for the lock to load a bucket.
+            async with grant_fence().exclusive():
+                return await self._admit(users, then, fenced=True)
+
+    async def _admit(self, users: list["AppUser"], then: Callable[[], Awaitable[None]] | None, *, fenced: bool) -> bool:
         async with self._lock:
             for _ in range(_SAVE_ATTEMPTS):
                 try:
-                    ok = await self._before_link(users)
+                    ok = await self._before_link(users, fenced=fenced)
                 except _Conflict as conflict:
                     # Another process saved this bucket meanwhile: read it again and decide again (removing a
                     # grant twice is harmless).
@@ -317,7 +416,7 @@ class SourceAccounts:
                 return ok
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
-    async def _before_link(self, users: list["AppUser"]) -> bool:
+    async def _before_link(self, users: list["AppUser"], *, fenced: bool) -> bool:
         try:
             marker = await self._get(source_accounts_key(self.connector_id))
             links = await self.processor.get_app_user_links(self.connector_id)
@@ -368,6 +467,8 @@ class SourceAccounts:
             # its stored link names (another writer may have rewritten it already), and a deleted account the source
             # still lists with it. The listed id being linked to some other address says nothing about this one.
             before = {linked.get(email), by_address.get(email), None if email in reused else old}
+            if before - {None, account} and not fenced:
+                raise _NeedsFence
             # shortcut: two live accounts listed with one address (Jira Data Center and Salesforce allow it) read as
             # a change of hands on every run, so the address keeps only the last-linked account's grants and they are
             # removed and written again each run; keying PipesHub users by source id would tell them apart.
@@ -384,10 +485,13 @@ class SourceAccounts:
             if linked.get(email) != account:
                 linked[email] = account
                 changed.add(bucket)
+        if changed:
+            await self._update_marker(changed=True, deleted_checked=None, fresh=touched, saving=True)
         await self._save(changed, deleted)
         await self._update_marker(
             changed=bool(changed),
             deleted_checked=None if self.deleted_users is None else read_deleted is not None,
+            fresh=touched,
         )
         return True
 
@@ -420,13 +524,20 @@ class SourceAccounts:
         holder = self._holder(email.lower())
         return holder is None or (source_id is not None and source_id == holder)
 
+    def admits(self, email: str, source_id: str | None) -> bool:
+        """For a loaded state: ``holds``, and an address with unreconciled deleted-account evidence takes only a grant
+        naming the account it is linked to (``_evidence_allows``)."""
+        return self.holds(email, source_id) and self._evidence_allows(email.lower(), source_id)
+
     def _evidence_allows(self, email: str, source_id: str | None) -> bool:
         """An address a deleted account still holds in the source's deleted accounts, and that no listing has shown
         since, takes only a grant naming the account it is linked to: not the deleted one, not one naming nobody."""
-        if email not in self._deleted.get(_bucket(email), {}) or email in self._reused.get(_bucket(email), {}):
+        deleted = self._deleted.get(_bucket(email), {})
+        if email not in deleted or email in self._reused.get(_bucket(email), {}):
             return True
         linked = self._linked.get(_bucket(email), {}).get(email)
-        return source_id is not None and source_id == linked
+        # The linked account may be the deleted one itself (not listed again yet): refused until a listing shows it.
+        return source_id is not None and source_id == linked and source_id != deleted[email]
 
     def _holder(self, email: str) -> str | None:
         part = self._reused.get(_bucket(email), {})

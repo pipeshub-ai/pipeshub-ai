@@ -91,6 +91,7 @@ def mock_data_entities_processor():
     proc.on_user_group_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[MagicMock(email="user@test.com")])
     proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.get_app_user_links = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_group_by_external_id = AsyncMock(return_value=None)

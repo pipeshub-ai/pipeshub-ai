@@ -147,6 +147,11 @@ class ConfigService(InMemoryConfigService):
             return self.platform or default
         return await super().get_config(path, default, **kwargs)
 
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts); nothing is
+        # kept here, as with every other key this fake answers.
+        return await self.get_config(key) == expected
+
 
 class LogCapture(logging.Handler):
     def __init__(self) -> None:

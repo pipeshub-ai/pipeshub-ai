@@ -583,6 +583,7 @@ class ServiceNowConnector(BaseConnector):
         self.block_kb_without_criteria: bool = True
         # The connector's users, read once per sync run after the user sync (see _all_app_users)
         self._app_users: list[AppUser] | None = None
+        self._unusable_user_ids: set[str] = set()   # inactive, locked out or without email in this run's listing
         # source user sys_id -> email, read once per sync run (see _process_criteria_permissions)
         self._email_by_source_id: dict[str, str] | None = None
         # user_criteria rows by sys_id, read once per sync run (see _fetch_user_criteria)
@@ -1507,6 +1508,7 @@ class ServiceNowConnector(BaseConnector):
         """
         try:
             self._app_users = None  # user listing is read once per run, after the user sync
+            self._unusable_user_ids = set()
             self._email_by_source_id = None
             # A knowledge base with no user criteria may be open to every user (see _kb_criteria).
             self._criteria_rows = {_EVERYONE: TableAPIRecord(sys_id=_EVERYONE, active="true")}
@@ -2222,8 +2224,9 @@ class ServiceNowConnector(BaseConnector):
 
         total_synced = 0
         latest_update_time = None
-        inactive: set[str] = set()
+        inactive = self._unusable_user_ids = set()
         no_email = 0
+        lock_unread = 0
 
         # A failed page raises: a short list is indistinguishable from a complete one to
         # everything downstream, so the sync would report success over what it missed.
@@ -2263,6 +2266,11 @@ class ServiceNowConnector(BaseConnector):
                         or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME):
                     inactive.add(user_data.sys_id)
                     continue
+                if not hasattr(user_data, ServiceNowFields.LOCKED_OUT):
+                    # Not returned (a field ACL can hide it) is unknown, not unlocked: neither linked nor withdrawn,
+                    # and the checkpoint stays so the row is read again once the field can be read.
+                    lock_unread += 1
+                    continue
                 if not (user_data.email or "").strip():
                     # Signs in as no PipesHub user: one stored with the email it had loses access too.
                     no_email += 1
@@ -2284,28 +2292,41 @@ class ServiceNowConnector(BaseConnector):
         reconcile = query is None or not checked or now - datetime.strptime(
             checked, ServiceNowDefaults.DATETIME_FORMAT
         ).replace(tzinfo=timezone.utc) >= timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS)
+        withdrawal_failed = False
         if inactive or reconcile:
-            stored_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id, raise_on_error=True
-            )
-            gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
-            if reconcile:
-                gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
-            stored = [u for u in stored_users if u.source_user_id in gone]
-            if stored:
-                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
-            if reconcile:
+            # A failed withdrawal must not stop the rest of the sync (its role and group rewrites leave these users
+            # out); the checkpoints stay where they were, so the next sync reads these users and withdraws again.
+            try:
+                stored_users = await self.data_entities_processor.get_all_app_users(
+                    connector_id=self.connector_id, raise_on_error=True
+                )
+                gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
+                if reconcile:
+                    gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
+                stored = [u for u in stored_users if u.source_user_id in gone]
+                if stored:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
+            except Exception as e:
+                withdrawal_failed = True
+                self.logger.error(f"Withdrawing inactive or locked-out users failed; tried again next sync: {e}",
+                                  exc_info=True)
+            if reconcile and not withdrawal_failed:
                 await self.user_sync_point.update_sync_point(
                     ServiceNowSyncPointKeys.USERS_RECONCILE,
                     {ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT)},
                 )
 
         # Save checkpoint for next sync
-        if latest_update_time:
+        if latest_update_time and not withdrawal_failed and not lock_unread:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
         if not migrated:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS_V2, {ServiceNowDictKeys.DONE: True})
 
+        if lock_unread:
+            self._note_problem(
+                f"The integration user cannot read whether {_plural(lock_unread, 'ServiceNow user is', 'ServiceNow users are')} "
+                "locked out, so they are not synced until it can"
+            )
         if no_email:
             self._note_problem(
                 f"{_plural(no_email, 'active ServiceNow user has', 'active ServiceNow users have')} no email "
@@ -4038,9 +4059,11 @@ class ServiceNowConnector(BaseConnector):
         """The connector's users, read once per sync run (after the user sync) for groups and grants."""
         if self._app_users is None:
             # Raising: an empty list would write every group with no members.
-            self._app_users = await self.data_entities_processor.get_all_app_users(
+            # Not the users this run listed as unusable: a stored link a failed withdrawal left must not get a
+            # group or a grant either.
+            self._app_users = [u for u in await self.data_entities_processor.get_all_app_users(
                 connector_id=self.connector_id, raise_on_error=True
-            )
+            ) if u.source_user_id not in self._unusable_user_ids]
         return self._app_users
 
     async def _emails_by_source_id(self) -> dict[str, str]:

@@ -1503,13 +1503,13 @@ class TestAllTicketsAccess:
         self, _f, zendesk_connector, mock_data_entities_processor, complete: bool
     ) -> None:
         """Neither can sign in; linked, one sharing an active agent's address would take that address. One linked
-        before is withdrawn, unless the export was truncated."""
+        before is withdrawn, as is one the export no longer lists (4: deleted or demoted), unless it was truncated."""
         from types import SimpleNamespace
 
         _ready(zendesk_connector)
         users = {k: _app_user(k, "maya@acme.com") for k in ("1", "2", "3")}
         mock_data_entities_processor.get_app_user_links = AsyncMock(return_value=[
-            SimpleNamespace(id=f"n-{k}", source_user_id=k, email=None) for k in ("1", "2", "3")
+            SimpleNamespace(id=f"n-{k}", source_user_id=k, email=None) for k in ("1", "2", "3", "4")
         ])
 
         async def _users():
@@ -1533,7 +1533,7 @@ class TestAllTicketsAccess:
         assert [u.source_user_id for u in linked] == ["1"]
         withdraw = mock_data_entities_processor.withdraw_app_user_access
         if complete:
-            assert sorted(u.source_user_id for u in withdraw.await_args.args[1]) == ["2", "3"]
+            assert sorted(u.source_user_id for u in withdraw.await_args.args[1]) == ["2", "3", "4"]
         else:
             withdraw.assert_not_awaited()
 

@@ -835,6 +835,79 @@ async def test_sharepoint_every_item_is_marked_for_reading_again_before_any_site
     assert order == ["sharepoint-permission-model=0", "sites"]
 
 
+@pytest.mark.asyncio
+async def test_sharepoint_every_item_is_read_again_next_run_while_the_deleted_accounts_are_unread() -> None:
+    """Until the deleted accounts are read, a SharePoint principal (no Entra id) is withheld (``may_grant``): the item
+    must be read again once they are, or its valid grants stay missing while it does not change."""
+    from unittest.mock import patch
+
+    c, _ = _sharepoint(["a"], [_app_user("a")])
+    _sharepoint_sync_point(c, None)
+    for name in ("_reinitialize_credential_if_needed", "_report_missing_graph_permission", "_remove_deleted_sites", "_remove_filtered_out"):
+        setattr(c, name, AsyncMock())
+    c._reset_permission_caches = MagicMock()
+    order: list[str] = []
+    c.drive_delta_sync_point = MagicMock(
+        read_sync_point=AsyncMock(return_value=None),
+        update_sync_point=AsyncMock(side_effect=lambda key, sync_point_data: order.append(f"{key}={sync_point_data['version']}")),
+    )
+    real_sync_users = c._sync_users
+
+    async def sync_users() -> None:
+        await real_sync_users()
+        c.source_accounts.deleted_pending = True       # the deleted-accounts read failed this run
+
+    async def sites() -> list:
+        order.append("sites")
+        raise RuntimeError("the run stops while reading sites")
+    c._sync_users = sync_users
+    c._get_all_sites = sites
+    with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        with pytest.raises(RuntimeError):
+            await c.run_sync()
+
+    assert c._disabled_set_unknown is False
+    assert order == ["sharepoint-permission-model=0", "sites"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [True, False])
+async def test_sharepoint_a_completed_run_keeps_items_marked_while_the_deleted_accounts_are_unread(pending: bool) -> None:
+    """A run that completes must not record the permission model as current while grants were withheld for unread
+    deleted accounts, or the next run reads only deltas and the withheld grants never come back."""
+    from unittest.mock import patch
+
+    from app.connectors.sources.microsoft.sharepoint_online.connector import (
+        PERMISSION_MODEL_VERSION,
+    )
+
+    c, _ = _sharepoint(["a"], [_app_user("a")])
+    _sharepoint_sync_point(c, None)
+    for name in ("_reinitialize_credential_if_needed", "_report_missing_graph_permission", "_remove_deleted_sites", "_remove_filtered_out"):
+        setattr(c, name, AsyncMock())
+    c._reset_permission_caches = MagicMock()
+    c._get_all_sites = AsyncMock(return_value=[])
+    c._sync_user_groups = AsyncMock()
+    versions: list[int] = []
+    c.drive_delta_sync_point = MagicMock(
+        read_sync_point=AsyncMock(return_value=None),
+        update_sync_point=AsyncMock(side_effect=lambda key, sync_point_data: versions.append(sync_point_data["version"])),
+    )
+    real_sync_users = c._sync_users
+
+    async def sync_users() -> None:
+        await real_sync_users()
+        c.source_accounts.deleted_pending = pending
+
+    c._sync_users = sync_users
+    with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await c.run_sync()
+
+    assert (PERMISSION_MODEL_VERSION in versions) is not pending
+
+
 @pytest.mark.parametrize(("unknown", "withheld"), [(True, True), (False, False)])
 def test_sharepoint_a_graph_identity_with_no_email_is_withheld_only_while_the_disabled_set_is_unknown(unknown: bool, withheld: bool) -> None:
     c, _ = _sharepoint([], [])
