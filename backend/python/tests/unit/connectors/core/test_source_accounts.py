@@ -969,6 +969,29 @@ async def test_a_grant_write_waits_for_a_change_of_hands_under_way() -> None:
     assert order == ["admitted", "write"]
 
 
+@pytest.mark.asyncio
+async def test_a_change_of_hands_waits_for_a_record_grant_added_on_its_own() -> None:
+    """``add_permission_to_record`` (a single record's grants, outside a sync batch) judges and writes in one
+    transaction: an admission must not remove the old account's grants between the two."""
+    processor, _ = _processor(_Config())
+    judged, order = asyncio.Event(), []
+
+    async def handle(*_: object) -> None:
+        judged.set()
+        await asyncio.sleep(0.05)
+        order.append("write")
+
+    processor._handle_record_permissions = handle
+
+    async def admission() -> None:
+        await judged.wait()
+        async with grant_fence().exclusive():
+            order.append("admitted")
+
+    await asyncio.gather(processor.add_permission_to_record(MagicMock(), [_grant("ana@x.com", None)]), admission())
+    assert order == ["write", "admitted"]
+
+
 
 
 def _stale_worker(directory: _Directory, config: _Config, monkeypatch) -> tuple[SourceAccounts, list[float]]:
