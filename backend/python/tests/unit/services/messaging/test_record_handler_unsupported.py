@@ -16,7 +16,7 @@ from tests.unit.services.messaging.test_record_handler_password import (
 @pytest.mark.asyncio
 async def test_a_record_the_dispatch_cannot_route_fails_on_its_first_attempt() -> None:
     handler = _make_handler()
-    record = _failing_record(handler, await _unroutable_error(None, "image/pjpeg"))
+    record = _failing_record(handler, await _unroutable_error(None, "image/heic"))
 
     await _run(handler, final=False)  # attempt 1 of 3
 

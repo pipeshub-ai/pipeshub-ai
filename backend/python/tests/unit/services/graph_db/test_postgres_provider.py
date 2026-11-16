@@ -1,6 +1,7 @@
 """The PostgreSQL graph provider (``DATA_STORE=postgres``): it is opt-in, it comes from the factory over the shared database runtime, and it keeps up with the graph interface."""
 from __future__ import annotations
 
+import ast
 import inspect
 import logging
 import os
@@ -150,7 +151,8 @@ def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
 HELPERS = ["_normalize_name", "_normalized_name_variants_lower", "_generate_upload_message", "_analyze_upload_structure", "_populate_file_destinations"]
 CALLER_METHODS = ["_get_kb_context_for_record", "_fetch_existing_file_names_in_parent", "_validate_upload_context", "get_user_app_ids",
                   "get_user_permission_app_ids", "_create_reindex_event_payload", "delete_inherit_permissions_relation_record_group", "get_user_apps",
-                  "delete_all_edges_for_node", "get_template", "clone_agent_template"]
+                  "delete_all_edges_for_node", "get_template", "clone_agent_template", "get_all_agent_templates", "update_agent_template",
+                  "delete_agent_template", "get_all_agents", "update_agent", "delete_agent"]
 
 
 def _providers() -> list[type]:
@@ -165,6 +167,42 @@ def test_every_provider_has_every_method_callers_use(provider: type) -> None:
     for name in CALLER_METHODS:
         assert name in IGraphDBProvider.__abstractmethods__
         assert callable(getattr(provider, name))
+
+
+def _raises_only(fn: ast.AST) -> bool:
+    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+    exc = body[0].exc if len(body) == 1 and isinstance(body[0], ast.Raise) else None
+    exc = exc.func if isinstance(exc, ast.Call) else exc
+    return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
+
+
+def raising_defaults() -> set[str]:
+    """Interface methods that are not abstract but whose default only raises NotImplementedError: a store that does not override one raises
+    wherever it is called, and nothing flags it at construction (unlike an abstract method, which ``unimplemented()`` stubs and lists)."""
+    tree = ast.parse(inspect.getsource(inspect.getmodule(IGraphDBProvider)))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == IGraphDBProvider.__name__)
+    return {f.name for f in cls.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name not in IGraphDBProvider.__abstractmethods__ and _raises_only(f)}
+
+
+# Raising defaults PostgreSQL may leave unimplemented, each with the reason it is safe to.
+RAISING_DEFAULTS_NOT_ON_POSTGRES = {
+    # data repairs of the other stores; their app/migrations/*_migration.py callers catch NotImplementedError and skip
+    "backfill_app_org_ids", "split_link_edges", "backfill_hierarchy", "drop_redundant_group_edges", "normalize_folder_mime_types", "stamp_kh_listing_state",
+    # only the Neo4j and ArangoDB browse paths call these (_with_readable_children and _kh_v3_scoped_start_access); PostgreSQL browses in kh_browse.py
+    "_kh_v3_child_ids", "_kh_v3_declared_scope", "_kh_v3_start_lineage",
+    # only with ACL_SCOPE_FIELDS on or ACL_FILTER_MODE shadow/scopes (off by default); there a search fails at start and a vector point stays on the
+    # legacy filter (marked stale). shortcut: the scope filter is not served on PostgreSQL, implement both views before it is
+    "permission_hierarchy_view", "permission_stamp_graph",
+}
+
+
+def test_every_raising_default_of_the_interface_is_overridden_by_the_postgres_provider_or_allowed_with_a_reason() -> None:
+    raising = raising_defaults()
+    mro = PostgresGraphProvider.__mro__
+    missing = {n for n in raising if not any(n in vars(c) for c in mro[:mro.index(IGraphDBProvider)])}
+    assert {"remove_user_access_to_connector", "get_virtual_record_holders", "set_record_properties"} <= raising      # the scan still finds them
+    assert sorted(missing - RAISING_DEFAULTS_NOT_ON_POSTGRES) == [], "the interface's default raises: implement it on PostgreSQL"
+    assert sorted(RAISING_DEFAULTS_NOT_ON_POSTGRES - missing) == [], "allowed but implemented (or no longer a raising default): drop it from the list"
 
 
 @pytest.mark.parametrize("name", CALLER_METHODS)

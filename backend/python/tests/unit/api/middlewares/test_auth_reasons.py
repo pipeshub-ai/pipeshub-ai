@@ -90,6 +90,8 @@ def _same_as_main(exc: AuthRejected, status: int, detail: str, headers: dict | N
         (f"Bearer {_token({'scopes': [TokenScopes.FETCH_CONFIG.value], 'exp': NOW + 600}, SCOPED_SECRET)}", 401,
          "Token missing orgId", None, "missing_org"),
     ],
+    ids=["missing_header", "bad_scheme", "missing_token", "expired", "invalid_token", "no_scopes", "scope_not_accepted",
+         "missing_org"],  # the tokens hold the time they were made
 )
 async def test_token_refusals_carry_a_reason_and_answer_as_before(authorization, status, detail, headers, reason) -> None:
     _same_as_main(await _refusal(authorization), status, detail, headers, reason)
@@ -197,6 +199,7 @@ async def test_a_non_admin_is_refused_with_a_reason() -> None:
         f"Bearer {_token({**USER_CLAIMS, 'exp': NOW - 60})}",
         f"Bearer {_token(USER_CLAIMS, 'not-the-secret-0123456789')}",
     ],
+    ids=["missing_header", "expired", "invalid_token"],
 )
 async def test_routine_refusals_log_no_warning_here(authorization, caplog: pytest.LogCaptureFixture) -> None:
     """The request's ``http.request.end`` line says it, once."""

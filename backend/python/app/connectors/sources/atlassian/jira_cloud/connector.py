@@ -4776,7 +4776,7 @@ class JiraConnector(BaseConnector):
             # Single pass so the parent-before-child sort above survives into the batch
             # handed to on_new_records.
             to_upsert: list[tuple[Record, list[Permission]]] = []
-            changed_records: list[tuple[Record, list[Permission]]] = []
+            changed_records: list[tuple[Record, list[Permission], bool]] = []
             new_count = 0
             edge_rebuild_count = 0
             for record, record_permissions, content_changed in batch:
@@ -4786,7 +4786,7 @@ class JiraConnector(BaseConnector):
                 elif content_changed or self._keeps_stored_grants(record):
                     # The second case is an issue whose grants are kept (holders unread): the
                     # content-update path leaves them alone, where a full sync's first write would replace them.
-                    changed_records.append((record, record_permissions))
+                    changed_records.append((record, record_permissions, content_changed))
                 else:
                     to_upsert.append((record, record_permissions))
                     edge_rebuild_count += 1
@@ -4794,13 +4794,15 @@ class JiraConnector(BaseConnector):
             if to_upsert:
                 await self.data_entities_processor.on_new_records(to_upsert)
 
-            for record, record_permissions in changed_records:
+            for record, record_permissions, content_changed in changed_records:
                 # Grants only replace the stored ones when the record is flagged to rewrite
-                # them (an issue under a security scheme); other records pass none.
+                # them (an issue under a security scheme); other records pass none. An unchanged issue is here
+                # only to keep its grants, so it asks for no reindex.
                 if getattr(record, "rewrite_permissions", False):
-                    await self.data_entities_processor.on_record_content_update(record, record_permissions)
+                    await self.data_entities_processor.on_record_content_update(
+                        record, record_permissions, content_changed=content_changed)
                 else:
-                    await self.data_entities_processor.on_record_content_update(record)
+                    await self.data_entities_processor.on_record_content_update(record, content_changed=content_changed)
 
             stats["new_count"] += new_count
             stats["updated_count"] += len(changed_records)

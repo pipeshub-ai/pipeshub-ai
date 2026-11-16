@@ -127,6 +127,7 @@ import {
   startsTurn,
   type ViewerMessage,
 } from '../utils/viewer-redaction';
+import { apiRecord, apiStoredRecords } from '../utils/internal-record-fields';
 import {
   attachUpstreamAbort,
   runGuarded,
@@ -232,13 +233,32 @@ export function buildSearchResponseForClient(
   data: AiSearchResponse & Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
-  if (Array.isArray(data.records)) out.records = data.records.map(omitId);
+  if (Array.isArray(data.records)) {
+    out.records = (data.records as unknown[]).map((r: unknown) =>
+      omitId(apiRecord(r)),
+    );
+  }
+  // A date-bounded search also returns the best matches written outside its dates.
+  const outside = data.outsideDates;
+  if (
+    outside !== null &&
+    typeof outside === 'object' &&
+    !Array.isArray(outside)
+  ) {
+    const { records } = outside as { records?: unknown };
+    if (Array.isArray(records)) {
+      out.outsideDates = {
+        ...outside,
+        records: (records as unknown[]).map((r: unknown) => apiRecord(r)),
+      };
+    }
+  }
   const vmap = data.virtual_to_record_map;
   if (vmap && typeof vmap === 'object' && !Array.isArray(vmap)) {
     out.virtual_to_record_map = Object.fromEntries(
       Object.entries(vmap as Record<string, unknown>).map(([k, v]) => [
         k,
-        omitId(v),
+        omitId(apiRecord(v)),
       ]),
     );
   }
@@ -5503,9 +5523,9 @@ export const search =
           // `linkedRecords` was filtered for the user who ran this search. A
           // saved search can be shared, and its records are returned as
           // stored, so the links are kept out of what is saved.
-          const stored: Record<string, unknown> = {
+          const stored: Record<string, unknown> = apiRecord({
             ...(record as Record<string, unknown>),
-          };
+          });
           delete stored.linkedRecords;
           // Convert the record object to a string since your schema expects Map<string, string>
           recordsMap.set(key, JSON.stringify(stored));
@@ -5887,7 +5907,14 @@ export const shareSearch =
         );
       }
 
-      res.status(HTTP_STATUS.OK).json(updatedSearch);
+      const shared = updatedSearch as unknown as Record<string, unknown> & {
+        toJSON?: () => Record<string, unknown>;
+      };
+      const sharedView = shared.toJSON?.() ?? shared;
+      res.status(HTTP_STATUS.OK).json({
+        ...sharedView,
+        records: apiStoredRecords(sharedView.records),
+      });
     } catch (error: any) {
       logger.error('Error sharing search', {
         requestId,

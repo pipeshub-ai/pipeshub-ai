@@ -13,7 +13,7 @@ from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import for_org, system
+from app.core.org_jobs import for_each_org
 from app.services.graph_db.common.utils import org_id_from_app_edge
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -90,33 +90,44 @@ async def run_s3_created_date_filter_migration(
         logger.debug(f"Unable to read the S3 created date filter migration flag (assuming not done): {e}")
 
     migrated = failures = 0
-    for connector_type in CONNECTOR_TYPES:
-        try:
-            with system("s3_created_date_filter_migration"):
+
+    async def migrate_org(bound_org_id: str) -> None:
+        nonlocal migrated, failures
+        for connector_type in CONNECTOR_TYPES:
+            try:
                 apps = await graph_provider.get_nodes_by_filters(
                     CollectionNames.APPS.value, {"type": connector_type}, raise_on_error=True
                 )
-        except Exception as e:
-            logger.error(f"S3 created date filter migration: could not list the {connector_type} connectors: {e}")
-            failures += 1
-            continue
-        for app in apps:
-            connector_id = app.get("_key") or app.get("id")
-            try:
-                # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
-                with system("s3_created_date_filter_migration"):
+            except Exception as e:
+                logger.error(f"S3 created date filter migration: could not list the {connector_type} connectors: {e}")
+                failures += 1
+                continue
+            for app in apps:
+                connector_id = app.get("_key") or app.get("id")
+                try:
+                    # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
                     org_id = app.get("orgId") or await org_id_from_app_edge(
                         graph_provider, connector_id, raise_on_error=True
                     )
-                if not org_id:
-                    # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
-                    logger.warning(f"S3 created date filter migration: connector {connector_id} has no org; skipped")
-                    continue
-                with for_org(org_id, job="s3_created_date_filter_migration"):
+                    if not org_id:
+                        # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
+                        logger.warning(f"S3 created date filter migration: connector {connector_id} has no org; skipped")
+                        continue
+                    if org_id != bound_org_id:
+                        continue  # Arango and Neo4j list every org's apps; its own org's pass migrates it
                     migrated += await _migrate_connector(config_service, connector_id, logger)
-            except Exception as e:
-                failures += 1
-                logger.error(f"S3 created date filter migration: connector {connector_id} failed: {e}")
+                except Exception as e:
+                    failures += 1
+                    logger.error(f"S3 created date filter migration: connector {connector_id} failed: {e}")
+
+    try:
+        failed_orgs = await for_each_org(
+            graph_provider, "s3_created_date_filter_migration", migrate_org, logger, raise_on_error=True,
+        )
+        failures += len(failed_orgs)
+    except Exception as e:
+        failures += 1
+        logger.error(f"S3 created date filter migration: could not list the organizations: {e}")
 
     # Left unset after a failure so the next start retries; migrated connectors have no created filter then.
     if not failures and not await config_service.set_config(MIGRATION_FLAG_KEY, {"done": True, "migrated": migrated}):
