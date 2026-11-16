@@ -149,6 +149,14 @@ class TestSkills(unittest.TestCase):
                 self.assertIn(word, sub.choices, f"{path}: {word}")
 
 
+class TestStandInModel(unittest.TestCase):
+    def test_a_qa_run_on_a_pull_request_uses_the_stand_in_model_like_the_pull_request_does(self) -> None:
+        text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
+        for key in ("TEST_AI_MODEL_PROVIDER", "TEST_STAND_IN_MODEL_ENDPOINT"):
+            line = next(l for l in text.splitlines() if l.strip().startswith(key + ":"))
+            self.assertIn("github.event_name == 'pull_request' || inputs.mode == 'pr'", line, key)
+
+
 class TestReportAndGate(unittest.TestCase):
     def test_report_and_gate_use_one_allow_list(self) -> None:
         text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
