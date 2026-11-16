@@ -421,3 +421,33 @@ def test_a_small_cpu_parse_never_waits_behind_a_large_one_waiting_for_a_start_to
 
     waits = asyncio.run(run())
     assert waits[-1] < 0.5, waits  # without the fix the slowest small waits 1.5-2 s for a start token
+
+
+def test_with_a_remote_parsing_service_the_parse_step_takes_the_remote_slot_only_and_never_the_class_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The order is explicit: the index permit is class-ordered; the parse step is the remote pool's slot alone
+    (the configured concurrency bounds it), so no class-gate permit is held while it waits for a remote slot."""
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "2")
+
+    async def run() -> tuple[int, bool, int]:
+        h = host()
+        ctx = wiring.class_context(msg("pdf", 150 * MIB).payload)
+        held = [await cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=1, ctx=ctx) for _ in range(2)]
+        gates = wiring.parse_engine_stats()["gates"]
+        in_class_gate = sum(row["running"] + row["waiting"] for stats in gates.values() for row in stats.values())
+        refused = False
+        try:
+            await cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=0.2, ctx=ctx)
+        except cc.ParseAdmissionTimeout as err:
+            refused = err.pool == "remote_parsing" and not isinstance(err, cc.BigAdmissionTimeout)
+        for a in held:
+            cc.release_admission(a)
+        again = await cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=1, ctx=ctx)
+        cc.release_admission(again)
+        return in_class_gate, refused, len(held)
+
+    in_class_gate, refused, taken = asyncio.run(run())
+    assert taken == 2 and in_class_gate == 0  # the class gate was never entered by a parse step
+    assert refused  # the third waited on the remote pool alone and was handed back as a plain parse timeout
