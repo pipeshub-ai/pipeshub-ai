@@ -19,6 +19,7 @@ from app.modules.pipeline.parse_now import (
     parse_outcome,
 )
 from app.services.messaging.config import StreamMessage
+from tests.support.loop_clock import virtual_loop_time
 from tests.unit.services.messaging.test_record_handler_parse_now import (
     Harness,
     _payload,
@@ -90,14 +91,20 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-async def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again() -> None:
-    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
+async def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The marker is stamped at the moment of the ask: stamped before the test's setup instead, a runner that
+    # spent over the 2 s skew getting to the ask saw it as an earlier run's and waited out the budget.
+    asked_at = _now_ms()
+    monkeypatch.setattr(f"{MODULE}.get_epoch_timestamp_in_ms", lambda: asked_at)
+    virtual_loop_time(monkeypatch)
+    loop = asyncio.get_running_loop()
+    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=asked_at)
     asker, send = _asker(wait=20)
-    t0 = time.monotonic()
+    t0 = loop.time()
     first = await _fetch(
         ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
     )
-    assert time.monotonic() - t0 < 10  # ended by the marker, far before the 20 s budget a busy runner cannot reach
+    assert loop.time() - t0 == pytest.approx(0.01)  # ended by the marker at the first 0.01 s look, not the 20 s budget
     assert first["not_indexed_records"]["rec-1"]["status"] == "FAILED"
     assert "preparing" not in first["not_indexed_records"]["rec-1"]
     # A later read of a record that still carries the FAILED marker asks again.
