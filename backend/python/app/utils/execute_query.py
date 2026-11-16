@@ -35,6 +35,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.connector_instances import fetch_user_connector_instances
 
 logger = create_logger("execute_query")
 
@@ -138,8 +139,6 @@ async def shared_sql_knowledge(
     """
     if not agent_knowledge_has_sql_connector(agent_knowledge):
         return agent_knowledge
-    from app.utils.connector_instances import fetch_user_connector_instances
-
     instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, log)
     shared = {
         str(i.get("_key") or i.get("id"))
@@ -147,11 +146,14 @@ async def shared_sql_knowledge(
         if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value
         and (i.get("orgId") or org_id) == org_id
     }
-    return [
+    kept = [
         k for k in agent_knowledge
         if not (isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES)
         or str(k.get("connectorId") or "").strip() in shared
     ]
+    if len(kept) < len(agent_knowledge):
+        log.info("Service-account agent: %d database(s) not shared with the org are not used", len(agent_knowledge) - len(kept))
+    return kept
 
 
 class ExecuteQueryArgs(BaseModel):
