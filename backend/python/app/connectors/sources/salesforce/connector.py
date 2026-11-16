@@ -2749,6 +2749,7 @@ class SalesforceConnector(BaseConnector):
                     self.logger.debug("Full user sync: no previous sync point, fetching all users")
                 inactive_user_ids = await self._sync_users(
                     self._soql_query_paginated(api_version=api_version, q=soql_query),
+                    frozen=await self._eligibility(api_version).frozen_user_ids(),
                 )
                 await self._withdraw_ineligible_users(api_version, inactive_user_ids)
                 await self.user_sync_point.update_sync_point(
@@ -3332,7 +3333,7 @@ class SalesforceConnector(BaseConnector):
         )
 
     async def _sync_users(
-        self, user_records_pages: SalesforceRawPageStream,
+        self, user_records_pages: SalesforceRawPageStream, frozen: set[str] | None = None,
     ) -> set[str]:
         """Sync users from Salesforce, committing each Salesforce page in its own
         transaction.  Per-page commit semantics: a crash mid-stream leaves earlier
@@ -3348,7 +3349,10 @@ class SalesforceConnector(BaseConnector):
                     continue
                 parsed_users = [SalesforceUser.model_validate(r) for r in page]
                 inactive.update(u.Id for u in parsed_users if u.Id and u.IsActive is False)
-                app_users = [self.user_to_app_user(u) for u in parsed_users if u.IsActive is not False]
+                # A frozen user cannot sign in either, so it is not linked: linked, a frozen duplicate of an active
+                # user's address would read as that address changing hands and take the active user's access.
+                app_users = [self.user_to_app_user(u) for u in parsed_users
+                             if u.IsActive is not False and u.Id not in (frozen or ())]
                 if app_users:
                     await self.data_entities_processor.on_new_app_users(app_users)
                     total += len(app_users)
