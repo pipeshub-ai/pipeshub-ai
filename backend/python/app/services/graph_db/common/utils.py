@@ -1,5 +1,5 @@
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -445,7 +445,8 @@ TRASH_STATE_FIELDS = (
 
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
-# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# when a rate-limit wait began, the stranded sweep's re-sends, the record processing diagnostics
+# (`firstQueuedAt`, `failedAt`, `indexingAttempts`, `pageCount`) and the duplicate
 # taxonomy copy, the mark a push leaves for indexing, and the projected property values with their controls
 # (`recordProps`, `propsSet`, `propsGen`, `propsSrc`, `propsVer`; on Neo4j the values are flat `p_<name>` keys,
 # dropped by `api_record` too). No client reads them, and the record endpoint's response
@@ -461,6 +462,10 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "rateLimitedSince",
     "lastRepublishedAt",
     "republishCount",
+    "firstQueuedAt",
+    "failedAt",
+    "indexingAttempts",
+    "pageCount",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
     "extractionDeferred",
@@ -487,12 +492,23 @@ INTERNAL_RECORD_FIELDS = frozenset({
 _PROJECTED_PROPERTY_KEY = re.compile(r"^p_[a-zA-Z0-9_]{1,64}$")
 
 
-def api_record(record: dict[str, Any]) -> dict[str, Any]:
-    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+def api_record(record: dict[str, Any], *, keep: Collection[str] = ()) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``.
+
+    ``keep`` names fields a response documents although they are internal elsewhere (the trash
+    fields on the record update response); only those are left in.
+    """
     return {
         key: value for key, value in record.items()
-        if key not in INTERNAL_RECORD_FIELDS and not _PROJECTED_PROPERTY_KEY.match(key)
+        if (key not in INTERNAL_RECORD_FIELDS or key in keep) and not _PROJECTED_PROPERTY_KEY.match(key)
     }
+
+
+def api_records(records: list[object] | dict[str, object]) -> list[object] | dict[str, object]:
+    """``api_record`` over a list of stored records, or over the values of a map of them."""
+    if isinstance(records, dict):
+        return {key: api_record(value) if isinstance(value, dict) else value for key, value in records.items()}
+    return [api_record(value) if isinstance(value, dict) else value for value in records]
 
 
 # A Recently deleted row for a multi-select delete names this many of its other items.

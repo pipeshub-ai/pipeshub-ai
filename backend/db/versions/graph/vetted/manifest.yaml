@@ -530,3 +530,50 @@ functions:
         WHERE s.org_id = v_org AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(p_virtual_record_ids) AND s.doc->>'rev' IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId' AND r.doc->>'contentRev' = s.doc->>'rev')
         LIMIT 100000;
+
+  # One page of a connector's live records at FILE_TYPE_NOT_SUPPORTED after an id (byte order, as records_page_by_connector), for the file-type re-queue
+  # (partial index nodes_record_unsupported).
+  - name: graph.records_unsupported_page
+    class: read
+    scope: org
+    grants: [pipeshub_connectors]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'indexingStatus' = 'FILE_TYPE_NOT_SUPPORTED' AND n.doc->>'connectorId' = p_connector_id
+          AND (p_after = '' OR n.id COLLATE ucs_basic > p_after COLLATE ucs_basic) AND coalesce(n.doc->>'isDeleted', '') <> 'true'
+        ORDER BY n.doc->>'connectorId', n.id COLLATE ucs_basic LIMIT p_limit;      -- the connector in the order, as records_page_by_connector: under row-level security the planner would sort the whole connector
+
+# ---- the storage documents a knowledge-base push may inline (graph_0013) ------------------------------------------------------------------
+# Same reason as above. A storage document belongs to one org (the storage service reads it by org and id), so the links that matter for it are those of that org.
+
+  # Per document id: up to p_per_doc records whose externalRecordId is the id, the platform's own upload first (origin p_upload in connector p_kb), then by id; and the first
+  # file (by id) whose path is storage://<id> (indexes nodes_record_external_any, nodes_file_path). Each document's cap is its own, so one with many links cannot hide another's.
+  - name: graph.ref_links
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_doc_ids, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+      - {name: p_upload, type: text, length: [1, 100]}
+      - {name: p_kb, type: text, length: [1, 100]}
+      - {name: p_per_doc, type: int, range: [1, 100]}
+    returns: "TABLE (doc_id text, kind text, node_id text, origin text, connector_name text, connector_id text)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      -- coalesce: the upload test is NULL for a record without an origin or connector name, and a descending order puts NULL first
+      RETURN QUERY SELECT d.e, x.k, x.id, x.o, x.cn, x.ci FROM (SELECT DISTINCT e FROM unnest(p_doc_ids) e) d
+        CROSS JOIN LATERAL ((SELECT 'externalRecordId'::text AS k, n.id, n.doc->>'origin' AS o, n.doc->>'connectorName' AS cn, n.doc->>'connectorId' AS ci FROM graph.nodes n
+            WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'externalRecordId' = d.e
+            ORDER BY coalesce(n.doc->>'origin' = p_upload AND n.doc->>'connectorName' = p_kb, false) DESC, n.id COLLATE ucs_basic LIMIT p_per_doc)
+          UNION ALL (SELECT 'files.path'::text, f.id, NULL::text, NULL::text, NULL::text FROM graph.nodes f
+            WHERE f.org_id = v_org AND f.coll = 'files' AND f.doc->>'path' = 'storage://' || d.e ORDER BY f.id COLLATE ucs_basic LIMIT 1)) x;
