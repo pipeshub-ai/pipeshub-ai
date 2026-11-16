@@ -1,11 +1,10 @@
-"""``scroll_with_vectors``: the default and pgvector refuse with a typed error; Redis decodes a stored vector."""
+"""``scroll_with_vectors``: the default refuses with a typed error; Redis decodes a stored vector."""
 from __future__ import annotations
 
 import pytest
 
 from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.services.vector_db.pgvector.pgvector import PgVectorService
 from app.services.vector_db.redis.utils import bytes_to_vector, vector_to_bytes
 
 
@@ -16,11 +15,6 @@ async def test_the_interface_default_refuses_with_a_typed_error() -> None:
 
     with pytest.raises(VectorsNotFetchable):
         await IVectorDBService.scroll_with_vectors(Bare(), "c", None, 10)  # type: ignore[arg-type]
-
-
-async def test_pgvector_refuses_with_a_typed_error() -> None:
-    with pytest.raises(VectorsNotFetchable):
-        await PgVectorService.scroll_with_vectors(object(), "c", None, 10)  # type: ignore[arg-type]
 
 
 def test_the_typed_error_is_a_not_implemented_error() -> None:

@@ -231,6 +231,33 @@ async def test_the_stray_sweep_removes_only_unreferenced_blocks_of_one_org(store
     assert (await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})).stray_blocks == 0
 
 
+async def test_scroll_with_vectors_returns_the_vector_the_terms_and_the_payload_of_one_org(store) -> None:
+    big = 3_000_000_000                  # above 2^31 - 1: stored wrapped, given back as written
+    await store.upsert_points("records", [point(A, "p1", i=1, terms=(3, big), text="alpha"), point(A, "p2", i=2, terms=(), text="beta")])
+    await store.upsert_points("records", [point(B, "p1", text="other org")])
+    seen: dict[str, VectorPoint] = {}
+    offset = None
+    while True:
+        page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 1, offset)
+        seen.update({p.id: p for p in page.points})
+        if not page.next_offset:
+            break
+        offset = page.next_offset
+    p1 = seen[pid(f"{A}/p1")]
+    assert set(seen) == {pid(f"{A}/p1"), pid(f"{A}/p2")} or set(seen) == {pid(f"{A}/p1")}
+    assert p1.payload["page_content"] == "alpha" and p1.payload["metadata"]["blockId"] == "p1"
+    assert p1.dense_vector == [0.0, 1.0] + [0.0] * (DIM - 2)
+    assert dict(zip(p1.sparse_vector.indices, p1.sparse_vector.values, strict=True)) == {3: 0.5, big: 0.5}
+    again = await store.scroll_with_vectors("records", flt(A), 10)
+    assert {p.payload["metadata"]["blockId"] for p in again.points} == {"p1", "p2"}
+    assert next(p for p in again.points if p.payload["metadata"]["blockId"] == "p2").sparse_vector is None
+    # and the point can be written under another id, vector and terms intact: the move a re-key makes
+    moved = [VectorPoint(id=pid(f"{A}/moved-{p.id}"), dense_vector=p.dense_vector, sparse_vector=p.sparse_vector, payload=p.payload)
+             for p in again.points]
+    await store.upsert_points("records", moved)
+    assert await live(store, A) == 4 and await postings(store, A) == 4
+
+
 async def test_deletes_run_in_batches(store, monkeypatch) -> None:
     monkeypatch.setattr(writes, "DELETE_BATCH", 2)
     await store.upsert_points("records", [point(A, f"p{n}", terms=(n + 1,)) for n in range(5)])

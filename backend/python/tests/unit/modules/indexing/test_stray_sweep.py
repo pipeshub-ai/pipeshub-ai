@@ -93,14 +93,14 @@ async def test_the_scan_is_bounded_per_record_and_the_next_run_finishes(db, monk
 
 
 async def test_a_store_that_pages_only_so_far_still_loses_the_strays_found_before_the_ceiling(db, monkeypatch) -> None:
-    from app.services.vector_db.models import ScrollWindowExceededError
+    from app.services.vector_db.models import ScrollResult, ScrollWindowExceededError
 
     monkeypatch.setattr(stray_sweep, "_PAGE_SIZE", 10)
     await db.upsert_points(COLL, [_point(f"p-{i:03d}", "keep" if i % 2 else f"stray-{i}") for i in range(40)])
     real = db.scroll
     pages = 0
 
-    async def window(*args: object, **kwargs: object):
+    async def window(*args: object, **kwargs: object) -> ScrollResult:
         nonlocal pages
         pages += 1
         if pages == 3:

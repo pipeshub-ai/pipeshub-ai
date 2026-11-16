@@ -138,9 +138,14 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
     return points, (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
 
 
+def _stored_term(term: int) -> int:
+    """A term id as the postings store it: ids above 2^31 - 1 wrap by 2^32 (``lex_terms`` keeps the id as written)."""
+    return term - 4294967296 if term > 2147483647 else term
+
+
 async def _add_vectors(tx: Tx, org: str, collection_id: int, space_id: int, rows: list[asyncpg.Record], points: list[VectorPoint]) -> None:
     """Set each point's dense vector (the halfvec column) and sparse vector (its postings, term-major so the lookup uses the index)."""
-    terms = sorted({t for r in rows for t in (r["lex_terms"] or [])})
+    terms = sorted({_stored_term(t) for r in rows for t in (r["lex_terms"] or [])})
     weights: dict[tuple[int, int], float] = {}
     if terms:
         found = await tx.fetch(
@@ -152,10 +157,9 @@ async def _add_vectors(tx: Tx, org: str, collection_id: int, space_id: int, rows
         weights = {(f["point_sk"], f["term"]): f["w"] for f in found}
     for row, point in zip(rows, points, strict=True):
         point.dense_vector = [float(x) for x in json.loads(row["embedding"])]
-        mine = sorted((t, weights[(row["point_sk"], t)]) for t in (row["lex_terms"] or []) if (row["point_sk"], t) in weights)
+        mine = sorted((t, weights[(row["point_sk"], _stored_term(t))]) for t in (row["lex_terms"] or []) if (row["point_sk"], _stored_term(t)) in weights)
         if mine:
-            # a term id above 2^31 - 1 is stored wrapped by 2^32: give back the id the writer was given
-            point.sparse_vector = SparseVector(indices=[t + 4294967296 if t < 0 else t for t, _ in mine], values=[w for _, w in mine])
+            point.sparse_vector = SparseVector(indices=[t for t, _ in mine], values=[w for _, w in mine])
 
 
 async def count_filtered(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled) -> int:

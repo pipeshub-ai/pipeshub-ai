@@ -14,19 +14,16 @@ import pytest_asyncio
 from app.modules.indexing import rekey_metrics
 from app.modules.reconciliation.service import ReconciliationService
 from app.services.vector_db.errors import VectorsNotFetchable
-from app.services.vector_db.models import CollectionConfig
+from app.services.vector_db.models import CollectionConfig, ScrollResult
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
-from tests.unit.modules.indexing.test_replica_race import (
+from tests.support.index_world import (
     COLL,
     RID,
-    VRID,
-    _Blob,
-    _index,
-    _parse,
-    _point_ids,
-    _record,
-    _store,
-    store_documents,
+    Blob,
+    documents,
+    index,
+    make_store,
+    parse,
 )
 
 N = 100
@@ -58,32 +55,31 @@ def _embedded_texts(store) -> list[str]:
     return [t for call in store._embed_documents_with_retry.await_args_list for t in call.args[0]]
 
 
-def _vector_of(text: str) -> list[float]:
-    return [float(len(text)), float(sum(map(ord, text)) % 97)]
+def _point_ids(db: InMemoryVectorDBService) -> set[str]:
+    return set(db.collections[COLL])
 
 
-async def _legacy_record(store, db) -> _Blob:
+async def _legacy_record(store, db) -> Blob:
     """The record as an older version stored it: random block ids, metadata of no scheme."""
-    store._embed_documents_with_retry = AsyncMock(side_effect=lambda texts, _rid: [_vector_of(t) for t in texts])
-    legacy = _parse(_doc())
-    await store._embed_and_upsert_documents(store_documents(legacy), RID, COLL)
+    legacy = parse(_doc())
+    await store._embed_and_upsert_documents(documents(legacy), RID, COLL)
     store._embed_documents_with_retry.reset_mock()
-    blob = _Blob()
+    blob = Blob()
     blob.saved = ReconciliationService().build_metadata(legacy).to_dict()
     assert len(db.collections[COLL]) == N
     return blob
 
 
 async def test_unchanged_blocks_are_moved_with_their_vectors_and_nothing_is_embedded(db) -> None:
-    store = _store(db)
+    store = make_store(db)
     blob = await _legacy_record(store, db)
     legacy_vectors = {p.payload["page_content"]: p.dense_vector for p in db.collections[COLL].values()}
-    await _index(store, blob, _doc())
+    await index(store, blob, _doc())
     assert _embedded_texts(store) == []
     fresh = InMemoryVectorDBService()
     await fresh.create_collection(COLL, CollectionConfig(embedding_size=2))
-    fresh_store = _store(fresh)
-    await _index(fresh_store, _Blob(), _doc(), event="newRecord")
+    fresh_store = make_store(fresh)
+    await index(fresh_store, Blob(), _doc(), event="newRecord")
     assert _point_ids(db) == _point_ids(fresh), "the point ids equal the content-derived ids"
     assert {p.payload["page_content"]: p.dense_vector for p in db.collections[COLL].values()} == legacy_vectors
     assert blob.saved["idScheme"] == "content-v1"
@@ -92,9 +88,9 @@ async def test_unchanged_blocks_are_moved_with_their_vectors_and_nothing_is_embe
 
 
 async def test_only_the_changed_blocks_are_embedded(db) -> None:
-    store = _store(db)
+    store = make_store(db)
     blob = await _legacy_record(store, db)
-    await _index(store, blob, _doc(changed=(3, 40, 77)))
+    await index(store, blob, _doc(changed=(3, 40, 77)))
     texts = _embedded_texts(store)
     assert len(texts) == 3 and all("was rewritten" in t for t in texts)
     assert len(db.collections[COLL]) == N
@@ -105,10 +101,10 @@ async def test_only_the_changed_blocks_are_embedded(db) -> None:
 async def test_a_store_that_cannot_return_vectors_embeds_again_and_counts_it(db, monkeypatch) -> None:
     recorder = _Recorder()
     monkeypatch.setattr(rekey_metrics, "REKEY_FALLBACK", recorder)
-    store = _store(db)
+    store = make_store(db)
     blob = await _legacy_record(store, db)
     db.scroll_with_vectors = AsyncMock(side_effect=VectorsNotFetchable("no vectors"))
-    await _index(store, blob, _doc())
+    await index(store, blob, _doc())
     assert len(_embedded_texts(store)) == N
     assert sum(c[-1] for c in recorder.calls) == N and {c[0] for c in recorder.calls} == {"unsupported"}
     assert len(db.collections[COLL]) == N, "the old points are gone, no strays"
@@ -118,11 +114,11 @@ async def test_a_store_that_cannot_return_vectors_embeds_again_and_counts_it(db,
 async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_they_are_stored(db, monkeypatch) -> None:
     recorder = _Recorder()
     monkeypatch.setattr(rekey_metrics, "REKEY_FALLBACK", recorder)
-    store = _store(db)
+    store = make_store(db)
     blob = await _legacy_record(store, db)
     real = db.scroll_with_vectors
 
-    async def one_point_missing(*args, **kwargs):
+    async def one_point_missing(*args: object, **kwargs: object) -> ScrollResult:
         page = await real(*args, **kwargs)
         page.points = page.points[1:]
         return page
@@ -131,12 +127,12 @@ async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_t
     first_embed_saw: list[int] = []
     embed = store._embed_documents_with_retry.side_effect
 
-    async def spying_embed(texts, rid):
+    async def spying_embed(texts: list[str], rid: str) -> list[list[float]]:
         first_embed_saw.append(len(db.collections[COLL]))
         return embed(texts, rid)
 
     store._embed_documents_with_retry = AsyncMock(side_effect=spying_embed)
-    await _index(store, blob, _doc())
+    await index(store, blob, _doc())
     assert {c[0] for c in recorder.calls} == {"error"}
     assert len(_embedded_texts(store)) == N
     assert _point_ids(db) == await _content_points()
@@ -146,18 +142,18 @@ async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_t
 async def test_moved_blocks_are_counted(db, monkeypatch) -> None:
     moved = _Recorder()
     monkeypatch.setattr(rekey_metrics, "REKEYED", moved)
-    store = _store(db)
+    store = make_store(db)
     blob = await _legacy_record(store, db)
-    await _index(store, blob, _doc(changed=(5,)))
+    await index(store, blob, _doc(changed=(5,)))
     assert sum(c[-1] for c in moved.calls) == N - 1
 
 
 async def test_the_move_happens_once(db) -> None:
-    store = _store(db)
+    store = make_store(db)
     blob = await _legacy_record(store, db)
-    await _index(store, blob, _doc())
+    await index(store, blob, _doc())
     after = _point_ids(db)
-    await _index(store, blob, _doc())
+    await index(store, blob, _doc())
     assert _point_ids(db) == after and _embedded_texts(store) == []
 
 
@@ -174,8 +170,7 @@ async def test_a_store_without_the_method_refuses_with_the_typed_error() -> None
 async def _content_points() -> set[str]:
     fresh = InMemoryVectorDBService()
     await fresh.create_collection(COLL, CollectionConfig(embedding_size=2))
-    await _index(_store(fresh), _Blob(), _doc(), event="newRecord")
+    await index(make_store(fresh), Blob(), _doc(), event="newRecord")
     return _point_ids(fresh)
 
 
-_ = (VRID, _record)
