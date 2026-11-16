@@ -608,7 +608,7 @@ function KnowledgeBasePageContent() {
   const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const allRecordsBusyTries = useRef(0);
   const allRecordsEmptyHops = useRef(0);
-  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean, retryOf?: number | null) => Promise<void>) | null>(null);
   // A source still being prepared answers an empty page that says so: it is asked again by itself until its rows can be listed.
   // One timer, for the listing on screen: leaving it (another node, the other view) cancels the retry.
   const { settle: settlePreparing, isCurrent: isPreparingCurrent } = usePreparingRetry(
@@ -626,7 +626,10 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false, retryOf: number | null = null) => {
+    // A retry of a source being prepared carries the generation of the answer that scheduled it: once a newer All Records request has started (a search,
+    // a filter, a page, a refresh), that one stands, and the retry is not sent.
+    if (retryOf !== null && retryOf !== allRecordsFetchGeneration) return;
     allRecordsFetchRef.current?.abort();
     // Each request the user makes gets its own retries; only the timer's retries share them.
     if (!busyRetry) allRecordsBusyTries.current = 0;
@@ -691,7 +694,7 @@ function KnowledgeBasePageContent() {
       }
       allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
-      settlePreparing(preparingKey(true, nodeType, nodeId), data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true));
+      settlePreparing(preparingKey(true, nodeType, nodeId), data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true, fetchGeneration));
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);

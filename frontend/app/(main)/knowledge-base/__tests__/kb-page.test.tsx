@@ -483,6 +483,31 @@ describe('Knowledge base page — inside a collection', () => {
       expect(screen.queryByText(/Failed to load items/)).toBeNull();
     });
 
+    it('sends no All records retry scheduled before a newer request of the same view, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.getAllRootItems.mockImplementation(() => {
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve(hubResponse([], { preparing: true }));
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));      // the same view, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));      // past any retry the opening loads scheduled
+      await act(async () => userAnswers.forEach((answer) => answer(hubResponse([DEAL]))));
+
+      expect(await screen.findByRole('row', { name: 'deal.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+    });
+
     it('asks nothing more for All records once the user leaves it', async () => {
       api.hub.getAllRootItems.mockResolvedValue(hubResponse([], { preparing: true }));
       openAt('/knowledge-base?view=all-records');
