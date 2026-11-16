@@ -546,7 +546,7 @@ class _Graph:
         orgs = [{"_key": ORG_A}, {"_key": ORG_B}]
         return orgs if not self.scoped or ctx.kind == "system" else [o for o in orgs if o["_key"] == ctx.org_id]
 
-    async def get_documents_paginated(self, collection: str, **kw: Any) -> list[dict]:
+    async def get_documents_paginated(self, collection: str, **kw: object) -> list[dict]:
         assert kw["raise_on_error"] is True and kw["filters"] == {"isActive": True}
         org = org_context.current_org_id()
         self.reads.append(org)
