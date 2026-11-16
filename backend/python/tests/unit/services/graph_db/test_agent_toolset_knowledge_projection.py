@@ -180,7 +180,7 @@ class TestNeo4jProjectAgents:
         assert calls["knowledge"] == 1
 
     @pytest.mark.asyncio
-    async def test_without_the_agents_org_no_app_is_resolved(self, neo4j_provider):
+    async def test_without_the_agents_org_no_app_is_resolved(self, neo4j_provider) -> None:
         knowledge_rows = [{"agent_id": "a1", "_key": "k1", "connectorId": "app1", "filters": "{}"}]
         client, calls = _make_projection_client([], knowledge_rows, {"app1": {"id": "app1", "name": "Slack", "type": "SLACK"}})
         neo4j_provider.client.execute_query = client
