@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING, TypeVar
 import openai
 from google.genai import errors as genai_errors
 
-from app.services.base_client import parse_retry_after
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -102,7 +100,10 @@ def signal_backpressure_if_rate_limited(
     # Imported here: the gateway module imports this one. Any provider's throttle counts (an OpenAI error, a Cohere or Voyage
     # error with a 429 status, a botocore throttle), and its Retry-After is read the one way every wait is: finite,
     # non-negative and at most an hour (``parse_retry_after`` of the wire module).
-    from app.services.llm_gateway.embedding_gateway import EmbeddingGateway, retry_after_of
+    from app.services.llm_gateway.embedding_gateway import (
+        EmbeddingGateway,
+        retry_after_of,
+    )
     from app.services.spend_guard.retry_policy import RetryKind
 
     if EmbeddingGateway.retry_kind(exc) is not RetryKind.THROTTLE:

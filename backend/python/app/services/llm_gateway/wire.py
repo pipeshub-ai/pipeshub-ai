@@ -152,13 +152,13 @@ def wire_scope() -> Iterator[WireOutcome]:
         _current.reset(token)
 
 
-def open_scope() -> tuple[WireOutcome, Any]:  # noqa: ANN401 - the contextvar token
+def open_scope() -> tuple[WireOutcome, Any]:
     """``wire_scope`` for a caller that cannot indent its code under a ``with``: pair with ``close_scope``."""
     outcome = WireOutcome()
     return outcome, _current.set(outcome)
 
 
-def close_scope(token: Any) -> None:  # noqa: ANN401
+def close_scope(token: Any) -> None:
     with contextlib.suppress(ValueError):  # a token from another context (a task that moved loops) cannot be reset
         _current.reset(token)
 
@@ -192,7 +192,7 @@ def note_response(status: int, retry_after: float | None = None) -> None:
         outcome.retry_after = retry_after
 
 
-def _header(headers: Any, name: str) -> Any:  # noqa: ANN401 - any mapping of header names to values
+def _header(headers: Any, name: str) -> Any:
     """``headers[name]`` whatever the case of its key (httpx and requests headers are case-insensitive; a plain dict is not)."""
     value = headers.get(name)
     if value is None and hasattr(headers, "items"):
@@ -202,7 +202,7 @@ def _header(headers: Any, name: str) -> Any:  # noqa: ANN401 - any mapping of he
     return value
 
 
-def parse_retry_after(headers: Any) -> float | None:  # noqa: ANN401 - any mapping of header names to values
+def parse_retry_after(headers: Any) -> float | None:
     """Seconds a provider asks to wait (``retry-after-ms``, else ``retry-after`` in seconds), or None.
 
     The header is untrusted input: only a finite, non-negative number is accepted, and it is clamped to
@@ -258,7 +258,7 @@ async def _async_response_hook(response: httpx.Response) -> None:
     _response_hook(response)
 
 
-def has_wire_hook(client: Any) -> bool:  # noqa: ANN401 - SDK clients are duck-typed across providers
+def has_wire_hook(client: Any) -> bool:
     return getattr(client, WIRE_MARKER, False) is True
 
 
@@ -395,7 +395,7 @@ def route_genai_through_httpx(model: object) -> int:
 BOTO_MARKER = "_pipeshub_wire_hook"
 
 
-def install_boto_hooks(client: Any) -> bool:  # noqa: ANN401 - botocore client
+def install_boto_hooks(client: Any) -> bool:
     """Mark the request as sent (``before-send``), record the status (``after-call``) and transport errors
     (``needs-retry``) of a botocore client."""
     if getattr(client, BOTO_MARKER, False) is True:
@@ -407,7 +407,7 @@ def install_boto_hooks(client: Any) -> bool:  # noqa: ANN401 - botocore client
         with contextlib.suppress(Exception):
             note_request_sent()
 
-    def after_call(http_response: Any = None, **_: object) -> None:  # noqa: ANN401
+    def after_call(http_response: Any = None, **_: object) -> None:
         with contextlib.suppress(Exception):
             status = getattr(http_response, "status_code", None)
             if isinstance(status, int):
@@ -466,7 +466,7 @@ class WireHookError(RuntimeError):
     """A chat model whose requests the gateway cannot observe. It is refused: its outages would never open a breaker."""
 
 
-def install_wire_hooks(model: Any, provider: str, *, require: Callable[[], bool] | None = None) -> int:  # noqa: ANN401
+def install_wire_hooks(model: Any, provider: str, *, require: Callable[[], bool] | None = None) -> int:
     """Install the hooks on every client of ``model``. Returns how many clients were hooked (or already were).
 
     Raises ``WireHookError`` for a chat model of a remote provider that has no client to hook, when built for a paid
