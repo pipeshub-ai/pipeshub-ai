@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.arango.arango_http_provider import (
@@ -2066,6 +2067,11 @@ class TestGetEntityIdByEmailPeopleFallback:
         ]
         result = await connected_provider.get_entity_id_by_email("person@test.com", org_id="org-1")
         assert result == "person_key1"
+        calls = connected_provider.http_client.execute_aql.await_args_list
+        assert [c.args[0].split("FOR doc IN ")[1].split()[0] for c in calls] == [CollectionNames.USERS.value, CollectionNames.GROUPS.value, CollectionNames.PEOPLE.value]
+        for c in calls:
+            assert "doc.orgId == @org_id" in c.args[0]
+            assert c.kwargs["bind_vars"] == {"email": "person@test.com", "org_id": "org-1"}
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
@@ -2088,6 +2094,19 @@ class TestBulkGetEntityIdsByEmailUsersAndErrors:
         result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"], org_id="org-1")
         assert "u@test.com" in result
         assert result["u@test.com"][0] == "u1"
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "FOR doc IN users" in call.args[0] and "doc.orgId == @org_id" in call.args[0]
+        assert call.kwargs["bind_vars"] == {"emails": ["u@test.com"], "org_id": "org-1"}
+
+    @pytest.mark.asyncio
+    async def test_groups_and_people_are_read_in_the_org_too(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = [[], [], []]
+        await connected_provider.bulk_get_entity_ids_by_email(["g@test.com"], org_id="org-1")
+        calls = connected_provider.http_client.execute_aql.await_args_list
+        assert [c.args[0].split("FOR doc IN ")[1].split()[0] for c in calls] == [CollectionNames.USERS.value, CollectionNames.GROUPS.value, CollectionNames.PEOPLE.value]
+        for c in calls:
+            assert "doc.orgId == @org_id" in c.args[0]
+            assert c.kwargs["bind_vars"]["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -14565,6 +14584,9 @@ class TestGetUserSyncState:
         result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE", org_id="org-1")
         assert result is not None
         assert result["syncState"] == "COMPLETED"
+        connected_provider.get_entity_id_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "app.orgId == @org_id" in call.args[0] and call.kwargs["bind_vars"]["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
@@ -14601,6 +14623,9 @@ class TestUpdateUserSyncState:
         result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING", "DRIVE", org_id="org-1")
         assert result is not None
         assert result["syncState"] == "RUNNING"
+        connected_provider.get_entity_id_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "app.orgId == @org_id" in call.args[0] and call.kwargs["bind_vars"]["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):

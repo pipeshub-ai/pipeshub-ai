@@ -14137,9 +14137,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not org_id:
             raise MissingOrgContext("the org argument is required")
         try:
+            # properties(): the client's result.data() turns a relationship into a (start, type, end) tuple, not its fields
             query = """
             MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
-            RETURN rel, u.id AS from_id, app.id AS to_id
+            RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             LIMIT 1
             """
 
@@ -14185,7 +14186,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
             SET rel.syncState = $state, rel.lastSyncUpdate = $updated_timestamp
-            RETURN rel, u.id AS from_id, app.id AS to_id
+            RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             """
 
             results = await self.client.execute_query(

@@ -14361,16 +14361,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not user_key:
                 return None
 
+            # Orgs can hold apps of the same name; an app written before apps carried orgId is the org's by its relation.
             query = f"""
-            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
-                          FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{ _key: a._key, name: a.name }})
-
             LET edge = FIRST(
-                FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', @user_key)
-                    FILTER rel._to == CONCAT('apps/', app._key)
-                    RETURN rel
+                FOR app IN {CollectionNames.APPS.value}
+                    FILTER LOWER(app.name) == LOWER(@service_type)
+                    FILTER app.orgId == @org_id OR (app.orgId IN [null, ""] AND LENGTH(
+                        FOR o IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER o._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND o._to == app._id
+                            LIMIT 1 RETURN 1) > 0)
+                    FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                        FILTER rel._from == CONCAT('users/', @user_key)
+                        FILTER rel._to == app._id
+                        RETURN rel
             )
 
             RETURN edge
@@ -14378,7 +14381,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"user_key": user_key, "service_type": service_type}
+                bind_vars={"user_key": user_key, "service_type": service_type, "org_id": org_id}
             )
 
             return results[0] if results else None
@@ -14417,19 +14420,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Get user key and app key based on service type and update the sync state
             query = f"""
-            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
-                          FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{
-                              _key: a._key,
-                              name: a.name
-                          }})
-
             LET edge = FIRST(
-                FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', @user_key)
-                    FILTER rel._to == CONCAT('apps/', app._key)
-                    UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
-                    RETURN NEW
+                FOR app IN {CollectionNames.APPS.value}
+                    FILTER LOWER(app.name) == LOWER(@service_type)
+                    FILTER app.orgId == @org_id OR (app.orgId IN [null, ""] AND LENGTH(
+                        FOR o IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER o._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND o._to == app._id
+                            LIMIT 1 RETURN 1) > 0)
+                    FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                        FILTER rel._from == CONCAT('users/', @user_key)
+                        FILTER rel._to == app._id
+                        UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
+                        RETURN NEW
             )
 
             RETURN edge
@@ -14440,6 +14442,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={
                     "user_key": user_key,
                     "service_type": service_type,
+                    "org_id": org_id,
                     "state": state,
                     "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                 }
