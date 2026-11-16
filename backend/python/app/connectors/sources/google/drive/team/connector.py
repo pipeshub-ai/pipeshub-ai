@@ -3035,7 +3035,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             if parent_id in seen:
                 continue
             seen.add(parent_id)
-            for child in await self.data_entities_processor.get_records_by_parent(self.connector_id, parent_id):
+            # Trashed ones too: restored, they would come back still granting this user.
+            for child in await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, parent_id, visibility=RecordVisibility.ALL
+            ):
                 if child.mime_type in FOLDER_MIME_TYPES:
                     pending.append(child.external_record_id)
                 items.append(child)
@@ -3059,30 +3062,34 @@ class GoogleDriveTeamConnector(BaseConnector):
         if file_id not in items:
             await self.drive_delta_sync_point.update_sync_point(key, {"items": sorted([*items, file_id])})
 
-    async def _park_holder_recheck(self, file_id: str) -> None:
-        """List an item whose holders' check failed (see `_process_drive_item`). A failed write raises, so the item
-        fails and is read again.
+    async def _park_holder_recheck(self, file_id: str, reader_email: str | None) -> None:
+        """List an item whose holders' check failed (see `_process_drive_item`), with the reader the check left out, so
+        the retry asks the same people. A failed write raises, so the item fails and is read again.
 
         shortcut: one list for the connector, read and rewritten whole; split it if it ever holds many thousands."""
         items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY) or {}).get("items") or [])]
-        if file_id not in items:
-            await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": sorted([*items, file_id])})
+        entry = f"{file_id}:{(reader_email or '').lower()}"  # Drive ids never contain ":"
+        if entry not in items:
+            await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": sorted([*items, entry])})
 
     async def _recheck_parked_holders(self) -> None:
         """Ask again about each item `_park_holder_recheck` listed, as the first try did. One that is gone or answered
         leaves the list; one whose check fails again stays. Nothing here holds a checkpoint."""
         items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY) or {}).get("items") or [])]
         left: list[str] = []
-        for file_id in items:
+        for entry in items:
+            file_id, _, reader_email = entry.partition(":")
             try:
                 record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=file_id
                 )
                 if record is not None:
-                    await self._drop_grants_of_people_who_cannot_open(record, self._holder_sources)
+                    await self._drop_grants_of_people_who_cannot_open(
+                        record, self._holder_sources, skip_email=reader_email or None
+                    )
             except Exception as e:
                 self.logger.warning(f"Still not known who can open item {file_id}: {_failure_summary(e)}")
-                left.append(file_id)
+                left.append(entry)
         if left != items:
             await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": left})
 
@@ -3120,7 +3127,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         A group's grant goes when one of its members gets that 404: a group permission grants "members of a specific
         group" (https://developers.google.com/workspace/drive/api/guides/manage-sharing), so a member who cannot open
-        the item shows the group no longer grants it. Members who can open it another way keep their own grants.
+        the item shows the group no longer grants it. Members who can open it another way keep their own grants. An
+        audience grant (a discoverable share) is checked the same way: the people it always holds decide, and those of
+        other domains it may reach only show it is still open.
         With ``only`` the groups asked about are that user's, and when that user still opens the item (perhaps through a
         share of their own) up to AUDIENCE_PROBES of the group's other members are asked too; otherwise up to
         AUDIENCE_PROBES members of each group, picked at random. A refusal or other error on a member's check decides
@@ -3168,26 +3177,37 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         for group in groups:
             group_id = group.source_user_group_id
-            if not group_id or _is_audience_group(group_id):
+            if not group_id:
                 continue
-            # A group the directory will not list cannot be asked about; its grant stays, as for a stored record
-            # whose group members cannot be read (`_another_synced_user_can_open`).
-            members = await self._synced_group_members(group_id) or set()
-            pool = sorted(e for e in members if e in by_email and e != (skip_email or "").lower())
+            if _is_audience_group(group_id):
+                # An audience (a discoverable share): the people it always holds decide, those of other domains it
+                # may reach only show it is still open, as for a stored record (`_another_synced_user_can_open`).
+                own, more = (set(people) for people in self._audience_people(group_id))
+            else:
+                # A group the directory will not list cannot be asked about; its grant stays, as for a stored record
+                # whose group members cannot be read (`_another_synced_user_can_open`).
+                own, more = await self._synced_group_members(group_id) or set(), set()
+
+            def pool_of(people: set[str]) -> list[str]:
+                return sorted(e for e in people if e in by_email and e in synced and e != (skip_email or "").lower())
+
             asked: list[str] = []
             if only is not None:
-                if only.email.lower() not in members:
+                if only.email.lower() not in own:
                     continue
                 asked.append(only.email.lower())
                 # The reporting user still opening it may be through a share of their own: the group's other
-                # members answer for the group then.
-                if await answer(only.email.lower()) is True:
-                    others = [e for e in pool if e != only.email.lower()]
-                    asked += secrets.SystemRandom().sample(others, min(AUDIENCE_PROBES, len(others)))
+                # people answer for the group then.
+                if await answer(only.email.lower()) is not True:
+                    asked_more: list[list[str]] = []
+                else:
+                    asked_more = [[e for e in pool_of(own) if e != only.email.lower()], pool_of(more - own)]
             else:
-                asked = secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES, len(pool)))
+                asked_more = [pool_of(own), pool_of(more - own)]
+            for pool in asked_more:
+                asked += secrets.SystemRandom().sample(pool, min(max(AUDIENCE_PROBES - len(asked) + (only is not None), 0), len(pool)))
             found = [await answer(e) for e in asked]
-            if False in found:
+            if any(answers[e] is False for e in asked if e in own):
                 self.logger.info(f"Removing a group's grant on {record.record_name}: a member can no longer open it")
                 try:
                     await self.data_entities_processor.delete_group_permission_from_record(
@@ -4476,7 +4496,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                     f"Could not check who can still open {existing_record.record_name} "
                                     f"({_failure_summary(e)}); it is checked again on later runs"
                                 )
-                                await self._park_holder_recheck(file_id)
+                                await self._park_holder_recheck(file_id, user_email)
                             self._holders_checked.add(existing_record.id)
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single
