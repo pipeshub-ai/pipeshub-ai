@@ -8,7 +8,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | Connector | Group | Rule | Container where | Writer evidence | Classified by |
 |---|---|---|---|---|---|
 | `atlassian/confluence_cloud` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_cloud/connector.py:4848` | writer read |
-| `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py:1080` | writer read |
+| `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py:1106` | writer read |
 | `atlassian/confluence_datacenter_personal` | container | container | the whole app | `app/connectors/sources/atlassian/confluence_datacenter_personal/connector.py:133` | writer read |
 | `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5320` | writer read |
 | `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4869` | writer read |
