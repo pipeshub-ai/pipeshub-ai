@@ -496,6 +496,21 @@ class FakeEntitiesProcessor:
         }
         return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
+    async def get_roles_on_record(self, record_id: str) -> tuple[dict[str, str], dict[str, str]]:
+        if self.fail_permission_lookup or self.fail_group_permission_lookup:
+            raise RuntimeError("graph unavailable while reading the record's grants")
+        record = self.by_id(record_id)
+        if record is None:
+            return {}, {}
+        perms = self.permissions.get(record.external_record_id, [])
+        users = {u.email.lower() for u in self.active_users if u.email}
+        groups = {group.source_user_group_id for group, _ in self.user_groups.values()}
+        return (
+            {p.email.lower(): p.type.value for p in perms
+             if p.entity_type != EntityType.GROUP and p.email and p.email.lower() in users},
+            {p.external_id: p.type.value for p in perms if p.entity_type == EntityType.GROUP and p.external_id in groups},
+        )
+
     # writes
     async def on_new_records(
         self,

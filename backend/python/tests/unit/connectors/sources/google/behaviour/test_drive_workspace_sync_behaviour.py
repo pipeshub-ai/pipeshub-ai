@@ -2967,6 +2967,29 @@ async def test_a_group_share_a_non_member_joins_goes_when_only_a_reader_reads_th
     assert CAROL not in f1_people(ws) and BOB in f1_people(ws)
 
 
+async def test_a_writer_group_split_on_a_relist_with_an_empty_list_keeps_its_passing_members_writers(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("kept@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "kept@example.com"},
+    ])
+    await ws.sync()
+    assert ("kept@example.com", "GROUP", "WRITE") in ws.grants("f1")
+
+    # Alice leaves, Carol, not a member, joins the group, and the relist only ever sees an empty list.
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    join_group(ws, "kept@example.com", CAROL)
+    ws.world.files["f1"].perm_access = "empty"
+    await ws.sync()
+
+    assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws)
+    assert (BOB, "USER", "WRITE") in ws.grants("f1"), "Bob, a member, writes through the group as before"
+
+
 async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a_reader_reads_it_again(
     ws: Workspace,
 ) -> None:

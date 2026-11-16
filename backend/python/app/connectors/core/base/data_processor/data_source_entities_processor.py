@@ -86,7 +86,7 @@ from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
@@ -5967,6 +5967,33 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_groups_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
+
+    async def get_roles_on_record(self, record_id: str) -> tuple[dict[str, str], dict[str, str]]:
+        """The role of each permission edge into a record from a user (by lowercased email) and from a group (by its
+        id at the source). Read with the user, group and edge lookups every store has; a failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            users = await tx_store.get_users_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            groups = await tx_store.get_groups_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            edges = await tx_store.get_edges_to_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value, raise_on_error=True
+            )
+        names = {
+            CollectionNames.USERS.value: {u.id: u.email.lower() for u in users if u.email},
+            CollectionNames.GROUPS.value: {g.id: g.source_user_group_id for g in groups if g.source_user_group_id},
+        }
+        roles: dict[str, dict[str, str]] = {CollectionNames.USERS.value: {}, CollectionNames.GROUPS.value: {}}
+        for edge in edges:
+            # ArangoDB answers `_from`; Neo4j and PostgreSQL answer from_collection and from_id.
+            collection, _, key = str(edge.get("_from") or "").partition("/")
+            if edge.get("from_collection"):
+                collection, key = edge["from_collection"], edge.get("from_id")
+            if key in names.get(collection, {}):
+                roles[collection][names[collection][key]] = read_role(edge.get("role")) or PermissionType.READ.value
+        return roles[CollectionNames.USERS.value], roles[CollectionNames.GROUPS.value]
 
     # Same reach as the user lookups (get_users_with_permission_to_node walks 8 inherit hops).
     GROUP_ACCESS_MAX_HOPS = 8
