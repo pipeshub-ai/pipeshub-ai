@@ -64,7 +64,7 @@ def source_accounts_key(connector_id: str, bucket: int | None = None) -> str:
 
 def _bucket(address: str) -> int:
     # hashlib, not hash(): the bucket must be the same in every process.
-    return hashlib.sha1(address.encode()).digest()[0] % BUCKETS
+    return hashlib.sha256(address.encode()).digest()[0] % BUCKETS
 
 
 def _legacy_reused(value: dict) -> dict[str, str]:
