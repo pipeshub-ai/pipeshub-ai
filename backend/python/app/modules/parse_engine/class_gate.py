@@ -248,6 +248,14 @@ class ClassGate:
 
     # -- internals ------------------------------------------------------
 
+    def _capacity_now(self) -> PoolCapacity:
+        """The pool's capacity with the ledger's held floors: a gate given its own capacity still grants
+        big work only what the ledger will not refuse."""
+        cap = self._capacity()
+        if self._budget is not None and self._capacity_given and not cap.held_floors:
+            return PoolCapacity(cap.capacity, held_floors_of(self._budget.snapshot()))
+        return cap
+
     def _from_snapshot(self) -> PoolCapacity:
         assert self._budget is not None
         snap = self._budget.snapshot()
@@ -346,7 +354,7 @@ class ClassGate:
     def _pump(self) -> None:
         numbers = self._numbers()
         while True:
-            cap = self._capacity()
+            cap = self._capacity_now()
             P, H = cap.capacity, cap.held_floors
             now = self._clock()
             demand = self._demand(now, max(1, P))

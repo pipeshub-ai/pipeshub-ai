@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 # wakeup is ever missed, a waiter re-checks admission at worst this often
 # instead of stalling indefinitely.
 _SAFETY_NET_INTERVAL_SECONDS = 1.0
+_UNSPACED_POLL_SECONDS = 0.05
 # Reported permit hold times are kept per sample interval for the last this
 # many intervals (PoolDemand.hold_seconds_by_sample), so the policy can widen
 # its view past a sample that released only one or two permits.
@@ -176,13 +177,18 @@ class AdmissionGate:
             self._permit_seconds += self._in_use * elapsed
         self._last_change = now
 
-    def _try_admit(self, cost: int, cap: int | None = None, *, spaced: bool = True) -> bool:
+    def _passes_rate_blocked_head(self, spaced: bool) -> bool:  # noqa: FBT001
+        """An unspaced acquire (light work, no start token) may pass a head whose only block is the start-rate limiter."""
+        return not spaced and bool(self._waiters) and self._head_block == "rate"
+
+    def _try_admit(self, cost: int, cap: int | None = None, *, spaced: bool = True, as_head: bool = True) -> bool:
         limit = self._registry.get(self._pool) if cap is None else cap
         # Deadlock guard: an oversized request (cost > limit, or limit fully
         # shrunk to 0) is still admitted alone rather than waiting forever.
         has_room = self._in_use == 0 or (self._in_use + cost <= limit)
         if not has_room:
-            self._head_block = "room" if cap is None else "cap"
+            if as_head:
+                self._head_block = "room" if cap is None else "cap"
             return False
         if spaced and self._rate_limiter is not None and not self._rate_limiter.try_consume():
             self._head_block = "rate"
@@ -196,7 +202,8 @@ class AdmissionGate:
         self._fold_permit_seconds(now)
         self._in_use += cost
         self._max_in_use = max(self._max_in_use, self._in_use)
-        self._head_block = "none"
+        if as_head:
+            self._head_block = "none"
         return True
 
     # -- public API ----------------------------------------------------
@@ -229,6 +236,8 @@ class AdmissionGate:
         # ahead of an earlier priority waiter.
         if (not self._waiters or (priority and not self._priority_waiting)) and self._try_admit(cost, cap, spaced=spaced):
             return True
+        if self._passes_rate_blocked_head(spaced) and not priority and self._try_admit(cost, cap, spaced=False, as_head=False):
+            return True
 
         wait_start = self._clock()
         self._blocked_acquires += 1
@@ -251,8 +260,13 @@ class AdmissionGate:
                     if remaining is None
                     else min(_SAFETY_NET_INTERVAL_SECONDS, remaining)
                 )
+                if not spaced and self._waiters[0] is not waiter:
+                    poll = min(poll, _UNSPACED_POLL_SECONDS)  # nothing wakes it while a rate-blocked head holds the line
                 await waiter.wait(poll)
-                if self._waiters[0] is waiter and self._try_admit(cost, cap, spaced=spaced):
+                if self._waiters[0] is waiter:
+                    if self._try_admit(cost, cap, spaced=spaced):
+                        return True
+                elif self._passes_rate_blocked_head(spaced) and self._try_admit(cost, cap, spaced=False, as_head=False):
                     return True
         finally:
             self._total_wait_seconds += self._clock() - wait_start

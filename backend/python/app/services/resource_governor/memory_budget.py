@@ -91,6 +91,8 @@ class MemoryBudget:
         # everyone else. stats() reads the total from another thread, so it
         # is kept as one int rather than summed over the dict.
         self._held_by: dict[_Waiter, int] = {}
+        # Waiters queued with ``ahead``: served after those holding content, before the rest, in arrival order.
+        self._ahead: set[_Waiter] = set()
         self._held = 0
 
     def _fits(self, nbytes: int, held: int) -> bool:
@@ -101,10 +103,16 @@ class MemoryBudget:
 
     def _enqueue(self, waiter: _Waiter, held: int, ahead: bool = False) -> None:  # noqa: FBT001, FBT002
         position = len(self._waiters)
-        # A record holding its content goes ahead of those holding none; so does a small record's reservation
-        # under PARSE_ADMISSION=classes (*ahead*), which is served before the big ones queued without content.
-        if held or ahead:
+        # Order: records holding their content, then small reservations under PARSE_ADMISSION=classes (*ahead*),
+        # then the rest; each group in arrival order.
+        if held:
             position = next((i for i, w in enumerate(self._waiters) if not self._held_by[w]), position)
+        elif ahead:
+            position = next(
+                (i for i, w in enumerate(self._waiters) if not self._held_by[w] and w not in self._ahead), position
+            )
+        if ahead and not held:
+            self._ahead.add(waiter)
         self._waiters.insert(position, waiter)
         self._held_by[waiter] = held
         self._held += held
@@ -139,6 +147,7 @@ class MemoryBudget:
                 await waiter.wait(_RECHECK_SECONDS if remaining is None else min(_RECHECK_SECONDS, remaining))
         finally:
             self._held -= self._held_by.pop(waiter, 0)
+            self._ahead.discard(waiter)
             with contextlib.suppress(ValueError):
                 self._waiters.remove(waiter)
             self._wake_head()
