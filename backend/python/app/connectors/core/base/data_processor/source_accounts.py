@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import uuid
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
+    from app.connectors.core.base.data_store.data_store import TransactionStore
     from app.models.entities import AppUser
 
 # Connectors whose linked users are not accounts of a source directory: a personal connector links the person who
@@ -51,6 +54,16 @@ def source_accounts_key(connector_id: str, bucket: int | None = None) -> str:
     # Not a sync point: a full resync deletes those, and the grants it writes again by address are what this guards.
     base = f"/services/connectors/{connector_id}/sourceAccounts"
     return base if bucket is None else f"{base}/{bucket:02x}"
+
+
+def graph_mode_key(connector_id: str) -> str:
+    """``{"enabled": true}`` keeps this connector's accounts as SourceAccount nodes (``SourceAccountGraph``). Off when absent."""
+    return f"{source_accounts_key(connector_id)}/graph"
+
+
+def account_node_id(org_id: str, connector_id: str, source_user_id: str) -> str:
+    """The SourceAccount node of (org, connector, source id): derived, so every writer names the same node without a read."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"pipeshub:sourceAccount:{org_id}:{connector_id}:{source_user_id}"))
 
 
 def _bucket(address: str) -> int:
@@ -262,3 +275,120 @@ class SourceAccounts:
     def _holder(self, email: str) -> str | None:
         part = self._reused.get(_bucket(email), {})
         return part[email] if email in part else self._legacy.get(email)
+
+
+ACCOUNTS = CollectionNames.SOURCE_ACCOUNTS.value
+LINKS = CollectionNames.AUTHENTICATED_AS.value
+DIRECTORY = "directory"           # a link made because the account's address is the user's (``relink``)
+AUTHENTICATOR = "authenticator"   # a link made because the user signed the connector in as the account
+
+
+class SourceAccountGraph:
+    """A connector's source accounts as SourceAccount nodes, one per (connector, source id), linked to the PipesHub user
+    that holds the address by an ``authenticatedAs`` edge (``via``: ``directory``). The id is the one ``SourceAccounts``
+    keys its addresses by (``_account_id``), so the registry and the graph name each account alike.
+
+    An address that two live accounts of the connector share links nobody: nothing in a sign-in tells which of them is
+    the person. A grant naming a known account by its source id is written on the account (``principal``)."""
+
+    def __init__(self, connector_id: str, org_id: str, logger: "Logger") -> None:
+        self.connector_id = connector_id
+        self.org_id = org_id
+        self.logger = logger
+        self._known: set[str] = set()     # account node ids read or written by this process
+
+    def node_id(self, source_user_id: str | None) -> str | None:
+        sid = _account_id(source_user_id)
+        return account_node_id(self.org_id, self.connector_id, sid) if sid else None
+
+    async def principal(self, tx_store: "TransactionStore", source_user_id: str | None) -> tuple[str, str] | None:
+        """The account node a grant naming ``source_user_id`` is written on, or None when no such account is stored (the
+        caller then resolves the grant as before). A failed read raises: a replace would otherwise drop the grant."""
+        node = self.node_id(source_user_id)
+        if node is None:
+            return None
+        if node not in self._known:
+            if await tx_store.get_document(node, ACCOUNTS) is None:
+                return None
+            self._known.add(node)
+        return node, ACCOUNTS
+
+    async def upsert(self, tx_store: "TransactionStore", users: list["AppUser"], *, state: str = "listed") -> None:
+        """Write the accounts of ``users`` (an id and an address each) in ``state``, keeping each one's earlier addresses,
+        then link the addresses they had and have now."""
+        now = get_epoch_timestamp_in_ms()
+        wanted = {}
+        for u in users:
+            node = self.node_id(u.source_user_id)
+            if node and u.email:
+                wanted[node] = u
+        if not wanted:
+            return
+        stored = {d.get("_key") or d.get("id"): d for d in await tx_store.get_nodes_by_field_in(
+            ACCOUNTS, "_key", list(wanted), raise_on_error=True)}
+        docs, addresses = [], set()
+        for node, u in wanted.items():
+            old = stored.get(node) or {}
+            email = u.email.lower()
+            previous = list(old.get("previousEmails") or [])
+            if old.get("email") and old["email"] != email and old["email"] not in previous:
+                previous.append(old["email"])
+            addresses |= {email, *previous}
+            docs.append({
+                "id": node, "orgId": self.org_id, "connectorId": self.connector_id, "sourceUserId": _account_id(u.source_user_id),
+                "email": email, "previousEmails": previous, "fullName": u.full_name or None, "isGuest": bool(u.is_guest),
+                "state": state, "createdAtTimestamp": old.get("createdAtTimestamp") or now, "updatedAtTimestamp": now,
+            })
+        await tx_store.batch_upsert_nodes(docs, ACCOUNTS)
+        self._known |= set(wanted)
+        await self.relink(tx_store, sorted(addresses))
+
+    async def relink(self, tx_store: "TransactionStore", addresses: list[str]) -> None:
+        """Link each address's PipesHub user to the one live account of this connector with that address, and to nothing
+        when there is none or several; every other directory link of that user in this connector goes."""
+        if not addresses:
+            return
+        accounts = [a for a in await tx_store.get_nodes_by_field_in(ACCOUNTS, "email", addresses, raise_on_error=True)
+                    if a.get("connectorId") == self.connector_id and a.get("state") != "withdrawn"]
+        users = await tx_store.get_users_by_emails(addresses, raise_on_error=True)
+        now = get_epoch_timestamp_in_ms()
+        for address in addresses:
+            user = users.get(address)
+            if user is None:
+                continue
+            live = sorted(a.get("_key") or a.get("id") for a in accounts if a.get("email") == address)
+            if len(live) > 1:
+                self.logger.warning(
+                    "Connector %s lists %d accounts with one address; their PipesHub user is linked to none of them",
+                    self.connector_id, len(live),
+                )
+            want = live[0] if len(live) == 1 else None
+            have = set()
+            for edge in await tx_store.get_edges_from_node(f"{CollectionNames.USERS.value}/{user.id}", LINKS, raise_on_error=True):
+                coll, _, target = (edge.get("_to") or "").partition("/")
+                if edge.get("via") != DIRECTORY or edge.get("connectorId") != self.connector_id:
+                    continue
+                if target == want:
+                    have.add(target)
+                else:
+                    await tx_store.delete_edge(user.id, CollectionNames.USERS.value, target, coll, LINKS)
+            if want and want not in have:
+                await tx_store.batch_create_edges([{
+                    "from_id": user.id, "from_collection": CollectionNames.USERS.value, "to_id": want, "to_collection": ACCOUNTS,
+                    "connectorId": self.connector_id, "orgId": self.org_id, "via": DIRECTORY,
+                    "createdAtTimestamp": now, "updatedAtTimestamp": now,
+                }], LINKS)
+
+    async def withdraw(self, tx_store: "TransactionStore", users: list["AppUser"]) -> None:
+        """Mark the stored accounts of ``users`` withdrawn (kept: they hold the grants, and the addresses they had), then
+        link their addresses again: a withdrawn account links nobody."""
+        nodes = [n for n in (self.node_id(u.source_user_id) for u in users) if n]
+        if not nodes:
+            return
+        stored = await tx_store.get_nodes_by_field_in(ACCOUNTS, "_key", nodes, raise_on_error=True)
+        if not stored:
+            return
+        now = get_epoch_timestamp_in_ms()
+        await tx_store.batch_upsert_nodes(
+            [{"id": d.get("_key") or d.get("id"), "state": "withdrawn", "updatedAtTimestamp": now} for d in stored], ACCOUNTS)
+        await self.relink(tx_store, sorted({e for d in stored for e in (d.get("email"), *(d.get("previousEmails") or [])) if e}))

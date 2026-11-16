@@ -72,7 +72,7 @@ MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
 HEADS = {"kernel": (17, 11), "platform": (5, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
          "graph": (13, 0), "kg": (15, 14), "retrieval": (3, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0005", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0015", "retrieval_0003", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0005", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0015", "retrieval_0003", "graph_0014"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):

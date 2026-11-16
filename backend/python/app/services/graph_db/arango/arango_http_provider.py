@@ -1865,6 +1865,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
         )
 
+        # One source account per (org, connector, source user id); its key is derived from the same three. By address for
+        # linking, by connector for deletion.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.SOURCE_ACCOUNTS.value, ["orgId", "connectorId", "sourceUserId"], unique=True,
+        )
+        await self.http_client.ensure_persistent_index(CollectionNames.SOURCE_ACCOUNTS.value, ["email"])
+        await self.http_client.ensure_persistent_index(CollectionNames.SOURCE_ACCOUNTS.value, ["connectorId"])
+
         # UNIQUE: entityRelations (_from, _to, edgeType) closes the UPSERT race of
         # _upsert_entity_relations. Not sparse: edgeType is required by the schema.
         # A unique index on a sharded collection must contain the shard key (_key
@@ -11369,25 +11377,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         connector_id: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        target_collection: str = CollectionNames.USERS.value,
     ) -> None:
-        # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth.
+        # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth. A directory link
+        # has a key of its own, so neither this nor remove_authenticated_as touches one.
         ts = get_epoch_timestamp_in_ms()
         query = f"""
         UPSERT {{ _key: @connectorId }}
-        INSERT {{
+        INSERT MERGE({{
             _key: @connectorId, _from: @from, _to: @to,
             connectorId: @connectorId, orgId: @orgId,
             createdAtTimestamp: @ts, updatedAtTimestamp: @ts
-        }}
-        UPDATE {{ _from: @from, _to: @to, orgId: @orgId, updatedAtTimestamp: @ts }}
-        IN {CollectionNames.AUTHENTICATED_AS.value}
+        }}, @via == null ? {{}} : {{ via: @via }})
+        UPDATE {{ _from: @from, _to: @to, orgId: @orgId, via: @via, updatedAtTimestamp: @ts }}
+        IN {CollectionNames.AUTHENTICATED_AS.value} OPTIONS {{ keepNull: false }}
         """
         await self.execute_query(
             query,
             bind_vars={
                 "connectorId": connector_id,
                 "from": f"{CollectionNames.USERS.value}/{creator_key}",
-                "to": f"{CollectionNames.USERS.value}/{source_user_key}",
+                "to": f"{target_collection}/{source_user_key}",
+                "via": "authenticator" if target_collection == CollectionNames.SOURCE_ACCOUNTS.value else None,
                 "orgId": org_id,
                 "ts": ts,
             },
@@ -13141,6 +13153,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.SOLD_IN.value,
                 CollectionNames.MEMBER_OF.value,
                 CollectionNames.AGENT_KNOWLEDGE.value,
+                CollectionNames.SOURCE_ACCOUNTS.value,
             ]
 
             # Blocks are the bulk of a code connector. Deleted inside the
@@ -13248,6 +13261,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         agent_knowledge_keys or [],
                         CollectionNames.AGENT_KNOWLEDGE.value,
                         transaction=transaction,
+                    )
+
+                    # The connector's source accounts name it by connectorId; their grants and links go with them.
+                    account_keys = await self.http_client.execute_aql(
+                        f"""
+                        FOR a IN {CollectionNames.SOURCE_ACCOUNTS.value}
+                            FILTER a.connectorId == @connector_id
+                            RETURN a._key
+                        """,
+                        bind_vars={"connector_id": connector_id},
+                        txn_id=transaction,
+                    )
+                    await self.delete_nodes_and_edges(
+                        account_keys or [], CollectionNames.SOURCE_ACCOUNTS.value, transaction=transaction,
                     )
 
                     # Step 13: Delete the app itself. Gone is gone, whoever removed it.
@@ -14999,12 +15026,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> str | None:
-        """Check user's permission role on a record."""
+        """Check user's permission role on a record: their own grant, or that of a source account they are linked to in the record's connector."""
         try:
             query = f"""
+            LET rec = DOCUMENT(@record_to)
+            LET principals = APPEND([@user_from], (
+                FOR l IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER l._from == @user_from AND rec != null AND l.connectorId == rec.connectorId
+                        AND STARTS_WITH(l._to, "{CollectionNames.SOURCE_ACCOUNTS.value}/")
+                    RETURN l._to
+            ))
             FOR edge IN {CollectionNames.PERMISSION.value}
                 FILTER edge._to == @record_to
-                    AND edge._from == @user_from
+                    AND edge._from IN principals
                     AND edge.type == 'USER'
                 LIMIT 1
                 RETURN edge.role
@@ -15038,12 +15072,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             drive_permission_query = """
             LET user_from = CONCAT('users/', @user_key)
             LET record_from = CONCAT('records/', @record_id)
+            LET rec = DOCUMENT(record_from)
+            // the user, and a source account they are linked to in the record's connector
+            LET principals = APPEND([user_from], (
+                FOR l IN @@authenticated_as
+                    FILTER l._from == user_from AND rec != null AND l.connectorId == rec.connectorId AND STARTS_WITH(l._to, "sourceAccounts/")
+                    RETURN l._to
+            ))
 
             // 1. Check direct user permissions on the record
             LET direct_permission = FIRST(
                 FOR perm IN @@permission
                     FILTER perm._to == record_from
-                    FILTER perm._from == user_from
+                    FILTER perm._from IN principals
                     FILTER perm.type == "USER"
                     RETURN perm.role
             )
@@ -15073,6 +15114,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "user_key": user_key,
                     "@permission": CollectionNames.PERMISSION.value,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
                 },
                 txn_id=transaction
             )
@@ -15123,11 +15165,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN is_sender ? "OWNER" : "WRITER"
             ) : null
 
-            // 2. Check direct permissions
+            // 2. Check direct permissions: the user's, or a source account's they are linked to in the record's connector
+            LET rec = DOCUMENT(record_from)
+            LET principals = APPEND([user_from], (
+                FOR l IN @@authenticated_as
+                    FILTER l._from == user_from AND rec != null AND l.connectorId == rec.connectorId AND STARTS_WITH(l._to, "sourceAccounts/")
+                    RETURN l._to
+            ))
             LET direct_permission = FIRST(
                 FOR perm IN @@permission
                     FILTER perm._to == record_from
-                    FILTER perm._from == user_from
+                    FILTER perm._from IN principals
                     FILTER perm.type == "USER"
                     RETURN perm.role
             )
@@ -15144,6 +15192,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "@records": CollectionNames.RECORDS.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     "@permission": CollectionNames.PERMISSION.value,
+                    "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
                 },
                 txn_id=transaction
             )

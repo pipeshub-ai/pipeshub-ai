@@ -28,7 +28,13 @@ from app.connectors.core.base.data_processor.record_organizations import (
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
-from app.connectors.core.base.data_processor.source_accounts import NOT_SOURCE_ACCOUNTS, SourceAccounts
+from app.connectors.core.base.data_processor.source_accounts import (
+    ACCOUNTS,
+    NOT_SOURCE_ACCOUNTS,
+    SourceAccountGraph,
+    SourceAccounts,
+    graph_mode_key,
+)
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_store.data_store import (
@@ -472,6 +478,7 @@ class DataSourceEntitiesProcessor:
         # Per connector, the nodes its running full sync has written so far.
         self._full_sync_runs: dict[str, FullSyncSeen] = {}
         self._source_accounts: dict[str, SourceAccounts] = {}
+        self._account_graphs: dict[str, SourceAccountGraph | None] = {}
 
     def source_accounts(self, connector_id: str, *, deleted_users: Callable[[], Awaitable[dict[str, str]]] | None = None) -> SourceAccounts:
         """Which source account holds each address this connector's users were linked by (see SourceAccounts). A
@@ -484,6 +491,29 @@ class DataSourceEntitiesProcessor:
         if deleted_users is not None:
             accounts.deleted_users = deleted_users
         return accounts
+
+    async def _account_graph(self, connector_id: str | None) -> SourceAccountGraph | None:
+        """The connector's accounts as SourceAccount nodes when its setting (``graph_mode_key``) turns that on; None (off,
+        the default) leaves every write as it was. Read once per process; an unreadable setting reads as off and is read
+        again on the next call, so a write is never made in a mode nobody chose."""
+        if not connector_id:
+            return None
+        if connector_id not in self._account_graphs:
+            try:
+                value = await self.config_service.get_config(graph_mode_key(connector_id), use_cache=False, raise_on_error=True)
+            except Exception as e:
+                self.logger.warning(f"Could not read the source-account mode of connector {connector_id}; writing as before: {e}")
+                return None
+            enabled = isinstance(value, dict) and value.get("enabled") is True
+            self._account_graphs[connector_id] = SourceAccountGraph(connector_id, self.org_id, self.logger) if enabled else None
+        return self._account_graphs[connector_id]
+
+    async def _account_principal(
+        self, tx_store: TransactionStore, connector_id: str | None, source_id: str | None
+    ) -> tuple[str, str] | None:
+        """The SourceAccount a grant naming the account ``source_id`` is written on; None to resolve it as before."""
+        graph = await self._account_graph(connector_id) if source_id else None
+        return await graph.principal(tx_store, source_id) if graph else None
 
     async def _holds_address(self, connector_id: str | None, email: str, source_id: str | None, user_id: str) -> bool:
         """Whether a grant naming ``email`` (and the source account ``source_id``, when the source named one) may be
@@ -2412,7 +2442,10 @@ class DataSourceEntitiesProcessor:
             from_collection = None
 
             if permission.entity_type == EntityType.USER.value:
-                if permission.email:
+                account = await self._account_principal(tx_store, record.connector_id, permission.external_id)
+                if account:
+                    from_id, from_collection = account
+                elif permission.email:
                     resolved = await self._resolve_principal(
                         permission.email, tx_store, account=(record.connector_id, permission.external_id)
                     )
@@ -5355,8 +5388,10 @@ class DataSourceEntitiesProcessor:
                         from_collection = None
 
                         if permission.entity_type == EntityType.USER:
-                            resolved = None
-                            if permission.email:
+                            resolved = await self._account_principal(
+                                tx_store, record_group.connector_id, permission.external_id
+                            )
+                            if not resolved and permission.email:
                                 resolved = await self._resolve_principal(
                                     permission.email, tx_store,
                                     account=(record_group.connector_id, permission.external_id),
@@ -5557,13 +5592,17 @@ class DataSourceEntitiesProcessor:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
-            if users[0].app_name not in NOT_SOURCE_ACCOUNTS and not await self.source_accounts(
-                users[0].connector_id
-            ).before_link(users):
+            directory = users[0].app_name not in NOT_SOURCE_ACCOUNTS
+            if directory and not await self.source_accounts(users[0].connector_id).before_link(users):
                 return
+            graph = await self._account_graph(users[0].connector_id) if directory else None
 
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_upsert_app_users(users)
+                if graph:
+                    await graph.upsert(tx_store, users)
+            if graph:
+                await self._access_changed([users[0].connector_id])
 
         except Exception as e:
             self._log_failure(f"Transaction on_new_users failed: {str(e)}", e)
@@ -5573,6 +5612,7 @@ class DataSourceEntitiesProcessor:
     async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
         the user's node). Without it no grant of the connector reaches the user."""
+        graph = await self._account_graph(connector_id)
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 await tx_store.delete_edge(
@@ -5580,6 +5620,8 @@ class DataSourceEntitiesProcessor:
                     connector_id, CollectionNames.APPS.value,
                     CollectionNames.USER_APP_RELATION.value,
                 )
+            if graph:
+                await graph.withdraw(tx_store, users)
         self.logger.info(f"Withdrew connector {connector_id} from {len(users)} user(s) no longer eligible at the source")
 
     @retry_on_deadlock()
@@ -5590,6 +5632,8 @@ class DataSourceEntitiesProcessor:
         is authenticated as: linked when that email differs from the user's own, removed when
         it matches. Instances written before ``authenticatedBy`` existed fall back to the creator."""
         link_changed = False
+        graph = await self._account_graph(connector_id) if app_name not in NOT_SOURCE_ACCOUNTS else None
+        account = graph.node_id(source_user_id) if graph else None
         async with self.data_store_provider.transaction() as tx_store:
             authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
             authenticator_key = authenticator.get("_key") or authenticator.get("id")
@@ -5597,6 +5641,16 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(
                     f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
                 )
+            elif account:
+                # Signing the connector in as the account shows the user holds it, whatever the address says: linked even
+                # where two accounts share the address and the directory links neither.
+                if await tx_store.get_document(account, ACCOUNTS) is None:
+                    await graph.upsert(tx_store, [AppUser(
+                        app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
+                        email=email, full_name=email, org_id=self.org_id,
+                    )], state="unlisted")
+                await tx_store.upsert_authenticated_as(authenticator_key, account, connector_id, self.org_id, target_collection=ACCOUNTS)
+                link_changed = True
             elif (authenticator.get("email") or "").lower() == email.lower():
                 link_changed = await tx_store.remove_authenticated_as(connector_id)
             else:
@@ -5863,8 +5917,8 @@ class DataSourceEntitiesProcessor:
         to_collection = CollectionNames.GROUPS.value
 
         for member in members:
-            resolved = None
-            if member.email:
+            resolved = await self._account_principal(tx_store, user_group.connector_id, member.source_user_id)
+            if not resolved and member.email:
                 resolved = await self._resolve_principal(
                     member.email, tx_store, account=(user_group.connector_id, member.source_user_id)
                 )
@@ -5942,6 +5996,12 @@ class DataSourceEntitiesProcessor:
                     to_collection = CollectionNames.ROLES.value
 
                     for member in members:
+                        account = await self._account_principal(tx_store, role.connector_id, member.source_user_id)
+                        if account:
+                            role_permissions.append(Permission(
+                                external_id=member.id, email=member.email, type=PermissionType.READ, entity_type=EntityType.USER,
+                            ).to_arango_permission(*account, to_id, to_collection))
+                            continue
                         user = None
                         if member.email:
                             # Find the user's internal DB ID. A read that fails is raised:

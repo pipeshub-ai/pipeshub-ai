@@ -74,8 +74,8 @@ def _ekey(coll: str, props: dict) -> str:
     created by and assigned to one user holds two edges, as ``batch_create_entity_relations`` merges on Neo4j); empty for the rest, one edge per pair."""
     if coll == "permission":
         return str(props.get("type") or "")
-    if coll == CollectionNames.AUTHENTICATED_AS.value:
-        return str(props.get("connectorId") or "")
+    if coll == CollectionNames.AUTHENTICATED_AS.value:      # a directory link and an authenticator link of one pair are two edges
+        return str(props.get("connectorId") or "") + (f"\x1f{props['via']}" if props.get("via") else "")
     if coll == CollectionNames.ENTITY_RELATIONS.value:
         return str(props.get("edgeType") or "")
     rt = props.get("relationshipType")

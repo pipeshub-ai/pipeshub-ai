@@ -245,7 +245,8 @@ class PermissionsMixin(PgBase):
 
     # ---- who holds a grant on a node, and the writes of grants -----------------------------------------------------
     async def _users_granted_on(self, node_id: str, limit: int | None, transaction: str | None) -> list[dict]:
-        """The users holding a PERMISSION edge on the node or on an ancestor it inherits from (up to ``_INHERIT_HOPS``), nearest first, then by id."""
+        """The users and source accounts holding a PERMISSION edge on the node or on an ancestor it inherits from (up to ``_INHERIT_HOPS``), nearest first,
+        then by id. A source account is the address a connector acts as, like a synced user's."""
         key = parse_node_id(node_id)[1] or node_id
         return await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_users_with_permission_to_node */ WITH RECURSIVE anc(coll, id, depth) AS (
               SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.id = $2
@@ -253,9 +254,9 @@ class PermissionsMixin(PgBase):
               SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
                 AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < $3)
             SELECT u.doc FROM anc
-              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.to_coll = anc.coll AND p.to_id = anc.id
-              JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id
-            GROUP BY u.id, u.doc ORDER BY min(anc.depth), u.id LIMIT $4""", current_org_id(), key, _INHERIT_HOPS, limit), transaction)
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('users', 'sourceAccounts') AND p.to_coll = anc.coll AND p.to_id = anc.id
+              JOIN graph.nodes u ON u.org_id = $1 AND u.coll = p.from_coll AND u.id = p.from_id
+            GROUP BY u.coll, u.id, u.doc ORDER BY min(anc.depth), u.id LIMIT $4""", current_org_id(), key, _INHERIT_HOPS, limit), transaction)
 
     @_soft(None)
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str, transaction: str | None = None) -> User | None:

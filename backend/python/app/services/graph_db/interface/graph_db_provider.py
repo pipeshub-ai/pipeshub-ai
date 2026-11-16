@@ -5662,12 +5662,15 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        target_collection: str = "users",
     ) -> None:
         """
-        Link a connector creator to the source-account user the connector is authenticated as.
+        Link a connector creator to the source account the connector is authenticated as: a ``users`` node, or a
+        ``sourceAccounts`` node when the connector keeps its accounts in the graph (``target_collection``).
 
-        Exactly one link exists per connector instance: re-linking with a different
-        source user repoints the existing link.
+        Exactly one such link exists per connector instance: re-linking repoints it. The directory links of the
+        connector (``via``: ``directory``) are not this link and are left alone, here and in ``remove_authenticated_as``.
         """
         pass
 
@@ -5677,7 +5680,7 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         transaction: str | None = None,
     ) -> bool:
-        """Remove the authenticated-as link for a connector instance. True if one existed."""
+        """Remove the authenticated-as link for a connector instance (not its directory links). True if one existed."""
         pass
 
     @abstractmethod

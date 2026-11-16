@@ -613,30 +613,35 @@ class IdentityMixin(PgBase):
                 VALUES ($1, 'userAppRelation', 'teams', $2, 'apps', $3, '', $4::jsonb) ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, team, connector_id, _j(props))
         await self._q(go, transaction, write=True)
 
-    async def upsert_authenticated_as(self, creator_key: str, source_user_key: str, connector_id: str, org_id: str, transaction: str | None = None) -> None:
-        """One link per connector: a stale one (other ends) is dropped, the right one is created or touched."""
+    async def upsert_authenticated_as(self, creator_key: str, source_user_key: str, connector_id: str, org_id: str, transaction: str | None = None, *,
+                                      target_collection: str = CollectionNames.USERS.value) -> None:
+        """One link per connector: a stale one (other ends) is dropped, the right one is created or touched. A link to a source account carries
+        ``via: authenticator`` (its own edge key, apart from a directory link of the same pair); the connector's directory links are left alone."""
         self._require_org(org_id)
         org, ts = current_org_id(), get_epoch_timestamp_in_ms()
-        link = {"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        to_account = target_collection == CollectionNames.SOURCE_ACCOUNTS.value
+        link = {"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts, **({"via": "authenticator"} if to_account else {})}
         _VALIDATOR.validate_edge(CollectionNames.AUTHENTICATED_AS.value, link)
+        ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
-            if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id IN ($2, $3)""",
-                                 org, creator_key, source_user_key) < len({creator_key, source_user_key}):
+            if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1
+                AND ((coll = 'users' AND id = $2) OR (coll = $4 AND id = $3))""", org, creator_key, source_user_key, target_collection) < len({("users", creator_key), (target_collection, source_user_key)}):
                 return
             await tx.execute("""/* pipeshub:graph.authenticated_as_drop_stale */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
-                AND doc->>'connectorId' = $2 AND NOT (from_id = $3 AND to_id = $4)""", org, connector_id, creator_key, source_user_key)
+                AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator'
+                AND NOT (from_id = $3 AND to_coll = $5 AND to_id = $4 AND ekey = $6)""", org, connector_id, creator_key, source_user_key, target_collection, ekey)
             await tx.execute("""/* pipeshub:graph.authenticated_as_upsert */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-                VALUES ($1, 'authenticatedAs', 'users', $2, 'users', $3, $6, $4::jsonb)
+                VALUES ($1, 'authenticatedAs', 'users', $2, $7, $3, $6, $4::jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('orgId', $1::text, 'updatedAtTimestamp', $5::bigint)""",
                              org, creator_key, source_user_key,
-                             _j(link), ts, connector_id)
+                             _j(link), ts, ekey, target_collection)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:
         org = current_org_id()
         n = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_authenticated_as */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
-            AND doc->>'connectorId' = $2 RETURNING 1) SELECT count(*) FROM d""", org, connector_id), transaction, write=True)
+            AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator' RETURNING 1) SELECT count(*) FROM d""", org, connector_id), transaction, write=True)
         return bool(n)
 
     # ---- apps and connector instances ----------------------------------------------------------------------------

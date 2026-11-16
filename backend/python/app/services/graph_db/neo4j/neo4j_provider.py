@@ -1216,6 +1216,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A person a source names without an email (see Person.source_key).
             "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
             f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
+            # One source account per (org, connector, source user id); its id is derived from the same three.
+            "CREATE CONSTRAINT source_account_key_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.SOURCE_ACCOUNTS.value}) REQUIRE (n.orgId, n.connectorId, n.sourceUserId) IS UNIQUE",
             # A sync point key names one sync point: connectors embed their org and
             # connector id, code-graph build state its record group's id. Without it
             # two first upserts both created one, and reads returned either (B3).
@@ -1551,6 +1554,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX syncpoint_connector_id IF NOT EXISTS "
             "FOR (n:SyncPoint) ON (n.connectorId)"
+        )
+
+        # A connector's source accounts by address (linking) and by connector (deletion)
+        indexes.append(
+            "CREATE INDEX source_account_email IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.SOURCE_ACCOUNTS.value}) ON (n.email)"
+        )
+        indexes.append(
+            "CREATE INDEX source_account_connector_id IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.SOURCE_ACCOUNTS.value}) ON (n.connectorId)"
         )
 
         # ==================== APP INDEXES (Medium Priority) ====================
@@ -10804,18 +10817,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         connector_id: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        target_collection: str = CollectionNames.USERS.value,
     ) -> None:
-        # A relationship cannot be repointed, so a stale link for this connector is
-        # dropped in the same statement before MERGE keeps exactly one per connector.
+        # A relationship cannot be repointed, so a stale link for this connector is dropped in the same statement before
+        # MERGE keeps exactly one per connector. A link to a SourceAccount carries via 'authenticator', so MERGE never takes
+        # a directory link of the same pair for it; directory links are not this link and stay.
         ts = get_epoch_timestamp_in_ms()
-        query = """
-        MATCH (c:User {id: $creator_key})
-        MATCH (s:User {id: $source_user_key})
-        OPTIONAL MATCH (x:User)-[old:AUTHENTICATED_AS {connectorId: $connector_id}]->(y:User)
-        WHERE x <> c OR y <> s
+        to_account = target_collection == CollectionNames.SOURCE_ACCOUNTS.value
+        label = collection_to_label(target_collection)
+        via = "authenticator" if to_account else ""
+        merge = "{connectorId: $connector_id, via: $via}" if to_account else "{connectorId: $connector_id}"
+        query = f"""
+        MATCH (c:User {{id: $creator_key}})
+        MATCH (s:{label} {{id: $source_user_key}})
+        OPTIONAL MATCH (x:User)-[old:AUTHENTICATED_AS {{connectorId: $connector_id}}]->(y)
+        WHERE coalesce(old.via, 'authenticator') = 'authenticator' AND (x <> c OR y <> s OR coalesce(old.via, '') <> $via)
         DELETE old
-        WITH c, s
-        MERGE (c)-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->(s)
+        WITH DISTINCT c, s
+        MERGE (c)-[r:AUTHENTICATED_AS {merge}]->(s)
         ON CREATE SET r.orgId = $org_id, r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
         ON MATCH SET r.orgId = $org_id, r.updatedAtTimestamp = $ts
         """
@@ -10826,6 +10846,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "source_user_key": source_user_key,
                 "connector_id": connector_id,
                 "org_id": org_id,
+                "via": via,
                 "ts": ts,
             },
             txn_id=transaction,
@@ -10838,6 +10859,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> bool:
         query = """
         MATCH ()-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->()
+        WHERE coalesce(r.via, 'authenticator') = 'authenticator'
         DELETE r
         RETURN count(*) AS deleted
         """
@@ -12270,6 +12292,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
                 CollectionNames.BLOCKS.value,
+                CollectionNames.SOURCE_ACCOUNTS.value,
             ]
 
             if transaction is None:
@@ -12351,6 +12374,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 if not knowledge_success:
                     raise Exception("CRITICAL: Failed to remove the connector from agents.")
+
+                # The connector's source accounts name it by connectorId; their grants and links go with them.
+                _, accounts_success = await self._delete_nodes_by_connector_id(
+                    transaction, connector_id, CollectionNames.SOURCE_ACCOUNTS.value
+                )
+                if not accounts_success:
+                    raise Exception("CRITICAL: Failed to delete the connector's source accounts.")
 
                 # User -> User link is not attached to any node deleted above
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
