@@ -152,3 +152,85 @@ async def test_a_timeout_raised_inside_the_parser_also_holds_the_permit_while_it
                 break
             await asyncio.sleep(0.02)
         assert gate.in_use == 0
+
+
+class _Gauge:
+    def __init__(self) -> None:
+        self.values: list[float] = []
+
+    def set(self, *_labels: str, value: float) -> None:
+        self.values.append(value)
+
+    def clear(self) -> None:
+        self.values.clear()
+
+
+async def test_a_conversion_that_never_returns_is_reported_with_its_age_and_on_the_gauges(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.api.routes import parsing
+    from app.services.parsing.thread_work import ThreadWork
+
+    count, oldest = _Gauge(), _Gauge()
+    monkeypatch.setattr(parsing, "_held_after_parse", {})
+    monkeypatch.setattr(parsing, "_STUCK_COUNT", count)
+    monkeypatch.setattr(parsing, "_STUCK_OLDEST", oldest)
+    monkeypatch.setattr(parsing, "STUCK_TICK_SECONDS", 0.05)
+    monkeypatch.setattr(parsing, "THREAD_OVERRUN_WARN_SECONDS", 0.0)
+    released: list[int] = []
+    stop = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1)
+    work = ThreadWork()
+    try:
+        work.add(pool.submit(stop.wait, 20))                         # a conversion that does not return
+        with caplog.at_level("WARNING"):
+            parsing._release_when_work_ends(lambda: released.append(1), work, time_now(), "big.pdf")
+            await asyncio.sleep(0.3)
+        assert released == [], "the permit was freed while the conversion still runs"
+        assert any("still runs" in r.getMessage() and "big.pdf" in r.getMessage() for r in caplog.records)
+        assert count.values[-1] == 1 and oldest.values[-1] > 0
+        stop.set()
+        for _ in range(100):
+            if released:
+                break
+            await asyncio.sleep(0.02)
+        assert released == [1] and count.values[-1] == 0
+    finally:
+        stop.set()
+        pool.shutdown(wait=True)
+
+
+def time_now() -> float:
+    import time
+
+    return time.monotonic()
+
+
+def test_a_conversion_that_ends_after_the_loop_closed_drops_its_release_quietly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.api.routes import parsing
+    from app.services.parsing.thread_work import ThreadWork
+
+    monkeypatch.setattr(parsing, "STUCK_TICK_SECONDS", 3600.0)
+    stop = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1)
+    released: list[int] = []
+
+    async def hold() -> None:
+        work = ThreadWork()
+        work.add(pool.submit(stop.wait, 20))
+        parsing._release_when_work_ends(lambda: released.append(1), work, time_now(), "big.pdf")
+
+    asyncio.run(hold())                                              # the loop is closed; the thread still runs
+    with caplog.at_level("ERROR"):
+        stop.set()
+        pool.shutdown(wait=True)                                     # the thread ends: its done-callback runs
+    assert released == []
+    assert not [r for r in caplog.records if "exception calling callback" in r.getMessage()]

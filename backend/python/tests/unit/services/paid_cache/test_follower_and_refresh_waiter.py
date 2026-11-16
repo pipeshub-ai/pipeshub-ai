@@ -83,3 +83,21 @@ async def test_a_refresh_caller_that_waits_for_a_holder_gets_the_replacement_not
     assert results[0] == "new"
     assert results[1] in ("new", "recomputed"), "a refresh caller was handed the result it exists to replace"
     assert results[1] != "old"
+
+
+async def test_deleting_a_record_named_like_the_org_purge_route_touches_nothing() -> None:
+    """``DELETE .../paid-results/org`` is the whole-org purge, so a record id ``org`` is refused before the store."""
+    store = MemoryResultStore()
+    cache = PaidResultCache(store, InProcessLocks())
+
+    async def paid() -> str:
+        return "kept"
+
+    with record_in_flight(ORG, REC):
+        await cache.get_or_compute(KEY, paid)
+    assert store.results(ORG, REC)
+
+    await cache.purge_record(ORG, "org")
+    await cache.delete_record(ORG, "org")
+
+    assert store.results(ORG, REC), "a delete of record 'org' reached the org's other records"

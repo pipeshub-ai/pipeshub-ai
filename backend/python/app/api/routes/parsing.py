@@ -50,6 +50,7 @@ from app.services.parsing.interface import (
 )
 from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
+from app.telemetry.backend import METRICS_BACKEND
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
     classify,
@@ -124,33 +125,81 @@ class _StageDeadlineExceeded(Exception):
         self.limit_s = limit_s
 
 
-#: A conversion still running this long after the deadline is logged once.
+#: A conversion still running this long after its parse ended is logged (with its age) at every tick.
 THREAD_OVERRUN_WARN_SECONDS = 30.0
+#: How often a held admission is re-reported and the stuck-conversion gauges refreshed.
+STUCK_TICK_SECONDS = 30.0
+
+_STUCK_COUNT = METRICS_BACKEND.gauge(
+    "pipeshub_parse_stuck_conversions",
+    "Parses whose conversion threads still run after the parse ended, so their permit is held",
+    ["pool"],
+)
+_STUCK_OLDEST = METRICS_BACKEND.gauge(
+    "pipeshub_parse_stuck_oldest_seconds",
+    "Age of the oldest conversion held after its parse ended",
+    ["pool"],
+)
+#: Held admissions (event loop thread only): token -> (when the parse ended, record name).
+_held_after_parse: dict[int, tuple[float, str]] = {}
+
+
+def _publish_stuck() -> None:
+    now = time.monotonic()
+    _STUCK_COUNT.set("parse", value=float(len(_held_after_parse)))
+    _STUCK_OLDEST.set("parse", value=max((now - at for at, _ in _held_after_parse.values()), default=0.0))
 
 
 def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, record_name: str) -> None:  # noqa: ANN401
     """Keep the gate permit and the memory reservation until the conversion's threads return, then free them once.
 
     The 504 has been answered, but the cancelled parse may still be running in a thread on the memory those stand
-    for; releasing them now would admit the next parse beside it. The release runs on the event loop.
+    for; releasing them now would admit the next parse beside it. The release runs on the event loop. While it is
+    held, every tick logs the age and the stuck-conversion gauges say how many and how old.
     """
     loop = asyncio.get_running_loop()
     done = threading.Event()
+    token = id(done)
     logger.warning(
         "Parse ended with %d conversion(s) still running in threads; the permit is held until they return",
         work.running(),
     )
+    _held_after_parse[token] = (deadline_at, record_name)
+    _publish_stuck()
+
+    def tick() -> None:
+        if done.is_set():
+            return
+        age = time.monotonic() - deadline_at
+        if age > THREAD_OVERRUN_WARN_SECONDS:
+            logger.warning("A conversion for '%s' still runs %.0f s after its parse; its permit is held", record_name, age)
+        _publish_stuck()
+        loop.call_later(STUCK_TICK_SECONDS, tick)
+
+    loop.call_later(STUCK_TICK_SECONDS, tick)
 
     def free() -> None:
         if done.is_set():
             return
         done.set()
+        _held_after_parse.pop(token, None)
+        _publish_stuck()
         over = time.monotonic() - deadline_at
         if over > THREAD_OVERRUN_WARN_SECONDS:
             logger.warning("A conversion for '%s' ended %.0f s after its parse", record_name, over)
         release()
 
-    work.when_idle(lambda: loop.call_soon_threadsafe(free))
+    def hop_to_loop() -> None:
+        # Runs on the thread that finished last. A loop that is already closed means the process is stopping: the
+        # release has nothing left to free and is dropped quietly.
+        if loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(free)
+        except RuntimeError:
+            return
+
+    work.when_idle(hop_to_loop)
 
 
 def _count_rejection(tier: ParseTier, reason: str) -> None:
