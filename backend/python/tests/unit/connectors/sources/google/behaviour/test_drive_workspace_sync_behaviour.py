@@ -667,6 +667,8 @@ async def test_losing_access_to_a_file_removes_only_that_users_access(ws: Worksp
 
 
 CAROL = "carol@example.com"
+DANA = "dana@example.com"
+ENG = "eng@example.com"
 GONE_OWNER = "gone@example.com"
 
 
@@ -697,6 +699,72 @@ async def test_unsharing_a_folder_whose_items_nobody_can_reread_removes_the_acce
 
     assert CAROL not in ws.records.perm_emails("dir")
     assert CAROL not in ws.records.perm_emails("doc"), "Drive reports only the folder in her feed; the doc goes too"
+    assert BOB in ws.records.perm_emails("doc")
+
+
+async def test_one_item_below_a_lost_folder_that_cannot_be_checked_holds_back_only_itself(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner(ws)
+    ws.world.add_item("doc2", "notes.txt", parent="dir", owner=GONE_OWNER)
+    ws.world.files["doc2"].perm_access = "sharers"
+    await ws.sync()
+    assert CAROL in ws.records.perm_emails("doc") and CAROL in ws.records.perm_emails("doc2")
+    carol_checkpoint = ws.user_checkpoint(CAROL)
+
+    ws.world.unshare("dir", CAROL)
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != CAROL)
+    # Asking whether Carol can still open the first doc keeps failing with a 403 no rule here knows.
+    ws.http.fail("GET", "/drive/v3/files/doc", 403, "somethingNew",
+                 when=lambda r: r.identity == CAROL and r.query.get("fields") == "id, trashed")
+    await ws.sync()
+
+    assert CAROL not in ws.records.perm_emails("doc2"), "the walk goes on past the item it cannot check"
+    assert CAROL in ws.records.perm_emails("doc"), "unknown is not 'cannot open'"
+    assert ws.user_checkpoint(CAROL) != carol_checkpoint, "the folder's change is not held for one item below it"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert CAROL not in ws.records.perm_emails("doc"), "the item is checked again on the next run"
+    assert BOB in ws.records.perm_emails("doc")
+
+
+def _folder_of_a_suspended_owner_shared_with_a_group(ws: Workspace) -> None:
+    """As above, with the folder also shared with a group Dana alone is in, and Bob reading it directly."""
+    _folder_of_a_suspended_owner(ws)
+    ws.world.add_user(DANA)
+    ws.records.active_users.append(User(id="u-dana", email=DANA, is_active=True))
+    ws.world.add_group(ENG, [DANA])
+    ws.world.files["dir"].perms.append({"type": "group", "role": "reader", "emailAddress": ENG})
+
+
+async def test_unsharing_a_group_from_a_folder_nobody_can_reread_removes_its_grant_below_on_the_next_sync(
+    ws: Workspace,
+) -> None:
+    _folder_of_a_suspended_owner_shared_with_a_group(ws)
+    await ws.sync()
+    assert (ENG, "GROUP", "READ") in ws.grants("doc"), "Carol's read of the doc's list stored the folder's group grant"
+
+    ws.world.unshare("dir", ENG)
+    # Only Dana's feed is read: she lost the folder through the group.
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != DANA)
+    await ws.sync()
+
+    assert (ENG, "GROUP", "READ") not in ws.grants("dir")
+    assert (ENG, "GROUP", "READ") not in ws.grants("doc"), "Dana cannot open the doc, so the group no longer grants it"
+    assert {CAROL, BOB} <= ws.records.perm_emails("doc"), "people with their own grant keep it"
+
+
+async def test_a_full_read_removes_a_group_grant_nobody_can_read_the_sharing_of_any_more(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner_shared_with_a_group(ws)
+    await ws.sync()
+    assert (ENG, "GROUP", "READ") in ws.grants("doc")
+
+    for grantee in (CAROL, ENG):
+        ws.world.unshare("dir", grantee)
+    ws.sync_points.sync_points.clear()
+    await ws.sync()
+
+    assert (ENG, "GROUP", "READ") not in ws.grants("doc"), "Bob can only show he opens it; Dana is asked and cannot"
+    assert CAROL not in ws.records.perm_emails("doc")
     assert BOB in ws.records.perm_emails("doc")
 
 

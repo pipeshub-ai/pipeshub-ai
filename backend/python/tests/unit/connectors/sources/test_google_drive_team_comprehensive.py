@@ -123,6 +123,7 @@ def connector():
         dep.get_record_by_external_id = AsyncMock(return_value=None)
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        dep.get_groups_with_permission_to_node = AsyncMock(return_value=[])
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
