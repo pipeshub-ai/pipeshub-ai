@@ -1620,6 +1620,10 @@ class JiraConnector(BaseConnector):
 
         # Read existing to preserve values not being updated
         existing = await self._get_project_sync_checkpoint(project_key) or {}
+        if last_issue_updated is not None and issues_to_retry is None:
+            # The cursor never moves past an issue this sync could not write in full without that issue being saved,
+            # in the same write, for the next sync to read first.
+            issues_to_retry = json.dumps(sorted(self._issues_to_retry))
 
         sync_point_data = {
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
@@ -4409,7 +4413,6 @@ class JiraConnector(BaseConnector):
             # Likewise before the cursor passes the stories of an epic that could not be read, and the
             # issues whose comments, grants or files could not be written.
             unsettled_parents = await self._save_parents_to_retry(project_key, unsettled_parents)
-            saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
 
             # Update checkpoint AFTER successful processing
             if last_issue_updated_in_batch:

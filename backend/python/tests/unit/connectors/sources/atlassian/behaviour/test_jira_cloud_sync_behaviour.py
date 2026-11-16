@@ -5,6 +5,7 @@ request is answered by an in-memory stub and our databases are in-memory fakes.
 Retry waits are recorded rather than slept (see conftest ``backoff_sleeps``).
 """
 
+import contextlib
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -2183,6 +2184,31 @@ class TestRestrictedComments:
         reads = len(search.bodies)
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
         assert not any("id in (" in b["jql"] for b in search.bodies[reads:]), "nothing is left to retry"
+
+    async def test_an_issue_that_failed_to_build_on_a_page_that_wrote_nothing_is_saved_with_the_cursor(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """The only issue of the first page fails to build, so the page writes nothing but still moves the cursor past it; then the
+        next page's search fails and the sync stops. The issue was saved with that cursor, so the next sync reads it by id."""
+        search.add("ENG", None, [{"issues": [issue(1, "2024-05-01T10:00:00.000+0000")], "nextPageToken": "T2"}, {"issues": []}])
+        search.add("ENG", "T2", json_response({"errorMessages": ["bad request"]}, status=400))
+        connector, _ = await ready_connector(db, checkpoints)
+        build = connector._build_records_for_issue
+        calls = {"n": 0}
+
+        async def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("malformed issue")
+            return await build(*args, **kwargs)
+        connector._build_records_for_issue = fails_once
+        with contextlib.suppress(Exception):
+            await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" not in tickets(db)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "1" in tickets(db), "the issue the cursor passed is read again by id"
 
     async def test_opening_an_issue_does_not_offer_a_file_from_a_restricted_comment(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
