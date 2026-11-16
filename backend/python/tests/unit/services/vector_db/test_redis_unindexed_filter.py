@@ -112,14 +112,14 @@ class TestSchemaLookup:
             await svc._indexed_fields("col_idx")
 
     async def test_create_index_drops_the_kept_schema(self) -> None:
-        svc, execute = _service(_info("metadata_orgId"), b"OK", _info("metadata_orgId", "metadata_blockId"))
+        svc, execute = _service(_info("metadata_orgId"), 1, b"OK", _info("metadata_orgId", "metadata_blockId"))
         await svc._indexed_fields("col_idx")
         await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
         assert "col_idx" not in svc._schema_fields
         assert await svc._indexed_fields("col_idx") == {"metadata_orgId", "metadata_blockId"}
 
     async def test_a_failed_alter_drops_it_too(self) -> None:
-        svc, _ = _service(_info("metadata_orgId"), ResponseError("boom"))
+        svc, _ = _service(_info("metadata_orgId"), 1, ResponseError("boom"))
         await svc._indexed_fields("col_idx")
         with pytest.raises(ResponseError):
             await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
@@ -204,7 +204,7 @@ class TestNothingRunsOnARefusedFilter:
 class TestDialectIsPinned:
     async def test_every_search_and_aggregate_carries_dialect_2(self) -> None:
         schema = _info("metadata_orgId", "metadata_virtualRecordId")
-        svc, execute = _service(schema, [1], [1], schema, [1, b"k"], [0])
+        svc, execute = _service(schema, [1], [1], schema, [], [1, b"k"], [0])
         flt = FilterExpression(must=[
             FieldCondition(key="metadata.orgId", value=ORG),
             FieldCondition(key="metadata.virtualRecordId", value="v"),
@@ -219,94 +219,183 @@ class TestDialectIsPinned:
             assert args.index("DIALECT") == 3  # straight after the query, ahead of every option that has its own arguments
 
 
+class _Server:
+    """One fake Redis several store instances share: an index, its FT.ALTER scan (``scan_polls`` FT.INFO replies say "indexing") and plain hashes."""
+
+    def __init__(self, *fields: str) -> None:
+        self.fields = list(fields)
+        self.scan_polls = 0
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.calls: list[tuple] = []
+
+    async def execute(self, *args: object) -> object:
+        self.calls.append(args)
+        cmd = args[0]
+        if cmd == "FT.INFO":
+            busy = self.scan_polls > 0
+            self.scan_polls = max(0, self.scan_polls - 1)
+            return _info(*self.fields, indexing=int(busy), percent="0.3" if busy else "1")
+        if cmd == "FT.ALTER":
+            if str(args[4]) in self.fields:
+                raise ResponseError("Duplicate field in schema")
+            self.fields.append(str(args[4]))
+            self.scan_polls = 10**6
+            return b"OK"
+        if cmd == "HSETNX":
+            h = self.hashes.setdefault(str(args[1]), {})
+            if str(args[2]) in h:
+                return 0
+            h[str(args[2])] = str(args[3])
+            return 1
+        if cmd == "HGETALL":
+            return [x.encode() for kv in self.hashes.get(str(args[1]), {}).items() for x in kv]
+        if cmd == "HDEL":
+            for field in args[2:]:
+                self.hashes.get(str(args[1]), {}).pop(str(field), None)
+            return 1
+        if cmd == "FT.SEARCH":
+            return [0]
+        raise AssertionError(args)
+
+    def finish_scan(self) -> None:
+        self.scan_polls = 0
+
+    def store(self) -> RedisVectorService:
+        svc = RedisVectorService(RedisVectorConfig(host="localhost", port=6379))
+        svc.client = MagicMock()
+        svc.client.execute_command = AsyncMock(side_effect=self.execute)
+        svc.client.delete = AsyncMock()
+        return svc
+
+    def searched(self) -> bool:
+        return any(c[0] in ("FT.SEARCH", "FT.AGGREGATE") for c in self.calls)
+
+
 class TestBackfill:
     """``FT.ALTER`` returns at once and indexes the stored documents in the background: a delete in between would find only some of them."""
 
+    FIELDS = ("metadata_orgId", "metadata_virtualRecordId", "metadata_blockId")
+
     @staticmethod
-    def _filter() -> FilterExpression:
+    def _block_filter() -> FilterExpression:
         return FilterExpression(must=[
             FieldCondition(key="metadata.orgId", value=ORG),
             FieldCondition(key="metadata.blockId", values=["b1"]),
+        ])
+
+    @staticmethod
+    def _record_filter() -> FilterExpression:
+        return FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=ORG),
+            FieldCondition(key="metadata.virtualRecordId", value="vr1"),
         ])
 
     @pytest.fixture(autouse=True)
     def _fast_wait(self, monkeypatch) -> None:
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0.05")
         monkeypatch.setattr("app.services.vector_db.redis.redis_vector._BACKFILL_POLL_SECONDS", 0.01)
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._PENDING_ALTER_GRACE_SECONDS", 0.0)
 
-    @staticmethod
-    def _old_field_filter() -> FilterExpression:
-        return FilterExpression(must=[
-            FieldCondition(key="metadata.orgId", value=ORG),
-            FieldCondition(key="metadata.virtualRecordId", value="vr1"),
-        ])
-
-    @pytest.mark.parametrize(("indexing", "percent"), [(1, "0.4"), (1, "1"), (0, "0.9")])
-    async def test_a_delete_by_the_field_being_filled_raises_after_the_bound(self, indexing, percent) -> None:
-        names = ("metadata_orgId", "metadata_blockId")
-        busy = _info(*names, indexing=indexing, percent=percent)
-        svc, execute = _service(_info(*names), *[busy] * 500)
+    async def test_a_delete_by_the_field_being_filled_raises_after_the_bound(self) -> None:
+        server = _Server(*self.FIELDS)
+        server.scan_polls = 10**6
+        svc = server.store()
         with pytest.raises(IndexBackfilling) as raised:
-            await svc.delete_points("col", self._filter())
+            await svc.delete_points("col", self._block_filter())
         assert raised.value.index == "col_idx"
         assert not isinstance(raised.value, NonRetryableError)
-        assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")
+        assert not server.searched()
         svc.client.delete.assert_not_awaited()
 
     async def test_a_delete_by_the_field_being_filled_waits_for_the_scan_then_runs(self, monkeypatch) -> None:
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "30")
-        names = ("metadata_orgId", "metadata_blockId")
-        busy = _info(*names, indexing=1, percent="0.3")
-        svc, execute = _service(_info(*names), busy, busy, busy, _info(*names), [0])
-        await svc.delete_points("col", self._filter())
-        assert len(_calls(execute, "FT.INFO")) == 5  # one schema check, three polls that saw the scan, one that saw it done
-        assert len(_calls(execute, "FT.SEARCH")) == 1
+        server = _Server(*self.FIELDS)
+        server.scan_polls = 4
+        await server.store().delete_points("col", self._block_filter())
+        assert server.searched()
 
     async def test_a_delete_by_fields_already_complete_runs_during_the_scan(self) -> None:
-        names = ("metadata_orgId", "metadata_virtualRecordId", "metadata_blockId")
-        busy = _info(*names, indexing=1, percent="0.3")
-        svc, execute = _service(_info(*names), busy, [0])
-        await svc.delete_points("col", self._old_field_filter())
-        assert len(_calls(execute, "FT.INFO")) == 2
-        assert len(_calls(execute, "FT.SEARCH")) == 1
+        server = _Server(*self.FIELDS)
+        server.scan_polls = 10**6
+        await server.store().delete_points("col", self._record_filter())
+        assert server.searched()
 
-    async def test_a_field_this_process_added_is_waited_for_even_when_the_index_was_created_with_it(self) -> None:
-        names = ("metadata_orgId", "metadata_virtualRecordId")
-        busy = _info(*names, indexing=1, percent="0.3")
-        svc, _ = _service(None, _info(*names), *[busy] * 500)
-        await svc.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
+    async def test_a_field_another_process_added_is_waited_for_even_when_this_one_counts_it_as_created_with_the_index(self, monkeypatch) -> None:
+        server = _Server("metadata_orgId")
+        a, b = server.store(), server.store()
+        await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})  # the scan starts
+        assert server.hashes["col_idx:pending_alter"].keys() == {"metadata_virtualRecordId"}
         with pytest.raises(IndexBackfilling):
-            await svc.delete_points("col", self._old_field_filter())
+            await a.delete_points("col", self._record_filter())
+        with pytest.raises(IndexBackfilling):
+            await a.set_payload("col", {"metadata.x": "1"}, self._record_filter())
+        assert not server.searched()
+
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "30")
+        server.scan_polls = 3  # the scan ends while a waits
+        await a.delete_points("col", self._record_filter())
+        assert server.searched()
+
+    async def test_the_record_of_a_finished_scan_is_cleared_and_both_processes_then_run(self) -> None:
+        server = _Server("metadata_orgId")
+        a, b = server.store(), server.store()
+        await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
+        server.finish_scan()
+        await a.delete_points("col", self._record_filter())
+        assert server.hashes["col_idx:pending_alter"] == {}
+        await b.delete_points("col", self._record_filter())
+
+    async def test_a_second_scan_is_not_hidden_by_the_clearing_of_the_first(self) -> None:
+        server = _Server("metadata_orgId", "metadata_virtualRecordId")
+        a = server.store()
+        await a.create_index("col", "metadata.blockId", {"type": "keyword"})
+        server.hashes["col_idx:pending_alter"]["metadata_blockId"] = repr(10**12)  # recorded after the check below began
+        server.finish_scan()
+        await a.delete_points("col", self._record_filter())
+        assert "metadata_blockId" in server.hashes["col_idx:pending_alter"]
+
+    async def test_an_alter_that_adds_nothing_leaves_no_pending_record(self) -> None:
+        server = _Server("metadata_orgId")
+        await server.store().create_index("col", "metadata.orgId", {"type": "keyword"})
+        assert server.hashes["col_idx:pending_alter"] == {}
+
+    async def test_an_alter_that_adds_nothing_does_not_erase_the_record_of_a_scan_in_progress(self) -> None:
+        server = _Server("metadata_orgId")
+        a, b = server.store(), server.store()
+        await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})  # the scan starts
+        await a.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})  # already there
+        assert set(server.hashes["col_idx:pending_alter"]) == {"metadata_virtualRecordId"}
+        with pytest.raises(IndexBackfilling):
+            await a.delete_points("col", self._record_filter())
+
+    async def test_an_index_with_no_pending_record_behaves_as_before(self) -> None:
+        server = _Server(*self.FIELDS)
+        await server.store().delete_points("col", self._record_filter())
+        assert server.searched() and "col_idx:pending_alter" not in server.hashes
 
     async def test_a_payload_write_by_the_field_being_filled_waits_then_is_refused(self) -> None:
-        names = ("metadata_orgId", "metadata_blockId")
-        svc, execute = _service(_info(*names), *[_info(*names, indexing=1, percent="0.2")] * 500)
+        server = _Server(*self.FIELDS)
+        server.scan_polls = 10**6
         with pytest.raises(IndexBackfilling):
-            await svc.set_payload("col", {"metadata.x": "1"}, self._filter())
-        assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")
+            await server.store().set_payload("col", {"metadata.x": "1"}, self._block_filter())
+        assert not server.searched()
 
     @pytest.mark.parametrize("raw", ["bad", "-5"])
     async def test_an_unusable_bound_falls_back_to_the_default_or_zero(self, raw, monkeypatch) -> None:
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", raw)
         assert _backfill_wait_seconds() == (_DEFAULT_BACKFILL_WAIT_SECONDS if raw == "bad" else 0.0)
 
-    async def test_a_delete_goes_ahead_once_the_index_has_caught_up(self) -> None:
-        names = ("metadata_orgId", "metadata_blockId")
-        svc, execute = _service(_info(*names), _info(*names), [0])
-        await svc.delete_points("col", self._filter())
-        assert len(_calls(execute, "FT.SEARCH")) == 1
-
     async def test_a_read_is_not_held_back(self) -> None:
         names = ("metadata_orgId", "metadata_blockId")
         svc, execute = _service(_info(*names, indexing=1, percent="0.1"), [2])
-        assert await svc.count_points("col", self._filter()) == 2
+        assert await svc.count_points("col", self._block_filter()) == 2
 
     async def test_a_reply_that_does_not_say_is_an_error_not_a_green_light(self) -> None:
         reply = _info("metadata_orgId", "metadata_blockId")
         del reply[-4:]
         svc, _ = _service(reply, reply)
         with pytest.raises(RuntimeError, match="still indexing"):
-            await svc.delete_points("col", self._filter())
+            await svc.delete_points("col", self._block_filter())
 
 
 class TestStaleSchemaCache:

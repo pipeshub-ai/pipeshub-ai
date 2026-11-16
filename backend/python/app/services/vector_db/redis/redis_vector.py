@@ -171,6 +171,7 @@ _CREATE_TIME_FIELDS = frozenset({
 _BACKFILL_WAIT_ENV = "REDIS_VECTOR_BACKFILL_WAIT_SECONDS"
 _DEFAULT_BACKFILL_WAIT_SECONDS = 600.0
 _BACKFILL_POLL_SECONDS = 1.0
+_PENDING_ALTER_GRACE_SECONDS = 5.0
 _SETTLE_ATTEMPTS = 5
 _SETTLE_DELAY_SECONDS = 0.05
 
@@ -595,7 +596,10 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         redis_alias = field_name.replace(".", "_")
         field_type = {"keyword": "TAG", "integer": "NUMERIC"}.get(field_schema.get("type"), "TEXT")
+        recorded = False
         try:
+            # Recorded before the ALTER, where every process can read it: the scan that follows is what makes the field complete.
+            recorded = await self._record_pending_alter(idx, redis_alias)
             # The scope fields are new in this release line: tags that tell `X` from `x`, so an exclusion can be carried by the query. (The membership
             # tags created with the index in older releases cannot be changed and keep matching without case.)
             case = ["CASESENSITIVE"] if field_type == "TAG" and field_name in {name for name, _ in SCOPE_KEYWORD_INDEXES} else []
@@ -605,7 +609,6 @@ class RedisVectorService(IVectorDBService):
                     "SCHEMA", "ADD",
                     redis_alias, field_type, *case,
                 )
-                self._altered_fields.setdefault(idx, set()).add(redis_alias)
             finally:
                 self._schema_fields.pop(idx, None)
         except Exception as e:
@@ -614,6 +617,12 @@ class RedisVectorService(IVectorDBService):
             # Redis surfaces this as either "already exists" or
             # "duplicate field in schema".
             if "already exists" in err or "duplicate field" in err:
+                # Nothing was added, so no scan is owed for it. An entry someone else wrote stays; one written for this attempt goes,
+                # unless a scan is running (it could be that other process's for this very field; the check that sees it end clears it).
+                if recorded is True:
+                    read = await self._read_index(idx)
+                    if read is not None and not read[2]:
+                        await self.client.execute_command("HDEL", self._pending_key(idx), redis_alias)  # type: ignore
                 return
             raise
 
@@ -1593,27 +1602,55 @@ class RedisVectorService(IVectorDBService):
         read = await self._read_index(idx)
         return None if read is None else read[0]
 
-    @property
-    def _altered_fields(self) -> dict[str, set[str]]:
-        """index name → the fields this process added with FT.ALTER (their scan may still be running)."""
-        return self.__dict__.setdefault("_altered_cache", {})
+    @staticmethod
+    def _pending_key(idx: str) -> str:
+        """The hash beside the index (``<index>:pending_alter``: field -> time of its FT.ALTER). Not under the index's document prefix."""
+        return f"{idx}:pending_alter"
+
+    async def _record_pending_alter(self, idx: str, alias: str) -> bool:
+        """Note the field before the ALTER, without overwriting another process's entry. True when this call wrote it."""
+        return bool(await self.client.execute_command("HSETNX", self._pending_key(idx), alias, repr(time.time())))  # type: ignore
+
+    async def _pending_alters(self, idx: str) -> dict[str, float]:
+        """Fields any process added with FT.ALTER whose scan was not yet seen to finish. Absent key: none (an index from before this key existed)."""
+        raw = await self.client.execute_command("HGETALL", self._pending_key(idx))  # type: ignore
+        pairs = list(raw.items()) if isinstance(raw, dict) else list(zip(raw[::2], raw[1::2], strict=False)) if raw else []
+        out: dict[str, float] = {}
+        for k, v in pairs:
+            try:
+                out[k.decode() if isinstance(k, bytes) else str(k)] = float(v)
+            except (TypeError, ValueError):
+                out[k.decode() if isinstance(k, bytes) else str(k)] = 0.0  # unreadable time: kept until a scan is seen to finish
+        return out
+
+    async def _clear_pending_alters(self, idx: str, seen_before: float) -> None:
+        """The scan finished: forget the fields recorded before the check began, less a grace for an ALTER that is just starting."""
+        stale = [f for f, t in (await self._pending_alters(idx)).items() if t < seen_before - _PENDING_ALTER_GRACE_SECONDS]
+        if stale:
+            await self.client.execute_command("HDEL", self._pending_key(idx), *stale)  # type: ignore
 
     async def _require_settled(self, idx: str, query: str) -> None:
         """Hold a delete or payload write until the fields its filter names are fully indexed (:class:`IndexBackfilling` after the bound).
 
         An ``FT.ALTER`` that adds a field returns at once and indexes the existing documents in the background (minutes on a large
         collection); until then that field matches only the documents reached so far, so a write built on it would leave some behind.
-        Fields the index was created with are complete from the start, so a write that names only those runs during the scan. A write
-        that names a field still being filled waits inside this call, polling ``FT.INFO``, for at most
-        ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed delivery), then raises. Read on every call: the state changes by itself.
+        FT.INFO does not say which field is being filled, so the process that issues the ALTER records the field in a hash beside the
+        index and every process reads it here; the entry is dropped once a check sees the scan finished. A write that names only
+        complete fields (the index's creation fields, none of them pending) runs during the scan. A write that names a field still being
+        filled waits inside this call, polling ``FT.INFO``, for at most ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed
+        delivery), then raises. Read on every call: the state changes by itself.
         """
         named = query_fields(query)
         deadline = time.monotonic() + _backfill_wait_seconds()
         while True:
+            checked_at = time.time()
             read = await self._read_index(idx)
-            if read is None or not read[2]:
+            if read is None:
                 return
-            if not ((named - _CREATE_TIME_FIELDS) | (named & self._altered_fields.get(idx, set()))):
+            if not read[2]:
+                await self._clear_pending_alters(idx, checked_at)
+                return
+            if not ((named - _CREATE_TIME_FIELDS) | (named & frozenset(await self._pending_alters(idx)))):
                 return
             if time.monotonic() >= deadline:
                 raise IndexBackfilling(idx, read[1])

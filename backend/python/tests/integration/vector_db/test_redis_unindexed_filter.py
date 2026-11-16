@@ -376,6 +376,38 @@ class TestBackfill:
         await _alter_settled(redis_service, collection)
 
 
+    async def test_another_process_adding_a_field_the_first_counts_as_original_is_waited_for(self, redis_service, second_service, collection, monkeypatch) -> None:
+        """An index from before virtualRecordId was part of the schema: process B alters it in, process A deletes by it mid-scan."""
+        from app.services.vector_db.redis.errors import IndexBackfilling
+        from app.services.vector_db.redis.redis_vector import _parse_ft_info
+
+        idx = redis_service._index_name(collection)
+        await redis_service.client.execute_command(
+            "FT.CREATE", idx, "ON", "HASH", "PREFIX", "1", f"{collection}:", "SCHEMA",
+            "page_content", "TEXT", "dense_embedding", "VECTOR", "HNSW", "6", "TYPE", redis_service._dense_dtype, "DIM", str(BACKFILL_DIM), "DISTANCE_METRIC", "COSINE",
+            "metadata_orgId", "TAG",
+        )
+        vec = [0.01 * (i % 7 + 1) for i in range(BACKFILL_DIM)]
+        for start in range(0, BACKFILL_DOCS, 2000):
+            await redis_service.upsert_points(collection, [
+                VectorPoint(id=point_id(f"om{n}"), dense_vector=[v + n * 1e-6 for v in vec],
+                            payload={"page_content": f"chunk {n}", "metadata": {"orgId": ORG, "virtualRecordId": TARGET if n < 3 else f"vr-{n}"}})
+                for n in range(start, start + 2000)
+            ])
+        await second_service.create_index(collection, "metadata.virtualRecordId", {"type": "keyword"})
+        assert int(_parse_ft_info(await redis_service.client.execute_command("FT.INFO", idx)).get("indexing", 0)) == 1, "the scan must still run"
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": TARGET})
+
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0")
+        with pytest.raises(IndexBackfilling):
+            await redis_service.delete_points(collection, flt)
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "120")
+        await redis_service.delete_points(collection, flt)
+        assert await _count(redis_service, collection, virtualRecordId=TARGET) == 0
+        assert await _count(redis_service, collection) == BACKFILL_DOCS - 3
+        assert await redis_service.client.hlen(f"{idx}:pending_alter") == 0, "cleared once the scan was seen to finish"
+
+
 class TestOlderIndex:
     """An index made by an earlier release holds fewer fields; the query service ensures them when it starts."""
 
