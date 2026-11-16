@@ -5,6 +5,7 @@ construct at process startup and share across their consumers/routes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import os
 import random
@@ -37,11 +38,16 @@ from app.services.resource_governor.memory_budget import MemoryBudget
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Pool,
     PoolDemand,
     ResourceSnapshot,
+    merge_cooldown_causes,
 )
 from app.services.resource_governor.policy import (
+    CPU_BRAKE_PRESSURE_AVG10,
+    CPU_BRAKE_THROTTLED_RATIO,
+    CPU_BRAKE_UTILISATION,
     EMBEDDING_CPU_RESERVATION,
     EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
     HEAVY_PARSE_SLOTS_PER_CPU,
@@ -53,6 +59,8 @@ from app.services.resource_governor.policy import (
     INDEX_SLOTS_PER_CPU,
     INDEX_TOTAL_MAX,
     LIGHT_PARSE_SLOTS_PER_CPU,
+    MEM_HARD,
+    MEM_SOFT,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
     HeavyWorkingSet,
@@ -62,6 +70,7 @@ from app.services.resource_governor.policy import (
     floor_for,
     free_memory_share_bytes,
     next_limits,
+    pressure_floor,
     resolve_ceilings,
     resolve_heavy_working_set,
     split_ceilings,
@@ -72,6 +81,7 @@ from app.services.resource_governor.probe import (
     ResourceProbe,
     build_probe,
     effective_cpu_count,
+    memory_domain_id,
 )
 from app.services.resource_governor.registry import LimitRegistry
 from app.services.resource_governor.shared_slots import (
@@ -82,7 +92,7 @@ from app.services.resource_governor.shared_slots import (
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from pathlib import Path
 
 
@@ -211,6 +221,17 @@ class ResourceGovernor:
         self._last_snapshot: ResourceSnapshot = initial_snapshot
         self._last_demand: dict[Pool, PoolDemand] = {pool: PoolDemand.empty() for pool in Pool}
         self._last_feedback: FeedbackWindow = FeedbackWindow.empty()
+        # Read-only observability, folded under _stats_lock with the fields above: how many
+        # samples have been taken, when the last one finished, and what the feedback windows
+        # have summed to.
+        self._sample_seq = 0
+        self._last_sample_at: float | None = None
+        self._feedback_totals: dict[str, dict[str, int]] = {
+            "throttles": {}, "timeouts": {}, "exhaustions": {}, "unavailable": {},
+        }
+        # Threads waiting on the shared heavy-parse slots (slot_wait()).
+        self._slot_waiting = 0
+        self._slot_wait_lock = threading.Lock()
 
         # Records too big for the count limits reserve their memory here.
         self.memory_budget = MemoryBudget()
@@ -379,6 +400,17 @@ class ResourceGovernor:
             cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set()), count
         )
 
+    @contextlib.contextmanager
+    def slot_wait(self) -> Iterator[None]:
+        """Count a caller polling for the shared heavy-parse slots (read by ``admission_explain``)."""
+        with self._slot_wait_lock:
+            self._slot_waiting += 1
+        try:
+            yield
+        finally:
+            with self._slot_wait_lock:
+                self._slot_waiting -= 1
+
     @property
     def heavy_working_set(self) -> HeavyWorkingSet:
         """The working set a heavy permit assumes as of the last sample, and where it came from."""
@@ -518,6 +550,17 @@ class ResourceGovernor:
             self._last_snapshot = snapshot
             self._last_demand = demand
             self._last_feedback = feedback
+            self._sample_seq += 1
+            self._last_sample_at = now
+            for kind, counts in (
+                ("throttles", feedback.throttles),
+                ("timeouts", feedback.timeouts),
+                ("exhaustions", feedback.pool_exhaustions),
+                ("unavailable", feedback.unavailable),
+            ):
+                bucket = self._feedback_totals[kind]
+                for service, count in counts.items():
+                    bucket[service] = bucket.get(service, 0) + count
 
         if not feedback.is_empty:
             self._logger.info(
@@ -605,6 +648,13 @@ class ResourceGovernor:
                 self._state.get(Pool.HEAVY_PARSE),
                 healthy_streak=0,
                 cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
+                rule=LimitRule.MEM_INCIDENT,
+                rule_since=now,
+                cooldown_causes=merge_cooldown_causes(
+                    self._state.get(Pool.HEAVY_PARSE).cooldown_causes,
+                    (("memory", now + INCIDENT_COOLDOWN_SECONDS),),
+                    now,
+                ),
             ))
         self._logger.warning(
             "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
@@ -617,6 +667,113 @@ class ResourceGovernor:
                 self._logger.exception("ResourceGovernor: could not record the incident in the lane ledger")
 
     # -- observability ------------------------------------------------------
+
+    def admission_explain(self) -> dict[str, Any]:
+        """Why each pool admits what it admits, for health endpoints. Safe from any thread.
+
+        Read-only: it never creates a gate, awaits, or touches a file or the network. Each read is
+        a lock-guarded copy or a single attribute. CPU lanes are not included (reading them does
+        file I/O); ``stats()["lanes"]`` carries them.
+        """
+        now = self._clock()
+        limits = self._registry.snapshot()
+        state = self._state
+        with self._stats_lock:
+            snapshot = self._last_snapshot
+            demand = dict(self._last_demand)
+            feedback = self._last_feedback
+            seq = self._sample_seq
+            sampled_at = self._last_sample_at
+            totals = {kind: dict(counts) for kind, counts in self._feedback_totals.items()}
+        with self._gates_lock:
+            gates = dict(self._gates)
+        pools: dict[str, Any] = {}
+        for pool in Pool:
+            gate = gates.get(pool)
+            pool_state = state.get(pool)
+            window = demand.get(pool) or PoolDemand.empty()
+            ceiling = ceiling_for(pool, self._ceilings)
+            entry: dict[str, Any] = {
+                "unit": "permits" if pool in (Pool.HEAVY_PARSE, Pool.LIGHT_PARSE) else "records",
+                "inUse": gate.in_use if gate is not None else 0,
+                "limit": limits.get(pool),
+                "ceiling": ceiling,
+                "floor": pressure_floor(pool, ceiling, self._worker_count),
+                "waiting": gate.waiting if gate is not None else 0,
+                "headBlock": gate.head_block if gate is not None else "none",
+                "rule": pool_state.rule.value,
+                "ruleAgeSec": None if pool_state.rule_since is None else max(0.0, now - pool_state.rule_since),
+                "cooldownRemainingSec": max(0.0, pool_state.cooldown_until - now),
+                "window": {
+                    "seq": seq,
+                    "blocked": window.blocked_acquires,
+                    "waitSec": window.total_wait_seconds,
+                    "rateLimited": window.rate_limited_acquires,
+                    "completions": window.completions,
+                },
+            }
+            cause = pool_state.active_cooldown_cause(now)
+            if cause is not None and pool_state.cooldown_until > now:
+                entry["cooldownCause"] = cause
+            if services := pool_state.active_services(now):
+                entry["services"] = list(services)
+            pools[pool.value] = entry
+        slots = self._heavy_parse_slots
+        shared: dict[str, int] | None = None
+        if slots is not None:
+            shared = {
+                "capacity": slots.capacity,
+                "limit": cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set()),
+                "waiting": self._slot_waiting,
+            }
+        record_memory = self.memory_budget.stats()
+        return {
+            "v": 2,
+            "sampleSeq": seq,
+            "sampleAgeSec": None if sampled_at is None else max(0.0, now - sampled_at),
+            "workerCount": self._worker_count,
+            "memoryDomain": memory_domain_id(),
+            "cpu": {
+                "quota": snapshot.cpu_quota,
+                "utilisation": snapshot.cpu_utilisation,
+                "throttledRatio": snapshot.cpu_throttled_ratio,
+                "psi": snapshot.cpu_pressure,
+                "brakeAt": {
+                    "util": CPU_BRAKE_UTILISATION,
+                    "throttled": CPU_BRAKE_THROTTLED_RATIO,
+                    "psi": CPU_BRAKE_PRESSURE_AVG10,
+                },
+            },
+            "mem": {
+                "pressureRaw": snapshot.mem_pressure_raw,
+                "limitBytes": snapshot.mem_limit_bytes,
+                "usableBytes": snapshot.mem_usable_bytes,
+                "softAt": MEM_SOFT,
+                "hardAt": MEM_HARD,
+            },
+            "pools": pools,
+            "fleetCeilings": {
+                "index_heavy": self._fleet_ceilings.index_heavy,
+                "index_light": self._fleet_ceilings.index_light,
+                "heavy_parse": self._fleet_ceilings.heavy,
+                "light_parse": self._fleet_ceilings.light,
+            },
+            "downloadAhead": {
+                "limit": self.download_ahead.limit,
+                "inUse": self.download_ahead.stats()["in_use"],
+                "waiting": self.download_ahead.waiting,
+            },
+            "recordMemory": {
+                "limitBytes": record_memory["limit_bytes"],
+                "reservedBytes": record_memory["reserved_bytes"],
+                "waiting": record_memory["waiting"],
+            },
+            "sharedSlots": shared,
+            "feedback": {
+                "window": {"seq": seq, **feedback.as_dict()},
+                "totals": totals,
+            },
+        }
 
     def stats(self) -> dict[str, Any]:
         """Snapshot for health endpoints / logs. Safe from any thread."""
@@ -667,6 +824,7 @@ class ResourceGovernor:
             "downstream_feedback": feedback.as_dict(),
             "record_memory": self.memory_budget.stats(),
             "download_ahead": self.download_ahead.stats(),
+            "admission": self.admission_explain(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

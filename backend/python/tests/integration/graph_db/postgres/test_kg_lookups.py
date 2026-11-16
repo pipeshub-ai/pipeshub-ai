@@ -62,9 +62,9 @@ async def test_each_lookup_reads_its_vetted_function_and_a_value_out_of_bounds_t
     await a.find_organizations(a.org, ["acme"])
     await a.get_person_by_source_key("c1:u1", a.org)
     await a.upsert_person_by_source_key(Person(source_key="c1:u1", org_id=a.org))
-    await a.get_entity_id_by_email("ann@x.com")
-    await a.bulk_get_entity_ids_by_email(["ann@x.com"])
-    await a.get_user_by_email("ann@x.com")
+    await a.get_entity_id_by_email("ann@x.com", org_id=a.org)
+    await a.bulk_get_entity_ids_by_email(["ann@x.com"], org_id=a.org)
+    await a.get_user_by_email("ann@x.com", org_id=a.org)
     await a.get_users_by_emails(["ann@x.com"])
     await a.find_people(a.org, "ann@x.com")
     await a.find_people(a.org, "ann")
@@ -74,7 +74,7 @@ async def test_each_lookup_reads_its_vetted_function_and_a_value_out_of_bounds_t
     await a.page_records_for_vector_membership_backfill("c" * 300, None, 10)
     await a.page_records_for_vector_membership_backfill("c1", None, 5000)
     await a.get_person_by_source_key("k" * 500, a.org)
-    await a.get_user_by_email("e" * 2000)
+    await a.get_user_by_email("e" * 2000, org_id=a.org)
     await a.find_people(a.org, "n" * 500)
     assert sent == ["page_records_for_vector_membership_backfill", "page_records_for_vector_membership_backfill", "get_person_by_source_key", "get_user_by_email", "find_people"]
 
@@ -124,7 +124,7 @@ async def test_a_full_page_of_matches_is_read_by_the_plain_statement(world, monk
     a, _ = world
     monkeypatch.setattr("app.services.graph_db.postgres.identity._PRINCIPALS_PAGE", 0)      # a page can never be short
     sent = spy(monkeypatch)
-    assert await a.get_entity_id_by_email("ANN@x.com") == "u1"          # the user, before the group and the person of the address
+    assert await a.get_entity_id_by_email("ANN@x.com", org_id=a.org) == "u1"          # the user, before the group and the person of the address
     assert sent == ["principals_by_email", "get_entity_id_by_email"]
 
 
@@ -137,11 +137,11 @@ async def test_each_lookup_answers_for_the_org_alone(world, pg_db) -> None:
     assert [r["_key"] for r in await a.page_records_for_vector_membership_backfill("c1", None, 10)] == ["R3", "r1", "r2"]          # byte order
     assert await b.get_person_by_source_key("c1:only", b.org) is None and (await a.get_person_by_source_key("c1:only", a.org)).id == "only-a"
     assert [p["id"] for p in await b.find_people(b.org, "only aaron")] == [] and [p["id"] for p in await a.find_people(a.org, "aar")] == ["only-a"]
-    assert await b.get_entity_id_by_email("only@a.com") is None and await a.get_entity_id_by_email("only@a.com") == "only-a"
-    assert await b.bulk_get_entity_ids_by_email(["only@a.com"]) == {} and await a.bulk_get_entity_ids_by_email(["only@a.com"]) == {"only@a.com": ("only-a", "person", "USER")}
+    assert await b.get_entity_id_by_email("only@a.com", org_id=b.org) is None and await a.get_entity_id_by_email("only@a.com", org_id=a.org) == "only-a"
+    assert await b.bulk_get_entity_ids_by_email(["only@a.com"], org_id=b.org) == {} and await a.bulk_get_entity_ids_by_email(["only@a.com"], org_id=a.org) == {"only@a.com": ("only-a", "person", "USER")}
     assert [o["id"] for o in await a.find_organizations(a.org, ["acme"])] == ["o1"] and await a.find_organizations(b.org, ["acme"]) == []
     # each org sees its own rows with the ids and keys they share
-    assert (await a.get_user_by_email("ANN@x.com")).id == "u1" and (await b.get_user_by_email("ANN@x.com")).id == "u1"
+    assert (await a.get_user_by_email("ANN@x.com", org_id=a.org)).id == "u1" and (await b.get_user_by_email("ANN@x.com", org_id=b.org)).id == "u1"
     assert [p["id"] for p in await b.find_people(b.org, "ann lee")] == ["p1"]
 
 

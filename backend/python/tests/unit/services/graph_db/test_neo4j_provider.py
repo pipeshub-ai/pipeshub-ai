@@ -482,7 +482,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # the org's apps, by id
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
                   "subcategory": None, "version": "1.0.0", "status": "active",
                   "deprecatedReason": None, "replacedBy": None}],  # skills
@@ -566,7 +566,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # the org's apps, by id
                 [],  # skills query
                 [],  # mcp servers projection
                 [],  # org share query
@@ -576,7 +576,7 @@ class TestGetAgent:
             side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
-        result = await neo4j_provider.get_agent("agent-1")
+        result = await neo4j_provider.get_agent("agent-1", org_id="org-1")
 
         assert result is not None
         assert result["knowledge"][0]["filtersParsed"] == {}
@@ -2253,9 +2253,8 @@ class TestUserAndOrganizationLookups:
         assert "u.orgId = $org_id" in query
         assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com", "org_id": "org-1"}
 
-        await neo4j_provider.get_user_by_email("a@x.com")
-        assert "orgId" not in neo4j_provider.client.execute_query.await_args.args[0]
-        assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com"}
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await neo4j_provider.get_user_by_email("a@x.com")  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
     async def test_get_user_by_email_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2265,11 +2264,11 @@ class TestUserAndOrganizationLookups:
             "app.services.graph_db.neo4j.neo4j_provider.User.from_arango_user",
             return_value={"user": "ok"},
         ):
-            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue")
+            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue", org_id="org-1")
         assert found == {"user": "ok"}
 
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        assert await neo4j_provider.get_user_by_email("missing@x.com") is None
+        assert await neo4j_provider.get_user_by_email("missing@x.com", org_id="org-1") is None
 
     @pytest.mark.asyncio
     async def test_get_user_by_source_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -5773,7 +5772,7 @@ class TestAppUserMembershipClearsExternalFlag:
                 email="member@corp.com",
                 full_name="Member",
             )
-        ])
+        ], org_id="org-1")
 
         app_edges = [
             c for c in mocked.batch_create_edges.await_args_list
@@ -6213,7 +6212,8 @@ class TestPrincipalLookupsCanRaise:
             "get_person_by_email": ("a@b.com", "org-1"),
             "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
         }[method]
-        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+        scope = {"org_id": "org-1"} if method == "get_user_by_email" else {}
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error, **scope)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])

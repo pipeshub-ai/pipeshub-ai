@@ -1,0 +1,301 @@
+name: Cost-class Indexing Performance
+
+# Record event to indexed, per corpus kind, on the configuration that ships: local CPU embedding, with only
+# the chat and vision model faked (integration-tests/perf/bench_costclass.py, fake_ai/server.py).
+# Never runs on pull requests: it holds secrets and only ever checks out this repository's own branches.
+#
+#   smoke   nightly: the cost-smoke corpus, every kind, all probes accepted, at most 30 minutes of bench run (the build and stack start are budgeted apart)
+#   weekly  Saturday: B-05, B-03 and a scaled B-01 on 4 CPUs, and the fake-embedding control, one job per run
+#           (perf/costclass_weekly_legs.json; the control is first)
+#   tiers   dispatch only: run_tiers_e2e.sh over the tiers you name, on the runner you name (B-06 knee, calibration, ...)
+#
+# The pure parts (schedules, filters, salts, verdicts) are checked on every pull request by
+# integration-suite-guards (integration-tests/unit/test_perf_costclass.py).
+on:
+  schedule:
+    - cron: '30 19 * * *'   # nightly smoke, after the nightly integration run
+    - cron: '0 22 * * 6'    # weekly, Saturday
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'smoke, weekly or tiers'
+        required: true
+        default: 'smoke'
+      scenario:
+        description: 'tiers only: b01, b02, b03, b05, b06, b06-knee or calibrate'
+        required: false
+        default: 'b05'
+      tiers:
+        description: 'tiers only: NAME:CPUS:MEM_GB list, at most 3, e.g. "T4:4:16 T16:16:64"'
+        required: false
+        default: 'T4:4:16'
+      runner:
+        description: 'tiers only, required: runner label. A tier needs about CPUS + 13 host CPUs (11 sibling CPUs, 1 fake provider, 1 aux) and 4 more kept free for the host, so T4 needs a 21-CPU runner'
+        required: false
+        default: '4cpu-linux-x64'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-costclass
+  cancel-in-progress: false
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  MESSAGE_BROKER: redis
+  SUITE: ${{ github.event_name == 'schedule' && (github.event.schedule == '30 19 * * *' && 'smoke' || 'weekly') || github.event.inputs.suite }}
+  SCENARIO_INPUT: ${{ github.event.inputs.scenario || 'b05' }}
+  TIERS_INPUT: ${{ github.event.inputs.tiers || 'T4:4:16' }}
+  RUNNER_INPUT: ${{ github.event.inputs.runner }}
+
+jobs:
+  plan:
+    name: Plan the runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # One job per weekly run, so each has its own build, start and time limit; smoke and tiers are one job.
+      - name: Matrix
+        id: matrix
+        run: |
+          case "$SUITE" in
+            weekly) matrix=$(jq -c '{include: .legs}' integration-tests/perf/costclass_weekly_legs.json) ;;
+            smoke|tiers) matrix=$(jq -cn --arg leg "$SUITE" '{include: [{leg: $leg}]}') ;;
+            *) echo "suite must be smoke, weekly or tiers"; exit 1 ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  costclass:
+    name: Cost-class benchmark (${{ matrix.leg }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 1  # in the order of the list: the control first
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: runs-on=${{ github.run_id }}/runner=${{ github.event.inputs.runner || '4cpu-linux-x64' }}/volume=100gb/ssh=true
+    # The image build, the stack start and the bench run have step limits of their own, so a slow build is not paid
+    # for out of the bench's budget and a hung step ends early. The job limit holds all of them plus the steps
+    # without a limit, with at least 20 percent to spare for every suite (test_perf_costclass.py checks the sums).
+    # The tiers dispatch is the longest: its 30-minute build and 120-minute run need 189 minutes in the worst case (pull 15, build 30, install 10).
+    timeout-minutes: 240
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+    env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dispatch input reaches the shell only through env and is validated here.
+      - name: Validate inputs
+        run: |
+          case "$SUITE" in smoke|weekly|tiers) ;; *) echo "suite must be smoke, weekly or tiers"; exit 1 ;; esac
+          [[ "$SCENARIO_INPUT" =~ ^(b01|b02|b03|b05|b06|b06-knee|calibrate)$ ]] || { echo "bad scenario"; exit 1; }
+          [[ "$TIERS_INPUT" =~ ^(T[0-9]+:[0-9]+:[0-9]+)( T[0-9]+:[0-9]+:[0-9]+){0,2}$ ]] || { echo "bad tiers (1 to 3 NAME:CPUS:MEM_GB entries)"; exit 1; }
+          # The default 4-CPU runner cannot host any tier (tiers.py fit() keeps 4 CPUs free on top of the tier and its siblings).
+          if [ "$SUITE" = tiers ]; then
+            [[ "$RUNNER_INPUT" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "suite tiers needs the runner input (a label of a runner big enough for the tiers)"; exit 1; }
+            [ "$RUNNER_INPUT" != 4cpu-linux-x64 ] || { echo "the 4-CPU runner cannot host a tier: name a larger runner"; exit 1; }
+          fi
+
+      - name: Log in to Docker Hub (read-only)
+        if: env.DOCKERHUB_PULL_LOGIN == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
+
+      - name: Pull pre-built base images
+        timeout-minutes: 15
+        run: |
+          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull ${image}, so this run uses ${hub} from Docker Hub."
+              image="$hub"
+              docker pull "$image" || true
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
+
+      - name: Build the stack image
+        timeout-minutes: 30
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml build pipeshub-ai
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      # The corpus generators need reportlab, python-docx, openpyxl, Pillow and numpy;
+      # the harness needs the integration-test client.
+      - name: Install dependencies
+        working-directory: integration-tests
+        timeout-minutes: 10
+        run: |
+          uv venv
+          uv pip install -e .
+          uv pip install 'reportlab>=4,<5' 'python-docx==1.2.0' 'openpyxl==3.1.5' pillow numpy pypdfium2
+
+      # Smoke and weekly share the runner's four CPUs between the app and its siblings, so they pin
+      # every container to the same cpuset and skip the sibling-CPU check (--siblings is left empty):
+      # they assert that every probe is accepted and report numbers, they are not the calibration.
+      # The tiers suite picks disjoint idle cores itself (run_tiers_e2e.sh) and does check.
+      - name: Start the stack (smoke and weekly)
+        if: env.SUITE != 'tiers'
+        timeout-minutes: 10
+        working-directory: deployment/docker-compose
+        run: |
+          {
+            echo "BENCH_PORT_HTTP=3000"
+            echo "BENCH_APP_CPUS=4" "BENCH_APP_MEM=12g"
+            for v in APP NEO4J QDRANT REDIS MONGO FAKE_AI AUX; do echo "BENCH_${v}_CPUSET=0-3"; done
+            for v in NEO4J QDRANT REDIS MONGO; do echo "BENCH_${v}_CPUS=2"; done
+          } | tr ' ' '\n' > bench.env
+          docker compose --env-file bench.env -p cc -f docker-compose.integration.neo4j.yml -f docker-compose.bench.yml up -d pipeshub-ai fake-ai
+
+      - name: Wait for the stack
+        if: env.SUITE != 'tiers'
+        timeout-minutes: 11
+        run: |
+          deadline=$((SECONDS + 600))
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Services not healthy after 600s"; exit 1; fi
+            sleep 10
+          done
+
+      - name: Create organization and skip onboarding
+        if: env.SUITE != 'tiers'
+        run: |
+          jq -n --arg email "$PIPESHUB_TEST_USER_EMAIL" --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+            '{accountType:"business",adminFullName:"Integration Test Admin",contactEmail:$email,password:$password,confirmPassword:$password,registeredName:"Integration Test Org",shortName:"INTTEST"}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" -H "Content-Type: application/json" --data-binary @- > /dev/null
+          HEADERS=$(mktemp)
+          jq -n --arg email "$PIPESHUB_TEST_USER_EMAIL" '{email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" -H "Content-Type: application/json" --data-binary @- -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+          ACCESS_TOKEN=$(jq -n --arg email "$PIPESHUB_TEST_USER_EMAIL" --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+              '{method:"password",credentials:{password:$password},email:$email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" -H "Content-Type: application/json" -H "x-session-token: ${SESSION_TOKEN}" --data-binary @- \
+            | jq -r '.accessToken')
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" -d '{"status": "configured"}' > /dev/null
+
+      # The smoke holds the run to its budgets (p95 of every accepted probe at most 10 minutes, the whole run at
+      # most 30) and fails on any ERROR line of the app's log, so a fake that sends the product down an error
+      # path cannot pass as a measurement.
+      - name: Smoke
+        if: env.SUITE == 'smoke'
+        timeout-minutes: 45  # the bench's own wall budget is 30 minutes (--max-wall-s 1800), plus corpus generation, with 20 percent to spare
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/bench_costclass.py --scenario smoke --profile cost-smoke --label ci-costclass-4cpu \
+            --tier-cpus 4 --tier-mem-gb 12 --fake-ai-endpoint http://fake-ai:8080/v1 \
+            --fake-ai-container cc-fake-ai-1 \
+            --app-container "$(docker compose -p cc -f ../deployment/docker-compose/docker-compose.integration.neo4j.yml -f ../deployment/docker-compose/docker-compose.bench.yml --env-file ../deployment/docker-compose/bench.env ps -q pipeshub-ai)" \
+            --inject-duplicate --timeout 1500 --max-p95-s 600 --max-wall-s 1800 --fail-on-log-errors \
+            --output reports/perf/costclass-smoke.json --summary reports/perf/summary.md
+
+      # One weekly run per job (matrix leg). Its schedule, the wait for the indexing tail and the corpus build must fit
+      # this step with 20 percent to spare (test_perf_costclass.py); --timeout is the bench's own hard wall limit.
+      - name: Weekly run
+        if: env.SUITE == 'weekly'
+        timeout-minutes: 38
+        working-directory: integration-tests
+        env:
+          LEG_SCENARIO: ${{ matrix.scenario }}
+          LEG_DURATION: ${{ matrix.duration }}
+          LEG_TIMEOUT: ${{ matrix.timeout }}
+          LEG_FAKE_EMBEDDINGS: ${{ matrix.fake_embeddings }}
+          LEG: ${{ matrix.leg }}
+        run: |
+          source .venv/bin/activate
+          COMPOSE=(docker compose -p cc -f ../deployment/docker-compose/docker-compose.integration.neo4j.yml -f ../deployment/docker-compose/docker-compose.bench.yml --env-file ../deployment/docker-compose/bench.env)
+          APP=$("${COMPOSE[@]}" ps -q pipeshub-ai)
+          extra=()
+          label=ci-costclass-4cpu
+          if [ "$LEG_FAKE_EMBEDDINGS" = "true" ]; then
+            # The control: the same run with the embedding model faked as well. The fake is recreated with its
+            # embedding route on, and the bench reads that back from the running container.
+            BENCH_FAKE_AI_ARGS="--fake-embeddings" "${COMPOSE[@]}" up -d --force-recreate fake-ai
+            sleep 15
+            extra=(--fake-embeddings --fake-ai-container cc-fake-ai-1)
+            label=ci-costclass-4cpu-fakeemb
+          fi
+          python perf/bench_costclass.py --scenario "$LEG_SCENARIO" --label "$label" \
+            --tier-cpus 4 --tier-mem-gb 12 --fake-ai-endpoint http://fake-ai:8080/v1 --app-container "$APP" \
+            --duration "$LEG_DURATION" --timeout "$LEG_TIMEOUT" "${extra[@]}" \
+            --output "reports/perf/costclass-$LEG.json" --summary reports/perf/summary.md
+
+      - name: Tiers
+        if: env.SUITE == 'tiers'
+        # Worst case per tier: 5 min waiting for a quiet host, 10 min for health, 20 min bench (--timeout 1200), 3 min
+        # for the rest, for at most 3 tiers (validated above): 114 minutes. With the build, the job needs 189 of its 240 (80 percent of which is 192).
+        timeout-minutes: 120
+        env:
+          BENCH_TIERS: ${{ env.TIERS_INPUT }}
+          BENCH_LABEL: ci-costclass
+        run: |
+          python3 -m venv .bench-venv && .bench-venv/bin/pip install -q -e integration-tests 'reportlab>=4,<5' 'python-docx==1.2.0' 'openpyxl==3.1.5' pillow numpy pypdfium2
+          PATH="$PWD/.bench-venv/bin:$PATH" integration-tests/perf/run_tiers_e2e.sh --scenario "$SCENARIO_INPUT" -- --timeout 1200
+
+      # Reports only, like the other performance workflows: compare.py exits 0 until thresholds have history.
+      - name: Compare with baseline
+        if: ${{ !cancelled() && env.SUITE != 'tiers' }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          for f in reports/perf/costclass-*.json; do
+            [ -e "$f" ] || continue
+            python perf/compare.py --baseline "perf/baselines/costclass-ci-4cpu-$(basename "$f" .json | sed 's/^costclass-//').json" \
+              --current "$f" --summary reports/perf/summary.md || true
+          done
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
+        run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dump docker logs
+        if: failure() && env.SUITE != 'tiers'
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/perf/docker-logs
+          docker compose --env-file bench.env -p cc -f docker-compose.integration.neo4j.yml -f docker-compose.bench.yml logs --no-color --timestamps pipeshub-ai fake-ai \
+            > ../../integration-tests/reports/perf/docker-logs/stack.log 2>&1 || true
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-costclass-${{ github.run_id }}-${{ matrix.leg }}
+          path: |
+            integration-tests/reports/perf/
+            integration-tests/perf/reports/
+          if-no-files-found: ignore
+
+      - name: Tear down services
+        if: always() && env.SUITE != 'tiers'
+        working-directory: deployment/docker-compose
+        run: docker compose --env-file bench.env -p cc -f docker-compose.integration.neo4j.yml -f docker-compose.bench.yml down -v

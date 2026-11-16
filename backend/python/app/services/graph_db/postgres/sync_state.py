@@ -7,7 +7,7 @@ literal with bound parameters. A sweep over every org (the flag backfill) runs u
 from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.core.org_context import current_org_id
+from app.core.org_context import MissingOrgContext, current_org_id
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -36,8 +36,12 @@ def _relation(doc: object, from_id: str, to_id: str) -> dict:
 
 class SyncStateMixin(PgBase):
     # ---- a user's sync state on an app (the relation edge of the user to the app of that name) ----------------------
-    async def get_user_sync_state(self, user_email: str, service_type: str, transaction: str | None = None) -> dict | None:
+    async def get_user_sync_state(self, user_email: str, service_type: str, transaction: str | None = None, *, org_id: str) -> dict | None:
         org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        if org_id != org:
+            return None
         try:
             r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_user_sync_state */ SELECT e.doc, e.from_id, e.to_id FROM graph.edges e
                 JOIN graph.nodes u ON u.org_id = e.org_id AND u.coll = 'users' AND u.id = e.from_id AND u.doc->>'email' = $2
@@ -49,8 +53,12 @@ class SyncStateMixin(PgBase):
             return None
         return _relation(r["doc"], r["from_id"], r["to_id"]) if r else None
 
-    async def update_user_sync_state(self, user_email: str, state: str, service_type: str, transaction: str | None = None) -> dict | None:
+    async def update_user_sync_state(self, user_email: str, state: str, service_type: str, transaction: str | None = None, *, org_id: str) -> dict | None:
         org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        if org_id != org:
+            return None
         change = {"syncState": state, "lastSyncUpdate": get_epoch_timestamp_in_ms()}
         _VALIDATOR.validate_edge_update(CollectionNames.USER_APP_RELATION.value, change)
         try:

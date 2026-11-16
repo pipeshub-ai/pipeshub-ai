@@ -50,6 +50,7 @@ class TestHandleUserAddedExtended:
     @pytest.mark.asyncio
     async def test_user_added_exception_raises(self):
         svc = _make_entity_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
         svc.graph_provider.get_user_by_email = AsyncMock(
             side_effect=Exception("DB error")
         )
