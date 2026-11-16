@@ -83,6 +83,34 @@ def _omp_threads_per_encode() -> int:
     return int(raw) if raw.isdecimal() and int(raw) > 0 else 2
 
 
+def _planned_slots() -> int | None:
+    """``PIPESHUB_CAPACITY_PROFILE=auto`` only: this process's share of the plan's encode slots, else ``None``."""
+    from app.capacity.runtime import current_plan
+
+    plan = current_plan()
+    if plan is None or plan.widths is None:
+        return None
+    return max(2, plan.widths.embed_slots // max(1, plan.widths.embed_processes))
+
+
+def default_executor_threads(slots: int, reserved: int) -> int:
+    """Threads for the loop's default executor: every encode slot runs at once, plus the reserved query slots
+    and two for the model loads. The stdlib default is ``min(32, cpus + 4)``, which caps 74 slots at 32."""
+    return slots + max(0, reserved) + 2
+
+
+def configure_default_executor(loop: asyncio.AbstractEventLoop, slots: int, reserved: int) -> None:
+    """Size the loop's default executor to the slots (``auto`` only); with the flag off nothing changes."""
+    from app.capacity.knobs import capacity_profile
+
+    if capacity_profile() == "auto":
+        from concurrent.futures import ThreadPoolExecutor
+
+        loop.set_default_executor(
+            ThreadPoolExecutor(max_workers=default_executor_threads(slots, reserved), thread_name_prefix="embed")
+        )
+
+
 def _default_max_concurrent_embeddings() -> int:
     """Encode slots when not set explicitly.
 
@@ -91,6 +119,8 @@ def _default_max_concurrent_embeddings() -> int:
     stretch every batch (queries included). Slots are sized so the threads
     fill the CPUs once. Larger containers keep one slot per CPU.
     """
+    if (planned := _planned_slots()) is not None:
+        return planned
     cpus = effective_cpu_count()
     if cpus <= _SMALL_TIER_MAX_CPUS:
         return max(2, cpus // _omp_threads_per_encode())
@@ -1198,6 +1228,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
     install_log_redaction()
     app.state.model_manager = model_manager
+    configure_default_executor(asyncio.get_running_loop(), MAX_CONCURRENT_EMBEDDINGS, QUERY_RESERVED_SLOTS)
     logger.info(
         "Starting embedding server (max_concurrency=%d, "
         "slots reserved for search queries=%d, model idle unload=%ss)",

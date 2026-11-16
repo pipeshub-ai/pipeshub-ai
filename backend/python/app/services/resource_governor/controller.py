@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from app.services.resource_governor.container_link import auto_inputs as _auto_inputs
 from app.services.resource_governor.download_ahead import (
     HEAVY_DOWNLOAD_AHEAD,
     DownloadAhead,
@@ -165,12 +166,18 @@ class ResourceGovernor:
                 "ResourceGovernor: initial probe snapshot failed; retrying once before resolving ceilings"
             )
             initial_snapshot = self._probe.snapshot()
+        # ``PIPESHUB_CAPACITY_PROFILE=auto`` only: sizes from the capacity plan and joins the container
+        # controller. Without it the calls below are exactly what they have always been.
+        auto = _auto_inputs(self._worker_count, sample_interval)
         self._fleet_ceilings: Ceilings = resolve_ceilings(
             initial_snapshot,
             env_parse,
             env_index,
             reserve_embedding_cpus=reserve_embedding_cpus,
+            **(auto.resolve_kwargs if auto is not None else {}),
         )
+        if auto is not None:
+            self._fleet_ceilings = auto.partition(self._fleet_ceilings)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
         # Only shared when there are workers to share with: one process's
         # heavy gate already holds it to free memory.
@@ -206,6 +213,7 @@ class ResourceGovernor:
         self._state_lock = threading.Lock()
         self._registry = LimitRegistry(warm_start_limits(self._ceilings))
         self._state = ControllerState.initial()
+        self._container = auto.link(self._fleet_ceilings, self._ceilings, self._logger) if auto is not None else None
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}
@@ -538,6 +546,12 @@ class ResourceGovernor:
                 worker_count=self._worker_count,
                 heavy_working_set_gb=self._policy_working_set(),
             )
+            if self._container is not None:
+                new_limits, new_state = self._container.step(
+                    own=(new_limits, new_state), snap=snapshot, ceilings=self._ceilings, demand=demand, now=now,
+                    interval=self._sample_interval, feedback=feedback,
+                    heavy_working_set_gb=self._policy_working_set(),
+                )
             self._state = new_state
 
             for pool in Pool:
@@ -834,4 +848,5 @@ class ResourceGovernor:
                 }
                 for pool in Pool
             },
+            **({"capacity": self._container.stats()} if self._container is not None else {}),
         }

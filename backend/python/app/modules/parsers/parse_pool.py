@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from app.capacity.admission import reserve_or_adopt, reserve_or_adopt_blocking
+from app.capacity.budget_policy import Demand, Family
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parsers import parse_worker
 from app.services.messaging.config import messaging_env
@@ -54,6 +56,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from app.capacity.member_budget import Permit
     from app.modules.parsers.parse_pool_lanes import LanePool
     from app.services.resource_governor import ResourceGovernor
 
@@ -420,6 +423,14 @@ def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
         return _State.pool
 
 
+_LANE_WAIT_S = 3600.0  # a wait for the member budget is always bounded
+
+
+def _lane_demand() -> Demand:
+    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work)."""
+    return Demand(Family.PARSE, 1)
+
+
 def _covered(kind: object | None) -> bool:
     """Whether a heavy parse permit held by the caller covers this job's memory (read at submit time)."""
     if kind is None or parse_lanes_mode() != "on":
@@ -437,6 +448,7 @@ async def submit(
     timeout: float | None = None,
     interactive: bool = False,
     kind: object | None = None,
+    permit: Permit | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -453,13 +465,19 @@ async def submit(
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
     """
-    pool = _pool(interactive=interactive)
-    if pool is not None:
-        try:
-            return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
-        except _PoolClosed:
-            pass
-    return await asyncio.to_thread(fn, *args)
+    # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
+    held = await reserve_or_adopt(permit, _lane_demand(), deadline_s=timeout or _LANE_WAIT_S)
+    try:
+        pool = _pool(interactive=interactive)
+        if pool is not None:
+            try:
+                return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
+            except _PoolClosed:
+                pass
+        return await asyncio.to_thread(fn, *args)
+    finally:
+        if held is not None:
+            held.release()
 
 
 class _OneShotPool:
@@ -480,6 +498,7 @@ def run_blocking(
     timeout: float | None = None,
     cancelled: threading.Event | None = None,
     kind: object | None = None,
+    permit: Permit | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
 
@@ -496,6 +515,23 @@ def run_blocking(
     """
     if os.name != "posix":
         return fn(*args)
+    held = reserve_or_adopt_blocking(permit, _lane_demand(), deadline_s=timeout or _LANE_WAIT_S)
+    try:
+        return _run_blocking(fn, args, label, size, timeout, cancelled, kind)
+    finally:
+        if held is not None:
+            held.release()
+
+
+def _run_blocking(
+    fn: Callable[..., T],
+    args: tuple[object, ...],
+    label: str,
+    size: int,
+    timeout: float | None,
+    cancelled: threading.Event | None,
+    kind: object | None,
+) -> T:
     job = _Job(fn, args, label, size, timeout, require_worker=True, kind=kind, covered=_covered(kind))
     if cancelled is not None:
         job.cancelled = cancelled

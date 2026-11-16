@@ -29,6 +29,7 @@ EDITED = {
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
         # Read-only admission explain: a rule tag on the returned state, no change to any limit.
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
+        "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
     "memory_budget.py": {"kind_reservation_cost"},  # new; record_memory_cost itself is unchanged
     "consumer_concurrency.py": {
@@ -59,6 +60,7 @@ EDITED = {
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
         "ResourceGovernor.try_acquire_heavy_parse_slots", "ResourceGovernor.heavy_working_set",
+        # PIPESHUB_CAPACITY_PROFILE=auto only: __init__ (inputs and the container link), _sample_once (one step on the shared limits), stats (one extra key). Flag off: the branches are not taken.
         "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
         "ResourceGovernor._resolve_heavy_working_set",
         # Read-only admission explain.

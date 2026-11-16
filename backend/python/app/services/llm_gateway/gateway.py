@@ -24,6 +24,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
+from app.capacity.admission import llm_slot as member_llm_slot
 from app.core.org_context import spawn_in_request
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.base_client import (
@@ -541,7 +542,7 @@ class LLMGateway:
             admission = None
             lease = None
             try:
-                async with self._limiter.slot():
+                async with self._limiter.slot(), member_llm_slot():
                     # Admitted with the slot held, right before the request: a call that waited for a slot while others
                     # opened the breaker must see the breaker as it is now.
                     if fleet is not None:

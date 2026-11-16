@@ -38,6 +38,8 @@ TRACE = json.loads(FIXTURE.read_text())
 
 # What may differ from the recorded source, and why. Everything else is pinned.
 PARSE_POOL_ALLOWED = {
+    "import:from app.capacity.admission import reserve_or_adopt, reserve_or_adopt_blocking",  # the member permit helpers (auto only)
+    "import:from app.capacity.budget_policy import Demand, Family",
     "import:from app.services.resource_governor.lanes import parse_lanes_mode",  # the mode switch
     "if:TYPE_CHECKING",  # a type-only import of the lane pool
     "assign:__all__",  # pool_stats
@@ -46,6 +48,7 @@ PARSE_POOL_ALLOWED = {
     "_Worker.__init__",  # extra_env, empty in off
     "_Lane._start_worker", "_Lane._new_worker",  # the one-line hook
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
+    "run_blocking", "_run_blocking", "_lane_demand", "assign:_LANE_WAIT_S",  # PIPESHUB_CAPACITY_PROFILE=auto only: an optional permit, adopted or reserved; without the flag nothing is held and the old body runs (test_member_permits)
     "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
 }
