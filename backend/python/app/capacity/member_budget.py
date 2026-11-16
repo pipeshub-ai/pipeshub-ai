@@ -424,8 +424,7 @@ class MemberBudget:
 
     @contextlib.contextmanager
     def _txn(self) -> Iterator[_Hot]:
-        if os.getpid() != self._pid and not self._closed:
-            self._after_fork()  # before the thread lock: a lock copied from a parent's other thread would never free
+        self._attach_if_forked()  # before the thread lock: a lock copied from a parent's other thread would never free
         with self._tlock:
             if self._closed:
                 raise RuntimeError("the member budget is closed")
@@ -515,6 +514,11 @@ class MemberBudget:
                 self._write_slot()
                 return
         raise RuntimeError("the process table is full")
+
+    def _attach_if_forked(self) -> None:
+        """A forked child reattaches (descriptors, slot, watcher) before it reads or waits on the ledger."""
+        if os.getpid() != self._pid and not self._closed:
+            self._after_fork()
 
     def _drop_inherited(self) -> None:
         """Close the descriptors a fork copied (the process id stays, so the next use sees the fork and re-attaches)."""
@@ -853,6 +857,7 @@ class MemberBudget:
         attempt is immediate; each later one follows a wake, and a cancel or deadline is honoured before it.
         """
         self._check_wait(deadline_s, cancel)
+        self._attach_if_forked()
         end = None if deadline_s is None else time.monotonic() + deadline_s
         head: WaiterHead | None = None
         loop = asyncio.get_running_loop()
@@ -889,6 +894,7 @@ class MemberBudget:
     def reserve_blocking(self, d: Demand, *, deadline_s: float | None = None, cancel: CancelToken | None = None) -> Permit:
         """``reserve`` for a thread."""
         self._check_wait(deadline_s, cancel)
+        self._attach_if_forked()
         end = None if deadline_s is None else time.monotonic() + deadline_s
         head: WaiterHead | None = None
         event = threading.Event()
