@@ -1789,8 +1789,6 @@ class BookStackConnector(BaseConnector):
         return self._pass_date_filters(page, *date_filters)
 
     @staticmethod
-
-    @staticmethod
     def _page_listing(response: BookStackResponse) -> dict | None:
         """The decoded body of a list_pages answer, or None when it is not a page listing."""
         content = response.data.get('content') if response.success and response.data else None

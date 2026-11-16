@@ -767,3 +767,21 @@ functions:
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n;
       END;
+
+  # A connector's first load into kg (its promotion to enforce) or its count after a restore asks the maintenance worker to refresh the statistics of the kg tables
+  # (db/lib/kg_stats.py): one row per org, and a later ask moves its time forward (a first seed counts a load still being copied; the promotion that ends it asks
+  # again, and statistics taken in between must not close it). The worker deletes it once every table has statistics newer than the request.
+  - name: kg.w_analyze_request
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.analyze_requests", "set": ["requested_at"]}]
+    args:
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      INSERT INTO kg.analyze_requests (org_id, app_sk) VALUES (v_org, p_app_sk) ON CONFLICT (org_id) DO UPDATE SET requested_at = excluded.requested_at;
+        RETURN true;

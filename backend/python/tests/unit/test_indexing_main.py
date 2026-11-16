@@ -29,6 +29,15 @@ def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_fleet_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests stand in for the services' collaborators; the fleet Redis binding is exercised, unpatched, in
+    tests/unit/services/messaging/test_fleet_state_startup.py and the spend integration tests."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("app.indexing_main._bind_fleet_state", AsyncMock(return_value=MagicMock()))
+
+
 
 @pytest.fixture(autouse=True)
 def disable_distributed_concurrency_by_default(monkeypatch):
@@ -2011,6 +2020,7 @@ class TestIndexingHealthCheck:
     async def test_stats_failures_are_not_echoed(self):
         """Still healthy; the exceptions go to the log and the payload says only that stats are unavailable."""
         import json
+
         from app.indexing_main import health_check
 
         governor_error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
@@ -2019,10 +2029,11 @@ class TestIndexingHealthCheck:
         mock_governor.stats.side_effect = governor_error
         consumer = MagicMock()
         consumer.dispatch_stats.side_effect = dispatch_error
+        consumer.admission_explain = None
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890), patch(
             "app.indexing_main.container"
-        ) as mock_container:
+        ) as mock_container, patch("app.indexing_main.open_circuits", return_value=[]):
             mock_container.kafka_consumers = [("record", consumer)]
             result = await health_check(_make_health_request(governor=mock_governor))
 
@@ -2031,11 +2042,13 @@ class TestIndexingHealthCheck:
         # Slot stats are counters only, so nothing an exception says can reach them.
         assert all(isinstance(v, (int, float)) for v in body.pop("indexing_llm").values())
         assert set(body.pop("llm_gateway")) == {"limit", "in_use", "waiting", "providers"}
+        assert set(body.pop("llm_wire_hooks")) == {"unhooked", "warning"}
         assert body == {
             "status": "healthy",
             "timestamp": 1234567890,
             "resource_governor": {"error": "unavailable"},
             "dispatch": {"record": {"error": "unavailable"}},
+            "openCircuits": [],
         }
         assert [c.args for c in mock_container.logger.return_value.warning.call_args_list] == [
             ("Resource governor stats failed: %s", governor_error),
@@ -2095,6 +2108,7 @@ class TestIndexingHealthCheck:
     async def test_health_check_exception_is_not_echoed(self):
         """The exception goes to the log; the unauthenticated caller gets fixed text."""
         import json
+
         from app.indexing_main import health_check
 
         mock_ts = MagicMock(side_effect=[RuntimeError("SENTINEL timestamp error"), 9999999])
@@ -4265,7 +4279,10 @@ class TestPipelineStageSweep:
     """The stage sweep reclaims abandoned running jobs with or without distributed concurrency."""
 
     async def _sweep(self, manager: object) -> AsyncMock:
-        from app.indexing_main import _STAGE_IN_PROGRESS_SWEEP_MS, _sweep_pipeline_stages
+        from app.indexing_main import (
+            _STAGE_IN_PROGRESS_SWEEP_MS,
+            _sweep_pipeline_stages,
+        )
 
         container = MagicMock()
         runtime = _stage_runtime()

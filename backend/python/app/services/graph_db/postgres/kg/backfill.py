@@ -80,6 +80,17 @@ def _fmt(k: Key) -> str:
     return f"{k[0]}|{k[1]}"
 
 
+# A copy carries this in its (unused until verified) digest once a batch of it was taken off the readers: it then ends not listed from. A restart or a take-back clears it with the cursor.
+INEXACT = "copy:inexact"
+COPY_STATE = "/* pipeshub:kg.copy_state */ SELECT backfill_cursor, verify_digest FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"
+
+
+async def _copy_state(tx: Tx, org: str, app_sk: int) -> tuple[str | None, bool]:
+    """(copy cursor, whether the copy is marked inexact) of a connector, or of the org's principals (``app_sk`` 0)."""
+    row = await tx.fetchrow(COPY_STATE, org, app_sk)
+    return (row["backfill_cursor"], row["verify_digest"] == INEXACT) if row else (None, False)
+
+
 async def _app_sk(tx: Tx, app_id: str) -> int:
     return (await KgWriter(tx).nodes_upsert({("apps", app_id)}))[("apps", app_id)]
 
@@ -122,17 +133,31 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
         while (max_batches is None or done < max_batches) and not (stop is not None and stop.is_set()):
             async def batch(tx: Tx) -> bool:
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
-                cursor, _ = await modes.state(tx, org, app_sk)
+                cursor, inexact = await _copy_state(tx, org, app_sk)
                 if cursor == "done":
                     return False
                 after = _parse(cursor)
                 nodes = await (app_nodes(tx, org, app_id, after, page) if app_id else principal_page(tx, org, after, page))
                 w = KgWriter(tx)
                 if not nodes:
-                    await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor="done", verified_at=None)
+                    await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=not app_id)
+                    taken_off = False
+                else:
+                    st = await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
+                    taken_off = app_sk in st.off
+                if taken_off:
+                    # This batch's own projection took the connector off the readers (a value kg cannot hold, or a node whose connector is gone) and cleared the cursor
+                    # with it. Starting the copy again would meet the same node every time: the copy goes on past it, marked inexact, and ends not listed from (epoch 0).
+                    # The verify names the difference; once the graph no longer holds the value, the drain projects the node again and a verify can pass.
+                    inexact = True
+                elif await _copy_state(tx, org, app_sk) != (cursor, inexact):
+                    # The copy state was read before the lock: a restart that demoted the copy, or another copy that moved its cursor or marked it inexact, has
+                    # committed by now. The batch writes nothing over it, and the next batch goes on from the state as it is.
+                    return True
+                if not nodes:      # the copy is finished, by this code: the listing reads it from here on (kh_listing.head), the access check only once it is verified and promoted
+                    await w.projection_set(app_sk, epoch=0 if inexact else CODE_EPOCH, mode="legacy", digest=INEXACT if inexact else None, cursor="done", verified_at=None)
                     return False
-                await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
-                await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=_fmt(nodes[-1]), verified_at=None)
+                await w.projection_set(app_sk, epoch=0, mode="legacy", digest=INEXACT if inexact else None, cursor=_fmt(nodes[-1]), verified_at=None)
                 return True
             if not await db.run(batch, write=True):
                 break
@@ -235,6 +260,8 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             if not res.ok:
                 if mode != "legacy":      # nothing waits and kg still differs: back to the walk for readers, and the next backfill starts over
                     await modes.demote(tx, org, app_sk)
+                else:      # a copy never served: it keeps its cursor, and loses this code's epoch so that the listing does not read it either
+                    await KgWriter(tx).projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=cursor, verified_at=None)
                 return Outcome(False, n, res, 0, "differs")
             await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce" if mode == "enforce" else "shadow", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
             return Outcome(True, n, res, 0)
@@ -265,7 +292,9 @@ async def promote(db: KernelDB, org: str, app_id: str) -> Result:
                 raise Refused(f"{app_id} was demoted while it was verified")
             if not res.ok:
                 raise Refused(f"{app_id} differs from the graph: {res.summary()}")
-            await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
+            w = KgWriter(tx)
+            await w.projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
+            await w.analyze_request(app_sk)
             return res
         return await db.run(go, write=True)
 

@@ -2334,16 +2334,17 @@ class JiraDataCenterConnector(BaseConnector):
                         )
 
                 elif holder_type == "user" and holder_param:
-                    # holder_param is the user key; resolve via AppUser map first, fall back to email
-                    user_data = holder.get("user", {})
-                    user_email = user_data.get("emailAddress")
-
-                    resolved_email = None
-                    if user_by_key and holder_param in user_by_key:
-                        resolved_email = user_by_key[holder_param].email
-                    elif user_email:
-                        resolved_email = user_email
-
+                    # Only an account in the synced directory is granted, never one an inline holder email names: that
+                    # may be an account withdrawn this sync. The holder's "user" bean is an expandable element
+                    # (https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/#api/2/permissionscheme-getPermissionSchemeGrants,
+                    # "expand":"user,group,projectRole,field,all"), and this read does not expand. The parameter is the
+                    # user key on every supported release, never a username (which another account may hold once
+                    # renamed): Jira stores "the userkey, not the username"
+                    # (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/), and the
+                    # single-user grant reads its argument as a "user key string" in the Java API of 8.5.0, 9.12.0,
+                    # 10.3.0 and 11.0.0 (e.g. https://docs.atlassian.com/software/jira/docs/api/11.0.0/com/atlassian/jira/security/type/SingleUser.html).
+                    listed = (user_by_key or {}).get(holder_param)
+                    resolved_email = listed.email if listed else None
                     if resolved_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
@@ -4691,6 +4692,12 @@ class JiraDataCenterConnector(BaseConnector):
         }
         return {**aliases, **user_by_key}
 
+    def _grant_directory(self, users: dict[str, AppUser]) -> dict[str, AppUser]:
+        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
+        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
+        linked = self._linked_not_read()
+        return {**{u.source_user_id: u for u in linked if u.source_user_id}, **users} if linked else users
+
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
         """Note the project and level of each issue read that may parent a story."""
         for issue in issues:
@@ -4853,7 +4860,7 @@ class JiraDataCenterConnector(BaseConnector):
             is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
             project_key=(fields.get("project") or {}).get("key") or "",
             context=context,
-            user_by_account_id=level_users,
+            user_by_account_id=self._grant_directory(level_users),
             app_roles_mapping=self._app_roles_mapping,
             reporter_email=record.reporter_email,
             assignee_email=record.assignee_email,
@@ -5036,7 +5043,7 @@ class JiraDataCenterConnector(BaseConnector):
                         is_subtask=issue_data["is_subtask"],
                         project_key=issue_project_key,
                         context=security,
-                        user_by_account_id=level_users,
+                        user_by_account_id=self._grant_directory(level_users),
                         app_roles_mapping=self._app_roles_mapping,
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
@@ -6669,12 +6676,12 @@ class JiraDataCenterConnector(BaseConnector):
                 is_subtask=issue_data["is_subtask"],
                 project_key=project.get("key") or str(issue.get("key") or "").rsplit("-", 1)[0],
                 context=security,
-                user_by_account_id=user_by_account_id,
+                user_by_account_id=self._grant_directory(synced_users),  # not the copy widened with this issue's people
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
-            permissions = self._directory_grants(permissions, synced_users)  # not the people this issue names
+            permissions = self._directory_grants(permissions, synced_users)
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
                 # Stored open, and the issue is not known to be without a level now: closed, not left readable
                 # by the project. (A stored leveled issue keeps its grants below; its level is not stored.)

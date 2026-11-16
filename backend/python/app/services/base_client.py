@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+import weakref
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -95,7 +96,15 @@ class ServiceCallError(Exception):
 
 
 class ServiceUnavailableError(ServiceCallError):
-    """Raised when the remote service is unreachable or persistently 5xx."""
+    """Raised when the remote service is unreachable or persistently 5xx.
+
+    ``delivered``: a request may have reached the service (it answered 5xx, or the connection broke or timed out
+    after the request was written), so it may have done paid work. False only when no attempt got that far (an open
+    circuit, a refused or timed-out connection); a caller that cannot tell reads True."""
+
+    def __init__(self, message: str, *args: Any, delivered: bool = True, **kwargs: Any) -> None:  # noqa: ANN401
+        super().__init__(message, *args, **kwargs)
+        self.delivered = delivered
 
 
 class ServiceAuthRefusedError(ServiceCallError):
@@ -157,6 +166,20 @@ class CircuitState(Enum):
     HALF_OPEN = "half_open"   # cooldown elapsed, single probe in flight
 
 
+# Every live breaker, held weakly so a discarded client takes its breaker with it.
+_BREAKERS: "weakref.WeakSet[CircuitBreaker]" = weakref.WeakSet()
+# Clients are created on any thread, so the registry is only added to and copied under this lock: a set that
+# changes size during a walk raises.
+_BREAKERS_LOCK = threading.Lock()
+
+
+def open_circuits() -> list[str]:
+    """The services whose breaker is open or half open in this process, sorted, once each."""
+    with _BREAKERS_LOCK:
+        breakers = list(_BREAKERS)
+    return sorted({b.service_name for b in breakers if b.state in (CircuitState.OPEN.value, CircuitState.HALF_OPEN.value)})
+
+
 class CircuitBreaker:
     """Per-client circuit breaker guarding a single downstream service.
 
@@ -197,6 +220,8 @@ class CircuitBreaker:
         self._half_open_probe_in_flight = False
         self._half_open_probe_started_at: float | None = None
         self._lock = threading.Lock()
+        with _BREAKERS_LOCK:
+            _BREAKERS.add(self)
 
     def _probe_timed_out(self, now: float) -> bool:
         return (
@@ -400,8 +425,14 @@ class BaseServiceClient:
         operation: str = "request",
         budget_seconds: float | None = None,
         read_timeout: float | None = None,
+        retry_after_delivery: bool = True,
     ) -> httpx.Response:
         """Execute *method* request with exponential-backoff retry.
+
+        ``retry_after_delivery=False`` is for a request whose work is paid and must not be repeated: once an attempt may
+        have reached the service (a 5xx answer, or a failure after the request was written), it is not sent again. A 5xx
+        is returned to the caller; a lost reply raises ``ServiceUnavailableError(delivered=True)``. An attempt that never
+        connected, and backpressure the service asks for, are still retried.
 
         ``read_timeout`` overrides the client-wide socket read timeout for
         this call alone, for an operation whose deadline belongs to the
@@ -454,6 +485,7 @@ class BaseServiceClient:
                 f"{self.service_name} is currently unavailable (circuit breaker open)",
                 status_code=503,
                 service_name=self.service_name,
+                delivered=False,
             )
 
         attempt_limit = self.max_retries
@@ -463,6 +495,8 @@ class BaseServiceClient:
         last_exc: Exception | None = None
         last_status: int | None = None
         transient_attempts = 0
+        # Whether any attempt may have reached the service (see ``ServiceUnavailableError.delivered``).
+        delivered = False
         backpressure_attempts = 0
         last_error_message: str | None = None
         started_at = time.monotonic()
@@ -496,6 +530,11 @@ class BaseServiceClient:
 
                     response = await client.request(method, url, **kwargs)
                     last_status = response.status_code
+                    # A 429 with Retry-After is the service declining before any work; every other answer may
+                    # have done some.
+                    delivered = delivered or not (
+                        response.status_code == HTTP_TOO_MANY_REQUESTS and response.headers.get("Retry-After")
+                    )
 
                     if response.status_code not in TRANSIENT_STATUS_CODES:
                         # Service responded — even a 4xx means it's reachable.
@@ -563,6 +602,10 @@ class BaseServiceClient:
                         await asyncio.sleep(wait)
                         continue
 
+                    if not retry_after_delivery:
+                        # The service may have done the work: the caller decides, nothing is sent twice.
+                        self.circuit_breaker.record_failure()
+                        return response
                     # Transient 5xx / bare 429 (no Retry-After) — retryable.
                     transient_attempts += 1
                     # Transient 5xx / 429 — retryable. Keep body message for final raise.
@@ -578,6 +621,8 @@ class BaseServiceClient:
                     httpx.WriteError,
                 ) as exc:
                     transient_attempts += 1
+                    # A connection that was never made carried no request; any later failure may have.
+                    delivered = delivered or not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                     self.logger.debug(
                         "[%s] %s transport error on attempt %d: %s",
                         self.service_name, operation, transient_attempts, exc,
@@ -604,7 +649,7 @@ class BaseServiceClient:
                         service_name=self.service_name,
                     ) from exc
 
-                if transient_attempts >= attempt_limit:
+                if transient_attempts >= attempt_limit or (delivered and not retry_after_delivery):
                     break
                 delay = self.retry_delay * (2 ** (transient_attempts - 1))
                 if budget_seconds is not None:
@@ -640,6 +685,7 @@ class BaseServiceClient:
             raise ServiceUnavailableError(
                 f"{self.service_name} {operation} failed after {attempted} attempts: {last_exc}",
                 service_name=self.service_name,
+                delivered=delivered,
             ) from last_exc
 
         message = f"{self.service_name} {operation} failed with status {last_status}"
@@ -682,6 +728,8 @@ class BaseServiceClient:
         payload: dict,
         operation: str = "POST",
         org_id: str | None = None,
+        *,
+        retry_after_delivery: bool = True,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         body = json.dumps(payload).encode("utf-8")
@@ -692,7 +740,8 @@ class BaseServiceClient:
         # Starlette does not auto-decompress Content-Encoding: gzip request bodies,
         # so we never compress JSON request payloads here.
         return await self._request_with_retry(
-            "POST", url, content=body, headers=headers, operation=operation
+            "POST", url, content=body, headers=headers, operation=operation,
+            retry_after_delivery=retry_after_delivery,
         )
 
     async def _post_multipart(

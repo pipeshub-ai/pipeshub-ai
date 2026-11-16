@@ -1760,6 +1760,16 @@ class TestIssueGrantsNameListedAccountsOnly:
         _, perms, _ = await _build(_connector(), _issue({"id": "10102"}), _present(holders))
         assert {p.email for p in perms} == {"asg@x.com"}
 
+    @pytest.mark.asyncio
+    async def test_an_account_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
+        """acc-x has no access in Jira but carries mia's email (acc-9): mia must not get acc-x's reporter or level grant."""
+        issue = _issue({"id": "10102"})
+        issue["fields"]["reporter"] = {"accountId": "acc-x", "emailAddress": "mia@x.com", "displayName": "X"}
+        holders = {"10102": [{"type": "user", "parameter": "acc-x", "user": {"accountId": "acc-x", "emailAddress": "mia@x.com"}},
+                             {"type": "reporter"}, {"type": "assignee"}]}
+        _, perms, _ = await _build(_connector(), issue, _present(holders))
+        assert {p.email for p in perms} == {"asg@x.com"}
+
     @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
     def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:
         c = _connector()
