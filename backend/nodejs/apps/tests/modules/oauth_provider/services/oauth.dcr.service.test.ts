@@ -314,6 +314,25 @@ describe('OAuthDcrService', () => {
       expect(created.allowedScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
+    it('stores a metadata document client in the organisation it is given for the person who consented', async () => {
+      const asked: unknown[] = []
+      const placed = new OAuthDcrService(
+        createMockLogger(), mockOAuthAppService, mockScopeValidatorService,
+        (service as any).appConfig,
+        async (consenter?: unknown) => {
+          asked.push(consenter)
+          return 'org-shared'
+        },
+      )
+      const { store } = await placed.resolveAuthorizeClient(CID)
+      await store(CONSENTER)
+
+      expect(asked).to.deep.equal([CONSENTER])
+      const created = mockOAuthAppService.createDynamicClient.firstCall.args[0]
+      expect(created.orgId).to.equal('org-shared')
+      expect(created.createdBy).to.equal(CONSENTER.userId)
+    })
+
     it('allows refresh_token when the document names no grant types', async () => {
       setClientMetadataGetter(async () => JSON.stringify({ ...doc, grant_types: undefined }))
       const { app } = await service.resolveAuthorizeClient(CID)

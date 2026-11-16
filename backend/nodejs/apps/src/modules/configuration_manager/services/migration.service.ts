@@ -22,12 +22,15 @@ import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_remo
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
 import { WebSearchDuckDuckGoDefaultMigration } from './migrations/web_search_duckduckgo_default.migration';
+import { InstanceAppOwnerMigration } from './migrations/instance_app_owner.migration';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
 export interface MigrationDependencies {
   scheduler: CrawlingSchedulerService;
   appConfig: AppConfig;
+  /** `dynamicClientOrg` from `src/config.ts`, passed in: this module is itself exported from there. */
+  dynamicClientOrg: () => Promise<string | null>;
 }
 
 @injectable()
@@ -54,6 +57,8 @@ export class MigrationService {
     // after a wait that the connector service itself has to finish would
     // always miss the boot that introduced it.
     await this.serviceAccountKindBackfillMigration();
+    // First of the rest: a metadata document client consented to before it runs would lose its creator.
+    await this.instanceAppOwnerMigration(deps.dynamicClientOrg);
     // Until it runs, a policy may still name a removed sign-in method.
     await this.signInMethodsRemovalMigration();
     // Before anyone can use the upgraded server, so an organisation that relied on the old
@@ -88,6 +93,28 @@ export class MigrationService {
       this.logger.error('Service-account kind backfill failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  async instanceAppOwnerMigration(
+    dynamicClientOrg: () => Promise<string | null>,
+  ): Promise<void> {
+    try {
+      const result = await new InstanceAppOwnerMigration(
+        this.logger,
+        this.keyValueStoreService,
+        dynamicClientOrg,
+      ).run();
+      if (!result.skipped) {
+        this.logger.info('✅ Instance OAuth apps repaired', result);
+      }
+    } catch (error) {
+      this.logger.error(
+        'Instance OAuth app repair failed; retried at the next start',
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 

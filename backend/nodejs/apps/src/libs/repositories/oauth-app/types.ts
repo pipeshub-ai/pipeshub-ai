@@ -197,6 +197,17 @@ export interface OAuthAppRepository {
     id: string,
     grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
   ): Promise<void>;
+  /**
+   * One-time repair of the instance apps of `orgId` (dynamically registered clients and the
+   * first-party device app, deleted or not), which were once stored with a borrowed user as their
+   * creator: sets `createdBy` to `NO_APP_CREATOR`, and stores each dynamic client under
+   * `dynamicClientOrgId` when that is another org. Returns how many apps changed; a second call
+   * changes none. PostgreSQL keeps every row in its org, so there a different org is refused.
+   */
+  disownInstanceApps(
+    orgId: string,
+    dynamicClientOrgId: string,
+  ): Promise<number>;
   /** Client ids of live apps whose tokens act as the given user (a service account). */
   listClientIdsActingAs(userId: string): Promise<string[]>;
   /**

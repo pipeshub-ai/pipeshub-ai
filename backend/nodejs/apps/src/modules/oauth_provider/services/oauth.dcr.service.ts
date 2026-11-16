@@ -22,7 +22,7 @@ import {
   fetchClientMetadataDocument,
   isClientIdMetadataUrl,
 } from './client_metadata_document';
-import { instanceOrgForDynamicClients } from './dynamic-client-org';
+import { dynamicClientOwnerOrg } from './dynamic-client-org';
 
 /** Who consented to an authorization request. */
 export interface Consenter {
@@ -76,8 +76,10 @@ export class OAuthDcrService {
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
     @inject('AppConfig') private appConfig: AppConfig,
-    /** Where /register stores a client: `dynamicClientOrg` from `src/config.ts`. */
-    private registrationOrg: () => Promise<string | null> = instanceOrgForDynamicClients,
+    /** Which organisation stores a dynamic client: `dynamicClientOrg` from `src/config.ts`. */
+    private clientOrg: (
+      consenter?: Consenter,
+    ) => Promise<string | null> = dynamicClientOwnerOrg,
   ) {}
 
   async register(body: DcrRequestBody): Promise<DcrResponse> {
@@ -110,7 +112,7 @@ export class OAuthDcrService {
     const tokenEndpointAuthMethod = body.token_endpoint_auth_method ?? 'none'
 
     // Anyone may register, so no person did: the client is the instance's and names no creator.
-    const orgId = await this.registrationOrg()
+    const orgId = await this.clientOrg()
     if (!orgId) {
       throw new BadRequestError('Instance is not initialized')
     }
@@ -251,11 +253,15 @@ export class OAuthDcrService {
     >,
     consenter: Consenter,
   ): Promise<OAuthAppDto> {
+    const orgId = await this.clientOrg(consenter);
+    if (!orgId) {
+      throw new BadRequestError('Instance is not initialized');
+    }
     try {
       await this.oauthAppService.createDynamicClient({
         ...fresh,
         clientId,
-        orgId: consenter.orgId,
+        orgId,
         createdBy: consenter.userId,
         isConfidential: false,
       });

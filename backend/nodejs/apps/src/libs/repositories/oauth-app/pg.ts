@@ -14,6 +14,7 @@ import { stripNul } from '../strip-nul';
 import { Params, likeEscape, newObjectId, oidOf, inUnit } from '../pg-util';
 import { clientOrg, goodKey, inKeyUnit, inOrgUnit } from './pg-org';
 import {
+  NO_APP_CREATOR,
   OAuthAppStatus,
   type NewOAuthApp,
   type OAuthAppDto,
@@ -435,6 +436,26 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
             WHERE org_id = $1 AND id = $2::text AND is_dynamic AND NOT is_deleted`,
         [k.orgId, appId, scopes, grant.allowedGrantTypes, new Date()],
       );
+    });
+  }
+
+  async disownInstanceApps(
+    orgId: string,
+    dynamicClientOrgId: string,
+  ): Promise<number> {
+    // Every row stays in its org here (row-level security, primary key (org_id, id)).
+    if (dynamicClientOrgId !== orgId) {
+      throw new Error(
+        'Moving OAuth apps to another organisation is not supported on PostgreSQL',
+      );
+    }
+    return inOrgUnit(orgId, undefined, true, async (k) => {
+      const { rowCount } = await k.query(
+        `/* pipeshub:oauth.app_disown_instance */ UPDATE oauth.apps SET created_by = $2, version = version + 1, updated_at = $4
+            WHERE org_id = $1 AND (is_dynamic OR client_id = $3) AND created_by <> $2`,
+        [k.orgId, NO_APP_CREATOR, FIRST_PARTY_DEVICE_CLIENT_ID, new Date()],
+      );
+      return rowCount ?? 0;
     });
   }
 

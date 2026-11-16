@@ -11,6 +11,7 @@ import { storedKnowledgeLimitFilter } from '../../../modules/oauth_provider/type
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
+  NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
   type NewOAuthApp,
@@ -220,6 +221,26 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
       { _id: id },
       { $addToSet: { allowedScopes: { $each: scopes } } },
     );
+  }
+
+  async disownInstanceApps(
+    orgId: string,
+    dynamicClientOrgId: string,
+  ): Promise<number> {
+    const inOrg = {
+      orgId: oid(orgId),
+      $or: [{ isDynamic: true }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }],
+    };
+    const creators = await OAuthApp.updateMany(
+      { ...inOrg, createdBy: { $ne: oid(NO_APP_CREATOR) } },
+      { $set: { createdBy: oid(NO_APP_CREATOR) } },
+    );
+    if (dynamicClientOrgId === orgId) return creators.modifiedCount;
+    const moved = await OAuthApp.updateMany(
+      { orgId: oid(orgId), isDynamic: true },
+      { $set: { orgId: oid(dynamicClientOrgId) } },
+    );
+    return creators.modifiedCount + moved.modifiedCount;
   }
 
   async setDynamicGrant(
