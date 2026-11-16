@@ -64,7 +64,12 @@ UNREAD_ROUTERS: dict[str, str] = {
 }
 
 # operationId -> (statuses a request with no valid token may get, reason).
-STATUS_EXCEPTIONS: dict[str, tuple[tuple[int, ...], str]] = {}
+_DELEGATION_STUB = ("this edition has no delegation: modules/oauth_provider/routes/delegation.routes.ts answers 501 to "
+                    "every caller and holds no data; an edition that serves delegation still has to answer 401")
+STATUS_EXCEPTIONS: dict[str, tuple[tuple[int, ...], str]] = {
+    "listServiceAccountDelegations": ((401, 501), _DELEGATION_STUB),
+    "listServiceAccountDelegationEvents": ((401, 501), _DELEGATION_STUB),
+}
 
 _extensions = suite_extensions.modules("read_route_table")
 PUBLIC_READS = frozenset(PUBLIC_READS | {i for m in _extensions for i in getattr(m, "PUBLIC_READS", ())})
