@@ -4840,7 +4840,7 @@ class JiraDataCenterConnector(BaseConnector):
         count too, but never one the issue payload alone names, such as an account withdrawn earlier."""
         linked = self._linked_not_read()
         listed = {u.email.lower() for u in [*users.values(), *linked] if u.email}
-        # A grant core named an account on (its email came from the payload) is kept when that account is listed.
+        # A grant by account (the directory holds no email for it) is kept when that account is listed.
         accounts = set(users) | {u.source_user_id for u in linked if u.source_user_id}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed
                 or (p.external_id and p.external_id in accounts)]
