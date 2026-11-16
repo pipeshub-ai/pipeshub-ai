@@ -93,6 +93,8 @@ export function AgentBuilderSidebar(props: {
   toolsetsOrgCredentialLocked?: boolean;
   /** Web-search provider currently attached to the agent (null if none). */
   webSearchAttached: AgentWebSearchAttachment | null;
+  /** A service agent not bound to a service account: collections are not offered, and the group says why. */
+  collectionsNeedBinding?: boolean;
 }) {
   const {
     open,
@@ -118,6 +120,7 @@ export function AgentBuilderSidebar(props: {
     toolsetsOrgCredentialLocked = false,
     webSearchAttached,
     inSheet = false,
+    collectionsNeedBinding = false,
   } = props;
 
   const { t } = useTranslation();
@@ -481,11 +484,13 @@ export function AgentBuilderSidebar(props: {
                   itemCount={kbIndividuals.length}
                   isExpanded={isSectionOpen('knowledge-collections')}
                   onToggle={() => toggle('knowledge-collections')}
-                  dragType={paletteStructureLocked ? undefined : 'kb-group'}
+                  dragType={paletteStructureLocked || collectionsNeedBinding ? undefined : 'kb-group'}
                 >
                   {kbIndividuals.length === 0 ? (
                     <Text size="1" style={{ color: 'var(--olive-11)', padding: '4px 8px', fontStyle: 'italic' }}>
-                      {t('agentBuilder.noCollections')}
+                      {collectionsNeedBinding
+                        ? t('agentBuilder.serviceAgentCollectionsNeedBinding')
+                        : t('agentBuilder.noCollections')}
                     </Text>
                   ) : (
                     <>

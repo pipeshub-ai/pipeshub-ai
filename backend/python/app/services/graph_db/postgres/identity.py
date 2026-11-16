@@ -138,6 +138,15 @@ class IdentityMixin(PgBase):
         return not org_id or org_id == current_org_id()
 
     @staticmethod
+    def _named_org(org_id: str | None) -> bool:
+        """For a method whose org argument is required: no org (None or empty) is an error, never the ambient org by default;
+        another org reads nothing. A missing or system context raises first, as for every read."""
+        org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        return org_id == org
+
+    @staticmethod
     def _require_org(org_id: str | None) -> None:
         """A write names the ambient org or none: it is refused, not skipped, for any other."""
         if not IdentityMixin._mine(org_id):
@@ -215,8 +224,8 @@ class IdentityMixin(PgBase):
 
     @_soft(None, flag=True)
     async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False,
-                                org_id: str | None = None) -> User | None:
-        if not self._mine(org_id):
+                                org_id: str) -> User | None:
+        if not self._named_org(org_id):
             return None
         rows = await self._principals_by_email(["users"], [email], transaction)
         if rows is not None:
@@ -263,13 +272,15 @@ class IdentityMixin(PgBase):
                                                   org, active, is_external), transaction)
         return [_arango(_doc(r["doc"]), "organizations") for r in rows]
 
-    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False) -> list[dict]:
+    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+                           app_ids: list[str] | None = None) -> list[dict]:
         if not self._mine(org_id):    # never another org's apps, and not under a system context (current_org_id refuses it)
             return []
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_org_apps */ SELECT a.doc FROM graph.edges e JOIN graph.nodes a
             ON a.org_id = e.org_id AND a.coll = 'apps' AND a.id = e.to_id WHERE e.org_id = $1 AND e.coll = 'orgAppRelation' AND e.from_id = $1
-            AND (NOT $2 OR coalesce((a.doc->>'isActive')::boolean, false)) AND ($3::text IS NULL OR a.doc->>'type' = $3)""",
-                                                  current_org_id(), active_only, app_type), None)
+            AND (NOT $2 OR coalesce((a.doc->>'isActive')::boolean, false)) AND ($3::text IS NULL OR a.doc->>'type' = $3)
+            AND ($4::text[] IS NULL OR a.id = ANY($4::text[]))""",
+                                                  current_org_id(), active_only, app_type, app_ids), None)
         return [_arango(_doc(r["doc"]), "apps") for r in rows]
 
     async def batch_upsert_orgs(self, orgs: list[dict], transaction: str | None = None) -> None:
@@ -439,9 +450,11 @@ class IdentityMixin(PgBase):
               AND r.doc->>'sourceUserId' IS NOT NULL""", [current_org_id(), connector_id], transaction)
         return [{"id": r["id"], "sourceUserId": r["sid"]} for r in rows]
 
-    async def batch_upsert_app_users(self, users: list, transaction: str | None = None) -> None:
+    async def batch_upsert_app_users(self, users: list, transaction: str | None = None, *, org_id: str) -> None:
         if not users:
             return
+        if not self._named_org(org_id):     # the connector's org is the ambient one
+            raise OrgMismatch("the org argument differs from the ambient org")
         org = current_org_id()
         connector_id = users[0].connector_id
         now = get_epoch_timestamp_in_ms()
@@ -1180,10 +1193,11 @@ class IdentityMixin(PgBase):
                   UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
                     AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
                 SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
-                JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
-                  AND jsonb_typeof(a.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
-                    WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_'))
-                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
+                CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+                  WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+                  AND jsonb_typeof(y.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(y.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
+                    WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_')) LIMIT 1) a
+                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
             return [dict(r) for r in rows]
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
@@ -1204,9 +1218,10 @@ class IdentityMixin(PgBase):
                   UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
                     AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
                 SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
-                JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
-                  AND a.doc->>'webSearch' = $3
-                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, provider], None)
+                CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+                  WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+                  AND y.doc->>'webSearch' = $3 LIMIT 1) a
+                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, provider], None)
             return [dict(r) for r in rows]
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
