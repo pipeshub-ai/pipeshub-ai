@@ -100,3 +100,26 @@ def test_a_service_announces_its_plan_once_on_stderr() -> None:
     )
     lines = [ln for ln in out.stderr.splitlines() if ln.startswith("capacity:")]
     assert len(lines) == 1 and "service=embedding omp=2" in lines[0], out.stderr
+
+
+def test_a_spawned_child_does_not_announce_the_plan_again(tmp_path) -> None:
+    """A child spawned by the service imports its main module while ``parent_process()`` is still ``None``;
+    its process name is what tells it from the service's own process."""
+    code = (
+        "import multiprocessing as mp\n"
+        "if __name__ == '__main__':\n"
+        "    mp.set_start_method('spawn')\n"
+        "    import app.utils.runtime_threads\n"
+        "    p = mp.Process(target=print, args=('child ran',)); p.start(); p.join()\n"
+        "else:\n"
+        "    import app.utils.runtime_threads\n"
+    )
+    script = tmp_path / "service_main.py"
+    script.write_text(code)
+    out = subprocess.run(
+        [sys.executable, "-W", "ignore", str(script)],
+        cwd=PYTHON_ROOT, capture_output=True, text=True, check=False,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(PYTHON_ROOT), "PIPESHUB_SERVICE": "embedding"},
+    )
+    assert "child ran" in out.stdout, out
+    assert len([ln for ln in out.stderr.splitlines() if ln.startswith("capacity:")]) == 1, out.stderr

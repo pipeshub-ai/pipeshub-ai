@@ -1708,8 +1708,7 @@ class TestLifespan:
             assert not cells._slot_held(directory, 0), "the claim was not released at shutdown"
         assert cells._PROCESS == []
 
-    async def test_a_worker_that_finds_no_free_cell_retries_then_warns_once(self) -> None:
-        from pathlib import Path
+    async def test_a_worker_that_finds_no_free_cell_retries_then_warns_once(self, tmp_path) -> None:
 
         from app.capacity.cells import CLAIM_ATTEMPTS
         from app.indexing_main import _start_cell
@@ -1719,7 +1718,7 @@ class TestLifespan:
         with (
             patch("app.indexing_main.container", mock_container),
             patch("app.indexing_main._indexing_worker_count", return_value=2),
-            patch("app.indexing_main.cells_directory", return_value=Path("/nonexistent/cells")),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path),
             patch("app.indexing_main.process_claim", return_value=None) as claim,
             patch("app.indexing_main.CLAIM_BACKOFF_S", 0.0),
         ):
@@ -1727,6 +1726,45 @@ class TestLifespan:
         assert claim.call_count == CLAIM_ATTEMPTS
         assert app.state.cell_claim is None and app.state.cell_task is None
         assert mock_container.logger().warning.call_count == 1
+
+    async def test_no_sleep_follows_the_last_failed_attempt(self, tmp_path) -> None:
+        from app.capacity.cells import CLAIM_ATTEMPTS
+        from app.indexing_main import _start_cell
+
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path),
+            patch("app.indexing_main.process_claim", return_value=None),
+            patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+        ):
+            await _start_cell(app, MagicMock())
+        assert sleep.await_count == CLAIM_ATTEMPTS - 1
+
+    async def test_an_unsafe_cells_directory_is_not_retried_and_logs_one_warning_naming_the_cause(self, tmp_path, caplog) -> None:
+        import logging
+
+        from app.capacity import cells
+        from app.indexing_main import _start_cell
+
+        directory = tmp_path / "cells"
+        directory.mkdir()
+        directory.chmod(0o777)
+        cells._warned.clear()
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+            patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+            caplog.at_level(logging.WARNING),
+        ):
+            await _start_cell(app, MagicMock())
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1 and "writable by others" in warnings[0], warnings
+        assert sleep.await_count == 0
+        assert app.state.cell_claim is None and app.state.cell_task is None
 
     async def test_a_claim_that_fails_at_first_is_retried_and_published(self, tmp_path) -> None:
         from app.capacity.cells import claim_cell

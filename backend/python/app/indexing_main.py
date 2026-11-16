@@ -24,6 +24,7 @@ from app.capacity.cells import (
     CLAIM_BACKOFF_S,
     CellClaim,
     cells_directory,
+    directory_problem,
     process_claim,
     read_cells,
     write_cell,
@@ -2254,7 +2255,10 @@ async def _start_cell(app: FastAPI, governor: ResourceGovernor) -> None:
             claim = process_claim(cells_dir, workers)
             if claim is not None:
                 break
-            await asyncio.sleep(CLAIM_BACKOFF_S * 2**attempt)
+            if directory_problem(cells_dir) is not None:
+                return  # permanent, and claim_cell has logged why: retrying cannot help
+            if attempt < CLAIM_ATTEMPTS - 1:
+                await asyncio.sleep(CLAIM_BACKOFF_S * 2**attempt)
     except OSError as exc:
         logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
         return

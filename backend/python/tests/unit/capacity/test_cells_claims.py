@@ -185,14 +185,35 @@ def test_a_replacement_cell_is_not_reported_stale_from_its_predecessor_file(tmp_
 
 
 @pytest.mark.parametrize("body", ["[]", "null", "42", '"text"', "true"])
-def test_a_non_object_cell_file_is_skipped_with_a_warning(tmp_path: Path, caplog, body: str) -> None:
+def test_valid_json_that_is_not_an_object_in_a_held_cells_file_is_unreadable(tmp_path: Path, body: str) -> None:
     claim_cell(tmp_path, 1)
     (tmp_path / "0.json").write_text(body)
-    with caplog.at_level(logging.WARNING, logger="app.capacity.cells"):
+    merged = read_cells(tmp_path, 1)
+    assert not merged.healthy
+    assert [(c["cell"], c["status"], c["reason"]) for c in merged.cells] == [(0, "unhealthy", "unreadable")]
+
+
+def test_a_health_read_never_deletes_a_newly_claimed_cells_file(tmp_path: Path) -> None:
+    """A reader's view of the lock can be one claim behind: it saw the slot free, then the cell claimed and wrote."""
+    claim = claim_cell(tmp_path, 1)
+    assert claim is not None
+    write_cell(claim, {}, loop_failure=None, tick_s=5.0)
+    with patch("app.capacity.cells._slot_held", return_value=False):
         merged = read_cells(tmp_path, 1)
-        read_cells(tmp_path, 1)
-    assert merged.cells == [] and merged.healthy
-    assert [r.levelno for r in caplog.records] == [logging.WARNING], "one warning, however often health is read"
+    assert merged.cells == []
+    assert (tmp_path / "0.json").exists(), "a /health read removed the file of a cell that has just claimed"
+
+
+def test_a_health_read_hides_the_files_of_a_held_cell_in_an_unsafe_directory(tmp_path: Path) -> None:
+    """The cell holds its lock and has written, so only the directory check keeps its file out of the answer."""
+    directory = tmp_path / "cells"
+    claim = claim_cell(directory, 1)
+    assert claim is not None
+    write_cell(claim, {}, loop_failure=None, tick_s=5.0)
+    assert [c["cell"] for c in read_cells(directory, 1).cells] == [0], "the control: readable while the directory is private"
+    os.chmod(directory, 0o777)
+    merged = read_cells(directory, 1)
+    assert merged.healthy and merged.cells == []
 
 
 def test_oversized_and_garbage_files_stay_unhealthy(tmp_path: Path) -> None:

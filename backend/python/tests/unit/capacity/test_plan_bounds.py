@@ -27,6 +27,10 @@ def _facts(cpus: float, mem_gib: float = 256, **kw) -> CapacityFacts:
     ("PIPESHUB_CAPACITY_CELL_CPUS", "0.0001"), ("PIPESHUB_CAPACITY_CELL_CPUS", "-4"), ("PIPESHUB_CAPACITY_CELL_CPUS", "0"),
     ("PIPESHUB_CAPACITY_CELL_CPUS", "0.5"), ("PIPESHUB_CAPACITY_CELL_CPUS", "inf"), ("PIPESHUB_CAPACITY_CELL_CPUS", "x"),
     ("GOVERNOR_INDEX_HEADROOM", "-2"), ("GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU", "nan"),
+] + [
+    (name, bad)
+    for name in ("GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU", "GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU", "GOVERNOR_INDEX_HEADROOM")
+    for bad in ("0", "-1", "abc", "nan", "inf")
 ])
 def test_nonsense_calibration_keeps_the_default_and_warns(name: str, value: str) -> None:
     base = plan_capacity(_facts(64), AUTO)

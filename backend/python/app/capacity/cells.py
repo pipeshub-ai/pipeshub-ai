@@ -55,7 +55,7 @@ def _warn_once(key: str, message: str, *args: object) -> None:
         _log.warning(message, *args)
 
 
-def _directory_problem(directory: Path) -> str | None:
+def directory_problem(directory: Path) -> str | None:
     """Why this directory is not safe to share stats through, or ``None``."""
     try:
         st = os.lstat(directory)
@@ -104,7 +104,7 @@ def claim_cell(directory: Path, cells: int) -> CellClaim | None:
     if not _OFD:
         return None
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    problem = _directory_problem(directory)
+    problem = directory_problem(directory)
     if problem is not None:
         _warn_once(f"dir:{directory}", "Not publishing cell stats: %s is not a safe cells directory: %s", directory, problem)
         return None
@@ -192,31 +192,29 @@ def _slot_held(directory: Path, index: int) -> bool:
 def read_cells(directory: Path, cells: int, *, now_ms: int | None = None) -> MergedCells:
     """The files of the cells whose index lock is held, in index order.
 
-    A held cell whose file is stale, unreadable or reports a dead loop is unhealthy. A file whose lock
-    is free belongs to a cell that died and was not replaced: it is removed and ignored, so a dead
-    cell cannot hold ``/health`` at 503 for good. A cell that holds its lock but has not written
+    A held cell whose file is stale, unreadable (including valid JSON that is not an object) or reports
+    a dead loop is unhealthy. A file whose lock is free belongs to a cell that died and was not replaced:
+    it is ignored, so a dead cell cannot hold ``/health`` at 503 for good. A reader never deletes a file,
+    because its view of the lock can be one claim behind and the file may be a new cell's first. A cell that holds its lock but has not written
     yet is starting, and is not counted.
     """
     now = int(time.time() * 1000) if now_ms is None else now_ms
     merged: list[dict[str, Any]] = []
     healthy = True
-    if (problem := _directory_problem(directory)) is not None:
+    if (problem := directory_problem(directory)) is not None:
         _warn_once(f"dir:{directory}", "Ignoring cell stats: %s is not a safe cells directory: %s", directory, problem)
         return MergedCells(healthy=True, cells=[])
     for index in range(max(1, cells)):
         path = directory / f"{index}.json"
         if not _slot_held(directory, index):
-            with contextlib.suppress(OSError):
-                path.unlink()
-            continue
+            continue  # the next cell to claim this index removes its predecessor's file
         entry: dict[str, Any] = {"cell": index, "status": "healthy"}
         try:
             if path.stat().st_size > _MAX_FILE_BYTES:
                 raise ValueError("cell file too large")
             raw = json.loads(path.read_text())
             if not isinstance(raw, dict):
-                _warn_once(f"shape:{path}", "Skipping cell file %s: its content is not a JSON object", path)
-                continue
+                raise ValueError("cell file is not a JSON object")
             tick_s = float(raw.get("tick_s") or 5.0)
             age_ms = now - int(raw["ts_ms"])
             entry.update(pid=raw.get("pid"), age_ms=max(0, age_ms), stats=raw.get("stats"))

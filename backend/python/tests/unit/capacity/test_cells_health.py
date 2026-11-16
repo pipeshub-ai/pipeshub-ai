@@ -50,12 +50,13 @@ def test_a_dead_loop_is_unhealthy(tmp_path) -> None:
     assert not merged.healthy and merged.cells[0]["loop_failure"] == "SystemExit"
 
 
-def test_a_file_whose_slot_is_free_is_ignored_and_removed(tmp_path) -> None:
+def test_a_file_whose_slot_is_free_is_ignored_and_the_next_claim_removes_it(tmp_path) -> None:
     a = claim_cell(tmp_path, 1)
     _write(a, now_ms=0)
     a.release()
     merged = read_cells(tmp_path, 1, now_ms=10**9)
     assert merged.healthy and merged.cells == []
+    assert claim_cell(tmp_path, 1) is not None
     assert not (tmp_path / "0.json").exists()
 
 

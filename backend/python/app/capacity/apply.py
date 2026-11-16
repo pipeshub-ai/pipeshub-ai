@@ -117,8 +117,8 @@ def log_line(plan: CapacityPlan | None, env: MutableMapping[str, str] | None = N
 
 
 def announce(plan: CapacityPlan | None) -> None:
-    """One line on stderr, from a service's main process only: logging is not configured yet when this runs."""
-    if not os.environ.get(SERVICE_ENV) or multiprocessing.parent_process() is not None:
+    """One line on stderr, from a service's main process only (a spawned child is still named for its parent while it imports the main module): logging is not configured yet when this runs."""
+    if not os.environ.get(SERVICE_ENV) or multiprocessing.current_process().name != "MainProcess":
         return
     with contextlib.suppress(OSError):
         sys.stderr.write(log_line(plan) + "\n")

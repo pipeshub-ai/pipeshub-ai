@@ -34,10 +34,11 @@ def _shim(tmp_path: pathlib.Path, body: str | None) -> str:
     return f"{shims}:/usr/bin:/bin"
 
 
-def _run(tmp_path: pathlib.Path, body: str | None, then: str = SHOW) -> subprocess.CompletedProcess[str]:
-    script = "set -e\n" + _block() + then + "\necho SURVIVED\n"
+def _run(tmp_path: pathlib.Path, body: str | None, then: str = SHOW, block: str | None = None) -> subprocess.CompletedProcess[str]:
+    script = "set -e\n" + (block if block is not None else _block()) + then + "\necho SURVIVED\n"
+    # cwd is tmp_path, so a command a printed line runs (`touch PWN`) lands where the tests look for it.
     return subprocess.run(["bash", "-c", script], env={"PATH": _shim(tmp_path, body), "HOME": str(tmp_path)},
-                          capture_output=True, text=True, timeout=60, check=False)
+                          cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False)
 
 
 @pytest.mark.parametrize("body", ["exit 1\n", "echo boom >&2; exit 2\n", "kill -SEGV $$\n", "exit 0\n"])
@@ -70,6 +71,24 @@ def test_only_the_listed_key_with_a_plain_value_is_exported(tmp_path: pathlib.Pa
     assert "SURVIVED" in out.stdout, out
     assert "FACTS=unset" in out.stdout and "OTHER=unset" in out.stdout
     assert not (tmp_path / "PWN").exists()
+
+
+def _a_printed_line_ran(tmp_path: pathlib.Path, block: str) -> bool:
+    _run(tmp_path, "printf '%s\\n' 'touch PWN'\n", block=block)
+    return (tmp_path / "PWN").exists()
+
+
+def test_a_printed_line_is_never_run_by_the_block(tmp_path: pathlib.Path) -> None:
+    assert not _a_printed_line_ran(tmp_path, _block())
+
+
+def test_the_check_notices_a_block_that_runs_each_printed_line_in_a_subshell(tmp_path: pathlib.Path) -> None:
+    """The check itself must be able to fail: a block that evaluates every line but still exports correctly."""
+    loop = "while IFS= read -r capacity_line; do\n"
+    block = _block()
+    assert loop in block
+    mutated = block.replace(loop, loop + '    ( eval "$capacity_line" ) >/dev/null 2>&1 || true\n')
+    assert _a_printed_line_ran(tmp_path, mutated)
 
 
 def test_the_real_export_reaches_a_child_and_is_accepted(tmp_path: pathlib.Path) -> None:
