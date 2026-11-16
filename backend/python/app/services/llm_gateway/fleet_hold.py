@@ -22,7 +22,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.services.llm_gateway.fleet_breaker import REDIS_OP_TIMEOUT_S, FleetBreaker, FleetBreakerUnavailable
+from app.services.llm_gateway.fleet_breaker import (
+    REDIS_OP_TIMEOUT_S,
+    FleetBreaker,
+    FleetBreakerUnavailable,
+)
 from app.services.notification.types import (
     NotificationOrigin,
     NotificationRecipientRole,
