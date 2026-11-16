@@ -21,6 +21,13 @@ export enum OAuthGrantType {
   TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange',
 }
 
+/**
+ * `createdBy` of an app no person created: a client that registered itself (RFC 7591) and the
+ * first-party device app. A valid id in both stores that no user has, so such an app is in
+ * nobody's list and its tokens never act as a person (the token service and auth middleware).
+ */
+export const NO_APP_CREATOR = '000000000000000000000000';
+
 /** A stored OAuth app with every id as a string; same keys as the stored row. */
 export interface OAuthAppDto {
   _id: string;

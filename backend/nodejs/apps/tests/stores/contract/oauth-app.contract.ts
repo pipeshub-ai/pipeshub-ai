@@ -5,6 +5,7 @@
 import { expect } from 'chai';
 import { UniqueConstraintError } from '../../../src/libs/repositories/errors';
 import {
+  NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
   type NewOAuthApp,
@@ -112,6 +113,15 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
         expect(await repo.findOwned(org, me, a._id), a.clientId).to.equal(null);
       }
       expect((await repo.listOwned(org, me, { skip: 0, limit: 10 })).total).to.equal(0);
+    });
+
+    it('stores an app no person created and finds it by client id, in nobody\'s list', async () => {
+      const org = fx.newId();
+      const app = await repo.create(mk(org, NO_APP_CREATOR, { isDynamic: true }));
+      expect(app.createdBy).to.equal(NO_APP_CREATOR);
+      expect((await repo.findLiveByClientId(app.clientId))?.createdBy).to.equal(NO_APP_CREATOR);
+      expect(await repo.findInOrg(org, app._id)).to.equal(null);
+      expect((await repo.listInOrg(org, { skip: 0, limit: 10 })).total).to.equal(0);
     });
 
     it('listOwned: newest first, skip and limit, total, status filter, search', async () => {

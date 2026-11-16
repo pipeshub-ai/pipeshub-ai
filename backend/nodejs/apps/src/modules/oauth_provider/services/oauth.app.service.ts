@@ -51,16 +51,16 @@ export const DYNAMIC_REFRESH_TOKEN_LIFETIME = 2592000;
 export const APP_WORKSPACE_MISMATCH_MESSAGE =
   'This application belongs to a different workspace. Switch to that workspace and try again.';
 
-/**
- * An app issues tokens only for the workspace that created it. DCR apps and
- * the first-party device app are registered once per instance, so every
- * workspace may use them.
- */
+/** DCR apps and the first-party device app are registered once per instance, not by a workspace or a person. */
+export function isInstanceApp(app: OAuthAppDto): boolean {
+  return (
+    app.isDynamic === true || app.clientId === FIRST_PARTY_DEVICE_CLIENT_ID
+  );
+}
+
+/** An app issues tokens only for the workspace that created it; every workspace may use an instance app. */
 export function isAppUsableInOrg(app: OAuthAppDto, orgId: string): boolean {
-  if (app.isDynamic === true || app.clientId === FIRST_PARTY_DEVICE_CLIENT_ID) {
-    return true;
-  }
-  return app.orgId === orgId;
+  return isInstanceApp(app) || app.orgId === orgId;
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
