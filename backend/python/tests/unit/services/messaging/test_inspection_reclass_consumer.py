@@ -180,7 +180,7 @@ async def _kafka_run(cells: int | None) -> list[tuple[int, int, int]]:
     consumer = _kafka_consumer()
     seen: list[tuple[int, int, int]] = []
 
-    async def handler(message):
+    async def handler(message) -> AsyncGenerator[PipelineEvent, None]:
         rid = message.payload["recordId"]
         yield PipelineEvent(event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id=rid))
         yield PipelineEvent(event=IndexingEvent.START_INSPECT, data=PipelineEventData(record_id=rid, size_bytes=80 * MIB))
