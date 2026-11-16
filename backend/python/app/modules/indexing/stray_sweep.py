@@ -53,6 +53,7 @@ class SweepResult:
     scanned: int = 0
     stray_blocks: int = 0
     truncated: bool = False
+    next_offset: str | None = None
 
 
 async def sweep_stray_points(
@@ -63,8 +64,13 @@ async def sweep_stray_points(
     virtual_record_id: str,
     keep_block_ids: Iterable[str],
     max_points: int | None = None,
+    resume: str | None = None,
 ) -> SweepResult:
-    """Delete the points of *virtual_record_id* whose block id is not in *keep_block_ids*."""
+    """Delete the points of *virtual_record_id* whose block id is not in *keep_block_ids*.
+
+    A pass lists at most *max_points* points. When the record has more, ``SweepResult.next_offset`` is where the listing stopped (moved
+    back by the points the pass deleted before it, for a store whose cursor is a position): pass it as *resume* to continue there.
+    """
     if not org_id or not virtual_record_id:
         return SweepResult()
     keep = set(keep_block_ids)
@@ -72,18 +78,19 @@ async def sweep_stray_points(
     scroll_filter = await vector_db.filter_collection(must={"orgId": org_id, "virtualRecordId": virtual_record_id})
 
     strays: set[str] = set()
+    stray_points = 0
     scanned = 0
     truncated = False
-    offset = None
+    offset = resume
+    stopped_at: str | None = None
     while True:
         try:
             page = await vector_db.scroll(
-                collection_name=collection_name, scroll_filter=scroll_filter, limit=_PAGE_SIZE,
+                collection_name=collection_name, scroll_filter=scroll_filter, limit=min(_PAGE_SIZE, limit - scanned),
                 offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD, BLOCK_ID_FIELD],
             )
         except ScrollWindowExceededError:
-            # A store that pages only so far (Redis: 10,000 results) cannot list the rest of this record. The strays
-            # found so far are still removed below; the points past the window are not reached.
+            # A store that cannot list past some depth ends the listing; the strays found so far are still removed below.
             truncated = True
             break
         for point in page.points or []:
@@ -91,12 +98,14 @@ async def sweep_stray_points(
             block_id = VectorChunkPayload.from_dict(point.payload or {}).metadata.blockId
             if block_id and block_id not in keep:
                 strays.add(block_id)
+                stray_points += 1
         if not page.next_offset or page.next_offset == offset:
             break
+        offset = page.next_offset
         if scanned >= limit:
             truncated = True
+            stopped_at = offset
             break
-        offset = page.next_offset
 
     ordered = sorted(strays)
     for start in range(0, len(ordered), _DELETE_BATCH):
@@ -110,4 +119,6 @@ async def sweep_stray_points(
             "stray sweep of %s: scanned %d points, removed the points of %d stale blocks%s",
             virtual_record_id, scanned, len(strays), " (bounded; the rest next run)" if truncated else "",
         )
-    return SweepResult(scanned=scanned, stray_blocks=len(strays), truncated=truncated)
+    if stopped_at is not None:
+        stopped_at = vector_db.scroll_offset_after_delete(stopped_at, stray_points)
+    return SweepResult(scanned=scanned, stray_blocks=len(strays), truncated=truncated, next_offset=stopped_at)

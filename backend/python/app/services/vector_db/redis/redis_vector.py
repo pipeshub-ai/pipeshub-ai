@@ -97,6 +97,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.errors import classify_redis_search_error
 from app.services.vector_db.redis.utils import (
+    _parse_fields_list,
     bytes_to_vector,
     coerce_payload_hash_value,
     decode_hash_doc,
@@ -1059,17 +1060,16 @@ class RedisVectorService(IVectorDBService):
             except (ValueError, TypeError):
                 int_offset = 0
 
-        # RediSearch refuses offsets past MAXSEARCHRESULTS (10k by default).
-        # Refused here, not on the page before: that page is still returned,
-        # with a next_offset, so the caller sees every point the window holds
-        # and cannot mistake the ceiling for the end of the scroll.
+        # FT.SEARCH refuses offsets past MAXSEARCHRESULTS (10k by default). FT.AGGREGATE carries no such bound, so
+        # the pages past the window come from it, by the same position.
         if int_offset >= _MAX_SEARCH_RESULTS:
-            raise ScrollWindowExceededError(
-                f"Scroll of '{collection_name}' reached the RediSearch result "
-                f"ceiling at offset {int_offset} (MAXSEARCHRESULTS). Narrow the "
-                f"filter or raise MAXSEARCHRESULTS; continuing would silently "
-                f"drop the remainder."
-            )
+            try:
+                return await self._scroll_past_window(collection_name, idx, query, int_offset, limit, with_payload)
+            except Exception as e:
+                raise ScrollWindowExceededError(
+                    f"Scroll of '{collection_name}' reached the RediSearch result ceiling at offset {int_offset} "
+                    f"(MAXSEARCHRESULTS) and FT.AGGREGATE could not continue it: {e}"
+                ) from e
 
         # With ON HASH and no RETURN/NOCONTENT clause, FT.SEARCH returns all
         # hash fields for each matching document.  dense_embedding is skipped
@@ -1131,6 +1131,44 @@ class RedisVectorService(IVectorDBService):
 
         next_offset: str | None = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)
+
+    async def _scroll_past_window(
+        self, collection_name: str, idx: str, query: str, offset: int, limit: int, with_payload: list[str] | None,
+    ) -> ScrollResult:
+        """One page at *offset* (past MAXSEARCHRESULTS) through ``FT.AGGREGATE ... LIMIT``: the keys of the page, then their fields. The
+        order is the index's, the same as the pages before the window, so the position is a cursor that survives a call."""
+        rows = await self.client.execute_command(  # type: ignore
+            "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key", "LIMIT", str(offset), str(limit), *_NO_TIMEOUT,
+        )
+        keys: list[str] = []
+        for row in list(rows)[1:] if isinstance(rows, (list, tuple)) else []:
+            key = _parse_fields_list(row).get("__key")
+            if key:
+                keys.append(key.decode() if isinstance(key, bytes) else key)
+        total = await self.client.execute_command(  # type: ignore
+            "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        wanted = [key.replace(".", "_") for key in with_payload] if with_payload else None
+        for key in keys:
+            if wanted:
+                pipeline.execute_command("HMGET", key, *wanted)
+            else:
+                pipeline.execute_command("HGETALL", key)
+        replies = await pipeline.execute()
+        points: list[VectorPoint] = []
+        for key, reply in zip(keys, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if wanted:
+                doc = decode_hash_doc({name: value for name, value in zip(wanted, reply) if value is not None})
+            else:
+                doc = decode_hash_doc(reply)
+            if doc:
+                points.append(VectorPoint(id=key.split(":")[-1], payload=hash_doc_to_payload(doc)))
+        nxt = offset + len(keys)
+        more = len(keys) == limit and nxt < int(total[0])
+        return ScrollResult(points=points, next_offset=str(nxt) if more else None)
 
     def scroll_offset_after_delete(
         self, next_offset: str | None, deleted: int,

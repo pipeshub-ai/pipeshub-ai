@@ -134,6 +134,8 @@ from app.utils.openai_hosts import is_openai_api_url
 # A record re-keyed from random block ids reads this many old blocks' points per query and this many points per page.
 _REKEY_BLOCKS_PER_READ = 100
 _REKEY_PAGE = 500
+# Records whose stray sweep stopped at its bound, with where to resume (per process; losing it only restarts that record's sweep).
+_SWEEP_RESUME_RECORDS = 2048
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
 
@@ -1161,6 +1163,7 @@ class VectorStore(Transformer):
         self.graph_provider = graph_provider
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        self._sweep_resume: dict[tuple[str, str, int], str] = {}
         self.collection_locator = VirtualRecordCollectionLocator(
             strategy=collection_registry.strategy,
             manifest_store=collection_registry.manifest_store,
@@ -1391,10 +1394,17 @@ class VectorStore(Transformer):
         try:
             collection_name = self.collection_registry.resolve_write_collection(
                 self._record_context(record.org_id, record))
-            await sweep_stray_points(
+            # A record larger than one pass lists is swept in steps: the next pass of this revision resumes where the last stopped.
+            where = (record.org_id, vrid, hash(frozenset(keep)))
+            result = await sweep_stray_points(
                 self.vector_db_service, collection_name,
                 org_id=org_for_filter(record.org_id, match_bound=True), virtual_record_id=vrid, keep_block_ids=keep,
+                resume=self._sweep_resume.pop(where, None),
             )
+            if result.next_offset is not None:
+                self._sweep_resume[where] = result.next_offset
+                while len(self._sweep_resume) > _SWEEP_RESUME_RECORDS:
+                    self._sweep_resume.pop(next(iter(self._sweep_resume)))
         except Exception as e:  # a backstop must not fail an indexed record
             self.logger.warning(f"Stray point sweep of {vrid} failed: {e}")
 

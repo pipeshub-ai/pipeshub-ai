@@ -171,3 +171,30 @@ async def test_the_sweep_can_be_switched_off(db, monkeypatch) -> None:
     record = _record(["b1"])
     await _store(db)._sweep_stray_points(record, record.block_containers)
     assert _ids(db) == {"old"}
+
+
+async def test_a_pass_that_stops_at_its_bound_gives_where_the_next_one_resumes(db, monkeypatch) -> None:
+    monkeypatch.setattr(stray_sweep, "_PAGE_SIZE", 10)
+    await db.upsert_points(COLL, [_point(f"k-{i:03d}", "keep") for i in range(40)] + [_point(f"s-{i:03d}", f"stray-{i}") for i in range(20)])
+    seen: list[int] = []
+    resume = None
+    for _ in range(6):
+        result = await _sweep(db, {"keep"}, max_points=25, resume=resume)
+        seen.append(result.scanned)
+        assert result.scanned <= 25, "a pass stays within its bound"
+        resume = result.next_offset
+        if resume is None:
+            break
+    assert {p.payload["metadata"]["blockId"] for p in db.collections[COLL].values()} == {"keep"}
+    assert len(seen) > 1
+
+
+async def test_the_store_resumes_a_bounded_sweep_on_its_next_pass(db, monkeypatch) -> None:
+    monkeypatch.setenv("INDEXING_STRAY_SWEEP_MAX_POINTS", "25")
+    monkeypatch.setattr(stray_sweep, "_PAGE_SIZE", 10)
+    await db.upsert_points(COLL, [_point(f"k-{i:03d}", "b0") for i in range(40)] + [_point(f"s-{i:03d}", f"stray-{i}") for i in range(10)])
+    store = _store(db)
+    record = _record(["b0"])
+    for _ in range(4):
+        await store._sweep_stray_points(record, record.block_containers)
+    assert {p.payload["metadata"]["blockId"] for p in db.collections[COLL].values()} == {"b0"}
