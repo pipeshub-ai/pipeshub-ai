@@ -160,5 +160,5 @@ async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
     for name, world in generated:
         total.merge(await runner.check_world(world, name, cites=True))
     assert total.pairs > 100, f"the corpus asked {total.pairs} pairs: nothing was checked"
-    assert not total.over_admits, f"over-admits (a leak)\n{_describe(total)}"
+    assert not total.over_admits, f"over-admits (an over-share)\n{_describe(total)}"
     assert not total.findings, _describe(total)
