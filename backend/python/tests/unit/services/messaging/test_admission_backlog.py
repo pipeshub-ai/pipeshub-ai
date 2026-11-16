@@ -6,11 +6,13 @@ shows the check rejecting it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import json
 import logging
 import random
 import re
+import sys
 import threading
 import uuid
 from types import SimpleNamespace
@@ -499,6 +501,19 @@ class _Interleaver:
         self._fire("left")
 
 
+_AUDIT_RECORDING: contextvars.ContextVar[bool] = contextvars.ContextVar("audit_recording", default=False)
+_AUDITED_DURING_ROUND: set[str] = set()
+_IO_AUDIT_PREFIXES = ("open", "os.", "socket.", "subprocess.", "time.sleep", "shutil.", "glob.", "urllib.", "http.")
+
+
+def _record_io_audit_event(event: str, _args: tuple[object, ...]) -> None:
+    if _AUDIT_RECORDING.get() and event.startswith(_IO_AUDIT_PREFIXES):
+        _AUDITED_DURING_ROUND.add(event)
+
+
+sys.addaudithook(_record_io_audit_event)
+
+
 class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
     """The worker's gate entry and admit, and the done callback's release (which a cancel runs on the
     cancelling thread), each change the counters exactly once, whatever the order."""
@@ -607,16 +622,21 @@ class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
     def test_the_hot_path_calls_only_the_c_functions_it_needs(self) -> None:
         # A blocking call into C (a read, a sleep, a socket send) is one call and a handful of instructions, so it
         # passes the work bounds above; it is caught here by name. These are the C functions a round calls today.
+        # A C type's constructor (io.FileIO opening a FIFO) raises no c_call event, so the I/O-capable operations
+        # the interpreter audits (open, socket, subprocess, sleep, ...) are watched as well.
         import sys
 
         host = self._host()
         called: set[str] = set()
+        audited = _AUDITED_DURING_ROUND
+        audited.clear()
 
         def record(_frame: object, event: str, arg: object) -> None:
             if event == "c_call":
                 called.add(getattr(arg, "__qualname__", repr(arg)))
 
         previous = sys.getprofile()
+        _AUDIT_RECORDING.set(True)
         sys.setprofile(record)
         try:
             token = GateWaiterToken(host, H)
@@ -625,8 +645,10 @@ class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
             token.release()
         finally:
             sys.setprofile(previous)
+            _AUDIT_RECORDING.set(False)
         allowed = {"allocate_lock", "getattr", "isinstance", "lock.__enter__", "lock.__exit__", "setprofile"}
         assert called <= allowed, sorted(called - allowed)
+        assert not audited, sorted(audited)
 
 
 class TestBufferedIsNotCountedTwiceForTheLane:
