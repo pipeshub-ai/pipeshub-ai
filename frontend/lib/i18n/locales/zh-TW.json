@@ -4513,6 +4513,10 @@
           "label": "MongoDB",
           "description": "工作階段與使用者中繼資料"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "工作階段與使用者中繼資料"
+        },
         "messageBroker": {
           "label": "訊息代理程式",
           "description": "分散式事件串流"
