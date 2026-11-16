@@ -6716,7 +6716,7 @@ class DataSourceEntitiesProcessor:
         user_email: str,
         connector_id: str,
         tx_store: TransactionStore | None = None
-    ) -> None:
+    ) -> bool:
         """
         Migrate all permissions from a group to a user.
 
@@ -6733,6 +6733,10 @@ class DataSourceEntitiesProcessor:
             connector_id: Connector ID for logging
             tx_store: Optional transaction store to participate in caller's transaction.
                      If not provided, a new transaction will be created.
+
+        Returns:
+            True when every grant of the group is now the user's (or it had none); False when the
+            user is not found in this org or a grant could not be moved, so the group must be kept.
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
@@ -6748,7 +6752,7 @@ class DataSourceEntitiesProcessor:
                 f"User {user_email} not found in users collection, "
                 f"cannot migrate permissions. Skipping."
             )
-            return None
+            return False
 
         # Get all permission edges FROM the group
         group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
@@ -6759,10 +6763,11 @@ class DataSourceEntitiesProcessor:
 
         if not permission_edges:
             self.logger.debug(f"No permissions found for group {group_id}")
-            return None
+            return True
 
         migrated_count = 0
         skipped_count = 0
+        failed_count = 0
         new_permission_edges = []
 
         # Process each permission edge
@@ -6852,6 +6857,7 @@ class DataSourceEntitiesProcessor:
                     f"for user {user_email}: {e}",
                     exc_info=True
                 )
+                failed_count += 1
                 continue
 
         # Batch create all new permission edges
@@ -6866,8 +6872,7 @@ class DataSourceEntitiesProcessor:
                 f"Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
-            return None
-        return None
+        return failed_count == 0
 
     @retry_on_deadlock()
     async def migrate_group_to_user_by_external_id(
@@ -6909,12 +6914,17 @@ class DataSourceEntitiesProcessor:
             )
 
             # Migrate permissions (using the same transaction)
-            await self.migrate_group_permissions_to_user(
+            if not await self.migrate_group_permissions_to_user(
                 group_id=group.id,
                 user_email=user_email,
                 connector_id=connector_id,
                 tx_store=tx_store
-            )
+            ):
+                # deleting the group now would drop grants nobody received; the next sync retries
+                self.logger.warning(
+                    f"Kept group '{group.name}' ({group.id}): its permissions were not all moved to the user"
+                )
+                return
 
             # Delete the group (this will also delete all its edges)
             await tx_store.delete_user_group_by_id(group.id)

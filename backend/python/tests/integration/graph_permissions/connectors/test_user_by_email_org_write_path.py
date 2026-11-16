@@ -10,7 +10,7 @@ import uuid
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
-from app.models.entities import FileRecord, RecordGroup, RecordGroupType, RecordType
+from app.models.entities import AppUserGroup, FileRecord, RecordGroup, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 
 from ..processor_harness import build_processor
@@ -77,5 +77,43 @@ async def test_deleting_a_user_deactivates_only_that_orgs_user_with_the_address(
         users = {u.get("_key") or u.get("id"): u for u in await backend.provider.get_nodes_by_filters(CollectionNames.USERS.value, {"email": shared})}
         assert users[foreign].get("isActive") is True and users[foreign].get("orgId") == other_org, "another org's user is untouched"
         assert users[mine].get("isActive") is False and users[mine].get("orgId") == ORG, "this org's user is deactivated"
+    finally:
+        await backend.provider.delete_nodes_and_edges([foreign, mine], CollectionNames.USERS.value)
+
+
+async def test_a_group_whose_user_is_not_in_this_org_keeps_its_grants_until_the_user_is(backend) -> None:
+    """Migrating a group to a user that only another org holds moves nothing, so the group and its grant stay; a later run moves them."""
+    processor, _ = build_processor(backend.provider, ORG)
+    connector_id = f"conn-{_suffix()}"
+    await _seed_app(backend, connector_id, name="BookStack", app_type=Connectors.BOOKSTACK.value, app_group="BookStack")
+    address, other_org = f"lead-{_suffix()}@acme.com", f"org-other-{_suffix()}"
+    foreign, mine = f"a0-foreign-{_suffix()}", f"user-{_suffix()}"
+    await _user(backend, foreign, address, other_org)
+    try:
+        group = AppUserGroup(source_user_group_id=f"g:{_suffix()}", app_name=Connectors.BOOKSTACK, connector_id=connector_id, name="Leads")
+        await processor.on_new_user_groups([(group, [])])
+        stored = await backend.provider.get_user_group_by_external_id(connector_id, group.source_user_group_id)
+        space = f"book/{_suffix()}"
+        await processor.on_new_record_groups([(RecordGroup(org_id=ORG, name=space, external_group_id=space, connector_name=Connectors.BOOKSTACK,
+                                                           connector_id=connector_id, group_type=RecordGroupType.BOOK), [])])
+        record = FileRecord(id=str(uuid.uuid4()), org_id=ORG, record_name="page", record_type=RecordType.FILE, external_record_group_id=space,
+                            external_record_id=f"page/{_suffix()}", version=0, origin=OriginTypes.CONNECTOR.value, connector_name=Connectors.BOOKSTACK,
+                            connector_id=connector_id, is_file=True, extension="md", mime_type="text/markdown", inherit_permissions=False)
+        await processor.on_new_records([(record, [Permission(external_id=group.source_user_group_id, type=PermissionType.WRITE,
+                                                             entity_type=EntityType.GROUP)])])
+        assert f"{CollectionNames.GROUPS.value}/{stored.id}" in await _granted(backend, record.id)
+
+        await processor.migrate_group_to_user_by_external_id(group.source_user_group_id, address, connector_id)
+
+        assert await backend.provider.get_user_group_by_external_id(connector_id, group.source_user_group_id) is not None, "the group is kept"
+        holders = await _granted(backend, record.id)
+        assert f"{CollectionNames.GROUPS.value}/{stored.id}" in holders, "its grant is kept"
+        assert f"{CollectionNames.USERS.value}/{foreign}" not in holders, "another org's user receives nothing"
+
+        await _user(backend, mine, address, ORG)
+        await processor.migrate_group_to_user_by_external_id(group.source_user_group_id, address, connector_id)
+
+        assert await backend.provider.get_user_group_by_external_id(connector_id, group.source_user_group_id) is None
+        assert await _granted(backend, record.id) == {f"{CollectionNames.USERS.value}/{mine}"}
     finally:
         await backend.provider.delete_nodes_and_edges([foreign, mine], CollectionNames.USERS.value)

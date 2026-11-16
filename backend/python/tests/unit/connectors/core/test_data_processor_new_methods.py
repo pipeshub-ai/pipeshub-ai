@@ -534,7 +534,7 @@ class TestMigrateGroupPermissionsToUser:
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = None
         result = await proc.migrate_group_permissions_to_user("group-1", "missing@x.com", "conn-1", tx)
-        assert result is None
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_no_permissions_returns_none(self):
@@ -542,7 +542,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_user_by_email.return_value = _make_user()
         tx.get_edges_from_node.return_value = []
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_creates_new_permission_edges(self):
@@ -555,7 +555,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = None  # no existing permission for user
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         tx.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -570,7 +570,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = {"role": "READER"}
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         # The batch upsert overwrites the edge; a delete first lost it when the batch failed.
         tx.delete_edge.assert_not_awaited()
         tx.batch_create_edges.assert_awaited_once()
@@ -589,7 +589,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = {"role": "OWNER"}
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         # batch_create_edges should not be called since no new edges needed
         tx.batch_create_edges.assert_not_awaited()
 
@@ -604,7 +604,7 @@ class TestMigrateGroupPermissionsToUser:
         ]
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_handles_invalid_permission_role(self):
@@ -617,7 +617,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = None
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         # Should have defaulted to READ and created edge
         tx.batch_create_edges.assert_awaited_once()
 
@@ -627,7 +627,7 @@ class TestMigrateGroupPermissionsToUser:
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = None
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1")
-        assert result is None
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_exception_in_edge_processing_continues(self):
@@ -642,7 +642,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.side_effect = [Exception("transient"), None]
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is False
         # Second edge should still have been processed
         tx.batch_create_edges.assert_awaited_once()
 
