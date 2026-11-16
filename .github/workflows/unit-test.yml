@@ -479,11 +479,19 @@ jobs:
   # against a real Redis, the same tests the unit tier runs on fakeredis's Lua engine. They fail, never skip, when
   # Redis is missing: SPEND_IT_REDIS_URL is set, so the fixtures connect to it. No external network: the model
   # providers are local sockets and a black-holed address that is never routed.
+  # The suite is split in three shards by a hash of each test's id (tests/support/shard_plugin.py), each on its own runner
+  # and Redis: a new test lands in one shard on its own, and test_shard_partition.py proves the shards cover every test
+  # exactly once. On a runner the whole suite took about 14 min of test time; a shard takes about a third of that.
   python-spend-redis:
+    name: python-spend-redis (shard ${{ matrix.shard }}/3)
     needs: changes
     if: needs.changes.outputs.python_unit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       redis:
         image: redis:7.4-bookworm
@@ -530,18 +538,18 @@ jobs:
         # moves the URL's database up by the worker index), so no two workers share a keyspace. worksteal hands the
         # longest simulations out first-come, so one 1000-job case does not hold a worker while others sit idle.
         run: |
-          pytest tests/integration/spend \
+          python -m pytest -p tests.support.shard_plugin --shard="${{ matrix.shard }}/3" tests/integration/spend \
             tests/unit/services/llm_gateway/test_fleet_breaker.py \
             tests/unit/modules/pipeline/test_hold_ledger.py \
             tests/unit/modules/pipeline/test_pause_budget_simulation.py \
             tests/unit/services/messaging/test_fleet_state_startup.py \
             -m "not live_smoke" \
             -n 4 --dist worksteal --durations=15 \
-            -v --timeout=600 --session-timeout=1200 --junitxml="$RUNNER_TEMP/spend.xml"
+            -v --timeout=600 --session-timeout=900 --junitxml="$RUNNER_TEMP/spend.xml"
 
       # A store that is down must fail these tests, never skip them.
       - name: Fail on skipped tests
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/spend.xml" --min-tests 200
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/spend.xml" --min-tests 60
 
   # One check for everything the single python-unit-tests job used to run, so a
   # required status check keeps one name however the shards change.
