@@ -12,8 +12,9 @@ const MIGRATION_FLAG_DONE = 'true';
  * (`NO_APP_CREATOR`), and a dynamic client is stored where `dynamicClientOrg` says. Runs on both
  * document stores, through the OAuth app repository.
  *
- * Once only (a flag in the key-value store): after it, a metadata document client is stored as
- * the person who consented to it, and a later run would take that away.
+ * Only apps created before the bound `markBound` records, before this version's first process
+ * accepts a request: the repair runs after start-up, while metadata clients are already stored as
+ * the person who consented, and those must keep that person. Once only (a flag) on top of that.
  */
 export class InstanceAppOwnerMigration {
   constructor(
@@ -21,6 +22,19 @@ export class InstanceAppOwnerMigration {
     private readonly kvStore: KeyValueStoreService,
     private readonly dynamicClientOrg: () => Promise<string | null>,
   ) {}
+
+  /**
+   * Called before the process accepts requests. The first process of this version records the
+   * time; every later one leaves it (compare-and-set from absent), so no app stored by this
+   * version on any process is older than the bound.
+   */
+  static async markBound(kvStore: KeyValueStoreService): Promise<void> {
+    await kvStore.compareAndSet<string>(
+      configPaths.instanceAppOwnerBound,
+      null,
+      new Date().toISOString(),
+    );
+  }
 
   async run(): Promise<{ skipped: boolean; updated: number }> {
     if (
@@ -39,6 +53,14 @@ export class InstanceAppOwnerMigration {
       );
       return { skipped: false, updated: 0 };
     }
+    const bound = await this.kvStore.get<string>(
+      configPaths.instanceAppOwnerBound,
+    );
+    if (bound === null) {
+      // Without the bound an app consented to on this version could not be told apart: next start.
+      this.logger.warn('Instance OAuth app repair waits for its bound');
+      return { skipped: true, updated: 0 };
+    }
     const target = await this.dynamicClientOrg();
     if (target === null) {
       throw new Error('No organisation to store dynamic clients in');
@@ -46,6 +68,7 @@ export class InstanceAppOwnerMigration {
     const updated = await getOAuthAppRepository().disownInstanceApps(
       installOrg,
       target,
+      new Date(bound),
     );
     // Written only after the apps changed: a failed run is retried at the next start.
     await this.kvStore.set(

@@ -96,6 +96,11 @@ export class MigrationService {
     }
   }
 
+  /** Before the process accepts requests (`Application.start`): see InstanceAppOwnerMigration.markBound. */
+  async markInstanceAppOwnerBound(): Promise<void> {
+    await InstanceAppOwnerMigration.markBound(this.keyValueStoreService);
+  }
+
   async instanceAppOwnerMigration(
     dynamicClientOrg: () => Promise<string | null>,
   ): Promise<void> {

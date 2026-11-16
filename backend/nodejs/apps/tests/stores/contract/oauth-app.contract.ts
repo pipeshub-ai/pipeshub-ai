@@ -124,7 +124,7 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       expect((await repo.listInOrg(org, { skip: 0, limit: 10 })).total).to.equal(0);
     });
 
-    it('disownInstanceApps: only the instance apps of that org lose their creator, once', async () => {
+    it('disownInstanceApps: only the instance apps of that org stored before the bound lose their creator, once', async () => {
       const org = fx.newId();
       const other = fx.newId();
       const borrowed = fx.newId();
@@ -134,8 +134,13 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       const own = await repo.create(mk(org, borrowed));
       const elsewhere = await repo.create(mk(other, borrowed, { isDynamic: true }));
       const done = await repo.create(mk(org, NO_APP_CREATOR, { isDynamic: true }));
+      const old = new Date(Date.now() - 120_000);
+      for (const a of [dynamic, second, own, elsewhere, done]) await fx.setCreatedAt(a._id, old);
+      const bound = new Date(Date.now() - 60_000);
+      // Stored by the current code after the bound: a metadata client keeps the person who consented.
+      const consented = await repo.create(mk(org, borrowed, { isDynamic: true }));
 
-      expect(await repo.disownInstanceApps(org, org)).to.equal(2);
+      expect(await repo.disownInstanceApps(org, org, bound)).to.equal(2);
 
       for (const a of [dynamic, second, done]) {
         expect((await repo.findByClientId(a.clientId))?.createdBy, a.clientId).to.equal(NO_APP_CREATOR);
@@ -143,7 +148,8 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       }
       expect((await repo.findByClientId(own.clientId))?.createdBy).to.equal(borrowed);
       expect((await repo.findByClientId(elsewhere.clientId))?.createdBy).to.equal(borrowed);
-      expect(await repo.disownInstanceApps(org, org)).to.equal(0);
+      expect((await repo.findByClientId(consented.clientId))?.createdBy).to.equal(borrowed);
+      expect(await repo.disownInstanceApps(org, org, bound)).to.equal(0);
     });
 
     it('listOwned: newest first, skip and limit, total, status filter, search', async () => {

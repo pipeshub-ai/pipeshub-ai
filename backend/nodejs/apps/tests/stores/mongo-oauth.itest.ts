@@ -94,11 +94,13 @@ describe('OAuth repositories against a real MongoDB', function () {
       const dynamic = await apps.create({ ...base, clientId: `cid-${newId()}`, isDynamic: true });
       const device = await apps.create({ ...base, clientId: FIRST_PARTY_DEVICE_CLIENT_ID });
 
-      expect(await apps.disownInstanceApps(org, shared)).to.equal(3);
+      const after = new Date(Date.now() + 1000);
+      // Each app once, though the dynamic one needed both writes (as PostgreSQL counts).
+      expect(await apps.disownInstanceApps(org, shared, after)).to.equal(2);
 
       expect(await apps.findByClientId(dynamic.clientId)).to.include({ orgId: shared, createdBy: NO_APP_CREATOR });
       expect(await apps.findByClientId(device.clientId)).to.include({ orgId: org, createdBy: NO_APP_CREATOR });
-      expect(await apps.disownInstanceApps(org, shared)).to.equal(0);
+      expect(await apps.disownInstanceApps(org, shared, after)).to.equal(0);
       await OAuthApp.deleteOne({ clientId: FIRST_PARTY_DEVICE_CLIENT_ID });
     });
   });

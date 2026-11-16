@@ -226,21 +226,40 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
   async disownInstanceApps(
     orgId: string,
     dynamicClientOrgId: string,
+    createdBefore: Date,
   ): Promise<number> {
-    const inOrg = {
+    const move = dynamicClientOrgId !== orgId;
+    const ids = await OAuthApp.distinct('_id', {
       orgId: oid(orgId),
-      $or: [{ isDynamic: true }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }],
-    };
-    const creators = await OAuthApp.updateMany(
-      { ...inOrg, createdBy: { $ne: oid(NO_APP_CREATOR) } },
+      createdAt: { $lt: createdBefore },
+      $and: [
+        {
+          $or: [
+            { isDynamic: true },
+            { clientId: FIRST_PARTY_DEVICE_CLIENT_ID },
+          ],
+        },
+        {
+          $or: [
+            { createdBy: { $ne: oid(NO_APP_CREATOR) } },
+            ...(move ? [{ isDynamic: true }] : []),
+          ],
+        },
+      ],
+    });
+    if (ids.length === 0) return 0;
+    await OAuthApp.updateMany(
+      { _id: { $in: ids } },
       { $set: { createdBy: oid(NO_APP_CREATOR) } },
     );
-    if (dynamicClientOrgId === orgId) return creators.modifiedCount;
-    const moved = await OAuthApp.updateMany(
-      { orgId: oid(orgId), isDynamic: true },
-      { $set: { orgId: oid(dynamicClientOrgId) } },
-    );
-    return creators.modifiedCount + moved.modifiedCount;
+    if (move) {
+      await OAuthApp.updateMany(
+        { _id: { $in: ids }, isDynamic: true },
+        { $set: { orgId: oid(dynamicClientOrgId) } },
+      );
+    }
+    // Each app once, whichever of the two writes it needed, as PostgreSQL's one UPDATE counts.
+    return ids.length;
   }
 
   async setDynamicGrant(

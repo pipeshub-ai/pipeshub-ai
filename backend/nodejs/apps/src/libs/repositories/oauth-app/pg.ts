@@ -442,6 +442,7 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
   async disownInstanceApps(
     orgId: string,
     dynamicClientOrgId: string,
+    createdBefore: Date,
   ): Promise<number> {
     // Every row stays in its org here (row-level security, primary key (org_id, id)).
     if (dynamicClientOrgId !== orgId) {
@@ -452,8 +453,14 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     return inOrgUnit(orgId, undefined, true, async (k) => {
       const { rowCount } = await k.query(
         `/* pipeshub:oauth.app_disown_instance */ UPDATE oauth.apps SET created_by = $2, version = version + 1, updated_at = $4
-            WHERE org_id = $1 AND (is_dynamic OR client_id = $3) AND created_by <> $2`,
-        [k.orgId, NO_APP_CREATOR, FIRST_PARTY_DEVICE_CLIENT_ID, new Date()],
+            WHERE org_id = $1 AND (is_dynamic OR client_id = $3) AND created_by <> $2 AND created_at < $5`,
+        [
+          k.orgId,
+          NO_APP_CREATOR,
+          FIRST_PARTY_DEVICE_CLIENT_ID,
+          new Date(),
+          createdBefore,
+        ],
       );
       return rowCount ?? 0;
     });

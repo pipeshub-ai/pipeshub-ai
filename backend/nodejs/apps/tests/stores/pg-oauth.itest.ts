@@ -213,7 +213,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           allowedScopes: ['org:read'],
           isConfidential: false,
         });
-        expect(await appRepo.disownInstanceApps(org, org)).to.equal(1);
+        expect(await appRepo.disownInstanceApps(org, org, new Date(Date.now() + 1000))).to.equal(1);
         const stored = await stack.admin(async (c) =>
           (await c.query('SELECT created_by FROM oauth.apps WHERE org_id = $1 AND id = $2', [org, device._id])).rows[0]);
         expect(stored?.created_by).to.equal(NO_APP_CREATOR);
@@ -234,7 +234,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           isConfidential: false,
           isDynamic: true,
         });
-        const error = await appRepo.disownInstanceApps(org, newId()).catch((e: unknown) => e);
+        const error = await appRepo.disownInstanceApps(org, newId(), new Date()).catch((e: unknown) => e);
         expect((error as Error).message).to.match(/not supported on PostgreSQL/);
         expect((await appRepo.findByClientId(app.clientId))?.createdBy).to.equal(app.createdBy);
       });
