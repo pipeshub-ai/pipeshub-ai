@@ -20,6 +20,7 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
+import { apiStoredRecords } from './internal-record-fields';
 import type { AppConfig } from '../../tokens_manager/config/config';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 
@@ -627,8 +628,10 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
           readable.ids.has(id ?? '') ? h : { ...(others ? REDACTED : verdict) },
         ];
       }),
-      records: Object.fromEntries(
-        recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
+      records: apiStoredRecords(
+        Object.fromEntries(
+          recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
+        ),
       ),
     };
     return view as S;

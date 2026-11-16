@@ -44,7 +44,7 @@ def make_store(request, runtime, uid) -> Callable[[], object]:
                 )
         return store
 
-    make.p = f"/c{uid}/"
+    make.p = f"/services/connectors/c{uid}/"  # a prefix the connectors role (this login) may write in enforce mode too
     return make
 
 
@@ -166,7 +166,7 @@ async def test_a_failing_purge_does_not_fail_the_write(runtime, uid) -> None:
     from app.config.providers import postgres_store
 
     store = PostgresKeyValueStore(SER, DE, runtime=runtime)
-    key = f"/purge{uid}/k"
+    key = f"/services/connectors/purge{uid}/k"
     with patch.object(postgres_store, "_PURGE", "/* pipeshub:kv.purge */ SELECT 1/0"):
         store._last_purge = 0.0
         assert await store.create_key(key, {"v": 1}) is True
