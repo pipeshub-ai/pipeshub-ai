@@ -64,4 +64,4 @@ def test_expiry_days_literals_are_allowed_values() -> None:
             continue
         for value in _bad_values(path.read_text(encoding="utf-8")):
             bad.append(f"{path.relative_to(ROOT)}: expiryDays={value}")
-    assert not bad, f"expiryDays must be one of {sorted(ALLOWED)} or 'never': {bad}"
+    assert not bad, f"expiryDays must be one of {sorted(ALLOWED)}: {bad}"
