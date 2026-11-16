@@ -333,28 +333,31 @@ async def test_a_scan_that_fails_or_stalls_is_a_store_outage_and_stops_neither_p
     from app.services.llm_gateway import fleet_hold
 
     client = fleet.client()
+    # Patches are undone inside the test: the fleet fixture's own cleanup scans this same client, and a stalled scan left
+    # in place there would wait out the test timeout.
+    with monkeypatch.context() as patch:
 
-    def broken_scan(*args, **kwargs):  # noqa: ANN202
-        async def gen():  # noqa: ANN202
-            raise ConnectionError("node down")
-            yield  # pragma: no cover
+        def broken_scan(*args, **kwargs):  # noqa: ANN202
+            async def gen():  # noqa: ANN202
+                raise ConnectionError("node down")
+                yield  # pragma: no cover
 
-        return gen()
+            return gen()
 
-    monkeypatch.setattr(client, "scan_iter", broken_scan)
-    with pytest.raises(PauseStoreUnavailable):
-        await PauseStore().reconcile_owed()
-    keeper = HoldKeeper(fleet, FleetBreaker(fleet))
-    assert await keeper.tick() == 0, "the tick ran although its reconcile scan failed"
+        patch.setattr(client, "scan_iter", broken_scan)
+        with pytest.raises(PauseStoreUnavailable):
+            await PauseStore().reconcile_owed()
+        keeper = HoldKeeper(fleet, FleetBreaker(fleet))
+        assert await keeper.tick() == 0, "the tick ran although its reconcile scan failed"
 
-    async def stalled_scan(*args, **kwargs):  # noqa: ANN202
-        await asyncio.sleep(3600)
-        yield "never"
+        async def stalled_scan(*args, **kwargs):  # noqa: ANN202
+            await asyncio.sleep(3600)
+            yield "never"
 
-    monkeypatch.setattr(client, "scan_iter", stalled_scan)
-    monkeypatch.setattr(fleet_hold, "REDIS_OP_TIMEOUT_S", 0.05)
-    with pytest.raises(PauseStoreUnavailable):
-        await PauseStore().reconcile_owed()
+        patch.setattr(client, "scan_iter", stalled_scan)
+        patch.setattr(fleet_hold, "REDIS_OP_TIMEOUT_S", 0.05)
+        with pytest.raises(PauseStoreUnavailable):
+            await PauseStore().reconcile_owed()
 
 
 async def test_a_restored_hold_credits_no_time_from_before_it_began(fleet: FleetRedis, sim_clock: SimClock) -> None:
