@@ -36,9 +36,13 @@ from tests.permissions.kh_worlds import (
     APPCHAIN,
     CHAIN,
     CHAINLINK,
+    DECLPAG,
     KH_WORLDS,
     OPENGRANT,
     OPENGRANTTEAM,
+    PAGMEMBER,
+    PAGSEED,
+    PAGSTORY,
     STUBHELD,
     STUBREACH,
     STUBTOP,
@@ -117,6 +121,7 @@ class KhPgLayer(KgLayer):
         self.copied = copied
         self.not_ready = 0
         self.hide_first_app = False
+        self.copies: dict = {}      # world -> (connectors promoted, connectors) of its own copy
         self.name = f"postgres-kg-{'copied' if copied else 'walk' if not_current else 'kg'}"
 
     async def preload(self, worlds) -> None:
@@ -133,6 +138,7 @@ class KhPgLayer(KgLayer):
                 continue
             done, total = await flip(self._db, org)
             self.promoted.update(promoted=done, connectors=total)
+            self.copies[w] = (done, total)
         if self.not_current:
             for w in new:
                 await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", _hex(Namespace(self._prefix[w]).org))
@@ -217,7 +223,7 @@ async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_vi
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
 async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, monkeypatch) -> None:
-    # The typed graph takes the three access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
+    # The typed graph takes the four access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
     # copied and the listing refuses it). The worlds are generated without it, so that every adversarial shape is listed.
     from tests.permissions.gen import adversarial
     monkeypatch.setattr(adversarial, "RULES", [r for r in adversarial.RULES if r != "INHERITED"])
@@ -481,3 +487,40 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) 
         assert await children_of(kh_layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}, kh_layer.name
     bad = _bad(await check(kh_layer, UNPLACED, "unplaced"))
     assert not bad, _describe(bad)
+
+
+async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_grant_and_nowhere_else(kh_layer: KhPgLayer) -> None:
+    """PAGSEED: dave reads the issue i1 only by his own grant, and the PARENT_AND_GRANT comment c1 (granted to his group), the file f1 in it and the reply c5
+    granted to him, by the access check and by browsing i1; never without the record's own grant or under a parent he cannot read. PAGSTORY: a RESTRICTED story
+    under an epic read the same way stays closed. DECLPAG: under a member of a declared group it stays closed, as an OPEN child there does. PAGMEMBER: under
+    a member that is also read below a seed it is read, as an OPEN child there is. The worlds are copied into kg and served from it ("current"), or answered by the walk ("not_current")."""
+    expected = {
+        (PAGSEED, "dave"): {"i1", "c1", "f1", "c5"},
+        (PAGSEED, "alice"): {"P", "i1", "i2", "c1", "f1", "c3", "s1"},
+        (PAGSEED, "bob"): {"P", "i1", "i2", "c2"},
+        (PAGSEED, "carol"): {"i2"},
+        (PAGSTORY, "dave"): {"epic"},
+        (DECLPAG, "u"): {"d", "k"},
+        (PAGMEMBER, "u"): {"S", "M", "C", "O"},
+    }
+    asked = {PAGSEED: ["P", "i1", "i2", "c1", "c2", "c3", "c4", "c5", "f1", "s1"], PAGSTORY: ["P", "epic", "story", "sub", "plain", "note"], DECLPAG: ["d", "k", "c"], PAGMEMBER: ["S", "M", "C", "O"]}
+    worlds = [PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
+    await kh_layer.preload(worlds)
+    for world in worlds:      # no world is refused by the copy
+        done, total = kh_layer.copies[world]
+        assert total > 0 and done == total, (kh_layer.name, worlds.index(world), done, total)
+    for (world, who), want in expected.items():
+        ns = await kh_layer._ns(world)
+        with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+            found = await kh_layer._provider.check_access(ns.id(who), ns.org, node_ids=[ns.id(n) for n in asked[world]])
+        assert {ns.local(n) for n in found.node_ids - found.placeholder_ids} == want, (kh_layer.name, who)
+    with bind(OrgContext((await kh_layer._ns(PAGSEED)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, PAGSEED, "dave", "i1", "record") == {"c1": True}, kh_layer.name
+        assert await children_of(kh_layer, PAGSEED, "dave", "c1", "record") == {"f1": False, "c5": False}, kh_layer.name
+    with bind(OrgContext((await kh_layer._ns(PAGSTORY)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, PAGSTORY, "dave", "epic", "record") == {}, kh_layer.name
+    bad = []
+    for i, world in enumerate(worlds):
+        with bind(OrgContext((await kh_layer._ns(world)).org, None, "job", "job:test", "t")):      # not ``check``: a world the copy refuses fails here
+            bad += _bad(await check_world(kh_layer, world, f"pag-{i}", browse_apps=True))
+    assert not bad, f"{kh_layer.name}\n{_describe(bad)}"

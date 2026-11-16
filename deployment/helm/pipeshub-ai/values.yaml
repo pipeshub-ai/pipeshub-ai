@@ -457,6 +457,16 @@ config:
   governorIndexLightWorkingSetGb: ""  # (0.02) RAM assumed per in-flight light record
   governorHeavyParseWorkingSetGb: ""  # (1.5) RAM assumed per in-flight heavy parse
   governorBaselineMemoryMb: ""        # process baseline excluded from pressure
+  parsePoolWorkers: ""  # (derived from the CPU limit) worker processes for large text, code and CSV parses
+  embeddingServerMaxConcurrency: ""  # (derived) bundled embedding server encode slots
+  embeddingServerQueryReservedSlots: ""  # (1) encode slots kept for search queries
+  embeddingBatchConcurrency: ""  # (derived) embedding requests in flight per batch
+  maxConcurrentIndexingLlmCalls: ""  # (24) LLM calls in flight per LLM-calling service
+  cpuBudget: ""  # CPUs the capacity plan may use, instead of the pod limit (inactive until capacityProfile is auto)
+  memoryBudget: ""  # bytes the capacity plan may use, instead of the pod limit (inactive until capacityProfile is auto)
+  capacityProfile: ""  # (legacy) legacy or auto: auto sizes every cap from the pod's CPU and memory
+  capacityCellCpus: ""  # (16) CPUs one indexing process is planned for under auto
+  cpuOversub: ""  # (1.25) running threads per CPU the member budget admits under auto
   indexingConcurrencyLeaseSeconds: 120
   # Must stay below any caller's own deadline so redis-py raises its own clean
   # timeout rather than having a command cancelled underneath it — a cancelled
