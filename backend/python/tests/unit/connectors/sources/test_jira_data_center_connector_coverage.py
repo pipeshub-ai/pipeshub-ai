@@ -1012,7 +1012,7 @@ async def test_fetch_project_permission_scheme_user_resolved_via_user_by_key():
 
 
 @pytest.mark.asyncio
-async def test_fetch_project_permission_scheme_inline_email_alone_grants_nothing():
+async def test_fetch_project_permission_scheme_inline_email_alone_grants_nothing() -> None:
     """A user holder outside the synced directory (an account withdrawn this sync, say) gets no project grant,
     even when the holder carries its email inline."""
     conn = _make_connector()
