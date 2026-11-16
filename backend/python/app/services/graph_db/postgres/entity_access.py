@@ -190,7 +190,7 @@ class EntityAccessMixin(PgBase):
         app-level that they hold a grant on (their own, a group's or role's, their team's, the organization's; the source account's only in its connector), and what
         inherits from them (through record groups, from a group not hiding its children)."""
         org = current_org_id()
-        user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+        user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
         if not user:
             return None
         uk = user["id"]

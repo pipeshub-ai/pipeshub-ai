@@ -6507,14 +6507,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
-        """Get user by user ID. Memoized for the current chat turn (see
-        `app.utils.turn_memo`): a turn looked the same user up about twenty
-        times. Each caller gets its own copy, so one caller's edits stay its own."""
+        """Get user by user ID; with ``org_id``, only a user of that organisation.
+        Memoized for the current chat turn (see `app.utils.turn_memo`): a turn
+        looked the same user up about twenty times. Each caller gets its own
+        copy, so one caller's edits stay its own."""
+        if org_id == "":
+            return None  # an empty organisation matches no user
         from app.utils.turn_memo import memo
 
         try:
-            user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
+            user = await memo(
+                ("user_by_user_id", user_id, org_id), lambda: self._get_user_by_user_id(user_id, org_id)
+            )
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
@@ -6522,15 +6528,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
         return copy.deepcopy(user)
 
-    async def _get_user_by_user_id(self, user_id: str) -> dict | None:
-        query = """
-        MATCH (u:User {userId: $user_id})
-        RETURN u {.*} AS u
+    async def _get_user_by_user_id(self, user_id: str, org_id: str | None = None) -> dict | None:
+        scoped = org_id is not None
+        org_filter = "WHERE u.orgId = $org_id" if scoped else ""
+        query = f"""
+        MATCH (u:User {{userId: $user_id}})
+        {org_filter}
+        RETURN u {{.*}} AS u
         LIMIT 1
         """
         results = await self.client.execute_query(
             query,
-            parameters={"user_id": user_id},
+            parameters={"user_id": user_id, **({"org_id": org_id} if scoped else {})},
             plain=True,
         )
         if results:
@@ -6543,7 +6552,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         email: str,
     ) -> dict | None:
-        keep = await self.get_user_by_user_id(user_id)
+        keep = await self.get_user_by_user_id(user_id, org_id=org_id)
         if not keep:
             return None
         keep_key = graph_user_key(keep)
@@ -8550,7 +8559,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             live_record = cypher_live_record("r")
             query = f"""
-            MATCH (u:User {{userId: $userId}})
+            MATCH (u:User {{userId: $userId, orgId: $orgId}})
             {self._kh_gate_cypher(org="$orgId")}
             WITH u AS caller, $connectorId IN gatedApps AS appGranted
 
@@ -8688,7 +8697,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             live_record = cypher_live_record("r")
             query = f"""
-            MATCH (userDoc:User {{userId: $userId}})
+            MATCH (userDoc:User {{userId: $userId, orgId: $orgId}})
 
             CALL {{
                 WITH userDoc
@@ -8754,7 +8763,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
 
     async def _get_accessible_kb_ids(
-        self, user_id: str, *, include_hidden: bool = False
+        self, user_id: str, org_id: str, *, include_hidden: bool = False
     ) -> list[str]:
         """KB App ids this user can reach, directly or through a team.
 
@@ -8770,7 +8779,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         caller explicitly requested.
         """
         query = """
-        MATCH (userDoc:User {userId: $userId})
+        MATCH (userDoc:User {userId: $userId, orgId: $orgId})
 
         CALL {
             WITH userDoc
@@ -8794,7 +8803,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         RETURN DISTINCT kbId AS kbId
         """.replace("__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         results = await self.client.execute_query(
-            query, parameters={"userId": user_id, "includeHidden": include_hidden}
+            query,
+            parameters={"userId": user_id, "orgId": org_id, "includeHidden": include_hidden},
         )
         return [r.get("kbId") for r in results if r.get("kbId")]
 
@@ -9086,7 +9096,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             accessible = await self._get_accessible_kb_ids(
-                user_id, include_hidden=bool(kb_ids)
+                user_id, org_id, include_hidden=bool(kb_ids)
             )
             accessible_set = set(accessible)
             targets = [kb for kb in kb_ids if kb in accessible_set] if kb_ids else accessible
@@ -9133,7 +9143,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         instead of two that can drift apart.
         """
         try:
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             if not user_key:
                 return []
@@ -9273,7 +9283,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return AccessibleContainers(fallback_reason="no_user_or_client")
         try:
             # A failed lookup raises into query_failed below, which the turn memo does not keep.
-            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id, raise_on_error=True)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             if not user_key:
                 return AccessibleContainers(fallback_reason="user_not_found")
@@ -9355,7 +9365,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         try:
             # Step 1: Get user and accessible apps (with type information)
-            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error, org_id=org_id)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return {}
@@ -11276,7 +11286,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "code": 404,
                         "reason": f"Knowledge base context not found for record {record_id}",
                     }
-                user = await self.get_user_by_user_id(user_id)
+                user = await self.get_user_by_user_id(user_id, org_id=org_id)
                 if not user:
                     return {
                         "success": False,
@@ -11327,7 +11337,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if soft_delete:
                 deleted_by = None
                 if DeleteSource(delete_source) is DeleteSource.USER:
-                    deleter = await self.get_user_by_user_id(user_id) or {}
+                    deleter = await self.get_user_by_user_id(user_id, org_id=org_id) or {}
                     deleted_by = deleter.get("id") or deleter.get("_key")
                 # What the hard delete removes: the record and its direct attachments, as on
                 # ArangoDB. One statement marks them all with one batch, so a restore of the
@@ -13984,7 +13994,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📋 Record details - Origin: {origin}, Connector: {connector_name}, ConnectorId: {connector_id}")
 
             # Get user
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return {
                     "success": False,
@@ -14187,7 +14197,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
             # Get user
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return {
                     "success": False,
@@ -16501,7 +16511,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> dict:
         """Unified validation for all upload scenarios"""
         try:
-            user = await self.get_user_by_user_id(user_id=user_id)
+            user = await self.get_user_by_user_id(user_id=user_id, org_id=org_id)
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
 
@@ -28380,7 +28390,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if user_ids:
                 user_keys = []
                 for uid in user_ids:
-                    user = await self.get_user_by_user_id(uid)
+                    user = await self.get_user_by_user_id(uid, org_id=org_id)
                     if user:
                         user_keys.append(user.get("id") or user.get("_key"))
 

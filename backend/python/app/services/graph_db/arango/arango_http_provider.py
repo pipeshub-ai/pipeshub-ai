@@ -3099,7 +3099,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "reason": "Record group does not have a connector id or name",
                 }
 
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return {
                     "success": False,
@@ -3891,7 +3891,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             connector_name = rec.get("connectorName", "")
             connector_id = rec.get("connectorId", "")
             origin = rec.get("origin", "")
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
             user_key = user.get("_key") or user.get("id")
@@ -8526,21 +8526,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
         """
-        Get user by user ID.
+        Get user by user ID; with ``org_id``, only a user of that organisation.
         Note: user_id is the userId field value, not the _key.
         """
         try:
+            scoped = org_id is not None
+            org_filter = "FILTER user.orgId == @org_id" if scoped else ""
             query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user.userId == @user_id
+                    {org_filter}
                     LIMIT 1
                     RETURN user
             """
             result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"user_id": user_id}
+                bind_vars={"user_id": user_id, **({"org_id": org_id} if scoped else {})}
             )
             return result[0] if result else None
         except Exception as e:
@@ -8555,7 +8559,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         email: str,
     ) -> dict | None:
-        keep = await self.get_user_by_user_id(user_id)
+        keep = await self.get_user_by_user_id(user_id, org_id=org_id)
         if not keep:
             return None
         keep_translated = self._translate_node_from_arango(keep) if "_key" in keep else keep
@@ -8756,7 +8760,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[str]:
         
         try:
-            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error, org_id=org_id)
             if not user:
                 return []
             user_key = user.get("_key") or user.get("id")
@@ -19110,7 +19114,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> dict:
         """Unified validation for all upload scenarios."""
         try:
-            user = await self.get_user_by_user_id(user_id=user_id)
+            user = await self.get_user_by_user_id(user_id=user_id, org_id=org_id)
             if not user:
                 return self._validation_error(404, f"User not found: {user_id}")
             user_key = user.get("_key") or user.get("id")
@@ -24280,7 +24284,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
             # Get user document to verify user exists
-            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return None
@@ -26192,6 +26196,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET userDoc = FIRST(
                 FOR user IN @@users
                 FILTER user.userId == @userId
+                FILTER user.orgId == @orgId
                 RETURN user
             )
             LET u = userDoc
@@ -26385,6 +26390,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             bind_vars: dict = {
                 "userId": user_id,
+                "orgId": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "completedStatus": ProgressStatus.COMPLETED.value,
                 "@users": CollectionNames.USERS.value,
@@ -26418,6 +26424,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET userDoc = FIRST(
                 FOR user IN @@users
                 FILTER user.userId == @userId
+                FILTER user.orgId == @orgId
                 RETURN user
             )
 
@@ -26495,7 +26502,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         reach" instead of two that can drift apart.
         """
         try:
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return []
             user_key = user.get("_key") or user.get("id")
@@ -26606,7 +26613,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not user_id or not org_id or not self.http_client:
             return AccessibleContainers(fallback_reason="no_user_or_client")
         try:
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             user_key = (user or {}).get("_key") or (user or {}).get("id")
             if not user_key:
                 return AccessibleContainers(fallback_reason="user_not_found")
