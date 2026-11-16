@@ -252,6 +252,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    UNSUPPORTED_PAGE_FIELDS,
     AccessibleContainers,
     CodeFileInfo,
     FolderChangedDuringDelete,
@@ -3266,6 +3267,61 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 expected, new_status, str(e),
             )
             raise
+
+    async def list_unsupported_page(
+        self,
+        org_id: str,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        # A range seek of the (orgId, connectorId, indexingStatus, _key) index; the sort is the index's.
+        rows = await self.http_client.execute_aql(
+            """
+            FOR r IN @@records
+                FILTER r.orgId == @org_id AND r.connectorId == @connector_id
+                    AND r.indexingStatus == @status AND r._key > @after AND r.isDeleted != true
+                SORT r._key
+                LIMIT @limit
+                RETURN KEEP(r, @fields)
+            """,
+            {
+                "@records": CollectionNames.RECORDS.value,
+                "org_id": org_id,
+                "connector_id": connector_id,
+                "status": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "after": after_key or "",
+                "limit": max(1, int(limit)),
+                "fields": ["_key", *UNSUPPORTED_PAGE_FIELDS],
+            },
+        )
+        return list(rows or [])
+
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not keys:
+            return []
+        bind_vars: dict[str, Any] = {
+            "@records": CollectionNames.RECORDS.value,
+            "keys": keys,
+            "expected": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            "to": to_status,
+        }
+        fields = "{ indexingStatus: @to, reason: null }"
+        if to_status == ProgressStatus.QUEUED.value:
+            fields = "{ indexingStatus: @to, reason: null, queuedAtTimestamp: @now }"
+            bind_vars["now"] = get_epoch_timestamp_in_ms()
+        # One statement: the status is read where it is written, so a record the indexer moved on is not taken back.
+        updated = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@records
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected AND doc.isDeleted != true
+                UPDATE doc WITH {fields} IN @@records
+                RETURN NEW._key
+            """,
+            bind_vars,
+        )
+        return [k for k in (updated or []) if isinstance(k, str)]
 
     # ==================== Pipeline stage states ====================
 
@@ -26959,6 +27015,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their _key (record IDs).
@@ -26999,6 +27057,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_virtual_record_holders(
@@ -29815,7 +29875,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
                 FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
+                LET template = DOCUMENT(perm._to)
+                // a template stored without isDeleted is live, as in the list and get_template
+                FILTER template != null AND template.isDeleted != true
                 LIMIT 1
                 RETURN perm
             """
@@ -29880,7 +29942,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
                 FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
+                LET template = DOCUMENT(perm._to)
+                // a template stored without isDeleted is live, as in the list and get_template
+                FILTER template != null AND template.isDeleted != true
                 LIMIT 1
                 RETURN perm
             """
