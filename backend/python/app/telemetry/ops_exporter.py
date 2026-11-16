@@ -864,7 +864,8 @@ class BoundedServer(HTTPServer):
         self._flight = SingleFlight()
         super().__init__(address, handler)
         threading.Thread(target=self._reap, name="ops-exporter-reaper", daemon=True).start()
-        threading.Thread(target=self._admit_loop, name="ops-exporter-admit", daemon=True).start()
+        self._admitter = threading.Thread(target=self._admit_loop, name="ops-exporter-admit", daemon=True)
+        self._admitter.start()
 
     def render(self, registry: CollectorRegistry) -> bytes:
         return self._flight.run(lambda: generate_latest(registry))

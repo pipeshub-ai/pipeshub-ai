@@ -384,7 +384,7 @@ def test_a_full_admission_queue_refuses_at_once(tmp_path: Path) -> None:
         server._closing.set()  # park the admitter so that the queue only fills
         with server._wake:
             server._wake.notify_all()
-        assert _wait_until(lambda: not any(t.name == "ops-exporter-admit" for t in threading.enumerate()), 5)
+        assert _wait_until(lambda: not server._admitter.is_alive(), 5)
         queued = []
         for _ in range(ox.ADMIT_QUEUE_MAX):
             c, d = socket.socketpair()
