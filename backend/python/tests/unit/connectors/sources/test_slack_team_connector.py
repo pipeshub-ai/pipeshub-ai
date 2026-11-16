@@ -2763,6 +2763,19 @@ class TestSyncUsersAndCaches:
         assert [u.source_user_id for u in c._non_guest_app_users] == ["UOK"]
 
     @pytest.mark.asyncio
+    async def test_a_member_listed_deactivated_gets_no_group_membership_from_its_stored_row(self) -> None:
+        """The source-id map feeds group members: a member listed deactivated or invited is left out of it, while a
+        mention of it still resolves through the internal-id cache."""
+        c = _connector_pipeline_ready()
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            MagicMock(source_user_id="UOLD", id="n-UOLD", email="old@x.com", is_active=True, full_name="Old"),
+            MagicMock(source_user_id="UOK", id="n-UOK", email="ok@x.com", is_active=True, full_name="Ok"),
+        ])
+        await c._build_user_id_caches({"UOLD"})
+        assert set(c._source_id_to_app_user) == {"UOK"}
+        assert c.user_id_to_internal_id_cache["UOLD"] == "n-UOLD"
+
+    @pytest.mark.asyncio
     async def test_a_member_listed_deactivated_gets_no_email_back_from_its_stored_row(self) -> None:
         """A short list keeps the member linked; its stored row must not put its email back for the grants."""
         from app.connectors.sources.slack.team.connector import SlackConnector
