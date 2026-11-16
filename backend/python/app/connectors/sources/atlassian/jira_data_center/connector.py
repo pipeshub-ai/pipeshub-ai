@@ -2337,7 +2337,12 @@ class JiraDataCenterConnector(BaseConnector):
                     # Only an account in the synced directory is granted, never one an inline holder email names: that
                     # may be an account withdrawn this sync. The holder's "user" bean is an expandable element
                     # (https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/#api/2/permissionscheme-getPermissionSchemeGrants,
-                    # "expand":"user,group,projectRole,field,all"), and this read does not expand.
+                    # "expand":"user,group,projectRole,field,all"), and this read does not expand. The parameter is the
+                    # user key on every supported release, never a username (which another account may hold once
+                    # renamed): Jira stores "the userkey, not the username"
+                    # (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/), and the
+                    # single-user grant reads its argument as a "user key string" in the Java API of 8.5.0, 9.12.0,
+                    # 10.3.0 and 11.0.0 (e.g. https://docs.atlassian.com/software/jira/docs/api/11.0.0/com/atlassian/jira/security/type/SingleUser.html).
                     listed = (user_by_key or {}).get(holder_param)
                     resolved_email = listed.email if listed else None
                     if resolved_email:
