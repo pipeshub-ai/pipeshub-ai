@@ -21,3 +21,12 @@ def structured_logging_provider() -> object:
     ``object`` so this module stays import-free; ``get_provider`` checks it.
     """
     return None
+
+
+def check_runtime_settings() -> None:
+    """Raise to refuse, at service start, a combination of settings this build does not run.
+
+    Every Python service calls it at load, before it serves: through
+    ``edition_services.configure_app``, and directly in docling and embedding,
+    which do not use that. OSS runs every combination, so it refuses nothing.
+    """

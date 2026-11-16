@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from unittest.mock import MagicMock
 
-from app import edition_services
+import pytest
+
+from app import edition, edition_services
 from app.agents.agent_loop import error_classification
 
 
@@ -22,6 +26,36 @@ def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     edition_services.register_extra_toolsets(registry)
 
     assert app.mock_calls == [] and registry.mock_calls == []
+
+
+APP = Path(edition.__file__).parent
+# The sandbox's Docker socket proxy reads no PipesHub setting.
+READS_NO_SETTINGS = {"docker_proxy_main.py"}
+
+
+def test_configure_app_runs_the_settings_check_before_touching_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse() -> None:
+        raise RuntimeError("refused")
+
+    monkeypatch.setattr(edition, "check_runtime_settings", refuse)
+    app = MagicMock()
+
+    with pytest.raises(RuntimeError, match="refused"):
+        edition_services.configure_app(app, "query")
+    assert app.mock_calls == []
+
+
+def _module_level_calls(path: Path) -> set[str]:
+    return {
+        node.value.func.id
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+    }
+
+
+@pytest.mark.parametrize("main", sorted(p.name for p in APP.glob("*_main.py") if p.name not in READS_NO_SETTINGS))
+def test_every_service_runs_the_settings_check_at_load(main: str) -> None:
+    assert _module_level_calls(APP / main) & {"configure_app", "check_runtime_settings"}
 
 
 def test_a_registered_classifier_is_asked_first(monkeypatch) -> None:
