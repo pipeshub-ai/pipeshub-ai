@@ -548,7 +548,8 @@ def _permissions_for_holder(
         email, inactive, account = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        add_user(email, account or _account_of(holder.get("user")) or parameter)
+        # The account is named only beside an address the directory resolved: outside it, a person gets no grant at all.
+        add_user(email, account or (_account_of(holder.get("user")) or parameter if email else None))
         # A person who resolves to no e-mail is unread, not outside the level.
         return grants, False, None if email or account else HOLDER_USER
 
@@ -562,11 +563,11 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email, reporter_account or _account_of(fields.get("reporter")))
+        add_user(reporter_email, reporter_account or (_account_of(fields.get("reporter")) if reporter_email else None))
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email, assignee_account or _account_of(fields.get("assignee")))
+        add_user(assignee_email, assignee_account or (_account_of(fields.get("assignee")) if assignee_email else None))
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -613,7 +614,7 @@ def _permissions_for_holder(
             else:
                 email, inactive, account = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email, account or _account_of(entry))
+                    add_user(email, account or (_account_of(entry) if email else None))
                     unresolved = unresolved or not (email or account)
         return grants, False, holder_type if unresolved else None
 

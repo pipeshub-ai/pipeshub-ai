@@ -254,7 +254,9 @@ class TestIssueAccess:
                     {"type": "user", "user": {"accountId": "gone", "active": False, "emailAddress": "old@ex.com"}},
                 ],
             }),
-            user_by_account_id={"acc-1": type("U", (), {"email": "mia@ex.com"})()},
+            user_by_account_id={"acc-1": type("U", (), {"email": "mia@ex.com"})(),
+                                "acc-rep": type("U", (), {"email": "rep@ex.com"})(),
+                                "acc-asg": type("U", (), {"email": "asg@ex.com"})()},
             app_roles_mapping={"jira-software": [{"groupId": "sw-users"}]},
             reporter_email="rep@ex.com",
             assignee_email="asg@ex.com",
@@ -954,7 +956,8 @@ class TestOneGrantPerPerson:
         holders = [{"type": "reporter"},
                    {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "emailAddress": "ana@x.com"}}]
         grants, unreadable, _ = level_grants(
-            holders, project_key="P", fields={"reporter": {"displayName": "Ana"}}, user_by_id={},
+            holders, project_key="P", fields={"reporter": {"displayName": "Ana"}},
+            user_by_id={"acc-1": type("U", (), {"email": "ana@x.com"})()},
             app_roles_mapping=None, reporter_email="ana@x.com", assignee_email=None,
         )
         assert not unreadable
