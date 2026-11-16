@@ -12,7 +12,12 @@ import pytest
 
 from app.capacity import member_budget as mb
 from app.capacity.budget_policy import Demand, Family
-from app.capacity.member_budget import AdmissionTimeout, Cancelled, CancelToken, MemberBudget
+from app.capacity.member_budget import (
+    AdmissionTimeout,
+    Cancelled,
+    CancelToken,
+    MemberBudget,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -156,7 +161,7 @@ def test_concurrent_releases_and_memory_refreshes_never_raise(ledger: Path) -> N
         try:
             while not stop.is_set():
                 b.refresh_memory()
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errors.append(exc)
 
     t = threading.Thread(target=refresher)

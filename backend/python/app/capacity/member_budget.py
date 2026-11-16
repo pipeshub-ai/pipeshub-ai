@@ -312,7 +312,7 @@ class _Watcher:
         with self._lock:
             self._entries.pop(token, None)
 
-    def _pick(self, entries: list[tuple[object, tuple[bool, bool, Any]]], llm: bool, n: int, fallback: bool) -> list[Any]:
+    def _pick(self, entries: list[tuple[object, tuple[bool, bool, Any]]], llm: bool, n: int, *, fallback: bool) -> list[Any]:
         side = sorted((e for e in entries if e[1][0] == llm), key=lambda e: not e[1][1])  # critical first, then oldest
         if not side:
             return []
@@ -340,11 +340,11 @@ class _Watcher:
                 cur = self._budget._changes()
             except OSError:
                 continue
-            wakes = self._pick(entries, False, cur[0] - last[0], False) + self._pick(entries, True, cur[1] - last[1], False)
+            wakes = self._pick(entries, False, cur[0] - last[0], fallback=False) + self._pick(entries, True, cur[1] - last[1], fallback=False)
             now = time.monotonic()
             if now >= next_fallback:
                 next_fallback = now + FALLBACK_S * (1 + random.random())
-                wakes += self._pick(entries, False, 1, True) + self._pick(entries, True, 1, True)
+                wakes += self._pick(entries, False, 1, fallback=True) + self._pick(entries, True, 1, fallback=True)
             with self._lock:
                 self._last = cur
             for wake in wakes:
