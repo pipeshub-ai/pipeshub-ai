@@ -1188,6 +1188,59 @@ class TestAgentKnowledgeSqlConnectorIds:
         assert agent_knowledge_sql_connector_ids(None) == frozenset()
 
 
+class TestSharedSqlKnowledge:
+    """What a service-account agent may use: databases shared with the whole org."""
+
+    KNOWLEDGE = [
+        {"connectorId": "pg-team", "type": "POSTGRESQL"},
+        {"connectorId": "pg-mine", "type": "POSTGRESQL"},
+        {"connectorId": "sf-legacy", "type": "SNOWFLAKE"},
+        {"connectorId": "pg-gone", "type": "POSTGRESQL"},
+        {"connectorId": "drive-mine", "type": "GOOGLE_DRIVE"},
+        None,
+    ]
+
+    @staticmethod
+    def _graph(instances: list[dict]) -> MagicMock:
+        graph = MagicMock()
+        graph.get_user_connector_instances = AsyncMock(return_value=instances)
+        return graph
+
+    async def test_keeps_the_orgs_databases_and_drops_the_identitys_own(self) -> None:
+        graph = self._graph([
+            {"_key": "pg-team", "scope": "team", "orgId": "org-1", "type": "POSTGRESQL"},
+            {"_key": "pg-mine", "scope": "personal", "orgId": "org-1", "createdBy": "sa-1", "type": "POSTGRESQL"},
+            # An app written before apps carried their org; the lookup found it through its org edge.
+            {"id": "sf-legacy", "scope": "team", "type": "SNOWFLAKE"},
+        ])
+        kept = await eq.shared_sql_knowledge(graph, self.KNOWLEDGE, "sa-1", "org-1", MagicMock())
+        assert [k and k["connectorId"] for k in kept] == ["pg-team", "sf-legacy", "drive-mine", None]
+
+    async def test_a_failed_lookup_keeps_no_database(self) -> None:
+        graph = MagicMock()
+        graph.get_user_connector_instances = AsyncMock(side_effect=RuntimeError("down"))
+        kept = await eq.shared_sql_knowledge(graph, self.KNOWLEDGE, "sa-1", "org-1", MagicMock())
+        assert [k and k["connectorId"] for k in kept] == ["drive-mine", None]
+
+    async def test_a_source_whose_app_could_not_be_read_is_dropped(self) -> None:
+        # The graph's knowledge projection types an entry "UNKNOWN" when it cannot read the app.
+        graph = self._graph([])
+        knowledge = [
+            {"connectorId": "pg-mine", "type": "UNKNOWN"},
+            {"connectorId": "untyped"},
+            {"connectorId": "drive-mine", "type": "GOOGLE_DRIVE"},
+        ]
+        kept = await eq.shared_sql_knowledge(graph, knowledge, "sa-1", "org-1", MagicMock())
+        assert [k["connectorId"] for k in kept] == ["drive-mine"]
+        graph.get_user_connector_instances.assert_not_awaited()
+
+    async def test_no_lookup_without_a_database(self) -> None:
+        graph = self._graph([])
+        knowledge = [{"connectorId": "drive-mine", "type": "GOOGLE_DRIVE"}]
+        assert await eq.shared_sql_knowledge(graph, knowledge, "sa-1", "org-1", MagicMock()) == knowledge
+        graph.get_user_connector_instances.assert_not_awaited()
+
+
 # ===========================================================================
 # has_sql_connector_configured
 # ===========================================================================

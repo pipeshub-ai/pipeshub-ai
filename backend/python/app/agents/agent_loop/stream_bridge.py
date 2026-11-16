@@ -312,6 +312,7 @@ async def run_agent_loop_stream(
     (which formats `Agent.run()`'s own final answer rather than making a
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
+    from app.connectors.core.registry.connector_builder import ConnectorScope
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.connector_instances import fetch_user_connector_instances
@@ -355,7 +356,11 @@ async def run_agent_loop_stream(
         connector_instances = await fetch_user_connector_instances(
             graph_provider, user_info["userId"], user_info["orgId"], log,
         )
-        has_sql_connector = connector_instances_have_sql(connector_instances)
+        sql_instances = connector_instances
+        if query_info.get("is_service_account"):
+            # Anyone in the org runs this agent on one identity, so only the org's databases.
+            sql_instances = [c for c in connector_instances if c.get("scope") == ConnectorScope.TEAM.value]
+        has_sql_connector = connector_instances_have_sql(sql_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
         has_code_connector = connector_instances_have_code(connector_instances)
         if stage_timer:
@@ -373,7 +378,7 @@ async def run_agent_loop_stream(
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
         chat_state["allowed_sql_connector_ids"] = (
-            sql_connector_instance_ids(connector_instances, user_info["orgId"])
+            sql_connector_instance_ids(sql_instances, user_info["orgId"])
             & agent_knowledge_sql_connector_ids(chat_state.get("agent_knowledge"))
         )
     except asyncio.CancelledError:
