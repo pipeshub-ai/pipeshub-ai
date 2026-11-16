@@ -100,8 +100,9 @@ def compile_world(world: World, prefix: str) -> Graph:
 
 def as_source_accounts(graph: Graph) -> Graph:
     """The graph with every linked source account (an AUTHENTICATED_AS target) stored as a SourceAccount node instead of a
-    User. A user reads such an account's grants and badges only through the link, so only its PERMISSION edges are kept:
-    its organization, gates and links of its own give the user nothing (oracle R4/R5), and it is nobody's viewer."""
+    User. A user reads such an account's grants and badges only through the link, so only its PERMISSION and BELONGS_TO edges
+    are kept: its organization stays so that a reader counting it fails the no-organisation comparison, its gates and links
+    give the user nothing (oracle R4/R5), and it is nobody's viewer."""
     connector = {e["to"]: e["props"].get("connectorId") for e in graph["edges"] if e["type"] == "AUTHENTICATED_AS"}
     def account(n: NodeDict) -> NodeDict:
         p = n["props"]
@@ -111,7 +112,7 @@ def as_source_accounts(graph: Graph) -> Graph:
 
     nodes = [account(n) if n["id"] in connector and n["kind"] == "User" else n for n in graph["nodes"]]
     accounts = {n["id"] for n in nodes if n["kind"] == "SourceAccount"}
-    edges = [e for e in graph["edges"] if e["from"] not in accounts or e["type"] == "PERMISSION"]
+    edges = [e for e in graph["edges"] if e["from"] not in accounts or e["type"] in ("PERMISSION", "BELONGS_TO")]
     return {"nodes": nodes, "edges": edges}
 
 
