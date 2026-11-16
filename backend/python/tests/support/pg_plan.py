@@ -30,9 +30,9 @@ def _bitmap_keyed(node: dict[str, Any], keys: tuple[str, ...]) -> bool:
     subs = [c for c in node.get("Plans", []) if c.get("Node Type", "").startswith("Bitmap") or c.get("Node Type") == "BitmapAnd"]
     if kind == "Bitmap Index Scan":
         return has_key(node.get("Index Cond") or "", keys)
-    if kind == "BitmapAnd":        # the rows meeting every input: one keyed input bounds them
-        return any(_bitmap_keyed(c, keys) for c in subs)
-    if kind == "BitmapOr":         # the rows meeting any input: every input must be keyed
+    if kind in ("BitmapAnd", "BitmapOr"):
+        # Every input index is scanned in full before the bitmaps are combined, so a keyed sibling bounds
+        # the rows returned but not the work: an unkeyed input still reads the organisation's index.
         return bool(subs) and all(_bitmap_keyed(c, keys) for c in subs)
     return False
 

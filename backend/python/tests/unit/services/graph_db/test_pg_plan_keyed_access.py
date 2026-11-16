@@ -41,10 +41,12 @@ def test_an_edge_read_by_to_id_or_from_id_passes(scan: dict) -> None:
     assert_keyed_access(join(scan))
 
 
-def test_a_bitmap_scan_ored_or_anded_is_keyed_when_its_inputs_are() -> None:
+def test_a_bitmap_scan_ored_or_anded_is_keyed_only_when_every_input_is() -> None:
     keyed, loose = {"Node Type": "Bitmap Index Scan", "Index Cond": NODE_KEY}, {"Node Type": "Bitmap Index Scan", "Index Cond": "((org_id = $1) AND (coll = 'records'::text))"}
     heap = {"Node Type": "Bitmap Heap Scan", "Relation Name": "nodes"}
-    assert not keyed_access_violations({**heap, "Plans": [{"Node Type": "BitmapAnd", "Plans": [keyed, loose]}]})
+    # Each input index is scanned before the bitmaps are intersected: a loose input reads the organisation's index.
+    assert keyed_access_violations({**heap, "Plans": [{"Node Type": "BitmapAnd", "Plans": [keyed, loose]}]})
+    assert not keyed_access_violations({**heap, "Plans": [{"Node Type": "BitmapAnd", "Plans": [keyed, keyed]}]})
     assert not keyed_access_violations({**heap, "Plans": [{"Node Type": "BitmapOr", "Plans": [keyed, keyed]}]})
     assert keyed_access_violations({**heap, "Plans": [{"Node Type": "BitmapOr", "Plans": [keyed, loose]}]})
 
