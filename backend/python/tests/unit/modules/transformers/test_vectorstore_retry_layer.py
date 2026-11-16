@@ -72,3 +72,21 @@ async def test_a_success_pays_a_retry_token_back() -> None:
     vs = _store([[0.1]])
     result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=budget))
     assert result == [[0.1]] and budget.tokens == 496
+
+
+async def test_the_wait_is_the_gateways_jitter_not_a_fixed_backoff() -> None:
+    """Batches that fail together must not wake together: the first retry waits at most the transient base (0.25 s), not 2 s."""
+    waits = []
+    for _ in range(10):
+        vs = _store(_error(503), [[0.1]])
+        _result, sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
+        waits.append(sleep.await_args_list[0].args[0])
+    assert max(waits) <= 0.25 and len(set(waits)) > 1
+
+
+async def test_the_wait_never_overruns_the_sleep_allowance() -> None:
+    """After a 59 s Retry-After only 1 s of the 60 s allowance is left: the next wait is at most that, not a 4 s floor."""
+    vs = _store(_error(429, retry_after="59"), _error(503), [[0.1]])
+    _result, sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
+    waits = [c.args[0] for c in sleep.await_args_list]
+    assert waits[0] == 59.0 and sum(waits) <= 60.0

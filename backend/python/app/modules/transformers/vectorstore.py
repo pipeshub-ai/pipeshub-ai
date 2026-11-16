@@ -2189,7 +2189,8 @@ class VectorStore(Transformer):
                     if limited is not None:
                         raise limited from last_error
                     break
-                delay = max(delay, decision.delay_s)
+                # The gateway's full-jitter wait, already capped to the call's sleep allowance: no fixed floor.
+                delay = decision.delay_s
                 slept_s += delay
             # The chain, not str(): the OpenAI SDK reports every transport
             # failure as "Connection error." and keeps the httpx exception that
