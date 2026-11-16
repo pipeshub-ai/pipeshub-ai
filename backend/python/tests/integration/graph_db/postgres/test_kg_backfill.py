@@ -616,7 +616,7 @@ async def test_a_restart_that_demotes_the_copy_while_a_batch_runs_is_not_overwri
     p, org = await fresh_world(pg_db)
     real, seen, demoted = bf.app_nodes, [], []
 
-    async def nodes(tx, o, app, after, limit):
+    async def nodes(tx, o, app, after, limit) -> list:
         got = await real(tx, o, app, after, limit)
         seen.append(after)
         if not demoted and after is not None and (not got if last else bool(got)):
