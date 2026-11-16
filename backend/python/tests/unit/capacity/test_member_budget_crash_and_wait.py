@@ -107,3 +107,19 @@ def test_two_hundred_llm_waiters_do_not_slow_the_ledger_or_burn_cpu(ledger: Path
         h.release()  # type: ignore[union-attr]
     assert loaded >= 0.9 * idle, (idle, loaded)
     assert cpu <= 0.1 * 6.0 * len(procs) + 2.0, cpu  # about 0.1 core per process at most (spawn start-up included)
+
+
+async def test_a_cancel_token_is_a_method_and_stops_a_wait(ledger: Path) -> None:
+    from app.capacity.member_budget import Cancelled, CancelToken
+
+    b = MemberBudget(ledger, cpu_tokens=2, mem_bytes=1 << 34)
+    held = [b.try_reserve(_small()) for _ in range(2)]
+    token = CancelToken()
+    assert token.cancelled() is False
+    task = asyncio.create_task(b.reserve(_small(), cancel=token))
+    await asyncio.sleep(0.1)
+    token.cancel()
+    with pytest.raises(Cancelled):
+        await asyncio.wait_for(task, 2)
+    for h in held:
+        h.release()  # type: ignore[union-attr]

@@ -112,7 +112,6 @@ class CancelToken:
     def cancel(self) -> None:
         self._event.set()
 
-    @property
     def cancelled(self) -> bool:
         return self._event.is_set()
 
@@ -753,7 +752,7 @@ class MemberBudget:
                 if d.family is Family.LLM and seen is not None and seen_now[1] == seen[1]:
                     # An LLM slot frees only through a release or a reap, and both bump the counter: with it
                     # unchanged a fallback wake has nothing to try, so it does not take the ledger lock.
-                    if cancel is not None and cancel.cancelled:
+                    if cancel is not None and cancel.cancelled():
                         raise Cancelled("reserve cancelled")
                     left = None if end is None else end - time.monotonic()
                     if left is not None and left <= 0:
@@ -768,7 +767,7 @@ class MemberBudget:
                     return permit
                 if head is None and d.family is not Family.LLM:
                     head = self.register_head(d)  # LLM demands are not ordered, so they take no place
-                if cancel is not None and cancel.cancelled:
+                if cancel is not None and cancel.cancelled():
                     raise Cancelled("reserve cancelled")
                 left = None if end is None else end - time.monotonic()
                 if left is not None and left <= 0:
@@ -792,7 +791,7 @@ class MemberBudget:
                 event.clear()
                 seen_now = self._changes()
                 if d.family is Family.LLM and seen is not None and seen_now[1] == seen[1]:
-                    if cancel is not None and cancel.cancelled:
+                    if cancel is not None and cancel.cancelled():
                         raise Cancelled("reserve cancelled")
                     left = None if end is None else end - time.monotonic()
                     if left is not None and left <= 0:
@@ -806,7 +805,7 @@ class MemberBudget:
                     return permit
                 if head is None and d.family is not Family.LLM:
                     head = self.register_head(d)
-                if cancel is not None and cancel.cancelled:
+                if cancel is not None and cancel.cancelled():
                     raise Cancelled("reserve cancelled")
                 left = None if end is None else end - time.monotonic()
                 if left is not None and left <= 0:
