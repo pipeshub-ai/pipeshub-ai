@@ -4514,6 +4514,10 @@
           "label": "MongoDB",
           "description": "세션 및 사용자 메타데이터"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "세션 및 사용자 메타데이터"
+        },
         "messageBroker": {
           "label": "메시지 브로커",
           "description": "분산 이벤트 스트리밍"

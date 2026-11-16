@@ -24027,7 +24027,7 @@ components:
               example: qdrant
             redisMode:
               type: string
-              description: Value of the `REDIS_MODE` environment variable of the Node.js process (`standalone` when unset)
+              description: Cache mode of the Node.js process, lower-cased. The `REDIS_MODE` environment variable when set; otherwise `postgres` when `KV_STORE_TYPE` and `MESSAGE_BROKER` are both `postgres`, else `standalone`
               example: standalone
         warnings:
           type: array

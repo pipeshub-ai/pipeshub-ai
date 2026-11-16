@@ -25,6 +25,7 @@ READS = frozenset("""
     find_named_entities_by_alias find_named_entities_by_key_prefix find_next_queued_duplicate find_organizations find_orphan_named_entities find_people
     find_slack_burst_record_by_ts find_taxonomy_nodes find_team_by_name find_uncalled_blocks find_users get_accessible_connector_types
     get_accessible_containers get_accessible_virtual_record_ids get_account_type get_address_links_batch get_agent
+    get_all_agent_templates get_all_agents
     get_agents_by_model_key get_agents_by_web_search_provider get_all_documents get_all_orgs get_app_creator_user
     get_app_needing_vector_membership_backfill get_app_role_by_external_id get_app_user_by_email get_app_user_links get_app_users
     get_artifact_detail get_child_record_ids_by_relation_type get_connector_instances_with_filters get_connector_stats
@@ -63,6 +64,7 @@ READS = frozenset("""
     get_virtual_record_holders get_virtual_record_ids_for_record_ids get_virtual_record_ids_in_use has_nodes_by_filters
     has_records_indexed_since is_named_entity_write_retryable is_record_descendant_of is_record_folder is_transient_error
     is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions list_kb_records
+    list_unsupported_page
     get_record_group_organization get_record_organizations get_record_people
     list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
     resolve_named_entity_redirects search_nodes_by_field_terms stage_state_org_for_virtual_record validate_folder_exists_in_kb validate_folder_for_upload
@@ -71,12 +73,13 @@ READS = frozenset("""
 
 HARMLESS = frozenset("""
     stamp_external_org_parents
+    delete_agent delete_agent_template update_agent update_agent_template
     add_named_entity_aliases add_taxonomy_aliases add_user_to_all_team apply_verified_user_email backfill_app_org_ids
     backfill_block_name_folded backfill_indexed_copy_flags batch_create_entity_relations batch_create_user_app_edges
     batch_update_connector_status batch_update_team_member_roles batch_upsert_app_roles batch_upsert_app_users batch_upsert_orgs
     batch_upsert_people batch_upsert_user_groups begin_transaction bulk_get_entity_ids_by_email claim_push_record
     clear_named_entity_persist_retry clear_orphan_named_entity_marks clone_agent_template commit_transaction
-    compare_and_set_indexing_status connect copy_document_relationships copy_named_entity_mentions create_kb_permissions
+    compare_and_set_indexing_status transition_unsupported connect copy_document_relationships copy_named_entity_mentions create_kb_permissions
     create_named_entities_if_absent create_node_if_absent create_organization_if_absent create_taxonomy_node_if_absent delete_all_team_permissions
     delete_blocks_for_records delete_dangling_named_entity_mentions delete_dangling_named_entity_values
     delete_orphan_named_entities delete_record_entity_relations replace_record_entity_relations delete_sync_points_by_connector_id delete_team_member_edges disconnect

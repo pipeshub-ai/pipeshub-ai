@@ -4514,6 +4514,10 @@
           "label": "MongoDB",
           "description": "会话和用户元数据"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "会话和用户元数据"
+        },
         "messageBroker": {
           "label": "消息代理",
           "description": "分布式事件流"
