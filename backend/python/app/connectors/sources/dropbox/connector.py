@@ -2626,6 +2626,7 @@ class DropboxConnector(BaseConnector):
 
             # Create permission for the user (OWNER)
             user_permission = Permission(
+                external_id=user.source_user_id,     # the account the address is linked to: holds a re-used address
                 email=user.email,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER
