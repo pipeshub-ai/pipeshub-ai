@@ -38,6 +38,7 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    PERMISSION_HIERARCHY,
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
@@ -4123,6 +4124,21 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_member_emails[drive_id] = members
         return self._drive_member_emails[drive_id]
 
+    async def _drive_role_of(self, drive_id: str, email: str) -> str | None:
+        """The highest role (a PermissionType value) a shared drive's member list gives a person, directly or through
+        a member group; None when it names them nowhere. A member group the directory cannot list adds nothing."""
+        email, best = email.lower(), None
+        for permission in await self._drive_acl(drive_id):
+            if permission.entity_type == EntityType.USER:
+                named = (permission.email or "").lower() == email
+            elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                named = email in (await self._group_member_emails(permission.external_id) or ())
+            else:
+                named = False
+            if named and PERMISSION_HIERARCHY.get(permission.type.value, 0) > PERMISSION_HIERARCHY.get(best or "", 0):
+                best = permission.type.value
+        return best
+
     async def _drive_acl(self, drive_id: str) -> list[Permission]:
         """A shared drive's member list, read once a run (as the admin) for every use of it."""
         if drive_id not in self._drive_acls:
@@ -5071,7 +5087,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     new_permissions, is_fallback_permissions, individually_shared_emails = read
                 if list_read and not is_fallback_permissions:  # a new item may have been counted too
                     await self._forget_empty_list_runs(file_id)
-                member_reads_through_drive = False
+                member_reads_through_drive = keeps_own_grant = False
                 # A drive this Workspace does not hold is not the admin's to list: its reader's own result stands.
                 in_scope = bool(item_drive_id) and item_drive_id in self._listed_shared_drive_ids
                 reader_lists = bool((metadata.get("capabilities") or {}).get("canShare")) or (
@@ -5094,10 +5110,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                         await self._is_drive_member(item_drive_id, user_email)
                     ):
                         # No Manager can list it: a member reaches it from the drive through the folders above, as in
-                        # Drive, so a limited folder cuts them out; a grant of their own would outlast that.
-                        # shortcut: a member cut out by a limited folder who also holds a direct grant on this item
-                        # loses it here, since only a Manager can list it; an active Manager on the drive avoids that.
+                        # Drive, so a limited folder cuts them out; a grant of their own would outlast that. One who
+                        # edits it while the drive makes them less than a writer holds a share of their own (or a
+                        # group's) that gives more than the drive: their stored grant stays.
+                        # shortcut: a member cut out by a limited folder whose own grant on this item is no more than
+                        # their drive role loses it here, since only a Manager can list it; an active Manager on the
+                        # drive avoids that.
                         new_permissions, member_reads_through_drive = [], True
+                        keeps_own_grant = bool((metadata.get("capabilities") or {}).get("canEdit")) and (
+                            PERMISSION_HIERARCHY.get(await self._drive_role_of(item_drive_id, user_email) or "", 0)
+                            < PERMISSION_HIERARCHY[PermissionType.WRITE.value]
+                        )
 
                 if is_fallback_permissions:
                     permissions_changed = False
@@ -5120,7 +5143,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         if new_permissions:
                             await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
                         elif user_email and (
-                            member_reads_through_drive
+                            (member_reads_through_drive and not keeps_own_grant)
                             or not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email)
                         ):
                             # The drive's limits leave this reader out, or they reach it from the drive (a grant of

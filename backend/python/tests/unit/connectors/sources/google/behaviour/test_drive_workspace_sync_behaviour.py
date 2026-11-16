@@ -3133,6 +3133,22 @@ async def test_a_reading_member_loses_a_grant_of_their_own_stored_by_an_earlier_
     assert not reaches(ws, BOB, "f"), "the limit cuts him out"
 
 
+async def test_a_drive_reader_with_a_write_grant_of_their_own_keeps_it_when_nobody_can_list(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "reader", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    await ws.sync()
+    assert (BOB, "USER", "WRITE") in ws.grants("f"), "Bob, a writer, read the item's sharing"
+
+    # The drive stops letting writers share: nobody can list the item any more, and Bob still edits it.
+    ws.world.files["f"].meta["capabilities"] = {"canShare": False, "canListChildren": False}
+    ws.world.rename("f", "y.txt")
+    await ws.sync()
+
+    assert (BOB, "USER", "WRITE") in ws.grants("f"), "his own grant gives more than the drive's reader role"
+    assert reaches(ws, BOB, "f")
+
+
 def _old_style_grant(ws: Workspace, external_id: str, email: str) -> None:
     """A reader's own grant on an item, as an earlier version stored it to stand in for their drive membership."""
     ws.records.permissions[external_id] = [
