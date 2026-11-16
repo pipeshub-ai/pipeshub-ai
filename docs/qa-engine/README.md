@@ -85,6 +85,7 @@ directory.
 | `agent` | The QA agent (see [QA agent](#qa-agent)): round 0 runs the floor, then Claude Code picks, runs (through the engine) and judges further rounds and writes tests. `--stack managed\|none`, `--minutes` (default 120), `--max-turns` (default 150), `--combine NUMBER:SHA` (repeat, in order) with `--combine-base REF`, `--gate`, `--comment --pr N` |
 | `notebook --pr N --to FILE` | The QA agent's notebook for PR N, from the bot's newest comment on it (needs `gh`); exits 1 when there is none |
 | `stack up \| down \| status` | One managed stack for several runs: `up [--plan F] [--graph-db G] [--no-build]` starts and seeds it and writes `stack/session.json` (owner-only; it holds the stack's admin password); `run --session FILE` runs any tests against it; `down` collects its logs and removes it with its image |
+| `features check \| show \| drift \| coverage` | The [feature map](#feature-map): `check` its shape; `show [--flow F]` print it; `drift [--since REF] [--warn]` list surfaces no feature claims, entries naming what is gone and tests the catalog lacks (writes `features-drift.json`, exits 1 on findings unless `--warn`); `coverage [--results FILE]` give each behavior a status (writes `features-coverage.json`) |
 | `prove ID` | Run one test on head `--repeat` times (default 3, 1 for stack tests), then with the change reverted (`--base REF`) or up to `--max-mutants` mutants (default 5, 1 for stack tests). A failing variant counts only if it fails again on a rerun; writes `prove/<id>.json` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
 | `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and the failed, errored and flaky ids; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
@@ -490,6 +491,50 @@ Without the `claude` CLI, or in CI without `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROP
 **Combined runs.** `/qa combine #12 #15 #18` (2 to 8 open pull requests from this repository, in stacking order) tests several PRs together. Each PR's head is pinned when the command runs, and the run stops if one moved. `qa agent --combine` stacks them on the default branch, one commit per PR, so there are no merge commits. When a PR conflicts with the ones before it, its commit keeps the combined side, and Claude Code (`scripts/qa/prompts/combine.md`) resolves the conflicting hunks in a commit of its own, `combine: resolve #15 against #12 in <files>`. The build stops and says why when markers remain, when the resolver touched any other file, or when a conflict is a delete against a change or a binary file. The agent then runs on the combined tree, and a failure that only two PRs together cause is `combined-only`, naming both. The report lists the PRs and each resolved conflict. With `--open-pr`, the publish job pushes the combined commits (and the agent's tests) to a new branch `qa-combined/<run id>`, refusing files none of the PRs touches, opens a draft PR, and comments on every combined PR. Nothing is pushed to the PRs themselves, and nothing is merged.
 
 **Warning.** The agent job runs the PR's code while it holds Claude's credential and the stack's test settings, like the stack job holds the test secrets. A PR author with write access could make a test print or send them. Run it on PRs from this repository only; on a fork PR only through an admin's `--trusted <sha>`.
+
+## Feature map
+
+`scripts/qa/features/*.toml` lists what the product does: one file per area, each feature with what it does,
+the surfaces it owns and the behaviors that must hold, each naming the tests that prove it. An overlay adds
+its own in `scripts/<name>/qa/features/`, and may extend a feature's lists but not change its other keys.
+The map comes from the checkout under test, so a change that adds a route adds its feature in the same commit.
+
+```toml
+[[feature]]
+id = "api-access.pat"                 # unique across features and behaviors
+title = "Personal access tokens"
+flow = "api-access"                   # a flow in rules/flows.toml
+what = "A user creates a scoped token and calls the API with it."
+routes = ["* /api/v1/user-account/pat/**"]   # METHOD (or *) and an OpenAPI path; {params} match any name; globs work
+pages = ["frontend/app/(main)/account/tokens/**"]
+connectors = []                       # directory names under backend/python/app/connectors/sources/
+toolsets = []                         # directory names under backend/python/app/agents/actions/
+code = ["backend/nodejs/apps/src/modules/user_account/**"]   # drift --since lists the feature when these change
+status = "reviewed"                   # draft (the default) until a person has reviewed it
+
+  [[feature.behavior]]
+  id = "api-access.pat.scope"
+  says = "A token without kb:read gets 403 from the knowledge base API."
+  priority = "P0"                     # P0 | P1 | P2
+  kind = "security"                   # function (default) | security | upgrade | performance
+  tests = ["TC-AUTH-012"]             # TC ids, catalog ids, or a file's catalog id for all its tests
+  # manual = "why CI cannot check it" # reported as manual, never as passed
+
+[ignore]                              # surfaces that are not features (health checks, redirects)
+routes = ["GET /api/v1/health"]
+```
+
+`qa features drift` reads the product's surfaces (the operations in `pipeshub-openapi.yaml`, every
+`frontend/app/**/page.tsx`, each connector and toolset directory) and reports:
+
+- `unclaimed`: a surface no feature or `[ignore]` entry lists, usually a new feature;
+- `stale`: an entry whose route, page, connector, toolset or code glob matches nothing;
+- `dead-test`: a behavior naming a test the catalog no longer has;
+- `changed` (with `--since REF`): features whose `code` or `pages` changed since REF.
+
+The plan job runs it on every run and warns. A full run's report adds feature coverage: each behavior is
+`passed` (every named test passed in this run), `failing`, `flaky`, `not-run` (with the reason), `no-test`
+or `manual`, with every P0 behavior that did not pass listed.
 
 ## Claude Code skills
 

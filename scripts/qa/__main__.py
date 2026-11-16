@@ -25,6 +25,7 @@ from qa import (
     command,
     config,
     culprit,
+    features,
     generate,
     history,
     impact,
@@ -282,12 +283,30 @@ def _allowed(args) -> frozenset[str]:
     return kinds
 
 
+def _feature_section(cfg: config.Config, out: Path, results: dict | None) -> str:
+    """Feature coverage for a full run's report; only a full run runs every test a behavior names."""
+    try:
+        fmap = features.load(cfg.root)
+        errors = features.check(cfg, fmap)
+    except ValueError as exc:
+        errors = [str(exc)]
+    if errors:
+        return f"\nThe feature map has {len(errors)} errors (`qa features check`); no coverage this run.\n"
+    cov = features.coverage(fmap, _rows(cfg, out), results)
+    _dump(out / "features-coverage.json", cov)
+    drift_file = out / "features-drift.json"
+    section = features.render(cov, _load(drift_file) if drift_file.is_file() else None)
+    return "\n" + section if section else ""
+
+
 def cmd_report(args) -> int:
     cfg = config.load()
     allowed = _allowed(args)
     out = _out(args)
     plan, results = _merged(out)
     body = report.render(cfg, plan, results, allowed=allowed, run_url=args.run_url)
+    if plan.get("mode") == "full":
+        body += _feature_section(cfg, out, results)
     (out / "report.md").write_text(body, encoding="utf-8")
     if args.summary:
         report.write_summary(body)
@@ -922,6 +941,53 @@ def cmd_bisect(args) -> int:
     return 0
 
 
+def cmd_features(args) -> int:
+    """The feature map: check its shape, show it, compare it with the product (drift), or score a run (coverage)."""
+    cfg = config.load()
+    try:
+        fmap = features.load(cfg.root)
+    except ValueError as exc:
+        print(f"qa features: {exc}", file=sys.stderr)
+        return 1
+    errors = features.check(cfg, fmap)
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    if args.action == "check":
+        print(f"feature map: {len(fmap['features'])} features, {sum(1 for _ in features.behaviors(fmap))} behaviors, ok")
+        return 0
+    if args.action == "show":
+        for f in fmap["features"]:
+            if args.flow and f["flow"] != args.flow:
+                continue
+            print(f"## {f['title']} (`{f['id']}`, {f['flow']}, {f.get('status', 'draft')})\n\n{f['what']}\n")
+            for b in f.get("behavior", []):
+                tests = ", ".join(b.get("tests", [])) or ("manual: " + b["manual"] if b.get("manual") else "no test")
+                print(f"- {b['priority']} {b.get('kind', 'function')}: {b['says']} [{tests}]")
+            print()
+        return 0
+    out = _out(args)
+    rows = _rows(cfg, out)
+    if args.action == "drift":
+        doc = features.drift(cfg.root, fmap, rows, since=args.since)
+        _dump(out / "features-drift.json", doc)
+        found = {k: len(doc[k]) for k in ("unclaimed", "stale", "dead_test")}
+        summary = ", ".join(f"{n} {k.replace('_', '-')}" for k, n in found.items())
+        print(f"feature map drift: {summary}; {len(doc['changed'])} changed" + (f" since {args.since}" if args.since else ""))
+        for k in ("unclaimed", "stale", "dead_test"):
+            for item in doc[k][:args.limit]:
+                print(f"  {k.replace('_', '-')}: " + " ".join(f"{n}={v}" for n, v in item.items()))
+        if any(found.values()) and args.warn:
+            print(f"::warning::feature map drift: {summary} (qa features drift)")
+        return 1 if any(found.values()) and not args.warn else 0
+    results = _load(Path(args.results)) if args.results else _merged(out)[1]
+    drift_file = out / "features-drift.json"
+    cov = features.coverage(fmap, rows, results)
+    _dump(out / "features-coverage.json", cov)
+    print(features.render(cov, _load(drift_file) if drift_file.is_file() else None) or "feature map is empty")
+    return 0
+
+
 def cmd_score(args) -> int:
     cfg = config.load()
     result = score.run(cfg, Path(args.cases), args.adapter, args.profile)
@@ -1137,6 +1203,15 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--stack", default="none", choices=["none", "managed", "external"])
     s.add_argument("--base-url")
     s.set_defaults(fn=cmd_bisect)
+
+    s = sub.add_parser("features", help="the feature map: check, show, drift against the product, coverage of a run")
+    s.add_argument("action", choices=["check", "show", "drift", "coverage"])
+    s.add_argument("--flow", help="show: only this flow's features")
+    s.add_argument("--since", metavar="REF", help="drift: also list features whose code or pages changed since REF")
+    s.add_argument("--warn", action="store_true", help="drift: report findings as a warning and exit 0")
+    s.add_argument("--limit", type=int, default=20, help="drift: findings to print per kind")
+    s.add_argument("--results", metavar="FILE", help="coverage: a results.json (default: this run directory's merged results)")
+    s.set_defaults(fn=cmd_features)
 
     s = sub.add_parser("score", help="score a planner adapter on past changes")
     s.add_argument("--cases", default=str(paths.REPO / "scripts/qa/score/cases"))

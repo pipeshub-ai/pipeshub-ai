@@ -202,6 +202,14 @@ jobs:
           QA_STACK_SHARDS: ${{ vars.QA_STACK_SHARDS || (github.event_name == 'pull_request' && '1' || '4') }}
         run: QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" validate --emit-gh-outputs
 
+      # The feature map against the product: routes, pages, connectors and toolsets no feature lists, and
+      # entries naming what is gone. A warning until the map is complete; a full run's report adds coverage.
+      - name: Check the feature map
+        run: |
+          if grep -q 'def cmd_features' "$ENGINE/__main__.py"; then
+            QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" features drift --warn || echo "::warning::the feature map has errors (qa features check)"
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
