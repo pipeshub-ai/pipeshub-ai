@@ -286,8 +286,8 @@ class _FakeGovernor:
         return self.value
 
 
-def _admission(rule: str, seq: int, totals: dict | None = None) -> dict:
-    return {"sampleSeq": seq, "feedback": {"window": {"seq": seq}, "totals": totals or {}}, "pools": {"heavy_parse": {"ceiling": 8, "limit": 4, "inUse": 4, "waiting": 3, "rule": rule, "ruleAgeSec": 20.0}}}
+def _admission(rule: str, seq: int, totals: dict | None = None, brakes: dict | None = None) -> dict:
+    return {"sampleSeq": seq, "brakeEntries": brakes or {}, "feedback": {"window": {"seq": seq}, "totals": totals or {}}, "pools": {"heavy_parse": {"ceiling": 8, "limit": 4, "inUse": 4, "waiting": 3, "rule": rule, "ruleAgeSec": 20.0}}}
 
 
 def test_governor_source_reads_pools_from_the_admission_block_and_counts_brakes_once() -> None:
@@ -300,15 +300,45 @@ def test_governor_source_reads_pools_from_the_admission_block_and_counts_brakes_
     assert metrics["pipeshub_governor_pool_waiters"] == [[["indexing", "heavy_parse"], 3.0]]
     assert metrics["pipeshub_governor_pool_braked"] == [[["indexing", "heavy_parse"], 0.0]]
     assert metrics["pipeshub_governor_brakes_total"] == []
-    stats["admission"] = _admission("mem_soft", 2, {"throttles": {"qdrant": 2}})
+    stats["admission"] = _admission("mem_soft", 2, {"throttles": {"qdrant": 2}}, {"heavy_parse": {"memory_soft": 1}})
     source()
     _signal, metrics = source()  # the same rule on the next read is not a second brake; the same totals are not counted twice
     assert metrics["pipeshub_governor_brakes_total"] == [[["indexing", "heavy_parse", "memory_soft"], 1.0]]
     assert metrics["pipeshub_downstream_events_total"] == [[["indexing", "qdrant", "throttle"], 2.0]]
-    stats["admission"] = _admission("cpu", 3)
+    stats["admission"] = _admission("cpu", 3, None, {"heavy_parse": {"memory_soft": 1, "cpu": 1}})
     _signal, metrics = source()
     assert {tuple(r[0]): r[1] for r in metrics["pipeshub_governor_brakes_total"]} == {
         ("indexing", "heavy_parse", "memory_soft"): 1.0, ("indexing", "heavy_parse", "cpu"): 1.0}
+
+
+def test_brake_entries_between_two_reads_are_all_exported_and_the_series_never_falls() -> None:
+    """The governor counted three entries (enter, leave, enter, leave, enter) while the exporter did not
+    read; the next read exports exactly three, whatever rule the pool shows now."""
+    stats = {"worker_count": 1, "cpu_quota": 2.0, "cpu_utilisation": 0.5, "mem_pressure_raw": 0.4,
+             "admission": _admission("grow", 1, None, {"heavy_parse": {"memory_soft": 0}})}
+    source = ox.GovernorSource(_FakeGovernor(stats), "indexing")
+    source()
+    stats["admission"] = _admission("grow", 4, None, {"heavy_parse": {"memory_soft": 3}})  # the pool shows no brake now
+    _signal, metrics = source()
+    assert {tuple(r[0]): r[1] for r in metrics["pipeshub_governor_brakes_total"]}[("indexing", "heavy_parse", "memory_soft")] == 3.0
+    stats["admission"] = _admission("grow", 5, None, {"heavy_parse": {"memory_soft": 2}})  # a reading that falls is not exported
+    _signal, metrics = source()
+    assert {tuple(r[0]): r[1] for r in metrics["pipeshub_governor_brakes_total"]}[("indexing", "heavy_parse", "memory_soft")] == 3.0
+
+
+def test_the_brake_series_does_not_fall_across_a_holder_change(tmp_path: Path) -> None:
+    """Process one counted 3 entries and left; process two starts at 0 and counts 1: 3, then 4, never less."""
+    first = {"worker_count": 1, "cpu_utilisation": 0.5, "mem_pressure_raw": 0.4,
+             "admission": _admission("grow", 1, None, {"heavy_parse": {"memory_soft": 3}})}
+    ox.SnapshotWriter(tmp_path, "indexing", ox.GovernorSource(_FakeGovernor(first), "indexing")).write()
+    collector = ox.SignalCollector(tmp_path, cache_ttl=0, is_alive=lambda *_: False)
+    seen = [_value(_text(collector), BRAKES)]  # the first process is gone: its three are carried
+    second = {"worker_count": 1, "cpu_utilisation": 0.5, "mem_pressure_raw": 0.4,
+              "admission": _admission("grow", 1, None, {"heavy_parse": {"memory_soft": 1}})}
+    ox.SnapshotWriter(tmp_path, "indexing", ox.GovernorSource(_FakeGovernor(second), "indexing")).write()
+    live = ox.SignalCollector(tmp_path, cache_ttl=0, is_alive=lambda *_: True)
+    seen.append(_value(_text(live), BRAKES))
+    assert seen == [3.0, 4.0]
 
 
 def test_governor_source_without_the_admission_block_exports_no_pool_series() -> None:

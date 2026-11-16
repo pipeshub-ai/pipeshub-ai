@@ -19,6 +19,7 @@ from app.services.resource_governor.download_ahead import (
     HEAVY_DOWNLOAD_AHEAD,
     DownloadAhead,
 )
+from app.services.resource_governor.explain import PRESSURE_REASONS, brake_reason
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
     FeedbackWindow,
@@ -234,6 +235,9 @@ class ResourceGovernor:
         self._feedback_totals: dict[str, dict[str, int]] = {
             "throttles": {}, "timeouts": {}, "exhaustions": {}, "unavailable": {},
         }
+        # Monotonic count of brake entries per pool and pressure reason, counted at the decision that
+        # enters the brake (under _state_lock), read with the rest of the admission block.
+        self._brake_entries: dict[str, dict[str, int]] = {}
         # Threads waiting on the shared heavy-parse slots (slot_wait()).
         self._slot_waiting = 0
         self._slot_wait_lock = threading.Lock()
@@ -543,6 +547,7 @@ class ResourceGovernor:
                 worker_count=self._worker_count,
                 heavy_working_set_gb=self._policy_working_set(),
             )
+            self._count_brake_entries(self._state, new_state, now)
             self._state = new_state
 
             for pool in Pool:
@@ -627,6 +632,24 @@ class ResourceGovernor:
                 ),
             )
 
+    def _count_brake_entries(self, old: ControllerState, new: ControllerState, now: float) -> None:
+        """Count each pool that, by this decision, is braked for a pressure reason it was not braked for.
+
+        Called under ``_state_lock``, so every decision is seen exactly once whatever the readers do.
+        """
+        entered: list[tuple[str, str]] = []
+        for pool in Pool:
+            before, after = old.get(pool), new.get(pool)
+            then = brake_reason(before.rule.value, before.active_cooldown_cause(now))
+            reason = brake_reason(after.rule.value, after.active_cooldown_cause(now))
+            if reason in PRESSURE_REASONS and reason != then:
+                entered.append((pool.value, reason.value))
+        if entered:
+            with self._stats_lock:
+                for pool_name, reason_name in entered:
+                    row = self._brake_entries.setdefault(pool_name, {})
+                    row[reason_name] = row.get(reason_name, 0) + 1
+
     def _drain_all_demand(self) -> dict[Pool, PoolDemand]:
         with self._gates_lock:
             gates = dict(self._gates)
@@ -649,6 +672,7 @@ class ResourceGovernor:
             floor = floor_for(Pool.HEAVY_PARSE, self._ceilings.heavy)
             current = self._registry.get(Pool.HEAVY_PARSE)
             self._registry.set(Pool.HEAVY_PARSE, max(floor, current // 2))
+            before = self._state
             self._state = self._state.with_update(Pool.HEAVY_PARSE, replace(
                 self._state.get(Pool.HEAVY_PARSE),
                 healthy_streak=0,
@@ -661,6 +685,7 @@ class ResourceGovernor:
                     now,
                 ),
             ))
+            self._count_brake_entries(before, self._state, now)
         self._logger.warning(
             "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
         )
@@ -690,6 +715,7 @@ class ResourceGovernor:
             seq = self._sample_seq
             sampled_at = self._last_sample_at
             totals = {kind: dict(counts) for kind, counts in self._feedback_totals.items()}
+            brake_entries = {pool: dict(row) for pool, row in self._brake_entries.items()}
         with self._gates_lock:
             gates = dict(self._gates)
         pools: dict[str, Any] = {}
@@ -735,6 +761,7 @@ class ResourceGovernor:
         return {
             "v": 2,
             "sampleSeq": seq,
+            "brakeEntries": brake_entries,
             "sampleAgeSec": None if sampled_at is None else max(0.0, now - sampled_at),
             "workerCount": self._worker_count,
             "memoryDomain": memory_domain_id(),

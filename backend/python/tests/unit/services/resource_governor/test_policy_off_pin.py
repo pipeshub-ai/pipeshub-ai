@@ -65,6 +65,10 @@ EDITED = {
         # Read-only admission explain.
         "ResourceGovernor.admission_explain", "ResourceGovernor.slot_wait", "ResourceGovernor.report_memory_incident",
         "if:TYPE_CHECKING",  # Iterator, for slot_wait
+        # A monotonic count of brake entries per pool and reason, incremented where the decision is made
+        # (_sample_once, report_memory_incident) and shown in admission_explain: no limit, state or
+        # admission outcome changes. Reason: load notifications must not miss an entry a delayed read skipped.
+        "ResourceGovernor._count_brake_entries",
     },
 }
 

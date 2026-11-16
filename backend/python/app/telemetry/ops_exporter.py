@@ -323,7 +323,6 @@ class GovernorSource:
         self._identity = identity
         self._project = project
         self._pressure = {r.value for r in PRESSURE_REASONS}
-        self._last_reason: dict[str, str] = {}
         self._brakes: dict[tuple[str, str], float] = {}
         self._downstream: dict[tuple[str, str], float] = {}
 
@@ -336,16 +335,18 @@ class GovernorSource:
             pressure = None
         signal = self._project(stats, self._identity() if self._identity else None, pressure)
         service = self._service
-        for pool, row in (signal.get("pools") or {}).items():
-            reason = row.get("reason")
-            if reason in self._pressure and self._last_reason.get(pool) != reason:
-                self._brakes[(pool, reason)] = self._brakes.get((pool, reason), 0.0) + 1
-            self._last_reason[pool] = reason
+        # Brake entries are counted by the governor where the decision is made and read here, never inferred
+        # from the states this process happens to see. Without the block the series is absent, not wrong.
+        admission = stats.get("admission")
+        entries = admission.get("brakeEntries") if isinstance(admission, dict) else None
+        for pool, by_reason in (entries.items() if isinstance(entries, dict) else ()):
+            for reason, n in (by_reason.items() if isinstance(by_reason, dict) else ()):
+                if reason in self._pressure and isinstance(pool, str) and isinstance(n, int) and not isinstance(n, bool):
+                    self._brakes[(pool, reason)] = max(self._brakes.get((pool, reason), 0.0), float(n))
         # The downstream symptoms are the governor's running totals, read in the same lock hold as the rest
         # of the admission block (`admission_explain`), so the figure is one consistent snapshot: a sample
         # taken between two reads, or two samples inside one tick, cannot be counted twice or dropped.
         # Without the admission block the counter is absent, not wrong.
-        admission = stats.get("admission")
         feedback = admission.get("feedback") if isinstance(admission, dict) else None
         totals = feedback.get("totals") if isinstance(feedback, dict) else None
         if isinstance(totals, dict):
