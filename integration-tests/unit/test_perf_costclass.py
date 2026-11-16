@@ -1753,8 +1753,8 @@ def test_the_job_budgets_the_build_and_stack_start_apart_from_the_bench_run() ->
     job = wf["jobs"]["costclass"]
     steps = {s.get("name", ""): s for s in job["steps"]}
     build, start, wait = steps["Build the stack image"], steps["Start the stack (smoke and weekly)"], steps["Wait for the stack"]
-    assert all("timeout-minutes" in s for s in (build, start, wait, steps["Smoke"], steps["Weekly run"]))
-    for suite, name in (("smoke", "Smoke"), ("weekly", "Weekly run")):
+    assert all("timeout-minutes" in s for s in (build, start, wait, steps["Smoke"], steps["Weekly run"], steps["Tiers"]))
+    for suite, name in (("smoke", "Smoke"), ("weekly", "Weekly run"), ("tiers", "Tiers")):
         worst = _worst_case_job_minutes(job["steps"], suite, steps[name])
         assert worst <= job["timeout-minutes"] * _HEADROOM, (suite, worst, job["timeout-minutes"])
 

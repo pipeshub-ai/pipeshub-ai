@@ -82,8 +82,9 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}/runner=${{ github.event.inputs.runner || '4cpu-linux-x64' }}/volume=100gb/ssh=true
     # The image build, the stack start and the bench run have step limits of their own, so a slow build is not paid
     # for out of the bench's budget and a hung step ends early. The job limit holds all of them plus the steps
-    # without a limit, with at least 20 percent to spare (test_perf_costclass.py checks the sums).
-    timeout-minutes: 160
+    # without a limit, with at least 20 percent to spare for every suite (test_perf_costclass.py checks the sums).
+    # The tiers dispatch is the longest: its 30-minute build and 120-minute run need 168 minutes in the worst case.
+    timeout-minutes: 210
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     env:
@@ -249,7 +250,7 @@ jobs:
       - name: Tiers
         if: env.SUITE == 'tiers'
         # Worst case per tier: 5 min waiting for a quiet host, 10 min for health, 20 min bench (--timeout 1200), 3 min
-        # for the rest, for at most 3 tiers (validated above): 114 minutes, inside the job's 160.
+        # for the rest, for at most 3 tiers (validated above): 114 minutes. With the build, the job needs 168 of its 210.
         timeout-minutes: 120
         env:
           BENCH_TIERS: ${{ env.TIERS_INPUT }}
