@@ -1664,6 +1664,10 @@ class DropboxConnector(BaseConnector):
                         external_group_id=user.source_user_id, connector_id=self.connector_id,
                         trash_live_records=True,
                     )
+        else:
+            # A partial list still withdraws the members its pages reported invited or suspended.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in app_users if not u.is_active})
         return app_users
 
     def full_sync_coverage(self) -> FullSyncCoverage:

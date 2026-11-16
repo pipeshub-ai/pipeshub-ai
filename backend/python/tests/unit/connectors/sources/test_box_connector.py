@@ -1391,7 +1391,8 @@ class TestBoxRunIncrementalSync:
     @pytest.mark.parametrize("complete", [True, False])
     async def test_a_linked_user_listed_inactive_is_withdrawn(self, box_connector, complete: bool) -> None:
         """Linked before it was made inactive, or deleted since, it keeps no grant; a user list cut by a failed page
-        withdraws nobody, and the connector creator's stand-in link is not a Box account."""
+        takes nobody for gone but still withdraws whom it reported inactive, and the connector creator's stand-in
+        link is not a Box account."""
         from types import SimpleNamespace
 
         entries = [
@@ -1408,6 +1409,7 @@ class TestBoxRunIncrementalSync:
             for sid in ("u-ok", "u-frozen", "u-deleted", "creator_c1")
         ])
         box_connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        box_connector.data_entities_processor.withdraw_reported_unusable = AsyncMock()
         box_connector._ensure_virtual_groups = AsyncMock()
         box_connector._sync_user_groups = AsyncMock()
         box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={"cursor": "pos-123"})
@@ -1421,7 +1423,10 @@ class TestBoxRunIncrementalSync:
         if complete:
             assert [u.source_user_id for u in withdraw.await_args.args[1]] == ["u-frozen", "u-deleted"]
         else:
+            # A cut list takes nobody for gone (u-deleted stays), but withdraws whom its pages reported inactive.
             withdraw.assert_not_awaited()
+            box_connector.data_entities_processor.withdraw_reported_unusable.assert_awaited_once_with(
+                box_connector.connector_id, {"u-frozen"})
 
     async def test_incremental_sync_with_events(self, box_connector):
         box_connector._sync_users = AsyncMock(return_value=[

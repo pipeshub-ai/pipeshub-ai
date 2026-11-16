@@ -41,6 +41,14 @@ def _connector(stored_ids: list[str], listing: object, complete: bool = True, st
             stored.pop(u.source_user_id)
 
     proc.withdraw_app_user_access = AsyncMock(side_effect=withdraw)
+
+    async def reported(cid: str, source_ids: set[str]) -> None:
+        # As DataSourceEntitiesProcessor.withdraw_reported_unusable: the stored links of the accounts named.
+        gone = [u for u in await proc.get_app_user_links(cid) if u.source_user_id in source_ids]
+        if gone:
+            await proc.withdraw_app_user_access(cid, gone)
+
+    proc.withdraw_reported_unusable = AsyncMock(side_effect=reported)
     proc.get_user_by_email = AsyncMock(return_value=None)
     c = stub_source_accounts(OneDriveConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator"))
     c.msgraph_client = MagicMock()
@@ -134,6 +142,14 @@ async def test_incomplete_listing_syncs_but_withdraws_nobody() -> None:
     await c._sync_users()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+    assert set(stored) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_incomplete_listing_still_withdraws_an_account_it_lists_disabled() -> None:
+    """b is missing from the cut listing and stays; off is listed disabled, which is stated, so it is withdrawn."""
+    c, stored = _connector(["a", "b", "off"], [_user("a"), _user("off", active=False)], complete=False)
+    await c._sync_users()
     assert set(stored) == {"a", "b"}
 
 

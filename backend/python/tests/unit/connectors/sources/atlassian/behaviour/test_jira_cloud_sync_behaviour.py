@@ -1057,6 +1057,29 @@ class TestUnfinishedUserRead:
 
         assert saved_members(site_db, "grp-dev") == []
 
+    async def test_a_short_user_read_still_withdraws_an_account_it_reports_deactivated(
+        self, api, site_db, checkpoints, search,
+    ) -> None:
+        """Bo's account is listed deactivated ("active": false) on a page that was read, then a later page fails: Bo
+        loses the connector all the same; only access by absence waits for a complete read."""
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert site_db.withdrawn_users == []
+
+        off = {**person("acc-bo", "bo@acme.com"), "active": False}
+        first = [*self.FIRST_PAGE[:-1], off]
+
+        def users(request: httpx.Request) -> httpx.Response:
+            start = AtlassianApiStub.query(request).get("startAt")
+            return json_response(first) if start == "0" else json_response({"errorMessages": ["expired"]}, status=401)
+
+        api.on("GET", f"{JIRA}/users/search", users)
+        await connector.run_sync()
+
+        assert "acc-bo" in [u.source_user_id for u in site_db.withdrawn_users]
+
     async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))

@@ -64,6 +64,14 @@ def _processor(stored_ids: list[str]) -> tuple[MagicMock, dict]:
             stored.pop(u.source_user_id)
 
     proc.withdraw_app_user_access = AsyncMock(side_effect=withdraw)
+
+    async def reported(cid: str, source_ids: set[str]) -> None:
+        # As DataSourceEntitiesProcessor.withdraw_reported_unusable: the stored links of the accounts named.
+        gone = [u for u in await proc.get_app_user_links(cid) if u.source_user_id in source_ids]
+        if gone:
+            await proc.withdraw_app_user_access(cid, gone)
+
+    proc.withdraw_reported_unusable = AsyncMock(side_effect=reported)
     return proc, stored
 
 
@@ -143,11 +151,21 @@ async def test_outlook_restored_account_gets_access_back() -> None:
     [_page([_graph_user("a")], count=None)],  # no count at all
 ])
 async def test_outlook_uncertain_listing_syncs_but_withdraws_nobody(pages: list) -> None:
+    """None of these pages lists a disabled account, so nobody is withdrawn."""
     c, stored = _outlook(["a", "b", "c"], pages)
     await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     assert set(stored) == {"a", "b", "c"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_uncertain_listing_still_withdraws_an_account_it_lists_disabled() -> None:
+    """The directory counts more users than were read: nobody is taken for gone (b stays), but off is listed
+    disabled, which is stated, so it is withdrawn."""
+    c, stored = _outlook(["a", "b", "off"], [_page([_graph_user("a"), _graph_user("off", enabled=False)], count=5)])
+    await c._sync_users()
+    assert set(stored) == {"a", "b"}
 
 
 @pytest.mark.asyncio
@@ -314,12 +332,13 @@ async def test_sharepoint_restored_account_gets_access_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_incomplete_listing_syncs_but_withdraws_nobody() -> None:
+async def test_sharepoint_incomplete_listing_takes_nobody_for_gone_but_withdraws_whom_it_lists_disabled() -> None:
+    """b is missing from the cut listing and stays; off is listed disabled ("accountEnabled": false), which is
+    stated, not inferred, so it is withdrawn."""
     c, stored = _sharepoint(["a", "b", "off"], [_app_user("a"), _app_user("off", active=False)], complete=False)
     await c._sync_users()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
-    c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-    assert set(stored) == {"a", "b", "off"}
+    assert set(stored) == {"a", "b"}
 
 
 @pytest.mark.asyncio
