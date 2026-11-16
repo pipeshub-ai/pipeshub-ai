@@ -15,9 +15,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.connectors.services.stored_content_heal import HEAL_VERSION, StoredContentHeal, StoredContentHealState
+from app.connectors.services.stored_content_heal import (
+    HEAL_VERSION,
+    StoredContentHeal,
+    StoredContentHealState,
+)
 from app.core.org_context import current_org_id
-from app.modules.indexing.record_label_repair import REPAIR_VERSION, RecordLabelRepair, RecordLabelRepairState
+from app.modules.indexing.record_label_repair import (
+    REPAIR_VERSION,
+    RecordLabelRepair,
+    RecordLabelRepairState,
+)
 from app.modules.transformers.blob_storage import StoredRecordNotFound
 
 if TYPE_CHECKING:
