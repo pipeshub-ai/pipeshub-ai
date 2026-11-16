@@ -2712,7 +2712,7 @@ class TestSyncUsersAndCaches:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("read_fails", [False, True])
     async def test_a_linked_member_listed_deactivated_or_invited_is_withdrawn(self, read_fails: bool) -> None:
-        """Linked before it became unusable, it keeps no grant; a short list withdraws nobody."""
+        """Linked before it became unusable, it keeps no grant, also when a later page of the list fails."""
         from types import SimpleNamespace
 
         from app.connectors.sources.slack.team.connector import SlackConnector
@@ -2732,11 +2732,9 @@ class TestSyncUsersAndCaches:
         ds.users_list = AsyncMock(side_effect=[page, MagicMock(success=False, error="ratelimited")])
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             await c._sync_users()
-        if read_fails:
-            c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-        else:
-            gone = c.data_entities_processor.withdraw_app_user_access.call_args[0][1]
-            assert sorted(u.source_user_id for u in gone) == ["UINV", "UOLD"]
+        # Also when a later page fails: the members a read page reported deactivated or invited are withdrawn.
+        gone = c.data_entities_processor.withdraw_app_user_access.call_args[0][1]
+        assert sorted(u.source_user_id for u in gone) == ["UINV", "UOLD"]
 
     @pytest.mark.asyncio
     async def test_a_failed_withdrawal_does_not_stop_the_sync_before_the_role_rewrite(self) -> None:

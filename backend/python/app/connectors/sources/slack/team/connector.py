@@ -1012,8 +1012,9 @@ class SlackConnector(BaseConnector):
             if not cursor:
                 break
 
-        # A short list withdraws nobody, as it rewrites no role (_sync_workspace_roles).
-        if unusable and not self._users_read_failed:
+        # A short list still withdraws the members its pages reported deactivated or invited: that is stated, not
+        # inferred from absence, and the role rewrite that would also leave them out is skipped on a short list.
+        if unusable:
             # A failed withdrawal must not stop the role rewrite after it, which already leaves these members out.
             try:
                 gone = [
