@@ -300,6 +300,7 @@ class TestPermissionSchemeGaps:
     @pytest.mark.asyncio
     async def test_application_role_403_grants_configuring_user(self):
         conn = _make_connector()
+        conn.data_entities_processor.source_accounts.return_value.before_grants = AsyncMock(return_value=True)  # checked in its own tests
         conn.data_source = MagicMock()
         conn.creator_email = "owner@example.com"
         conn._authenticated_user_key = "JIRAUSER10100"

@@ -283,10 +283,10 @@ class SourceAccounts:
         if holder is None:
             # shortcut: an address never seen to change hands takes any id; failing closed here would drop every grant
             # to an account a connector does not list. Connectors pass the unlisted accounts their grants name with an
-            # id through before_grants (Drive, Dropbox, Box and Zoom outsiders, Zendesk end users); still unchecked:
-            # Microsoft guests outside the listing, Jira holders resolved from the payload email, Google group members
-            # outside the Workspace (a second id space beside Drive's permissionId), and grantees named by address
-            # alone (Dropbox invitees, Zoom alternative hosts and invitees). Upgrade each the same way.
+            # id through before_grants (Drive, Dropbox, Box and Zoom outsiders, Zendesk end users, Jira holders outside
+            # the user listing); still unchecked: Microsoft guests outside the listing, Google group members outside
+            # the Workspace (a second id space beside Drive's permissionId), and grantees named by address alone
+            # (Dropbox invitees, Zoom alternative hosts and invitees). Upgrade each the same way.
             return True
         return source_id is not None and (
             source_id == holder or self._other.get(_bucket(email), {}).get(email) == [holder, source_id]

@@ -31,6 +31,8 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
 )
 from app.models.entities import AppUser, TicketRecord
 from app.models.permission import EntityType
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+from tests.support.in_memory_config import InMemoryConfigService
 
 PROJECT_ID = "p-1"
 SCHEME = {"id": 10002, "name": "PROJ issue security scheme", "levels": [{"id": "10102", "name": "Leadership"}]}
@@ -1712,3 +1714,34 @@ class TestSkippedHoldersAreReportedOncePerLevel:
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
             await c._build_issue_records(issues, PROJECT_ID, _users())
         assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1
+
+
+class TestHoldersOutsideTheListingGoThroughTheAccountCheck:
+    """A level holder resolved from the issue payload (not in the user listing) is checked by its accountId."""
+
+    @staticmethod
+    def _level(account_id: str) -> IssueSecurityContext:
+        return _present(members={"10102": [
+            {"type": "user", "parameter": account_id,
+             "user": {"accountId": account_id, "emailAddress": "guest@example.org", "active": True}},
+        ]})
+
+    @pytest.mark.asyncio
+    async def test_a_payload_holders_address_handed_to_another_account_loses_the_earlier_accounts_grants(self) -> None:
+        c = _connector()
+        dep = c.data_entities_processor
+        dep.get_app_user_links = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="pipeshub-guest"))
+        dep.remove_user_access_to_connector = AsyncMock(return_value=1)
+        accounts = SourceAccounts(dep, "conn-sec", InMemoryConfigService(), logging.getLogger("t"))
+        dep.source_accounts = MagicMock(return_value=accounts)
+        level = {"id": "10102", "name": "Leadership"}
+
+        await _build(c, _issue(level, issue_id="1001", key="PROJ-1"), self._level("ext-1"))
+        dep.remove_user_access_to_connector.assert_not_awaited()
+        _, perms, _ = await _build(c, _issue(level, issue_id="1002", key="PROJ-2"), self._level("ext-2"))
+
+        dep.remove_user_access_to_connector.assert_awaited_once_with("conn-sec", "guest@example.org")
+        assert ("guest@example.org", "ext-2") in {(p.email, p.external_id) for p in perms}
+        assert accounts.holds("guest@example.org", "ext-2") and not accounts.holds("guest@example.org", "ext-1")

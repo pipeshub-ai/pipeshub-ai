@@ -911,6 +911,7 @@ def _perm_resp():
 @pytest.mark.asyncio
 async def test_fetch_project_permission_scheme_dc_branches():
     conn = _make_connector()
+    conn.data_entities_processor.source_accounts.return_value.before_grants = AsyncMock(return_value=True)  # checked in its own tests
     conn.data_source = MagicMock()
     sch, grants = _perm_resp()
     ds = MagicMock()
