@@ -2,7 +2,8 @@
 
 Two orgs can each hold an app with the same name. The other org's app is written first and its key sorts
 first, so a pick of "the first app with this name" over every org lands on it and misses this org's relation.
-An app written before apps carried ``orgId`` is still this org's through the org's relation to it.
+An app written before apps carried ``orgId`` is still this org's through the org's relation to it. A relation
+from this org's user to another org's app (written before apps carried an org) is neither read nor set.
 
 Runs in backend-matrix on both graph jobs. Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL,
 ARANGO_IT_PASSWORD.
@@ -54,9 +55,10 @@ async def test_a_users_sync_state_is_read_and_set_on_the_app_of_that_name_in_the
     now = get_epoch_timestamp_in_ms()
     stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
     other, mine = f"org-a-{run}", f"org-b-{run}"
-    email, drive, mail = f"sam-{run}@example.com", f"Drive-{run}", f"Mail-{run}"
+    email, drive, mail, chat = f"sam-{run}@example.com", f"Drive-{run}", f"Mail-{run}", f"Chat-{run}"
     their_user, my_user = f"a0-user-{run}", f"b-user-{run}"
     their_drive, my_drive, their_mail, my_legacy_mail = f"a0-drive-{run}", f"b-drive-{run}", f"a0-mail-{run}", f"b-mail-{run}"
+    their_chat = f"a0-chat-{run}"
     app = {"type": "Drive", "appGroup": "Google Workspace", "scope": "team", "isActive": True, **stamps}
     try:
         assert await graph.batch_upsert_nodes(
@@ -66,6 +68,7 @@ async def test_a_users_sync_state_is_read_and_set_on_the_app_of_that_name_in_the
         assert await graph.batch_upsert_nodes(
             [{"id": their_drive, "orgId": other, "name": drive, **app},
              {"id": their_mail, "orgId": other, "name": mail, **app},
+             {"id": their_chat, "orgId": other, "name": chat, **app},
              {"id": my_drive, "orgId": mine, "name": drive, **app},
              {"id": my_legacy_mail, "name": mail, **app}],          # no orgId: this org's through the org's relation only
             collection=CollectionNames.APPS.value,
@@ -73,7 +76,7 @@ async def test_a_users_sync_state_is_read_and_set_on_the_app_of_that_name_in_the
         assert await graph.batch_create_edges(
             [{"from_id": org, "from_collection": CollectionNames.ORGS.value, "to_id": a, "to_collection": CollectionNames.APPS.value,
               "createdAtTimestamp": now}
-             for org, a in ((other, their_drive), (other, their_mail), (mine, my_drive), (mine, my_legacy_mail))],
+             for org, a in ((other, their_drive), (other, their_mail), (other, their_chat), (mine, my_drive), (mine, my_legacy_mail))],
             collection=CollectionNames.ORG_APP_RELATION.value,
         )
         assert await graph.batch_upsert_nodes(
@@ -85,7 +88,8 @@ async def test_a_users_sync_state_is_read_and_set_on_the_app_of_that_name_in_the
             [{"from_id": user, "from_collection": CollectionNames.USERS.value, "to_id": a,
               "to_collection": CollectionNames.APPS.value, "syncState": state, "lastSyncUpdate": now, **stamps}
              for user, a, state in ((their_user, their_drive, "COMPLETED"), (their_user, their_mail, "COMPLETED"),
-                                    (my_user, my_drive, "NOT_STARTED"), (my_user, my_legacy_mail, "PAUSED"))],
+                                    (my_user, my_drive, "NOT_STARTED"), (my_user, my_legacy_mail, "PAUSED"),
+                                    (my_user, their_chat, "COMPLETED"))],                # a relation to the other org's app
             collection=CollectionNames.USER_APP_RELATION.value,
         )
 
@@ -98,8 +102,14 @@ async def test_a_users_sync_state_is_read_and_set_on_the_app_of_that_name_in_the
         assert updated is not None and updated["syncState"] == "IN_PROGRESS"
         assert (await graph.get_user_sync_state(email, drive, org_id=mine))["syncState"] == "IN_PROGRESS"
         assert (await graph.get_user_sync_state(email, drive, org_id=other))["syncState"] == "COMPLETED", "the other org's relation is untouched"
+
+        assert await graph.get_user_sync_state(email, chat, org_id=mine) is None, "the other org's app is not this org's"
+        assert await graph.update_user_sync_state(email, "PAUSED", chat, org_id=mine) is None
+        edge = await graph.get_edge(my_user, CollectionNames.USERS.value, their_chat, CollectionNames.APPS.value,
+                                    CollectionNames.USER_APP_RELATION.value)
+        assert edge is not None and edge["syncState"] == "COMPLETED", "the relation to the other org's app is not set"
     finally:
         with contextlib.suppress(Exception):
             await graph.delete_nodes_and_edges([their_user, my_user], CollectionNames.USERS.value)
-            await graph.delete_nodes_and_edges([their_drive, my_drive, their_mail, my_legacy_mail], CollectionNames.APPS.value)
+            await graph.delete_nodes_and_edges([their_drive, my_drive, their_mail, their_chat, my_legacy_mail], CollectionNames.APPS.value)
             await graph.delete_nodes_and_edges([other, mine], CollectionNames.ORGS.value)
