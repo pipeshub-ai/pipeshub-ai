@@ -7,15 +7,21 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import json
+import os
+import re
+
+import asyncpg
 import pytest
 
 from app.core import org_context
+from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 
 from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
-from .test_kb import folder, grant, kb, other_org, team, users
+from .test_kb import FOLDER, folder, grant, kb, other_org, team, users
 
 pytestmark = pytest.mark.integration
 
@@ -209,6 +215,66 @@ async def test_the_flat_listing_sorts_strings_by_code_point_and_numbers_by_value
     assert names(asc) == ["A", "B", "Z", "a", "b", "ä"]                                      # code point: capitals first, whatever the database collation
     assert names(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="recordName", sort_order="desc")) == ["ä", "b", "a", "Z", "B", "A"]
     assert [x["createdAtTimestamp"] for x in (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="createdAtTimestamp", sort_order="asc"))[0]] == [2, 9, 10, 33, 100, 1000]
+
+
+async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flat listing of a collection (the page, and one folder's page with the collection's filters) reads the collection's edges by its id, each node by its id and
+    each folder's children by the folder, whatever the organisation's other connectors hold; one folder's page reads that folder only. Its estimates cannot be trusted:
+    the collection's edges are estimated at one row (coll, to_coll and to_id are correlated) and the jsonb filters at the planner's default 0.5 %, so a join left to the
+    planner read every record of the organisation for each folder at a million records (past the 20 s timeout)."""
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
+    await tree(w)
+    await users(w, "me")
+    await grant(w, "me", "READER")
+    # 20 more folders of 10 records each and 200 more root records in kb1 (400 records); 20,000 records and their links in another connector
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', id, jsonb_build_object('recordName', id, 'mimeType', mime,
+        'connectorId', app, 'orgId', $1::text, 'createdAtTimestamp', 1000) FROM (SELECT 'kf' || g AS id, $2::text AS mime, 'kb1' AS app FROM generate_series(1, 20) g
+        UNION ALL SELECT 'kr' || g, 'text/plain', 'kb1' FROM generate_series(1, 400) g UNION ALL SELECT 'n' || g, 'text/plain', 'other' FROM generate_series(1, 20000) g) x""",
+        w.org, FOLDER), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, coll, 'records', f, to_coll, t, doc
+        FROM (SELECT 'belongsTo' AS coll, 'kf' || g AS f, 'apps' AS to_coll, 'kb1' AS t, '{}'::jsonb AS doc FROM generate_series(1, 20) g
+        UNION ALL SELECT 'belongsTo', 'kr' || g, 'apps', 'kb1', '{}' FROM generate_series(1, 400) g
+        UNION ALL SELECT 'nodeRelations', 'kf' || (1 + (g - 1) / 10), 'records', 'kr' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 200) g
+        UNION ALL SELECT 'nodeRelations', 'n' || (g / 10), 'records', 'n' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(10, 20000) g
+        UNION ALL SELECT 'isOfType', 'n' || g, 'files', 'nf' || g, '{}' FROM generate_series(1, 20000) g) x""", w.org), write=True)
+    # their files, as every file record has one: with none, the organisation's isOfType edges were rightly estimated at a row or two, and a read of all of them
+    # (the to_id index bounded by org and coll, in the page's file order) was as cheap as the record's own edge, and was taken now and then
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'files', 'nf' || g, '{"extension": "txt"}'::jsonb
+        FROM generate_series(1, 20000) g""", w.org), write=True)
+    con = await asyncpg.connect(admin_url)
+    try:
+        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
+    finally:
+        await con.close()
+    sent: list[tuple[str, tuple]] = []
+    real = uow.Tx.fetch
+
+    async def spy(tx: uow.Tx, sql: str, *args: object, **kw: object) -> object:
+        if "pipeshub:graph.list_kb_records" in sql:
+            sent.append((sql, args))
+        return await real(tx, sql, *args, **kw)
+    monkeypatch.setattr(uow.Tx, "fetch", spy)
+    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 404        # the tree's 4, the 20 folders' 200 and 200 at the root
+    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[1] == 1
+    assert len(sent) == 3                                                         # the page, then a folder's page and the collection's filters
+
+    def scans(node: dict) -> list[dict]:
+        return [node] + [x for child in node.get("Plans", []) for x in scans(child)]
+    for i, (sql, args) in enumerate(sent):
+        ran = await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args))
+        plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
+        for n in scans(plan):
+            rel = n.get("Relation Name") or ""
+            # a bitmap heap scan is as bounded as its bitmap index scans: each must carry the key, as a plain index scan must
+            conds = [x.get("Index Cond") or "" for x in scans(n) if x["Node Type"] == "Bitmap Index Scan"] if n["Node Type"] == "Bitmap Heap Scan" else \
+                [n.get("Index Cond") or ""] if n["Node Type"] in ("Index Scan", "Index Only Scan") else [""]
+            if rel.startswith("nodes"):
+                assert conds and all(re.search(r"\bid = ", c) for c in conds), (i, n["Node Type"], n.get("Index Name"), conds)
+            if rel.startswith("edges"):      # every edge read is bounded by a node of the collection: its id, a folder or a record
+                assert conds and all(re.search(r"\b(to_id|from_id) = ", c) for c in conds), (i, n["Node Type"], conds)
+        if i == 1:      # one folder's page reads that folder, not the collection
+            assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 600, plan.get("Shared Hit Blocks")
 
 
 async def test_a_failed_flat_listing_raises_and_the_next_call_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:

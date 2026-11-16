@@ -272,13 +272,15 @@ class IdentityMixin(PgBase):
                                                   org, active, is_external), transaction)
         return [_arango(_doc(r["doc"]), "organizations") for r in rows]
 
-    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False) -> list[dict]:
+    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+                           app_ids: list[str] | None = None) -> list[dict]:
         if not self._mine(org_id):    # never another org's apps, and not under a system context (current_org_id refuses it)
             return []
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_org_apps */ SELECT a.doc FROM graph.edges e JOIN graph.nodes a
             ON a.org_id = e.org_id AND a.coll = 'apps' AND a.id = e.to_id WHERE e.org_id = $1 AND e.coll = 'orgAppRelation' AND e.from_id = $1
-            AND (NOT $2 OR coalesce((a.doc->>'isActive')::boolean, false)) AND ($3::text IS NULL OR a.doc->>'type' = $3)""",
-                                                  current_org_id(), active_only, app_type), None)
+            AND (NOT $2 OR coalesce((a.doc->>'isActive')::boolean, false)) AND ($3::text IS NULL OR a.doc->>'type' = $3)
+            AND ($4::text[] IS NULL OR a.id = ANY($4::text[]))""",
+                                                  current_org_id(), active_only, app_type, app_ids), None)
         return [_arango(_doc(r["doc"]), "apps") for r in rows]
 
     async def batch_upsert_orgs(self, orgs: list[dict], transaction: str | None = None) -> None:

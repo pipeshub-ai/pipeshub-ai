@@ -482,7 +482,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # the org's apps, by id
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
                   "subcategory": None, "version": "1.0.0", "status": "active",
                   "deprecatedReason": None, "replacedBy": None}],  # skills
@@ -566,7 +566,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # the org's apps, by id
                 [],  # skills query
                 [],  # mcp servers projection
                 [],  # org share query
@@ -576,7 +576,7 @@ class TestGetAgent:
             side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
-        result = await neo4j_provider.get_agent("agent-1")
+        result = await neo4j_provider.get_agent("agent-1", org_id="org-1")
 
         assert result is not None
         assert result["knowledge"][0]["filtersParsed"] == {}

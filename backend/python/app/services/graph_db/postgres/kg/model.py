@@ -23,7 +23,7 @@ HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP, LINK_PARENT_CHILD = 1, 2, 3     # kg.links.kind; 3 (kg_0014): every PARENT_CHILD parent, the primary one too
 UAR = "@uar"                                                 # gtype of a userAppRelation row in kg.scope_members (a permission edge's gtype is its type)
-CODE_EPOCH = 6                                               # kg.projection_state.code_epoch this code writes after a verified backfill
+CODE_EPOCH = 7                                               # kg.projection_state.code_epoch this code writes after a verified backfill
 
 Key = tuple[str, str]                                        # (collection, id)
 
