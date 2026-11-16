@@ -64,6 +64,7 @@ def _make_request(
     graph_provider = AsyncMock()
     graph_provider.get_all_orgs = AsyncMock(return_value=orgs if orgs is not None else [{"_key": "org-1"}])
     graph_provider.get_documents_paginated = AsyncMock(return_value=page_docs if page_docs is not None else [])
+    graph_provider.get_document = AsyncMock(return_value=None)      # no store records an org for an app without orgId
 
     container = MagicMock()
     container.logger = MagicMock(return_value=logger)
@@ -540,6 +541,7 @@ class _Graph:
         ]
         self.broken: set[str] = set()
         self.inactive: set[str] = set()
+        self.holder: dict[str, str] = {}      # scoped only: the org an app without orgId is stored in, which a lookup by id gives
         self.reads: list[str] = []
 
     async def get_all_orgs(self, *, active: bool = True, **_kw: object) -> list[dict]:
@@ -553,11 +555,12 @@ class _Graph:
         self.reads.append(org)
         if org in self.broken:
             raise RuntimeError("graph did not answer")
-        return [dict(a) for a in self.apps if not self.scoped or a.get("orgId") in (org, None)]
+        return [dict(a) for a in self.apps if not self.scoped or a.get("orgId", self.holder.get(a["_key"], org)) == org]
 
     async def get_document(self, key: str, collection: str, transaction: object = None, *, raise_on_error: bool = False) -> dict | None:
         assert current_or_system().kind == "system", "a lookup by id names no org"
-        return next((dict(a) for a in self.apps if a["_key"] == key), None)
+        doc = next((dict(a) for a in self.apps if a["_key"] == key), None)
+        return {**doc, "orgId": self.holder[key]} if doc and self.scoped and key in self.holder else doc
 
 
 def _graph_request(graph: _Graph) -> MagicMock:
@@ -638,3 +641,16 @@ class TestAllScheduledPerOrg:
             by_id = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50, connector_ids="legacy")
 
         assert [i["orgId"] for i in listed["items"]] == [i["orgId"] for i in by_id["items"]] == [ORG_A]
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_is_listed_under_the_org_holding_it_while_another_org_fails(self) -> None:
+        # A partitioned store answers it for its own org only: an earlier org's failure is no reason to hold it back.
+        graph = _Graph(scoped=True, apps=[_active_doc("legacy", "Jira")])
+        graph.holder["legacy"] = ORG_B
+        graph.broken.add(ORG_A)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert [(i["connectorId"], i["orgId"]) for i in result["items"]] == [("legacy", ORG_B)]
+        assert result["partial"] is True and result["failedOrgs"] == [ORG_A]

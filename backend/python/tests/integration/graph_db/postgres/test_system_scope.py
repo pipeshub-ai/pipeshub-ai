@@ -153,3 +153,32 @@ async def test_the_schedule_sweep_route_lists_every_orgs_scheduled_connectors(pg
     assert answer["partial"] is False
     assert {i["connectorId"]: i["orgId"] for i in listed if i["connectorId"].endswith(tag)} == apps
     assert {i["connectorId"]: (i["orgId"], i["isActive"]) for i in by_id["items"]} == {k: (v, True) for k, v in apps.items()}
+
+
+async def test_an_app_with_no_org_field_is_looked_up_and_listed_under_the_org_that_holds_it(pg_provider, org_ctx) -> None:
+    """A legacy app stored without orgId names its org by the partition it is in, not by whichever org sorts first."""
+    first, holder = f"000000{uuid.uuid4().hex[:18]}", f"ffffff{uuid.uuid4().hex[:18]}"       # org ids are 24 hex digits; the holder sorts last
+    key = f"legacy-{uuid.uuid4().hex[:8]}"
+    for org in (first, holder):
+        with org_ctx(org):
+            await pg_provider.batch_upsert_nodes([{"_key": org, "name": f"org {org}", "isActive": True}], "organizations")
+    with org_ctx(holder):
+        await pg_provider.batch_upsert_nodes([{"_key": key, "name": "Legacy", "type": "JIRA", "isActive": True}], "apps")
+        assert "orgId" not in await pg_provider.get_document(key, "apps", raise_on_error=True)
+    request = _route_request(pg_provider, {key})
+    try:
+        with bind(OrgContext(org_context.SYSTEM_ORG_ID, "system", "service", "scoped_jwt", "t")):
+            by_id = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50, connector_ids=key)
+            listed, page = [], 1
+            while True:
+                answer = await get_all_scheduled_connector_instances_internal(request, page=page, limit=200, connector_ids=None)
+                listed += [i for i in answer["items"] if i["connectorId"] == key]
+                if not answer["hasMore"]:
+                    break
+                page += 1
+        assert [(i["connectorId"], i["orgId"]) for i in by_id["items"]] == [(key, holder)]
+        assert [i["orgId"] for i in listed] == [holder]
+    finally:
+        for org in (first, holder):
+            with bind(OrgContext(org, None, "job", "job:test", "t")):
+                await pg_provider._db.run(lambda tx, org=org: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", org), write=True)

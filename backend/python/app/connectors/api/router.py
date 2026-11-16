@@ -3538,6 +3538,11 @@ async def _fetch_connector_sync_block(
 _MAX_LISTED_CONNECTOR_IDS = 200
 
 
+def _app_org(doc: dict[str, Any] | None, fallback_org_id: str | None) -> str | None:
+    """A connector's org: the one its store records (PostgreSQL also gives a legacy app's partition), else the first org."""
+    return (doc or {}).get("orgId") or fallback_org_id
+
+
 async def _connector_schedule_state(
     connector_id: str,
     graph_provider: IGraphDBProvider,
@@ -3561,7 +3566,7 @@ async def _connector_schedule_state(
     item: dict[str, Any] = {
         "connectorId": connector_id,
         "type": doc.get("type"),
-        "orgId": doc.get("orgId") or fallback_org_id,
+        "orgId": _app_org(doc, fallback_org_id),
         "ownerUserId": doc.get("createdBy"),
         "isActive": bool(doc.get("isActive")),
     }
@@ -3588,43 +3593,52 @@ async def _active_connectors_of_every_org(
 
     shortcut: every page call reads every org's connectors and slices; page by an (org, key) cursor if connector counts reach the thousands.
     """
-    found: dict[tuple[str, str | None], dict[str, Any]] = {}
-    an_org_failed = False
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    no_org: dict[str, tuple[dict[str, Any], str]] = {}      # apps with no orgId, by id: (the doc, the first org that read it)
+    visited: list[str] = []
+
+    def candidate(doc: dict[str, Any], connector_id: str, org_id: str) -> dict[str, Any]:
+        return {"connectorId": connector_id, "connectorType": doc["type"], "orgId": org_id, "createdBy": doc.get("createdBy")}
 
     async def one_org(org_id: str) -> None:
-        nonlocal an_org_failed
+        visited.append(org_id)
         apps: list[dict[str, Any]] = []
         after: str | None = None
         while True:
-            try:
-                # Raising: Neo4j and ArangoDB answer a failed read with no rows, which would read as an org with no schedules.
-                batch = await graph_provider.get_documents_paginated(
-                    CollectionNames.APPS.value, limit=_APPS_READ_PAGE, filters={"isActive": True},
-                    sort_field="_key", after_key=after, raise_on_error=True,
-                )
-            except Exception:
-                an_org_failed = True
-                raise
+            # Raising: Neo4j and ArangoDB answer a failed read with no rows, which would read as an org with no schedules.
+            batch = await graph_provider.get_documents_paginated(
+                CollectionNames.APPS.value, limit=_APPS_READ_PAGE, filters={"isActive": True},
+                sort_field="_key", after_key=after, raise_on_error=True,
+            )
             apps.extend(batch)
             after = (batch[-1].get("_key") or batch[-1].get("id")) if batch else None
             if len(batch) < _APPS_READ_PAGE or after is None:
                 break
         for doc in of_org(apps, org_id):
-            connector_id, connector_type, doc_org = doc.get("_key") or doc.get("id"), doc.get("type"), doc.get("orgId")
-            # An app with no orgId is in every org's answer on Neo4j and ArangoDB and belongs to the first org, as a lookup by id
-            # says; after a failed org it waits for the next listing rather than be repaired under another org.
-            if connector_id and connector_type and (doc_org or not an_org_failed):
-                found.setdefault((connector_id, doc_org), {
-                    "connectorId": connector_id,
-                    "connectorType": connector_type,
-                    "orgId": doc_org or org_id,
-                    "createdBy": doc.get("createdBy"),
-                })
+            connector_id, doc_org = doc.get("_key") or doc.get("id"), doc.get("orgId")
+            if not connector_id or not doc.get("type"):
+                continue
+            if doc_org:
+                found.setdefault((connector_id, doc_org), candidate(doc, connector_id, doc_org))
+            else:
+                no_org.setdefault(connector_id, (doc, org_id))
 
     # The caller's token names no org: it may widen into an explicit cross-org scope, inside which each org is bound in turn.
     with system(_SCHEDULE_SWEEP_JOB):
         failed = await for_each_org(graph_provider, _SCHEDULE_SWEEP_JOB, one_org, logger, raise_on_error=True)
-    return [found[k] for k in sorted(found, key=lambda k: (k[0], k[1] or ""))], failed
+        # An app with no orgId gets the org a lookup by id gives it: the one the store records (PostgreSQL: the partition it is in),
+        # else the first org (Neo4j and ArangoDB answer it for every org). If that org was not read, it waits for the next listing.
+        for connector_id, (doc, read_by) in no_org.items():
+            try:
+                stored = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+            except Exception as exc:
+                logger.warning("connector schedule listing: lookup of %s failed error=%s", connector_id, type(exc).__name__)
+                failed += [read_by] if read_by not in failed else []
+                continue
+            org_id = _app_org(stored, visited[0] if visited and visited[0] not in failed else None)
+            if org_id:
+                found.setdefault((connector_id, org_id), candidate(doc, connector_id, org_id))
+    return [found[k] for k in sorted(found)], failed
 
 
 @router.get(
