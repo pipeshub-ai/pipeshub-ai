@@ -169,8 +169,14 @@ class SourceAccounts:
         await asyncio.gather(*(one(b) for b in set(buckets)))
         return deleted
 
-    def _take_marker(self, marker: dict) -> None:
-        self._version = marker.get("version")
+    def _take_marker(self, marker: dict, fresh: Iterable[int] = ()) -> None:
+        # ``saving``: a save that may have stopped between its buckets and its marker, so no loaded copy is current.
+        version = object() if marker.get("saving") else marker.get("version")
+        if version != self._version:
+            # Some bucket changed: only those read after this marker (``fresh``) are current; the rest are read again.
+            self._read &= set(fresh)
+            self.loaded = len(self._read) == BUCKETS
+        self._version = version
         self.deleted_pending = marker.get("deletedChecked") is False
         self._legacy = {} if marker.get("seeded") else _lower(_legacy_reused(marker))
         self.loaded_at = time.monotonic()
@@ -183,15 +189,11 @@ class SourceAccounts:
         if self.admission_failed:
             raise RuntimeError(f"the stored users of connector {self.connector_id} could not be read this run")
         wanted = set(range(BUCKETS)) if emails is None else {_bucket(e.lower()) for e in emails}
-        stale: set[int] = set()
         if not self.loaded_at or time.monotonic() - self.loaded_at > STATE_MAX_AGE_SECONDS:
-            marker = await self._get(source_accounts_key(self.connector_id))
-            if self.loaded_at and marker.get("version") != self._version:
-                stale = set(self._read)
-            self._take_marker(marker)
-        if self.loaded and not stale:
+            self._take_marker(await self._get(source_accounts_key(self.connector_id)))
+        if self.loaded:
             return
-        missing = (wanted - self._read) | stale
+        missing = wanted - self._read
         if missing:
             async with self._lock:
                 await self._load(missing)
@@ -233,21 +235,30 @@ class SourceAccounts:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
 
-    async def _update_marker(self, *, changed: bool, deleted_checked: bool | None) -> None:
+    async def _update_marker(
+        self, *, changed: bool, deleted_checked: bool | None, fresh: Iterable[int], saving: bool = False,
+    ) -> None:
         """Merge this run into the marker by compare-and-set against what is stored now, not what the run read at its
         start: another replica may have written a newer version meanwhile, and writing an older one back would stop
         other processes from reloading. A change writes a new version; otherwise the stored one stands. The flags
-        only ever turn on."""
+        only ever turn on. ``saving`` flags the marker before a run saves its buckets: if the save after them fails,
+        the next run still writes a new version, though the buckets then already hold what it would save."""
         key = source_accounts_key(self.connector_id)
         for _ in range(_SAVE_ATTEMPTS):
             raw = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
             stored = _mapping(raw or {}, self.connector_id)
             # A token, not a counter: two processes bumping one counter would write one number for different changes.
-            noted = {"seeded": True, "version": uuid.uuid4().hex if changed else stored.get("version")}
-            if deleted_checked is not None or "deletedChecked" in stored:
-                noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
+            if saving:
+                noted = {**stored, "version": uuid.uuid4().hex, "saving": True}
+            else:
+                # shortcut: another run's final save clears a flag set by a run still saving; that run's own final save
+                # then publishes, so only both failing at once is missed. Key the flag by run if that shows up.
+                noted = {"seeded": True,
+                         "version": uuid.uuid4().hex if changed or stored.get("saving") else stored.get("version")}
+                if deleted_checked is not None or "deletedChecked" in stored:
+                    noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
             if noted == stored or await self.config_service.compare_and_set_config(key, raw or None, noted):
-                self._take_marker(noted)
+                self._take_marker(noted, fresh)
                 return
         raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
@@ -265,18 +276,21 @@ class SourceAccounts:
         if not noted:
             return
         async with self._lock:
+            buckets = {_bucket(e) for e in noted}
             for _ in range(_SAVE_ATTEMPTS):
-                deleted = await self._load({_bucket(e) for e in noted})
+                deleted = await self._load(buckets)
                 changed = set()
                 for email, sid in noted.items():
                     if self._linked.setdefault(_bucket(email), {}).setdefault(email, sid) == sid:
                         changed.add(_bucket(email))
+                if changed:
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets, saving=True)
                 try:
                     await self._save(changed, deleted)
                 except _Conflict:
                     continue
                 if changed:
-                    await self._update_marker(changed=True, deleted_checked=None)
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets)
                 return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
@@ -362,10 +376,13 @@ class SourceAccounts:
             if linked.get(email) != account:
                 linked[email] = account
                 changed.add(bucket)
+        if changed:
+            await self._update_marker(changed=True, deleted_checked=None, fresh=touched, saving=True)
         await self._save(changed, deleted)
         await self._update_marker(
             changed=bool(changed),
             deleted_checked=None if self.deleted_users is None else read_deleted is not None,
+            fresh=touched,
         )
         return True
 
