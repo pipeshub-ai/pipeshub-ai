@@ -1089,3 +1089,10 @@ class TestGetBookIdFilter:
 
 
 
+
+
+def test_page_listing_is_a_plain_staticmethod() -> None:
+    # staticmethod(staticmethod(f)) works under CPython 3.10+ but not in compiled builds.
+    import inspect
+
+    assert inspect.isfunction(vars(BookStackConnector)["_page_listing"].__func__)

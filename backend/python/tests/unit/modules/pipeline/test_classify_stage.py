@@ -237,3 +237,32 @@ async def test_a_resolution_lookup_outage_is_retried() -> None:
     io = _IO()
     io.save_error = EntityLookupUnavailableError("vector store down")
     assert (await ClassifyStage().run(_job(), io)).outcome is StageOutcome.RETRY
+
+
+@pytest.mark.parametrize(
+    ("error", "sends"),
+    [
+        pytest.param(ServiceUnavailableError("breaker open", delivered=False), 0, id="open-circuit"),
+        pytest.param(ServiceBackpressureError("slow down", retry_after=5.0), 0, id="busy-before-any-work"),
+        pytest.param(ServiceUnavailableError("read timeout after retries", delivered=True), 1, id="sent-no-answer"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_service_outage_counts_a_send_only_when_the_request_may_have_reached_it(
+    error: BaseException, sends: int
+) -> None:
+    """A request the service may have received and never answered may have reached the model: one failed send, not
+    charged. A refusal before any work sent nothing."""
+    from app.modules.pipeline.pause_budget import PauseLimits, pause_verdict
+    from app.services.llm_gateway.gateway import llm_job
+
+    io = _IO()
+    io.outcome = error
+    with llm_job("classify:vr:rev"):
+        result = await ClassifyStage().run(_job(), io)
+    assert result.outcome is StageOutcome.PAUSED
+    decision = pause_verdict(
+        None, sent=result.sent, trial=result.trial, chargeable=result.chargeable, charged=result.charged,
+        requests=result.requests, now_ms=1, ledger_now=0, limits=PauseLimits(),
+    )
+    assert (decision.state.sends, decision.state.charged) == (sends, 0)
