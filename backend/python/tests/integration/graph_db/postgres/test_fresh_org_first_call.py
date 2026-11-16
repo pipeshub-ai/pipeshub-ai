@@ -21,9 +21,12 @@ from tests.integration.graph_db.postgres.pg_support import new_org
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 
-async def test_the_first_creates_after_signup_succeed(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("events_after_creates", [False, True], ids=["events-during-creates", "events-after-creates"])
+async def test_the_first_creates_after_signup_succeed(
+    pg_provider, monkeypatch: pytest.MonkeyPatch, events_after_creates: bool,
+) -> None:
     monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")  # after the folder's conftest, which turns it off
-    await first_calls_after_signup(pg_provider, new_org())
+    await first_calls_after_signup(pg_provider, new_org(), events_after_creates=events_after_creates)
 
 
 async def test_any_number_of_writers_of_a_new_user_write_one_user_and_one_default(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,8 +20,11 @@ from app.utils import user_lookup
 logger = logging.getLogger("fresh-org-first-call-it")
 
 
-async def first_calls_after_signup(graph: Any, org_id: str) -> None:  # noqa: ANN401
-    """Two knowledge-base creates by the new admin, straight after sign-up, then the sign-up events themselves."""
+async def first_calls_after_signup(graph: Any, org_id: str, *, events_after_creates: bool = False) -> None:  # noqa: ANN401
+    """Two knowledge-base creates by the new admin, straight after sign-up, then the sign-up events themselves.
+
+    With ``events_after_creates`` both creates finish before any event is delivered, so the creates alone must write
+    the user and their default, and the events must then add no second of either."""
     run = uuid.uuid4().hex[:10]
     user_id, email = f"uid-fresh-{run}", f"admin-{run}@example.com"
     live = {
@@ -58,11 +61,14 @@ async def first_calls_after_signup(graph: Any, org_id: str) -> None:  # noqa: AN
         assert await graph.get_user_by_user_id(user_id=user_id, raise_on_error=True) is None
         assert await graph.get_document(org_id, CollectionNames.ORGS.value) is None
 
-        # The admin's first two creates, the sign-up events on the other worker and a redelivery on this one, at once.
-        *results, _, _ = await asyncio.gather(
-            *(kb.create_knowledge_base(user_id=user_id, org_id=org_id, name=f"First {i}") for i in range(2)),
-            events_arrive(second), events_arrive(first),
-        )
+        creates = [kb.create_knowledge_base(user_id=user_id, org_id=org_id, name=f"First {i}") for i in range(2)]
+        if events_after_creates:
+            results = await asyncio.gather(*creates)
+            await events_arrive(second)
+            await events_arrive(first)
+        else:
+            # The admin's first two creates, the sign-up events on the other worker and a redelivery on this one, at once.
+            *results, _, _ = await asyncio.gather(*creates, events_arrive(second), events_arrive(first))
         assert all(r.get("success") for r in results), results
 
         users = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
@@ -137,6 +143,11 @@ async def a_readded_user_keeps_one_node(graph: Any, org_id: str, *, older_random
             assert await events.process_event("userAdded", dict(event))
         (before,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
         key = before.get("id") or before.get("_key")
+        (kb_before,) = await graph.get_nodes_by_filters(
+            CollectionNames.APPS.value,
+            {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            raise_on_error=True,
+        )
 
         assert await events.process_event("userAdded", {**event, "email": new_email})
 
@@ -147,8 +158,9 @@ async def a_readded_user_keeps_one_node(graph: Any, org_id: str, *, older_random
             {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
             raise_on_error=True,
         )
-        assert [a["name"] for a in apps] == ["Readd's Private"], apps
-        assert await graph.get_user_kb_permission(apps[0].get("id") or apps[0].get("_key"), key) == "OWNER"
+        kb_key = kb_before.get("id") or kb_before.get("_key")
+        assert [(a.get("id") or a.get("_key"), a["name"]) for a in apps] == [(kb_key, "Readd's Private")], apps
+        assert await graph.get_user_kb_permission(kb_key, key) == "OWNER"
 
 
 def _worker(graph: Any) -> EntityEventService:  # noqa: ANN401

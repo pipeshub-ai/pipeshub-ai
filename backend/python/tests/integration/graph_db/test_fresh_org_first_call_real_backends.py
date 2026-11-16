@@ -71,8 +71,9 @@ async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         yield provider, org_id
 
 
-async def test_the_first_creates_after_signup_succeed(graph: tuple[Any, str]) -> None:
-    await first_calls_after_signup(*graph)
+@pytest.mark.parametrize("events_after_creates", [False, True], ids=["events-during-creates", "events-after-creates"])
+async def test_the_first_creates_after_signup_succeed(graph: tuple[Any, str], events_after_creates: bool) -> None:
+    await first_calls_after_signup(*graph, events_after_creates=events_after_creates)
 
 
 async def test_any_number_of_writers_of_a_new_user_write_one_user_and_one_default(graph: tuple[Any, str]) -> None:
