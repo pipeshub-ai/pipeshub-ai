@@ -67,7 +67,10 @@ from app.modules.indexing.named_entity_persist_retry import (
     retry_pending_named_entity_persists,
 )
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
-from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.rate_limit_deferral import (
+    deferral_due,
+    is_deferred_until_later,
+)
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import (
     is_parked_duplicate,
@@ -618,6 +621,10 @@ async def recover_in_progress_records(
         page_size = max(1, messaging_env.stale_recovery_page_size)
 
         def is_stale(record: dict[str, Any]) -> bool:
+            if is_deferred_until_later(record, get_epoch_timestamp_in_ms()):
+                # Handed back to the broker for a wait (a model provider's rate limit): its delayed message is the
+                # wake-up, and a recovery event now would call the provider again before it said it can serve.
+                return False
             started_at = record.get("processingStartedAt")
             if started_at is None:
                 # Rows written before processingStartedAt was introduced are
@@ -1876,6 +1883,8 @@ async def _republish_stranded_records(
                 # parked while its connector was off since then keeps the
                 # parked rules below (its turn-on clock), even if the wait's
                 # fields are still on it.
+                if is_deferred_until_later(record, pass_started_ms):
+                    continue
                 due = None if parked_while_off else deferral_due(record, pass_started_ms)
                 if due is not None:
                     if not due:

@@ -72,6 +72,7 @@ from app.modules.indexing.parse_now_marker import (
     store_only_active,
 )
 from app.modules.indexing.rate_limit_deferral import (
+    DEFERRED_UNTIL_FIELD,
     cleared_deferral,
     deferral_updates,
     is_deferred,
@@ -838,6 +839,17 @@ class RecordEventHandler(BaseEventService):
                 f"Could not end the enrichment of record {record_id}",
                 details={"record_id": record_id},
             )
+
+    async def _clear_handed_back_wait(self, record_id: str, record: dict | None) -> None:
+        """The record is being processed again: the wait it was handed back for is over (best effort)."""
+        if not record or record.get(DEFERRED_UNTIL_FIELD) is None:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {DEFERRED_UNTIL_FIELD: None}
+            )
+        except Exception as exc:
+            self.logger.warning(f"Could not clear the rate-limit wait of record {record_id}: {exc}")
 
     async def _enrichment_still_cut_short(self, record_id: str, *, unreadable: bool = True) -> bool:
         """Whether the record is indexed with its enrichment still running.
@@ -1919,6 +1931,7 @@ class RecordEventHandler(BaseEventService):
             # Known before the read below, as is whether this is a stage re-run: the finally block
             # keys on both if that read fails.
             resuming_enrichment = record_resuming_enrichment(record)
+            await self._clear_handed_back_wait(record_id, record)
             stages = payload.get("stages")
             stage_ingress = self.event_processor.stage_ingress
             stage_redrive = bool(
@@ -2002,6 +2015,7 @@ class RecordEventHandler(BaseEventService):
             # Decided before anything is taken out of the vector store: an event that is
             # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
+            await self._clear_handed_back_wait(record_id, doc)
             idle = already_indexed(event_type, payload, doc)
             if replayed or (idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc))):
                 # The finally block releases queued copies from here, and that is a write, so a
@@ -2498,18 +2512,16 @@ class RecordEventHandler(BaseEventService):
                     # like a transient failure (QUEUED, no processing start), so the broker's delay is the only wake-up and
                     # the stale-record scan does not mistake the wait for a crash and call the provider again.
                     is_final = False
-                    if resuming_enrichment:
-                        # The record stays COMPLETED with its enrichment running, which the stale scan selects once a
-                        # lease has passed since ``processingStartedAt``. Dating the start at the end of the wait keeps it
-                        # out of the scan until then; the broker's delayed message is the wake-up.
-                        try:
-                            await self.event_processor.graph_provider.update_node(
-                                record_id,
-                                CollectionNames.RECORDS.value,
-                                {"processingStartedAt": get_epoch_timestamp_in_ms() + int(handback_delay_s * 1000)},
-                            )
-                        except Exception as wait_exc:
-                            self.logger.warning(f"Could not date the rate-limit wait of record {record_id}: {wait_exc}")
+                    # The recovery scans leave the record alone until the broker's delayed message fires: the wait is
+                    # recorded as such, and ``processingStartedAt`` keeps saying when processing really began.
+                    try:
+                        await self.event_processor.graph_provider.update_node(
+                            record_id,
+                            CollectionNames.RECORDS.value,
+                            {DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + int(handback_delay_s * 1000)},
+                        )
+                    except Exception as wait_exc:
+                        self.logger.warning(f"Could not record the rate-limit wait of record {record_id}: {wait_exc}")
 
                 if cancelled:
                     # Checked before is_final: a cancellation is not a verdict

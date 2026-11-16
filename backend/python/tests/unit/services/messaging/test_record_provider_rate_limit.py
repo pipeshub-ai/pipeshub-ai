@@ -69,18 +69,25 @@ async def test_a_parse_now_run_is_handed_back_for_the_wait() -> None:
     assert all(write.get("parseNowStatus") != "FAILED" for write in harness.writes())
 
 
-async def test_an_enrichment_resume_is_handed_back_and_kept_off_the_stale_scan_for_the_wait() -> None:
-    """An enrichment resume stays COMPLETED with its enrichment running. Its start time is dated at the end of the wait, so the
-    stale scan (one lease after ``processingStartedAt``) cannot pick it before the delay."""
-    started = 1_000  # an attempt far older than any lease
+async def test_an_enrichment_resume_is_handed_back_and_its_wait_is_recorded_not_future_dated() -> None:
+    """The wait is recorded on the record (``deferredUntilMs``) and ``processingStartedAt`` is never moved into the future:
+    the monitor and dashboards read it as when processing really began."""
     harness = Harness(
-        _record(indexingStatus="COMPLETED", extractionStatus="IN_PROGRESS", processingStartedAt=started, origin="UPLOAD")
+        _record(indexingStatus="COMPLETED", extractionStatus="IN_PROGRESS", processingStartedAt=1_000, origin="UPLOAD")
     )
     harness.fail_with = EmbeddingRateLimited("embeddings busy", retry_after=300.0)
     before = int(time.time() * 1000)
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=True))
     assert raised.value.delay_s == 300.0
-    dated = [w["processingStartedAt"] for w in harness.writes() if w.get("processingStartedAt")]
-    assert dated and dated[-1] >= before + 300_000
+    deferred = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")]
+    assert deferred and deferred[-1] >= before + 300_000
+    assert all(w.get("processingStartedAt") is None or w["processingStartedAt"] <= int(time.time() * 1000)
+               for w in harness.writes()), "processingStartedAt must never be in the future"
     assert all(w.get("indexingStatus") != "FAILED" and w.get("extractionStatus") != "FAILED" for w in harness.writes())
+
+
+async def test_processing_a_record_again_clears_its_wait() -> None:
+    harness = Harness(_record(indexingStatus="QUEUED", deferredUntilMs=1_000))
+    await harness.run(_payload(parseNow=False))
+    assert {"deferredUntilMs": None} in [{"deferredUntilMs": w["deferredUntilMs"]} for w in harness.writes() if "deferredUntilMs" in w]

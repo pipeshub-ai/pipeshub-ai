@@ -392,6 +392,9 @@ record_schema = {
             # app/modules/indexing/rate_limit_deferral.py).
             "retryNotBefore": {"type": ["number", "null"]},
             "rateLimitedSince": {"type": ["number", "null"]},
+            # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
+            # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).
+            "deferredUntilMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",

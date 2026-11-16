@@ -47,6 +47,10 @@ if TYPE_CHECKING:
 
 RETRY_NOT_BEFORE_FIELD = "retryNotBefore"
 RATE_LIMITED_SINCE_FIELD = "rateLimitedSince"
+# A record handed back to the broker for a wait (a model provider's rate limit): the time the broker's delayed message
+# fires. The recovery scans leave the record alone until then. ``processingStartedAt`` stays the time processing really
+# began; nothing is dated into the future.
+DEFERRED_UNTIL_FIELD = "deferredUntilMs"
 
 # A Retry-After of 0 still has to land after the queue time it is written
 # with, or the sweep could not tell the wait from an old one.
@@ -96,6 +100,12 @@ def rate_limit_retry_after(exc: BaseException) -> float | None:
         ):
             return max(0.0, float(cause.retry_after_seconds))
     return None
+
+
+def is_deferred_until_later(record: Mapping[str, object], now_ms: float) -> bool:
+    """Whether the record was handed back for a wait that is not over yet (``deferredUntilMs`` in the future)."""
+    until = _number(record.get(DEFERRED_UNTIL_FIELD))
+    return until is not None and until > now_ms
 
 
 def provider_rate_limit_wait(exc: BaseException) -> float | None:
