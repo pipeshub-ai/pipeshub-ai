@@ -130,7 +130,7 @@ const SQL = {
     WHERE queue = $1 AND state = 'active' AND locked_until < now() AND stalled < $2 RETURNING id`,
   stalledFail: `/* pipeshub:sched.stalledfail */ UPDATE platform.sched_jobs SET state = 'failed', failed_reason = 'job stalled more than allowable limit',
     finished_ms = $3, locked_by = NULL, locked_until = NULL
-    WHERE queue = $1 AND state = 'active' AND locked_until < now() AND stalled >= $2 RETURNING id`,
+    WHERE queue = $1 AND state = 'active' AND locked_until < now() AND stalled >= $2 RETURNING id, opts`,
   nextDue: `/* pipeshub:sched.nextdue */ SELECT extract(epoch FROM min(CASE WHEN state = 'active' THEN locked_until ELSE run_at END) - now())::float8 AS secs
     FROM platform.sched_jobs WHERE queue = $1 AND state IN ('waiting', 'delayed', 'active')`,
 };
@@ -702,11 +702,18 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
         this.queueName,
         this.maxStalled,
       ]);
-      const failed = await tx.query<{ id: string }>(SQL.stalledFail, [
-        this.queueName,
-        this.maxStalled,
-        Date.now(),
-      ]);
+      const failed = await tx.query<{ id: string; opts: PgJobOptions }>(
+        SQL.stalledFail,
+        [this.queueName, this.maxStalled, Date.now()],
+      );
+      // a run failed for stalling keeps removeOnFail like any other failed run (BullMQ fails it through the same path)
+      for (const r of failed.rows)
+        await this.trim(
+          tx,
+          'failed',
+          r.opts.removeOnFail ?? this.defaults.removeOnFail,
+          r.id,
+        );
       return [...back.rows, ...failed.rows];
     });
     for (const r of out) this.emit('stalled', r.id);

@@ -339,6 +339,25 @@ type D = { n?: number; tag?: string }
     await until(async () => (await job.getState()) === 'completed')
   })
 
+  it('runs that stall past maxStalledCount and fail keep at most removeOnFail failed runs', async () => {
+    const queue = new PgJobQueue<D>(q, { attempts: 1, removeOnFail: 1 })
+    const jobs = [await queue.add('stuck', { n: 1 }), await queue.add('stuck', { n: 2 })]
+    // workers that claimed them, died and already used up maxStalledCount (1): active, claims expired
+    await ensurePgRuntime().withUow({ preOrg: true, write: true }, (tx) =>
+      tx.query(
+        `/* pipeshub:test.stuck */ UPDATE platform.sched_jobs SET state = 'active', attempts_made = 1, stalled = 1, locked_by = 'dead', locked_until = now() - interval '1 second' WHERE queue = $1 AND id = ANY($2::text[])`,
+        [q, jobs.map((j) => j.id)],
+      ),
+    )
+    const stalled: string[] = []
+    const ran: string[] = []
+    const w = worker(async (j) => { ran.push(j.id) })
+    w.on('stalled', (id: string) => stalled.push(id))
+    await until(() => stalled.length === 2)
+    expect(ran).to.deep.equal([])
+    expect((await queue.getFailed()).map((j) => j.failedReason)).to.deep.equal(['job stalled more than allowable limit'])
+  })
+
   it('keeps the reconcile-pending marks: a newer save keeps its mark, an older one clears it', async () => {
     const id = `c-${randomBytes(3).toString('hex')}`
     await pgReconcilePending.mark(id, 'org1')
