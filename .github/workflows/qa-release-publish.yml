@@ -166,6 +166,9 @@ jobs:
             if [[ -f "$report" ]]; then head -c 60000 "$report"; else echo "The report is missing from the run's artifacts."; fi
           } > "$RUNNER_TEMP/issue.md"
           verdict=$(grep -oE '^\*\*(ship|ship-with-known-issues|dont-ship|unsure)\*\* over' "$report" 2>/dev/null | head -1 | tr -d '*' | cut -d' ' -f1)
+          # A repository with issues turned off gets the report on the draft PR instead.
           gh issue create --repo "$GITHUB_REPOSITORY" --title "Release QA ${HEAD_SHA:0:10}: ${verdict:-no verdict}" \
-            --body-file "$RUNNER_TEMP/issue.md" >/dev/null || echo "::warning::the release issue could not be opened"
+            --body-file "$RUNNER_TEMP/issue.md" >/dev/null \
+            || { [[ -n "${url:-}" ]] && gh pr comment "$url" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue.md" >/dev/null; } \
+            || echo "::warning::the release report could not be posted as an issue or on the draft PR"
           echo "$status" | tee -a "$GITHUB_STEP_SUMMARY"

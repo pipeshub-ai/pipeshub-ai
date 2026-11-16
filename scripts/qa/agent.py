@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -360,14 +361,17 @@ def _release_input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, 
     return path
 
 
-def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int, log: Path, creds: dict[str, str]) -> str:
+def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int, log: Path, creds: dict[str, str],
+            session: str | None = None, resume: bool = False) -> str:
     cmd = [shutil.which("claude") or "claude", "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns),
            "--allowedTools", ",".join(tools(engine)), "--disallowedTools", ",".join(DENIED),
            # User settings only and no MCP servers: the tree under test could add hooks, tools or servers.
            "--setting-sources", "user", "--strict-mcp-config"]
     if os.environ.get("QA_PLANNER_MODEL") and os.environ.get("QA_PLANNER", "claude_code") == "claude_code":
         cmd += ["--model", os.environ["QA_PLANNER_MODEL"]]
-    with log.open("w", encoding="utf-8") as fh:
+    if session:
+        cmd += ["--resume" if resume else "--session-id", session]
+    with log.open("a" if resume else "w", encoding="utf-8") as fh:
         proc = subprocess.Popen(cmd, cwd=root, env=claude_env(creds), stdout=subprocess.PIPE, stderr=fh, text=True, start_new_session=True)
         try:
             stdout, _ = proc.communicate(timeout=minutes * 60)
@@ -387,6 +391,33 @@ def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int
         detail = " ".join(str(envelope.get(k)) for k in ("subtype", "result") if isinstance(envelope, dict) and envelope.get(k))
         return f"claude exited {proc.returncode}: {(detail or stdout.strip())[:300]}"
     return ""
+
+
+WRAP_UP_TURNS = 12
+WRAP_UP_MINUTES = 10.0
+
+
+def _ask(root: Path, prompt_file: str, inp: Path, agent_dir: Path, engine: str, minutes: float, max_turns: int,
+         creds: dict[str, str], started: float) -> list[str]:
+    """Runs Claude on the prompt; if it stops (turns or time) before writing the verdict, resumes the same session once
+    to write it from what it found, so a long run still ends with a judgment."""
+    vfile = agent_dir / "verdict.json"
+    prompt = (paths.REPO / "scripts/qa/prompts" / prompt_file).read_text(encoding="utf-8")
+    prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{vfile}`.\n"
+    session = str(uuid.uuid4())
+    log = agent_dir / "claude.log"
+    notes = []
+    reserve = min(WRAP_UP_MINUTES, minutes / 4)
+    problem = _claude(root, prompt, engine, minutes - reserve, max_turns, log, creds, session)
+    if problem:
+        notes.append(f"agent {problem}")
+    if not vfile.is_file():
+        left = minutes - (time.time() - started) / 60
+        wrap = (f"Stop testing now: you have used your turns or your time. Write the verdict to `{vfile}` from what you found, "
+                "following the verdict section of your instructions. Say in the summary what you did not get to.")
+        problem = _claude(root, wrap, engine, max(reserve, min(WRAP_UP_MINUTES, left)), WRAP_UP_TURNS, log, creds, session, resume=True)
+        notes.append("the agent stopped before its verdict and was asked once more to write it" + (f" ({problem})" if problem else ""))
+    return notes
 
 
 def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[[list[str], Path], None], *,
@@ -416,11 +447,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
     elif release:
         engine = engine_cmd(root)
         inp = _release_input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, release)
-        prompt = (paths.REPO / "scripts/qa/prompts/release.md").read_text(encoding="utf-8")
-        prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{agent_dir / 'verdict.json'}`.\n"
-        problem = _claude(root, prompt, engine, minutes, max_turns, agent_dir / "claude.log", creds)
-        if problem:
-            notes.append(f"agent {problem}")
+        notes += _ask(root, "release.md", inp, agent_dir, engine, minutes, max_turns, creds, started)
     else:
         diff = subprocess.run(["git", "diff", f"{plan['base']}..{plan.get('head') or 'HEAD'}"], cwd=root, capture_output=True, text=True)
         (agent_dir / "changeset.diff").write_text(diff.stdout, encoding="utf-8")
@@ -429,11 +456,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
                                  capture_output=True, text=True).stdout.split()
         inp = _input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, combined, changed,
                      previous, since(root, previous, plan.get("head")))
-        prompt = (paths.REPO / "scripts/qa/prompts/agent.md").read_text(encoding="utf-8")
-        prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{agent_dir / 'verdict.json'}`.\n"
-        problem = _claude(root, prompt, engine, minutes, max_turns, agent_dir / "claude.log", creds)
-        if problem:
-            notes.append(f"agent {problem}")
+        notes += _ask(root, "agent.md", inp, agent_dir, engine, minutes, max_turns, creds, started)
     ignore = tuple(p for p in (os.path.relpath(out, root) + "/",) if not p.startswith(".."))
     kept, reverted = keep_test_changes(cfg, root, ignore, before, map_too=bool(release))
     if reverted:

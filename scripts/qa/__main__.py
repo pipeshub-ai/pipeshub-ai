@@ -43,6 +43,10 @@ from qa import (
     validate,
 )
 
+# A release agent covers several areas of the whole product, a PR agent one change.
+AGENT_TURNS = 150
+RELEASE_TURNS = 400
+
 
 def _out(args) -> Path:
     out = Path(args.out)
@@ -396,7 +400,7 @@ def cmd_agent(args) -> int:
             report.redact_results(result)
             _dump(where / "results.json", result)
 
-        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
+        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns or AGENT_TURNS,
                               combined=_combined_summary(combined), creds=creds, previous=notebook, pr=args.pr)
     except run._Cancelled:
         print("qa agent: cancelled", file=sys.stderr)
@@ -498,8 +502,8 @@ def _release_agent(args, cfg: config.Config, out: Path, creds: dict) -> int:
             report.redact_results(result)
             _dump(where / "results.json", result)
 
-        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
-                              creds=creds, release=release)
+        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes,
+                              max_turns=args.max_turns or RELEASE_TURNS, creds=creds, release=release)
     except run._Cancelled:
         print("qa agent: cancelled", file=sys.stderr)
         return 130
@@ -1204,7 +1208,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--graph-db", choices=["neo4j", "arango"])
     s.add_argument("--no-build", action="store_true", help="use the image a previous run built for this commit")
     s.add_argument("--minutes", type=float, default=float(os.environ.get("QA_AGENT_MINUTES") or 120), help="the agent's time budget")
-    s.add_argument("--max-turns", type=int, default=int(os.environ.get("QA_AGENT_MAX_TURNS") or 150))
+    s.add_argument("--max-turns", type=int, default=int(os.environ.get("QA_AGENT_MAX_TURNS") or 0) or None,
+                   help=f"Claude's turns (default {AGENT_TURNS}, or {RELEASE_TURNS} for a release agent's whole areas)")
     s.add_argument("--allow-not-run", default=",".join(sorted(report.DEFAULT_ALLOWED)), metavar="KINDS")
     s.add_argument("--strict", action="store_true")
     s.add_argument("--run-url")

@@ -29,10 +29,13 @@ FAKE = textwrap.dedent('''\
     from pathlib import Path
     scenario = json.loads(Path(os.environ["FAKE_CLAUDE"]).read_text())
     prompt = sys.argv[sys.argv.index("-p") + 1]
-    Path(os.environ["FAKE_CLAUDE"] + ".argv").write_text(json.dumps(sys.argv))
+    if "--resume" in sys.argv:
+        Path(os.environ["FAKE_CLAUDE"] + ".resumed").write_text(json.dumps(sys.argv))
+        scenario = scenario.get("resume", {{}})
+    else:
+        Path(os.environ["FAKE_CLAUDE"] + ".argv").write_text(json.dumps(sys.argv))
     Path(os.environ["FAKE_CLAUDE"] + ".token").write_text(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""))
-    inp = Path(re.search(r"Read `([^`]+)` first", prompt).group(1))
-    agent_dir = inp.parent
+    agent_dir = Path(re.search(r"`([^`]+)/verdict\.json`", prompt).group(1))
     time.sleep(scenario.get("sleep", 0))
     for n, tests in scenario.get("rounds", {{}}).items():
         d = agent_dir / "rounds" / n
@@ -156,6 +159,20 @@ class TestRounds(AgentCase):
         doc = self.go({"is_error": True, "exit": 1})
         self.assertTrue(any(n.startswith("agent claude exited 1") for n in doc["notes"]), doc["notes"])
         self.assertIn("the agent wrote no verdict", doc["notes"])
+
+
+    def test_an_agent_out_of_turns_is_resumed_once_to_write_its_verdict(self) -> None:
+        doc = self.go({"is_error": True, "exit": 1, "resume": {"verdict": verdict()}})
+        first = json.loads(Path(str(self.scenario) + ".argv").read_text())
+        again = json.loads(Path(str(self.scenario) + ".resumed").read_text())
+        self.assertEqual(again[again.index("--resume") + 1], first[first.index("--session-id") + 1])
+        self.assertEqual(again[again.index("--max-turns") + 1], str(agent.WRAP_UP_TURNS))
+        self.assertEqual(doc["verdict"]["verdict"], "broken")
+        self.assertTrue(any("asked once more" in n for n in doc["notes"]), doc["notes"])
+
+    def test_an_agent_that_wrote_its_verdict_is_not_resumed(self) -> None:
+        self.go({"verdict": verdict()})
+        self.assertFalse(Path(str(self.scenario) + ".resumed").exists())
 
 
 class TestCredentials(AgentCase):

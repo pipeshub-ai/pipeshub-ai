@@ -27,7 +27,7 @@ Work through your areas like a QA engineer before a release, in this order, in r
 4. **Write tests** in the right suite, following its conventions (the docstring's `TC-` id, `covers:` and `needs:` lines; `@pytest.mark.live_model` when it reads real model output). Run `catalog build`, run the test, and prove a unit test with the prove command (it mutates the code the test covers and checks the test catches it). A test that shows a real bug fails on this commit: for Python, mark it `@pytest.mark.xfail(strict=True, reason="bug: <one line>")` so it stays in the suite and starts failing the day the bug is fixed; report the bug as a finding. A stack test you could not prove goes in `unproven`.
 5. **Keep the map true.** In your areas' files only: link the tests you wrote to their behaviors; add a behavior for something you found the product must do (or must not do) that the map does not say; fix a `says` that the code contradicts. Every feature you touch stays `status = "draft"`. Run `features check` after editing. The first batch (`batch` starting with `1/`) also drafts entries for the `unclaimed` surfaces in `drift`.
 
-Leave about ten minutes for the verdict. Prefer depth on P0 and security over touching everything lightly; say what you did not get to.
+Leave about ten minutes and twenty turns for the verdict. Prefer depth on P0 and security over touching everything lightly; say what you did not get to.
 
 Judge every non-passing result into one kind:
 
