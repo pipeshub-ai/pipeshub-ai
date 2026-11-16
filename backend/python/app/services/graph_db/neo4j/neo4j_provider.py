@@ -109,6 +109,7 @@ from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import (
     ORG_SHARE_PERMISSION_TYPES,
     RETIRED_ROLES,
+    best_record_access,
     read_role,
 )
 from app.models.source_dates import (
@@ -13661,13 +13662,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }
                     break
 
-            # Select the highest permission from all access paths
-            role_priority = {"OWNER": 3, "WRITER": 2, "READER": 1}
-
-            best_access = max(
-                access_result,
-                key=lambda a: role_priority.get(read_role(a.get("role", "")), 0)
-            )
+            best_access = best_record_access(access_result, record.get("accessRule"))
 
             permissions = [{
                 "id": record.get("id") or record.get("_key"),
@@ -21519,9 +21514,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The inheritance probe is spelled once: each spelling costs the planner
         # an Expand(Into) over INHERIT_PERMISSIONS. With R = accessRule, I = the
         # probe, G = the grant test:
-        #   (I AND (R IN ['STRICT','OPEN'] OR (R='RESTRICTED' AND G)))
+        #   (I AND (R IN ['STRICT','OPEN'] OR (R IN ['RESTRICTED','PARENT_AND_GRANT'] AND G)))
         #   OR (R IN ['STRICT','OPEN'] AND G)
-        # RESTRICTED: I AND G; STRICT/OPEN: I OR G; any other value: false. Keep
+        # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; any other value: false. Keep
         # the three branches: a shorter form admits an unknown accessRule value.
         # `hideChildren` is navigation only: access checks drop it.
         hide = f"\n              AND NOT {self._kh_hides(parent, state=state)}" if navigation else ""
@@ -21529,23 +21524,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # When the grant is tested from the node (`_kh_grants_by_probe`) it is
             # the costly term (every PERMISSION edge into the node), so the grant
             # is spelled once here and inheritance twice. With I, G, R as above:
-            #   (I AND R IN ['STRICT','OPEN']) OR (G AND ((I AND R='RESTRICTED') OR R IN ['STRICT','OPEN']))
-            # RESTRICTED: I AND G; STRICT/OPEN: I OR G; any other value: false.
+            #   (I AND R IN ['STRICT','OPEN']) OR (G AND ((I AND R IN ['RESTRICTED','PARENT_AND_GRANT']) OR R IN ['STRICT','OPEN']))
+            # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; any other value: false.
             rule = f"coalesce({child}.accessRule, 'OPEN')"
             inherits = self._kh_inherits(child, parent, state=state)
             return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({inherits} AND {rule} IN ['STRICT', 'OPEN'])
                 OR ({child}.id IN $grantedIds
-                    AND (({inherits} AND {rule} = 'RESTRICTED') OR {rule} IN ['STRICT', 'OPEN'])))"""
+                    AND (({inherits} AND {rule} IN ['RESTRICTED', 'PARENT_AND_GRANT']) OR {rule} IN ['STRICT', 'OPEN'])))"""
         return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({self._kh_inherits(child, parent, state=state)}
                     AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
-                      OR (coalesce({child}.accessRule, 'OPEN') = 'RESTRICTED'
+                      OR (coalesce({child}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT']
                           AND {child}.id IN $grantedIds)))
                 OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                     AND {child}.id IN $grantedIds))"""
+
+    def _kh_v3_seed_hop(self, c: str, p: str, *, state: bool) -> str:
+        """The hop ``c`` -> ``p`` below a seed: ``c`` is live, and OPEN and inherits or is granted, or PARENT_AND_GRANT and inherits and is
+        granted. Any other rule: false. Spelled once per use (each spelling costs the planner an Expand(Into) over INHERIT_PERMISSIONS)."""
+        rule = f"coalesce({c}.accessRule, 'OPEN')"
+        return (f"NOT {self._kh_deleted(c, state=state)}"
+                f" AND ({rule} = 'OPEN' OR ({rule} = 'PARENT_AND_GRANT' AND {c}.id IN $grantedIds))"
+                f" AND ({self._kh_inherits(c, p, state=state)} OR ({rule} = 'OPEN' AND {c}.id IN $grantedIds))")
 
     @staticmethod
     def _kh_v3_reach_pattern(
@@ -21568,7 +21571,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self, c: str, p: str, *, from_app: str, opens: str, state: bool, grant_once: bool = False,
     ) -> str:
         """Whether child ``c`` is listed under ``p`` when browsing: the hop where the
-        walk from the App (or an open App) reaches ``p``, OPEN nodes only below a seed,
+        walk from the App (or an open App) reaches ``p``, the seed hop below a seed,
         and the declared scope either way. Written once: the expansion and the row's
         arrow both read it, so an arrow means the expansion lists something."""
         deleted, hides = self._kh_deleted, self._kh_hides
@@ -21602,10 +21605,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               WHERE (kh_hp AND {from_app})
               OR ((kh_hp
                 OR (NOT {from_app} AND NOT {member_of_open_app}
-                  AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
-                  AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
-                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded})
+                  AND {self._kh_v3_seed_hop(c, p, state=state)} AND {walk_seeded} AND {below_member_seeded})
                 OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
@@ -21709,15 +21710,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f" AND {v}.id IN $grantedIds)"
             )
 
-        # Below a seed only OPEN nodes pass (something above the seed is not
+        # Below a seed only the seed hop passes (something above the seed is not
         # accessible). As in the listing, a granted node another arm already
         # admits is not a seed, so its hierarchy-only children stay out.
-        open_hop = (
-            "kh_hs.relationshipType " + hierarchy
-            + " AND NOT coalesce(kh_cs.isDeleted, false)"
-            " AND coalesce(kh_cs.accessRule, 'OPEN') = 'OPEN'"
-            " AND (EXISTS { (kh_cs)-[:INHERIT_PERMISSIONS]->(kh_ps) } OR kh_cs.id IN $grantedIds)"
-        )
+        open_hop = f"kh_hs.relationshipType {hierarchy} AND {self._kh_v3_seed_hop('kh_cs', 'kh_ps', state=False)}"
         below_seed = f"""EXISTS {{
                 MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_s)
                 WHERE {seed('kh_s')}
@@ -22246,11 +22242,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (sc)
                   ((pc)-[kh_rc:NODE_RELATION]->(cc)
                    WHERE kh_rc.relationshipType {hierarchy}
-                     AND NOT {deleted("cc", state=state)}
                      AND NOT {hides("pc", state=state)}
-                     AND coalesce(cc.accessRule, 'OPEN') = 'OPEN'
-                     AND ({self._kh_inherits("cc", "pc", state=state)}
-                       OR cc.id IN $grantedIds)
+                     AND {self._kh_v3_seed_hop("cc", "pc", state=state)}
                   ){{1,50}} (nc)
             RETURN collect(DISTINCT nc) AS belowSeeds
         }}
@@ -23038,9 +23031,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             c, p, r, s = (f"kh_s{x}{tag}" for x in ("c", "p", "r", "s"))
             return (f"EXISTS {{ MATCH ({v}) (({c})<-[{r}:NODE_RELATION]-({p})"
                     f" WHERE {r}.relationshipType {hierarchy}"
-                    f" AND NOT {deleted(c, state=state)} AND NOT {hides(p, state=state)}"
-                    f" AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'"
-                    f" AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds)){{1,50}} ({s})"
+                    f" AND NOT {hides(p, state=state)} AND {self._kh_v3_seed_hop(c, p, state=state)}){{1,50}} ({s})"
                     f" WHERE {seed(s, tag + 'x')} }}")
 
         return f"""
@@ -25595,6 +25586,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
 
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
+            WITH {node_var}, {user_var}, role_priority, principals,
+                 CASE WHEN coalesce({node_var}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT'] THEN [{node_var}]
+                      ELSE permission_targets END AS permission_targets
+
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
@@ -25724,6 +25721,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE linked.connectorId = {node_var}.connectorId
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
+
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
+            WITH {node_var}, {user_var}, role_priority, principals,
+                 CASE WHEN coalesce({node_var}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT'] THEN [{node_var}]
+                      ELSE permission_targets END AS permission_targets
 
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target

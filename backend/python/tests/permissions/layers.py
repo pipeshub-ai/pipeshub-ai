@@ -31,7 +31,7 @@ _RUN = uuid.uuid4().hex[:6]
 if TYPE_CHECKING:
     from .model import World
 
-KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED")
+KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT")
 # The permission-type values Arango's edge schema accepts (schema/arango/edges.py); ANYONE is not one of them.
 ARANGO_GRANT_TYPES = {None, "USER", "GROUP", "DOMAIN", "TEAM", "ORG", "ROLE", "ORGANIZATION"}
 LoadFn = Callable[[list, list], Awaitable[None]]

@@ -8,6 +8,8 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import random
 from typing import TYPE_CHECKING
 
@@ -141,3 +143,90 @@ async def test_entity_search_walks_the_same_window_with_the_batched_and_with_the
     monkeypatch.setattr(type(w.p), "_roles_on", per_record)
     assert batched == {(limit, offset): await asked(limit, offset) for limit in (1, 5, 20) for offset in (0, 7)}
     assert any(batched.values())
+
+
+async def test_a_record_that_needs_its_own_grant_takes_no_role_from_what_it_inherits(w: World) -> None:
+    """A role on the record group a record inherits from is a role on an OPEN record, not on a RESTRICTED or PARENT_AND_GRANT one: those take a role only
+    when the user holds a grant on the record itself, by the batched and by the per-record read alike."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("apps", {"_key": "a1", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "rg", "connectorId": "a1"})
+    rules = {"open": None, "pag": "PARENT_AND_GRANT", "res": "RESTRICTED", "pag-own": "PARENT_AND_GRANT", "res-own": "RESTRICTED"}
+    await w.nodes("records", *({"_key": k, "connectorId": "a1", "recordName": k, **({"accessRule": r} if r else {})} for k, r in rules.items()))
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": k, "to_collection": "recordGroups", "to_id": "rg"} for k in rules], "inheritPermissions")
+    await w.p.batch_create_edges([{"from_collection": "users", "from_id": "u", "to_collection": to[0], "to_id": to[1], "type": "USER", "role": "READER"}
+                                  for to in (("recordGroups", "rg"), ("records", "pag-own"), ("records", "res-own"))], "permission")
+    ids = list(rules)
+    batch = await w.p._q(lambda tx: w.p._roles_on(tx, w.org, "u", "records", ids, _CTX_RANK), None)
+    assert batch == await w.p._q(lambda tx: _per_record(w, tx, "u", ids, _CTX_RANK), None)
+    assert {k for k, v in batch.items() if v} == {"open", "pag-own", "res-own"}
+
+
+async def test_a_record_that_needs_its_own_grant_takes_its_role_from_its_own_grants_alone(w: World) -> None:
+    """READER on the record and OWNER on the record group it inherits from (the user's own grant and a group's): a RESTRICTED or PARENT_AND_GRANT
+    record reads READER, by the batched and by the per-record read alike; an OPEN one reads OWNER, inherited."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("groups", {"_key": "g"})
+    await w.nodes("apps", {"_key": "a1", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "rg", "connectorId": "a1"})
+    rules = {"open": None, "pag": "PARENT_AND_GRANT", "res": "RESTRICTED"}
+    await w.nodes("records", *({"_key": k, "connectorId": "a1", "recordName": k, **({"accessRule": r} if r else {})} for k, r in rules.items()))
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": k, "to_collection": "recordGroups", "to_id": "rg"} for k in rules], "inheritPermissions")
+    grant = [{"from_collection": "users", "from_id": "u", "to_collection": "records", "to_id": k, "type": "USER", "role": "READER"} for k in rules]
+    grant += [{"from_collection": "users", "from_id": "u", "to_collection": "groups", "to_id": "g", "type": "USER", "role": "READER"},
+              {"from_collection": "groups", "from_id": "g", "to_collection": "recordGroups", "to_id": "rg", "type": "GROUP", "role": "OWNER"},
+              {"from_collection": "users", "from_id": "u", "to_collection": "recordGroups", "to_id": "rg", "type": "USER", "role": "OWNER"}]
+    await w.p.batch_create_edges(grant, "permission")
+    ids = list(rules)
+    batch = await w.p._q(lambda tx: w.p._roles_on(tx, w.org, "u", "records", ids, _CTX_RANK), None)
+    assert batch == await w.p._q(lambda tx: _per_record(w, tx, "u", ids, _CTX_RANK), None)
+    assert {k: v[0] for k, v in batch.items()} == {"open": "OWNER", "pag": "READER", "res": "READER"}
+
+
+class _ChangesAfterEachStatement:
+    """A transaction whose world changes, committed elsewhere, after its first statement: what read committed lets happen between two statements."""
+
+    def __init__(self, tx: object, change: object) -> None:
+        self._tx, self._change = tx, change
+
+    def __getattr__(self, name: str) -> object:
+        attr = getattr(self._tx, name)
+        if name not in ("fetch", "fetchval", "fetchrow"):
+            return attr
+
+        async def then_change(*args: object, **kwargs: object) -> object:
+            out = await attr(*args, **kwargs)
+            change, self._change = self._change, None
+            if change is not None:
+                await change()
+            return out
+        return then_change
+
+
+@pytest.mark.parametrize("batched", [False, True])
+async def test_the_role_and_the_rule_it_obeys_are_read_at_one_moment(w: World, batched: bool) -> None:
+    """Before: an OPEN record the user holds READER on, under a group they hold OWNER on (OWNER). After, committed elsewhere: the user's grant is gone
+    and the record is RESTRICTED (no role). Whatever the timing, the read answers one of the two, never the record's own READER under the new rule."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("apps", {"_key": "a1", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "rg", "connectorId": "a1"})
+    await w.nodes("records", {"_key": "r", "connectorId": "a1", "recordName": "r"})
+    await w.edge("inheritPermissions", ("records", "r"), ("recordGroups", "rg"))
+    await w.edge("permission", ("users", "u"), ("records", "r"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("recordGroups", "rg"), type="USER", role="OWNER")
+
+    async def commit_elsewhere() -> None:
+        await w.p.delete_edge("u", "users", "r", "records", "permission")
+        await w.p.update_node("r", "records", {"accessRule": "RESTRICTED"})
+    outside = contextvars.copy_context()  # outside the reading unit of work: its own connection and commits
+
+    async def change() -> None:
+        await asyncio.create_task(commit_elsewhere(), context=outside)
+
+    async def read(tx: object) -> object:
+        racing = _ChangesAfterEachStatement(tx, change)
+        if batched:
+            return (await w.p._roles_on(racing, w.org, "u", "records", ["r"], _CTX_RANK))["r"]
+        return await w.p._role_on(racing, w.org, "u", "records", "r", _CTX_RANK)
+    role = await w.p._q(read, None)
+    assert (role or (None,))[0] in ("OWNER", None)
