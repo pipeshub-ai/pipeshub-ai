@@ -128,10 +128,17 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                 after = _parse(cursor)
                 nodes = await (app_nodes(tx, org, app_id, after, page) if app_id else principal_page(tx, org, after, page))
                 w = KgWriter(tx)
+                if not nodes:
+                    await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=not app_id)
+                else:
+                    await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
+                # The cursor was read before the lock: a restart that demoted the copy meanwhile (under the org key, exclusively) has committed by now. The batch then writes
+                # no cursor over it, and the next batch starts the copy again from where the restart left it.
+                if (await modes.state(tx, org, app_sk))[0] != cursor:
+                    return True
                 if not nodes:      # the copy is finished, by this code: the listing reads it from here on (kh_listing.head), the access check only once it is verified and promoted
                     await w.projection_set(app_sk, epoch=CODE_EPOCH, mode="legacy", digest=None, cursor="done", verified_at=None)
                     return False
-                await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
                 await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=_fmt(nodes[-1]), verified_at=None)
                 return True
             if not await db.run(batch, write=True):

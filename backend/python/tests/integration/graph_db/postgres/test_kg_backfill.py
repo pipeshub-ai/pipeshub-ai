@@ -26,6 +26,7 @@ from app.services.graph_db.postgres.kg.writers import RECORD_COLS, KgWriter
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, prov
+from .test_kg_read import _admin
 from .test_kg_projection import add_edge, delete_edge
 from .test_kg_projection_races import OPS, world2
 
@@ -606,6 +607,29 @@ async def test_a_demotion_made_while_a_backfill_is_ending_is_not_undone_by_its_f
     out = await bf.backfill(pg_db, org, "app1", page=4)
     assert not out.flipped and out.result.ok
     assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
+
+
+@pytest.mark.parametrize("last", [True, False], ids=["finishing_batch", "copying_batch"])
+async def test_a_restart_that_demotes_the_copy_while_a_batch_runs_is_not_overwritten_by_its_cursor(pg_db, monkeypatch, last: bool) -> None:
+    """A batch reads the copy cursor before it takes the connector's lock. A restart that demoted the copy in between (its reset holds the org key exclusively) wins: the batch
+    writes no cursor over it (not "done" with this code's epoch, which the listing would read from, nor a cursor past the start), and the copy starts again from the first node."""
+    p, org = await fresh_world(pg_db)
+    real, seen, demoted = bf.app_nodes, [], []
+
+    async def nodes(tx, o, app, after, limit):  # noqa: ANN001, ANN202
+        got = await real(tx, o, app, after, limit)
+        seen.append(after)
+        if not demoted and after is not None and (not got if last else bool(got)):
+            demoted.append(len(seen))
+            await _admin("""UPDATE kg.projection_state s SET backfill_cursor = NULL, mode = 'legacy', code_epoch = 0, verified_at = NULL FROM kg.node_keys k
+                WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 AND s.org_id = $1 AND k.id = 'app1'""", org)
+        return got
+    monkeypatch.setattr(bf, "app_nodes", nodes)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "app1", page=3)
+    assert demoted, "the batch the restart was meant to race never ran"
+    assert None in seen[demoted[0]:], f"the copy did not start again after the restart: {seen}"      # on main: the batch wrote its cursor over the demotion
+    assert await state(pg_db, org, "app1") == ("done", "legacy", CODE_EPOCH)
 
 
 async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -> None:
