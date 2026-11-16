@@ -456,4 +456,5 @@ class GraphNavigator:
             indexing_status=indexing_status,
             connector=connector,
             context_block=context_block,
+            preparing=getattr(response, "preparing", None) is True,
         )
