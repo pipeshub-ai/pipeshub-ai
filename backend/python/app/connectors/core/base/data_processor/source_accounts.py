@@ -469,7 +469,9 @@ class SourceAccounts:
                     changed.add(bucket)
                 try:
                     await self._save(changed, deleted)
-                    return
                 except _Conflict:
                     continue        # another process saved a bucket meanwhile: read it again and decide again
+                if changed:         # a new version, so other processes read the noted ids again
+                    await self._update_marker(changed=True, deleted_checked=None)
+                return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")

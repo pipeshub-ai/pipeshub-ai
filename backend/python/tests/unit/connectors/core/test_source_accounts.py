@@ -843,6 +843,27 @@ async def test_an_other_id_noted_while_another_process_saves_the_same_bucket_kee
 
 
 @pytest.mark.asyncio
+async def test_another_process_reads_an_other_id_noted_after_it_loaded(world, monkeypatch) -> None:
+    """Noting an id is a change: a process that loaded before it reads it once its copy is old, as for a new link."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    replica = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    await replica.ensure_loaded()
+    assert not replica.holds("ana@x.com", "perm-new")
+
+    await accounts.note_other_ids({"ana@x.com": ("new-oid", "perm-new")})
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await replica.ensure_loaded()
+
+    assert replica.holds("ana@x.com", "perm-new")
+
+
+@pytest.mark.asyncio
 async def test_an_other_id_stops_passing_once_the_address_changes_hands_again(world) -> None:
     directory, accounts, _ = world
     await _admit(directory, accounts, [_user("ana@x.com", "a1")])
