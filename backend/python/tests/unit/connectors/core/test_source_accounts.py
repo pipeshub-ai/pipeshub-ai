@@ -360,7 +360,7 @@ async def test_a_second_admission_for_an_address_waits_for_the_first_ones_link_w
     processor.remove_user_access_to_connector = AsyncMock(return_value=0)
     a_writing, release, order = asyncio.Event(), asyncio.Event(), []
 
-    async def upsert(users: list) -> None:
+    async def upsert(users: list, org_id: str) -> None:
         sid = users[0].source_user_id
         if sid == "a":
             a_writing.set()

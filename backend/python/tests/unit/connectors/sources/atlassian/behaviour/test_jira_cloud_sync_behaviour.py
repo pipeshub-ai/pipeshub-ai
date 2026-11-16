@@ -489,7 +489,7 @@ class TestAccessControlSafety:
 
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.USER", None, "sync@acme.com")]
+        assert acl(site_db) == [("EntityType.USER", "me", "sync@acme.com")], "the Jira account, named by its id and address"
 
     async def test_an_unreadable_permission_scheme_still_syncs_the_projects_issues(self, api, site_db, checkpoints, search) -> None:
         stub_site(api)
@@ -1941,7 +1941,7 @@ class TestUnreadApplicationRoles:
         api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["no"]}, status=403))
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-dev", None), ("EntityType.USER", None, "sync@acme.com")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev", None), ("EntityType.USER", "me", "sync@acme.com")]
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helper exception lives in the same module; the builder decorator must still land on the connector.
