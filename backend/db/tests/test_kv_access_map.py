@@ -52,7 +52,7 @@ READS = {
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),  # every ConfigurationService
         # parsing and extraction bind the fleet breaker at start (fleet_redis.bind_service_fleet): created if absent, then read
         "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),
-        "/services/redis": ("app/config/configuration_service.py:577", "REDIS"),  # the same: fleet_redis.fleet_redis_config (fleet_redis.py:78)
+        "/services/redis": ("app/config/configuration_service.py:596", "REDIS"),  # the same: fleet_redis.fleet_redis_config (fleet_redis.py:78)
     },
     "indexing": {
         "state:*": ("app/services/pg_state.py:24", "state:lock:"),
