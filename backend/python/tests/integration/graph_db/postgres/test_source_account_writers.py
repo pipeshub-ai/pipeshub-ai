@@ -13,7 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from tests.integration.graph_permissions import source_account_writes as scenario
 from tests.support.in_memory_config import InMemoryConfigService

@@ -1,8 +1,14 @@
 """The source-account setting and the account ids, without a store."""
 from unittest.mock import AsyncMock, MagicMock
 
-from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
-from app.connectors.core.base.data_processor.source_accounts import SourceAccountGraph, account_node_id, graph_mode_key
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_processor.source_accounts import (
+    SourceAccountGraph,
+    account_node_id,
+    graph_mode_key,
+)
 from tests.support.in_memory_config import InMemoryConfigService
 
 

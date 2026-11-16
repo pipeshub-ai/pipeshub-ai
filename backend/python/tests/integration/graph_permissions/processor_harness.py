@@ -59,7 +59,7 @@ class _AccountsOnConfig(InMemoryConfigService):
     """Every connector keeps its accounts as SourceAccount nodes (``PERM_SOURCE_ACCOUNTS=1``): the write-path suites then run with the
     writers on, and must still read what they read with them off."""
 
-    async def get_config(self, key: str, default=None, use_cache: bool = True, **kw):  # noqa: ANN001, ANN201
+    async def get_config(self, key: str, default: object = None, use_cache: bool = True, **kw: object) -> object:
         if key.endswith("/sourceAccounts/graph") and key not in self.values:
             return {"enabled": True}
         return await super().get_config(key, default, use_cache, **kw)

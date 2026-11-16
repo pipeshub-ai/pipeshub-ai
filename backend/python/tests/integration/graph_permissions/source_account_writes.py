@@ -11,7 +11,14 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
-from app.models.entities import AppUser, AppUserGroup, FileRecord, RecordGroup, RecordGroupType, RecordType
+from app.models.entities import (
+    AppUser,
+    AppUserGroup,
+    FileRecord,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
