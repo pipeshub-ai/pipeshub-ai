@@ -2,13 +2,12 @@
 another memory cgroup does not seed this one's mark, IPv6 bind addresses, a close that cuts active clients,
 and a stop that cannot be outrun by a bind.
 
-Needs no service, only loopback ports in 19400-19499 (override with OPS_EXPORTER_LIFECYCLE_TEST_PORT).
+Needs no service; every port is asked of the kernel (`tests/support/free_port.py`).
 """
 from __future__ import annotations
 
 import errno
 import json
-import os
 import socket
 import threading
 import time
@@ -18,22 +17,14 @@ import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
+from tests.support.free_port import free_port
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-BASE_PORT = int(os.environ.get("OPS_EXPORTER_LIFECYCLE_TEST_PORT", "19400"))
 HOST = "127.0.0.1"
 OOM = 'pipeshub_cgroup_oom_kills_total{service="indexing"}'
 BRAKES = 'pipeshub_governor_brakes_total{pool="heavy_parse",reason="memory_soft",service="indexing"}'
-
-
-def _free(port: int) -> int:
-    while True:
-        with socket.socket() as s:
-            if s.connect_ex((HOST, port)) != 0:
-                return port
-        port += 1
 
 
 def _wait_until(predicate, timeout_s: float) -> bool:
@@ -151,7 +142,7 @@ def _ipv6_loopback() -> bool:
 
 @pytest.mark.skipif(not _ipv6_loopback(), reason="this host has no IPv6 loopback")
 def test_an_ipv6_bind_address_is_served(tmp_path: Path) -> None:
-    port = _free(BASE_PORT)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="::1")
     assert exporter.try_bind()
     try:
@@ -166,7 +157,7 @@ def test_an_ipv6_bind_address_is_served(tmp_path: Path) -> None:
 
 
 def test_closing_the_server_ends_a_client_that_trickles(tmp_path: Path) -> None:
-    port = _free(BASE_PORT + 1)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST)
     assert exporter.try_bind()
     server = exporter._server
@@ -189,7 +180,7 @@ def test_closing_the_server_ends_a_client_that_trickles(tmp_path: Path) -> None:
 
 
 def test_a_stopped_exporter_never_binds(tmp_path: Path) -> None:
-    port = _free(BASE_PORT + 2)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST)
     exporter.stop()
     assert exporter.try_bind() is False
@@ -197,7 +188,7 @@ def test_a_stopped_exporter_never_binds(tmp_path: Path) -> None:
 
 
 def test_a_bind_in_progress_when_stop_runs_is_closed_before_stop_returns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    port = _free(BASE_PORT + 3)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST)
     real = ox.BoundedServer
     inside, release = threading.Event(), threading.Event()

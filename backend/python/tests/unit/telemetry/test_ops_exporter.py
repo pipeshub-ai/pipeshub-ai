@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
+from tests.support.free_port import free_port
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -606,7 +607,7 @@ def test_a_temp_file_of_a_live_writer_is_kept_until_it_is_old(tmp_path: Path) ->
 
 
 def test_stop_folds_this_processes_counters_and_removes_its_file(tmp_path: Path) -> None:
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=19299, source=lambda: ({}, _brakes(7)))
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=lambda: ({}, _brakes(7)))
     assert exporter.writer.write() and exporter.writer.path.exists()
     exporter.stop()
     assert not exporter.writer.path.exists()
@@ -620,7 +621,7 @@ def test_stop_folds_this_processes_counters_and_removes_its_file(tmp_path: Path)
 def test_stop_does_not_make_a_live_neighbours_counter_fall(tmp_path: Path) -> None:
     """One process leaves while a holder keeps scraping: the total never dips and never double counts."""
     _snapshot(tmp_path, 4242, _brakes(3))
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=19299, source=lambda: ({}, _brakes(7)))
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=lambda: ({}, _brakes(7)))
     exporter.writer.write()
     collector = ox.SignalCollector(tmp_path, is_alive=lambda pid, start: pid == 4242 or start == exporter.writer._start, cache_ttl=0)
     before = _value(_text(collector), BRAKES)

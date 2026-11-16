@@ -1,13 +1,12 @@
 """Real processes: one holds the port, kills leave no stale gauges, and counters stay monotonic.
 
-Needs no service, only loopback ports in 19200-19299 (override with OPS_EXPORTER_TEST_PORT).
+Needs no service; every port is asked of the kernel (`tests/support/free_port.py`).
 """
 from __future__ import annotations
 
 import json
 import os
 import signal
-import socket
 import subprocess
 import sys
 import textwrap
@@ -17,8 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.free_port import free_port
+
 PY = Path(__file__).resolve().parents[3]
-BASE_PORT = int(os.environ.get("OPS_EXPORTER_TEST_PORT", "19260"))
 
 WORKER = textwrap.dedent(
     """
@@ -37,14 +37,6 @@ WORKER = textwrap.dedent(
 )
 IN_USE = 'pipeshub_governor_pool_in_use{pool="heavy_parse",service="indexing"}'
 BRAKES = 'pipeshub_governor_brakes_total{pool="heavy_parse",reason="memory_soft",service="indexing"}'
-
-
-def _free(port: int) -> int:
-    while True:
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
-        port += 1
 
 
 def _scrape(port: int, timeout: float = 15.0) -> dict[str, float]:
@@ -90,7 +82,7 @@ def _spawn(procs: list, run: Path, port: int, in_use: float, brakes: float) -> s
 
 
 def test_kill_freshness_and_carry(tmp_path: Path, procs: list) -> None:
-    port = _free(BASE_PORT)
+    port = free_port()
     a = _spawn(procs, tmp_path, port, 3, 50)
     b = _spawn(procs, tmp_path, port, 5, 50)
     c = _spawn(procs, tmp_path, port, 7, 0)
@@ -161,7 +153,7 @@ def test_scrape_latency_with_64_snapshot_files(tmp_path: Path) -> None:
             },
         }))
     assert start is not None or True
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=_free(BASE_PORT + 20), source=lambda: ({}, {}))
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=lambda: ({}, {}))
     assert exporter.try_bind()
     try:
         _scrape(exporter._port)
@@ -194,7 +186,7 @@ OOM = 'pipeshub_cgroup_oom_kills_total{service="indexing"}'
 
 def test_oom_kills_is_the_cgroup_value_with_several_real_processes_and_a_restart(tmp_path: Path, procs: list) -> None:
     """Every process reads the same container-wide oom_kill; N processes and a restart serve the cgroup value."""
-    port = _free(BASE_PORT + 40)
+    port = free_port()
     env = {k: v for k, v in os.environ.items() if k != "PROMETHEUS_MULTIPROC_DIR"}
     spawned = [subprocess.Popen([sys.executable, "-c", OOM_WORKER, str(tmp_path), str(port), "2"], cwd=PY, env=env) for _ in range(3)]
     procs.extend(spawned)
@@ -216,7 +208,7 @@ def test_gc_never_deletes_a_live_writers_file(tmp_path: Path, procs: list) -> No
     """A real writer every 0.2 s and a holder-side scan in a tight loop with the real /proc start-time check."""
     from app.telemetry import ops_exporter as ox
 
-    port = _free(BASE_PORT + 45)
+    port = free_port()
     writer = _spawn(procs, tmp_path, port, 1, 7)
     deadline = time.time() + 15
     while time.time() < deadline and not list((tmp_path / "signals").glob(f"{writer.pid}-*.json")):
@@ -308,7 +300,7 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
             out.append(time.perf_counter() - t - 0.005)
         return sorted(out)
 
-    port = _free(BASE_PORT + 50)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), stale_after=7200, bind="127.0.0.1", interval=1.0)
     exporter.start()
     deadline = time.time() + 5

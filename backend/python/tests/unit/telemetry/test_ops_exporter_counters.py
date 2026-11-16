@@ -21,13 +21,13 @@ import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
+from tests.support.free_port import free_port
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 OOM = 'pipeshub_cgroup_oom_kills_total{service="indexing"}'
 BRAKES = "pipeshub_governor_brakes_total"
-BASE_PORT = 19840
 
 
 def _write(run: Path, pid: int, metrics: dict, *, at: float = 1000.0, start: str | None = "s", service: str = "indexing",
@@ -167,7 +167,7 @@ def test_a_slow_last_round_does_not_write_the_file_again_after_stop(tmp_path: Pa
             time.sleep(2.6)  # a slow stats() under load, longer than stop()'s join
         return {}, {BRAKES: [[["indexing", "heavy_parse", "memory_soft"], 5]]}
 
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=BASE_PORT, source=source, bind="127.0.0.1",
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=source, bind="127.0.0.1",
                               interval=0.05, rebind_interval=3600)
     exporter.start()
     assert in_round.wait(5)
@@ -309,7 +309,7 @@ def _close(exporter: ox.OpsExporter) -> None:
 
 def test_reconnecting_idle_clients_do_not_keep_a_scrape_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 1.0)
-    port = BASE_PORT + 1
+    port = free_port()
     exporter = _exporter(tmp_path, port)
     stop = threading.Event()
 
@@ -337,7 +337,7 @@ def test_reconnecting_idle_clients_do_not_keep_a_scrape_out(tmp_path: Path, monk
 
 def test_trickling_clients_are_cut_at_the_request_deadline_and_never_block_a_scrape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.8)
-    port = BASE_PORT + 2
+    port = free_port()
     exporter = _exporter(tmp_path, port)
     socks = [socket.create_connection(("127.0.0.1", port)) for _ in range(ox.MAX_CONNECTIONS + 4)]
     stop = threading.Event()
@@ -384,7 +384,7 @@ def test_trickling_clients_are_cut_at_the_request_deadline_and_never_block_a_scr
 
 
 def test_a_connection_that_is_being_answered_is_not_evicted(tmp_path: Path) -> None:
-    exporter = _exporter(tmp_path, BASE_PORT + 3)
+    exporter = _exporter(tmp_path, free_port())
     server = exporter._server
     assert server is not None
     try:

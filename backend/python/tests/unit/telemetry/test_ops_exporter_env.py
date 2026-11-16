@@ -1,6 +1,6 @@
 """The exporter's on/off switch, its config, the lifespan wiring, and the bounded port.
 
-Needs no service, only loopback ports in 19200-19299 (override with OPS_EXPORTER_ENV_TEST_PORT).
+Needs no service; every port is asked of the kernel (`tests/support/free_port.py`).
 """
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from pathlib import Path
 import pytest
 
 from app.telemetry import ops_exporter as ox
+from tests.support.free_port import free_port
 
 PY = Path(__file__).resolve().parents[3]
-BASE_PORT = int(os.environ.get("OPS_EXPORTER_ENV_TEST_PORT", "19200"))
 
 
 class _Gov:
@@ -31,12 +31,6 @@ class _Gov:
 def _listening(port: int) -> bool:
     with socket.socket() as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
-
-
-def _free(port: int) -> int:
-    while _listening(port):
-        port += 1
-    return port
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +44,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off", "False ", "maybe"])
 def test_off_values_build_nothing_start_nothing_and_write_nothing(value: str | None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    port = _free(BASE_PORT)
+    port = free_port()
     if value is not None:
         monkeypatch.setenv("PIPESHUB_METRICS_ENABLED", value)
     monkeypatch.setenv("PIPESHUB_RUN_DIR", str(tmp_path / "run"))
@@ -139,11 +133,11 @@ def test_the_bind_address_is_configurable_and_validated(monkeypatch: pytest.Monk
         assert ox.exporter_from_env(_Gov(), "indexing")._bind == "0.0.0.0"
     assert [r for r in caplog.records if "PIPESHUB_METRICS_BIND" in r.message]
     with pytest.raises(ValueError, match="bind"):
-        ox.OpsExporter(service="indexing", run_dir=tmp_path, port=BASE_PORT, source=lambda: ({}, {}), bind="host.example")
+        ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=lambda: ({}, {}), bind="host.example")
 
 
 def test_it_listens_only_on_the_configured_address(tmp_path: Path) -> None:
-    port = _free(BASE_PORT + 10)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
     assert exporter.try_bind()
     try:
@@ -186,7 +180,7 @@ def test_importing_the_indexing_entry_module_starts_nothing(enabled: str, tmp_pa
 
 
 def test_the_exporter_on_serves_then_stop_removes_its_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    port = _free(BASE_PORT + 20)
+    port = free_port()
     monkeypatch.setenv("PIPESHUB_METRICS_ENABLED", "true")
     monkeypatch.setenv("PIPESHUB_RUN_DIR", str(tmp_path))
     monkeypatch.setenv("PIPESHUB_METRICS_PORT", str(port))
@@ -220,7 +214,7 @@ def _wait_until(predicate, timeout_s: float) -> bool:
 
 def test_idle_connections_do_not_grow_threads_without_bound_and_time_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.5)  # the shipped value is pinned in the bounds test
-    port = _free(BASE_PORT + 30)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
     assert exporter.try_bind()
     socks: list[socket.socket] = []
@@ -250,7 +244,7 @@ def test_live_handler_threads_never_exceed_the_cap_under_trickling_clients_and_c
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.4)
-    port = _free(BASE_PORT + 35)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
     assert exporter.try_bind()
     stop = threading.Event()
@@ -316,12 +310,12 @@ def test_the_shipped_bounds_are_small_literals() -> None:
     assert 0 < ox.REQUEST_DEADLINE_S <= ox.CONNECTION_TIMEOUT_S
     assert 0 < ox._Handler.timeout <= 10  # a silent client is dropped
     assert 0 < ox.COLLECT_CACHE_TTL_S <= 5  # a scrape flood costs one scan per window
-    assert ox.OpsExporter(service="indexing", run_dir="/nonexistent-run", port=BASE_PORT, source=lambda: ({}, {})).collector._cache_ttl == ox.COLLECT_CACHE_TTL_S
+    assert ox.OpsExporter(service="indexing", run_dir="/nonexistent-run", port=free_port(), source=lambda: ({}, {})).collector._cache_ttl == ox.COLLECT_CACHE_TTL_S
 
 
 def test_a_client_that_sends_nothing_is_dropped_after_the_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ox._Handler, "timeout", 0.5)
-    port = _free(BASE_PORT + 40)
+    port = free_port()
     exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
     assert exporter.try_bind()
     try:
