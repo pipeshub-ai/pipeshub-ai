@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from . import gen
+from .linked_readers import findings, linked_worlds, snapshot
 from .runner import ConformanceRunner, Report
 from .scenario import Scenario, load_all
 
@@ -57,3 +58,21 @@ async def test_linked_source_accounts_equal_the_oracle(account_layers) -> None:
         assert total.pairs > 100, f"{layer.name} asked {total.pairs} pairs: nothing was checked"
         assert not total.over_admits, f"{layer.name} over-admits\n{_describe(total)}"
         assert not total.findings, f"{layer.name}\n{_describe(total)}"
+
+
+async def test_linked_accounts_give_no_role_or_hit_beyond_the_access_check(graph_layers, no_source_org_layers) -> None:
+    """The context role, the record access details and the search scope, in every world that links a user to a source account: the same with
+    the linked accounts' organisations removed, and no ability or search hit on a node `check_access` refuses."""
+    worlds = linked_worlds(10)
+    found: list[str] = []
+    for plain, without in zip(graph_layers, no_source_org_layers, strict=True):
+        await plain.preload(w for _, w in worlds)
+        await without.preload(w for _, w in worlds)
+        for name, world in worlds:
+            ns, ns_without = await plain._ns(world), await without._ns(world)
+            for viewer in world.users():
+                admitted = await plain.admitted(world, viewer, [n.id for n in world.nodes])
+                found += findings(f"{plain.name} {name}", viewer,
+                                  await snapshot(plain._provider, world, viewer, ns, ns.org),
+                                  await snapshot(without._provider, world, viewer, ns_without, ns_without.org), admitted)
+    assert not found, "\n".join(found[:40])

@@ -264,6 +264,18 @@ async def test_a_source_account_the_user_authenticated_as_adds_its_grants_inside
     assert await w.allowed("other", "viaBadge") == set()
 
 
+async def test_a_linked_source_account_holds_only_its_own_grants_and_not_those_of_a_user_that_shares_its_id(w: World) -> None:
+    """The link's grants are read by collection and id: a users node that happens to share the account's id is another principal."""
+    await w.nodes("sourceAccounts", {"_key": "acct", "connectorId": APP, "sourceUserId": "s1", "state": "listed",
+                                      "createdAtTimestamp": 1, "updatedAtTimestamp": 1})
+    await w.nodes("users", {"_key": "acct"})
+    await w.nodes("records", rec("viaAccount"), rec("viaNamesake"))
+    await w.edge("authenticatedAs", ("users", "u"), ("sourceAccounts", "acct"), connectorId=APP)
+    await w.edge("permission", ("sourceAccounts", "acct"), ("records", "viaAccount"), type="USER", role="READER")
+    await w.edge("permission", ("users", "acct"), ("records", "viaNamesake"), type="USER", role="READER")
+    assert await w.allowed("u", "viaAccount", "viaNamesake") == {"viaAccount"}
+
+
 async def test_only_principals_can_be_grantees_of_the_gate(w: World) -> None:
     """An edge out of a node of another collection that shares a grantee's id is not the grantee's."""
     await w.nodes("apps", {"_key": "gated2", "type": "CONNECTOR"})
