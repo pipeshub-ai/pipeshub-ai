@@ -14,6 +14,7 @@ The adaptation process:
 import copy
 
 from app.config.constants.arangodb import CollectionNames
+from app.edition import extra_edge_schemas
 from app.schema.arango.documents import (
     agent_schema,
     agent_skill_candidates_schema,
@@ -235,6 +236,7 @@ EDGE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.SOLD_IN.value: adapt_schema(sold_in_schema),
     CollectionNames.MEMBER_OF.value: adapt_schema(member_of_schema),
 }
+EDGE_SCHEMA_REGISTRY.update({name: adapt_schema(schema) for name, schema in extra_edge_schemas().items()})
 
 
 def get_edge_schema(collection: str) -> dict | None:
