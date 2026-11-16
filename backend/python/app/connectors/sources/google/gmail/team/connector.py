@@ -1894,6 +1894,10 @@ class GoogleGmailTeamConnector(BaseConnector):
             if not user.email:
                 continue
             key = await self._mailbox_owner(user.email)
+            # shortcut: an address with no saved key is taken as keyed by itself. That holds for every mailbox written
+            # before per-account keys existed, but if the saved keys are lost after an address changed hands twice,
+            # the middle account's mailbox (keyed by that account) is not found and stays, granting nobody; upgrade by
+            # listing this connector's mailbox groups for the address.
             earlier = keys.get(user.email.lower(), user.email)
             if earlier != key:
                 if key == user.email:
