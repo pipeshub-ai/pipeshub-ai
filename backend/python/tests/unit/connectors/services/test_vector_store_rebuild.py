@@ -10,7 +10,10 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.services.vector_db.collection_epoch import CollectionEpochs
-from app.services.vector_db.collection_manifest import CollectionManifestStore, ManagedCollection
+from app.services.vector_db.collection_manifest import (
+    CollectionManifestStore,
+    ManagedCollection,
+)
 from app.services.vector_db.rebuild_state import (
     CLEANUP_PHASE_KEY,
     JOB_LOCK_KEY,
@@ -1019,7 +1022,7 @@ async def test_the_wait_is_read_from_the_verdict_key_and_a_missing_or_unreadable
 
 
 @pytest.mark.asyncio
-async def test_a_record_that_completes_after_the_status_reset_and_before_the_drop_is_fenced():
+async def test_a_record_that_completes_after_the_status_reset_and_before_the_drop_is_fenced() -> None:
     """The epoch moves before any status is reset, so a record still being written when the drop comes is handed back."""
     from app.connectors.services.vector_store_rebuild import start_vector_store_cleanup
 
@@ -1034,14 +1037,14 @@ async def test_a_record_that_completes_after_the_status_reset_and_before_the_dro
     graph.get_records_by_status = AsyncMock(return_value=[])
     seen: dict[str, bool] = {}
 
-    async def _after_the_reset(*_args, **_kwargs):
+    async def _after_the_reset(*_args, **_kwargs) -> None:
         # The record's batch completes here: after the app reset, before the drop. Its confirmation asks the epoch.
         seen["fenced_at_reset"] = await epochs.moved(in_flight)
 
     graph.reset_indexing_status_for_connector = AsyncMock(side_effect=_after_the_reset)
     kafka = AsyncMock()
 
-    async def _publish(topic, event):
+    async def _publish(topic, event) -> bool:
         seen["fenced_at_drop"] = await epochs.moved(in_flight)
         redis.store[CLEANUP_PHASE_KEY] = PHASE_READY
         return True
@@ -1057,7 +1060,7 @@ async def test_a_record_that_completes_after_the_status_reset_and_before_the_dro
 
 
 @pytest.mark.asyncio
-async def test_a_cleanup_whose_epoch_cannot_move_resets_nothing():
+async def test_a_cleanup_whose_epoch_cannot_move_resets_nothing() -> None:
     from app.connectors.services.vector_store_rebuild import start_vector_store_cleanup
 
     config = await _config_with("records")

@@ -30,7 +30,7 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
-from app.core.org_context import current_org_id, for_org
+from app.core.org_context import MissingOrgContext, current_or_system, current_org_id, for_org, system
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
@@ -1658,6 +1658,27 @@ class RecordEventHandler(BaseEventService):
         if vector_store is not None:
             await vector_store.require_matching_precision_before_delete(None, org_id, build_model=True)
 
+    async def _org_ids_to_sweep(self) -> list[str]:
+        """The organisations whose retired-epoch points the cleanup's tail removes.
+
+        A store deletes for one organisation at a time. When the event runs bound to an organisation, that one;
+        otherwise every one the graph lists. A listing that fails leaves the sweep to the end of each organisation's
+        next record, which runs it too.
+        """
+        try:
+            try:
+                bound = current_or_system().org_id
+            except MissingOrgContext:
+                bound = None
+            if bound:
+                return [bound]
+            with system("epoch_sweep_orgs"):
+                orgs = await self.event_processor.graph_provider.get_all_orgs(active=False, raise_on_error=True) or []
+        except Exception:
+            self.logger.warning("Could not list the organisations to sweep retired epochs for", exc_info=True)
+            return []
+        return [str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")]
+
     async def _forget_precision_state(self) -> None:
         """After the drop: release the pins of collections that are gone (orphans) and recompute the verdict now.
 
@@ -1670,7 +1691,7 @@ class RecordEventHandler(BaseEventService):
         try:
             registry = self.event_processor.processor.indexing_pipeline.collection_registry
             await registry.release_orphan_pins()
-            await registry.sweep_dead_epochs()
+            await registry.sweep_dead_epochs(await self._org_ids_to_sweep())
         except Exception:
             self.logger.error("Could not release the weight-precision pins of collections that are gone", exc_info=True)
             raise

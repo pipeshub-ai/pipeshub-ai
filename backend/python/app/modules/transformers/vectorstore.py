@@ -167,7 +167,7 @@ CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
 _POINT_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "pipeshub:vector-point")
 
 
-def deterministic_point_id(metadata: dict[str, object], page_content: str) -> str:
+def deterministic_point_id(metadata: dict[str, object], page_content: str, fence: Fence | None = None) -> str:
     """Stable id for the point *metadata*/*page_content* becomes.
 
     Keyed on (virtual record, block, kind, text): the same point written twice
@@ -176,6 +176,9 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
     splits an over-long table, row or SQL text into several pieces sharing one
     metadata. An edited block is not overwritten in place by id; every write
     path deletes the block's stored points first.
+
+    With *fence* (the epoch the batch was accepted under) the id is also specific to that epoch once the collection
+    has been reset, so a batch that outlived a reset cannot replace what a later batch wrote for the same chunk.
 
     Missing identity still hashes canonical metadata and text so a retry
     overwrites the same point instead of inserting a duplicate.
@@ -193,7 +196,8 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
         )
         kind = "chunk" if is_sub_chunk else "unit"
         name = f"{virtual_record_id}|{block_id}|{kind}|{page_content}"
-    return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
+    base = str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
+    return fence.point_id(base) if fence is not None else base
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 # Residue units read back per scroll page when checking which records already have them.
@@ -2806,6 +2810,7 @@ class VectorStore(Transformer):
         record_id: str,
         collection_name: str,
         presence: Optional["_RecordPresence"] = None,
+        fence: Fence | None = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
@@ -2827,8 +2832,10 @@ class VectorStore(Transformer):
         texts = [doc.page_content for doc in documents]
         # The epoch of the collection this batch is accepted under, read before it is embedded: a cleanup that
         # drops the collection meanwhile moves it, and the batch then claims and confirms nothing.
+        # Every provider has one: the id of each point depends on it. A caller that wrote ids before (a resumed record) passes its own.
         guard = self._precision_guard()
-        fence = await guard.capture(collection_name) if isinstance(self.dense_embeddings, EmbeddingServerEmbeddings) else None
+        if fence is None:
+            fence = await guard.capture(collection_name)
 
         with stage(
             "embed.dense",
@@ -2859,11 +2866,11 @@ class VectorStore(Transformer):
         stamp = (attempt.stamp if attempt is not None else None) or {}
         # The weights that made this batch, as its own response said: every point carries it, fp32 too.
         precision_stamp = {POINT_PRECISION: batch_precision} if batch_precision else {}
-        if batch_precision and fence is not None:
+        if batch_precision:  # a provider that does not witness its weights is not confirmed after the write, so its points are not tagged
             precision_stamp[POINT_EPOCH] = fence.token
         points: List[VectorPoint] = [
             VectorPoint(
-                id=deterministic_point_id(doc.metadata, doc.page_content),
+                id=deterministic_point_id(doc.metadata, doc.page_content, fence),
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(
@@ -2890,10 +2897,14 @@ class VectorStore(Transformer):
         langchain_document_chunks: List[Document],
         record_id: str,
         collection_name: str,
+        fence: Fence | None = None,
     ) -> None:
         self.logger.debug(
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
         )
+        # One epoch for every batch of the call: the ids of its points are derived from it.
+        if fence is None:
+            fence = await self._precision_guard().capture(collection_name)
         use_local_sequential = self._is_local_cpu_embedding()
         max_documents, max_chars = (
             (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
@@ -2908,7 +2919,7 @@ class VectorStore(Transformer):
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
             try:
                 await self._embed_and_upsert_documents(
-                    batch, record_id, collection_name, presence
+                    batch, record_id, collection_name, presence, fence
                 )
                 return len(batch)
             except Exception as e:
@@ -3011,7 +3022,9 @@ class VectorStore(Transformer):
         embeds the rest; anything else is today's full replace. Errors after the first write never
         remove points: they fail the attempt, and the next one converges.
         """
-        point_ids = [deterministic_point_id(d.metadata, d.page_content) for d in documents]
+        # The epoch this record is written under, once: the ids it wants and the ids its batches write are the same ones.
+        fence = await self._precision_guard().capture(collection_name)
+        point_ids = [deterministic_point_id(d.metadata, d.page_content, fence) for d in documents]
         digest = digest_of(point_ids)
         key = self._embed_key()
         prior = attempt.prior
@@ -3071,7 +3084,7 @@ class VectorStore(Transformer):
             await progress.report(force=True)
 
         if todo:
-            await self._process_document_chunks(todo, record_id, collection_name)
+            await self._process_document_chunks(todo, record_id, collection_name, fence)
         log = _POINTED.get()
         if present and log is not None:  # kept from the interrupted run of this same revision: they are this run's points too
             log.wrote.update(d.metadata["blockId"] for d, pid in zip(documents, point_ids) if pid in present and d.metadata.get("blockId"))
@@ -3233,7 +3246,7 @@ class VectorStore(Transformer):
             return
         guard = self._precision_guard()
         org = org_for_filter(org_id, match_bound=True)
-        await guard.sweep_dead(collection_name, org)
+        await guard.sweep_dead(collection_name, org, throttle=True)
         standing = await guard.standing(collection_name, org, fresh=True)
         if standing.precision is None:
             return

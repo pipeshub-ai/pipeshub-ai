@@ -9,8 +9,8 @@ a pin cannot say so: it is removed with the collection. The epoch is the fact th
   claim of a pin and the check after the write are valid only while the pointer still names that token.
 * A token is a set of keys, one per state, each created only if absent, so a late writer of a state can never
   bring a token back from a later one: ``issuing`` (created, not yet the pointer's value), ``live`` (has been
-  current), ``retired`` (its drop is confirmed: its points are dead), ``swept`` (retired for longer than a
-  straggler can still write: ignored by everything). A token's state is the highest one present.
+  current), ``retired`` (its drop is confirmed: its points are dead; it is ignored in a scope once that scope is swept,
+  see ``mark_swept``). A token's state is the highest one present.
 * A separate per-scope key says that a pin of the index was released at some time. It is read only to decide
   whether a first claim may skip counting the points.
 """
@@ -28,13 +28,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 EPOCH_DIRECTORY = "/services/vectordb/embedding_epoch"
-ISSUING, LIVE, RETIRED, SWEPT = "issuing", "live", "retired", "swept"
-_ORDER = (ISSUING, LIVE, RETIRED, SWEPT)
+ISSUING, LIVE, RETIRED = "issuing", "live", "retired"
+_ORDER = (ISSUING, LIVE, RETIRED)
 # Stragglers of a retired token can still write while a record's processing budget runs, plus the hand-back delay,
 # the clock skew between processes and the requeue.
 SWEEP_MARGIN_SECONDS = 300.0
-KEPT_SWEPT_TOKENS = 16
+KEPT_RETIRED_TOKENS = 16
 POINT_EPOCH = "embedEpoch"
+# A token made by a reset starts with this: its points get ids of their own (``Fence.point_id``). A token made when
+# the collection had none (the first, or after the epoch keys were lost) does not, so existing points keep their ids.
+RESET_TOKEN_PREFIX = "r"
+_POINT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "pipeshub:epoch-point")
 
 
 def sweep_window_seconds() -> float:
@@ -50,6 +54,16 @@ class Fence:
 
     collection: str
     token: str
+
+    def point_id(self, base: str) -> str:
+        """The id a point is stored under: *base* for the first token, else *base* made specific to this token.
+
+        Two batches accepted under different tokens then never address the same point, so neither can replace
+        the other's. Within a token the id is a function of the content alone, so a retry overwrites its own.
+        """
+        if not self.token.startswith(RESET_TOKEN_PREFIX):
+            return base
+        return str(uuid.uuid5(_POINT_NAMESPACE, f"{base}|{self.token}"))
 
 
 @dataclass(frozen=True)
@@ -165,7 +179,7 @@ class CollectionEpochs:
         seen = {t for t, (state, _) in (await self.states(collection)).items() if state == LIVE}
         if previous:
             seen.add(previous)
-        fresh = uuid.uuid4().hex
+        fresh = RESET_TOKEN_PREFIX + uuid.uuid4().hex
         await self._create(self._state_key(collection, fresh, ISSUING), {"at": int(self._clock() * 1000)})
         if not await self._config.set_config(self._pointer(collection), {"token": fresh}, keep_in_cache=False):
             raise RuntimeError("the epoch of the collection could not be moved")
@@ -186,31 +200,18 @@ class CollectionEpochs:
         await self._prune(ticket.collection)
 
     async def _prune(self, collection: str) -> None:
-        """Keep the most recently swept tokens; delete the others. The time is the one stored in the swept key."""
-        states = await self.states(collection)
-        await self._forget_old_retired(collection, states)
-        swept = [t for t, (state, _) in states.items() if state == SWEPT]
-        if len(swept) <= KEPT_SWEPT_TOKENS:
-            return
-        when: dict[str, float] = {}
-        for token in swept:
-            raw = await self._read(self._state_key(collection, token, SWEPT))
-            at = raw.get("at") if isinstance(raw, dict) else None
-            when[token] = float(at) if isinstance(at, (int, float)) else 0.0  # a key without a time counts as the oldest
-        oldest_first = sorted(swept, key=lambda t: (when[t], t))
-        for token in oldest_first[:-KEPT_SWEPT_TOKENS]:
-            for state in _ORDER:
-                await self._config.delete_config(self._state_key(collection, token, state))
+        await self._forget_old_retired(collection, await self.states(collection))
 
     async def _forget_old_retired(self, collection: str, states: dict[str, tuple[str, float]]) -> None:
-        """A token retired long ago and only ever swept per space is dropped once more than the kept number are older.
+        """A token retired long ago is dropped, with the keys that say where it was swept, once more than the kept number are newer.
 
-        A sweep that cannot reach every space never marks a token swept for all of them, so without this the
-        retired tokens (and the keys that say where each was swept) would grow with every cleanup.
+        A sweep reaches one space at a time and no sweep knows every space, so without this the retired tokens (and
+        their per-scope keys) would grow with every cleanup. Whatever such a token left in a space an idle organisation
+        owns is removed by the next drop.
         """
         retired = sorted(((when, t) for t, (state, when) in states.items() if state == RETIRED), reverse=True)
         window = sweep_window_seconds()
-        old = [t for when, t in retired[KEPT_SWEPT_TOKENS:] if self._clock() > when + window]
+        old = [t for when, t in retired[KEPT_RETIRED_TOKENS:] if self._clock() > when + window]
         if not old:
             return
         prefix = f"{self._base(collection)}/swept/"
@@ -222,6 +223,9 @@ class CollectionEpochs:
             await self._config.delete_config(key)
 
     # -- what the guard asks ---------------------------------------------------------------------------------
+
+    def now(self) -> float:
+        return self._clock()
 
     async def swept_for(self, collection: str, scope: str | None) -> set[str]:
         """The retired tokens whose points are gone from this scope (one organisation's space, or the whole collection)."""
@@ -249,17 +253,13 @@ class CollectionEpochs:
             for token, (state, _) in states.items()
         )
 
-    async def mark_swept(self, collection: str, token: str, scope: str | None = None, *, everywhere: bool = True) -> None:
-        """The token's points are gone: from every space (``everywhere``) or from *scope* only.
+    async def mark_swept(self, collection: str, token: str, scope: str | None) -> None:
+        """The token's points are gone from this scope (one organisation's space, or the whole shared collection).
 
-        A sweep deletes the points of one organisation, so what it proves is that scope's. Only a sweep that
-        reached every space may retire the token for all of them.
+        A sweep deletes the points of one organisation, so what it proves is that scope's: the token stays retired
+        for every other scope until that scope's own sweep.
         """
-        at = {"at": int(self._clock() * 1000)}
-        if everywhere:
-            await self._create(self._state_key(collection, token, SWEPT), at)
-        else:
-            await self._create(f"{self._swept_prefix(collection, scope)}{token}", at)
+        await self._create(f"{self._swept_prefix(collection, scope)}{token}", {"at": int(self._clock() * 1000)})
 
     def expired(self, dead: Dead, window: float) -> bool:
         return self._clock() > dead.retired_at + window

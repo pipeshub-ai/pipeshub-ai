@@ -14,8 +14,8 @@ from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.services.messaging.precision_flip import FenceMoved, PrecisionFlip
 from app.services.vector_db.collection_epoch import CollectionEpochs
-from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.collection_pin import FP32, INT8, CollectionPinStore, Pin
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.precision_guard import PrecisionGuard, PrecisionUnreadable
 from app.utils.precision_witness import PrecisionWitness, set_precision_witness
 
@@ -173,6 +173,44 @@ async def test_a_sweep_for_one_organisation_does_not_hide_another_organisations_
     await world.guard.sweep_dead(C, "o2")
     assert world.db.points == []
     assert await world.pins.epochs.dead(C, "o2" if per_org else None) == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_at_the_end_of_a_record_is_not_repeated_for_a_space_swept_a_moment_ago(monkeypatch) -> None:
+    """An idle organisation's straggler keeps the token dead; every record end of the others must not pay for it again."""
+    now = [1_000_000.0]
+    world = _World(clock=lambda: now[0])
+    monkeypatch.setattr("app.services.vector_db.precision_guard.sweep_window_seconds", lambda: 5700.0)
+    old = await world.guard.capture(C)
+    await world.cleanup()
+    world.db.write(INT8, old.token, org="idle", vrid="x")
+    now[0] += 6000  # the window is over, and the idle organisation's point keeps the token from being swept
+    calls: list[str] = []
+    for name in ("count_points", "delete_points"):
+        real = getattr(world.db, name)
+
+        async def counted(*a, _real=real, _name=name, **k):  # noqa: ANN202
+            calls.append(_name)
+            return await _real(*a, **k)
+
+        setattr(world.db, name, counted)
+    reads: list[str] = []
+    real_list = world.config.list_keys_in_directory
+
+    async def listing(prefix):  # noqa: ANN202
+        reads.append(prefix)
+        return await real_list(prefix)
+
+    world.config.list_keys_in_directory = listing
+    await world.guard.sweep_dead(C, ORG, throttle=True)
+    first = (len(calls), len(reads))
+    assert first[0] >= 2 and first[1] >= 1  # the first one deleted and counted
+    for _ in range(5):
+        await world.guard.sweep_dead(C, ORG, throttle=True)
+    assert (len(calls), len(reads)) == first  # the next five record ends cost nothing
+    now[0] += 61
+    await world.guard.sweep_dead(C, ORG, throttle=True)
+    assert len(calls) > first[0]
 
 
 # -- an index written before pins existed, and a check that claims nothing --------------------------------------

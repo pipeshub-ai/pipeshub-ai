@@ -42,6 +42,8 @@ from app.utils.precision_witness import get_precision_witness
 # The counts that derive an index's precision are unindexed scans on a store with one space per organisation; they
 # are bounded so that a large space cannot hold a consumer or a claim.
 DERIVE_TIMEOUT_SECONDS = 3.0
+# A record end sweeps the points of retired epochs; a space is swept at most this often by one process.
+SWEEP_INTERVAL_SECONDS = 60.0
 TAG_FIELD = "embedPrecision"
 _ORG_FIELD = "orgId"
 
@@ -80,6 +82,7 @@ class PrecisionGuard:
         self._pins = pins
         self._db = vector_db_service
         self._logger = logger
+        self._swept_at: dict[tuple[str, str | None], float] = {}
 
     # -- facts about the points ------------------------------------------------------------------------------
 
@@ -212,7 +215,7 @@ class PrecisionGuard:
         if moved:
             raise FenceMoved(f"collection '{fence.collection}' was reset while this batch was being embedded; it is embedded again")
 
-    async def sweep_dead(self, collection: str, org: str | None) -> None:
+    async def sweep_dead(self, collection: str, org: str | None, *, throttle: bool = False) -> None:
         """Delete the points written under retired tokens, and mark a token swept for the space this sweep covered.
 
         Every store deletes for one organisation, so the delete names the writer's (the argument, else the bound
@@ -220,10 +223,20 @@ class PrecisionGuard:
         whole space, and the token is swept for it. On a shared store the token is swept only once no point of
         it is left anywhere in the collection. Without an organisation nothing can be deleted and nothing is marked.
 
+        With *throttle* (the sweep at the end of a record) a space already swept in this process less than
+        ``SWEEP_INTERVAL_SECONDS`` ago is left alone: one organisation that has not yet written must not make every
+        record end of every other organisation repeat the reads and the count.
+
         Never raises: a sweep that cannot run is repeated at the end of the next record.
         """
         try:
             scope = self.scope(org)
+            if throttle:
+                now = self._pins.epochs.now()
+                last = self._swept_at.get((collection, scope))
+                if last is not None and now - last < SWEEP_INTERVAL_SECONDS:
+                    return
+                self._swept_at[(collection, scope)] = now
             dead = await self._pins.epochs.dead(collection, scope)
             if not dead:
                 return
@@ -239,7 +252,7 @@ class PrecisionGuard:
                     continue
                 if scope is None and await self._remaining(collection, item.token):
                     continue  # another organisation's points of the token are still there
-                await self._pins.epochs.mark_swept(collection, item.token, scope, everywhere=False)
+                await self._pins.epochs.mark_swept(collection, item.token, scope)
         except Exception:
             self._logger.warning("could not sweep the points of retired epochs of '%s'", collection, exc_info=True)
 

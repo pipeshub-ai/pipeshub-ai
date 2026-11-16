@@ -1,6 +1,7 @@
 """The epoch of a collection: tokens, their states, resets, and the window after which a retired token is ignored."""
 
 import logging
+import uuid
 
 import pytest
 
@@ -9,7 +10,6 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.services.vector_db.collection_epoch import (
     LIVE,
     RETIRED,
-    SWEPT,
     CollectionEpochs,
 )
 
@@ -174,9 +174,8 @@ async def test_a_swept_token_is_not_dead_and_the_index_is_quiet_again() -> None:
     await epochs.confirm_reset(await epochs.begin_reset("c"))
     assert not await epochs.quiet("c", None)  # inside the window
     (dead,) = await epochs.dead("c")
-    await epochs.mark_swept("c", dead.token)
+    await epochs.mark_swept("c", dead.token, None)
     assert await epochs.dead("c") == []
-    assert (await epochs.states("c"))[dead.token][0] == SWEPT
     assert await epochs.quiet("c", None)
 
 
@@ -204,33 +203,6 @@ async def test_a_pin_release_that_cannot_be_recorded_raises_so_the_release_does_
     store.create_key = failing
     with pytest.raises(RuntimeError, match="could not be written"):
         await epochs.pin_released("c", "o1")
-
-
-@pytest.mark.asyncio
-async def test_swept_tokens_beyond_the_newest_sixteen_are_pruned() -> None:
-    epochs, _ = _epochs()
-    await epochs.capture("c")
-    for _ in range(20):
-        await epochs.confirm_reset(await epochs.begin_reset("c"))
-        for dead in await epochs.dead("c"):
-            await epochs.mark_swept("c", dead.token)
-    await epochs.confirm_reset(await epochs.begin_reset("c"))
-    swept = [t for t, (state, _) in (await epochs.states("c")).items() if state == SWEPT]
-    assert len(swept) <= 17
-
-
-@pytest.mark.asyncio
-async def test_the_swept_tokens_kept_are_the_most_recently_swept_not_the_last_by_name() -> None:
-    epochs, config = _epochs()
-    await epochs.capture("c")
-    # token names sort the opposite way to the time they were swept: "t19" was swept first, "t00" last
-    for i in range(20):
-        await config.create_config_if_absent(epochs._state_key("c", f"t{i:02d}", SWEPT), {"at": (100 - i) * 1000})
-    # a swept key written without a time (an older format) counts as the oldest and is the first to go
-    await config.create_config_if_absent(epochs._state_key("c", "tlegacy", SWEPT), {})
-    await epochs.confirm_reset(await epochs.begin_reset("c"))
-    kept = {t for t, (state, _) in (await epochs.states("c")).items() if state == SWEPT}
-    assert kept == {f"t{i:02d}" for i in range(16)}
 
 
 @pytest.mark.asyncio
@@ -309,12 +281,12 @@ async def test_a_token_swept_for_one_space_is_still_dead_in_the_others_and_quiet
     await epochs.capture("c")
     await epochs.confirm_reset(await epochs.begin_reset("c"))
     (dead,) = await epochs.dead("c", "o1")
-    await epochs.mark_swept("c", dead.token, "o1", everywhere=False)
+    await epochs.mark_swept("c", dead.token, "o1")
     assert await epochs.dead("c", "o1") == []
     assert [d.token for d in await epochs.dead("c", "o2")] == [dead.token]
     assert await epochs.quiet("c", "o1") is True
     assert await epochs.quiet("c", "o2") is False
-    assert (await epochs.states("c"))[dead.token][0] == RETIRED  # nothing says it is swept everywhere
+    assert (await epochs.states("c"))[dead.token][0] == RETIRED  # retired for every scope that has not been swept
 
 
 @pytest.mark.asyncio
@@ -327,7 +299,7 @@ async def test_retired_tokens_that_were_only_swept_per_space_are_forgotten_once_
         await epochs.confirm_reset(await epochs.begin_reset("c"))
         now[0] += 10  # distinct retirement times
         for dead in await epochs.dead("c", "o1"):
-            await epochs.mark_swept("c", dead.token, "o1", everywhere=False)
+            await epochs.mark_swept("c", dead.token, "o1")
             first = first or dead.token
     now[0] += 2 * WINDOW
     await epochs.confirm_reset(await epochs.begin_reset("c"))
@@ -335,3 +307,46 @@ async def test_retired_tokens_that_were_only_swept_per_space_are_forgotten_once_
     assert sum(state == RETIRED for state, _ in states.values()) <= 17
     assert first not in states
     assert first not in await epochs.swept_for("c", "o1")
+
+
+@pytest.mark.asyncio
+async def test_forgetting_an_old_retired_token_removes_the_keys_that_say_where_it_was_swept() -> None:
+    epochs, config = _epochs(clock=lambda: 0.0)
+    await epochs.capture("c")
+    await epochs.confirm_reset(await epochs.begin_reset("c"))
+    (first,) = await epochs.dead("c", "o1")
+    await epochs.mark_swept("c", first.token, "o1")
+    await epochs.mark_swept("c", first.token, "o2")
+    keys = await config.list_keys_in_directory(epochs._base("c") + "/swept/")
+    assert len(keys) == 2
+    now = [10.0]
+    epochs._clock = lambda: now[0]
+    for _ in range(17):
+        now[0] += 10
+        await epochs.confirm_reset(await epochs.begin_reset("c"))
+    now[0] += 2 * WINDOW
+    await epochs.confirm_reset(await epochs.begin_reset("c"))
+    assert first.token not in await epochs.states("c")
+    assert not await config.list_keys_in_directory(epochs._base("c") + "/swept/")
+
+
+def test_a_reset_token_has_ids_of_its_own_and_the_first_token_keeps_the_ids_it_always_had() -> None:
+    from app.services.vector_db.collection_epoch import RESET_TOKEN_PREFIX, Fence
+
+    base = "7b6a2f2e-0d0a-5b8e-9a43-0c1f7f3a9d11"
+    first = Fence("c", "ab" * 16)
+    one, two = Fence("c", RESET_TOKEN_PREFIX + "01" * 16), Fence("c", RESET_TOKEN_PREFIX + "02" * 16)
+    assert first.point_id(base) == base
+    assert len({one.point_id(base), two.point_id(base), base}) == 3
+    assert one.point_id(base) == one.point_id(base) and uuid.UUID(one.point_id(base))
+
+
+@pytest.mark.asyncio
+async def test_a_token_made_by_a_reset_is_a_reset_token_and_the_first_one_is_not() -> None:
+    from app.services.vector_db.collection_epoch import RESET_TOKEN_PREFIX
+
+    epochs, _ = _epochs()
+    first = await epochs.capture("c")
+    await epochs.begin_reset("c")
+    assert not first.token.startswith(RESET_TOKEN_PREFIX)
+    assert (await epochs.capture("c")).token.startswith(RESET_TOKEN_PREFIX)

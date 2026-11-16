@@ -241,7 +241,7 @@ async def test_an_entity_batch_written_across_a_cleanup_is_removed_and_no_pin_is
 
 
 async def _stored_states(world, payloads):  # noqa: ANN202, F811
-    async def fetch(collection, entities):  # noqa: ANN202
+    async def fetch(collection, entities, fence=None):  # noqa: ANN202
         states = {}
         for e in entities:
             pid = world.store._point_id(e.org_id, e.entity_type.value, e.entity_id)
@@ -335,7 +335,7 @@ async def test_the_cleanups_tail_sweeps_the_points_of_retired_epochs(world) -> N
     await world.registry.recreate_records_collections(4)  # the cleanup: the old epoch is retired
     world.vdb.add(REC, INT8, embedEpoch=old.token)  # a straggler lands in the new index
     world.vdb.add(REC, FP32, embedEpoch=(await world.pins.epochs.capture(REC)).token)
-    await world.registry.sweep_dead_epochs()
+    await world.registry.sweep_dead_epochs([ORG])
     assert {p["embedPrecision"] for p in world.vdb.points[REC]} == {FP32}
 
 
@@ -527,12 +527,12 @@ async def test_the_old_token_is_retired_only_after_the_drop_has_returned(world) 
 # -- the pin an entity batch judges stored points against ----------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_an_entity_stored_with_the_precision_the_pin_has_left_is_written_again(world) -> None:
+async def test_an_entity_stored_with_the_precision_the_pin_has_left_is_written_again(world) -> None:  # noqa: F811
     """The pin moves while the batch waits for the entity locks: the point stored with the old precision is not 'unchanged'."""
     from types import SimpleNamespace
 
-    from app.modules.transformers.entity_vectorstore import EMBEDDING_MODEL_FIELD
     from app.modules.indexing.embed_resume import POINT_PRECISION
+    from app.modules.transformers.entity_vectorstore import EMBEDDING_MODEL_FIELD
 
     entity = _entity()
     world.vdb.dims[ENTITIES], world.vdb.points[ENTITIES] = 4, []
@@ -557,3 +557,82 @@ async def test_an_entity_stored_with_the_precision_the_pin_has_left_is_written_a
     await world.store._upsert_batch(ENTITIES, [entity], outcome, set(), merge_membership=False)
     assert (outcome.written, outcome.unchanged) == (1, 0)
     assert {p["embedPrecision"] for p in world.vdb.points[ENTITIES]} == {FP32}
+
+
+# -- the cleanup's tail has no organisation bound -------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_tail_sweeps_each_organisation_the_graph_lists_under_its_own_scope(world) -> None:  # noqa: F811
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.core import org_context
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
+    from app.services.vector_db.precision_guard import PrecisionGuard
+    from tests.unit.services.messaging.test_precision_switch_converges import (
+        RECORDS as REC,
+    )
+    from tests.unit.services.messaging.test_precision_switch_converges import (
+        _seed_int8_index,
+    )
+
+    await _seed_int8_index(world)
+    graph = SimpleNamespace(get_all_orgs=AsyncMock(return_value=[{"_key": "o1"}, {"id": "o2"}, {}]))
+    handler = object.__new__(RecordEventHandler)
+    handler.logger = logging.getLogger("tail")
+    handler.event_processor = SimpleNamespace(graph_provider=graph)
+
+    swept: list[tuple[str, str]] = []
+
+    async def sweep(self, collection, org, **_k):  # noqa: ANN202
+        swept.append((org, org_context.current_org_id()))  # the org is bound while its sweep runs
+
+    async def tail() -> list[str]:
+        orgs = await handler._org_ids_to_sweep()
+        await world.registry.sweep_dead_epochs(orgs)
+        return orgs
+
+    old = PrecisionGuard.sweep_dead
+    PrecisionGuard.sweep_dead = sweep
+    try:
+        orgs = await org_context.spawn_detached(tail())  # the cleanup event binds no organisation
+    finally:
+        PrecisionGuard.sweep_dead = old
+    assert orgs == ["o1", "o2"]
+    assert swept == [("o1", "o1"), ("o2", "o2")] and REC
+
+
+@pytest.mark.asyncio
+async def test_a_tail_that_runs_bound_to_an_organisation_sweeps_only_that_one() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.core import org_context
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
+
+    graph = SimpleNamespace(get_all_orgs=AsyncMock(return_value=[{"_key": "o1"}, {"_key": "o2"}]))
+    handler = object.__new__(RecordEventHandler)
+    handler.logger = logging.getLogger("tail")
+    handler.event_processor = SimpleNamespace(graph_provider=graph)
+
+    async def bound() -> list[str]:
+        with org_context.for_org("o1", job="test"):
+            return await handler._org_ids_to_sweep()
+
+    assert await org_context.spawn_detached(bound()) == ["o1"]
+    graph.get_all_orgs.assert_not_awaited()  # another organisation's points are not this event's to reach
+
+
+@pytest.mark.asyncio
+async def test_a_listing_that_fails_leaves_the_tail_with_nothing_to_sweep_and_does_not_fail_the_cleanup() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
+
+    handler = object.__new__(RecordEventHandler)
+    handler.logger = logging.getLogger("tail")
+    handler.event_processor = SimpleNamespace(graph_provider=SimpleNamespace(get_all_orgs=AsyncMock(side_effect=ConnectionError("down"))))
+    from app.core import org_context
+
+    assert await org_context.spawn_detached(handler._org_ids_to_sweep()) == []

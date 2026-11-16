@@ -1176,6 +1176,11 @@ class EntityVectorStore:
         self._report(outcome, failed_keys)
         return outcome
 
+    @staticmethod
+    def _stored_id(point_id: str, fence: Fence | None) -> str:
+        """The id a point is stored under. ``states``, ``vectors``, ``witnessed`` and ``settled`` keep the logical id."""
+        return fence.point_id(point_id) if fence is not None else point_id
+
     def _key_of(self, entity: EntityRecord) -> str:
         return self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
 
@@ -1205,7 +1210,7 @@ class EntityVectorStore:
         # the batch: merging against an assumed-empty state would drop every
         # other writer's membership.
         try:
-            early = await self._fetch_existing_states(collection, named)
+            early = await self._fetch_existing_states(collection, named, fence)
         except _MembershipReadError as exc:
             if merge_membership:
                 raise
@@ -1219,7 +1224,7 @@ class EntityVectorStore:
             for key in sorted({self._entity_key(e.org_id, e.entity_type.value, e.entity_id) for e in named}):
                 await locks.enter_async_context(self._entity_lock(key))
             try:
-                states = await self._fetch_existing_states(collection, named)
+                states = await self._fetch_existing_states(collection, named, fence)
             except _MembershipReadError as exc:
                 if merge_membership:
                     raise
@@ -1251,7 +1256,7 @@ class EntityVectorStore:
                         # move. Written by id: a search-based update cannot
                         # see a point the index has not refreshed yet.
                         await self.vector_db_service.update_payload_by_ids(
-                            collection, [point_id],
+                            collection, [self._stored_id(point_id, fence)],
                             {CONNECTOR_IDS_FIELD: connector_ids, RECORD_GROUP_IDS_FIELD: record_group_ids},
                             org_id=entity.org_id,
                         )
@@ -1292,7 +1297,7 @@ class EntityVectorStore:
                 dense, sparse, _ = vectors[point_id]
                 tag = {POINT_PRECISION: witnessed[point_id][0], POINT_EPOCH: fence.token} if witnessed.get(point_id) else {}
                 points.append(VectorPoint(
-                    id=point_id,
+                    id=self._stored_id(point_id, fence),
                     dense_vector=dense,
                     sparse_vector=sparse,
                     payload={
@@ -1306,7 +1311,9 @@ class EntityVectorStore:
             await self.vector_db_service.upsert_points(collection_name=collection, points=points)
             await self._confirm_precision_after_write(collection, batch_org, witnessed, [e for e, _, _ in pending], fence)
             outcome.written += len(points)
-            settled.update(point.id for point in points)
+            settled.update(
+                self._point_id(e.org_id, e.entity_type.value, e.entity_id) for e, _, _ in pending
+            )
 
     async def _confirm_precision_after_write(
         self, collection: str, org: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
@@ -1485,9 +1492,11 @@ class EntityVectorStore:
             return await self.vector_db_service.retrieve_points(collection, ids)
 
     async def _fetch_existing_states(
-        self, collection: str, entities: list[EntityRecord]
+        self, collection: str, entities: list[EntityRecord], fence: Fence | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Each entity's stored membership and text, keyed by point id.
+        """Each entity's stored membership and text, keyed by its logical point id (the one ``_point_id`` gives).
+
+        The point is read under the id it is stored with: the logical one made specific to the epoch of *fence*.
 
         Read by id, not by search: a search does not see writes an OpenSearch
         index has not refreshed yet, so a merge against it would drop an
@@ -1501,8 +1510,9 @@ class EntityVectorStore:
         ids = [
             self._point_id(e.org_id, e.entity_type.value, e.entity_id) for e in entities
         ]
+        stored_ids = {point_id: self._stored_id(point_id, fence) for point_id in ids}
         try:
-            points = await self._retrieve(collection, entities[0].org_id, ids)
+            points = await self._retrieve(collection, entities[0].org_id, list(stored_ids.values()))
         except Exception as exc:
             raise _MembershipReadError(
                 f"membership read failed for {len(ids)} entities"
@@ -1510,7 +1520,7 @@ class EntityVectorStore:
         by_id = {point.id: point.payload or {} for point in points}
         states: dict[str, dict[str, Any]] = {}
         for point_id in ids:
-            payload = by_id.get(point_id)
+            payload = by_id.get(stored_ids[point_id])
             if payload is None:
                 states[point_id] = {
                     "exists": False,

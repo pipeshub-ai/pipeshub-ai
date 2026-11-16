@@ -24,6 +24,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
+from app.core.org_context import for_org
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.vector_db.collection_manifest import (
@@ -611,10 +612,16 @@ class CollectionRegistry:
         """Release the pins of collections that no longer exist; a pin over a collection that is there stays."""
         return await self._pins().release_orphans(self._vector_db_service.collection_exists)
 
-    async def sweep_dead_epochs(self) -> None:
-        """Delete, from every managed collection, the points written under retired epochs (the cleanup's tail)."""
+    async def sweep_dead_epochs(self, org_ids: list[str]) -> None:
+        """Delete, from every managed collection, the points written under retired epochs, for each of *org_ids* (the cleanup's tail).
+
+        Every store deletes for one organisation, so the sweep runs once per organisation, each under its own
+        scope. A sweep that cannot run is repeated at the end of the next record of that organisation.
+        """
         for entry in await self.list_managed_collections(fresh=True):
-            await self._guard().sweep_dead(entry.name, None)
+            for org in org_ids:
+                with for_org(org, job="epoch_sweep"):
+                    await self._guard().sweep_dead(entry.name, org)
 
     async def delete_collection(self, name: str) -> None:
         """Idempotent drop: a missing collection is treated as success."""
