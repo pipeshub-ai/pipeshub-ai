@@ -51146,7 +51146,8 @@ paths:
             isServiceAccount, or leave the binding out.`).
 
             A service-account agent (`isServiceAccount: true`) may only be given knowledge shared
-            with the whole organization: a personal connector is refused (`HTTP_BAD_REQUEST`,
+            with the whole organization, plus collections once `serviceAccountUserId` binds it to a
+            service account: a personal connector is refused (`HTTP_BAD_REQUEST`,
             `Personal sources (...) can't be attached to an agent that runs as a service account.`),
             and so is a collection unless `serviceAccountUserId` binds the agent to a service account.
             A knowledge source that is not one of the organization's is refused too.

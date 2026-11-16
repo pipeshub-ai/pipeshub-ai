@@ -1079,11 +1079,13 @@ async def _resolve_turn_filters(
     connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
+    admit_project_collections: bool = True,
 ) -> dict[str, Any]:
     """This turn's source filters, never wider than the agent's knowledge.
 
     Ids outside it are dropped, except the caller's own project collection
-    (see ``admit_caller_project_collections``). A selection below app level
+    (see ``admit_caller_project_collections``) when ``admit_project_collections``:
+    an unbound service-account agent searches no collection. A selection below app level
     is resolved once here, as the identity the search runs as, and bounded by
     a saved agent's sources and by the project's.
 
@@ -1099,7 +1101,7 @@ async def _resolve_turn_filters(
     )
     filters = scope.filters
     dropped_kbs = list(scope.dropped_kb_ids)
-    if dropped_kbs:
+    if dropped_kbs and admit_project_collections:
         admitted = await admit_caller_project_collections(
             graph_provider,
             kb_ids=dropped_kbs,
@@ -4781,10 +4783,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
+                # An unbound service agent would read a collection as its creator, so it reads none,
+                # the caller's project collection included (project_files_knowledge reads it from filters).
+                collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
                 if is_service_account:
                     agent_knowledge = await service_account_knowledge(
                         graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
-                        bound=bool(agent.get("serviceAccountUserId")),
+                        bound=collections_allowed,
                     )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 try:
@@ -4800,6 +4805,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
+                        admit_project_collections=collections_allowed,
                     )
                 except (SelectionTooLargeError, SelectionNotReadyError) as exc:
                     code, message = selection_error(

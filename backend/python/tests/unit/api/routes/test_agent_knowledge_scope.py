@@ -200,6 +200,23 @@ class TestSavedAgentScope:
         assert "proj-kb" not in query_info["filters"]["kb"]
 
 
+async def test_an_unbound_service_agent_does_not_search_the_callers_project_collection() -> None:
+    """It would read the collection as its creator; a bound one (above) reads it as the account."""
+    hidden = {"type": "KB", "isHidden": True, "orgId": ORG}
+    unbound = {k: v for k, v in _agent(service_account=True).items() if k != "serviceAccountUserId"}
+    graphs: list = []
+    query_info = await _run(
+        unbound,
+        {"query": "q", "filters": {"apps": ["jira-1"], "kb": ["proj-kb"]}, "strictScope": True},
+        graph_out=graphs,
+        apps={"proj-kb": hidden},
+        roles={("proj-kb", "caller-key"): "READER"},
+    )
+    assert "proj-kb" not in query_info["filters"]["kb"]
+    assert all(k.get("connectorId") != "proj-kb" for k in query_info["knowledge"])
+    graphs[0].get_user_kb_permission.assert_not_awaited()
+
+
 LIMITED_KNOWLEDGE = [
     {"connectorId": "jira-1", "type": "JIRA", "filtersParsed": {"recordGroups": ["proj-a"]}},
     {"connectorId": "kb-1", "type": "KB"},
