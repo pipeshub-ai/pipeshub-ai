@@ -148,7 +148,9 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_every_arango_permission_path_checks_all_principals(self) -> None:
         for name in ("arango record", "arango recordGroup"):
             query = _role_queries()[name]
-            assert query.count("._from IN principal_ids") == 5, name
+            # The five role paths, and the three reads of the own-grant check a record or group that needs a grant of
+            # its own passes (a grant from a principal, the groups, roles and teams it belongs to, its organisation).
+            assert query.count("._from IN principal_ids") == 8, name
             # the only single-user anchor left is the link lookup itself
             assert query.count("._from == u._id") == 1, name
 
