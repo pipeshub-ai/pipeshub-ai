@@ -452,17 +452,25 @@ def _email_of(user_by_id: dict[str, Any], identifier: str | None) -> str | None:
 
 
 def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool]:
-    """Return ``(email, skip_because_inactive)``."""
+    """Return ``(email, skip_because_inactive)``.
+
+    A person the payload names by account resolves only through the synced directory (``user_by_id``), never by the
+    email the payload carries: an account outside it reads nothing in Jira (no product access, deactivated), and its
+    email may be another, synced account's too. An email with no account names someone only when exactly one synced
+    account holds it. Cloud's ``accountId`` "uniquely identifies the user across all Atlassian products" and its
+    ``emailAddress`` "may be returned as null" (User, https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json);
+    Data Center's ``key`` "will never change" (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/)."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
     if user.get("active") is False:
         return None, True
     account = user.get("accountId") or user.get("key") or user.get("name") or holder.get("parameter")
-    email = _email_of(user_by_id, str(account) if account else None)
-    if not email:
-        raw = user.get("emailAddress")
-        if isinstance(raw, str) and raw.strip():
-            email = raw
-    return email, False
+    if account:
+        return _email_of(user_by_id, str(account)), False
+    raw = user.get("emailAddress")
+    if not isinstance(raw, str) or not raw.strip():
+        return None, False
+    holders = {id(u) for u in user_by_id.values() if (getattr(u, "email", None) or "").lower() == raw.strip().lower()}
+    return (raw if len(holders) == 1 else None), False
 
 
 def _permissions_for_holder(
@@ -689,6 +697,12 @@ def apply_issue_access_settled(
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
+    if isinstance(fields, dict):
+        # The reporter and assignee the payload names resolve like any other person in it, not by the payload's email.
+        if "reporter" in fields:
+            reporter_email = _holder_user_email({"user": fields["reporter"]}, users)[0] if isinstance(fields["reporter"], dict) else None
+        if "assignee" in fields:
+            assignee_email = _holder_user_email({"user": fields["assignee"]}, users)[0] if isinstance(fields["assignee"], dict) else None
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
 

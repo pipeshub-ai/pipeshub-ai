@@ -1352,7 +1352,7 @@ class JiraConnector(BaseConnector):
             is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
             project_key=(fields.get("project") or {}).get("key") or "",
             context=context,
-            user_by_account_id=user_by_account_id,
+            user_by_account_id=self._grant_directory(user_by_account_id),
             app_roles_mapping=self._app_roles_mapping,
             reporter_email=issue_data["reporter_email"],
             assignee_email=issue_data["assignee_email"],
@@ -2809,6 +2809,12 @@ class JiraConnector(BaseConnector):
         if self._directory_read_complete():
             return []
         return [u for u in self._stored_app_users if u.source_user_id not in self._seen_account_ids]
+
+    def _grant_directory(self, user_by_account_id: dict[str, AppUser]) -> dict[str, AppUser]:
+        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
+        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
+        linked = self._linked_not_read()
+        return {**{u.source_user_id: u for u in linked if u.source_user_id}, **user_by_account_id} if linked else user_by_account_id
 
     def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
         """An issue's own grants (reporter, assignee, user fields, level members) name only accounts in the
@@ -5583,7 +5589,7 @@ class JiraConnector(BaseConnector):
                 is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
                 project_key=(fields.get("project") or {}).get("key") or issue_key.rsplit("-", 1)[0],
                 context=security,
-                user_by_account_id=user_by_account_id,
+                user_by_account_id=self._grant_directory(user_by_account_id),
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
@@ -7463,12 +7469,12 @@ class JiraConnector(BaseConnector):
                 is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
                 project_key=project.get("key") or str(issue.get("key") or "").rsplit("-", 1)[0],
                 context=security,
-                user_by_account_id=user_by_account_id,
+                # The synced directory, not the copy widened with the issue's own creator, reporter and assignee.
+                user_by_account_id=self._grant_directory(synced_user_by_account_id or {}),
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
-            # The synced directory, not the copy widened with the issue's own creator, reporter and assignee.
             permissions = self._directory_grants(permissions, synced_user_by_account_id or {})
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder

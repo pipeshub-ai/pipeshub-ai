@@ -4692,6 +4692,12 @@ class JiraDataCenterConnector(BaseConnector):
         }
         return {**aliases, **user_by_key}
 
+    def _grant_directory(self, users: dict[str, AppUser]) -> dict[str, AppUser]:
+        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
+        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
+        linked = self._linked_not_read()
+        return {**{u.source_user_id: u for u in linked if u.source_user_id}, **users} if linked else users
+
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
         """Note the project and level of each issue read that may parent a story."""
         for issue in issues:
@@ -4854,7 +4860,7 @@ class JiraDataCenterConnector(BaseConnector):
             is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
             project_key=(fields.get("project") or {}).get("key") or "",
             context=context,
-            user_by_account_id=level_users,
+            user_by_account_id=self._grant_directory(level_users),
             app_roles_mapping=self._app_roles_mapping,
             reporter_email=record.reporter_email,
             assignee_email=record.assignee_email,
@@ -5037,7 +5043,7 @@ class JiraDataCenterConnector(BaseConnector):
                         is_subtask=issue_data["is_subtask"],
                         project_key=issue_project_key,
                         context=security,
-                        user_by_account_id=level_users,
+                        user_by_account_id=self._grant_directory(level_users),
                         app_roles_mapping=self._app_roles_mapping,
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
@@ -6670,12 +6676,12 @@ class JiraDataCenterConnector(BaseConnector):
                 is_subtask=issue_data["is_subtask"],
                 project_key=project.get("key") or str(issue.get("key") or "").rsplit("-", 1)[0],
                 context=security,
-                user_by_account_id=user_by_account_id,
+                user_by_account_id=self._grant_directory(synced_users),  # not the copy widened with this issue's people
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
-            permissions = self._directory_grants(permissions, synced_users)  # not the people this issue names
+            permissions = self._directory_grants(permissions, synced_users)
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
                 # Stored open, and the issue is not known to be without a level now: closed, not left readable
                 # by the project. (A stored leveled issue keeps its grants below; its level is not stored.)
