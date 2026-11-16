@@ -768,7 +768,7 @@ async def test_a_full_read_removes_a_group_grant_nobody_can_read_the_sharing_of_
     assert BOB in ws.records.perm_emails("doc")
 
 
-async def test_a_parked_item_is_asked_again_for_the_user_only_and_never_settled_as_removed(ws: Workspace) -> None:
+async def test_a_parked_item_is_asked_again_and_never_settled_as_removed(ws: Workspace) -> None:
     _folder_of_a_suspended_owner(ws)
     await ws.sync()
     ws.world.unshare("dir", CAROL)
@@ -779,7 +779,7 @@ async def test_a_parked_item_is_asked_again_for_the_user_only_and_never_settled_
     assert CAROL in ws.records.perm_emails("doc"), "parked: her check failed"
 
     ws.http.clear_faults()
-    # Now nobody's check opens the doc: the first try would only have dropped her grant, so the retry must too.
+    # Now nobody's check opens the doc: the retry drops the grants of those who cannot open it, never the record.
     ws.http.fail("GET", "/drive/v3/files/doc", 404, "notFound", when=lambda r: r.query.get("fields") == "id, trashed")
     ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != CAROL)
     await ws.sync()
