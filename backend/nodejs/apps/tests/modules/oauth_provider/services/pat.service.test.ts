@@ -137,11 +137,12 @@ describe('PatService', () => {
       }
     })
 
-    const expiryCases: Array<[7 | 30 | 90 | undefined, number]> = [
+    const expiryCases: Array<[7 | 30 | 90 | 365 | undefined, number]> = [
       [7, 7 * SECONDS_PER_DAY],
       [30, 30 * SECONDS_PER_DAY],
       [90, 90 * SECONDS_PER_DAY],
-      [undefined, 7 * SECONDS_PER_DAY],
+      [365, 365 * SECONDS_PER_DAY],
+      [undefined, 30 * SECONDS_PER_DAY],
     ]
     for (const [expiryDays, expectedSeconds] of expiryCases) {
       it(`resolves expiryDays=${expiryDays} to a ${expectedSeconds}s lifetime`, async () => {

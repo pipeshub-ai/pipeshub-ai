@@ -2252,6 +2252,7 @@
         "expiry7Days": "7 dní",
         "expiry30Days": "30 dní",
         "expiry90Days": "90 dní",
+        "expiry365Days": "365 dní",
         "permissionsHeading": "Rozsahy",
         "errorScopeRequired": "Vyberte alespoň jeden rozsah.",
         "selectAllScopes": "Vybrat vše",

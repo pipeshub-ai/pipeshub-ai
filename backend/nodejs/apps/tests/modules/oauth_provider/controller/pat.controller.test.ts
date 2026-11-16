@@ -109,7 +109,7 @@ describe('PatController', () => {
 
       await controller.createToken(mockReq, mockRes, mockNext)
 
-      expect(eventBuffer.drain()[0].props.expiry_days).to.equal(7)
+      expect(eventBuffer.drain()[0].props.expiry_days).to.equal(30)
     })
 
     it('counts the token on the Grafana activity counter with org and domain only', async () => {

@@ -4393,6 +4393,7 @@
         "expiry7Days": "7 Tage",
         "expiry30Days": "30 Tage",
         "expiry90Days": "90 Tage",
+        "expiry365Days": "365 Tage",
         "permissionsHeading": "Berechtigungsbereiche",
         "errorScopeRequired": "Wählen Sie mindestens einen Berechtigungsbereich aus.",
         "selectAllScopes": "Alle auswählen",

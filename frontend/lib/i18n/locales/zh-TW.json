@@ -2144,6 +2144,7 @@
         "expiry7Days": "7 天",
         "expiry30Days": "30 天",
         "expiry90Days": "90 天",
+        "expiry365Days": "365 天",
         "permissionsHeading": "範圍",
         "errorScopeRequired": "請至少選取一個範圍。",
         "selectAllScopes": "全選",

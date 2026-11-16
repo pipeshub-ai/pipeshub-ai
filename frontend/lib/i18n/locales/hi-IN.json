@@ -4388,6 +4388,7 @@
         "expiry7Days": "7 दिन",
         "expiry30Days": "30 दिन",
         "expiry90Days": "90 दिन",
+        "expiry365Days": "365 दिन",
         "permissionsHeading": "स्कोप",
         "errorScopeRequired": "कम से कम एक स्कोप चुनें।",
         "selectAllScopes": "सभी चुनें",

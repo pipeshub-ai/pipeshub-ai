@@ -2160,6 +2160,7 @@
         "expiry7Days": "7 days",
         "expiry30Days": "30 days",
         "expiry90Days": "90 days",
+        "expiry365Days": "365 days",
         "permissionsHeading": "Scopes",
         "errorScopeRequired": "Select at least one scope.",
         "selectAllScopes": "Select all",

@@ -4434,6 +4434,7 @@
         "expiry7Days": "7 días",
         "expiry30Days": "30 días",
         "expiry90Days": "90 días",
+        "expiry365Days": "365 días",
         "permissionsHeading": "Ámbitos",
         "errorScopeRequired": "Seleccione al menos un ámbito.",
         "selectAllScopes": "Seleccionar todo",

@@ -397,8 +397,8 @@ export interface TokenListItem {
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];
-  /** Days until expiry; defaults to 7. */
-  expiryDays?: 7 | 30 | 90;
+  /** Days until expiry; defaults to 30. */
+  expiryDays?: 7 | 30 | 90 | 365;
   /** What the token may see; omit for everything the user can. */
   knowledgeLimit?: KnowledgeLimit;
 }

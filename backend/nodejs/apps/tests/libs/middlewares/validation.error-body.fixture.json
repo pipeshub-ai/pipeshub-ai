@@ -60,11 +60,11 @@
   "pat: bad union literal": {
     "code": "VALIDATION_ERROR",
     "statusCode": 400,
-    "message": "Expiry days must be 7, 30 or 90.",
+    "message": "Expiry days must be 7, 30, 90 or 365.",
     "errors": [
       {
         "field": "body.expiryDays",
-        "message": "Expiry days must be 7, 30 or 90.",
+        "message": "Expiry days must be 7, 30, 90 or 365.",
         "code": "INVALID_ENUM",
         "value": ""
       }

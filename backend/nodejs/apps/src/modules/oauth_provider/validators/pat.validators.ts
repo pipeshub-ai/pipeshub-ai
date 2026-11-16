@@ -7,7 +7,9 @@ export const createPatTokenSchema = z.object({
     name: z.string().min(1).max(100),
     scopes: z.array(z.string()).min(1).max(100).optional(),
     expiryDays: z
-      .literal([7, 30, 90], { error: 'Expiry days must be 7, 30 or 90.' })
+      .literal([7, 30, 90, 365], {
+        error: 'Expiry days must be 7, 30, 90 or 365.',
+      })
       .optional(),
     knowledgeLimit: knowledgeLimitSchema.optional(),
   }),
