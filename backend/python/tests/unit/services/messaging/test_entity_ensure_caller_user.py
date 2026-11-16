@@ -168,6 +168,10 @@ class _Graph:
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         return True
 
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, transaction: str | None = None, *,
+                                  raise_on_error: bool = False) -> list[dict]:
+        return []      # this store keeps no edges
+
 
 async def test_any_number_of_writers_of_one_new_user_write_one_node() -> None:
     """The event, its redelivery and two first requests, through two service instances (two workers), at once."""
