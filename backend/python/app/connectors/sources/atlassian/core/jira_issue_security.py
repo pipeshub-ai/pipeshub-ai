@@ -464,10 +464,16 @@ def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tu
     if user.get("active") is False:
         return None, True
     account = user.get("accountId") or user.get("key") or user.get("name") or holder.get("parameter")
-    if account:
-        return _email_of(user_by_id, str(account)), False
     raw = user.get("emailAddress")
-    if not isinstance(raw, str) or not raw.strip():
+    raw = raw if isinstance(raw, str) and raw.strip() else None
+    if account:
+        if str(account) in user_by_id:
+            # A synced account: the payload's email is its own when the directory has none.
+            return _email_of(user_by_id, str(account)) or raw, False
+        # Outside the directory, like a deactivated account: no access, so the level's other holders are still written.
+        # Named without an email, it may be an account a user read cut short left out, so it stays unread and is retried.
+        return None, raw is not None
+    if raw is None:
         return None, False
     holders = {id(u) for u in user_by_id.values() if (getattr(u, "email", None) or "").lower() == raw.strip().lower()}
     return (raw if len(holders) == 1 else None), False
