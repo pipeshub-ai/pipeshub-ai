@@ -138,7 +138,7 @@ async def test_the_embeddings_gateway_hands_over_a_throttles_wait_when_its_attem
     class _Throttle(Exception):
         status_code = 429
 
-        class response:
+        class response:  # noqa: N801
             headers = {"retry-after": "20"}
 
     async def call() -> None:

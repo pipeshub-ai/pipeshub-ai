@@ -30,11 +30,11 @@ class Throttle(Exception):
 
     status_code = 429
 
-    class response:
+    class response:  # noqa: N801
         headers = {"retry-after": "600"}
 
 
-def _config(provider: str, **extra: Any) -> MultimodalProviderConfig:
+def _config(provider: str, **extra: Any) -> MultimodalProviderConfig:  # noqa: ANN401
     return MultimodalProviderConfig(
         provider=provider, api_key="k", model_name="m", region_name="us-east-1", aws_access_key_id="a",
         aws_secret_access_key="s", sdk_retries=0, normalize_fn=lambda ref: ref, **extra,
@@ -70,7 +70,7 @@ async def test_gemini_hands_the_wait_over(monkeypatch: pytest.MonkeyPatch, one_a
     from google import genai
 
     class FakeClient:
-        def __init__(self, **_: Any) -> None:
+        def __init__(self, **_: Any) -> None:  # noqa: ANN401
             self.aio = MagicMock()
             self.aio.models.embed_content = AsyncMock(side_effect=Throttle("slow"))
 

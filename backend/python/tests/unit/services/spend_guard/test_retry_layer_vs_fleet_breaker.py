@@ -30,7 +30,7 @@ from app.services.spend_guard.retry_policy import (
     RetryKind,
     decide_retry,
 )
-from tests.support.spend_world import fleet, sim_clock  # noqa: F401 - fixtures
+from tests.support.spend_world import fleet, sim_clock  # noqa: E402, F401 - fixtures
 
 PROVIDER = "FakeChat:fake-model@host"
 SEED = random.SystemRandom().randrange(1, 2**31)
@@ -50,12 +50,12 @@ def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 class Model:
     """Answers each request with the next scripted reply: an int status, (status, retry_after), or 'ok'."""
 
-    def __init__(self, script=None, default=(503, None)) -> None:
+    def __init__(self, script=None, default=(503, None)) -> None:  # noqa: ANN001
         self.script = list(script or [])
         self.default = default
         self.requests = 0
 
-    async def ainvoke(self, value, /, **kwargs):
+    async def ainvoke(self, value, /, **kwargs):  # noqa: ANN001, ANN202
         wire.admit_request()
         wire.note_request_sent()
         self.requests += 1
@@ -71,7 +71,7 @@ class Model:
 # ---- 1. a 5xx storm: the breaker still opens, and the retries do not outrun it --------------------------------------
 
 
-async def test_a_5xx_storm_opens_the_breaker_and_retries_stop_at_it(fleet, sim_clock, slept) -> None:
+async def test_a_5xx_storm_opens_the_breaker_and_retries_stop_at_it(fleet, sim_clock, slept) -> None:  # noqa: ANN001
     gateway = LLMGateway(8, retry_budget=RetryBudget())
     model = Model()
     errors = []
@@ -87,12 +87,12 @@ async def test_a_5xx_storm_opens_the_breaker_and_retries_stop_at_it(fleet, sim_c
     assert sum(e.requests for e in errors) == 5, "every failed request is counted in the errors' `requests`"
 
 
-async def test_concurrent_jobs_in_a_5xx_storm(fleet, sim_clock, slept) -> None:
+async def test_concurrent_jobs_in_a_5xx_storm(fleet, sim_clock, slept) -> None:  # noqa: ANN001
     """Many jobs at once: requests stay within 5 + the attempts already in flight when it opened (<= the slots)."""
     gateway = LLMGateway(8, retry_budget=RetryBudget())
 
     class Slow(Model):
-        async def ainvoke(self, value, /, **kwargs):
+        async def ainvoke(self, value, /, **kwargs):  # noqa: ANN001, ANN202
             await asyncio.sleep(0)  # interleave: several attempts are in flight together
             return await super().ainvoke(value, **kwargs)
 
@@ -123,7 +123,7 @@ async def test_the_send_allowance_bounds_the_gateway_retries(slept, allowance: i
     assert raised.value.requests == model.requests
 
 
-async def test_failed_sends_are_counted_across_the_attempts(fleet, sim_clock, slept) -> None:
+async def test_failed_sends_are_counted_across_the_attempts(fleet, sim_clock, slept) -> None:  # noqa: ANN001
     gateway = LLMGateway(8, retry_budget=RetryBudget())
     model = Model(script=[503, 502, 500])
     with llm_job("job", allowance=20) as trace, pytest.raises(ProviderUnavailableError) as raised:
@@ -135,7 +135,7 @@ async def test_failed_sends_are_counted_across_the_attempts(fleet, sim_clock, sl
 
 
 @pytest.mark.parametrize("trial_reply", [503, (429, None), (429, 5.0)])
-async def test_a_half_open_trial_is_not_repeated(fleet, sim_clock, slept, trial_reply) -> None:
+async def test_a_half_open_trial_is_not_repeated(fleet, sim_clock, slept, trial_reply) -> None:  # noqa: ANN001
     gateway = LLMGateway(8, retry_budget=RetryBudget())
     model = Model()
     for i in range(5):

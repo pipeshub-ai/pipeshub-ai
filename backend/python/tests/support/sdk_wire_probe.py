@@ -20,8 +20,8 @@ from typing import Any
 
 sys.path.insert(0, os.getcwd())
 
-import httpx
-import requests
+import httpx  # noqa: E402
+import requests  # noqa: E402
 
 STATUS = int(sys.argv[1]) if len(sys.argv) > 1 else 500
 COUNT = {"n": 0}
@@ -35,14 +35,14 @@ def _body() -> bytes:
 HEADERS = {"content-type": "application/json", "retry-after": "0", "retry-after-ms": "0", "x-should-retry": "true"}
 
 
-async def _ahandle(self: Any, request: httpx.Request) -> httpx.Response:
+async def _ahandle(self: Any, request: httpx.Request) -> httpx.Response:  # noqa: ANN401
     COUNT["n"] += 1
     if STATUS == 0:  # a dropped connection
         raise httpx.ConnectError("QA probe: connection reset", request=request)
     return httpx.Response(STATUS, headers=HEADERS, content=_body(), request=request)
 
 
-def _handle(self: Any, request: httpx.Request) -> httpx.Response:
+def _handle(self: Any, request: httpx.Request) -> httpx.Response:  # noqa: ANN401
     COUNT["n"] += 1
     if STATUS == 0:
         raise httpx.ConnectError("QA probe: connection reset", request=request)
@@ -52,13 +52,13 @@ def _handle(self: Any, request: httpx.Request) -> httpx.Response:
 httpx.AsyncHTTPTransport.handle_async_request = _ahandle  # type: ignore[method-assign]
 httpx.HTTPTransport.handle_request = _handle  # type: ignore[method-assign]
 # Clients that put aiohttp under httpx (fireworks-ai) or call aiohttp directly: counted, and never on the network.
-import aiohttp
-import httpx_aiohttp.transport
+import aiohttp  # noqa: E402
+import httpx_aiohttp.transport  # noqa: E402
 
 httpx_aiohttp.transport.AiohttpTransport.handle_async_request = _ahandle  # type: ignore[method-assign]
 
 
-async def _aio_request(self: Any, method: str, url: Any, **kwargs: Any) -> Any:
+async def _aio_request(self: Any, method: str, url: Any, **kwargs: Any) -> Any:  # noqa: ANN401
     COUNT["n"] += 1
     raise aiohttp.ClientConnectionError("QA probe: aiohttp request blocked (counted)")
 
@@ -66,7 +66,7 @@ async def _aio_request(self: Any, method: str, url: Any, **kwargs: Any) -> Any:
 aiohttp.ClientSession._request = _aio_request  # type: ignore[method-assign]
 
 
-def _req_send(self: Any, request: Any, **kwargs: Any) -> requests.Response:
+def _req_send(self: Any, request: Any, **kwargs: Any) -> requests.Response:  # noqa: ANN401
     COUNT["n"] += 1
     if STATUS == 0:
         raise requests.ConnectionError("QA probe: connection reset")
@@ -82,12 +82,12 @@ def _req_send(self: Any, request: Any, **kwargs: Any) -> requests.Response:
 requests.adapters.HTTPAdapter.send = _req_send  # type: ignore[method-assign]
 
 # SDK backoffs change no count: sleep nothing.
-import anyio
+import anyio  # noqa: E402
 
 _real_asleep = asyncio.sleep
 
 
-async def _nosleep(_s: float = 0, *a: Any, **k: Any) -> Any:
+async def _nosleep(_s: float = 0, *a: Any, **k: Any) -> Any:  # noqa: ANN401
     return await _real_asleep(0)
 
 
@@ -96,10 +96,10 @@ anyio.sleep = _nosleep  # type: ignore[assignment]
 time.sleep = lambda _s: None  # type: ignore[assignment]
 
 # Vertex AI: give the service account a token without the network.
-from google.oauth2 import service_account
+from google.oauth2 import service_account  # noqa: E402
 
 
-def _refresh(self: Any, request: Any) -> None:
+def _refresh(self: Any, request: Any) -> None:  # noqa: ANN401
     import datetime
 
     self.token = "t"
@@ -111,19 +111,19 @@ service_account.Credentials.refresh = _refresh  # type: ignore[method-assign]
 os.environ.setdefault("LLM_WIRE_HOOKS_REQUIRED", "false")
 os.environ["AWS_EC2_METADATA_DISABLED"] = "true"  # no instance-metadata lookup: static credentials only
 
-from app.utils.aimodels import (
+from app.utils.aimodels import (  # noqa: E402
     INDEXING_SDK_RETRIES,
     EmbeddingProvider,
     LLMProvider,
     get_embedding_model,
     get_generator_model,
 )
-from tests.support.provider_configs import BASE, service_account_json
+from tests.support.provider_configs import BASE, service_account_json  # noqa: E402
 
 CONF = {**BASE, "serviceAccountJson": service_account_json(), "endpoint": "https://gateway.example.com/v1"}
 
 
-def _hook_boto(model: Any) -> None:
+def _hook_boto(model: Any) -> None:  # noqa: ANN401
     client = getattr(model, "client", None)
     meta = getattr(client, "meta", None)
     if meta is None:
@@ -131,10 +131,10 @@ def _hook_boto(model: Any) -> None:
     from botocore.awsrequest import AWSResponse
 
     class _Raw:
-        def stream(self, **_: Any) -> Any:
+        def stream(self, **_: Any) -> Any:  # noqa: ANN401
             yield _body()
 
-    def before_send(request: Any, **_: Any) -> AWSResponse:
+    def before_send(request: Any, **_: Any) -> AWSResponse:  # noqa: ANN401
         COUNT["n"] += 1
         if STATUS == 0:
             from botocore.exceptions import EndpointConnectionError
@@ -161,7 +161,7 @@ async def _one(kind: str, provider: str, model_name: str, sdk_retries: int | Non
         else:
             await asyncio.wait_for(model.aembed_documents(["DOC:x"]), 120)
         err = "no error?!"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         err = f"{type(exc).__name__}"
     return COUNT["n"], type(model).__name__, f"{err} {time.monotonic() - started:.1f}s"
 
@@ -182,7 +182,7 @@ async def main() -> int:
             try:
                 n0, wrapper, info0 = await _one(kind, provider, model_name, INDEXING_SDK_RETRIES)
                 nd, _, infod = await _one(kind, provider, model_name, None)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 print(f"BUILD-ERR {kind:4} {provider:18} {type(exc).__name__}: {str(exc)[:100]}")
                 continue
             verdict = "OK" if n0 == 1 else ("UNSEEN" if n0 == 0 else "SDK-RETRIES")

@@ -45,7 +45,7 @@ def test_a_throttle_from_a_provider_that_is_not_openai_signals() -> None:
     class _ProviderError(Exception):
         status_code = 429
 
-        class response:
+        class response:  # noqa: N801 - a stand-in for the HTTP response the SDK keeps
             headers = {"retry-after": "12"}
 
     coordinator = BackpressureCoordinator()
@@ -57,7 +57,7 @@ def test_an_outage_or_a_request_fault_does_not_pause_reads() -> None:
     class _Down(Exception):
         status_code = 503
 
-        class response:
+        class response:  # noqa: N801
             headers = {"retry-after": "30"}
 
     coordinator = BackpressureCoordinator()
