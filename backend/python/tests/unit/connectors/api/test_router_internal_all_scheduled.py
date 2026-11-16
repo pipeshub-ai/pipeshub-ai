@@ -539,11 +539,12 @@ class _Graph:
             {**_active_doc("conn-b", "Confluence"), "orgId": ORG_B},
         ]
         self.broken: set[str] = set()
+        self.inactive: set[str] = set()
         self.reads: list[str] = []
 
-    async def get_all_orgs(self, **_kw: object) -> list[dict]:
+    async def get_all_orgs(self, *, active: bool = True, **_kw: object) -> list[dict]:
         ctx = current_or_system()
-        orgs = [{"_key": ORG_A}, {"_key": ORG_B}]
+        orgs = [{"_key": o} for o in (ORG_A, ORG_B) if not active or o not in self.inactive]
         return orgs if not self.scoped or ctx.kind == "system" else [o for o in orgs if o["_key"] == ctx.org_id]
 
     async def get_documents_paginated(self, collection: str, **kw: object) -> list[dict]:
@@ -613,3 +614,27 @@ class TestAllScheduledPerOrg:
             )
 
         assert {i["connectorId"]: i["orgId"] for i in result["items"]} == {"conn-a": ORG_A, "conn-b": ORG_B}
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_waits_while_its_org_cannot_be_read(self) -> None:
+        # Listed under the next org instead, a repair would move its schedule to an org a lookup by id does not give it.
+        graph = _Graph(scoped=False, apps=[_active_doc("legacy", "Jira")])
+        graph.broken.add(ORG_A)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert result["items"] == []
+        assert result["partial"] is True and result["failedOrgs"] == [ORG_A]
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_gets_the_same_org_listed_and_looked_up(self) -> None:
+        graph = _Graph(scoped=False, apps=[_active_doc("legacy", "Jira")])
+        graph.inactive.add(ORG_A)
+        request = _graph_request(graph)
+
+        with bind(SWEEP_TOKEN):
+            listed = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+            by_id = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50, connector_ids="legacy")
+
+        assert [i["orgId"] for i in listed["items"]] == [i["orgId"] for i in by_id["items"]] == [ORG_A]

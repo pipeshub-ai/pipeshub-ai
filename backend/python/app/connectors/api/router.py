@@ -3589,24 +3589,31 @@ async def _active_connectors_of_every_org(
     shortcut: every page call reads every org's connectors and slices; page by an (org, key) cursor if connector counts reach the thousands.
     """
     found: dict[tuple[str, str | None], dict[str, Any]] = {}
+    an_org_failed = False
 
     async def one_org(org_id: str) -> None:
+        nonlocal an_org_failed
         apps: list[dict[str, Any]] = []
         after: str | None = None
         while True:
-            # Raising: Neo4j and ArangoDB answer a failed read with no rows, which would read as an org with no schedules.
-            batch = await graph_provider.get_documents_paginated(
-                CollectionNames.APPS.value, limit=_APPS_READ_PAGE, filters={"isActive": True},
-                sort_field="_key", after_key=after, raise_on_error=True,
-            )
+            try:
+                # Raising: Neo4j and ArangoDB answer a failed read with no rows, which would read as an org with no schedules.
+                batch = await graph_provider.get_documents_paginated(
+                    CollectionNames.APPS.value, limit=_APPS_READ_PAGE, filters={"isActive": True},
+                    sort_field="_key", after_key=after, raise_on_error=True,
+                )
+            except Exception:
+                an_org_failed = True
+                raise
             apps.extend(batch)
             after = (batch[-1].get("_key") or batch[-1].get("id")) if batch else None
             if len(batch) < _APPS_READ_PAGE or after is None:
                 break
         for doc in of_org(apps, org_id):
             connector_id, connector_type, doc_org = doc.get("_key") or doc.get("id"), doc.get("type"), doc.get("orgId")
-            if connector_id and connector_type:
-                # setdefault: an app with no orgId is in every org's answer on Neo4j and ArangoDB; the first org keeps it.
+            # An app with no orgId is in every org's answer on Neo4j and ArangoDB and belongs to the first org, as a lookup by id
+            # says; after a failed org it waits for the next listing rather than be repaired under another org.
+            if connector_id and connector_type and (doc_org or not an_org_failed):
                 found.setdefault((connector_id, doc_org), {
                     "connectorId": connector_id,
                     "connectorType": connector_type,
@@ -3680,7 +3687,8 @@ async def get_all_scheduled_connector_instances_internal(
             ids = list(dict.fromkeys(i.strip() for i in connector_ids.split(",") if i.strip()))[:_MAX_LISTED_CONNECTOR_IDS]
             # The caller's token names no org: a lookup by id is a cross-org read (PostgreSQL serves it through its vetted system path).
             with system(_SCHEDULE_SWEEP_JOB):
-                organisation = await graph_provider.get_all_orgs(raise_on_error=True)
+                # Every org, as the listing goes through them: an app with no orgId gets the same org in both.
+                organisation = await graph_provider.get_all_orgs(active=False, raise_on_error=True)
                 # Only for app docs written before orgId was stored on them.
                 fallback_org_id = (organisation[0].get("_key") or organisation[0].get("id")) if organisation else None
                 items = [
