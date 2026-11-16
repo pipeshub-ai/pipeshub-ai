@@ -97,7 +97,7 @@ from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import EXCEL_TOO_LARGE
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_caller_user, get_user_or_503
 from app.utils.validation_messages import validation_error_text
 
 DEFAULT_CONTEXT_LENGTH = 128000
@@ -1241,7 +1241,7 @@ async def _attachment_caller(
     if user.get("isServiceAccount"):
         return org_id, None, True
     user_id = user.get("userId")
-    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    user_doc = await get_caller_user(graph_provider, user_id) if user_id else None
     return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
 
 
@@ -1505,7 +1505,7 @@ async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) 
     by the caller's `gather(..., return_exceptions=True)`."""
     if not user_id:
         return None
-    return await graph_provider.get_user_by_user_id(user_id)
+    return await get_caller_user(graph_provider, user_id)
 
 
 async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:

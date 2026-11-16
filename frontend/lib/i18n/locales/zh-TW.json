@@ -5404,6 +5404,7 @@
     "mcpServerNeedsToolsTooltip": "請為每個 MCP 伺服器選擇工具，或開啟「所有工具」。",
     "mcpServerNeedsToolsBanner": "請為 {{names}} 至少選擇一個工具，或開啟「所有工具」。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的個人 MCP 伺服器，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
+    "serviceAgentCollectionsNeedBinding": "將此服務代理程式綁定到服務帳戶後，才能新增集合。",
     "mcpAgentApprovalsEnterprise": "依代理程式設定的工具核准屬於企業版。在這裡，適用每個人自己的工具核准設定。",
     "mcpAgentApprovals": "依代理程式設定工具核准",
     "limitSource": "選擇 {{name}} 的搜尋範圍",

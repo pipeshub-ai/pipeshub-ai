@@ -142,6 +142,7 @@ class ResourceGovernor:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: Callable[[], float] = random.random,
         heavy_working_set_gb: float | None = None,
+        remote_parse_slots: int | None = None,
     ) -> None:
         self._logger = logger
         # The Docling service's own working set; the other services leave it unset.
@@ -177,8 +178,14 @@ class ResourceGovernor:
             reserve_embedding_cpus=reserve_embedding_cpus,
             **(auto.resolve_kwargs if auto is not None else {}),
         )
+        if remote_parse_slots:
+            from app.services.parsing.remote_concurrency import lift_ceilings
+            # Parsing runs in another pod: the ceilings hold that many parses, not this CPU's share.
+            self._fleet_ceilings = lift_ceilings(self._fleet_ceilings, remote_parse_slots, env_index)
         container_fleet = self._fleet_ceilings  # the whole container's: what the shared ramp is sized against
-        if auto is not None:
+        if auto is not None and not remote_parse_slots:
+            # A service that parses elsewhere holds no local parse share of the member budget (and does not join the
+            # container's shared ramp below): its heavy ceiling is the remote pool's width, not this CPU's.
             self._fleet_ceilings = auto.partition(self._fleet_ceilings)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
         # Only shared when there are workers to share with: one process's
@@ -215,7 +222,9 @@ class ResourceGovernor:
         self._state_lock = threading.Lock()
         self._registry = LimitRegistry(warm_start_limits(self._ceilings))
         self._state = ControllerState.initial()
-        self._container = auto.link(container_fleet, self._ceilings, self._logger) if auto is not None else None
+        self._container = (
+            auto.link(container_fleet, self._ceilings, self._logger) if auto is not None and not remote_parse_slots else None
+        )
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}

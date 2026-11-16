@@ -330,3 +330,20 @@ async def test_a_slow_ledger_step_does_not_stall_the_event_loop_or_an_incident_r
     assert incident_took[0] < 0.2  # the state lock was not held across the step
     # the incident's state stands after the step's result is applied
     assert g._state.get(Pool.HEAVY_PARSE).cooldown_until > 0
+
+
+def test_a_service_that_parses_in_another_pod_keeps_the_lifted_ceilings_and_joins_no_shared_ramp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With remote parse slots the heavy ceiling is the remote pool's width; the member budget's local partition and
+    the container ramp (sized from this container's CPUs) must not cap it."""
+    monkeypatch.setenv("PIPESHUB_CAPACITY_PROFILE", "auto")
+    monkeypatch.setenv("PIPESHUB_CAPACITY_DIR", str(tmp_path / "cap"))
+    monkeypatch.setenv("PIPESHUB_CPU_BUDGET", "8")
+    monkeypatch.setenv("PIPESHUB_MEMORY_BUDGET", str(64 * 2**30))
+    monkeypatch.setenv("PIPESHUB_SERVICE", "indexing")
+    g = ResourceGovernor(
+        logger=logging.getLogger("t"), probe=Probe(snap(8.0)), sample_interval=1.0, remote_parse_slots=40
+    )
+    assert g._fleet_ceilings.heavy >= 40
+    assert g._container is None

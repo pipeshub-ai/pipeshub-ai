@@ -20,6 +20,7 @@ from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.scenario import load_all
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_conformance import CHUNK, PgLayer
@@ -427,15 +428,9 @@ def _nodes(node: dict[str, Any]) -> list[dict[str, Any]]:
     return [node, *(n for c in node.get("Plans", []) for n in _nodes(c))]
 
 def _scans(node: dict[str, Any]) -> list[str]:
-    """What in a plan reads a table by more than its key: a sequential or bitmap scan, or an index scan whose condition bounds nothing but the organisation (and the collection)."""
-    rel, kind = node.get("Relation Name"), node["Node Type"]
-    out = []
-    if rel and kind in ("Seq Scan", "Bitmap Heap Scan"):
-        out.append(f"{kind} on {rel}")
-    elif rel and kind in ("Index Scan", "Index Only Scan"):
-        cond = re.sub(r"(org_id|coll) = [^)]*", "", node.get("Index Cond", ""))
-        if not re.search(r"\b(sk|id|parent_sk|group_sk|child_sk|from_id|to_id)\b|ROW\(", cond):
-            out.append(f"{node.get('Index Name')} on {rel} bounded by {node.get('Index Cond')}")
-    for child in node.get("Plans", []):
-        out += _scans(child)
-    return out
+    """What in a plan reads a table by more than its key: a sequential scan, or an index (or bitmap index) scan whose condition bounds nothing but the
+    organisation (and the collection)."""
+    def keyed(cond: str) -> bool:
+        return bool(re.search(r"\b(sk|id|parent_sk|group_sk|child_sk|from_id|to_id)\b|ROW\(", re.sub(r"(org_id|coll) = [^)]*", "", cond)))
+    return [f"{n['Node Type']} on {n['Relation Name']}: {plan_gate.bounds(n) or 'no index condition'}" for n in plan_gate.scans(node, "")
+            if not (b := plan_gate.bounds(n)) or not all(keyed(cond) for _, cond in b)]

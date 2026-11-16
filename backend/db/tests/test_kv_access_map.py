@@ -50,6 +50,9 @@ READS = {
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),  # every ConfigurationService
+        # parsing and extraction bind the fleet breaker at start (fleet_redis.bind_service_fleet): created if absent, then read
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),
+        "/services/redis": ("app/config/configuration_service.py:577", "REDIS"),  # the same: fleet_redis.fleet_redis_config (fleet_redis.py:78)
     },
     "indexing": {
         "state:*": ("app/services/pg_state.py:24", "state:lock:"),
@@ -77,6 +80,8 @@ READS = {
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
         _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
+        "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py:346", "SPEND_GUARD_KEY"),  # the pause judge (pipeline/runtime.py:186)
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),  # indexing_main.py:2699, at start
     },
 }
 
@@ -115,9 +120,10 @@ NOT_READ = {
            "/services/storage": "storage settings: the Node API and indexing's blob reads",
            "/services/namedEntities": "named-entity settings: indexing and query",
            "/services/arangodb": "BaseAppContainer's ArangoDB client is resolved only by services with a graph connection; " + _ENVFB,
-           "/services/kafka": _ENVFB, "/services/redis": _ENVFB, "/services/qdrant": _ENVFB, "/services/opensearch": _ENVFB,
+           "/services/kafka": _ENVFB, "/services/qdrant": _ENVFB, "/services/opensearch": _ENVFB,
            "/services/redis-vector": _ENVFB, "/services/pgvector": "the pgvector store: indexing and query",
-           "/services/file_types/config": "file-type settings: read by indexing's record event handler only (record.py:260)"},
+           "/services/file_types/config": "file-type settings: read by indexing's record event handler only (record.py:260)",
+           "/services/indexing/spendGuard": "the pause caps of stage jobs: read by the indexing pipeline's pause judge only (modules/pipeline/runtime.py:186)"},
 }
 
 
