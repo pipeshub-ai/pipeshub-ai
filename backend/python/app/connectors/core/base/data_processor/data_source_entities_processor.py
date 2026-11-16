@@ -7242,7 +7242,7 @@ class DataSourceEntitiesProcessor:
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             user_ids: set[str] = set()
             for email in sorted(user_emails):
-                user = await tx_store.get_user_by_email(email, raise_on_error=True)
+                user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
                 if user is not None and user.id:
                     user_ids.add(user.id)
             if not user_ids:
