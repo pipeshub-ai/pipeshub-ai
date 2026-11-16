@@ -12,6 +12,7 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  ObjectPage,
   SignObjectUrlOptions,
   SignedObjectUrl,
 } from '../types/storage.service.types';
@@ -31,6 +32,14 @@ import { encodeRFC5987 } from '../utils/utils';
 import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 
 @injectable()
+/** Containers (by URL) that a check in this process has seen to exist. */
+const verifiedContainers = new Set<string>();
+
+/** For tests: forget which containers were seen, so the next adapter checks again. */
+export const forgetVerifiedContainers = (): void => {
+  verifiedContainers.clear();
+};
+
 class AzureBlobStorageAdapter implements StorageServiceInterface {
   private blobServiceClient: BlobServiceClient;
   private containerClient: any;
@@ -119,7 +128,17 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
    * rejection; the failure surfaces from the next storage operation instead.
    */
   private startContainerCheck(): Promise<void> {
-    const check = this.ensureContainerExists();
+    const ready: string | undefined = this.containerClient.url;
+    // A container seen to exist is not asked about again by the adapters built later in this process
+    // (the controller builds one per request): a cache lookup is a request, and the check is a round trip.
+    if (ready !== undefined && verifiedContainers.has(ready)) {
+      return Promise.resolve();
+    }
+    const check = this.ensureContainerExists().then(() => {
+      if (ready !== undefined) {
+        verifiedContainers.add(ready);
+      }
+    });
     check.catch(() => undefined);
     return check;
   }
@@ -554,6 +573,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
           headers: {
             'x-ms-blob-type': 'BlockBlob',
             'Content-Type': options.contentType ?? 'application/octet-stream',
+            ...(options.ifAbsent === true && { 'If-None-Match': '*' }),
           },
         };
       }
@@ -564,6 +584,71 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       }
       throw new PresignedUrlError(
         'Failed to generate signed URL for Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  async listObjects(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage> {
+    try {
+      await this.waitForContainer();
+      const iterator = (this.containerClient as ContainerClient)
+        .listBlobsFlat({ prefix })
+        .byPage({
+          maxPageSize: options.limit,
+          continuationToken: options.after,
+        });
+      const result = await iterator.next();
+      if (result.done === true) {
+        return { objects: [] };
+      }
+      const page = result.value;
+      const next = page.continuationToken;
+      return {
+        objects: page.segment.blobItems.map((b) => ({
+          key: b.name,
+          size: b.properties.contentLength ?? 0,
+          lastModifiedMs: b.properties.lastModified.getTime(),
+        })),
+        ...(next !== undefined && next !== '' && { next }),
+      };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      const status = (error as { statusCode?: number }).statusCode;
+      if (options.after !== undefined && status === 400) {
+        throw new StorageValidationError('The listing cursor is not valid');
+      }
+      throw new StorageDownloadError(
+        'Failed to list blobs in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  async deleteObjects(storageKeys: string[]): Promise<void> {
+    try {
+      await this.waitForContainer();
+      const container = this.containerClient as ContainerClient;
+      for (let i = 0; i < storageKeys.length; i += 16) {
+        await Promise.all(
+          storageKeys
+            .slice(i, i + 16)
+            .map((key) => container.getBlockBlobClient(key).deleteIfExists()),
+        );
+      }
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError(
+        'Failed to delete blobs in Azure Blob Storage',
         {
           originalError:
             error instanceof Error ? error.message : 'Unknown error',

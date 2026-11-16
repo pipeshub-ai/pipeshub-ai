@@ -12,8 +12,10 @@ import {
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
 import { StorageError } from '../../../../src/libs/errors/storage.errors';
+import { forgetVerifiedContainers } from '../../../../src/modules/storage/providers/azure.provider'
 
 describe('AzureBlobStorageAdapter', () => {
+  beforeEach(() => { forgetVerifiedContainers() })
   afterEach(() => { sinon.restore() })
 
   // -------------------------------------------------------------------------
@@ -1382,6 +1384,9 @@ describe('AzureBlobStorageAdapter - branch coverage', () => {
 })
 
 describe('AzureBlobStorageAdapter - additional coverage', () => {
+  beforeEach(() => {
+    forgetVerifiedContainers()
+  })
   afterEach(() => {
     sinon.restore()
   })

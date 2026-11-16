@@ -1,0 +1,205 @@
+"""Deleting a record or an org deletes its stored model outputs; a storage failure is retried by the broker."""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.config.constants.arangodb import EventTypes
+from app.services.messaging.config import IndexingEvent
+from app.services.paid_cache import access
+from app.services.paid_cache.cache import PaidResultCache
+from app.services.paid_cache.run import clear_run, current_run
+from tests.support.paid_cache import MemoryResultStore
+from tests.support.record_handler import make_record_handler
+
+ORG, REC = "org-1", "rec-1"
+PAGE = f"ocr_page/{'a' * 64}.json"
+
+
+@pytest.fixture
+def store(monkeypatch: pytest.MonkeyPatch) -> MemoryResultStore:
+    memory = MemoryResultStore()
+    cache = PaidResultCache(memory)
+    monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: cache)
+    yield memory
+    clear_run()
+
+
+def _seed(store: MemoryResultStore) -> None:
+    for org, rec in ((ORG, REC), (ORG, "rec-2"), ("org-2", REC)):
+        store.files[(org, rec, PAGE)] = (b"{}", 1)
+        store.files[(org, rec, "manifests/rev/parse.json")] = (b"{}", 1)
+
+
+async def _events(handler, event_type: str, payload: dict) -> list:
+    return [e async for e in handler.process_event(event_type, payload) if e.event != IndexingEvent.START_DOWNLOAD]
+
+
+def _handler() -> Any:  # noqa: ANN401 - a RecordEventHandler built over mocks
+    handler = make_record_handler()
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"_key": REC, "orgId": ORG, "virtualRecordId": "vr"})
+    handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+    handler._request_code_edge_build_for_deleted = AsyncMock()
+    handler._hand_over_shared_copy = AsyncMock()
+    return handler
+
+
+async def test_record_and_org_purge(store: MemoryResultStore) -> None:
+    _seed(store)
+    handler = _handler()
+
+    events = await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
+
+    assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+    assert store.paths(ORG, REC) == []                       # the record's folder, manifests included
+    assert store.paths(ORG, "rec-2") != []                   # another record of the org
+    assert store.paths("org-2", REC) != []                   # the same record id in another org
+
+
+async def test_a_record_delete_without_an_org_takes_it_from_the_record(store: MemoryResultStore) -> None:
+    _seed(store)
+    handler = _handler()
+
+    await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "virtualRecordId": "vr"})
+
+    assert store.paths(ORG, REC) == []
+    assert store.paths("org-2", REC) != []
+
+
+async def test_a_storage_failure_raises_so_the_broker_redelivers_until_it_succeeds(store: MemoryResultStore) -> None:
+    _seed(store)
+    handler = _handler()
+    store.failing = {"purge"}
+
+    with pytest.raises(ConnectionError):
+        await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
+    assert store.paths(ORG, REC) != []                       # nothing was acknowledged as deleted
+
+    store.failing = set()                                    # the broker redelivers
+    events = await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
+    assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+    assert store.paths(ORG, REC) == []
+
+
+async def test_a_record_with_nothing_stored_deletes_cleanly(store: MemoryResultStore) -> None:
+    handler = _handler()
+
+    events = await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
+
+    assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+
+
+async def test_the_purge_happens_even_with_the_cache_switched_off(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAID_CACHE", "off")
+    _seed(store)
+
+    await _events(_handler(), EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
+
+    assert store.paths(ORG, REC) == []
+
+
+async def test_an_org_delete_removes_the_orgs_whole_folder(store: MemoryResultStore) -> None:
+    from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+    _seed(store)
+    app_container = MagicMock()
+    service = EntityEventService(MagicMock(), AsyncMock(), app_container)
+    service._remove_mcp_data = AsyncMock()
+    service._remove_personal_toolsets = AsyncMock()
+    service._remove_api_toolset_data = AsyncMock()
+
+    assert await service.process_event("orgDeleted", {"orgId": ORG}) is True
+
+    assert store.paths(ORG, REC) == [] and store.paths(ORG, "rec-2") == []
+    assert store.paths("org-2", REC) != []
+
+
+async def test_an_org_delete_whose_purge_fails_is_redelivered(store: MemoryResultStore) -> None:
+    from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+    _seed(store)
+    store.failing = {"purge"}
+    service = EntityEventService(MagicMock(), AsyncMock(), MagicMock())
+    service._remove_mcp_data = AsyncMock()
+    service._remove_personal_toolsets = AsyncMock()
+    service._remove_api_toolset_data = AsyncMock()
+
+    with pytest.raises(ConnectionError):
+        await service.process_event("orgDeleted", {"orgId": ORG})
+    assert store.paths(ORG, REC) != []
+
+    store.failing = set()
+    assert await service.process_event("orgDeleted", {"orgId": ORG}) is True
+    assert store.paths(ORG, REC) == []
+
+
+async def _reindex(handler, payload: dict) -> None:
+    """Runs a reindex event as far as it goes; what follows the refresh step is not under test."""
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        await _events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+
+async def test_refresh_paid_outputs_purges_the_set_first_and_binds_a_bypassing_run(store: MemoryResultStore) -> None:
+    _seed(store)
+    handler = _handler()
+
+    await _reindex(handler, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True})
+
+    assert store.paths(ORG, REC) == []                       # the record's set is gone before the run
+    assert store.paths(ORG, "rec-2") != [] and store.paths("org-2", REC) != []
+    run = current_run()
+    assert run is not None and run.refresh and run.matches(ORG, REC)
+
+
+async def test_refresh_paid_outputs_takes_the_org_from_the_record_when_the_event_has_none(store: MemoryResultStore) -> None:
+    _seed(store)
+
+    await _reindex(_handler(), {"recordId": REC, "refreshPaidOutputs": True})
+
+    assert store.paths(ORG, REC) == [] and store.paths("org-2", REC) != []
+
+
+async def test_a_refresh_whose_purge_fails_fails_the_event_so_it_is_retried(store: MemoryResultStore) -> None:
+    _seed(store)
+    store.failing = {"purge"}
+    handler = _handler()
+
+    with pytest.raises(ConnectionError):
+        await _events(handler, EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True})
+    assert store.paths(ORG, REC) != []                       # a run never starts over a half-purged set
+
+
+@pytest.mark.parametrize("payload", [{"forceReindex": True}, {"refreshPaidOutputs": "true"}, {"refreshPaidOutputs": False}, {}])
+async def test_anything_but_an_explicit_refresh_keeps_the_stored_set(store: MemoryResultStore, payload: dict) -> None:
+    _seed(store)
+
+    await _reindex(_handler(), {"recordId": REC, "orgId": ORG, **payload})
+
+    assert store.paths(ORG, REC) != []
+    run = current_run()
+    assert run is None or not run.refresh
+
+
+def test_only_an_explicit_true_is_a_refresh() -> None:
+    from app.services.paid_cache.run import refresh_requested
+
+    assert refresh_requested({"refreshPaidOutputs": True})
+    for not_a_refresh in ({"refreshPaidOutputs": "true"}, {"refreshPaidOutputs": 1}, {"forceReindex": True}, {}, None, "x"):
+        assert not refresh_requested(not_a_refresh)
+
+
+async def test_force_reindex_alone_keeps_the_stored_set(store: MemoryResultStore) -> None:
+    _seed(store)
+    handler = _handler()
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
+
+    # A reindex carrying only forceReindex reaches the "record not found" drain without touching the set.
+    await _events(handler, EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "forceReindex": True})
+
+    assert store.paths(ORG, REC) != []
+    assert current_run() is None

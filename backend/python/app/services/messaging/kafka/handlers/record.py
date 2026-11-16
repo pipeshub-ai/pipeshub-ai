@@ -111,6 +111,9 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.paid_cache import access as paid_cache_access
+from app.services.paid_cache import run as paid_cache_run
+from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
@@ -1769,6 +1772,19 @@ class RecordEventHandler(BaseEventService):
                     yield event
                 return
 
+            if event_type == EventTypes.PURGE_PAID_RESULTS.value:
+                purge_org, purge_record_id = payload.get("orgId"), payload.get("recordId")
+                if not purge_org or not purge_record_id:
+                    raise ProcessingError(
+                        "purgePaidResults carries no orgId or recordId",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                # A storage failure raises, so the broker redelivers until the purge succeeds.
+                await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(purge_org, purge_record_id)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
+                return
+
             if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:
                 org_id = payload.get("orgId")
                 document_ids = payload.get("documentIds") or []
@@ -1847,6 +1863,20 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
+                if org_id:
+                    # Erasure: the record's stored model outputs go with it, and a parse still running for it
+                    # (the parsing service outlives the run that sent it) can store nothing more. A storage
+                    # failure raises, so the broker redelivers until it succeeds (none stored is a success).
+                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).delete_record(org_id, record_id)
+                    # Redis can lose the marker while a parse that outlived the record is still running: a
+                    # durable delayed purge removes whatever such a write left. A publish failure raises.
+                    await schedule_paid_repurge(self.producer, org_id, record_id)
+                else:
+                    self.logger.warning(
+                        "deleteRecord %s carries no orgId and the record is gone; "
+                        "its stored model outputs are left for the org purge",
+                        record_id,
+                    )
                 await self._request_code_edge_build_for_deleted(payload)
                 await self._hand_over_shared_copy(payload, org_id)
                 # Yield both events since delete is complete
@@ -1906,6 +1936,14 @@ class RecordEventHandler(BaseEventService):
             # A retry repeats the original message, which still holds the id from
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
+
+            if paid_cache_run.refresh_requested(payload):
+                # An explicit request to pay for every model output again: the record's stored set goes
+                # first, and the run bypasses lookups. A storage failure raises and the event is retried.
+                refresh_org = payload.get("orgId") or record.get("orgId")
+                if refresh_org:
+                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(refresh_org, record_id)
+                    paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
 
             # A connector being deleted owns its records, and the delete may yet be put back, so its
             # record events are held before anything is written: a stage redrive's states, a vector

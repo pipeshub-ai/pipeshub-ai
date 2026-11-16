@@ -36,8 +36,10 @@ from app.exceptions.indexing_exceptions import (
     PasswordProtectedError,
 )
 from app.modules.parsers.encryption import raise_if_password_protected_office
+from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.services.paid_cache.access import complete_run, start_run
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -282,7 +284,10 @@ async def parse_file(
                 raise_if_password_protected_office(
                     content, extension=extension, mime_type=mime_type
                 )
+                # The paid calls this parse makes (page OCR, table summaries) go into the revision's manifest.
+                paid_run = start_run(content_revision(content), "parse")
                 result = await parser.parse(content, record_name, config)
+                await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
             logger.warning(
                 "Parse refused: record='%s' provider=%s code=%s",

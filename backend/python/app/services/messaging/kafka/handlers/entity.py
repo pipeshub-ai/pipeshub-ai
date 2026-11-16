@@ -42,6 +42,7 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.paid_cache import access as paid_cache_access
 from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
@@ -293,6 +294,8 @@ class EntityEventService(BaseEventService):
             await self._remove_mcp_data("org", payload["orgId"])
             await self._remove_personal_toolsets("org", payload["orgId"])
             await self._remove_api_toolset_data(payload["orgId"])
+            # Erasure: every stored model output of the org. A storage failure raises, so the event is redelivered.
+            await paid_cache_access.paid_cache_for(self.app_container.config_service(), self.logger).purge_org(org_id)
             return True
 
         except SchemaValidationError:

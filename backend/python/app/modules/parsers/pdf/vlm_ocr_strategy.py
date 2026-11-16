@@ -27,6 +27,8 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
     render_batch_from_path_sync,
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.paid_cache import NotCached, cache_key, paid_cache_for
+from app.services.paid_cache.keys import KIND_OCR_PAGE, sha256_hex
 from app.utils.aimodels import (
     LLMProvider,
     coerce_message_content_to_text,
@@ -34,6 +36,7 @@ from app.utils.aimodels import (
     is_multimodal_llm,
 )
 from app.utils.env_config import env_int
+from app.utils.is_truncated import is_truncated
 from app.utils.llm import LLMUnavailableError, get_llm_for_role, load_ai_models
 from app.utils.opik import get_llm_invoke_config
 
@@ -355,17 +358,51 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 
+    def _invoke_kwargs(self) -> dict[str, Any]:
+        invoke_kwargs: dict[str, Any] = {}
+        if (
+            self.llm_config
+            and self.llm_config.get("provider") == LLMProvider.OPENAI_COMPATIBLE.value
+        ):
+            invoke_kwargs = {
+                "max_tokens": self.MAX_OUTPUT_TOKENS,
+                "temperature": 0,
+            }
+            model_name = str(
+                self.llm_config.get("configuration", {}).get("model", "")
+            ).lower()
+            if "qwen" in model_name:
+                invoke_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False},
+                }
+        return invoke_kwargs
+
     async def _call_llm_for_markdown(self, image_base64: str, page_number: int) -> str:
-        """
-        Call LLM with page image to get markdown output
+        """The page's markdown: the record's stored result for this page render, or one paid model call.
 
-        Args:
-            image_base64: Base64-encoded image with data URI prefix
-            page_number: Page number for the prompt
-
-        Returns:
-            str: Markdown content from LLM
+        A retry of a failed document, a replay, a replica race and a re-update of the same record all reach
+        the same key (the page render's hash, the model, the prompt and the call's params), so a page that was
+        read once is never paid for again. An empty page is returned but not stored.
         """
+        llm = self.llm
+        key = None if llm is None else cache_key(
+            KIND_OCR_PAGE,
+            llm=llm,
+            prompt=self.DEFAULT_PROMPT,
+            input_digest=sha256_hex(image_base64),
+            params={**self._invoke_kwargs(), "dpi": self.RENDER_DPI},
+        )
+        if key is None:
+            return await self._ocr_page_with_model(image_base64, page_number)
+
+        async def compute() -> "str | NotCached[str]":
+            markdown = await self._ocr_page_with_model(image_base64, page_number)
+            return markdown if markdown else NotCached(markdown)
+
+        return await paid_cache_for(self.config, self.logger).get_or_compute(key, compute)
+
+    async def _ocr_page_with_model(self, image_base64: str, page_number: int) -> str:
+        """One paid call: the page image to markdown."""
         try:
             # Format prompt with page number
             prompt = self.DEFAULT_PROMPT
@@ -380,22 +417,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
             # Call LLM
             self.logger.debug(f"📤 Calling LLM for page {page_number}")
-            invoke_kwargs: dict[str, Any] = {}
-            if (
-                self.llm_config
-                and self.llm_config.get("provider") == LLMProvider.OPENAI_COMPATIBLE.value
-            ):
-                invoke_kwargs = {
-                    "max_tokens": self.MAX_OUTPUT_TOKENS,
-                    "temperature": 0,
-                }
-                model_name = str(
-                    self.llm_config.get("configuration", {}).get("model", "")
-                ).lower()
-                if "qwen" in model_name:
-                    invoke_kwargs["extra_body"] = {
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    }
+            invoke_kwargs = self._invoke_kwargs()
 
             llm = self.llm
             if llm is None:
@@ -409,8 +431,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 **invoke_kwargs,
             )
 
-            response_metadata = getattr(response, "response_metadata", {}) or {}
-            if response_metadata.get("finish_reason") == "length":
+            if is_truncated(response):
                 raise DocumentProcessingError(
                     f"VLM OCR output was truncated for page {page_number}"
                 )
