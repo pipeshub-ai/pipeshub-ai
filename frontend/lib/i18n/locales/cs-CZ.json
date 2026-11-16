@@ -845,7 +845,8 @@
       "folderSeparator": "Názvy složek nesmí obsahovat \"/\" ani \"\\\".",
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     },
-    "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu."
+    "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu.",
+    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4653,6 +4654,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "Relace a metadata uživatelů"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "Relace a metadata uživatelů"
         },
         "messageBroker": {

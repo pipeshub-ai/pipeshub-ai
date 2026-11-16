@@ -709,7 +709,8 @@
       "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     },
-    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal."
+    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal.",
+    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4220,6 +4221,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "Sitzungen und Benutzermetadaten"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "Sitzungen und Benutzermetadaten"
         },
         "messageBroker": {

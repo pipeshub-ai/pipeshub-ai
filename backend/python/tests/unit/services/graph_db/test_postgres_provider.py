@@ -193,9 +193,6 @@ RAISING_DEFAULTS_NOT_ON_POSTGRES = {
     # only with ACL_SCOPE_FIELDS on or ACL_FILTER_MODE shadow/scopes (off by default); there a search fails at start and a vector point stays on the
     # legacy filter (marked stale). shortcut: the scope filter is not served on PostgreSQL, implement both views before it is
     "permission_hierarchy_view", "permission_stamp_graph",
-    # shortcut: get_ref_access (a knowledge-base push that inlines stored images) raises on PostgreSQL; "linked" is read across orgs, which needs
-    # a vetted cross-org read here. Implement it and drop this entry
-    "_ref_link_rows",
 }
 
 

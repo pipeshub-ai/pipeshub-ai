@@ -22,6 +22,7 @@ on:
       - 'backend/python/tests/integration/pg_runtime/**'
       - 'backend/python/app/services/graph_db/postgres/**'
       - 'backend/python/app/services/graph_db/**'
+      - 'backend/python/app/schema/**'
       - 'backend/python/app/modules/code_graph/**'
       - 'backend/python/app/modules/indexing/vector_membership_backfill.py'
       - 'backend/python/app/models/entities.py'
@@ -32,6 +33,7 @@ on:
       - 'backend/python/app/models/permission.py'
       - 'backend/python/tests/integration/graph_db/postgres/**'
       - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
+      - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
@@ -181,6 +183,20 @@ jobs:
           args=(tests/integration/pg_runtime -m "not chaos" -p no:cacheprovider)
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime.collected" "${args[@]}"
           python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
+
+      - name: Python runtime stores with key-value access by prefix enforced
+        if: ${{ matrix.shard == 2 }}
+        working-directory: backend/python
+        run: |
+          # the same suite on a database migrated with PG_KV_ACCESS=enforce: the services' key prefixes must be enough for it
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_KV_ACCESS=enforce PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_ci_kv_enforce)"
+          export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
+          args=(tests/integration/pg_runtime -m "not chaos" -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime-enforce.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-enforce-junit.xml"
+          # checked here, not in the job's last step: its node ids are the same as the shadow run's, so a set there would hide a missing run
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-enforce-junit.xml" --collected "$RUNNER_TEMP/py-runtime-enforce.collected"
 
       - name: PostgreSQL graph provider (tests/integration/graph_db/postgres, shard ${{ matrix.shard }})
         working-directory: backend/python
