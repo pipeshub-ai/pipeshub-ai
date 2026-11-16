@@ -465,6 +465,7 @@ class MemberBudget:
         return _Hot.fresh()
 
     def _changes(self) -> tuple[int, int]:
+        self._attach_if_forked()  # a forked child's descriptors are closed until it reattaches
         raw = os.pread(self._fd, _CHANGES.size, CHANGE_OFFSET)
         return _CHANGES.unpack(raw.ljust(_CHANGES.size, b"\0"))
 
