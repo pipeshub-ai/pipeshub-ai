@@ -1,0 +1,785 @@
+# Feature map: API access (tokens, OAuth, service accounts, MCP endpoint, API docs).
+
+# Personal access tokens
+
+[[feature]]
+id = "api-access.pat"
+title = "Personal access tokens"
+flow = "api-access"
+what = "A signed-in user creates, lists and revokes their own scoped tokens for programmatic access. The raw token is shown once; only a hash is stored."
+routes = [
+  "GET /api/v1/personal-access-tokens",
+  "POST /api/v1/personal-access-tokens",
+  "GET /api/v1/personal-access-tokens/scopes",
+  "DELETE /api/v1/personal-access-tokens/{tokenId}",
+]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/developer-settings/personal-access-tokens/page.tsx",
+  "frontend/app/(main)/workspace/developer-settings/personal-access-tokens/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/pat.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/pat.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/pat.service.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/validators/pat.validators.ts",
+  "frontend/app/(main)/workspace/developer-settings/personal-access-tokens/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.pat.create-once"
+  says = "POST /api/v1/personal-access-tokens returns the raw token (prefix phpat_) once, with no refresh token. Listing never returns it."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts", "e2e:tests/e2e/workspace/personal-access-tokens.spec.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.pat.scopes"
+  says = "A scope outside the allowed set is refused, and a token created without scopes gets the default set. GET /api/v1/personal-access-tokens/scopes lists what may be chosen."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts", "node:tests/modules/oauth_provider/config/scopes.config.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.pat.expiry"
+  says = "expiryDays accepts only 30, 90, 365 or never (default 30). A name is required (1 to 100 characters)."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts", "e2e:tests/e2e/workspace/personal-access-tokens.spec.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.pat.session-only"
+  says = "Every personal access token route needs a signed-in session. A PAT or an OAuth access token gets 403, and a service account caller is refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/oauth_provider/routes/pat.routes.test.ts",
+    "node:tests/libs/middlewares/require-session-auth.middleware.test.ts",
+    "node:tests/modules/user_management/middlewares/refuseServiceAccountCaller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.pat.revoke-own"
+  says = "DELETE /api/v1/personal-access-tokens/{tokenId} revokes only the caller's own token; another user's token id answers 404. A revoked token stops working at once."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts", "e2e:tests/e2e/workspace/personal-access-tokens.spec.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.pat.knowledge-limit"
+  says = "A token created with a knowledge limit can reach only the sources in that limit."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts", "node:tests/modules/oauth_provider/schema/knowledge_limit.schema.test.ts"]
+
+[[feature]]
+id = "api-access.pat-admin"
+title = "Admin view of personal access tokens"
+flow = "api-access"
+what = "An organization admin lists every active personal access token (paged, with owner) and revokes any of them."
+routes = [
+  "GET /api/v1/personal-access-tokens/admin",
+  "DELETE /api/v1/personal-access-tokens/admin/{tokenId}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/pat.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/pat.service.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.pat-admin.admin-only"
+  says = "A non-admin gets 403 from both admin routes."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/routes/pat.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.pat-admin.list"
+  says = "The admin list pages at most 100 tokens per request, and a token whose owner was deleted is still listed and marked."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.pat-admin.revoke"
+  says = "An admin revokes any user's token by id in the organization; an unknown id answers 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/pat.service.test.ts"]
+
+# OAuth apps (management)
+
+[[feature]]
+id = "api-access.oauth-apps"
+title = "OAuth apps"
+flow = "api-access"
+what = "A user registers OAuth apps with redirect URIs, grant types and scopes, then edits, suspends, reactivates, deletes them, rotates the secret and revokes their tokens."
+routes = [
+  "GET /api/v1/oauth-clients",
+  "POST /api/v1/oauth-clients",
+  "GET /api/v1/oauth-clients/scopes",
+  "GET /api/v1/oauth-clients/{appId}",
+  "PUT /api/v1/oauth-clients/{appId}",
+  "DELETE /api/v1/oauth-clients/{appId}",
+  "POST /api/v1/oauth-clients/{appId}/regenerate-secret",
+  "POST /api/v1/oauth-clients/{appId}/suspend",
+  "POST /api/v1/oauth-clients/{appId}/activate",
+  "GET /api/v1/oauth-clients/{appId}/tokens",
+  "POST /api/v1/oauth-clients/{appId}/revoke-all-tokens",
+]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/developer-settings/oauth2/page.tsx",
+  "frontend/app/(main)/workspace/developer-settings/oauth2/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/oauth.clients.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/oauth.app.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/oauth.app.service.ts",
+  "frontend/app/(main)/workspace/developer-settings/oauth2/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.create"
+  says = "POST /api/v1/oauth-clients returns the client id and the client secret once. Later reads never return the secret."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestCreateOAuthApp::test_response_schema",
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestGetOAuthApp::test_response_schema",
+    "e2e:tests/e2e/workspace/oauth-apps.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.session-only"
+  says = "Every OAuth app route needs a signed-in session. A PAT or an OAuth access token gets 403, and a service account is refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestOAuthAppsRequireSession::test_oauth_access_token_is_refused",
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestOAuthAppsRequireSession::test_personal_access_token_is_refused",
+    "node:tests/modules/oauth_provider/routes/oauth.clients.routes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.redirect-uris"
+  says = "Redirect URIs must be https, or http on localhost or 127.0.0.1, with no fragment; at most 10; an authorization_code app needs at least one."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/oauth_provider/services/oauth.app.service.test.ts",
+    "e2e:tests/e2e/workspace/oauth-apps.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.own-apps"
+  says = "A user sees and changes only the apps they created, and another user's app id answers 404."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/oauth_provider/services/oauth.app.service.test.ts",
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestSuspendActivateOAuthApp::test_cross_user_errors",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.regenerate-secret"
+  says = "POST /api/v1/oauth-clients/{appId}/regenerate-secret returns a new secret once, and the old secret stops working at the token endpoint."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestRegenerateOAuthAppSecret::test_response_schema",
+    "e2e:tests/e2e/workspace/oauth-apps.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.suspend-revoke"
+  says = "Suspending or deleting an app revokes the tokens it issued; an app that is not active gets invalid_client at the token endpoint. Activating a revoked app is refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestSuspendActivateOAuthApp::test_suspend_flow",
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestDeleteOAuthApp::test_deleted_app_not_gettable_or_searchable",
+    "it:response-validation/oauth_app/integration_test_oauthApps.py::TestRevokeAllOAuthAppTokens::test_response_schema",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.scope-narrowing"
+  says = "Removing a scope or narrowing the knowledge limit of an app revokes its existing tokens; adding scopes does not."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth-app-scope-reduction.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-apps.admin-scopes"
+  says = "Any member may create an authorization_code app; the scopes on offer depend on the caller's role."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.app.service.test.ts"]
+
+[[feature]]
+id = "api-access.oauth-app-identity"
+title = "OAuth app token identity"
+flow = "api-access"
+what = "An admin chooses which service account an app's client_credentials tokens act as. An app using client_credentials must name one."
+routes = ["PUT /api/v1/oauth-clients/{appId}/token-identity"]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/oauth.clients.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/oauth.app.service.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.oauth-app-identity.admin-only"
+  says = "A non-admin, or an admin token without the user:write scope, gets 403; creating a client_credentials app as a member is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.app.service.test.ts", "node:tests/modules/oauth_provider/services/oauth-app-token-identity.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-app-identity.account-rules"
+  says = "The named account must be an enabled service account of the same organization; a colleague or a disabled account is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth-app-token-identity.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-app-identity.revokes"
+  says = "Changing the identity revokes the app's existing tokens, and the old identity is restored if the revocation fails."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth-app-token-identity.test.ts"]
+
+# OAuth provider
+
+[[feature]]
+id = "api-access.oauth-authorize"
+title = "OAuth authorization code flow"
+flow = "api-access"
+what = "A third-party app sends a user to authorize, the user consents on the consent page, and the app exchanges the code at the token endpoint. Tokens can be refreshed, revoked and introspected."
+routes = [
+  "GET /api/v1/oauth2/authorize",
+  "POST /api/v1/oauth2/authorize",
+  "POST /api/v1/oauth2/token",
+  "POST /api/v1/oauth2/revoke",
+  "POST /api/v1/oauth2/introspect",
+]
+pages = ["frontend/app/(public)/oauth/authorize/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/oauth.provider.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/oauth.provider.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/authorization_code.service.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/oauth_token.service.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/middlewares/oauth.redirect.middleware.ts",
+  "frontend/app/(public)/oauth/authorize/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.code-flow"
+  says = "A signed-in user who approves gets a redirect to the registered redirect_uri with a code and the state; the token endpoint exchanges it for an access token (and a refresh token when allowed). A user who denies gets an error redirect and no code."
+  priority = "P0"
+  tests = [
+    "it:response-validation/oauth_provider/integration_test_oauthProvider.py::TestOAuthAuthorizeConsent::test_response_and_errors",
+    "it:response-validation/oauth_provider/integration_test_oauthProvider.py::TestOAuthToken::test_response_schema",
+    "node:tests/modules/oauth_provider/controller/oauth.provider.controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.redirect-uri"
+  says = "A redirect_uri that does not exactly match a registered one (loopback may differ in port) is refused, and no code is issued."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/controller/oauth.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.pkce"
+  says = "A public client must send a code_challenge; the verifier must match it (S256) or the exchange fails with invalid_grant."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/authorization_code.service.test.ts", "node:tests/modules/oauth_provider/controller/oauth.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.code-single-use"
+  says = "An authorization code works once. Presenting a used code again fails and revokes the tokens it issued. An expired code is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/authorization_code.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.consent-session-only"
+  says = "POST /api/v1/oauth2/authorize needs a signed-in session. A token (PAT or OAuth) gets 403, and a service account is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/routes/oauth.provider.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.scopes"
+  says = "Consent covers only scopes the app is registered for; scopes outside the registration are dropped, and when none remain the request redirects with invalid_scope."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/controller/oauth.provider.controller.test.ts", "node:tests/modules/oauth_provider/services/scope.validator.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.client-auth"
+  says = "The token endpoint refuses an unknown client, a wrong or missing secret for a confidential client, and an unsupported grant type; it is rate limited."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/oauth_provider/integration_test_oauthProvider.py::TestOAuthToken::test_error_responses",
+    "it:response-validation/oauth_provider/integration_test_oauthProvider.py::TestOAuthProviderRateLimiting::test_token_rate_limit",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.refresh-rotation"
+  says = "A refresh token works once and is replaced. Presenting a used refresh token again revokes the grant."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth_token.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.revoke-introspect"
+  says = "POST /api/v1/oauth2/revoke revokes an access or refresh token and answers 200 even for an unknown token. Introspect reports a revoked or invalid token as inactive."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/oauth_provider/integration_test_oauthProvider.py::TestOAuthRevoke::test_response_and_errors",
+    "it:response-validation/oauth_provider/integration_test_oauthProvider.py::TestOAuthIntrospect::test_response_and_errors",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-authorize.consent-page"
+  says = "The consent page shows the app and the requested scopes, and lets the user approve or deny."
+  priority = "P1"
+  tests = ["fe:app/(public)/oauth/authorize/__tests__/oauth-authorize-view.test.tsx"]
+
+[[feature]]
+id = "api-access.oauth-dcr"
+title = "Dynamic client registration"
+flow = "api-access"
+what = "An MCP or other client registers itself as a public OAuth client (RFC 7591), without a secret and without client_credentials."
+routes = ["POST /api/v1/oauth2/register"]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/services/oauth.dcr.service.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/client_metadata_document.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.oauth-dcr.public-client"
+  says = "Registration returns a client id and no secret. It is refused when dynamic registration is off."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.dcr.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-dcr.no-client-credentials"
+  says = "A registration asking for the client_credentials grant is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.dcr.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-dcr.redirect-uris"
+  says = "Redirect URIs must be https, loopback http, or an app scheme; javascript:, data:, file:, mailto: and similar, and fragments, are refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.app.service.test.ts"]
+
+[[feature]]
+id = "api-access.oauth-device"
+title = "OAuth device authorization"
+flow = "api-access"
+what = "A device or CLI starts a device grant (RFC 8628), shows a user code, and polls the token endpoint while the user approves on the device page."
+routes = [
+  "POST /api/v1/oauth2/device_authorization",
+  "POST /api/v1/oauth2/device/verify",
+  "POST /api/v1/oauth2/device/consent",
+]
+pages = ["frontend/app/(public)/oauth/device/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/services/oauth.device.service.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/oauth.first_party_device.service.ts",
+  "frontend/app/(public)/oauth/device/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.oauth-device.flow"
+  says = "A device gets a device_code and user_code; polling answers authorization_pending until approval, then returns tokens for the approving user. The code works once and expires after 10 minutes."
+  priority = "P0"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.device.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-device.polling"
+  says = "Polling faster than the interval answers slow_down; a denied grant answers access_denied; an unknown or expired code answers expired_token."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.device.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-device.session-only"
+  says = "Verify and consent need a signed-in session; a token (PAT or OAuth) gets 403 and a service account is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/routes/oauth.provider.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-device.hashed-codes"
+  says = "Only a hash of the device code is stored, and neither code appears in logs."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.device.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-device.disabled"
+  says = "When the device grant is switched off (PIPESHUB_ENABLE_DEVICE_GRANT=false), starting one is refused."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/services/oauth.device.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.oauth-device.page"
+  says = "The device page takes a user code and lets the signed-in user approve or deny."
+  priority = "P1"
+  tests = ["fe:app/(public)/oauth/device/__tests__/oauth-device-view.test.tsx"]
+
+[[feature]]
+id = "api-access.agent-registration"
+title = "Agent registration"
+flow = "api-access"
+what = "An agent registers itself, the user opens a claim link and approves or denies it, and the agent then gets a short-lived token. A user lists and revokes the registrations they approved."
+routes = [
+  "POST /api/v1/agent/identity",
+  "POST /api/v1/agent/identity/claim",
+  "POST /api/v1/agent/identity/claim/verify",
+  "POST /api/v1/agent/identity/claim/complete",
+  "GET /api/v1/agent/registrations",
+  "DELETE /api/v1/agent/registrations/{id}",
+]
+pages = ["frontend/app/(public)/agent/claim/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/agent-registration.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/agent-registration.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/agent-registration.service.ts",
+  "frontend/app/(public)/agent/claim/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.agent-registration.hashed"
+  says = "Registering stores only hashes and answers alike for any address, never looking users up."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/agent-registration.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.agent-registration.claim-session"
+  says = "Verify, complete, list and revoke need a signed-in session; a token or service account is refused. The registration binds to the session user and org, not to the request."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/agent-registration.service.test.ts", "node:tests/modules/oauth_provider/controller/agent-registration.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.agent-registration.code-attempts"
+  says = "After 5 wrong claim codes the attempt expires, even for the right code."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/agent-registration.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.agent-registration.token"
+  says = "After approval the agent gets one access token with no refresh token, limited to what the person approved. A denied or revoked registration gets no token."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/agent-registration.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.agent-registration.revoke"
+  says = "Revoking a registration revokes the tokens issued under it, and a user revokes only their own registrations."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/agent-registration.service.test.ts"]
+
+# Service accounts and service tokens
+
+[[feature]]
+id = "api-access.service-accounts"
+title = "Service accounts"
+flow = "api-access"
+what = "An admin creates non-human accounts for unattended access, renames, describes, disables and deletes them. A service account cannot create credentials itself."
+routes = [
+  "GET /api/v1/service-accounts",
+  "POST /api/v1/service-accounts",
+  "GET /api/v1/service-accounts/{id}",
+  "PATCH /api/v1/service-accounts/{id}",
+  "DELETE /api/v1/service-accounts/{id}",
+]
+pages = ["frontend/app/(main)/workspace/service-accounts/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/user_management/routes/service-accounts.routes.ts",
+  "backend/nodejs/apps/src/modules/user_management/controller/service-accounts.controller.ts",
+  "backend/nodejs/apps/src/modules/user_management/services/service-accounts.service.ts",
+  "frontend/app/(main)/workspace/service-accounts/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.service-accounts.admin-and-scope"
+  says = "Only organization admins use these routes, and an OAuth token or PAT also needs the matching user scope (user:read, user:invite, user:write, user:delete)."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/routes/service-accounts.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-accounts.name"
+  says = "A name must be 3 or more lowercase letters, digits and single hyphens (not at the ends) and unique in the organization; a taken name answers 409."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/services/service-accounts.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-accounts.delete"
+  says = "Deleting an account revokes every token it holds. A deleted name can be reused, and the new account does not inherit the old tokens."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/services/service-accounts.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-accounts.disable"
+  says = "A disabled account keeps its record but cannot get new tokens; enabling it again works."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/services/service-accounts.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-accounts.not-users"
+  says = "A service account route never returns a human user, and service accounts are hidden from user and team member lists."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/user_management/services/service-accounts.service.test.ts",
+    "py:tests/unit/services/graph_db/test_organization_users_hide_service_accounts.py",
+    "py:tests/unit/services/graph_db/test_team_members_hide_service_accounts.py",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.service-accounts.page"
+  says = "The service accounts page lets an admin create, disable and delete accounts, with a confirmation before destructive actions."
+  priority = "P1"
+  tests = ["fe:app/(main)/workspace/service-accounts/__tests__/destructive-actions-confirm.test.tsx"]
+
+[[feature]]
+id = "api-access.service-tokens"
+title = "Service tokens"
+flow = "api-access"
+what = "An admin mints read-only tokens for a service account, lists them and revokes them. Tokens carry the prefix phsvc_ and always expire."
+routes = [
+  "GET /api/v1/service-tokens",
+  "POST /api/v1/service-tokens",
+  "GET /api/v1/service-tokens/scopes",
+  "DELETE /api/v1/service-tokens/{tokenId}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/service-token.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/service-token.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/service-token.service.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/validators/service-token.validators.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.service-tokens.scopes"
+  says = "A token needs at least one scope; agent:execute and scopes the instance does not allow are refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/service-token.service.test.ts", "node:tests/modules/oauth_provider/controller/service-token.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-tokens.identity"
+  says = "The token authenticates as the service account, not as the admin who minted it."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/service-token.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-tokens.expiry-cap"
+  says = "Expiry defaults to 90 days and may not exceed 365 days; there is no never-expires option. An account may hold at most 50 active tokens."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/services/service-token.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-tokens.admin-and-scope"
+  says = "Only admins use the routes, and a token caller also needs the matching user scope."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "api-access.service-tokens.disabled-account"
+  says = "Minting for a disabled account is refused; listing and revoking its tokens still work."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/services/service-token.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.service-tokens.revoke"
+  says = "Revoking a token stops it working, and a token id that belongs to a different service account answers 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/services/service-token.service.test.ts"]
+
+[[feature]]
+id = "api-access.delegation"
+title = "Service account delegation"
+flow = "api-access"
+what = "Acting as a named person through a service account is not available in this build. The capability probe says so, and the other routes answer 501."
+routes = [
+  "GET /api/v1/service-account-delegations/capability",
+  "GET /api/v1/service-account-delegations",
+  "POST /api/v1/service-account-delegations",
+  "GET /api/v1/service-account-delegations/events",
+  "DELETE /api/v1/service-account-delegations/{subjectUserId}",
+]
+code = ["backend/nodejs/apps/src/modules/oauth_provider/routes/delegation.routes.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.delegation.capability"
+  says = "GET /api/v1/service-account-delegations/capability answers 200 with available false."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/routes/delegation.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.delegation.not-built"
+  says = "The list, create, events and delete routes answer 501, so no delegation entry can exist."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/routes/delegation.routes.test.ts"]
+
+# MCP endpoint
+
+[[feature]]
+id = "api-access.mcp-endpoint"
+title = "MCP endpoint"
+flow = "api-access"
+what = "An MCP client calls the server's tools over streamable HTTP at /mcp with an OAuth access token or a PAT. The tools it sees depend on the token's scopes."
+routes = [
+  "POST /api/v1/mcp",
+  "GET /api/v1/mcp",
+]
+code = [
+  "backend/nodejs/apps/src/modules/mcp/**",
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/oid.provider.routes.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.auth"
+  says = "A request with no token or a bad token gets 401 with a WWW-Authenticate header naming the protected-resource metadata."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/mcp/integration_test_mcp_server.py::TestMcpAuth::test_no_token_is_401",
+    "it:response-validation/mcp/integration_test_mcp_server.py::TestMcpAuth::test_bad_token_is_401",
+    "node:tests/modules/mcp/routes/mcp.routes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.token-kinds"
+  says = "An authorization-code token, a client_credentials token and a PAT are accepted. A web session token is refused with 401."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/mcp/integration_test_mcp_server.py::TestMcpAuth::test_authorization_code_token_is_accepted",
+    "it:response-validation/mcp/integration_test_mcp_server.py::TestMcpAuth::test_client_credentials_token_sees_the_same_tools",
+    "it:ai_agents/integration_test_pipeshub_mcp_live.py::TestPipesHubMcpWithAPat::test_the_tool_list_has_search",
+    "node:tests/modules/mcp/routes/mcp.routes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.audience"
+  says = "A token issued for another resource is refused at /mcp, and an MCP token is refused by the REST API and the connector service."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/mcp/integration_test_mcp_audience.py::test_the_token_names_mcp_as_its_audience",
+    "it:response-validation/mcp/integration_test_mcp_audience.py::test_the_rest_api_refuses_it",
+    "it:response-validation/mcp/integration_test_mcp_audience.py::test_the_connector_service_refuses_it",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.origin"
+  says = "A browser request with an Origin not in the allowed list gets 403 before authentication; clients that send no Origin pass."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp/routes/mcp.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.tools"
+  says = "The tool list is the curated set with descriptions, schemas and annotations; a call to a tool the token lacks scopes for answers 403 insufficient_scope."
+  priority = "P0"
+  tests = [
+    "it:response-validation/mcp/integration_test_mcp_server.py::TestMcpSurfaceInvariants::test_exactly_the_curated_tools",
+    "it:response-validation/mcp/integration_test_mcp_server.py::TestMcpSurfaceMatchesGolden::test_tool_names",
+    "node:tests/modules/mcp/controller/mcp.controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.get-405"
+  says = "GET /mcp answers 405 with Allow: POST."
+  priority = "P2"
+  tests = ["node:tests/modules/mcp/routes/mcp.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.rate-limit"
+  says = "Each account has its own request budget, and an address is counted only for rejected tokens. Over the limit answers 429 as a JSON-RPC error."
+  priority = "P1"
+  tests = ["node:tests/modules/mcp/routes/mcp.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.mcp-endpoint.tool-results"
+  says = "Tools return real data for the caller: search finds an indexed document, a record can be read back, and every hit can be opened."
+  priority = "P1"
+  tests = [
+    "it:response-validation/mcp/integration_test_mcp_tools.py::TestSearch::test_finds_the_seeded_document_in_its_collection",
+    "it:response-validation/mcp/integration_test_mcp_tools.py::TestGetRecordContent::test_content_reads_the_document",
+  ]
+
+# API documentation
+
+[[feature]]
+id = "api-access.api-docs"
+title = "API documentation"
+flow = "api-access"
+what = "The server serves its API documentation as a page at /api/v1/docs, the OpenAPI document as JSON, and a health check."
+routes = [
+  "GET /api/v1/docs",
+  "GET /api/v1/docs/{subPath}",
+  "GET /api/v1/docs/health",
+  "GET /api/v1/docs/json",
+]
+code = ["backend/nodejs/apps/src/modules/api-docs/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "api-access.api-docs.json"
+  says = "GET /api/v1/docs/json returns the unified API document with an OAuth2 requirement on each operation at most once."
+  priority = "P1"
+  tests = ["node:tests/modules/api-docs/docs.oauth-security.test.ts", "node:tests/modules/api-docs/docs.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.api-docs.page"
+  says = "The docs page renders descriptions as escaped text: markup in a description is not executed and only http(s), relative and fragment links are linked."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/api-docs/docs.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "api-access.api-docs.health"
+  says = "GET /api/v1/docs/health answers status ok."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "api-access.api-docs.any-path"
+  says = "Any other path under /api/v1/docs serves the same page, so deep links work."
+  priority = "P2"
+  tests = []
+
+[ignore]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/oauth-apps/page.tsx",
+  "frontend/app/(main)/workspace/oauth-apps/page.tsx",
+]
