@@ -55,6 +55,7 @@ LOCAL=(-f values-local.yaml)
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
   "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
+  "local-parsing-netpol|${LOCAL[*]} --set parsing.enabled=true --set networkPolicy.enabled=true --set parsing.networkPolicy.extraIngress[0].from[0].namespaceSelector.matchLabels.team=monitoring --set parsing.networkPolicy.extraIngress[0].ports[0].port=8092"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
@@ -145,11 +146,44 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-parsing 'path: /health/ready' present 'name: PIPESHUB_ROLE'
   # The parsing pods must not match the main Deployment's selector (its autoscaler would measure them).
   expect local-parsing 'app.kubernetes.io/name: pipeshub-ai-parsing' present 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'kind: NetworkPolicy' absent 'name: ci-pipeshub-ai-parsing'
   expect local-parsing 'value: "4"' absent 'name: PARSING_UVICORN_WORKERS'
   expect local-parsing 'extra-marker' present 'name: PIPESHUB_ROLE'
   expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent
   expect local-neo4j-kafka 'PARSING_SERVICE_CONCURRENCY' absent
 fi
+# The parsing pods' own NetworkPolicy: only with networkPolicy.enabled and parsing.enabled, selecting only the
+# parsing pods, admitting the application's selector on the parsing port (and what extraIngress lists).
+netpol_check() { # rendered file, "present" | "absent"
+  python3 - "$1" "$2" <<'PY' || failed=1
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "NetworkPolicy"]
+parsing = [d for d in docs if d["metadata"]["name"].endswith("-parsing")]
+if sys.argv[2] == "absent":
+    assert not parsing, "parsing NetworkPolicy rendered without both flags"
+    print("ok", sys.argv[1], "no parsing NetworkPolicy")
+    raise SystemExit
+assert len(parsing) == 1, "want exactly one parsing NetworkPolicy"
+spec = parsing[0]["spec"]
+sel = spec["podSelector"]["matchLabels"]
+assert sel["app.kubernetes.io/name"].endswith("-parsing") and sel["pipeshub.ai/workload"] == "parsing", sel
+main = [d for d in docs if d is not parsing[0]]
+assert all(d["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] != sel["app.kubernetes.io/name"] for d in main), "main policy selects parsing pods"
+first = spec["ingress"][0]
+assert first["ports"] == [{"protocol": "TCP", "port": 8092}], first
+(source,) = first["from"]
+assert list(source) == ["podSelector"], source
+app = source["podSelector"]["matchLabels"]
+assert app["app.kubernetes.io/name"] and not app["app.kubernetes.io/name"].endswith("-parsing"), app
+extra = spec["ingress"][1:]
+assert extra == [{"from": [{"namespaceSelector": {"matchLabels": {"team": "monitoring"}}}], "ports": [{"port": 8092}]}], extra
+assert spec["egress"], "no egress rules"
+print("ok", sys.argv[1], "parsing NetworkPolicy: app selector on 8092 only, plus extraIngress")
+PY
+}
+netpol_check "$OUT/local-parsing-netpol.yaml" present
+netpol_check "$OUT/local-parsing.yaml" absent
+netpol_check "$OUT/local-extras.yaml" absent
 if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'ReadWriteMany' absent
   expect eks 'efs' absent

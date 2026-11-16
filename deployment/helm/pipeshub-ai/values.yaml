@@ -1014,6 +1014,11 @@ parsing:
   enabled: false
   replicas: 1
   port: 8092
+  # With networkPolicy.enabled the parsing pods get a policy of their own: ingress on `port` only from
+  # the application pods, egress as networkPolicy.egress. List anything else that must reach them (a
+  # metrics scraper, a scaler) in extraIngress, as NetworkPolicy ingress rules.
+  networkPolicy:
+    extraIngress: []
   # Parses in flight per parsing pod. Beyond it a pod answers 429 with
   # Retry-After at once (PARSING_MAX_CONCURRENT). Empty = not limited by count.
   maxConcurrent: ""

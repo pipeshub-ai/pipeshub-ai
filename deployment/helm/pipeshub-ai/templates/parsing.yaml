@@ -199,4 +199,48 @@ spec:
       {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
       pipeshub.ai/workload: parsing
 {{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+{{- /*
+The parsing pods are a different application name from the main pods, so the main policy does not
+select them. They take parse requests only from the application pods, on the parsing port; anything
+else that needs them (a metrics scraper, a scaler) is admitted by parsing.networkPolicy.extraIngress.
+Egress is the application policy's own rules.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
+    pipeshub.ai/workload: parsing
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
+      pipeshub.ai/workload: parsing
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "pipeshub-ai.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.parsing.port }}
+    {{- with .Values.parsing.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.networkPolicy.egress .Values.networkPolicy.extraEgress }}
+  egress:
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}
 {{- end }}
