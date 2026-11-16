@@ -68,15 +68,21 @@ async def _info(tx: Tx, org: str, nodes: list[tuple[str, str]]) -> dict[tuple[st
     return out
 
 
-async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list[str]) -> dict[str, list[str]]:
+async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list[str], *, nodes: list[tuple[str, str]] | None = None) -> dict[str, list[str]]:
     """connectorId -> ids of the live records and groups that ``from_ids`` hold a permission edge to (an edge from an organization counts when its
-    type is in ``org_types``): the edges by the key, then the nodes by primary key."""
+    type is in ``org_types``): the edges by the key, then the nodes by primary key. ``nodes`` names the holders by (collection, id) instead, so a node
+    of another collection that happens to share an id holds nothing here."""
+    if nodes is not None:
+        from_ids = list({i for _, i in nodes})
     if not from_ids:
         return {}
+    wanted = set(nodes) if nodes is not None else None
     targets: set[tuple[str, str]] = set()
-    for r in await tx.fetch("""/* pipeshub:graph.access_grant_edges */ SELECT e.from_coll, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e WHERE e.org_id = $1
+    for r in await tx.fetch("""/* pipeshub:graph.access_grant_edges */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e WHERE e.org_id = $1
         AND e.coll = 'permission' AND e.from_id = ANY($2::text[]) AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups')""",
                               org, from_ids, PRINCIPALS):
+        if wanted is not None and (r["from_coll"], r["from_id"]) not in wanted:
+            continue
         if r["from_coll"] != "organizations" or r["t"] in org_types:
             targets.add((r["to_coll"], r["to_id"]))
     out: dict[str, list[str]] = {}

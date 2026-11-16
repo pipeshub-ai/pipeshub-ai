@@ -24380,6 +24380,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER userDoc._id == caller._id
                 FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER permEdge.type IN @org_share_types
                 FILTER record._key == @recordId
@@ -24392,6 +24393,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET orgRecordGroupAccess = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER userDoc._id == caller._id
                     FILTER belongsEdge.entityType == 'ORGANIZATION'
 
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
@@ -25073,7 +25075,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path9_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        FILTER belongs_edge._from IN principal_ids
+                        // the organisation is the viewer's: a linked source account adds its own and its groups' grants only
+                        FILTER belongs_edge._from == {user_var}._id
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -25232,7 +25235,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path5_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        FILTER belongs_edge._from IN principal_ids
+                        // the organisation is the viewer's: a linked source account adds its own and its groups' grants only
+                        FILTER belongs_edge._from == {user_var}._id
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -26194,8 +26198,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             LET orgGrants = (
-                FOR principal_id IN principal_ids
-                FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
+                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                     FOR granted, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER orgPerm.type IN @org_share_types
                         {granted_here}
