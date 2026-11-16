@@ -115,7 +115,8 @@ def notebook_from_comments(comments: list[dict[str, Any]], author: str = "github
 def agent_section(doc: dict[str, Any]) -> list[str]:
     """The QA agent's analysis. It never changes the gate, which reads the test results only."""
     v = doc.get("verdict") or {}
-    lines = ["", "### QA agent", ""]
+    release = doc.get("release") or {}
+    lines = ["", f"### QA agent: batch {release['batch']} ({', '.join(release.get('areas') or [])})" if release else "### QA agent", ""]
     combined = doc.get("combined") or {}
     if combined.get("prs"):
         lines.append("Combined run of " + ", ".join(f"#{p['number']}" for p in combined["prs"]) + f" on `{str(combined.get('base', ''))[:10]}`.")
@@ -140,8 +141,12 @@ def agent_section(doc: dict[str, Any]) -> list[str]:
                 tests = ", ".join(f"`{_short(t)}`" for t in f.get("tests", [])[:3]) + (f" +{len(f['tests']) - 3}" if len(f.get("tests", [])) > 3 else "")
                 prs = (" (" + ", ".join(f"#{n}" for n in f.get("prs", [])) + ")") if f.get("prs") else ""
                 lines.append(f"| {f['kind']} | {_model_text(f.get('title'), 120)}{prs} | {tests} | {_model_text(f.get('evidence'), 300)} |")
+        if v.get("areas"):
+            lines += ["", "| Area | Verdict | Why |", "| --- | --- | --- |"]
+            lines += [f"| {_model_text(a['area'], 60)} | {a['verdict']} | {_model_text(a.get('why'), 300)} |" for a in v["areas"][:40]]
         if v.get("rounds"):
-            lines += ["", f"Rounds: {len(v['rounds'])} (round 0 is the rule floor the engine ran first)"]
+            floor = "the full run's results" if release else "the rule floor the engine ran first"
+            lines += ["", f"Rounds: {len(v['rounds'])} (round 0 is {floor})"]
             lines += [f"- {_model_text(r.get('why'), 200)} ({len(r.get('tests', []))} tests)" for r in v["rounds"][:10]]
     added = doc.get("tests_added") or []
     if added:
@@ -151,6 +156,31 @@ def agent_section(doc: dict[str, Any]) -> list[str]:
         lines += ["", "Added but not proven: " + ", ".join(f"`{_short(t)}`" for t in v["unproven"][:10])]
     for note in doc.get("notes", [])[:10]:
         lines += ["", f"Note: {_model_text(note, 400)}"]
+    return lines
+
+
+# Worst first: one batch that says dont-ship decides the release.
+RELEASE_ORDER = ("dont-ship", "unsure", "ship-with-known-issues", "ship")
+
+
+def release_verdict(docs: list[dict[str, Any]]) -> str:
+    """The release verdict over every batch: the worst one, and unsure when a batch gave none."""
+    got = [(d.get("verdict") or {}).get("verdict") or "unsure" for d in docs]
+    return min(got, key=lambda v: RELEASE_ORDER.index(v) if v in RELEASE_ORDER else 1) if got else "unsure"
+
+
+def release_section(docs: list[dict[str, Any]]) -> list[str]:
+    """A release run: the agents that covered the feature map, batch by batch, and the release verdict."""
+    docs = sorted(docs, key=lambda d: str((d.get("release") or {}).get("batch")))
+    lines = ["", "### Release verdict", "",
+             f"**{release_verdict(docs)}** over {len(docs)} batches of the feature map (Claude's judgment; the gate comes from the test results only)."]
+    lines += ["", "| Batch | Areas | Verdict | Findings | Tests added |", "| --- | --- | --- | --- | --- |"]
+    for d in docs:
+        r, v = d.get("release") or {}, d.get("verdict") or {}
+        lines.append(f"| {r.get('batch')} | {', '.join(r.get('areas') or [])} | {v.get('verdict', 'none')} | "
+                     f"{len(v.get('findings', []))} | {len(d.get('tests_added') or [])} |")
+    for d in docs:
+        lines += agent_section(d)
     return lines
 
 
@@ -177,6 +207,8 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
     for note in plan.get("notes", []):
         lines += ["", f"Note: {note}"]
 
+    if plan.get("agents"):
+        lines += release_section(plan["agents"])
     if plan.get("agent"):
         lines += agent_section(plan["agent"])
         notebook = plan["agent"].get("notebook")
@@ -357,6 +389,11 @@ def merge_results(parts: list[dict[str, Any]], planned: list[str] = (), jobs: Ma
             prev = by_id.get(t["id"])
             if prev is None or (prev["outcome"] == "not_run" and (t["outcome"] != "not_run" or _blocks_more(t, prev))):
                 by_id[t["id"]] = t
+                continue
+            # A release run's agents each carry the full run as round 0; the one that reran a test knows better.
+            if bool(t.get("agent_round")) != bool(prev.get("agent_round")):
+                if t.get("agent_round") and t["outcome"] != "not_run":
+                    by_id[t["id"]] = t
                 continue
             both_ran = "not_run" not in (prev["outcome"], t["outcome"])
             worse = junit.worst([prev["outcome"], t["outcome"]]) != prev["outcome"]

@@ -38,8 +38,10 @@ on:
       # One input for what follows the plan (a dispatch takes at most ten inputs): "true" strengthens and
       # adds tests after the run (/qa on a same-repo PR); "agent" runs the QA agent instead (Claude Code
       # picks and judges, the engine runs); "combine[-open] NUMBER:SHA ..." first stacks those PRs.
+      # With mode full, "agent" runs the full run first and then the release agents on its results,
+      # which is a second run of this workflow with "release:<the full run's id>" (set by release-dispatch).
       improve:
-        description: '"true", "agent", or "combine[-open] NUMBER:SHA ..." (set by /qa)'
+        description: '"true", "agent", "release:RUN_ID", or "combine[-open] NUMBER:SHA ..." (set by /qa)'
         type: string
         default: ''
       command:
@@ -75,21 +77,34 @@ jobs:
       on: ${{ steps.parse.outputs.on }}
       combine: ${{ steps.parse.outputs.combine }}
       open_pr: ${{ steps.parse.outputs.open_pr }}
+      full_run: ${{ steps.parse.outputs.full_run }}
+      release_after: ${{ steps.parse.outputs.release_after }}
     steps:
       - id: parse
         env:
           AGENT: ${{ inputs.improve }}
+          MODE: ${{ inputs.mode }}
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
         run: |
-          on=false combine="" open_pr=false
-          if [[ "$AGENT" == agent ]]; then
+          on=false combine="" open_pr=false full_run="" release_after=false
+          # The Sunday weekly run hands its results to the release agents; the nightly does not (it would
+          # spend Claude usage every night).
+          if [[ "$EVENT" == schedule && "$CRON" == '0 4 * * 0' ]]; then
+            release_after=true
+          elif [[ "$AGENT" == agent && "$MODE" == full ]]; then
+            release_after=true
+          elif [[ "$AGENT" == agent ]]; then
             on=true
+          elif [[ "$AGENT" =~ ^release:([0-9]{1,20})$ && "$MODE" == full ]]; then
+            on=true full_run="${BASH_REMATCH[1]}"
           elif [[ "$AGENT" =~ ^combine(-open)?((\ [0-9]{1,7}:[0-9a-f]{40}){1,8})$ ]]; then
             on=true combine="${BASH_REMATCH[2]# }"
             [[ -n "${BASH_REMATCH[1]}" ]] && open_pr=true
           elif [[ -n "$AGENT" && "$AGENT" != true && "$AGENT" != false ]]; then
-            echo "::error::improve must be true, false, agent or \"combine[-open] NUMBER:SHA ...\""; exit 1
+            echo "::error::improve must be true, false, agent, release:RUN_ID (mode full) or \"combine[-open] NUMBER:SHA ...\""; exit 1
           fi
-          { echo "on=$on"; echo "combine=$combine"; echo "open_pr=$open_pr"; } >> "$GITHUB_OUTPUT"
+          { echo "on=$on"; echo "combine=$combine"; echo "open_pr=$open_pr"; echo "full_run=$full_run"; echo "release_after=$release_after"; } >> "$GITHUB_OUTPUT"
 
   pipeline:
     needs: agent-args
@@ -107,7 +122,46 @@ jobs:
       requested_by: ${{ inputs.requested_by }}
       agent: ${{ needs.agent-args.outputs.on == 'true' }}
       combine: ${{ needs.agent-args.outputs.combine }}
+      full_run: ${{ needs.agent-args.outputs.full_run }}
     secrets: inherit
+
+  # A full run that should be judged by the release agents: once it is done, start a second run of
+  # this workflow at the same commit that hands them its artifacts. Artifacts are per run, so the
+  # agents' files cannot share this run with the full run's.
+  release-dispatch:
+    needs: [agent-args, pipeline]
+    if: ${{ !cancelled() && needs.agent-args.outputs.release_after == 'true' && needs.pipeline.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ inputs.head_sha || github.sha }}
+          REF: ${{ github.ref_name }}
+          ACTOR: ${{ inputs.requested_by || github.actor }}
+        run: |
+          [[ "$HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::head is not a commit"; exit 1; }
+          gh workflow run qa.yml --repo "$GITHUB_REPOSITORY" --ref "$REF" -f mode=full -f profile=full \
+            -f head_sha="$HEAD" -f improve="release:$GITHUB_RUN_ID" -f requested_by="$ACTOR"
+          echo "Release agents started on \`${HEAD:0:10}\` with this run's results; see the QA workflow's next run." >> "$GITHUB_STEP_SUMMARY"
+
+  # The release agents' tests and feature map edits as one draft PR, and the report as an issue,
+  # by a job with no secrets after the checks in qa-release-publish.yml.
+  release-publish:
+    needs: [agent-args, pipeline]
+    if: ${{ !cancelled() && needs.agent-args.outputs.full_run != '' }}
+    uses: ./.github/workflows/qa-release-publish.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    with:
+      edition: oss
+      head_sha: ${{ inputs.head_sha }}
+      full_run: ${{ needs.agent-args.outputs.full_run }}
+      requested_by: ${{ inputs.requested_by }}
 
   # The QA agent's tests (a same-repo PR) or combined branch (/qa combine --open-pr), pushed by a
   # job with no secrets, after the checks in qa-agent-publish.yml.

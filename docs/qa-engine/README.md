@@ -492,6 +492,19 @@ Without the `claude` CLI, or in CI without `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROP
 
 **Warning.** The agent job runs the PR's code while it holds Claude's credential and the stack's test settings, like the stack job holds the test secrets. A PR author with write access could make a test print or send them. Run it on PRs from this repository only; on a fork PR only through an admin's `--trusted <sha>`.
 
+### Release QA on the default branch
+
+A pull request's agent tests a diff. Before a release the question is different: does the whole product work at this commit, old code included. The release agents answer it.
+
+1. **The full run.** Every suite, on both graph databases, sharded (`mode: full`). Its report scores every behavior in the [feature map](#feature-map).
+2. **The release agents.** A second run of `qa.yml` at the same commit (`improve: release:<full run id>`) gives four agents one stack each. `qa agent --full-run DIR --batch K/4` takes the full run's merged results as round 0 and `features.batches()` splits the map's areas into four groups of about equal size, so together they cover every area. Each agent gets its areas' features and their coverage, the map's drift, and the commits since the last release tag as untrusted hints (`scripts/qa/prompts/release.md`). It reruns and judges every failure in its areas, works through every P0 and security behavior that did not pass, reads the code of each feature for bugs the tests do not catch, writes and proves tests (a test that shows a real bug is marked `xfail(strict=True)`), and keeps the map true (draft entries only). It gives a verdict per area and overall: `ship`, `ship-with-known-issues`, `dont-ship` or `unsure`.
+3. **The report.** One section per batch and a release verdict: the worst batch decides. A test an agent reran wins over another batch's round 0 copy. As always, the gate reads test results only.
+4. **Publishing.** `qa-release-publish.yml`, which holds no secrets, applies each batch's patch (test files the default branch's engine recognises and feature map files only), rebuilds the catalog itself, and pushes one signed-off commit to a new branch `qa-release/<run id>` with a draft PR. It opens an issue "Release QA <sha>: <verdict>" with the report. Nothing reaches the default branch until someone reviews and merges the PR.
+
+**When it runs.** Dispatch `qa.yml` with `mode: full` and `improve: agent` (for example on a release candidate), and on the Sunday weekly run. The nightly full run stays without Claude. Four agents use four times the agent budget (`QA_AGENT_MINUTES`, default 120 each).
+
+Locally, with the artifacts of a full run downloaded to a directory: `python3 scripts/qa agent --full-run DIR --batch 1/4`.
+
 ## Feature map
 
 `scripts/qa/features/*.toml` lists what the product does: one file per area, each feature with what it does,

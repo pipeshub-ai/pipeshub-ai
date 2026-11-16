@@ -56,6 +56,10 @@ on:
         description: 'agent only: pull requests to stack on the default branch first, as "NUMBER:SHA NUMBER:SHA ..."'
         type: string
         default: ''
+      full_run:
+        description: 'agent only: the id of a finished full run of this workflow; its results are round 0 and the agents test the feature map in batches'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -290,7 +294,8 @@ jobs:
         # one shard, on the standard profile's graph DB.
         # The QA agent is one job: one Neo4j stack that every round of its tests reuses.
         graph: ${{ inputs.agent && fromJSON('["neo4j"]') || fromJSON(needs.plan.outputs.graph_db || '["neo4j"]') }}
-        shard: ${{ inputs.agent && fromJSON('[1]') || fromJSON(needs.plan.outputs.shards || '[1]') }}
+        # A release run (full_run): four agents, each on its share of the feature map (--batch K/4).
+        shard: ${{ inputs.agent && fromJSON(inputs.full_run != '' && '[1, 2, 3, 4]' || '[1]') || fromJSON(needs.plan.outputs.shards || '[1]') }}
         # "" is the default stack; a variant is a stack of its own (qa run --stack-variant).
         variant: ${{ inputs.agent && fromJSON('[""]') || fromJSON(needs.plan.outputs.variants || '[""]') }}
     environment:
@@ -635,6 +640,16 @@ jobs:
           if [[ -f qa-engine/scripts/qa/agent.py ]] && grep -q 'def cmd_notebook' qa-engine/scripts/qa/__main__.py; then
             python3 qa-engine/scripts/qa notebook --pr "$PR_NUMBER" --to "$RUNNER_TEMP/previous-notebook.json" || true
           fi
+      # A release run: the full run's artifacts, round 0 for every agent. Read-only (actions: read).
+      - name: Fetch the full run's results
+        if: inputs.agent && inputs.full_run != ''
+        env:
+          FULL_RUN: ${{ inputs.full_run }}
+          EDITION: ${{ inputs.edition }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$FULL_RUN" =~ ^[0-9]{1,20}$ ]] || { echo "::error::full_run is not a run id"; exit 1; }
+          gh run download "$FULL_RUN" --repo "$GITHUB_REPOSITORY" -p "qa-*-$EDITION" -D "$RUNNER_TEMP/full-run"
       - name: Fetch the pull requests to combine
         if: inputs.agent && inputs.combine != ''
         env:
@@ -653,6 +668,7 @@ jobs:
         env:
           AGENT: ${{ inputs.agent }}
           COMBINE: ${{ inputs.combine }}
+          FULL_RUN: ${{ inputs.full_run }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           # Only this step, and only for the QA agent: Claude Code's credential. A Claude account
           # login (claude setup-token) or an API key.
@@ -673,7 +689,9 @@ jobs:
               echo "::warning::The default branch's engine has no QA agent yet, so this run uses the PR's engine."
               engine=scripts/qa
             fi
-            if [[ -n "$COMBINE" ]]; then
+            if [[ -n "$FULL_RUN" ]]; then
+              args=(--stack managed --graph-db neo4j --full-run "$RUNNER_TEMP/full-run" --batch "$SHARD/4")
+            elif [[ -n "$COMBINE" ]]; then
               args=(--stack managed --graph-db neo4j --combine-base "origin/$DEFAULT_BRANCH")
               for pair in $COMBINE; do args+=(--combine "$pair"); done
             else
@@ -702,10 +720,11 @@ jobs:
             qa-out/results-stack-*.json
             qa-out/logs/
             qa-out/junit-*.xml
-            qa-out/results-agent.json
+            qa-out/results-agent*.json
             qa-out/agent.json
+            qa-out/agent-batch*.json
             qa-out/agent-plan.json
-            qa-out/agent-tests.patch
+            qa-out/agent-tests*.patch
             qa-out/combined.bundle
             qa-out/agent/claude.log
             qa-out/agent/rounds/*/logs/

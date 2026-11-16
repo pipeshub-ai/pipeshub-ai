@@ -99,6 +99,14 @@ def _merged(out: Path) -> tuple[dict, dict | None]:
         have = {t["id"] for t in plan["tests"]}
         plan["tests"] += [t for t in doc.get("extra_tests", []) if t["id"] not in have]
         plan["agent"] = doc
+    # A release run: one agent document per batch of the feature map.
+    batches = [_load(p) for p in sorted(out.glob("agent-batch*.json")) + sorted(out.glob(f"{out.name}/agent-batch*.json"))]
+    if batches:
+        have = {t["id"] for t in plan["tests"]}
+        for doc in batches:
+            plan["tests"] += [t for t in doc.get("extra_tests", []) if t["id"] not in have]
+            have |= {t["id"] for t in doc.get("extra_tests", [])}
+        plan["agents"] = batches
     # A run job's artifact holds its files under qa-out/ when it also uploads files from outside it
     # (Playwright diffs, perf summaries), so a merged download nests them one level down.
     parts = [_load(p) for p in sorted(out.glob("results*.json")) + sorted(out.glob(f"{out.name}/results*.json"))]
@@ -331,6 +339,8 @@ def cmd_agent(args) -> int:
     out = _out(args)
     # Out of the environment before any test runs; only the claude processes get it.
     creds = agent.take_credentials()
+    if args.full_run:
+        return _release_agent(args, cfg, out, creds)
     # What the agent knew about this PR: --previous, or a local run's last notebook in this run directory.
     notebook = None
     source = Path(args.previous) if args.previous else out / "agent-notebook.json"
@@ -406,6 +416,104 @@ def cmd_agent(args) -> int:
     rc = cmd_report(args)
     print(f"report: {out / 'report.md'}")
     return rc
+
+
+def _last_release(root: Path) -> str | None:
+    """The newest release tag reachable from HEAD (v1.2.3, without -rc), or None."""
+    r = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "--exclude", "*-rc*"],
+                       cwd=root, capture_output=True, text=True)
+    return r.stdout.strip() or None
+
+
+def _release_agent(args, cfg: config.Config, out: Path, creds: dict) -> int:
+    """The QA agent on a full run of the default branch: round 0 is that run's merged results (--full-run DIR);
+    this batch's agent works through its share of the feature map's areas, old code as much as new."""
+    src = Path(args.full_run)
+    # gh run download puts each artifact in a directory of its own: the plan job's holds plan.json.
+    plan_file = next((p for p in sorted(src.rglob("plan.json"), key=lambda p: len(p.parts)) if "rounds" not in p.parts), None)
+    parts = [_load(p) for p in sorted(src.rglob("results*.json")) if not p.name.startswith("results-agent")]
+    if not plan_file or not parts:
+        print(f"qa agent: {src} holds no plan.json or results: pass the downloaded artifacts of a full run", file=sys.stderr)
+        return 2
+    plan = _load(plan_file)
+    if plan.get("mode") != "full":
+        print(f"qa agent: {plan_file} is a {plan.get('mode')} run, not a full run", file=sys.stderr)
+        return 2
+    m = re.fullmatch(r"(\d+)/(\d+)", args.batch or "1/1")
+    k, n = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    if not (m and 1 <= k <= n):
+        print(f"qa agent: --batch takes K/N with 1 <= K <= N, not {args.batch!r}", file=sys.stderr)
+        return 2
+    try:
+        fmap = features.load(cfg.root)
+    except ValueError as exc:
+        print(f"qa agent: the feature map does not load: {exc}", file=sys.stderr)
+        return 2
+    plan["head"] = plan.get("head") or collect.rev(cfg.root, "HEAD")
+    _dump(out / "plan.json", plan)
+    merged = report.merge_results(parts, [t["id"] for t in plan["tests"]])
+    agent_dir = out / "agent"
+    (agent_dir / "rounds" / "0").mkdir(parents=True, exist_ok=True)
+    _dump(agent_dir / "rounds" / "0" / "results.json", merged)
+    rows_list = _rows(cfg, out)
+    groups = features.batches(fmap, n)
+    areas = groups[k - 1] if k <= len(groups) else []
+    mine = {"features": [f for f in fmap["features"] if features.area(f) in areas], "ignore": {}}
+    cov = features.coverage(mine, rows_list, merged)
+    # A name the catalog cannot expand still links the test it names.
+    linked_mine = {i for f, b in features.behaviors(mine) for t in b.get("tests", []) for i in features.resolve(t, rows_list) or [t]}
+    linked_all = {i for f, b in features.behaviors(fmap) for t in b.get("tests", []) for i in features.resolve(t, rows_list) or [t]}
+    bad = [t["id"] for t in merged["tests"] if t["outcome"] in ("fail", "error", "flaky")]
+    problems = [i for i in bad if i in linked_mine or (k == 1 and i not in linked_all)]
+    since = args.since or _last_release(cfg.root)
+    log = subprocess.run(["git", "log", "--no-merges", "--format=%h %s", f"{since}..HEAD" if since else "-200"],
+                         cwd=cfg.root, capture_output=True, text=True).stdout
+    _dump(agent_dir / "features.json", mine)
+    _dump(agent_dir / "coverage.json", cov)
+    _dump(agent_dir / "drift.json", features.drift(cfg.root, fmap, rows_list))
+    (agent_dir / "commits.txt").write_text(log[:200_000], encoding="utf-8")
+    release = {"batch": f"{k}/{n}", "areas": areas, "since": since, "problems": problems,
+               "features": str(agent_dir / "features.json"), "coverage": str(agent_dir / "coverage.json"),
+               "drift": str(agent_dir / "drift.json"), "commits": str(agent_dir / "commits.txt")}
+    if not areas:
+        print(f"qa agent: batch {k}/{n} has no area (the map has {len(groups)}); nothing to do", file=sys.stderr)
+        return 0
+    rows = catalog.index(rows_list)
+    sess = None
+    previous = signal.signal(signal.SIGTERM, run._on_term)
+    try:
+        if plan["stack"].get("needed") and args.stack != "none":
+            try:
+                sess = session.up(cfg, out, plan["stack"], args.graph_db or "neo4j", build=not args.no_build, head=plan.get("head"))
+            except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+                print(f"qa agent: the stack did not start: {exc}", file=sys.stderr)
+
+        def run_round(ids: list[str], where: Path) -> None:
+            where.mkdir(parents=True, exist_ok=True)
+            sub_plan = validate.plan_from_tests(cfg, ids, rows)
+            _dump(where / "plan.json", sub_plan)
+            base_url = session.use(session.path(out)) if sess else None
+            result = run.run(cfg, sub_plan, rows, where, stack_mode="external" if sess else "none", base_url=base_url)
+            report.redact_files(where)
+            report.redact_results(result)
+            _dump(where / "results.json", result)
+
+        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
+                              creds=creds, release=release)
+    except run._Cancelled:
+        print("qa agent: cancelled", file=sys.stderr)
+        return 130
+    finally:
+        if sess:
+            print("qa agent: stack down: " + "; ".join(session.down(cfg, out)), file=sys.stderr)
+        signal.signal(signal.SIGTERM, previous)
+    _dump(out / "agent-plan.json", plan)
+    for note in doc["notes"]:
+        print(f"qa agent: {note}", file=sys.stderr)
+    verdict = (doc.get("verdict") or {}).get("verdict", "none")
+    print(f"qa agent: batch {k}/{n} ({', '.join(areas)}): verdict {verdict}; {doc['rounds']} rounds; "
+          f"{len(doc['tests_added'])} files changed")
+    return 0
 
 
 def _combine_arg(value: str) -> dict:
@@ -1109,6 +1217,9 @@ def parser() -> argparse.ArgumentParser:
                    help="stack these pull requests on --combine-base first (in order), then test the result")
     s.add_argument("--combine-base", default="main", metavar="REF")
     s.add_argument("--previous", metavar="FILE", help="the notebook of the last run on this PR (default: <out>/agent-notebook.json)")
+    s.add_argument("--full-run", metavar="DIR", help="release mode: the downloaded artifacts of a full run of the default branch, "
+                   "taken as round 0; the agent then tests its share of the feature map's areas")
+    s.add_argument("--batch", metavar="K/N", help="release mode: this agent's share of the areas (default 1/1)")
     s.set_defaults(fn=cmd_agent, emit_gh_outputs=False)
 
     s = sub.add_parser("notebook", help="fetch the QA agent's notebook for a PR from the bot's comments on it")

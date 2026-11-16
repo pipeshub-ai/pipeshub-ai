@@ -244,6 +244,28 @@ def coverage(fmap: dict[str, Any], rows: list[dict[str, Any]], results: dict[str
             "behaviors": items, "counts": counts}
 
 
+def area(feature: dict[str, Any]) -> str:
+    """The file a feature comes from, without .toml: auth, or plus/extra for a file in the overlay scripts/plus/."""
+    src = Path(str(feature.get("source", "")))
+    overlay = src.parts[1] if len(src.parts) > 4 and src.parts[2] == "qa" else ""
+    return f"{overlay}/{src.stem}" if overlay else src.stem
+
+
+def batches(fmap: dict[str, Any], n: int) -> list[list[str]]:
+    """Every area in n groups of about equal behavior counts, the largest first, so parallel agents share the
+    whole map. Deterministic: each batch job computes the same split."""
+    sizes: dict[str, int] = {}
+    for f in fmap["features"]:
+        sizes[area(f)] = sizes.get(area(f), 0) + len(f.get("behavior", []))
+    groups: list[list[str]] = [[] for _ in range(max(1, n))]
+    load = [0] * len(groups)
+    for name in sorted(sizes, key=lambda a: (-sizes[a], a)):
+        i = load.index(min(load))
+        groups[i].append(name)
+        load[i] += sizes[name]
+    return [g for g in groups if g]
+
+
 def render(cov: dict[str, Any], drift_doc: dict[str, Any] | None = None, cap: int = 40) -> str:
     """The report section: counts by priority, every P0 behavior that did not pass, and the drift totals."""
     if not cov["features"]:

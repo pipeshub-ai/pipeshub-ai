@@ -1,0 +1,171 @@
+name: QA release publish
+
+# Publishes what the release agents produced (qa.yml with improve "release:<full run>"):
+#   their test files and feature map edits, as one signed-off commit on a new branch qa-release/<run id>
+#   from the tested commit, and a draft PR for it; and the run's report as an issue.
+# The agent jobs ran with Claude's credential, so nothing they uploaded is trusted: only test files the
+# default branch's engine recognises and feature map files, no secret, no symlink. The test catalog is
+# rebuilt here by that engine rather than taken from the patches. No force push, no merge commit, and
+# nothing goes to the default branch: a person reviews and merges the PR. This job holds no secrets.
+
+on:
+  workflow_call:
+    inputs:
+      edition:
+        type: string
+        default: oss
+      head_sha:
+        type: string
+        required: true
+      full_run:
+        type: string
+        required: true
+      requested_by:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          # The token goes to the push alone, not into .git/config while the engine reads the tree.
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Before the untrusted artifacts arrive: the checks run from this copy, which no patch can reach.
+      # It keeps the scripts/ layout, because the engine finds its rules at <copy>/scripts/qa/rules.
+      - name: Keep a clean copy of the engine
+        run: mkdir -p "$RUNNER_TEMP/engine" && cp -a qa-engine/scripts "$RUNNER_TEMP/engine/scripts"
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: qa-results-stack-neo4j-*-${{ inputs.edition }}
+          # Outside the checkout: they hold test files.
+          path: ${{ runner.temp }}/agents
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: qa-report-${{ inputs.edition }}
+          path: ${{ runner.temp }}/report
+
+      - name: Check and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          FULL_RUN: ${{ inputs.full_run }}
+          ACTOR: ${{ inputs.requested_by }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+          ENGINE_SCRIPTS: ${{ runner.temp }}/engine/scripts
+        run: |
+          set +e -uo pipefail
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$FULL_RUN" =~ ^[0-9]{1,20}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::head_sha, full_run or run id is malformed"; exit 1; }
+          [[ "$ACTOR" =~ ^[A-Za-z0-9-]{1,39}$ ]] || ACTOR="$GITHUB_ACTOR"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          full_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$FULL_RUN"
+
+          # Every path a test file the default branch's engine recognises, or a feature map file; inside the
+          # checkout, through no symlink, never the catalog (rebuilt below), a workflow or the engine copy.
+          allowed() {
+            local f
+            for f in "$@"; do
+              [[ "$f" != *..* && "$f" != .github/* && "$f" != qa-engine/* && "$f" != integration-tests/catalog/* && ! -L "$f" ]] || return 1
+              [[ "$(realpath -m -- "$f")" == "$GITHUB_WORKSPACE/$f" ]] || return 1
+            done
+            QA_ROOT="$GITHUB_WORKSPACE" python3 -I - "$@" <<'PY'
+          import os, sys
+          sys.path.insert(0, os.environ["ENGINE_SCRIPTS"])
+          from qa import agent, config
+          cfg = config.load()
+          bad = [p for p in sys.argv[1:] if not (agent.is_test_path(cfg, p) or agent.MAP_FILES.fullmatch(p))]
+          print("\n".join(bad), file=sys.stderr)
+          sys.exit(1 if bad else 0)
+          PY
+          }
+
+          status="" applied=() skipped=()
+          mapfile -t patches < <(find "$RUNNER_TEMP/agents" -name 'agent-tests-*.patch' -size +0 2>/dev/null | sort)
+          for patch in "${patches[@]}"; do
+            name=$(basename "$patch" .patch)
+            if git apply --summary "$patch" 2>/dev/null | grep -qE 'rename|copy|mode|120000'; then skipped+=("$name: renames, modes or symlinks"); continue; fi
+            mapfile -t names < <(git apply --numstat --exclude='integration-tests/catalog/*' "$patch" 2>/dev/null | cut -f3-)
+            if [[ ${#names[@]} -eq 0 ]]; then continue; fi
+            if printf '%s\n' "${names[@]}" | grep -qF ' => ' || ! allowed "${names[@]}"; then skipped+=("$name: changes files that are not tests or the feature map"); continue; fi
+            if ! git apply --exclude='integration-tests/catalog/*' --exclude='qa-engine/*' --exclude='.github/*' "$patch" 2>/dev/null; then
+              skipped+=("$name: does not apply on top of the other batches"); continue
+            fi
+            applied+=("$name")
+          done
+          mapfile -t files < <(git status --porcelain --untracked-files=all | cut -c4- | grep -v '^qa-engine/')
+          if [[ ${#files[@]} -gt 0 ]] && ! allowed "${files[@]}"; then
+            git checkout -q -- . && git clean -fdq -e qa-engine
+            files=() applied=() status="Not pushed: the applied changes include files that are not tests or the feature map."
+          fi
+          if [[ -z "$status" && ${#files[@]} -gt 0 ]]; then
+            QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE_SCRIPTS/qa" --out "$RUNNER_TEMP/qa-out" catalog build >/dev/null \
+              || echo "::warning::the catalog could not be rebuilt; the PR's own checks will say so"
+            check=$(QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE_SCRIPTS/qa" --out "$RUNNER_TEMP/qa-out" features check 2>&1 | tail -3)
+            git add -A -- . ':!qa-engine'
+            if git diff --cached | grep -qF -- "$GH_TOKEN"; then
+              git reset -q --hard && git clean -fdq -e qa-engine
+              status="Not pushed: the change holds a secret."
+            else
+              branch="qa-release/$RUN_ID"
+              git switch -q -c "$branch"
+              git commit -q -s -m "qa: tests and feature map entries from the release agents" \
+                -m "Full run: $full_url. Release agents: $RUN_URL. Requested by $ACTOR."
+              if git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push -q origin "HEAD:refs/heads/$branch"; then
+                body=$(printf '%s\n\n%s\n\n%s\n\n%s' \
+                  "Tests and feature map entries the release agents wrote while testing \`${HEAD_SHA:0:10}\` ([full run]($full_url), [release agents]($RUN_URL))." \
+                  "Batches: ${applied[*]:-none}." \
+                  "Every map entry here stays \`status = \"draft\"\`. A test marked \`xfail(strict=True)\` documents a bug the agents found: it starts failing the day the bug is fixed, so remove the mark then. \`qa features check\`: $check" \
+                  "Review it like any other change before merging; nothing here is merged automatically.")
+                url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$DEFAULT_BRANCH" --head "$branch" \
+                  --title "qa: tests and map entries from the release agents (${HEAD_SHA:0:10})" --body "$body") || url=""
+                status="Pushed \`$branch\`${url:+ and opened the draft PR $url}."
+              else
+                status="Not pushed: \`$branch\` could not be pushed."
+              fi
+            fi
+          elif [[ -z "$status" ]]; then
+            status="Nothing to push: the release agents added no tests and changed no map entries."
+          fi
+          [[ ${#skipped[@]} -gt 0 ]] && status="$status Left out: $(printf '%s; ' "${skipped[@]}")"
+
+          report="$RUNNER_TEMP/report/report.md"
+          {
+            echo "Release QA of \`$HEAD_SHA\` on \`$DEFAULT_BRANCH\`: [full run]($full_url), [release agents]($RUN_URL), requested by $ACTOR."
+            echo
+            echo "$status"
+            echo
+            if [[ -f "$report" ]]; then head -c 60000 "$report"; else echo "The report is missing from the run's artifacts."; fi
+          } > "$RUNNER_TEMP/issue.md"
+          verdict=$(grep -oE '^\*\*(ship|ship-with-known-issues|dont-ship|unsure)\*\* over' "$report" 2>/dev/null | head -1 | tr -d '*' | cut -d' ' -f1)
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Release QA ${HEAD_SHA:0:10}: ${verdict:-no verdict}" \
+            --body-file "$RUNNER_TEMP/issue.md" >/dev/null || echo "::warning::the release issue could not be opened"
+          echo "$status" | tee -a "$GITHUB_STEP_SUMMARY"

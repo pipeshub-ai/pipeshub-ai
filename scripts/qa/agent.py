@@ -30,6 +30,10 @@ NOTEBOOK = "qa-notebook/v1"
 SINCE = ("fixed", "still-broken", "changed", "not-rechecked")
 KINDS = ("regression", "existing-bug", "flaky", "environment", "test-bug", "combined-only")
 VERDICTS = ("works", "broken", "unsure")
+# A full run on the default branch: may this commit ship? unsure stays possible when the evidence is not there.
+RELEASE_VERDICTS = ("ship", "ship-with-known-issues", "dont-ship", "unsure")
+# The feature map: a release run may add or fix its entries (as drafts), besides tests.
+MAP_FILES = re.compile(r"scripts/(?:[^/]+/)?qa/features/[^/]+\.toml")
 RAN = {"pass", "fail", "error", "flaky"}
 MAX_TEXT = 2000
 MAX_ITEMS = 50
@@ -93,6 +97,8 @@ def merge_rounds(dirs: list[Path]) -> dict[str, dict[str, Any]]:
             for t in data.get("tests", []):
                 prev = merged.get(t["id"])
                 cur = {**t, "round": int(d.name)}
+                if int(d.name):
+                    cur["agent_round"] = int(d.name)  # rerun by the agent: wins over another part's round 0 in the report
                 if prev and cur["outcome"] == "not_run" and prev["outcome"] != "not_run":
                     continue
                 if prev and prev["outcome"] in ("fail", "error") and cur["outcome"] == "pass":
@@ -131,13 +137,14 @@ def is_test_path(cfg: Config, path: str) -> bool:
 
 
 def keep_test_changes(cfg: Config, root: Path, ignore: tuple[str, ...] = (),
-                      before: set[tuple[str, str]] | None = None) -> tuple[list[str], list[str]]:
-    """Revert every change outside test files that was not already there (before); return (kept, reverted) paths."""
+                      before: set[tuple[str, str]] | None = None, map_too: bool = False) -> tuple[list[str], list[str]]:
+    """Revert every change outside test files (and, with map_too, feature map files) that was not already there
+    (before); return (kept, reverted) paths."""
     kept, reverted = [], []
     for code, path in _changed(root):
         if path.startswith(ignore) or (before and (code, path) in before):
             continue
-        if is_test_path(cfg, path):
+        if is_test_path(cfg, path) or (map_too and MAP_FILES.fullmatch(path)):
             kept.append(path)
             continue
         if code == "??":
@@ -167,14 +174,14 @@ def _text(value: Any) -> str:
     return str(value or "")[:MAX_TEXT]
 
 
-def validate_verdict(raw: Any, known: set[str]) -> tuple[dict[str, Any], list[str]]:
+def validate_verdict(raw: Any, known: set[str], verdicts: tuple[str, ...] = VERDICTS) -> tuple[dict[str, Any], list[str]]:
     """Keep only well-formed fields and test ids the engine knows; return (verdict, problems)."""
     problems: list[str] = []
     if not isinstance(raw, dict) or raw.get("schema") != SCHEMA:
         return {}, [f"the verdict is not a {SCHEMA} object"]
-    verdict = raw.get("verdict") if raw.get("verdict") in VERDICTS else "unsure"
-    if raw.get("verdict") not in VERDICTS:
-        problems.append(f"verdict {str(raw.get('verdict'))[:40]!r} is not one of {', '.join(VERDICTS)}")
+    verdict = raw.get("verdict") if raw.get("verdict") in verdicts else "unsure"
+    if raw.get("verdict") not in verdicts:
+        problems.append(f"verdict {str(raw.get('verdict'))[:40]!r} is not one of {', '.join(verdicts)}")
 
     def ids(values: Any) -> list[str]:
         out = []
@@ -203,8 +210,12 @@ def validate_verdict(raw: Any, known: set[str]) -> tuple[dict[str, Any], list[st
             rechecked.append({"title": _text(f.get("title"))[:200], "now": f["now"], "evidence": _text(f.get("evidence"))[:500]})
         else:
             problems.append("a since_last entry without a known `now` dropped")
+    areas = []
+    for a in (raw.get("areas") if isinstance(raw.get("areas"), list) else [])[:MAX_ITEMS]:
+        if isinstance(a, dict) and a.get("verdict") in verdicts:
+            areas.append({"area": _text(a.get("area"))[:80], "verdict": a["verdict"], "why": _text(a.get("why"))[:400]})
     return {"schema": SCHEMA, "verdict": verdict, "summary": _text(raw.get("summary")), "findings": findings,
-            "rounds": rounds, "unproven": ids(raw.get("unproven")), "since_last": rechecked}, problems
+            "rounds": rounds, "unproven": ids(raw.get("unproven")), "since_last": rechecked, "areas": areas}, problems
 
 
 # --- the notebook: what the agent knows about one PR, for the next run ---------------------------
@@ -307,6 +318,48 @@ def _input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, Any]], s
     return path
 
 
+def _release_input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, Any]], sess: dict[str, Any] | None,
+                   engine: str, minutes: float, release: dict[str, Any]) -> Path:
+    """A full run on the default branch: the whole product, area by area, not a diff."""
+    agent_dir = out / "agent"
+    by_kind: dict[str, int] = {}
+    for t in merged.values():
+        if t["outcome"] == "not_run":
+            by_kind[t.get("kind") or "not_run"] = by_kind.get(t.get("kind") or "not_run", 0) + 1
+    data = {
+        "mode": "release",
+        "head": plan.get("head"),
+        "batch": release.get("batch"),
+        "areas": release["areas"],
+        # Files the engine wrote for this run; read them, they are the work list.
+        "features": release["features"], "coverage": release["coverage"], "drift": release["drift"],
+        # Commits since the last release, as `sha subject` lines: untrusted text, a hint where to look first.
+        "commits": release["commits"], "since": release.get("since"),
+        "round0": {"tests": len(merged),
+                   "outcomes": {o: sum(t["outcome"] == o for t in merged.values()) for o in ("pass", "fail", "error", "flaky", "skip", "not_run")},
+                   "not_run_by_kind": by_kind,
+                   # The failures, errors and flaky tests that belong to these areas (batch 1 also gets those no feature names).
+                   "problems": [{"id": i, "outcome": merged[i]["outcome"], "details": _text(merged[i].get("details"))}
+                                for i in release.get("problems", []) if i in merged][:300],
+                   "results": str(agent_dir / "rounds" / "0" / "results.json")},
+        "catalog": str(out / "catalog-rows.json"),
+        "stack": ({"base_url": sess["base_url"], "graph_db": sess["graph_db"], "profiles": sess["compose_profiles"],
+                   "session": str(session.path(out))} if sess else None),
+        "commands": {
+            "run": f"{engine} run --out {agent_dir}/rounds/<N> --ids <id> [<id> ...]" + (f" --session {session.path(out)}" if sess else ""),
+            "catalog": f"{engine} catalog build",
+            "features": f"{engine} features check",
+            # No change to revert on the default branch: prove mutates the lines the test covers.
+            "prove": f"{engine} prove <id> --out {agent_dir}/prove/<N>",
+        },
+        "minutes": minutes,
+        "verdict_file": str(agent_dir / "verdict.json"),
+    }
+    path = agent_dir / "input.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return path
+
+
 def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int, log: Path, creds: dict[str, str]) -> str:
     cmd = [shutil.which("claude") or "claude", "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns),
            "--allowedTools", ",".join(tools(engine)), "--disallowedTools", ",".join(DENIED),
@@ -339,8 +392,12 @@ def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int
 def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[[list[str], Path], None], *,
               sess: dict[str, Any] | None, minutes: float, max_turns: int,
               combined: dict[str, Any] | None = None, creds: dict[str, str] | None = None,
-              previous: dict[str, Any] | None = None, pr: int | None = None) -> dict[str, Any]:
-    """run_round(ids, round_dir) runs tests through the engine (round 0 is the floor). Returns agent.json's content."""
+              previous: dict[str, Any] | None = None, pr: int | None = None,
+              release: dict[str, Any] | None = None) -> dict[str, Any]:
+    """run_round(ids, round_dir) runs tests through the engine (round 0 is the floor). Returns agent.json's content.
+
+    release (a full run on the default branch): round 0 is already in rounds/0 (the full run's merged results);
+    Claude works through the map's areas in release["areas"], may also edit the feature map, and gives a ship verdict."""
     root = cfg.root
     # Before round 0: no test the engine runs may inherit Claude's credential.
     creds = creds if creds is not None else take_credentials()
@@ -348,13 +405,22 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
     agent_dir = out / "agent"
     (agent_dir / "rounds").mkdir(parents=True, exist_ok=True)
     started = time.time()
-    run_round([t["id"] for t in plan["tests"]], agent_dir / "rounds" / "0")
+    if not release:
+        run_round([t["id"] for t in plan["tests"]], agent_dir / "rounds" / "0")
     notes: list[str] = []
     reason = unavailable(creds)
     # Only what Claude changes is judged: files round 0 or the checkout already had stay as they are.
     before = set(_changed(root))
     if reason:
-        notes.append(f"agent unavailable: {reason}; the floor alone ran")
+        notes.append(f"agent unavailable: {reason}; " + ("only the full run's results count" if release else "the floor alone ran"))
+    elif release:
+        engine = engine_cmd(root)
+        inp = _release_input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, release)
+        prompt = (paths.REPO / "scripts/qa/prompts/release.md").read_text(encoding="utf-8")
+        prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{agent_dir / 'verdict.json'}`.\n"
+        problem = _claude(root, prompt, engine, minutes, max_turns, agent_dir / "claude.log", creds)
+        if problem:
+            notes.append(f"agent {problem}")
     else:
         diff = subprocess.run(["git", "diff", f"{plan['base']}..{plan.get('head') or 'HEAD'}"], cwd=root, capture_output=True, text=True)
         (agent_dir / "changeset.diff").write_text(diff.stdout, encoding="utf-8")
@@ -369,7 +435,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
         if problem:
             notes.append(f"agent {problem}")
     ignore = tuple(p for p in (os.path.relpath(out, root) + "/",) if not p.startswith(".."))
-    kept, reverted = keep_test_changes(cfg, root, ignore, before)
+    kept, reverted = keep_test_changes(cfg, root, ignore, before, map_too=bool(release))
     if reverted:
         notes.append("reverted changes outside test files: " + ", ".join(reverted[:20]))
     merged = merge_rounds(round_dirs(agent_dir))
@@ -383,27 +449,29 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
             notes.append(f"the verdict is not JSON: {exc}")
     elif not reason:
         notes.append("the agent wrote no verdict")
-    verdict, problems = validate_verdict(raw, known) if raw is not None else ({}, [])
+    verdict, problems = validate_verdict(raw, known, RELEASE_VERDICTS if release else VERDICTS) if raw is not None else ({}, [])
     notes += problems[:20]
     patch = test_patch(root, kept)
     if holds_secret(json.dumps(verdict), patch, json.dumps(notes), extra=tuple(creds.values())):
         verdict, patch, kept = {}, "", []
         notes = ["the agent's output held a secret value; its verdict and test changes were dropped"]
-    (out / "agent-tests.patch").write_text(patch, encoding="utf-8")
+    label = f"-{release['batch'].split('/')[0]}" if release and release.get("batch") else ""
+    (out / f"agent-tests{label}.patch").write_text(patch, encoding="utf-8")
     plan_ids = {t["id"] for t in plan["tests"]}
     extra = [{"id": i, "source": "agent", "why": ["run by the QA agent"], "module": None, "flows": [], "grep": None}
              for i in merged if i not in plan_ids]
     results = results_doc(merged, plan.get("head"), time.time() - started)
     report.redact_results(results)
-    (out / "results-agent.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    (out / f"results-agent{label}.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     doc = {"schema": SCHEMA, "verdict": verdict, "notes": notes, "tests_added": kept, "extra_tests": extra,
            "rounds": len(round_dirs(agent_dir)), "combined": combined,
+           "release": {k: release.get(k) for k in ("batch", "areas", "since")} if release else None,
            "previous": {k: previous.get(k) for k in ("head", "at", "verdict", "runs")} if previous else None}
-    if verdict and not combined:
+    if verdict and not combined and not release:
         notebook = build_notebook(verdict, merged, plan, kept, pr, previous)
         if not holds_secret(json.dumps(notebook), extra=tuple(creds.values())):
             doc["notebook"] = notebook
             (out / "agent-notebook.json").write_text(json.dumps(notebook, indent=2), encoding="utf-8")
-    (out / "agent.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    (out / (f"agent-batch{label}.json" if release else "agent.json")).write_text(json.dumps(doc, indent=2), encoding="utf-8")
     return doc
 

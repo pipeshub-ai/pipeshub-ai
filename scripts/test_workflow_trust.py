@@ -6,6 +6,7 @@ missed some spelling GitHub accepts. The rest is pattern-based.
 """
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -1850,6 +1851,43 @@ class TestQaAgentWorkflows(unittest.TestCase):
         check, apply = script.index("git apply --numstat"), script.index('git apply --exclude=')
         self.assertLess(check, apply)
         self.assertIn("--exclude='qa-engine/*'", script[apply:apply + 80])
+
+    def test_the_release_publish_workflow_reads_no_secret_and_pushes_only_a_new_branch(self) -> None:
+        text = (REPO / ".github" / "workflows" / "qa-release-publish.yml").read_text()
+        self.assertIsNone(re.search(r"\$\{\{[^}]*secrets\.", text))
+        caller = self.load("qa.yml")["jobs"]["release-publish"]
+        self.assertNotIn("secrets", caller)
+        self.assertEqual(caller["uses"], "./.github/workflows/qa-release-publish.yml")
+        script = "\n".join(_scripts(self.load("qa-release-publish.yml")["jobs"]["publish"]))
+        self.assertEqual(len(re.findall(r"\bgit commit -q -s\b", script)), 1)
+        for banned in (r"git\s+(merge|pull|rebase|cherry-pick|am)\b", r"push[^\n]*(--force|\s-f\b|\+HEAD|\+refs)"):
+            self.assertIsNone(re.search(banned, script), banned)
+        pushes = re.findall(r"push -q origin \"HEAD:refs/heads/\$(\w+)\"", script)
+        self.assertEqual(pushes, ["branch"])
+        self.assertIn('branch="qa-release/$RUN_ID"', script)
+        # The patches are untrusted: checked by the default branch's engine before anything is applied.
+        self.assertLess(script.index("allowed()"), script.index("git apply --exclude="))
+        self.assertIn("integration-tests/catalog/*", script[script.index("allowed()"):script.index("allowed()") + 400])
+
+    def test_only_a_release_dispatch_job_may_start_runs_and_it_holds_nothing_else(self) -> None:
+        jobs = self.load("qa.yml")["jobs"]
+        writers = [n for n, j in jobs.items() if (j.get("permissions") or {}).get("actions") == "write"]
+        self.assertEqual(writers, ["release-dispatch"])
+        job = jobs["release-dispatch"]
+        self.assertEqual(job["permissions"], {"actions": "write"})
+        self.assertNotIn("secrets", json.dumps(job))
+        script = "\n".join(_scripts(job))
+        self.assertIn('-f improve="release:$GITHUB_RUN_ID"', script)
+        self.assertIn("^[0-9a-f]{40}$", script)
+
+    def test_claude_reaches_a_release_run_only_through_the_agent_step(self) -> None:
+        pipe = self.load("qa-pipeline.yml")
+        steps = pipe["jobs"]["run-stack"]["steps"]
+        fetch = next(s for s in steps if s.get("name") == "Fetch the full run's results")
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", json.dumps(fetch))
+        self.assertIn("^[0-9]{1,20}$", fetch["run"])
+        holders = [s.get("name") for s in steps if "CLAUDE_CODE_OAUTH_TOKEN" in json.dumps(s.get("env", {}))]
+        self.assertEqual(holders, ["Run the selected integration and e2e tests"])
 
     def test_the_clean_engine_copy_still_recognises_test_files(self) -> None:
         """The copy must keep scripts/ so the engine finds its rules; without them no file is a test and nothing publishes."""
