@@ -121,6 +121,37 @@ def agent_knowledge_sql_connector_ids(agent_knowledge: list[dict[str, Any]] | No
     return frozenset(ids)
 
 
+async def shared_sql_knowledge(
+    graph_provider: IGraphDBProvider,
+    agent_knowledge: list[dict[str, Any]],
+    user_id: str,
+    org_id: str,
+    log: Any,
+) -> list[dict[str, Any]]:
+    """*agent_knowledge* without the databases that are not shared with the whole org.
+
+    A service-account agent is run by anyone in its org on one identity, so a
+    personal database (its creator's or the account's own) is never one it may
+    query or search. A failed lookup keeps no database.
+    """
+    if not agent_knowledge_has_sql_connector(agent_knowledge):
+        return agent_knowledge
+    from app.utils.connector_instances import fetch_user_connector_instances
+
+    instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, log)
+    shared = {
+        str(i.get("_key") or i.get("id"))
+        for i in instances
+        if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value
+        and (i.get("orgId") or org_id) == org_id
+    }
+    return [
+        k for k in agent_knowledge
+        if not (isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES)
+        or str(k.get("connectorId") or "").strip() in shared
+    ]
+
+
 class ExecuteQueryArgs(BaseModel):
     """Required tool args for executing SQL queries."""
     
