@@ -51,6 +51,17 @@ describe('paid-result handlers: a parameter that is not a single value', () => {
     })
   }
 
+  for (const [label, body] of [
+    ['an array', ['a', 'b']],
+    ['a string', 'text'],
+    ['a plain object', { length: 3 }],
+  ] as const) {
+    it(`putPaidResultFile refuses a body that is ${label}`, async () => {
+      const error = await run('putPaidResultFile', { params: { recordId: 'rec-1', 0: 'ocr_page/a.json' }, body })
+      expect(error).to.be.instanceOf(BadRequestError)
+    })
+  }
+
   for (const name of ['prefix', 'after'] as const) {
     it(`listPaidResults refuses ${name} given twice`, async () => {
       const error = await run('listPaidResults', { params: { recordId: 'rec-1' }, query: { [name]: ['a', 'b'] } })

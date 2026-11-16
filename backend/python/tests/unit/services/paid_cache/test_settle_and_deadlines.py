@@ -123,7 +123,7 @@ async def test_a_result_computed_for_longer_than_the_stage_deadline_is_not_store
     cache = PaidResultCache(store, locks)
 
     async def slow() -> str:
-        clock[0] += locks_module.STAGE_DEADLINE_S + 1      # the call ran past the stage's deadline
+        clock[0] += locks_module.stage_deadline_s() + 1      # the call ran past the stage's deadline
         return "text"
 
     with caplog.at_level(logging.WARNING, logger=cache.logger.name):
@@ -139,7 +139,7 @@ async def test_a_result_inside_the_stage_deadline_is_stored(monkeypatch: pytest.
     store = MemoryResultStore()
 
     async def fine() -> str:
-        clock[0] += locks_module.STAGE_DEADLINE_S - 1
+        clock[0] += locks_module.stage_deadline_s() - 1
         return "text"
 
     await PaidResultCache(store, InProcessLocks()).get_or_compute(KEY, fine)

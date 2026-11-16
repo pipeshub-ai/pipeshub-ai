@@ -115,6 +115,14 @@ _rejected: dict[str, dict[str, int]] = {
 }
 
 
+class _StageDeadlineExceeded(Exception):
+    """The parse ran longer than the stage deadline (not any other timeout raised inside the parser)."""
+
+    def __init__(self, limit_s: float) -> None:
+        super().__init__(limit_s)
+        self.limit_s = limit_s
+
+
 def _count_rejection(tier: ParseTier, reason: str) -> None:
     with _rejected_lock:
         _rejected[tier.value][reason] += 1
@@ -313,9 +321,18 @@ async def parse_file(
                 # The paid calls this parse makes (page OCR, table summaries) go into the revision's manifest.
                 paid_run = start_run(content_revision(content), "parse")
                 # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
-                # outlive what the delayed re-purge after a delete covers.
-                async with asyncio.timeout(lock_limits.STAGE_DEADLINE_S):
-                    result = await parser.parse(content, record_name, config)
+                # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
+                # configured (never shorter than the client's own read timeout for the record), and only this
+                # timeout is the stage deadline: a TimeoutError raised inside the parser is the parser's.
+                stage_limit = lock_limits.stage_deadline_s()
+                stage_timer = asyncio.timeout(stage_limit)
+                try:
+                    async with stage_timer:
+                        result = await parser.parse(content, record_name, config)
+                except TimeoutError as exc:
+                    if not stage_timer.expired():
+                        raise
+                    raise _StageDeadlineExceeded(stage_limit) from exc
                 await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
             logger.warning(
@@ -383,10 +400,10 @@ async def parse_file(
                     },
                 },
             )
-        except TimeoutError:
+        except _StageDeadlineExceeded as exc:
             logger.warning(
                 "Parse stopped: record='%s' provider=%s ran longer than %s s",
-                record_name, provider_enum.value, lock_limits.STAGE_DEADLINE_S,
+                record_name, provider_enum.value, exc.limit_s,
             )
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,

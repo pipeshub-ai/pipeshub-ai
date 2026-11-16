@@ -28,8 +28,9 @@ DELETED_TTL_MS = 24 * 3600 * 1000
 
 #: What bounds a write that lands after its record was deleted. A lock lives at most ``LOCK_TTL_MS`` past its
 #: last renewal, a signed upload that has started ends within ``WRITE_DEADLINE_S`` (enforced: the store sequence
-#: runs under that timeout), and a result is stored only if its computation started less than
-#: ``STAGE_DEADLINE_S`` ago, the longest a paid stage (a parse) may run.
+#: runs under that timeout), and a result is stored only if its stage began less than ``stage_deadline_s()`` ago:
+#: the record's own processing budget, read from the settings the indexing client reads, never less than
+#: ``STAGE_DEADLINE_S`` (a floor for the smallest budgets).
 WRITE_DEADLINE_S = 120
 STAGE_DEADLINE_S = 2400
 REPURGE_MARGIN_S = 60
@@ -37,32 +38,46 @@ REPURGE_MARGIN_S = 60
 #: (lock TTL + write deadline + margin), so no queued message waits long enough to outlive its signature.
 REPURGE_HOP_S = LOCK_TTL_MS // 1000 + WRITE_DEADLINE_S + REPURGE_MARGIN_S
 REPURGE_DELAY_S = REPURGE_HOP_S
-#: The latest a paid stage can begin after its record was deleted. The indexing consumer may queue for a parse slot
-#: twice (before the download and before the parse) and the record's budget is paused meanwhile, each wait up to
-#: ``RECORD_PROCESSING_TIMEOUT``; the parse request is then sent while the budget still holds a read (the budget's
-#: share the client does not reserve for it), and the parsing route can hold it for the admission gate and the
-#: memory wait before ``parse`` starts. ``STAGE_DEADLINE_S`` counts from the stage's start, so this is added to the
-#: horizon. The three figures below mirror the consumer's and the route's (a test ties each to its source); the
-#: record budgets are read from the same environment variables.
+#: The figures below mirror the consumer's, the client's and the parsing route's (a test ties each to its source).
 PARSE_SLOT_WAITS = 2
 PARSE_READ_SHARE = 0.8
 PARSE_GATE_WAIT_S = 120
 PARSE_MEMORY_WAIT_S = 30
 
 
-def _admission_window_s() -> int:
+def _budgets() -> tuple[float, float]:
+    """(general record budget, longest budget of any record type), from the environment, live."""
     record = env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
-    budget = max(record, env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
-    window = (
-        PARSE_SLOT_WAITS * record + budget * (1 - PARSE_READ_SHARE) + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
-    )
-    return int(-(-window // REPURGE_MARGIN_S) * REPURGE_MARGIN_S)
+    return record, max(record, env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
 
 
-ADMISSION_WINDOW_S = _admission_window_s()
-#: The chain ends once this long has passed since the delete: the latest a stage can begin, the longest it may run,
-#: the last write's deadline, a lock's life and a margin.
-REPURGE_HORIZON_S = ADMISSION_WINDOW_S + STAGE_DEADLINE_S + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
+def stage_deadline_s() -> float:
+    """How long after its start a stage may still store results and write its manifests, and the most a parse may run.
+
+    The longest record budget configured: a parse the client allows (``PARSE_READ_SHARE`` of its record's budget) is
+    never cut by the route, and the index run that began before it, which holds the whole record's budget, can still
+    store its own results. Read at every call, so an operator's raised budget is followed.
+    """
+    return max(float(STAGE_DEADLINE_S), _budgets()[1])
+
+
+def admission_window_s() -> float:
+    """The latest a paid stage can begin after its record was deleted.
+
+    The indexing consumer may queue for a parse slot twice (before the download and before the parse), each wait up
+    to ``RECORD_PROCESSING_TIMEOUT``, and the record's budget is paused meanwhile. The parse request is then sent
+    while the budget still holds a read (the share the client does not reserve for it), and the parsing route can hold
+    it for the admission gate and the memory wait before ``parse`` starts.
+    """
+    record, longest = _budgets()
+    window = PARSE_SLOT_WAITS * record + longest * (1 - PARSE_READ_SHARE) + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
+    return float(-(-window // REPURGE_MARGIN_S) * REPURGE_MARGIN_S)
+
+
+def repurge_horizon_s() -> float:
+    """The chain ends once this long has passed since the delete, computed from the live configuration: the latest a
+    stage can begin, the longest it may run, the last write's deadline, a lock's life and a margin."""
+    return admission_window_s() + stage_deadline_s() + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
 
 
 def lock_name(org_id: str, record_id: str, digest: str) -> str:

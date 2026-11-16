@@ -92,6 +92,8 @@ def test_a_parse_that_outlives_the_stage_deadline_is_stopped_and_pays_for_nothin
     from app.services.paid_cache import locks
 
     monkeypatch.setattr(locks, "STAGE_DEADLINE_S", 0.1)
+    monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "0.1")
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "0.1")
     paid_after: list[str] = []
 
     async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
@@ -106,3 +108,13 @@ def test_a_parse_that_outlives_the_stage_deadline_is_stopped_and_pays_for_nothin
     assert response.status_code == 504
     assert response.json()["error"]["code"] == "PARSE_FAILED"
     assert paid_after == []
+
+
+def test_a_timeout_raised_inside_the_parser_is_not_answered_as_the_stage_deadline(store: MemoryResultStore) -> None:
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        raise TimeoutError("the provider timed out")
+
+    response = _post(parse)
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "Unexpected error while parsing the document"

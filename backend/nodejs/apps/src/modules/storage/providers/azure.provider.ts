@@ -580,6 +580,8 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
           headers: {
             'x-ms-blob-type': 'BlockBlob',
             'Content-Type': options.contentType ?? 'application/octet-stream',
+            // Enforced by the service when the uploader sends it; a SAS with `create` alone is refused by Azurite
+            // (403) even for a new blob, so the URL itself cannot be made once-only here.
             ...(options.ifAbsent === true && { 'If-None-Match': '*' }),
           },
         };

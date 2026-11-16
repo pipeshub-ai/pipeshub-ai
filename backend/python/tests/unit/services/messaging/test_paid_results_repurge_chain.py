@@ -19,7 +19,7 @@ from app.services.paid_cache.keys import CacheKey
 from app.services.paid_cache.locks import (
     LOCK_TTL_MS,
     REPURGE_HOP_S,
-    REPURGE_HORIZON_S,
+    repurge_horizon_s,
     STAGE_DEADLINE_S,
     InProcessLocks,
 )
@@ -94,7 +94,7 @@ async def _consume(handler: Any, topic: str, wire: dict, *, age_s: float, signed
 
 def test_the_chain_covers_the_longest_paid_stage() -> None:
     assert REPURGE_HOP_S == LOCK_TTL_MS // 1000 + 120 + 60 == 300
-    assert REPURGE_HORIZON_S >= STAGE_DEADLINE_S + LOCK_TTL_MS // 1000
+    assert repurge_horizon_s() >= STAGE_DEADLINE_S + LOCK_TTL_MS // 1000
     assert STAGE_DEADLINE_S >= 2400                       # a parse may run that long (api/routes/parsing.py)
 
 
@@ -105,8 +105,8 @@ def test_the_first_hop_carries_when_the_record_was_deleted() -> None:
 
 def test_the_chain_stops_once_the_horizon_has_passed_and_never_trusts_a_future_delete_time() -> None:
     first = repurge_event_payload(ORG, REC, now=0.0)
-    assert next_hop_payload(ORG, first, now=REPURGE_HORIZON_S) is not None
-    assert next_hop_payload(ORG, first, now=REPURGE_HORIZON_S + 1) is None
+    assert next_hop_payload(ORG, first, now=repurge_horizon_s()) is not None
+    assert next_hop_payload(ORG, first, now=repurge_horizon_s() + 1) is None
     assert next_hop_payload(ORG, {"orgId": ORG, "recordId": REC}, now=10.0) is None            # an older single-hop event
     assert next_hop_payload(ORG, {**first, "deletedAt": "soon"}, now=10.0) is None
     assert next_hop_payload(ORG, {**first, "deletedAt": float("nan")}, now=10.0) is None
@@ -168,8 +168,8 @@ async def test_an_orphaned_parse_paying_for_2400_s_after_a_delete_with_redis_flu
                 pending.append(producer.send_event.await_args.kwargs["payload"])
 
     assert store.paths(ORG, REC) == [], f"left: {store.paths(ORG, REC)}"
-    assert REPURGE_HORIZON_S // REPURGE_HOP_S <= hops <= REPURGE_HORIZON_S // REPURGE_HOP_S + 2   # then the chain ends
-    assert clock[0] - delete_at <= REPURGE_HORIZON_S + REPURGE_HOP_S
+    assert repurge_horizon_s() // REPURGE_HOP_S <= hops <= repurge_horizon_s() // REPURGE_HOP_S + 2   # then the chain ends
+    assert clock[0] - delete_at <= repurge_horizon_s() + REPURGE_HOP_S
 
 
 @pytest.mark.parametrize("lag_s", [0, 300, 590])
@@ -198,8 +198,8 @@ async def test_every_hop_verifies_within_the_signature_window(
             break
     # A lagging consumer reaches the horizon in fewer hops; the last hop always runs after it (it is the one
     # that finds nothing left to schedule).
-    assert (REPURGE_HORIZON_S // REPURGE_HOP_S <= consumed <= REPURGE_HORIZON_S // REPURGE_HOP_S + 2) if lag_s == 0 else consumed >= 3
-    assert clock[0] - delete_at > REPURGE_HORIZON_S
+    assert (repurge_horizon_s() // REPURGE_HOP_S <= consumed <= repurge_horizon_s() // REPURGE_HOP_S + 2) if lag_s == 0 else consumed >= 3
+    assert clock[0] - delete_at > repurge_horizon_s()
 
 
 async def test_a_hop_older_than_the_window_is_still_rejected(world: Any, clock: list[float], monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401

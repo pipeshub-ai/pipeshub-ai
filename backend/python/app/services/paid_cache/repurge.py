@@ -8,7 +8,7 @@ than a lock lives plus the longest signed upload. The consumers hold an event un
 (the same field the stored-document cleanup uses), and the broker redelivers it until the purge succeeds.
 
 Each hop purges, then publishes the next one (same payload, ``hop`` + 1, ``_retry_not_before`` one hop later),
-and stops once ``REPURGE_HORIZON_S`` has passed since the delete (``deletedAt``). A hop is published, and so
+and stops once ``repurge_horizon_s()`` has passed since the delete (``deletedAt``). A hop is published, and so
 signed, when the hop before it runs, so no queued message waits longer than ``REPURGE_HOP_S`` before delivery:
 every one verifies well inside ``ENVELOPE_MAX_AGE_SECONDS`` (900 s by default) even with 600 s of consumer lag.
 An org purge schedules one chain for the org (``scope: "org"``), not one per record. The org a consumer purges
@@ -20,7 +20,7 @@ import time
 from typing import Any
 
 from app.config.constants.arangodb import EventTypes
-from app.services.paid_cache.locks import REPURGE_HOP_S, REPURGE_HORIZON_S
+from app.services.paid_cache.locks import REPURGE_HOP_S, repurge_horizon_s
 from app.utils.loop_bridge import run_on_loop
 
 #: ``scope`` of a purge event that covers an org rather than one record.
@@ -43,7 +43,7 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
     """The hop after the one that carries ``payload``, or None when the chain is over.
 
     None for an event with no valid ``deletedAt`` (an older single-hop event), and once more than
-    ``REPURGE_HORIZON_S`` has passed since the delete. ``deletedAt`` is never taken from the future. The org is
+    ``repurge_horizon_s()`` has passed since the delete. ``deletedAt`` is never taken from the future. The org is
     the verified envelope's (``org_id``), never a field of the body.
     """
     now = time.time() if now is None else now
@@ -52,7 +52,7 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
     if isinstance(deleted_at, bool) or not isinstance(deleted_at, int | float) or not math.isfinite(deleted_at):
         return None
     deleted_at = min(float(deleted_at), now)
-    if now - deleted_at > REPURGE_HORIZON_S:
+    if now - deleted_at > repurge_horizon_s():
         return None
     return {
         "orgId": org_id,

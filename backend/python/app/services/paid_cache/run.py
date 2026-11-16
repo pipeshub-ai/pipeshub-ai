@@ -74,12 +74,12 @@ class RunScope:
         self._write_lock = asyncio.Lock()
 
     def past_deadline(self) -> bool:
-        """True once the stage has run longer than ``STAGE_DEADLINE_S``: nothing more is written for the record.
+        """True once the stage has run longer than ``stage_deadline_s()``: nothing more is written for the record.
 
         Measured from the stage's start, not from the paid call's: the delayed re-purge after a delete ends a
         bounded time after that stage began, so a write later than this could land after the last purge.
         """
-        return self._clock() * 1000 - self.started_ms > lock_limits.STAGE_DEADLINE_S * 1000
+        return self._clock() * 1000 - self.started_ms > lock_limits.stage_deadline_s() * 1000
 
     def matches(self, org_id: str, record_id: str) -> bool:
         return self.org_id == org_id and self.record_id == record_id

@@ -1307,7 +1307,7 @@ export class StorageController {
         res.status(412).json({ error: 'A result is already stored here' });
         return;
       }
-      res.status(HTTP_STATUS.OK).json({ path: filePath, size: body.length });
+      res.status(HTTP_STATUS.OK).json({ path: filePath, size: body.byteLength });
     } catch (error) {
       next(error);
     }

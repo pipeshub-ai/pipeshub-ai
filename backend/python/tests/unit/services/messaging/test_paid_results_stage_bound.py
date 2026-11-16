@@ -30,7 +30,7 @@ from app.services.paid_cache.cache import PaidResultCache
 from app.services.paid_cache.keys import CacheKey
 from app.services.paid_cache.locks import (
     REPURGE_HOP_S,
-    REPURGE_HORIZON_S,
+    repurge_horizon_s,
     InProcessLocks,
 )
 from app.services.paid_cache.repurge import (
@@ -231,7 +231,6 @@ async def test_an_orphan_that_keeps_paying_leaves_nothing_once_the_chain_ends(
 def test_the_admission_window_is_tied_to_the_consumer_and_the_route() -> None:
     """The constants the horizon mirrors are the ones the consumer, the client and the route really use."""
     from app.api.routes.parsing import PARSE_GATE_TIMEOUT_SECONDS
-    from app.services.messaging.config import messaging_env as env
     from app.services.messaging.consumer_concurrency import parse_admission_wait_seconds
     from app.services.parsing.client import PARSE_SHARE_OF_RECORD_BUDGET
     from app.services.resource_governor.kinds import EXCESS_WAIT_SECONDS
@@ -239,17 +238,55 @@ def test_the_admission_window_is_tied_to_the_consumer_and_the_route() -> None:
     assert locks_module.PARSE_GATE_WAIT_S == PARSE_GATE_TIMEOUT_SECONDS
     assert locks_module.PARSE_MEMORY_WAIT_S == EXCESS_WAIT_SECONDS
     assert locks_module.PARSE_READ_SHARE == PARSE_SHARE_OF_RECORD_BUDGET
-    assert locks_module.PARSE_SLOT_WAITS * env.record_processing_timeout == 2 * parse_admission_wait_seconds()
-    latest = (
-        2 * parse_admission_wait_seconds()
-        + env.max_record_processing_timeout * (1 - PARSE_SHARE_OF_RECORD_BUDGET)
-        + PARSE_GATE_TIMEOUT_SECONDS + EXCESS_WAIT_SECONDS
-    )
-    assert locks_module.ADMISSION_WINDOW_S >= latest
-    assert REPURGE_HORIZON_S >= (
-        locks_module.ADMISSION_WINDOW_S + locks_module.STAGE_DEADLINE_S + locks_module.WRITE_DEADLINE_S
-        + locks_module.LOCK_TTL_MS // 1000
-    )
+    assert locks_module.PARSE_SLOT_WAITS * locks_module._budgets()[0] == 2 * parse_admission_wait_seconds()
+
+
+@pytest.mark.parametrize("pdf_budget", [900, 5400, 9000, 21600])
+def test_the_horizon_follows_the_configured_budgets(monkeypatch: pytest.MonkeyPatch, pdf_budget: int) -> None:
+    """Computed at the hop from the live settings: a raised budget lengthens the chain, a fixed constant would not."""
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", str(pdf_budget))
+    record = float(locks_module._budgets()[0])
+    latest_start = 2 * record + max(record, pdf_budget) * 0.2 + 120 + 30
+    assert locks_module.admission_window_s() >= latest_start
+    assert locks_module.stage_deadline_s() >= max(record, pdf_budget)
+    assert repurge_horizon_s() >= latest_start + max(record, pdf_budget) + locks_module.WRITE_DEADLINE_S + 120
+
+
+@pytest.mark.parametrize("pdf_budget", [9000, 21600])
+async def test_a_stage_that_starts_late_under_a_raised_budget_leaves_nothing(
+    world: Any, monkeypatch: pytest.MonkeyPatch, pdf_budget: int,  # noqa: ANN401
+) -> None:
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", str(pdf_budget))
+    store, locks, cache = world
+    now = [1_000_000.0]
+    monkeypatch.setattr(repurge, "time", SimpleNamespace(time=lambda: now[0]))
+    monkeypatch.setattr(cache_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    producer = AsyncMock()
+    handler = _record_handler(producer)
+    delete_at = now[0]
+    late = int(locks_module.admission_window_s()) - 60                  # as late as the configuration allows
+    with bind(OrgContext(ORG, None, "service", "envelope", "qa")):
+        [e async for e in handler.process_event(EventTypes.DELETE_RECORD.value, DELETE)]
+        locks._held.clear()
+        pending = [producer.send_event.await_args.kwargs["payload"]]
+        while now[0] - delete_at < late:
+            now[0] += 60
+            await _deliver_due(handler, producer, pending, now[0])
+        scope = RunScope(ORG, REC, "rev1", "parse", clock=lambda: now[0])
+        run_module._run.set(scope)
+        stage_start, page = now[0], 0
+        while now[0] - stage_start < locks_module.stage_deadline_s() + 600:    # pays on past the deadline
+            now[0] += 120
+            await scope.note(cache.store, _key(page).relative_path(), opens=True)
+            await cache.get_or_compute(_key(page), _text)
+            page += 1
+            await _deliver_due(handler, producer, pending, now[0])
+        await scope.finish(cache.store)
+        run_module._run.set(None)
+        while pending:
+            now[0] = max(now[0], pending[0]["_retry_not_before"])
+            await _deliver_due(handler, producer, pending, now[0])
+    assert store.paths(ORG, REC) == []
 
 
 async def test_a_call_started_long_after_its_stage_began_is_still_stored(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,7 +295,7 @@ async def test_a_call_started_long_after_its_stage_began_is_still_stored(monkeyp
     store = MemoryResultStore()
     cache = PaidResultCache(store, InProcessLocks())
     scope = begin_run(ORG, REC, "rev1", "parse")
-    scope.started_ms -= int((locks_module.STAGE_DEADLINE_S + 600) * 1000)   # the stage began 3000 s ago
+    scope.started_ms -= int((locks_module.stage_deadline_s() + 600) * 1000)   # the stage began 3000 s ago
     try:
         await cache.get_or_compute(_key(), _text)
     finally:
@@ -316,7 +353,7 @@ async def test_every_hop_verifies_under_random_lag_and_the_chain_ends_after_the_
         purge_times.append(now[0] - delete_at)
         consumed += 1
     assert consumed < 60, "the chain did not end"
-    assert purge_times[-1] > REPURGE_HORIZON_S, f"last purge at {purge_times[-1]:.0f} s"
+    assert purge_times[-1] > repurge_horizon_s(), f"last purge at {purge_times[-1]:.0f} s"
     assert all(b - a <= REPURGE_HOP_S + 590 + 1e-6 for a, b in zip([0.0, *purge_times], purge_times)), purge_times
 
 
@@ -443,7 +480,7 @@ async def test_the_run_manifest_is_not_written_past_the_stage_deadline() -> None
     """The open and the final manifest are objects too: none may land after the chain's last purge."""
     store = MemoryResultStore()
     scope = RunScope(ORG, REC, "rev1", "parse")
-    scope.started_ms -= int((locks_module.STAGE_DEADLINE_S + 1) * 1000)
+    scope.started_ms -= int((locks_module.stage_deadline_s() + 1) * 1000)
     await scope.note(store, _key().relative_path(), opens=True)
     await scope.finish(store)
     assert store.paths(ORG, REC) == []
