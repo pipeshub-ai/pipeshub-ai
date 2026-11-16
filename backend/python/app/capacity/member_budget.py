@@ -72,6 +72,7 @@ FILE_SIZE = CHANGE_OFFSET + 64
 MAGIC = 0x50484C47
 DEAD_SCAN_INTERVAL_S = 0.1
 WATCH_S = 0.002  # how often a process's one watcher reads the change counters (no lock taken)
+REAP_S = 0.5  # while anyone waits, the watcher also looks for dead holders this often (a dead holder bumps no counter)
 FALLBACK_S = 0.05  # a waiter re-checks at least this often (jittered) in case a wake was missed
 SPIN_TRIES = int(os.environ.get("PIPESHUB_LEDGER_SPIN", "200"))
 _NF, _NC, _NK = len(FAMILIES), len(CLASSES), len(FAMILIES) * len(CLASSES)
@@ -299,8 +300,13 @@ class _Watcher:
 
     def _run(self) -> None:
         last = self._budget._changes()
+        next_reap = time.monotonic() + REAP_S
         while True:
             time.sleep(WATCH_S)
+            if time.monotonic() >= next_reap:
+                next_reap = time.monotonic() + REAP_S
+                with contextlib.suppress(Exception):
+                    self._budget._reap_dead()  # a reap bumps the counters, which wakes the waiters below
             with self._lock:
                 if not self._entries or self._budget._closed:
                     self._thread = None
@@ -560,6 +566,36 @@ class MemberBudget:
         if reaped:
             self._reconcile(hot)
         return reaped
+
+    def _reap_dead(self) -> int:
+        """Return the holdings of processes that died, for a waiter that no reservation attempt would reach.
+
+        The look for a dead holder takes no ledger lock (it reads the hot block, which is checksummed, and tries each
+        occupied slot's lifetime lock); the ledger lock is taken only when someone is found.
+        """
+        hot = self._read_hot()
+        dead = False
+        for i in range(MAX_SLOTS):
+            if i == self._slot or not hot.occupancy[i // 64] >> (i % 64) & 1:
+                continue
+            try:
+                fd = _open(self.directory / "procs" / f"{i}.lock", os.O_RDWR)
+            except OSError:
+                continue
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue  # still held: alive
+                dead = True
+            finally:
+                os.close(fd)
+            if dead:
+                break
+        if not dead:
+            return 0
+        with self._txn() as locked:
+            return self._reap(locked, force=True)
 
     def _reconcile(self, hot: _Hot) -> None:
         """Rebuild the totals from the live slots. A slot is the single source of truth for what its process holds:

@@ -138,3 +138,11 @@ def llm_waiters(directory: str, count: int, seconds: float, out: Connection) -> 
     start = time.process_time()
     asyncio.run(run())
     out.send(time.process_time() - start)
+
+
+def hold_all_llm_slots_then_wait(directory: str, count: int, ready: Connection) -> None:
+    """Take every LLM slot, tell the parent, then sleep until killed."""
+    budget = open_budget(directory, "holder", cpu_tokens=16, mem=1 << 36, llm_cap=count)
+    held = [budget.try_reserve(Demand(Family.LLM, 0)) for _ in range(count)]
+    ready.send(all(held))
+    time.sleep(600)
