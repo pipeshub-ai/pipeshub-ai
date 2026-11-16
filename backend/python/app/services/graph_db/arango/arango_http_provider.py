@@ -8737,25 +8737,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN a
                 )
 
-                // Then find the user by email
-                LET user = FIRST(
+                // The user of this address that the connector holds: other orgs can have a user with the same address
+                LET found = FIRST(
                     FOR u IN {CollectionNames.USERS.value}
                         FILTER LOWER(u.email) == LOWER(@email)
-                        RETURN u
+                        FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                            FILTER e._from == u._id AND e._to == app._id
+                            SORT u._key
+                            RETURN {{ user: u, sourceUserId: e.sourceUserId }}
                 )
 
-                // Find the edge connecting user to app
-                LET edge = FIRST(
-                    FOR e IN {CollectionNames.USER_APP_RELATION.value}
-                        FILTER e._from == user._id
-                        FILTER e._to == app._id
-                        RETURN e
-                )
-
-                // Return user merged with sourceUserId if edge exists
-                RETURN edge != null ? MERGE(user, {{
-                    sourceUserId: edge.sourceUserId
-                }}) : null
+                RETURN found != null ? MERGE(found.user, {{ sourceUserId: found.sourceUserId }}) : null
             """
 
             results = await self.http_client.execute_aql(
