@@ -3549,6 +3549,105 @@ async def test_a_shared_drive_item_read_again_by_id_then_trashed_in_the_same_run
     assert "s" not in ws.records.records, "the flush does not write an item the drive's feed reported in the trash"
 
 
+def _new_file_record(ext: str, parent: str):
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import FileRecord, OriginTypes, RecordType
+
+    return FileRecord(
+        org_id="org-1", record_name=ext, record_type=RecordType.FILE, external_record_id=ext,
+        parent_external_record_id=parent, version=1, origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.GOOGLE_DRIVE, connector_id=CONNECTOR_ID, is_file=True,
+    )
+
+
+async def test_a_shared_drive_file_kept_for_another_member_is_lost_to_the_reporter(ws: Workspace) -> None:
+    from functools import partial
+
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import FolderFailureRuns
+
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", erin: "organizer"})
+    ws.world.add_item("f", "f.txt", parent="sd-1", perms=[reader(ALICE)])
+    await ws.sync()
+    assert ALICE in ws.records.perm_emails("f")
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+    # Her feed reports the file removed and her own check does not open it; Erin's does.
+    ws.http.fail("GET", "/drive/v3/files/f", 404, "notFound", when=lambda r: r.identity == ALICE)
+    w = drive_connector._SyncWithdrawals(ALICE)
+    drive_connector._withdrawals.set(w)
+    try:
+        await connector._bounded_removal(
+            "f", "sd-1", FolderFailureRuns(None), "k", connector._undecided_key(alice, "sd-1"),
+            partial(connector._apply_shared_drive_removal, "f", alice, "sd-1", None),
+        )
+    finally:
+        drive_connector._withdrawals.set(None)
+
+    assert "f" in ws.records.records, "Erin still opens it: kept"
+    assert ALICE not in ws.records.perm_emails("f"), "her own grant went"
+    assert "f" in w.lost and "f" not in w.kept, "a new record of it is written without her"
+
+
+async def test_an_undecided_shared_drive_removal_is_lost_to_the_reporter(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import FolderFailureRuns
+
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+
+    async def undecided() -> object:  # what the drive removal answers once her grant went and a member group is unread
+        return drive_connector._Settled.UNDECIDED
+
+    w = drive_connector._SyncWithdrawals(ALICE)
+    drive_connector._withdrawals.set(w)
+    try:
+        await connector._bounded_removal(
+            "f", "sd-1", FolderFailureRuns(None), "k", connector._undecided_key(alice, "sd-1"), undecided,
+        )
+    finally:
+        drive_connector._withdrawals.set(None)
+
+    assert "f" in w.lost, "her grant went before the answer: a new record of it is written without her"
+
+
+async def test_a_placeholder_below_a_removed_folder_lets_no_new_record_under_it_be_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    ws.world.folder("d", "Old", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+    folder = ws.records.records["d"]
+    # A stand-in below the folder for a folder never read, with a new record under it waiting in the batch.
+    ws.records.records["p"] = folder.model_copy(update={
+        "id": "rec-p", "external_record_id": "p", "record_name": "p", "parent_external_record_id": "d",
+        "is_placeholder": True,
+    })
+    ws.world.delete("d")
+    w = drive_connector._SyncWithdrawals(ALICE)
+    drive_connector._withdrawals.set(w)
+    written: list = []
+
+    async def capture(batch: list) -> None:
+        written.extend(batch)
+
+    try:
+        assert await connector._apply_shared_drive_removal("d", alice, "sd-1", None) is drive_connector._Settled.REMOVED
+        connector.data_entities_processor.on_new_records = capture
+        await connector._flush_batch([(_new_file_record("n", "p"), [])])
+    finally:
+        drive_connector._withdrawals.set(None)
+
+    assert "p" not in w.kept, "nobody was asked whether the stand-in is open"
+    assert written == [], "below the deleted folder: not written"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (

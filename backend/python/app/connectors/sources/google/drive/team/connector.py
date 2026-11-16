@@ -375,6 +375,9 @@ class _Settled(Enum):
     that decided nothing leaves it there, to be checked again."""
 
     KEPT = "kept"
+    # Kept because someone else still opens it, while the reporting user could not: off its list like KEPT, and
+    # this user's grant went.
+    LOST = "lost"
     REMOVED = "removed"
     UNDECIDED = "undecided"
     NOT_STORED = "not_stored"  # nothing was stored for it: off its list like REMOVED
@@ -3441,7 +3444,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         # nothing from a new record of it waiting in the batch except as that outcome says.
         _record_withdrawal(file_id, {
             _Settled.REMOVED: None,  # deleted: recorded where it was deleted
-            _Settled.KEPT: _Withdrawal.KEPT,
+            _Settled.KEPT: _Withdrawal.KEPT,  # the reporting user still opens it
+            # The reporting user could not open it: their grant went, whoever else still opens it or is unknown.
+            _Settled.LOST: _Withdrawal.LOST,
+            _Settled.UNDECIDED: _Withdrawal.LOST,
             _Settled.NOT_STORED: _Withdrawal.NOT_STORED,
         }.get(outcome, outcome) if isinstance(outcome, (_Settled, _Withdrawal)) else None)
         held.clear(file_id)
@@ -3722,6 +3728,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             return _Settled.NOT_STORED
         unknown = False
         sources = {user.email: user_drive_data_source} if user and user_drive_data_source else {}
+        opened_by: dict[str, str] = {}  # who confirmed each kept item is still open
 
         async def still_open(item: Record) -> bool:
             nonlocal unknown
@@ -3741,6 +3748,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if metadata.get("trashed"):
                     return False
                 self.logger.info(f"Keeping {item.record_name}: {candidate.email} can still open it")
+                opened_by[item.external_record_id] = candidate.email.lower()
                 return True
             if drive_id in self._drive_members_unread:
                 # Unknown is not empty: a member of that group may still open it. Kept, as for a group grant whose
@@ -3761,7 +3769,13 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         try:
             if await still_open(record):
-                return _Settled.UNDECIDED if unknown else _Settled.KEPT
+                if unknown:
+                    return _Settled.UNDECIDED
+                if user is not None and opened_by.get(record.external_record_id) != user.email.lower():
+                    # The drive's feed reported it removed for this user, and their own check did not open it.
+                    await self._drop_reporters_grant(record, user)
+                    return _Settled.LOST
+                return _Settled.KEPT
             if record.mime_type in FOLDER_MIME_TYPES:
                 kept = await remove_folder_confirming_contents(
                     self.data_entities_processor, self.connector_id, record, still_open, self.logger
