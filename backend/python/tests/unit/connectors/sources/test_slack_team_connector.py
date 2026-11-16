@@ -2739,6 +2739,30 @@ class TestSyncUsersAndCaches:
             assert sorted(u.source_user_id for u in gone) == ["UINV", "UOLD"]
 
     @pytest.mark.asyncio
+    async def test_a_failed_withdrawal_does_not_stop_the_sync_before_the_role_rewrite(self) -> None:
+        """The stored-links read of the withdrawal fails: the user sync still finishes (so the workspace role, which
+        leaves deactivated members out, is rewritten this run), and the failure is logged for the next sync."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("store down"))
+        page = MagicMock(success=True, data={
+            "members": [
+                {"id": "UOK", "profile": {"email": "maya@x.com", "real_name": "Maya"}},
+                {"id": "UOLD", "deleted": True, "profile": {"real_name": "Old"}},
+            ],
+            "response_metadata": {"next_cursor": ""},
+        })
+        ds = MagicMock()
+        ds.users_list = AsyncMock(return_value=page)
+        c._build_user_id_caches = AsyncMock()
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_users()
+        c._build_user_id_caches.assert_awaited_once()
+        assert any("tried again next sync" in str(call) for call in c.logger.error.call_args_list)
+        assert [m["id"] for m in [{"id": u.source_user_id} for u in c._non_guest_app_users]] == ["UOK"]
+
+    @pytest.mark.asyncio
     async def test_sync_users_list_failure_breaks_loop(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 

@@ -1014,12 +1014,17 @@ class SlackConnector(BaseConnector):
 
         # A short list withdraws nobody, as it rewrites no role (_sync_workspace_roles).
         if unusable and not self._users_read_failed:
-            gone = [
-                u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
-                if u.source_user_id in unusable
-            ]
-            if gone:
-                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            # A failed withdrawal must not stop the role rewrite after it, which already leaves these members out.
+            try:
+                gone = [
+                    u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                    if u.source_user_id in unusable
+                ]
+                if gone:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            except Exception as e:
+                self.logger.error(f"Withdrawing deactivated or invited members failed; tried again next sync: {e}",
+                                  exc_info=True)
 
         # After all pages, build the internal-ID cache for fast mention resolution
         await self._build_user_id_caches()

@@ -563,12 +563,17 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_new_app_users(linkable)
         unusable = {u.source_user_id for u in users} - {u.source_user_id for u in linkable}
         if users_complete and unusable:
-            gone = [
-                u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
-                if u.source_user_id in unusable
-            ]
-            if gone:
-                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            # A failed withdrawal must not stop the group and role rewrites after it, which leave these users out.
+            try:
+                gone = [
+                    u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                    if u.source_user_id in unusable
+                ]
+                if gone:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            except Exception as e:
+                self.logger.error(f"Withdrawing suspended or deleted users failed; tried again next sync: {e}",
+                                  exc_info=True)
         self.logger.info(f"Zendesk: synced {len(users)} users")
 
         self._role_ticket_access, self._roles_complete = (

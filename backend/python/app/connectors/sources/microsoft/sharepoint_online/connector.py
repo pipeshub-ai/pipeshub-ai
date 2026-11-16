@@ -3701,7 +3701,14 @@ class SharePointConnector(BaseConnector):
                 continue
             gone.append(u)
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            try:
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            except Exception as e:
+                # The run goes on to its group and grant rewrites; the listing is not trusted, so nothing else is
+                # taken as withdrawn, and the next sync tries again.
+                self.logger.error(f"Withdrawing deleted or disabled accounts failed; tried again next sync: {e}",
+                                  exc_info=True)
+                return False
         return trusted
 
     async def _sync_users(self) -> None:

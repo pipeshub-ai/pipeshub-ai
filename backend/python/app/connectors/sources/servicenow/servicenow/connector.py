@@ -2284,24 +2284,32 @@ class ServiceNowConnector(BaseConnector):
         reconcile = query is None or not checked or now - datetime.strptime(
             checked, ServiceNowDefaults.DATETIME_FORMAT
         ).replace(tzinfo=timezone.utc) >= timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS)
+        withdrawal_failed = False
         if inactive or reconcile:
-            stored_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id, raise_on_error=True
-            )
-            gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
-            if reconcile:
-                gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
-            stored = [u for u in stored_users if u.source_user_id in gone]
-            if stored:
-                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
-            if reconcile:
+            # A failed withdrawal must not stop the rest of the sync (its role and group rewrites leave these users
+            # out); the checkpoints stay where they were, so the next sync reads these users and withdraws again.
+            try:
+                stored_users = await self.data_entities_processor.get_all_app_users(
+                    connector_id=self.connector_id, raise_on_error=True
+                )
+                gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
+                if reconcile:
+                    gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
+                stored = [u for u in stored_users if u.source_user_id in gone]
+                if stored:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
+            except Exception as e:
+                withdrawal_failed = True
+                self.logger.error(f"Withdrawing inactive or locked-out users failed; tried again next sync: {e}",
+                                  exc_info=True)
+            if reconcile and not withdrawal_failed:
                 await self.user_sync_point.update_sync_point(
                     ServiceNowSyncPointKeys.USERS_RECONCILE,
                     {ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT)},
                 )
 
         # Save checkpoint for next sync
-        if latest_update_time:
+        if latest_update_time and not withdrawal_failed:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
         if not migrated:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS_V2, {ServiceNowDictKeys.DONE: True})

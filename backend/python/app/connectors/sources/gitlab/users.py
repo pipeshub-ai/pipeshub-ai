@@ -669,12 +669,16 @@ class UsersSync:
 
         # The row states the account itself, so a walk that missed other groups still decides it.
         if blocked:
-            gone = [
-                u for u in await c.data_entities_processor.get_app_user_links(c.connector_id)
-                if u.source_user_id in blocked
-            ]
-            if gone:
-                await c.data_entities_processor.withdraw_app_user_access(c.connector_id, gone)
+            # A failed withdrawal must not stop the membership rewrites after it, which leave these accounts out.
+            try:
+                gone = [
+                    u for u in await c.data_entities_processor.get_app_user_links(c.connector_id)
+                    if u.source_user_id in blocked
+                ]
+                if gone:
+                    await c.data_entities_processor.withdraw_app_user_access(c.connector_id, gone)
+            except Exception as e:
+                self.logger.error("Withdrawing blocked accounts failed; tried again next sync: %s", e, exc_info=True)
 
         self.logger.info(
             "Total users synced: %s, Total users skipped: %s",
