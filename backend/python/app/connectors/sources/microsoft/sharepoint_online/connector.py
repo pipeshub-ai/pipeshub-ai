@@ -3701,7 +3701,14 @@ class SharePointConnector(BaseConnector):
                 continue
             gone.append(u)
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            try:
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            except Exception as e:
+                # The run goes on to its group and grant rewrites; the listing is not trusted, so nothing else is
+                # taken as withdrawn, and the next sync tries again.
+                self.logger.error(f"Withdrawing deleted or disabled accounts failed; tried again next sync: {e}",
+                                  exc_info=True)
+                return False
         return trusted
 
     async def _sync_users(self) -> None:
@@ -3879,7 +3886,8 @@ class SharePointConnector(BaseConnector):
                 # A warning about the app's permissions must not stop the sync it is about.
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
-            if self._disabled_set_unknown:
+            # While the deleted accounts are unread, a SharePoint principal (no Entra id) is withheld too (may_grant).
+            if self._disabled_set_unknown or self.source_accounts.deleted_pending:
                 # A grant may be withheld this run (_user_may_be_granted), and an item's grants and the drives' delta
                 # tokens are saved as the run goes. Mark every item for reading again before any of that, so a run
                 # that stops anywhere after this point still leaves the next run to write what was withheld. If this

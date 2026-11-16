@@ -2224,6 +2224,7 @@ class ServiceNowConnector(BaseConnector):
         latest_update_time = None
         inactive: set[str] = set()
         no_email = 0
+        lock_unread = 0
 
         # A failed page raises: a short list is indistinguishable from a complete one to
         # everything downstream, so the sync would report success over what it missed.
@@ -2263,6 +2264,11 @@ class ServiceNowConnector(BaseConnector):
                         or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME):
                     inactive.add(user_data.sys_id)
                     continue
+                if not hasattr(user_data, ServiceNowFields.LOCKED_OUT):
+                    # Not returned (a field ACL can hide it) is unknown, not unlocked: neither linked nor withdrawn,
+                    # and the checkpoint stays so the row is read again once the field can be read.
+                    lock_unread += 1
+                    continue
                 if not (user_data.email or "").strip():
                     # Signs in as no PipesHub user: one stored with the email it had loses access too.
                     no_email += 1
@@ -2284,28 +2290,41 @@ class ServiceNowConnector(BaseConnector):
         reconcile = query is None or not checked or now - datetime.strptime(
             checked, ServiceNowDefaults.DATETIME_FORMAT
         ).replace(tzinfo=timezone.utc) >= timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS)
+        withdrawal_failed = False
         if inactive or reconcile:
-            stored_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id, raise_on_error=True
-            )
-            gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
-            if reconcile:
-                gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
-            stored = [u for u in stored_users if u.source_user_id in gone]
-            if stored:
-                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
-            if reconcile:
+            # A failed withdrawal must not stop the rest of the sync (its role and group rewrites leave these users
+            # out); the checkpoints stay where they were, so the next sync reads these users and withdraws again.
+            try:
+                stored_users = await self.data_entities_processor.get_all_app_users(
+                    connector_id=self.connector_id, raise_on_error=True
+                )
+                gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
+                if reconcile:
+                    gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
+                stored = [u for u in stored_users if u.source_user_id in gone]
+                if stored:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
+            except Exception as e:
+                withdrawal_failed = True
+                self.logger.error(f"Withdrawing inactive or locked-out users failed; tried again next sync: {e}",
+                                  exc_info=True)
+            if reconcile and not withdrawal_failed:
                 await self.user_sync_point.update_sync_point(
                     ServiceNowSyncPointKeys.USERS_RECONCILE,
                     {ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT)},
                 )
 
         # Save checkpoint for next sync
-        if latest_update_time:
+        if latest_update_time and not withdrawal_failed and not lock_unread:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
         if not migrated:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS_V2, {ServiceNowDictKeys.DONE: True})
 
+        if lock_unread:
+            self._note_problem(
+                f"The integration user cannot read whether {_plural(lock_unread, 'ServiceNow user is', 'ServiceNow users are')} "
+                "locked out, so they are not synced until it can"
+            )
         if no_email:
             self._note_problem(
                 f"{_plural(no_email, 'active ServiceNow user has', 'active ServiceNow users have')} no email "

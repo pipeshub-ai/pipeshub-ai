@@ -502,6 +502,12 @@ class UsersSync:
                         _gitlab_timeout=120.0,
                     )
                     if user_res.success and user_res.data is not None:
+                        # The profile has no membership: keep the member row's state, or an awaiting membership
+                        # ("one of awaiting or active", https://docs.gitlab.com/api/members/) would read as active.
+                        full = getattr(user_res.data, "attributes", None)
+                        if isinstance(full, dict):
+                            membership = attributes.get("membership_state") if isinstance(attributes, dict) else None
+                            return member_id, SimpleNamespace(**full, membership_state=membership)
                         return member_id, user_res.data
                     self.logger.warning(
                         "Could not fetch full GitLab user id=%s (%s); using member payload.",
@@ -663,12 +669,16 @@ class UsersSync:
 
         # The row states the account itself, so a walk that missed other groups still decides it.
         if blocked:
-            gone = [
-                u for u in await c.data_entities_processor.get_app_user_links(c.connector_id)
-                if u.source_user_id in blocked
-            ]
-            if gone:
-                await c.data_entities_processor.withdraw_app_user_access(c.connector_id, gone)
+            # A failed withdrawal must not stop the membership rewrites after it, which leave these accounts out.
+            try:
+                gone = [
+                    u for u in await c.data_entities_processor.get_app_user_links(c.connector_id)
+                    if u.source_user_id in blocked
+                ]
+                if gone:
+                    await c.data_entities_processor.withdraw_app_user_access(c.connector_id, gone)
+            except Exception as e:
+                self.logger.error("Withdrawing blocked accounts failed; tried again next sync: %s", e, exc_info=True)
 
         self.logger.info(
             "Total users synced: %s, Total users skipped: %s",

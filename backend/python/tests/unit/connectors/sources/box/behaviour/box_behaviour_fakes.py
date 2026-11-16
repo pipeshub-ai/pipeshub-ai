@@ -501,9 +501,6 @@ class FakeBoxRecordsDb:
             self._accounts = SourceAccounts(self, connector_id, InMemoryConfigService(), logging.getLogger("fake"))
         return self._accounts
 
-    async def get_app_user_links(self, connector_id: str) -> list[Any]:
-        return [SimpleNamespace(id=email, email=email, source_user_id=u.source_user_id) for email, u in self.app_users.items()]
-
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         return SimpleNamespace(id=email.lower(), email=email)
 
@@ -515,6 +512,13 @@ class FakeBoxRecordsDb:
                 del stored[key]
                 removed += 1
         return removed
+
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return [SimpleNamespace(id=u.id, source_user_id=u.source_user_id, email=u.email) for u in self.app_users.values()]
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        gone = {u.source_user_id for u in users}
+        self.app_users = {e: u for e, u in self.app_users.items() if u.source_user_id not in gone}
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> AppUser | None:
         return next((u for u in self.app_users.values() if u.source_user_id == source_user_id), None)
