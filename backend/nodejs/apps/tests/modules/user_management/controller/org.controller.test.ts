@@ -11,6 +11,7 @@ import { UserCredentials } from '../../../../src/modules/auth/schema/userCredent
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
 import * as outboxDispatcher from '../../../../src/libs/services/outbox/outbox.dispatcher';
+import { MongoUnitOfWork } from '../../../../src/libs/repositories/mongo';
 import {
   BadRequestError,
   NotFoundError,
@@ -691,12 +692,30 @@ describe('OrgController', () => {
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
       const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
+      // Hold the unit of work open after its body ran, so a kick from inside the body would show.
+      let commit!: () => void;
+      const committed = new Promise<void>((resolve) => { commit = resolve; });
+      let bodyRan!: () => void;
+      const bodyDone = new Promise<void>((resolve) => { bodyRan = resolve; });
+      const run = MongoUnitOfWork.prototype.run;
+      sinon.stub(MongoUnitOfWork.prototype, 'run').callsFake(async function (
+        this: MongoUnitOfWork,
+        ...args: Parameters<MongoUnitOfWork['run']>
+      ) {
+        const out = await run.apply(this, args);
+        bodyRan();
+        await committed;
+        return out;
+      });
 
-      await controller.createOrg(req, res);
+      const done = controller.createOrg(req, res);
+      await bodyDone;
+      expect(mockEventService.publishEvent.calledTwice).to.be.true;
+      expect(kick.called).to.be.false;
+      commit();
+      await done;
 
       expect(kick.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledTwice).to.be.true;
-      expect(kick.calledAfter(mockEventService.publishEvent)).to.be.true;
     });
 
     it('does not kick the outbox when the organisation was not created', async () => {

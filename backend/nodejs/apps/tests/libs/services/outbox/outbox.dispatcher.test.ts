@@ -417,7 +417,10 @@ describe('kickOutbox', () => {
   });
 
   it('never sends an event twice, however many kicks and ticks overlap', async () => {
-    const outbox = memoryOutbox();
+    let emptyClaims = 0;
+    const outbox = memoryOutbox(() => {
+      emptyClaims += 1;
+    });
     setOutboxRepository(outbox.repo);
     const producer = makeProducer();
     dispatcher = new OutboxDispatcher(producer as any, makeLogger() as any, 5);
@@ -427,20 +430,26 @@ describe('kickOutbox', () => {
     kickOutbox();
     kickOutbox();
     await Promise.all([dispatcher.drain(), dispatcher.drain()]);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    // Two more passes found the queue empty: timer ticks ran after the kicks and drains.
+    const afterDrains = emptyClaims;
+    await until(() => emptyClaims >= afterDrains + 2);
 
     expect(producer.publish.callCount).to.equal(1);
     expect(outbox.published).to.deep.equal(['org-created']);
   });
 
   it('leaves the timer running as the fallback', async () => {
-    const outbox = memoryOutbox();
+    let emptyClaims = 0;
+    const outbox = memoryOutbox(() => {
+      emptyClaims += 1;
+    });
     setOutboxRepository(outbox.repo);
     const producer = makeProducer();
     dispatcher = new OutboxDispatcher(producer as any, makeLogger() as any, 10);
     dispatcher.start();
     kickOutbox();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The kick's pass is over before the row lands, so only a tick can deliver it.
+    await until(() => emptyClaims >= 1);
 
     outbox.add('later');
     await until(() => outbox.published.length === 1);
@@ -457,7 +466,6 @@ describe('kickOutbox', () => {
     outbox.add('org-created');
 
     kickOutbox();
-    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(producer.publish.called).to.equal(false);
   });
 });
