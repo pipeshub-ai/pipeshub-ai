@@ -1,0 +1,246 @@
+{{- if .Values.parsing.enabled }}
+{{- /*
+Parsing service in its own pods, from the application image with
+PIPESHUB_ROLE=parsing. The Deployment is named <fullname>-parsing and its pods
+carry the label pipeshub.ai/workload=parsing, so other charts can select them by those two
+and nothing else.
+*/ -}}
+{{- $name := include "pipeshub-ai.parsingName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
+    pipeshub.ai/workload: parsing
+    app.kubernetes.io/component: parsing
+spec:
+  replicas: {{ .Values.parsing.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
+      pipeshub.ai/workload: parsing
+  template:
+    metadata:
+      {{- with .Values.parsing.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pipeshub-ai.parsingLabels" . | nindent 8 }}
+        pipeshub.ai/workload: parsing
+        app.kubernetes.io/component: parsing
+        {{- with .Values.parsing.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.parsing.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pipeshub-ai.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: parsing
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          ports:
+            - name: parsing
+              containerPort: {{ .Values.parsing.port }}
+              protocol: TCP
+          env:{{ include "pipeshub-ai.appEnv" . }}
+            - name: PIPESHUB_ROLE
+              value: parsing
+            - name: PARSING_SERVICE_PORT
+              value: {{ .Values.parsing.port | quote }}
+            {{- if ne (toString .Values.parsing.maxConcurrent) "" }}
+            - name: PARSING_MAX_CONCURRENT
+              value: {{ .Values.parsing.maxConcurrent | quote }}
+            {{- end }}
+            # One worker per pod: the admission count behind PARSING_MAX_CONCURRENT and the
+            # saturation metrics is per process, so more workers would admit that many each.
+            - name: PARSING_UVICORN_WORKERS
+              value: "1"
+            {{- range .Values.parsing.extraEnv }}
+            {{- if ne .name "PARSING_UVICORN_WORKERS" }}
+            {{- list . | toYaml | nindent 12 }}
+            {{- end }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.parsing.resources | nindent 12 }}
+          volumeMounts:
+            - name: app-logs
+              mountPath: /app/python/logs
+            - name: app-home
+              mountPath: /home/user
+            - name: app-rootlocal
+              mountPath: /root/.local
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.s3SignatureV4Preload }}
+            - name: s3-sigv4
+              mountPath: /etc/pipeshub/s3-sigv4
+              readOnly: true
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: parsing
+            initialDelaySeconds: {{ .Values.parsing.healthCheck.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.parsing.healthCheck.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.parsing.healthCheck.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.parsing.healthCheck.startupProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: parsing
+            periodSeconds: {{ .Values.parsing.healthCheck.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.parsing.healthCheck.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.parsing.healthCheck.readinessProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: parsing
+            periodSeconds: {{ .Values.parsing.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.parsing.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.parsing.healthCheck.livenessProbe.failureThreshold }}
+      {{- with .Values.parsing.nodeSelector }}
+      {{- $selector := include "pipeshub-ai.compactMap" . }}
+      {{- if $selector }}
+      nodeSelector:
+        {{- $selector | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- if .Values.parsing.affinity }}
+      affinity:
+        {{- toYaml .Values.parsing.affinity | nindent 8 }}
+      {{- else if .Values.parsing.spreadAcrossNodes }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 20 }}
+                    pipeshub.ai/workload: parsing
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- with .Values.parsing.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: app-logs
+          emptyDir: {}
+        - name: app-home
+          emptyDir: {}
+        - name: app-rootlocal
+          emptyDir: {}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.s3SignatureV4Preload }}
+        - name: s3-sigv4
+          configMap:
+            name: {{ include "pipeshub-ai.fullname" . }}-s3-sigv4
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
+    pipeshub.ai/workload: parsing
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.parsing.port }}
+      targetPort: parsing
+      protocol: TCP
+      name: parsing
+  selector:
+    {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 4 }}
+    pipeshub.ai/workload: parsing
+{{- if .Values.parsing.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
+    pipeshub.ai/workload: parsing
+spec:
+  maxUnavailable: {{ .Values.parsing.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
+      pipeshub.ai/workload: parsing
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+{{- /*
+The parsing pods are a different application name from the main pods, so the main policy does not
+select them. They take parse requests only from the application pods, on the parsing port; anything
+else that needs them (a metrics scraper, for example) is admitted by parsing.networkPolicy.extraIngress.
+Egress is the application policy's own rules.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
+    pipeshub.ai/workload: parsing
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
+      pipeshub.ai/workload: parsing
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "pipeshub-ai.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.parsing.port }}
+    {{- with .Values.parsing.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.networkPolicy.egress .Values.networkPolicy.extraEgress }}
+  egress:
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
