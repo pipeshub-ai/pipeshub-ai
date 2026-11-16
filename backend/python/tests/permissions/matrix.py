@@ -95,7 +95,7 @@ SRC = "app/connectors/sources/"
 CONNECTORS: tuple[Connector, ...] = (
     Connector("atlassian/confluence_cloud", "confluence", INTERSECTION, "atlassian/confluence_cloud/connector.py:4848",
               "space RESTRICTED + inherit; page STRICT or RESTRICTED (:1786)"),
-    Connector("atlassian/confluence_datacenter", "confluence", INTERSECTION, "atlassian/confluence_datacenter/connector.py:1135",
+    Connector("atlassian/confluence_datacenter", "confluence", INTERSECTION, "atlassian/confluence_datacenter/connector.py:1140",
               "same writer shape as Cloud"),
     Connector("atlassian/confluence_datacenter_personal", "container", CONTAINER, "atlassian/confluence_datacenter_personal/connector.py:133"),
     Connector("atlassian/jira_cloud", "jira", INTERSECTION, "atlassian/jira_cloud/connector.py:5320",

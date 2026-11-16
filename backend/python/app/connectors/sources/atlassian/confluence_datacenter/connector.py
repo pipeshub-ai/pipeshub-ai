@@ -672,6 +672,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             total_synced = 0
             total_skipped = 0
             listed: set[str] = set()      # source ids of the active users listed, for the withdrawal below
+            keyless = False               # a known user listed without an id: who is listed is not fully known
             read_complete = True
 
             # Paginate through all users
@@ -724,6 +725,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 continue
                             if source_id := user_data.get("userKey") or user_data.get("key"):
                                 listed.add(source_id)
+                            else:
+                                keyless = True
                     else:
                         # Flatten: merge nested 'user' dict with top-level fields
                         user_data = {**user_result.get("user", {}), **{k: v for k, v in user_result.items() if k != "user"}}
@@ -771,7 +774,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             # A linked account the complete active list no longer shows was disabled, unlicensed or deleted since: it
             # loses the connector, as it is not linked either. A cut or empty list withdraws nobody. Enabled again, it
             # is linked on the next read. ``creator_`` ids are the stand-in the connector's creator is linked with.
-            if active_list and read_complete and listed:
+            # The 9.3-10.0 docs list no fields for an entry: one without a key could be a linked user, so then
+            # nobody is withdrawn rather than everyone the list seems to leave out.
+            if active_list and read_complete and listed and not keyless:
                 gone = [
                     u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
                     if u.source_user_id not in listed and not u.source_user_id.startswith("creator_")

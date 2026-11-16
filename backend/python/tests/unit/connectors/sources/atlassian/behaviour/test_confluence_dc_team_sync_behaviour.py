@@ -452,6 +452,20 @@ class TestUsersAndGroups:
         await connector._sync_users()
         assert db.app_users[-1].source_user_id == "bob"
 
+    async def test_an_active_list_entry_without_a_key_withdraws_nobody(self, atlassian_api, db, store) -> None:
+        """The 9.3-10.0 docs list no fields for an entry: one without a userKey may be a linked user, so nobody the
+        list seems to leave out is withdrawn."""
+        connector = await make_connector(atlassian_api, db, store)
+        ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})
+        await connector._sync_users()
+
+        keyless_bob = {k: v for k, v in bob.items() if k not in ("userKey", "key")}
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, keyless_bob]})
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+
     @pytest.mark.parametrize("second_page", [
         json_response({"message": "busy"}, status=503),
         {"oops": True},
