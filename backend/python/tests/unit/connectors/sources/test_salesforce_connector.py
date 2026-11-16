@@ -56,7 +56,7 @@ from app.connectors.sources.salesforce.connector import (
     _ts_in_bounds,
 )
 from app.exceptions.graph_db_exceptions import GraphQueryError
-from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
+from app.models.entities import AppUser, FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 from tests.support.data_store import runs_in_its_transaction
 from tests.support.in_memory_config import InMemoryConfigService
@@ -3754,57 +3754,64 @@ class TestSyncPermissionsEdges:
 
 
 class TestPermissionsFollowTheAddressHolder:
-    """A Salesforce user's access follows the account that holds the address."""
+    """A Salesforce user's access follows the account that holds the address, as the user listing decided it."""
 
     @staticmethod
-    def _connector(users: list[dict]) -> SalesforceConnector:
+    def _connector() -> tuple[SalesforceConnector, SourceAccounts]:
         connector = _make_connector()
         dep = connector.data_entities_processor
         dep.get_app_user_links = AsyncMock(return_value=[])
         dep.get_all_app_users = AsyncMock(return_value=[])
         dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
         dep.remove_user_access_to_connector = AsyncMock(return_value=3)
-        connector.source_accounts = SourceAccounts(dep, "conn-sf-1", InMemoryConfigService(), logging.getLogger("t"))
-        connector._soql_query_paginated = _mock_pages(users)
-        mock_tx = dep.data_store_provider.transaction.return_value
-        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=lambda **_: [])
+        accounts = SourceAccounts(dep, "conn-sf-1", InMemoryConfigService(), logging.getLogger("t"))
+        connector.source_accounts = accounts
         connector._sync_permissions_for_user = AsyncMock(return_value=[])
-        return connector
+        return connector, accounts
 
     @staticmethod
-    def _stored(connector: SalesforceConnector) -> None:
+    def _sf_user(user_id: str) -> AppUser:
+        return AppUser(app_name="SALESFORCE", connector_id="conn-sf-1", source_user_id=user_id,
+                       email="alice@example.com", full_name="Alice")
+
+    @staticmethod
+    async def _permissions(connector: SalesforceConnector, users: list[dict]) -> list[str]:
+        connector._soql_query_paginated = _mock_pages(users)
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}], [],
             [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         ])
+        connector._sync_permissions_for_user.reset_mock()
+        await connector._sync_permissions_edges(api_version="59.0")
+        return [c.kwargs["user"]["Id"] for c in connector._sync_permissions_for_user.await_args_list]
 
     @pytest.mark.asyncio
-    async def test_an_address_handed_to_a_new_user_loses_the_earlier_users_access_first(self) -> None:
-        connector = self._connector([{"Id": "005000000000001AAA", "Email": "alice@example.com"}])
-        self._stored(connector)
-        await connector._sync_permissions_edges(api_version="59.0")
-        connector.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+    async def test_only_the_account_holding_the_address_is_read_after_it_changed_hands(self) -> None:
+        connector, accounts = self._connector()
+        old, new = "005000000000001AAA", "005000000000002AAA"
+        assert await accounts.before_link([self._sf_user(old)])          # an earlier user sync
+        assert await accounts.before_link([self._sf_user(new)])          # this run's user sync: the address moved
 
-        connector._soql_query_paginated = _mock_pages([{"Id": "005000000000002AAA", "Email": "alice@example.com"}])
-        self._stored(connector)
-        await connector._sync_permissions_edges(api_version="59.0")
+        read = await self._permissions(connector, [{"Id": old, "Email": "alice@example.com"},
+                                                   {"Id": new, "Email": "alice@example.com"}])
 
-        connector.data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(
-            "conn-sf-1", "alice@example.com"
-        )
-        read_for = connector._sync_permissions_for_user.await_args.kwargs["user"]["Id"]
-        assert read_for == "005000000000002AAA"
+        assert read == [new]
 
     @pytest.mark.asyncio
-    async def test_two_active_users_on_one_address_read_only_the_holders_access(self) -> None:
-        connector = self._connector([{"Id": "005000000000001AAA", "Email": "alice@example.com"},
-                                     {"Id": "005000000000002AAA", "Email": "alice@example.com"}])
-        self._stored(connector)
-        await connector._sync_permissions_edges(api_version="59.0")
+    async def test_two_active_users_on_one_address_keep_the_listings_holder_and_remove_nothing_more(self) -> None:
+        """The permission step must not decide the holder again: that would remove the listed holder's grants (its
+        group memberships among them) and flip back on the next run."""
+        connector, accounts = self._connector()
+        first, second = "005000000000001AAA", "005000000000002AAA"
+        assert await accounts.before_link([self._sf_user(first), self._sf_user(second)])   # this run's user sync
+        removals = connector.data_entities_processor.remove_user_access_to_connector.await_count
 
-        read_for = [c.kwargs["user"]["Id"] for c in connector._sync_permissions_for_user.await_args_list]
-        assert read_for == ["005000000000002AAA"]
+        for _ in range(2):          # this run and the next
+            read = await self._permissions(connector, [{"Id": first, "Email": "alice@example.com"},
+                                                       {"Id": second, "Email": "alice@example.com"}])
+            assert read == [second]
+        assert connector.data_entities_processor.remove_user_access_to_connector.await_count == removals
 
 
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:
