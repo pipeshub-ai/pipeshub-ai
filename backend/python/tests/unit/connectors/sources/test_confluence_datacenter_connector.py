@@ -2415,6 +2415,15 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
+    async def test_a_group_naming_the_old_account_does_not_reach_the_new_one_at_its_address(self) -> None:
+        """The group lists account A; the address is linked to account B now. B must not get A's membership."""
+        c = _conn()
+        b = MagicMock(email="a@t.com", source_user_id="key-b")
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[b])
+        assert await c._get_app_users_by_emails(["a@t.com"], {"a@t.com": {"key-a"}}) == []
+        assert await c._get_app_users_by_emails(["a@t.com"], {"a@t.com": {"key-b"}}) == [b]
+
+    @pytest.mark.asyncio
     async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))

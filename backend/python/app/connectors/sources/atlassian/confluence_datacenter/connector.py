@@ -843,9 +843,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.debug(f"  Processing group: {group_name} ({group_id})")
 
                         # Fetch members: name-based (DC) or ID-based (Cloud) based on flag
+                        member_ids: dict[str, set[str]] = {}
                         member_emails = await self._fetch_group_members(
                             group_name=group_name,
-                            group_id=group_id
+                            group_id=group_id,
+                            ids_by_email=member_ids,
                         )
                         if member_emails is None:
                             # Saving the group now would replace its members with an empty list.
@@ -861,7 +863,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                         # Get AppUser objects for members
                         try:
-                            app_users = await self._get_app_users_by_emails(member_emails)
+                            app_users = await self._get_app_users_by_emails(member_emails, member_ids)
                         except Exception as lookup_error:
                             # Saving the group now would replace its members with an empty list.
                             self.logger.warning(
@@ -4301,7 +4303,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         )
 
     async def _fetch_group_members(
-        self, group_name: str, group_id: Optional[str] = None
+        self, group_name: str, group_id: Optional[str] = None, ids_by_email: Optional[dict[str, set[str]]] = None,
     ) -> Optional[list[str]]:
         """Fetch all members of a group and return their email addresses.
 
@@ -4418,6 +4420,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     if email:
                         member_emails.append(email)
+                        # The account the group names, as users are linked (Data Center userKey, Cloud accountId).
+                        sid = (member_data.get("userKey") or member_data.get("key") if USE_DATA_CENTER_APIS
+                               else member_data.get("accountId"))
+                        if ids_by_email is not None and sid:
+                            ids_by_email.setdefault(email, set()).add(str(sid))
                     else:
                         self.logger.debug(
                             "Skipping group member '%s' in group '%s': no email found",
@@ -4478,7 +4485,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
         return ""
 
-    async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
+    async def _get_app_users_by_emails(
+        self, emails: list[str], ids_by_email: Optional[dict[str, set[str]]] = None,
+    ) -> list[AppUser]:
         """
         Get AppUser objects by their email addresses from database.
 
@@ -4505,8 +4514,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         # Create email lookup map
         email_set = set(emails)
 
-        # Filter users by email
-        filtered_users = [user for user in all_app_users if user.email in email_set]
+        # Filter users by email, and by the account the group named where it named one: an old account the group still
+        # lists must not hand its membership to the new account linked to the same address.
+        ids_by_email = ids_by_email or {}
+        filtered_users = [
+            user for user in all_app_users
+            if user.email in email_set and (user.email not in ids_by_email or user.source_user_id in ids_by_email[user.email])
+        ]
 
         if len(filtered_users) < len(emails):
             missing_count = len(emails) - len(filtered_users)
