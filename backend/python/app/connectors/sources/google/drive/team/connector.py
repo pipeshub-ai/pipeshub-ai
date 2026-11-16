@@ -2318,8 +2318,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         kept, so removals their feed reports still apply."""
         for user in self.synced_users:
             key = generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
+            had_token = bool((await self.drive_delta_sync_point.read_sync_point(key) or {}).get("pageToken"))
             await self.drive_delta_sync_point.delete_sync_point(key)
-            await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RELISTED: True})
+            if had_token:  # only a dropped token loses removals
+                await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RELISTED: True})
             if reseed:
                 # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare. Ids
                 # left to retry are dropped: only a whole listing answers for a change of the limits.
