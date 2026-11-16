@@ -75,10 +75,28 @@ class ThreadWorkExecutor(ThreadPoolExecutor):
 
 
 def install(loop: asyncio.AbstractEventLoop) -> None:
-    """Make the loop's default executor the tracking one (once per loop)."""
+    """Record the jobs submitted to the loop's default executor (once per loop).
+
+    The executor the service installed (sized to the governor's ceilings, and shut down at shutdown) is kept: its
+    ``submit`` is wrapped, and its size and identity do not change. Only a loop with no default executor yet gets a
+    tracking one, with asyncio's own default size.
+    """
     if getattr(loop, _INSTALLED, False):
         return
-    loop.set_default_executor(ThreadWorkExecutor(max_workers=min(32, (os.cpu_count() or 1) + 4)))
+    executor = getattr(loop, "_default_executor", None)
+    if executor is None:
+        loop.set_default_executor(ThreadWorkExecutor(max_workers=min(32, (os.cpu_count() or 1) + 4)))
+    elif not isinstance(executor, ThreadWorkExecutor):
+        original = executor.submit
+
+        def submit(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:  # noqa: ANN401
+            future = original(fn, *args, **kwargs)
+            work = _current.get()
+            if work is not None:
+                work.add(future)
+            return future
+
+        executor.submit = submit
     setattr(loop, _INSTALLED, True)
 
 
