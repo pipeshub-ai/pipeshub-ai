@@ -15095,6 +15095,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER edge._to == @record_to
                     AND edge._from IN principals
                     AND edge.type == 'USER'
+                // the strongest of the user's and the linked accounts' grants, not whichever is read first
+                SORT NOT_NULL(@role_rank[UPPER(edge.role)], 0) DESC
                 LIMIT 1
                 RETURN edge.role
             """
@@ -15103,7 +15105,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query,
                 bind_vars={
                     "record_to": f"records/{record_id}",
-                    "user_from": f"users/{user_key}"
+                    "user_from": f"users/{user_key}",
+                    "role_rank": PERMISSION_ROLE_RANK,
                 },
                 txn_id=transaction
             )
@@ -15141,6 +15144,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._to == record_from
                     FILTER perm._from IN principals
                     FILTER perm.type == "USER"
+                    SORT NOT_NULL(@role_rank[UPPER(perm.role)], 0) DESC
                     RETURN perm.role
             )
 
@@ -15170,6 +15174,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "@permission": CollectionNames.PERMISSION.value,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
                     "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
+                    "role_rank": PERMISSION_ROLE_RANK,
                 },
                 txn_id=transaction
             )
@@ -15232,6 +15237,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._to == record_from
                     FILTER perm._from IN principals
                     FILTER perm.type == "USER"
+                    SORT NOT_NULL(@role_rank[UPPER(perm.role)], 0) DESC
                     RETURN perm.role
             )
 
@@ -15248,6 +15254,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     "@permission": CollectionNames.PERMISSION.value,
                     "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
+                    "role_rank": PERMISSION_ROLE_RANK,
                 },
                 txn_id=transaction
             )
