@@ -6,14 +6,14 @@ from pathlib import Path
 from alembic import op
 from db.lib.vetted import Fn, load, render, run_vetted
 
-revision = "kg_0016"
-down_revision = "kg_0015"
+revision = "kg_0017"
+down_revision = "kg_0016"
 branch_labels = None
 depends_on = None
 # A contract, as kg_0014 is: code of an older release reads PARENT_AND_GRANT as an unknown rule, so its projector would stamp such a record (and what it holds) as readable by
 # no one, at the epoch this code also writes, and the stamp would stand. The epoch floor refuses it, and the projection code epoch 7 has every connector copied and
 # verified again before it is served.
-min_code_epoch = 16
+min_code_epoch = 17
 
 EPOCH_WRITERS = ("w_stamps_set", "w_fence_rows", "w_queue_touch", "w_queue_done", "w_changes_ack", "w_changes_delete")
 RECORDS_WRITER = "w_records_upsert"
@@ -28,7 +28,7 @@ def _mine() -> list[Fn]:
 
 
 def as_before(fn: Fn) -> Fn:
-    """The writer as kg_0015 left it: the epoch floor at 6."""
+    """The writer as kg_0016 left it: the epoch floor at 6."""
     return replace(fn, args=tuple(replace(a, range=(OLD_FLOOR, a.range[1])) if a.name == "p_projector_epoch" else a for a in fn.args))
 
 

@@ -383,6 +383,177 @@ describe('Knowledge base page — collections list', () => {
 });
 
 describe('Knowledge base page — inside a collection', () => {
+  it('says a collection is still being prepared, asks again by itself and then lists its items', async () => {
+    withCollections();
+    // Preparing for every request in the first 1.5 s: the rows can only come from the page asking again by itself (after 2 s).
+    const start = Date.now();
+    api.hub.loadFolderData.mockImplementation(async () =>
+      Date.now() - start < 1_500 ? { ...engineeringContents([]), preparing: true } : engineeringContents(),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+
+    expect(await screen.findByText(/Preparing this source/)).toBeTruthy();
+    expect(screen.queryByText('No collection selected')).toBeNull();      // rows are coming, not missing
+    expect(screen.getByRole('status', { name: /Preparing this source/ })).toBeTruthy();
+    expect(await screen.findByRole('row', { name: 'spec.pdf' }, { timeout: 6_000 })).toBeTruthy();
+    expect(screen.queryByText(/Preparing this source/)).toBeNull();
+  });
+
+  describe('a retry of a source still being prepared stops once the user leaves it', () => {
+    const DEAL = hubNode({ id: 'rec-deal', name: 'deal.pdf', parentId: 'kb-sales' });
+    const salesContents = () =>
+      folderResponse({ id: 'kb-sales', name: 'Sales', nodeType: 'app' }, [{ id: 'kb-sales', name: 'Sales', nodeType: 'app' }], [DEAL]);
+    const engineeringCalls = () => api.hub.loadFolderData.mock.calls.filter(([, id]) => id === 'kb-eng').length;
+    // Past the first retry's wait (2 s), so a retry that was not cancelled has fired.
+    const pastTheFirstRetry = () => act(() => new Promise((resolve) => setTimeout(resolve, 2_600)));
+
+    beforeEach(() => {
+      withCollections();
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) =>
+        id === 'kb-eng' ? { ...engineeringContents([]), preparing: true } : salesContents(),
+      );
+    });
+
+    it('asks nothing more for a collection the user has left for the collections list, and leaves the list alone', async () => {
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base'));
+      await screen.findByRole('row', { name: 'Sales' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('Sales')).toBeTruthy();
+      expect(screen.queryByText(/Preparing this source/)).toBeNull();
+    });
+
+    it('asks nothing more for a collection the user has left for another one', async () => {
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+
+    it('asks nothing more for a collection once the user switches to All records', async () => {
+      api.hub.getAllRootItems.mockResolvedValue(hubResponse([DEAL]));
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?view=all-records'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+
+    it('sends no retry scheduled before a newer request of the same collection, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.loadFolderData.mockImplementation((_type: string, id: string) => {
+        if (id !== 'kb-eng') return Promise.resolve(salesContents());
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve({ ...engineeringContents([]), preparing: true });
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-eng&from=search'));      // same collection, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      // The page loads twice on open, so the retry pending is the second (4 s after the second answer): wait past it.
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));
+      await act(async () => userAnswers.forEach((answer) => answer(engineeringContents())));
+
+      expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+      expect(screen.queryByText(/Failed to load items/)).toBeNull();
+    });
+
+    it('sends no All records retry scheduled before a newer request of the same view, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.getAllRootItems.mockImplementation(() => {
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve(hubResponse([], { preparing: true }));
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));      // the same view, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));      // past any retry the opening loads scheduled
+      await act(async () => userAnswers.forEach((answer) => answer(hubResponse([DEAL]))));
+
+      expect(await screen.findByRole('row', { name: 'deal.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+    });
+
+    it('a retry the user has moved on from opens no more of its path in the sidebar', async () => {
+      const X = { id: 'folder-x', name: 'Drafts', nodeType: 'folder' as const };
+      const D = { id: 'folder-designs', name: 'Designs', nodeType: 'folder' as const };
+      let answers = 0;
+      let releaseCollection: (value: unknown) => void = () => {};
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) => {
+        if (id !== 'folder-x') return salesContents();
+        answers += 1;
+        return answers <= 2      // both loads of the opening answer that the folder is being prepared; the retry gets it ready
+          ? { ...folderResponse(X, [], []), breadcrumbs: [], preparing: true }
+          : folderResponse(X, [...ENGINEERING_TRAIL, D, X], [SPEC]);
+      });
+      api.hub.getNodeChildren.mockImplementation((_type: string, id: string) =>
+        id === 'kb-eng' && answers >= 3
+          ? new Promise((resolve) => { releaseCollection = resolve; })      // the retry's walk waits on the collection's children
+          : Promise.resolve(hubResponse([])),
+      );
+      openAt('/knowledge-base?nodeType=folder&nodeId=folder-x');
+      await screen.findByText(/Preparing this source/);
+      await waitFor(() => expect(answers).toBeGreaterThanOrEqual(3), { timeout: 8_000 });      // the retry has its answer and walks its path
+      await waitFor(() => expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'kb-eng')).toBe(true));
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+
+      await act(async () => releaseCollection(hubResponse([hubNode({ ...D, parentId: 'kb-eng', hasChildren: true })])));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+
+      expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'folder-designs')).toBe(false);
+      expect(useKnowledgeBaseStore.getState().expandedFolders['folder-designs']).toBeFalsy();
+    });
+
+    it('asks nothing more for All records once the user leaves it', async () => {
+      api.hub.getAllRootItems.mockResolvedValue(hubResponse([], { preparing: true }));
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = api.hub.getAllRootItems.mock.calls.length;
+
+      await pastTheFirstRetry();
+
+      expect(api.hub.getAllRootItems.mock.calls.length).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+  });
+
   it('shows the collection name in the breadcrumb and every item in it', async () => {
     await openEngineering();
 
