@@ -582,42 +582,32 @@ def test_a_live_connector_with_another_status_is_still_active() -> None:
     assert connector_state({"_key": "conn-on", "isActive": True, "status": "SYNCING"}) is ConnectorState.ACTIVE
 
 
-async def test_a_delete_that_begins_while_embeddings_are_deleted_still_holds_the_event() -> None:
-    """The read before the embedding delete only decides whether to hold there; the connector
-    check reads the app again, so a delete marked meanwhile is seen before the record is written."""
+async def test_an_update_of_a_connector_being_deleted_is_held_and_takes_nothing_out_of_the_vector_store() -> None:
     graph = FakeConnectorGraph()
     graph.add_connector("conn-off", active=True)
     graph.add_record("r1", "conn-off")
+    graph.apps["conn-off"]["status"] = "DELETING"
     handler, event_processor = _handler(graph)
-
-    async def delete_marked_meanwhile(*_a: object, **_kw: object) -> None:
-        graph.apps["conn-off"]["status"] = "DELETING"
-
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = delete_marked_meanwhile
 
     with pytest.raises(RecordHeldForDelete):
         _ = [e async for e in handler.process_event(UPDATE, dict(_payload(**_CLEARS_EMBEDDINGS_FIRST)))]
 
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once()
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
     assert _writes(graph) == {}
 
 
-async def test_a_connector_turned_off_while_embeddings_are_deleted_is_skipped_as_off() -> None:
+async def test_an_update_of_a_turned_off_connector_is_skipped_as_off_and_keeps_its_points() -> None:
     graph = FakeConnectorGraph()
-    graph.add_connector("conn-off", active=True)
+    graph.add_connector("conn-off", active=False)
     graph.add_record("r1", "conn-off")
     handler, event_processor = _handler(graph)
-
-    async def turned_off_meanwhile(*_a: object, **_kw: object) -> None:
-        graph.set_active("conn-off", False)
-
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = turned_off_meanwhile
 
     events = [e.event async for e in handler.process_event(UPDATE, dict(_payload(**_CLEARS_EMBEDDINGS_FIRST)))]
 
     assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
     assert graph.records["r1"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
     assert graph.records["r1"]["reason"] == CONNECTOR_OFF
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 async def test_a_stage_rerun_of_a_connector_being_deleted_is_held_before_its_states_are_touched() -> None:
