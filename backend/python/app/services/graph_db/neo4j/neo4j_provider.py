@@ -14211,6 +14211,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # properties(): the client's result.data() turns a relationship into a (start, type, end) tuple, not its fields
             query = """
             MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            // the org's app: by orgId, or one written without it that the org links
+            WHERE app.orgId = $org_id OR ((app.orgId IS NULL OR app.orgId = "") AND EXISTS { (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app) })
             RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             LIMIT 1
             """
@@ -14256,6 +14258,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             query = """
             MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            // the org's app: by orgId, or one written without it that the org links
+            WHERE app.orgId = $org_id OR ((app.orgId IS NULL OR app.orgId = "") AND EXISTS { (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app) })
             SET rel.syncState = $state, rel.lastSyncUpdate = $updated_timestamp
             RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             """
