@@ -285,24 +285,25 @@ class _FakeGovernor:
         return self.value
 
 
-def _admission(rule: str, seq: int) -> dict:
-    return {"sampleSeq": seq, "pools": {"heavy_parse": {"ceiling": 8, "limit": 4, "inUse": 4, "waiting": 3, "rule": rule, "ruleAgeSec": 20.0}}}
+def _admission(rule: str, seq: int, totals: dict | None = None) -> dict:
+    return {"sampleSeq": seq, "feedback": {"window": {"seq": seq}, "totals": totals or {}}, "pools": {"heavy_parse": {"ceiling": 8, "limit": 4, "inUse": 4, "waiting": 3, "rule": rule, "ruleAgeSec": 20.0}}}
 
 
 def test_governor_source_reads_pools_from_the_admission_block_and_counts_brakes_once() -> None:
     stats = {"worker_count": 1, "cpu_quota": 2.0, "cpu_utilisation": 0.5, "mem_pressure_raw": 0.4,
-             "downstream_feedback": {"throttles": {"qdrant": 2}}, "admission": _admission("grow", 1)}
+             "downstream_feedback": {"throttles": {"qdrant": 2}},
+             "admission": _admission("grow", 1, {"throttles": {"qdrant": 2}})}
     gov = _FakeGovernor(stats)
     source = ox.GovernorSource(gov, "indexing")
     _signal, metrics = source()
     assert metrics["pipeshub_governor_pool_waiters"] == [[["indexing", "heavy_parse"], 3.0]]
     assert metrics["pipeshub_governor_pool_braked"] == [[["indexing", "heavy_parse"], 0.0]]
     assert metrics["pipeshub_governor_brakes_total"] == []
-    stats["admission"] = _admission("mem_soft", 2)
+    stats["admission"] = _admission("mem_soft", 2, {"throttles": {"qdrant": 2}})
     source()
-    _signal, metrics = source()  # the same rule on the next read is not a second brake; the same window is not counted twice
+    _signal, metrics = source()  # the same rule on the next read is not a second brake; the same totals are not counted twice
     assert metrics["pipeshub_governor_brakes_total"] == [[["indexing", "heavy_parse", "memory_soft"], 1.0]]
-    assert metrics["pipeshub_downstream_events_total"] == [[["indexing", "qdrant", "throttle"], 4.0]]
+    assert metrics["pipeshub_downstream_events_total"] == [[["indexing", "qdrant", "throttle"], 2.0]]
     stats["admission"] = _admission("cpu", 3)
     _signal, metrics = source()
     assert {tuple(r[0]): r[1] for r in metrics["pipeshub_governor_brakes_total"]} == {
@@ -315,8 +316,28 @@ def test_governor_source_without_the_admission_block_exports_no_pool_series() ->
     signal, metrics = ox.GovernorSource(gov, "indexing")()
     assert signal["pools"] == {}
     assert not any(name.startswith(("pipeshub_governor_pool", "pipeshub_governor_oldest")) for name in metrics)
-    assert metrics["pipeshub_downstream_events_total"] == []  # no sample sequence: unknown, not counted
+    assert metrics["pipeshub_downstream_events_total"] == []  # no admission block: unknown, not counted
     assert metrics["pipeshub_cgroup_memory_pressure_ratio"] == [[["indexing"], 0.4]]
+
+
+def test_downstream_counter_follows_the_totals_across_skipped_and_repeated_samples() -> None:
+    """A sample that lands between two reads of stats(), or two samples inside one tick, must not be counted
+    twice or dropped: the counter is the governor's running total, whatever the sequence does."""
+    stats = {"worker_count": 1, "cpu_quota": 2.0, "cpu_utilisation": 0.5, "mem_pressure_raw": 0.4,
+             # a stale window next to newer totals: the pre-fix pairing would add this window again
+             "downstream_feedback": {"throttles": {"qdrant": 2}}}
+    source = ox.GovernorSource(_FakeGovernor(stats), "indexing")
+
+    def read(seq: int, throttles: int) -> float:
+        stats["admission"] = _admission("grow", seq, {"throttles": {"qdrant": throttles}, "timeouts": {"qdrant": 1}})
+        _signal, metrics = source()
+        return {tuple(r[0]): r[1] for r in metrics["pipeshub_downstream_events_total"]}[("indexing", "qdrant", "throttle")]
+
+    assert read(1, 2) == 2.0
+    assert read(1, 5) == 5.0  # the sequence did not move but the totals did (a sample landed mid-read)
+    assert read(3, 9) == 9.0  # two samples inside one tick: nothing dropped
+    assert read(3, 9) == 9.0  # repeated: nothing added
+    assert read(4, 7) == 9.0  # a counter never falls
 
 
 # ---------------------------------------------------------------------------

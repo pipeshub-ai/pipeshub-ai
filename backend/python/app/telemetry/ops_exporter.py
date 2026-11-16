@@ -325,7 +325,6 @@ class GovernorSource:
         self._last_reason: dict[str, str] = {}
         self._brakes: dict[tuple[str, str], float] = {}
         self._downstream: dict[tuple[str, str], float] = {}
-        self._last_seq: int | None = None
 
     def __call__(self) -> tuple[dict[str, Any], dict[str, list[list[Any]]]]:
         stats = self._governor.stats()
@@ -341,21 +340,25 @@ class GovernorSource:
             if reason in self._pressure and self._last_reason.get(pool) != reason:
                 self._brakes[(pool, reason)] = self._brakes.get((pool, reason), 0.0) + 1
             self._last_reason[pool] = reason
-        # The downstream window is one sample long; it is counted once per sample, which needs the
-        # sample sequence the admission block carries. Without it the counter is absent, not wrong.
+        # The downstream symptoms are the governor's running totals, read in the same lock hold as the rest
+        # of the admission block (`admission_explain`), so the figure is one consistent snapshot: a sample
+        # taken between two reads, or two samples inside one tick, cannot be counted twice or dropped.
+        # Without the admission block the counter is absent, not wrong.
         admission = stats.get("admission")
-        seq = admission.get("sampleSeq") if isinstance(admission, dict) else None
-        if seq is not None and seq != self._last_seq:
-            self._last_seq = seq
-            kinds = {"throttles": "throttle", "timeouts": "timeout", "pool_exhaustions": "exhaustion",
+        feedback = admission.get("feedback") if isinstance(admission, dict) else None
+        totals = feedback.get("totals") if isinstance(feedback, dict) else None
+        if isinstance(totals, dict):
+            kinds = {"throttles": "throttle", "timeouts": "timeout", "exhaustions": "exhaustion",
                      "unavailable": "unavailable"}
+            counted: dict[tuple[str, str], float] = {}
             for column, kind in kinds.items():
-                feedback = stats.get("downstream_feedback")
-                names = feedback.get(column) if isinstance(feedback, dict) else None
+                names = totals.get(column)
                 for dep, n in (names.items() if isinstance(names, dict) else ()):
                     if isinstance(n, int) and not isinstance(n, bool) and isinstance(dep, str):
                         name = normalise_dependency(dep)
-                        self._downstream[(name, kind)] = self._downstream.get((name, kind), 0.0) + n
+                        counted[(name, kind)] = counted.get((name, kind), 0.0) + n
+            for key, value in counted.items():  # a counter never falls, whatever the totals do
+                self._downstream[key] = max(self._downstream.get(key, 0.0), value)
         # Process-wide counters, only when the load is known: never a zero for "no reading".
         metrics = derive_metrics(service, signal)
         metrics["pipeshub_governor_brakes_total"] = [[[service, p, r], v] for (p, r), v in self._brakes.items()]
