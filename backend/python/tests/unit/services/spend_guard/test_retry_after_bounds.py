@@ -1,3 +1,4 @@
+# ruff: noqa: F401, F811 (the spend-world fixtures are imported for pytest, then named as arguments)
 """A provider's Retry-After is untrusted input: finite, non-negative, at most an hour, wherever it ends up."""
 
 from __future__ import annotations
@@ -10,10 +11,18 @@ import pytest
 from app.services.llm_gateway import gateway as gateway_module
 from app.services.llm_gateway import wire
 from app.services.llm_gateway.embedding_gateway import EmbeddingRateLimited
-from app.services.llm_gateway.gateway import LLMGateway, ProviderUnavailableError, RateLimited
-from app.services.spend_guard.retry_policy import MAX_RETRY_AFTER_S, RetryBudget, clamp_retry_after
+from app.services.llm_gateway.gateway import (
+    LLMGateway,
+    ProviderUnavailableError,
+    RateLimited,
+)
+from app.services.spend_guard.retry_policy import (
+    MAX_RETRY_AFTER_S,
+    RetryBudget,
+    clamp_retry_after,
+)
 from app.utils.llm import LLMUnavailableError
-from tests.support.spend_world import fleet, sim_clock  # noqa: F401 - fixtures
+from tests.support.spend_world import fleet, sim_clock
 
 
 @pytest.mark.parametrize(
@@ -82,9 +91,14 @@ async def test_the_gateway_waits_the_clamped_retry_after(monkeypatch: pytest.Mon
     assert raised.value.retry_after == MAX_RETRY_AFTER_S and slept == []
 
 
-async def test_a_refused_retry_keeps_the_attempts_it_charged(monkeypatch: pytest.MonkeyPatch, fleet) -> None:  # noqa: ANN001, F811
+async def test_a_refused_retry_keeps_the_attempts_it_charged(monkeypatch: pytest.MonkeyPatch, fleet) -> None:
     """A call whose first attempt was charged and whose retry the open breaker then refuses still reports the charge."""
-    from app.services.llm_gateway.fleet_breaker import FleetBreaker, credential_of, provider_pk, size_class
+    from app.services.llm_gateway.fleet_breaker import (
+        FleetBreaker,
+        credential_of,
+        provider_pk,
+        size_class,
+    )
 
     async def instant(_seconds: float) -> None:
         return None

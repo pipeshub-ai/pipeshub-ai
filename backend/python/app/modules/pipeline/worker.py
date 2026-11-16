@@ -46,7 +46,6 @@ from app.modules.pipeline.stage import (
 )
 from app.services.llm_gateway.fleet_hold import RECONCILE_EVERY_TICKS
 from app.services.llm_gateway.gateway import JobTrace, llm_job
-from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -55,6 +54,7 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
 )
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.utils.indexing_timing import ADMITTED, begin_record, end_record
 
 # Called once a stage's headline is final on the records it updated, e.g. to release the

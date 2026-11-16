@@ -1,3 +1,4 @@
+# ruff: noqa: F401, F811 (the spend-world fixtures are imported for pytest, then named as arguments)
 """A provider's Retry-After is untrusted input: it never parks a stage job for more than an hour.
 
 The header is read off the wire and carried by the gateway's errors into the stage worker's requeue delay. This drives the
@@ -18,7 +19,7 @@ from app.services.llm_gateway import gateway as gateway_module
 from app.services.llm_gateway import wire
 from app.utils.llm import LLMUnavailableError
 from tests.support.gateway_world import GatewayWorld, ModelStage
-from tests.support.spend_world import fleet, sim_clock  # noqa: F401 - fixtures
+from tests.support.spend_world import fleet, sim_clock
 
 ONE_HOUR = 3600.0  # TRIAL_MAX: the longest the breaker itself ever waits before a trial
 
@@ -28,7 +29,7 @@ class _RAModel:
         self.header = header
         self.requests = 0
 
-    async def ainvoke(self, value, /, **kwargs):  # noqa: ANN001, ANN202
+    async def ainvoke(self, value: object, /, **kwargs: object) -> None:
         wire.admit_request()
         wire.note_request_sent()
         self.requests += 1
@@ -39,10 +40,10 @@ class _RAModel:
 class _Stage(ModelStage):
     name: ClassVar[str] = "classify"
 
-    def __init__(self, gateway, model) -> None:  # noqa: ANN001
+    def __init__(self, gateway, model) -> None:
         self.gateway, self.model = gateway, model
 
-    async def run(self, job, io) -> StageResult:  # noqa: ANN001
+    async def run(self, job, io) -> StageResult:
         try:
             await self.gateway.invoke(self.model, f"DOC:{job.virtual_record_id}", provider="FakeChat:fake-model@host")
         except LLMUnavailableError as exc:
@@ -51,7 +52,7 @@ class _Stage(ModelStage):
 
 
 @pytest.mark.parametrize("header", ["61", "3600", "86400", "1e9", "inf", "nan", "-5"])
-async def test_the_requeue_delay_of_a_rate_limited_stage_job(fleet, sim_clock, monkeypatch, header) -> None:  # noqa: ANN001
+async def test_the_requeue_delay_of_a_rate_limited_stage_job(fleet, sim_clock, monkeypatch, header) -> None:
     async def no_sleep(_s: float) -> None:
         return None
 

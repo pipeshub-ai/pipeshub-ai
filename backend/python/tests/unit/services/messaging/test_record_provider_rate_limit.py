@@ -10,8 +10,15 @@ import pytest
 
 from app.services.llm_gateway.embedding_gateway import EmbeddingRateLimited
 from app.services.llm_gateway.gateway import RateLimited
-from app.services.messaging.consumer_concurrency import ProviderRateLimitRequeue, RequeueWithoutAttempt
-from tests.unit.services.messaging.test_record_handler_parse_now import Harness, _payload, _record
+from app.services.messaging.consumer_concurrency import (
+    ProviderRateLimitRequeue,
+    RequeueWithoutAttempt,
+)
+from tests.unit.services.messaging.test_record_handler_parse_now import (
+    Harness,
+    _payload,
+    _record,
+)
 
 
 @pytest.mark.parametrize("final", [False, True])
@@ -34,6 +41,6 @@ async def test_a_provider_rate_limit_hands_the_record_back_for_its_wait(error: E
 async def test_an_ordinary_failure_is_still_an_ordinary_retry() -> None:
     harness = Harness(_record(indexingStatus="QUEUED"))
     harness.fail_with = RuntimeError("parser busy")
-    with pytest.raises(Exception) as raised:  # noqa: B017
+    with pytest.raises(Exception) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert not isinstance(raised.value, RequeueWithoutAttempt)
