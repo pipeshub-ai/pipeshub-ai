@@ -90,15 +90,9 @@ def _best_role(rows: Any, coll: str, node_id: str, ranks: dict[str, int]) -> tup
     return best
 
 
-# The nodes among ``$3`` (of collection ``$2``) whose rule needs a grant of their own (RESTRICTED, PARENT_AND_GRANT): their role comes from their own grants
-# alone. A grant on what such a node inherits from is not access to it, and never raises the role its own grants give.
-_NEEDS_OWN_GRANT = """/* pipeshub:graph.node_roles_own_grant */ SELECT n.id FROM graph.nodes n
-    WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[]) AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT')"""
-
-
-def _own_rows(rows: Any, coll: str, node_id: str) -> list:  # noqa: ANN401
-    """The grant rows of ``_role_on`` (or ``_roles_on``) on the node ``(coll, node_id)`` itself."""
-    return [r for r in rows if (r["tcoll"], r["tid"]) == (coll, node_id)]
+# A node whose rule needs a grant of its own (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: the role walk reads the rule in the
+# same statement as the grants (one snapshot) and does not leave such a node, so a grant on what it inherits from never gives or raises its role
+# (the ``own_only`` column of ``_role_on``'s and ``_roles_on``'s walk).
 
 
 class PermissionsMixin(PgBase):
@@ -495,16 +489,17 @@ class PermissionsMixin(PgBase):
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
     async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str, ranks: dict[str, int] = _CTX_RANK) -> tuple[str, str] | None:
         """The highest role the user holds on a record or record group: their own grant, a group's, a role's, a team's (never above WRITER) or the
-        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to; a source account the user authenticated
-        as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
-        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth) AS (
-              SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
+        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to (on the node alone when its rule needs a grant
+        of its own, read in the same statement); a source account the user authenticated as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
+        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth, own_only) AS (
+              SELECT n.coll, n.id, 0, coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT') FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
               UNION
-              SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+              SELECT i.to_coll, i.to_id, a.depth + 1, a.own_only FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20 AND NOT a.own_only),
             targets AS (
               SELECT coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                JOIN anc s0 ON s0.depth = 0 AND NOT s0.own_only
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
             principals AS (
               SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
@@ -535,8 +530,6 @@ class PermissionsMixin(PgBase):
               JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, node_id, user_key)
-        if await tx.fetchval(_NEEDS_OWN_GRANT, org, coll, [node_id]):
-            rows = _own_rows(rows, coll, node_id)
         return _best_role(rows, coll, node_id, ranks)
 
     async def _roles_on(self, tx: Tx, org: str, user_key: str, coll: str, node_ids: list[str], ranks: dict[str, int] = _CTX_RANK) -> dict[str, tuple[str, str] | None]:
@@ -546,14 +539,15 @@ class PermissionsMixin(PgBase):
         if not ids:
             return {}
         rows = await tx.fetch("""/* pipeshub:graph.node_roles_batch */ WITH RECURSIVE o(origin) AS (SELECT unnest($3::text[])),
-            anc(origin, coll, id, depth) AS (
-              SELECT n.id, n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
+            anc(origin, coll, id, depth, own_only) AS (
+              SELECT n.id, n.coll, n.id, 0, coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT') FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
               UNION
-              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1, a.own_only FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20 AND NOT a.own_only),
             targets(origin, coll, id, depth) AS (
               SELECT origin, coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.from_id, b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                JOIN anc s0 ON s0.origin = b.from_id AND s0.depth = 0 AND NOT s0.own_only
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = ANY($3::text[])),
             principals(origin, id) AS (
               SELECT o.origin, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4
@@ -587,8 +581,7 @@ class PermissionsMixin(PgBase):
         by_origin: dict[str, list] = {i: [] for i in ids}
         for r in rows:
             by_origin[r["origin"]].append(r)
-        own_only = {r["id"] for r in await tx.fetch(_NEEDS_OWN_GRANT, org, coll, ids)}
-        return {i: _best_role(_own_rows(by_origin[i], coll, i) if i in own_only else by_origin[i], coll, i, ranks) for i in ids}
+        return {i: _best_role(by_origin[i], coll, i, ranks) for i in ids}
 
     async def _app_role(self, tx: Tx, org: str, user_key: str, app_id: str) -> str | None:
         """The user's role on an app (a connector or a collection); None when nothing relates them."""
