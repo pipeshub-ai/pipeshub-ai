@@ -12,6 +12,7 @@ import logging
 from langchain_core.embeddings import Embeddings
 
 from app.exceptions.non_retryable import NonRetryableError
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -76,7 +77,7 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
             (start, image_base64s[start:start + batch_size])
             for start in range(0, len(image_base64s), batch_size)
         ]
-        results = await asyncio.gather(*[process_batch(s, imgs) for s, imgs in batches])
+        results = await gather_or_cancel([process_batch(s, imgs) for s, imgs in batches])
         flattened: list[ImageEmbeddingResult] = []
         for r in results:
             flattened.extend(r)

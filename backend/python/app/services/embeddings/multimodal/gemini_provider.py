@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -85,6 +86,15 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
             from app.services.llm_gateway.wire import route_genai_through_httpx
 
             route_genai_through_httpx(client)
+            # This client does not come from a model factory, so its requests carry no hooks yet: install them, or a failed
+            # request is not counted in the wire scope of the gateway attempt.
+            from app.services.llm_gateway.wire import (
+                find_http_clients,
+                install_wire_hook,
+            )
+
+            for http in find_http_clients(client):
+                install_wire_hook(http)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
@@ -111,6 +121,6 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
                         self.logger.warning(f"Gemini image embed failed for index {i}: {e}")
                     return ImageEmbeddingResult(index=i, error=str(e))
 
-        return await asyncio.gather(
-            *[embed_single(i, ref) for i, ref in enumerate(image_base64s)]
+        return await gather_or_cancel(
+            [embed_single(i, ref) for i, ref in enumerate(image_base64s)]
         )

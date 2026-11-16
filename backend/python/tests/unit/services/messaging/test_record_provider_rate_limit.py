@@ -168,3 +168,29 @@ async def test_a_record_whose_wait_cannot_be_stored_is_not_handed_back_unbounded
     with pytest.raises(Exception) as raised:  # noqa: B017
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert not isinstance(raised.value, RequeueWithoutAttempt)
+
+
+async def test_a_wait_that_rounds_to_nothing_still_counts_toward_the_limit() -> None:
+    """A positive sub-millisecond Retry-After adds the minimum wait to the total, so hand-backs of it cannot go on for ever."""
+    harness = Harness(_record(indexingStatus="QUEUED", rateLimitedForMs=0))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=0.0004)
+    with pytest.raises(ProviderRateLimitRequeue):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    totals = [w["rateLimitedForMs"] for w in harness.writes() if w.get("rateLimitedForMs")]
+    assert totals and totals[-1] >= 1000
+
+
+async def test_a_store_that_answers_false_does_not_count_as_a_stored_wait() -> None:
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
+    real = harness.graph.update_node.side_effect
+
+    async def update(doc_id: str, collection: str, fields: dict) -> bool:
+        if "deferredUntilMs" in fields:
+            return False
+        return await real(doc_id, collection, fields) if real else True
+
+    harness.graph.update_node = AsyncMock(side_effect=update)
+    with pytest.raises(Exception) as raised:  # noqa: B017
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert not isinstance(raised.value, RequeueWithoutAttempt)

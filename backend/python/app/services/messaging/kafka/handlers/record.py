@@ -80,6 +80,7 @@ from app.modules.indexing.rate_limit_deferral import (
     RATE_LIMITED_FOR_FIELD,
     cleared_deferral,
     deferral_updates,
+    handback_wait_ms,
     is_deferred,
     plan_deferral,
     provider_rate_limit_wait,
@@ -857,7 +858,7 @@ class RecordEventHandler(BaseEventService):
         """The error that ends the record when one more hand-back for ``wait_s`` would carry the time it has spent
         rate-limited past ``RATE_LIMIT_MAX_WAIT_S``; None while it is within the limit."""
         limit_s = messaging_env.rate_limit_max_wait_seconds
-        total_s = (self._rate_limited_for_ms(record) + int(wait_s * 1000)) / 1000.0
+        total_s = (self._rate_limited_for_ms(record) + handback_wait_ms(wait_s)) / 1000.0
         if total_s <= limit_s:
             return None
         hours = limit_s / 3600.0
@@ -876,16 +877,20 @@ class RecordEventHandler(BaseEventService):
         the time it has spent rate-limited in all (``rateLimitedForMs``, what bounds the hand-backs). False when the write
         fails: the caller then does not hand the record back, because nothing would bound it."""
         try:
-            await self.event_processor.graph_provider.update_node(
+            stored = await self.event_processor.graph_provider.update_node(
                 record_id,
                 CollectionNames.RECORDS.value,
                 {
-                    DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + int(wait_s * 1000),
+                    DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + handback_wait_ms(wait_s),
                     RATE_LIMITED_FOR_FIELD: total_ms,
                 },
             )
         except Exception as exc:
             self.logger.warning(f"Could not record the rate-limit wait of record {record_id}; not handing it back: {exc}")
+            return False
+        if not stored:
+            # A store answers False for an update it did not apply: the total is not there, so nothing would bound the record.
+            self.logger.warning(f"The rate-limit wait of record {record_id} was not stored; not handing it back")
             return False
         return True
 
@@ -946,6 +951,8 @@ class RecordEventHandler(BaseEventService):
                 record_id, ENRICHMENT_FAILED, extraction_status=ProgressStatus.FAILED.value
             )
             await self._release_queued_copies(record_id)
+            # Best effort and nested: a failed write must not change the retry path below.
+            await self._end_provider_rate_limit_total(record_id, {RATE_LIMITED_FOR_FIELD: 1})
             return
         except Exception as e:
             self.logger.error(
@@ -1678,7 +1685,6 @@ class RecordEventHandler(BaseEventService):
         cancelled = False
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
-        handback_delay_s = 0.0
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         record = None
@@ -2506,10 +2512,9 @@ class RecordEventHandler(BaseEventService):
                 # The hand-back is bounded by the total stored here (the broker's own budget is not used), so it is
                 # only made when the total was stored: otherwise this stays an ordinary failure, counted by its attempts.
                 if await self._record_handback_wait(
-                    record_id, wait, self._rate_limited_for_ms(record) + int(wait * 1000)
+                    record_id, wait, self._rate_limited_for_ms(record) + handback_wait_ms(wait)
                 ):
                     handed_back = True
-                    handback_delay_s = wait
                     raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
@@ -2530,10 +2535,9 @@ class RecordEventHandler(BaseEventService):
                 # The hand-back is bounded by the total stored here (the broker's own budget is not used), so it is
                 # only made when the total was stored: otherwise this stays an ordinary failure, counted by its attempts.
                 if await self._record_handback_wait(
-                    record_id, wait, self._rate_limited_for_ms(record) + int(wait * 1000)
+                    record_id, wait, self._rate_limited_for_ms(record) + handback_wait_ms(wait)
                 ):
                     handed_back = True
-                    handback_delay_s = wait
                     raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below

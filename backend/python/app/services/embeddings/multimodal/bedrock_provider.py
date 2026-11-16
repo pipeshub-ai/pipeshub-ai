@@ -96,6 +96,10 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         except NoCredentialsError as e:
             raise EmbeddingError("AWS credentials not found for Bedrock image embeddings.") from e
 
+        # This client does not come from a model factory: count its requests in the wire scope of a gateway attempt.
+        from app.services.llm_gateway.wire import install_boto_hooks
+
+        install_boto_hooks(bedrock)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
@@ -104,10 +108,8 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                 return ImageEmbeddingResult(index=i, error="invalid image data")
             async with semaphore:
                 try:
-                    loop = asyncio.get_running_loop()
                     response = await get_embedding_gateway().call(
-                        lambda: loop.run_in_executor(
-                            None,
+                        lambda: asyncio.to_thread(
                             lambda: bedrock.invoke_model(
                                 modelId=self.model_name,
                                 body=json.dumps({

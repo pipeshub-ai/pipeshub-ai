@@ -110,6 +110,13 @@ def is_deferred_until_later(record: Mapping[str, object], now_ms: float) -> bool
     return until is not None and until > now_ms
 
 
+def handback_wait_ms(wait_s: float) -> int:
+    """What a hand-back for ``wait_s`` adds to a record's rate-limited total, and how long its deferral lasts: the wait in
+    milliseconds, at least ``_MIN_WAIT_MS``. A wait that rounds to nothing would add nothing to the total that bounds the
+    hand-backs, and they would never end."""
+    return max(_MIN_WAIT_MS, math.ceil(wait_s * 1000))
+
+
 def provider_rate_limit_wait(exc: BaseException) -> float | None:
     """Seconds a model provider asked us to wait when ``exc`` (or a cause) is its rate limit past the call's allowance
     (``RateLimited``, ``EmbeddingRateLimited``: marked ``rate_limited``); None otherwise. Never longer than the clamp the

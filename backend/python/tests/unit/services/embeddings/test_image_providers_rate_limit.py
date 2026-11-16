@@ -102,3 +102,39 @@ async def test_gemini_images_are_sent_through_httpx_when_the_sdk_must_not_retry(
     provider = MultimodalEmbeddingFactory.create(_config("gemini"))
     await provider.embed_images([])  # type: ignore[union-attr]
     assert len(routed) == 1
+
+
+async def test_a_deferral_leaves_no_sibling_image_running(monkeypatch: pytest.MonkeyPatch, one_attempt: None) -> None:
+    """With more images than the concurrency limit, the first image's wait must not leave the others to start paid requests after
+    the caller has the deferral."""
+    started: list[int] = []
+    client = MagicMock()
+
+    def embed(**_: Any) -> Any:  # noqa: ANN401
+        started.append(1)
+        raise Throttle("slow")
+
+    client.embed.side_effect = embed
+    monkeypatch.setitem(sys.modules, "cohere", types.SimpleNamespace(ClientV2=lambda api_key: client))
+    provider = MultimodalEmbeddingFactory.create(_config("cohere"))
+    with pytest.raises(EmbeddingRateLimited):
+        await provider.embed_images([IMAGE] * 40)  # type: ignore[union-attr]
+    count = len(started)
+    import asyncio
+
+    await asyncio.sleep(0.2)
+    assert len(started) == count, "an image started a request after the deferral had been raised"
+    assert count < 40
+
+
+async def test_native_image_clients_count_their_requests_in_the_wire_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed image request is a send of the stage job: the Bedrock client carries wire hooks."""
+    from app.services.llm_gateway import wire
+
+    installed: list[object] = []
+    monkeypatch.setattr(wire, "install_boto_hooks", lambda client: installed.append(client) or True)
+    client = MagicMock()
+    monkeypatch.setattr("boto3.client", lambda **_: client)
+    provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
+    await provider.embed_images([])  # type: ignore[union-attr]
+    assert installed == [client]

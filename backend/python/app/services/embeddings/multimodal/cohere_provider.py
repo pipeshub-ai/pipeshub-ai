@@ -18,6 +18,7 @@ older model rather than silently sending a request the docs do not cover.
 import asyncio
 import logging
 
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -50,6 +51,15 @@ def cohere_image_input_type(model_name: str | None) -> str:
     return _IMAGE_INPUT_TYPE
 
 
+def _install_wire_hooks(client: object) -> None:
+    """Count this client's requests in the wire scope of a gateway attempt (a client built outside the model factories has
+    no hooks of its own)."""
+    from app.services.llm_gateway import wire
+
+    for http in wire.find_http_clients(client):
+        wire.install_wire_hook(http)
+
+
 class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
     def __init__(
         self, api_key: str | None, model_name: str | None, logger: logging.Logger | None = None,
@@ -75,6 +85,7 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
         import cohere
 
         co = cohere.ClientV2(api_key=self.api_key)
+        _install_wire_hooks(co)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_base64: str) -> ImageEmbeddingResult:
@@ -83,12 +94,11 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
             }
             async with semaphore:
                 try:
-                    loop = asyncio.get_running_loop()
-                    # One retry layer: the SDK repeats nothing when told so, and the gateway repeats a failed request.
+                    # One retry layer: the SDK repeats nothing when told so, and the gateway repeats a failed request. In a
+                    # thread that keeps the context, so the request is counted by the wire scope of the attempt.
                     options = {"max_retries": self.sdk_retries} if self.sdk_retries is not None else None
                     response = await get_embedding_gateway().call(
-                        lambda: loop.run_in_executor(
-                            None,
+                        lambda: asyncio.to_thread(
                             lambda: co.embed(
                                 model=self.model_name,
                                 input_type=self.input_type,
@@ -114,6 +124,6 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
                             self.logger.warning(f"Cohere embed failed for index {i}: {e}")
                     return ImageEmbeddingResult(index=i, error=str(e))
 
-        return await asyncio.gather(
-            *[embed_single(i, b64) for i, b64 in enumerate(image_base64s)]
+        return await gather_or_cancel(
+            [embed_single(i, b64) for i, b64 in enumerate(image_base64s)]
         )

@@ -172,3 +172,29 @@ async def test_the_failed_requests_of_the_batch_loop_are_charged_to_the_jobs_sen
         result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
     assert isinstance(result, EmbeddingError) and Counting.calls == 3
     assert meter.failed == 3
+
+
+async def test_a_cancelled_attempt_charges_what_it_sent() -> None:
+    """The stage's deadline cancels the loop after a request left: it counts before the cancellation goes on."""
+    import asyncio
+
+    from app.services.llm_gateway import wire
+
+    class Hanging:
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+            wire.note_request_sent()
+            await asyncio.sleep(30)
+            return []
+
+    vs = _make_vectorstore()
+    vs.embedding_provider = "openAI"
+    vs.dense_embeddings = Hanging()
+    meter = wire.SendMeter(allowance=10)
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    with wire.metered(meter), patch("app.modules.transformers.vectorstore.get_embedding_gateway", return_value=gateway):
+        task = asyncio.create_task(vs._embed_documents_with_retry(["x"], "rec"))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert meter.failed == 1

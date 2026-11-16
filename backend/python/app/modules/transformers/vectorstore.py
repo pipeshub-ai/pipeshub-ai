@@ -2171,6 +2171,12 @@ class VectorStore(Transformer):
                     if gateway is not None:
                         gateway.note_success()
                     return vectors
+            except asyncio.CancelledError:
+                # The stage's deadline: what the attempt sent counts before the cancellation goes on, so the run that commits
+                # the job's sends pays for it.
+                if attempt_wire is not None:
+                    wire.charge_failed_sends(attempt_wire.requests)
+                raise
             except asyncio.TimeoutError as e:
                 last_error = e
                 if attempt_wire is not None:

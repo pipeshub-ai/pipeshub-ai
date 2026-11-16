@@ -4154,7 +4154,9 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
     async def test_a_record_handed_back_for_a_providers_wait_is_not_sent_before_it_ends(self) -> None:
         """``deferredUntilMs``: the record carries a provider's wait; the sweep leaves it to the broker's delayed message."""
         now = get_epoch_timestamp_in_ms()
-        row = self._waiting(now, deferredUntilMs=now + HOUR_MS, retryNotBefore=None, rateLimitedSince=None)
+        row = self._waiting(
+            now, deferredUntilMs=now + HOUR_MS, retryNotBefore=None, rateLimitedSince=None, queuedAtTimestamp=now - 3 * HOUR_MS
+        )
         graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
         producer = AsyncMock()
 
