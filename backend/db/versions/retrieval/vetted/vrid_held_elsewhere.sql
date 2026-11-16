@@ -14,10 +14,12 @@ BEGIN
   IF p_vrid IS NULL THEN RAISE EXCEPTION 'vrid_held_elsewhere: p_vrid is required' USING ERRCODE = '22023'; END IF;
   IF length(p_vrid) NOT BETWEEN 1 AND 2000 THEN RAISE EXCEPTION 'vrid_held_elsewhere: p_vrid length must be 1..2000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN true; END IF;       -- no org (or someone else's): no rows, the same answer
+  -- the LATERAL ... LIMIT 1 keeps the points side a probe per (org, collection): a semi-join may scan every point for the vrid instead
   RETURN EXISTS (SELECT 1 FROM retrieval.org_spaces s CROSS JOIN retrieval.collections c
-    WHERE s.role = 'active' AND s.org_id <> v_org AND c.status <> 'deleting'
-      AND EXISTS (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.vrid = p_vrid
-                    AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = p.org_id AND x.point_sk = p.point_sk)));
+    CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.vrid = p_vrid
+                          AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = p.org_id AND x.point_sk = p.point_sk)
+                          LIMIT 1) hit
+    WHERE s.org_id <> v_org AND c.status <> 'deleting');
 END $fn$;
 REVOKE ALL ON FUNCTION retrieval.vrid_held_elsewhere(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION retrieval.vrid_held_elsewhere(text) TO pipeshub_indexing;

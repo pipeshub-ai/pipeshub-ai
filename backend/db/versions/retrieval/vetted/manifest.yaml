@@ -353,7 +353,9 @@ functions:
   # Whether an org other than the caller's still holds a live point of this vrid, in any live collection: true or false, never which
   # org. A delete asks it after removing the caller's own points, to keep the one mapping row (and the stored content) another org's
   # points of a shared vrid still need. Class write only to bind the one role that may call it (the indexing service, where every
-  # delete of points runs); it changes nothing. One probe of the (org, collection, vrid) index per org and collection, stopping at the first.
+  # delete of points runs); it changes nothing. The orgs come from org_spaces whatever the space's role: the points foreign key
+  # (org_id, space_id, embedding_dim) -> org_spaces (org_id, space_id, dim) gives every point a row there, and nothing makes it an
+  # active one. One probe of the (org, collection, vrid) index per space row and collection, stopping at the first.
   - name: retrieval.vrid_held_elsewhere
     class: write
     scope: org
@@ -365,10 +367,12 @@ functions:
     no_org: "true"
     reads: [retrieval.points, retrieval.org_spaces, retrieval.collections, retrieval.point_tombstones]
     body: |
+      -- the LATERAL ... LIMIT 1 keeps the points side a probe per (org, collection): a semi-join may scan every point for the vrid instead
       RETURN EXISTS (SELECT 1 FROM retrieval.org_spaces s CROSS JOIN retrieval.collections c
-        WHERE s.role = 'active' AND s.org_id <> v_org AND c.status <> 'deleting'
-          AND EXISTS (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.vrid = p_vrid
-                        AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = p.org_id AND x.point_sk = p.point_sk)));
+        CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.vrid = p_vrid
+                              AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = p.org_id AND x.point_sk = p.point_sk)
+                              LIMIT 1) hit
+        WHERE s.org_id <> v_org AND c.status <> 'deleting');
     test:
       needle: >-
         DELETE FROM retrieval.points WHERE vrid = 'vr-held';

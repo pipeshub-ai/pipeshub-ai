@@ -6,6 +6,8 @@ import psycopg
 import pytest
 from psycopg import errors as pg
 
+from db import vetted_harness
+
 from .conftest import run_migrate
 from .rls_fixture import ORG_A, ORG_B, uow
 
@@ -654,3 +656,36 @@ def test_vrid_held_elsewhere_is_executable_by_the_indexing_role_only(rdb):
     for login, role in (("pipeshub_query_login", "pipeshub_query"), ("pipeshub_connectors_login", "pipeshub_connectors"), ("pipeshub_node_login", "pipeshub_node")):
         with connect_as(cluster, name, login) as c, uow(c, role, ORG_A), pytest.raises(pg.InsufficientPrivilege):
             c.execute(HELD, ("vr-a",))
+
+
+def test_vrid_held_elsewhere_counts_a_point_in_a_space_that_is_not_active(rdb):
+    """Org B holds its only point of the vrid in a shadow space and has no active space: it still holds the vrid."""
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        a.execute("INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30005, 'shadow-model', 4, 'cosine') "
+                  "ON CONFLICT DO NOTHING")
+        a.execute("INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (%s, 30005, 4, 'shadow')", (ORG_B,))
+        a.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 30005, gen_random_uuid(), 'vr-shadow', 'vr-shadow', %s::ext.halfvec, 4)", (ORG_B, VEC))
+        assert a.execute("SELECT count(*) FROM retrieval.org_spaces WHERE org_id = %s AND role = 'active'", (ORG_B,)).fetchone()[0] == 0
+    assert held(cluster, name, ORG_A, "vr-shadow") is True
+
+
+def test_vrid_held_elsewhere_probes_the_vrid_index_and_never_scans_the_points(rdb):
+    """20,000 points in each of two orgs, half of B's tombstoned. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    adopt(cluster, name, ORG_B)
+    with cluster.admin(name) as c:
+        for org in (ORG_A, ORG_B):
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                      "SELECT %s, 1, 1, gen_random_uuid(), 'vr-' || g, 'vr-' || g, %s::ext.halfvec, 4 FROM generate_series(1, 20000) g", (org, VEC))
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) SELECT org_id, point_sk FROM retrieval.points WHERE org_id = %s AND point_sk %% 2 = 0", (ORG_B,))
+        c.execute("ANALYZE retrieval.points, retrieval.point_tombstones")
+        big = vetted_harness.org_tables_over(c, 1000)
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_indexing", ORG_A, HELD, ("vr-777",))
+    assert any(t.startswith("points_") for t in big) and any(t.startswith("point_tombstones_") for t in big), big
+    # an empty leaf may be read whole; a leaf that holds rows is probed: points by (org, collection, vrid), a tombstone by its key
+    for i in (0, 6):
+        assert "_vrid_block_id_idx" in plans[i] and "Scan using point_tombstones_h" in plans[i], (i, plans[i])
+        assert vetted_harness.seq_scanned(plans[i], big) == [], (i, plans[i])
