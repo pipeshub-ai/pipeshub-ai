@@ -138,6 +138,15 @@ class IdentityMixin(PgBase):
         return not org_id or org_id == current_org_id()
 
     @staticmethod
+    def _named_org(org_id: str | None) -> bool:
+        """For a method whose org argument is required: no org (None or empty) is an error, never the ambient org by default;
+        another org reads nothing. A missing or system context raises first, as for every read."""
+        org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        return org_id == org
+
+    @staticmethod
     def _require_org(org_id: str | None) -> None:
         """A write names the ambient org or none: it is refused, not skipped, for any other."""
         if not IdentityMixin._mine(org_id):
@@ -216,7 +225,7 @@ class IdentityMixin(PgBase):
     @_soft(None, flag=True)
     async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False,
                                 org_id: str) -> User | None:
-        if not self._mine(org_id):
+        if not self._named_org(org_id):
             return None
         rows = await self._principals_by_email(["users"], [email], transaction)
         if rows is not None:
@@ -442,7 +451,8 @@ class IdentityMixin(PgBase):
     async def batch_upsert_app_users(self, users: list, transaction: str | None = None, *, org_id: str) -> None:
         if not users:
             return
-        self._require_org(org_id)       # the connector's org is the ambient one
+        if not self._named_org(org_id):     # the connector's org is the ambient one
+            raise OrgMismatch("the org argument differs from the ambient org")
         org = current_org_id()
         connector_id = users[0].connector_id
         now = get_epoch_timestamp_in_ms()

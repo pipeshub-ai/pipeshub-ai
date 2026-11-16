@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -2011,7 +2011,7 @@ class TestBatchUpsertAppUsers:
     async def test_no_org_raises(self, connected_provider):
         user = MagicMock()
         user.connector_id = "conn1"
-        with pytest.raises(ValueError, match="needs the org"):
+        with pytest.raises(MissingOrgContext, match="needs the org"):
             await connected_provider.batch_upsert_app_users([user], org_id="")
 
     async def test_exception_raises(self, connected_provider):

@@ -423,3 +423,13 @@ async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World)
         await w.p.rollback_transaction(txn)
     assert inside == {"m"}
     assert await w.p.get_app_user_links(w.org, APP) == []
+
+
+
+@pytest.mark.parametrize(("name", "args"), [("get_user_by_email", ("a@b.c",)), ("get_entity_id_by_email", ("a@b.c",)),
+                                            ("bulk_get_entity_ids_by_email", (["a@b.c"],)), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],))])
+async def test_an_org_argument_of_none_is_refused_even_inside_an_org(w: World, name: str, args: tuple) -> None:
+    """These methods require the org: None or empty is an error, never the ambient org by default."""
+    for empty in (None, ""):
+        with pytest.raises(MissingOrgContext, match="org argument is required"):
+            await getattr(w.p, name)(*args, org_id=empty)

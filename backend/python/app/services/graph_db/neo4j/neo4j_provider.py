@@ -68,7 +68,7 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import spawn_in_request
+from app.core.org_context import MissingOrgContext, spawn_in_request
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphMemoryLimitError,
@@ -6344,6 +6344,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
     ) -> User | None:
         """Get the user of org ``org_id`` with this email."""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             parameters = {"email": email, "org_id": org_id}
             query = """
@@ -10446,7 +10448,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return
 
             if not org_id:
-                raise ValueError("batch_upsert_app_users needs the org of the connector the users come from")
+                raise MissingOrgContext("batch_upsert_app_users needs the org of the connector the users come from")
             connector_id = users[0].connector_id
 
             # Get or create app
@@ -10926,6 +10928,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
     ) -> str | None:
         """Get the ID of the user, group or person of the org with this email"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             query = """
             MATCH (n)
@@ -10955,6 +10959,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """Bulk get entity IDs for multiple emails"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             if not emails:
                 return {}
@@ -14128,6 +14134,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
     ) -> dict | None:
         """Get user's sync state for a specific service"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             query = """
             MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
@@ -14166,6 +14174,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
     ) -> dict | None:
         """Update user's sync state for a specific service"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             updated_timestamp = get_epoch_timestamp_in_ms()
             self.validator.validate_edge_update(

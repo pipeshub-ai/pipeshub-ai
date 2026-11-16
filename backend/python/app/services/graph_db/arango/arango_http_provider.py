@@ -53,6 +53,8 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
+from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
+from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -94,6 +96,7 @@ from app.models.source_dates import (
     upload_times_undated,
 )
 from app.modules.code_graph.edge_build_trigger import is_code_record
+from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
     agent_schema,
     agent_skill_candidates_schema,
@@ -108,9 +111,6 @@ from app.schema.arango.documents import (
     comment_record_schema,
     deal_record_schema,
     department_schema,
-    named_entity_schema,
-    named_entity_persist_retry_schema,
-    value_mention_schema,
     file_record_schema,
     knowledge_schema,
     link_record_schema,
@@ -118,6 +118,8 @@ from app.schema.arango.documents import (
     mcp_server_schema,
     meeting_record_schema,
     message_record_schema,
+    named_entity_persist_retry_schema,
+    named_entity_schema,
     orgs_schema,
     people_schema,
     product_record_schema,
@@ -134,6 +136,7 @@ from app.schema.arango.documents import (
     tool_schema,
     toolset_schema,
     user_schema,
+    value_mention_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
@@ -155,19 +158,18 @@ from app.schema.arango.edges import (
     lead_schema,
     mcp_server_has_tool_schema,
     member_of_schema,
+    mentions_entity_schema,
+    node_relations_schema,
     permissions_schema,
     prospect_schema,
-    node_relations_schema,
     record_links_schema,
     sold_in_schema,
-    mentions_entity_schema,
     taxonomy_edge_schema,
     toolset_has_tool_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
-from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.services.graph_db import edge_effects
 from app.services.graph_db.arango.arango_http_client import (
     ARANGO_CONFLICT,
@@ -177,6 +179,11 @@ from app.services.graph_db.arango.arango_http_client import (
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
+from app.services.graph_db.common.cascade_retry import (
+    CASCADE_ATTEMPTS,
+    CONNECTOR_DELETE_BASE_SECONDS,
+)
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -209,15 +216,15 @@ from app.services.graph_db.common.utils import (
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     AncestorChainLimitError,
-    ancestor_chain_rows,
     EntityCandidateRows,
     PermittedEntityRows,
+    ancestor_chain_rows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
-    jira_issue_browse_url_regex,
     is_full_address,
+    jira_issue_browse_url_regex,
     person_query_ref,
     record_status_field,
     restore_items,
@@ -227,6 +234,13 @@ from app.services.graph_db.common.utils import (
     trash_purge_row,
     uploaded_document_id,
     within_param,
+)
+from app.services.graph_db.conditions import (
+    EQ,
+    IS_NULL,
+    NULL_OR_EQ,
+    Cond,
+    check_conditions,
 )
 from app.services.graph_db.dated_scope import (
     DatedRow,
@@ -247,7 +261,6 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
-    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     REF_LINKS_PER_DOC,
@@ -259,22 +272,15 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     _distinct_connector_types,
     _unsupported_container_filters,
+    promoted_duplicate_extraction_status,
     requested_scope_ids,
 )
-from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
-from app.services.graph_db.common.cascade_retry import (
-    CASCADE_ATTEMPTS,
-    CONNECTOR_DELETE_BASE_SECONDS,
+from app.services.graph_db.push_claim import (
+    KB_DELETING_STATUS,
+    PushClaim,
+    PushExpect,
+    PushSet,
 )
-from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
-from app.services.graph_db.conditions import (
-    EQ,
-    IS_NULL,
-    NULL_OR_EQ,
-    Cond,
-    check_conditions,
-)
-from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
@@ -282,7 +288,6 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     global_department_key,
@@ -291,12 +296,15 @@ from app.services.graph_db.taxonomy import (
     own_record_labels,
     subcategory_level,
 )
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
+)
 from app.services.graph_db.user_email_identity import (
-    GraphUserEmailConflictError,
     PERMISSION_ROLE_RANK,
     STUB_EDGE_COLLECTIONS,
     STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    GraphUserEmailConflictError,
     classify_email_peer,
     connector_ids_of_users,
     graph_user_key,
@@ -307,10 +315,9 @@ from app.services.graph_db.vector_membership_queries import (
     build_page_records_for_vector_membership_backfill_aql,
     can_use_membership_cleanup,
 )
-from app.utils.user_messages import action_failed
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import folder_in_trash
+from app.utils.user_messages import action_failed, folder_in_trash
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -8285,6 +8292,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Get the user of org ``org_id`` with this email.
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         bind_vars = {"email": email, "org_id": org_id}
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
@@ -11039,7 +11048,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return
 
             if not org_id:
-                raise ValueError("batch_upsert_app_users needs the org of the connector the users come from")
+                raise MissingOrgContext("batch_upsert_app_users needs the org of the connector the users come from")
             connector_id = users[0].connector_id
 
             app = await self.get_document(connector_id, CollectionNames.APPS.value)
@@ -11503,6 +11512,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[str]: Entity key (_key) or None
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         # First check users
         query = f"""
         FOR doc IN {CollectionNames.USERS.value}
@@ -11580,6 +11591,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "external@example.com": ("789ghi", "person", "USER")
             }
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         if not emails:
             return {}
 
@@ -14341,6 +14354,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         Queries the user-app relation edge to get sync state.
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             user_key = await self.get_entity_id_by_email(user_email, org_id=org_id)
             if not user_key:
@@ -14390,6 +14405,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[Dict]: Updated relation document if successful, None otherwise
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             self.logger.debug("Updating a user's %s sync state to %s", service_type, state)
 

@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.arango.arango_http_provider import (
     ArangoHTTPProvider,
@@ -5153,7 +5154,7 @@ class TestBatchUpsertAppUsersMissingInputs:
     async def test_no_org(self, connected_provider):
         mock_user = MagicMock()
         mock_user.connector_id = "c1"
-        with pytest.raises(ValueError, match="needs the org"):
+        with pytest.raises(MissingOrgContext, match="needs the org"):
             await connected_provider.batch_upsert_app_users([mock_user], org_id="")
 
     @pytest.mark.asyncio

@@ -295,11 +295,23 @@ def test_every_method_of_the_module_is_in_the_no_org_cases() -> None:
     assert set(NAMES) == set(CALLS)
 
 
+# the methods whose org argument is required: a call names it, and a None one is refused (never the ambient org by default)
+NAMED_ORG = {"get_user_sync_state", "update_user_sync_state"}
+
+
 @pytest.mark.parametrize("name", sorted(CALLS))
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str) -> None:
+    kwargs = {"org_id": None} if name in NAMED_ORG else {}
     with pytest.raises(MissingOrgContext):
-        await getattr(pg_provider, name)(*CALLS[name])
+        await getattr(pg_provider, name)(*CALLS[name], **kwargs)
     if name == "backfill_indexed_copy_flags":
         return                                                  # under a system context it is the sweep of every org (tested above)
     with org_context.system("test.no-org"), pytest.raises(Exception, match="(?i)system|org"):
-        await getattr(pg_provider, name)(*CALLS[name])
+        await getattr(pg_provider, name)(*CALLS[name], **kwargs)
+
+
+@pytest.mark.parametrize("name", sorted(NAMED_ORG))
+async def test_an_org_argument_of_none_is_refused_even_inside_an_org(w: World, name: str) -> None:
+    for empty in (None, ""):
+        with pytest.raises(MissingOrgContext, match="org argument is required"):
+            await getattr(w.p, name)(*CALLS[name], org_id=empty)

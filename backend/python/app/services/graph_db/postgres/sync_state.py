@@ -7,7 +7,7 @@ literal with bound parameters. A sweep over every org (the flag backfill) runs u
 from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.core.org_context import current_org_id
+from app.core.org_context import MissingOrgContext, current_org_id
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -38,6 +38,8 @@ class SyncStateMixin(PgBase):
     # ---- a user's sync state on an app (the relation edge of the user to the app of that name) ----------------------
     async def get_user_sync_state(self, user_email: str, service_type: str, transaction: str | None = None, *, org_id: str) -> dict | None:
         org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         if org_id != org:
             return None
         try:
@@ -53,6 +55,8 @@ class SyncStateMixin(PgBase):
 
     async def update_user_sync_state(self, user_email: str, state: str, service_type: str, transaction: str | None = None, *, org_id: str) -> dict | None:
         org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         if org_id != org:
             return None
         change = {"syncState": state, "lastSyncUpdate": get_epoch_timestamp_in_ms()}
