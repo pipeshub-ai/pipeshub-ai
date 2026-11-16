@@ -536,6 +536,11 @@ async def test_removing_the_earlier_accounts_mailbox_leaves_the_new_holders(w: W
         await w.nodes("records", rec(key, recordGroupId=stored.id, externalRecordId=key))
         await w.edge(CollectionNames.BELONGS_TO.value, ("records", key), (CollectionNames.RECORD_GROUPS.value, stored.id))
 
+    listed = await processor.get_nodes_by_filters(       # how Gmail finds an address's mailboxes
+        CollectionNames.RECORD_GROUPS.value, {"connectorId": APP, "groupType": RecordGroupType.MAILBOX.value},
+        ["externalGroupId"], raise_on_error=True,
+    )
+    assert {g["externalGroupId"] for g in listed} >= {"mailbox:m@x.com", "mailbox:m@x.com#new"}
     assert await processor.on_record_group_deleted("mailbox:m@x.com", APP)
 
     for gone in ("mailbox:m@x.com", "m@x.com:INBOX"):
