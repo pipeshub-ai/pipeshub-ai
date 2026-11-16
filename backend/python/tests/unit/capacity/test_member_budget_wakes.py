@@ -216,7 +216,7 @@ def test_a_forked_child_can_wait_for_a_slot_the_parent_frees(ledger: Path) -> No
             permit = b.reserve_blocking(_llm(), deadline_s=3)
             permit.release()
             code = 0
-        except BaseException:  # noqa: BLE001
+        except BaseException:
             code = 2
         finally:
             os.write(w, bytes([code]))
