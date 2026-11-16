@@ -143,7 +143,7 @@ class ConfigService:
             return self.platform or default
         return default
 
-    async def compare_and_set_config(self, key, expected, new) -> bool:  # noqa: ANN001
+    async def compare_and_set_config(self, key, expected, new) -> bool:
         # The connector processor keeps per-connector state by compare-and-set (SourceAccounts); nothing is
         # kept here, as with every other key this fake answers.
         return await self.get_config(key) == expected

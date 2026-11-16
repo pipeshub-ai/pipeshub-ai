@@ -59,7 +59,7 @@ class _KV:
         self.values[key] = value
         return True
 
-    async def compare_and_set_config(self, key, expected, new) -> bool:  # noqa: ANN001
+    async def compare_and_set_config(self, key, expected, new) -> bool:
         # The connector processor keeps per-connector state by compare-and-set (SourceAccounts).
         if await self.get_config(key) != expected:
             return False
