@@ -248,3 +248,22 @@ class TestAccessContextCountsTheLink:
         query = provider.http_client.execute_aql.await_args.args[0]
         assert "LET linked_grants" in query
         assert "granted.connectorId == kh_link.connectorId" in query
+
+
+class TestArangoAuthenticatorLinkWrite:
+    async def test_the_activity_check_and_the_link_write_are_one_statement(self) -> None:
+        """Two statements leave a gap after the user's write: a delete there (user switched off, link removed) is missed and the link
+        written again. One statement keeps the user written until the link write commits, with or without a caller's transaction."""
+        provider = _arango()
+        provider.execute_query = AsyncMock(return_value=[True])
+        await provider.upsert_authenticated_as("u1", "acct1", "conn-1", "org-1", target_collection="sourceAccounts")
+        provider.execute_query.assert_awaited_once()
+        query = provider.execute_query.await_args.args[0]
+        assert query.index("UPDATE x WITH {}") < query.index("UPSERT") and "isActive != false" in query
+
+    async def test_a_switched_off_user_gets_no_link_and_loses_its_own(self) -> None:
+        provider = _arango()
+        provider.execute_query = AsyncMock(side_effect=[[], ["conn-1"]])
+        await provider.upsert_authenticated_as("u1", "acct1", "conn-1", "org-1", target_collection="sourceAccounts")
+        assert provider.execute_query.await_count == 2
+        assert "REMOVE link" in provider.execute_query.await_args_list[1].args[0]

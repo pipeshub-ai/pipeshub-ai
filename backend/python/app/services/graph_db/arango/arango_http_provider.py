@@ -11403,25 +11403,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # keeps no authenticator link and gets none.
         ts = get_epoch_timestamp_in_ms()
         users = CollectionNames.USERS.value
-        live = await self.execute_query(f"""
-        FOR x IN {users} FILTER x._key == @creatorKey UPDATE x WITH {{}} IN {users} RETURN NEW.isActive != false
-        """, bind_vars={"creatorKey": creator_key}, transaction=transaction)
-        if live and live[0] is False:
-            await self.remove_authenticated_as(connector_id, transaction=transaction)
-            return
+        # One statement: the user stays written until the link write commits, so a delete between the two cannot be missed.
         query = f"""
-        UPSERT {{ _key: @connectorId }}
-        INSERT MERGE({{
-            _key: @connectorId, _from: @from, _to: @to,
-            connectorId: @connectorId, orgId: @orgId,
-            createdAtTimestamp: @ts, updatedAtTimestamp: @ts
-        }}, @via == null ? {{}} : {{ via: @via }})
-        UPDATE {{ _from: @from, _to: @to, orgId: @orgId, via: @via, updatedAtTimestamp: @ts }}
-        IN {CollectionNames.AUTHENTICATED_AS.value} OPTIONS {{ keepNull: false }}
+        LET user = FIRST(FOR x IN {users} FILTER x._key == @creatorKey UPDATE x WITH {{}} IN {users} RETURN NEW)
+        LET live = user == null OR user.isActive != false
+        FOR i IN (live ? [1] : [])
+            UPSERT {{ _key: @connectorId }}
+            INSERT MERGE({{
+                _key: @connectorId, _from: @from, _to: @to,
+                connectorId: @connectorId, orgId: @orgId,
+                createdAtTimestamp: @ts, updatedAtTimestamp: @ts
+            }}, @via == null ? {{}} : {{ via: @via }})
+            UPDATE {{ _from: @from, _to: @to, orgId: @orgId, via: @via, updatedAtTimestamp: @ts }}
+            IN {CollectionNames.AUTHENTICATED_AS.value} OPTIONS {{ keepNull: false }}
+        RETURN live
         """
-        await self.execute_query(
+        written = await self.execute_query(
             query,
             bind_vars={
+                "creatorKey": creator_key,
                 "connectorId": connector_id,
                 "from": f"{CollectionNames.USERS.value}/{creator_key}",
                 "to": f"{target_collection}/{source_user_key}",
@@ -11431,6 +11431,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             },
             transaction=transaction,
         )
+        if not written:      # a deactivated user: no row, and its authenticator link goes
+            await self.remove_authenticated_as(connector_id, transaction=transaction)
 
     async def set_directory_link(
         self,
