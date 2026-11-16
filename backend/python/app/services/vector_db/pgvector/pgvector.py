@@ -24,7 +24,6 @@ from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     current_scope_generation,
 )
-from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -506,9 +505,22 @@ class PgVectorService(IVectorDBService):
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
 
     async def scroll_with_vectors(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None) -> ScrollResult:
-        """Not served: the halfvec column and the postings are not read back through the provider yet, so a caller that wanted to move points
-        without embedding them again embeds them (``VectorsNotFetchable``)."""
-        raise VectorsNotFetchable("pgvector does not return stored vectors")
+        """``scroll`` returning each point whole: its payload, its dense vector (the halfvec column) and its sparse terms (the postings)."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, None, vectors=True),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
 
     async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
         """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""

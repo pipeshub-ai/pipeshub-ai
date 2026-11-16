@@ -94,7 +94,7 @@ from app.services.resource_governor.feedback import get_default_downstream_feedb
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.errors import VectorsNotFetchable
+from app.services.vector_db.errors import PartialResult, VectorsNotFetchable
 from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
@@ -1317,7 +1317,7 @@ class VectorStore(Transformer):
             except VectorsNotFetchable:
                 failed.update(dict.fromkeys(batch, "unsupported"))
                 continue
-            except Exception as e:  # falling back to embedding is always correct
+            except Exception as e:  # a partial read, a store that pages only so far, any failure: embedding is always correct
                 self.logger.warning(f"Re-key read of {vrid} failed, embedding those blocks instead: {e}")
                 failed.update(dict.fromkeys(batch, "error"))
                 continue
@@ -1364,14 +1364,21 @@ class VectorStore(Transformer):
         scroll_filter = await self.vector_db_service.filter_collection(
             must={"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": block_ids}
         )
+        await self.vector_db_service.make_searchable(collection_name)  # a point written a moment ago is in neither the scroll nor the count
         points: list[VectorPoint] = []
         offset = None
         while True:
             page = await self.vector_db_service.scroll_with_vectors(collection_name, scroll_filter, _REKEY_PAGE, offset)
             points.extend(page.points or [])
             if not page.next_offset or page.next_offset == offset:
-                return points
+                break
             offset = page.next_offset
+        # Complete or an error: a store can answer a scroll with fewer points than it holds, and a block counted as moved loses
+        # its old points. The store's own count of the same filter must agree with what was read.
+        counted = await self.vector_db_service.count_points(collection_name, scroll_filter)
+        if counted != len(points):
+            raise PartialResult(f"{collection_name}: the scroll saw {len(points)} points and the store counts {counted}")
+        return points
 
     async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> None:
         """Drop the record's points that *revision* (its whole current container) does not reference.

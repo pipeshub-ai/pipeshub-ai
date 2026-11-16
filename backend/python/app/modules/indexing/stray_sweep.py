@@ -10,7 +10,8 @@ ones whose block id is not in the revision's set.
 It is a backstop, never the mechanism, so:
 - it is idempotent: a second pass finds nothing;
 - it is bounded: at most `INDEXING_STRAY_SWEEP_MAX_POINTS` points are listed per record per run
-  (the rest are met by a later run), and deletes go out in batches;
+  (the rest are met by a later run), and deletes go out in batches; a store that can page only so
+  far (Redis, 10,000 results) ends the listing there, and the strays found before it are removed;
 - a point with no block id is left alone (what it is, is unknown);
 - a failure is logged and never fails the record's indexing.
 """
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.models import VectorChunkPayload
+from app.services.vector_db.models import ScrollWindowExceededError, VectorChunkPayload
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -75,10 +76,16 @@ async def sweep_stray_points(
     truncated = False
     offset = None
     while True:
-        page = await vector_db.scroll(
-            collection_name=collection_name, scroll_filter=scroll_filter, limit=_PAGE_SIZE,
-            offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD, BLOCK_ID_FIELD],
-        )
+        try:
+            page = await vector_db.scroll(
+                collection_name=collection_name, scroll_filter=scroll_filter, limit=_PAGE_SIZE,
+                offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD, BLOCK_ID_FIELD],
+            )
+        except ScrollWindowExceededError:
+            # A store that pages only so far (Redis: 10,000 results) cannot list the rest of this record. The strays
+            # found so far are still removed below; the points past the window are not reached.
+            truncated = True
+            break
         for point in page.points or []:
             scanned += 1
             block_id = VectorChunkPayload.from_dict(point.payload or {}).metadata.blockId

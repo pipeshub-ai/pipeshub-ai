@@ -115,6 +115,34 @@ async def test_a_store_that_cannot_return_vectors_embeds_again_and_counts_it(db,
     assert _point_ids(db) == await _content_points()
 
 
+async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_they_are_stored(db, monkeypatch) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(rekey_metrics, "REKEY_FALLBACK", recorder)
+    store = _store(db)
+    blob = await _legacy_record(store, db)
+    real = db.scroll_with_vectors
+
+    async def one_point_missing(*args, **kwargs):
+        page = await real(*args, **kwargs)
+        page.points = page.points[1:]
+        return page
+
+    db.scroll_with_vectors = one_point_missing
+    first_embed_saw: list[int] = []
+    embed = store._embed_documents_with_retry.side_effect
+
+    async def spying_embed(texts, rid):
+        first_embed_saw.append(len(db.collections[COLL]))
+        return embed(texts, rid)
+
+    store._embed_documents_with_retry = AsyncMock(side_effect=spying_embed)
+    await _index(store, blob, _doc())
+    assert {c[0] for c in recorder.calls} == {"error"}
+    assert len(_embedded_texts(store)) == N
+    assert _point_ids(db) == await _content_points()
+    assert first_embed_saw and first_embed_saw[0] == N, "every old point was still stored when the first embed ran"
+
+
 async def test_moved_blocks_are_counted(db, monkeypatch) -> None:
     moved = _Recorder()
     monkeypatch.setattr(rekey_metrics, "REKEYED", moved)

@@ -18,7 +18,7 @@ from app.services.permissions.scope_fields import (
     SCOPE_STAMP_FIELD,
     SCOPE_VERSION_FIELD,
 )
-from app.services.vector_db.models import VectorPoint
+from app.services.vector_db.models import SparseVector, VectorPoint
 from app.services.vector_db.pgvector.errors import OrgMismatch
 from app.services.vector_db.pgvector.sql_filters import PROMOTED, Compiled
 
@@ -110,9 +110,10 @@ def _needs(with_payload: list[str] | None) -> tuple[bool, bool]:
 
 
 async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled, limit: int, offset: str | None,
-                 with_payload: list[str] | None) -> tuple[list[VectorPoint], str | None]:
+                 with_payload: list[str] | None, *, vectors: bool = False) -> tuple[list[VectorPoint], str | None]:
     """One page of points ordered by ``point_sk``; ``c`` is compiled with ``first_param=5``. Fetches one extra row to know
-    whether another page exists."""
+    whether another page exists. With ``vectors`` each point also carries its stored dense vector and its sparse terms and weights
+    (the postings), so it can be written again under another id."""
     after = decode_offset(org, offset) if offset else 0
     need_json, need_text = _needs(with_payload)
     join_text = need_json or need_text or c.needs_text
@@ -122,6 +123,7 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
                {'pt.payload' if need_json else 'NULL::jsonb'} AS payload, {'pt.page_content' if need_text else 'NULL::text'} AS page_content,
                coalesce(g.connector_ids, '{{}}') AS connector_ids, coalesce(g.record_group_ids, '{{}}') AS record_group_ids,
                coalesce(g.root_record_group_ids, '{{}}') AS root_record_group_ids, {_SCOPE_COLUMNS}
+               {', p.embedding::text AS embedding, p.lex_terms' if vectors else ''}
         FROM retrieval.points p
         {'JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk' if join_text else ''}
         LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
@@ -130,7 +132,30 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
         org, collection_id, space_id, after, *c.params, limit + 1,
     )
     page = rows[:limit]
-    return [to_point(r, with_payload, org) for r in page], (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
+    points = [to_point(r, with_payload, org) for r in page]
+    if vectors:
+        await _add_vectors(tx, org, collection_id, space_id, page, points)
+    return points, (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
+
+
+async def _add_vectors(tx: Tx, org: str, collection_id: int, space_id: int, rows: list[asyncpg.Record], points: list[VectorPoint]) -> None:
+    """Set each point's dense vector (the halfvec column) and sparse vector (its postings, term-major so the lookup uses the index)."""
+    terms = sorted({t for r in rows for t in (r["lex_terms"] or [])})
+    weights: dict[tuple[int, int], float] = {}
+    if terms:
+        found = await tx.fetch(
+            """/* pipeshub:pgvector.scroll_postings */
+            SELECT term, point_sk, w FROM retrieval.postings
+            WHERE org_id = $1 AND collection_id = $2 AND space_id = $3 AND term = ANY($4::int[]) AND point_sk = ANY($5::bigint[])""",
+            org, collection_id, space_id, terms, [r["point_sk"] for r in rows],
+        )
+        weights = {(f["point_sk"], f["term"]): f["w"] for f in found}
+    for row, point in zip(rows, points, strict=True):
+        point.dense_vector = [float(x) for x in json.loads(row["embedding"])]
+        mine = sorted((t, weights[(row["point_sk"], t)]) for t in (row["lex_terms"] or []) if (row["point_sk"], t) in weights)
+        if mine:
+            # a term id above 2^31 - 1 is stored wrapped by 2^32: give back the id the writer was given
+            point.sparse_vector = SparseVector(indices=[t + 4294967296 if t < 0 else t for t, _ in mine], values=[w for _, w in mine])
 
 
 async def count_filtered(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled) -> int:

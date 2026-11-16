@@ -79,7 +79,7 @@ class IndexingPipeline:
                             old_metadata, new_metadata
                         )
                         logger.info(
-                            f"📊 Reconciliation (1:1, re-key): {len(rekey_ids)} to move, "
+                            f"Reconciliation (1:1, re-key): {len(rekey_ids)} to move, "
                             f"{len(blocks_to_index_ids)} to index, {len(block_ids_to_delete)} to delete"
                         )
                         return ReconciliationContext(

@@ -92,6 +92,27 @@ async def test_the_scan_is_bounded_per_record_and_the_next_run_finishes(db, monk
     assert _ids(db) == set()
 
 
+async def test_a_store_that_pages_only_so_far_still_loses_the_strays_found_before_the_ceiling(db, monkeypatch) -> None:
+    from app.services.vector_db.models import ScrollWindowExceededError
+
+    monkeypatch.setattr(stray_sweep, "_PAGE_SIZE", 10)
+    await db.upsert_points(COLL, [_point(f"p-{i:03d}", "keep" if i % 2 else f"stray-{i}") for i in range(40)])
+    real = db.scroll
+    pages = 0
+
+    async def window(*args: object, **kwargs: object):
+        nonlocal pages
+        pages += 1
+        if pages == 3:
+            raise ScrollWindowExceededError("ceiling")
+        return await real(*args, **kwargs)
+
+    db.scroll = window
+    result = await _sweep(db, {"keep"})
+    assert result.truncated and result.stray_blocks == 10
+    assert all(p.payload["metadata"]["blockId"] == "keep" or int(p.id[2:]) >= 20 for p in db.collections[COLL].values())
+
+
 async def test_without_an_org_or_record_nothing_is_scanned(db) -> None:
     await db.upsert_points(COLL, [_point("p", "gone")])
     assert (await sweep_stray_points(db, COLL, org_id="", virtual_record_id=VRID, keep_block_ids=[])).scanned == 0
