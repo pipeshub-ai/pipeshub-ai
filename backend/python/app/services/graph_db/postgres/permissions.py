@@ -170,10 +170,10 @@ class PermissionsMixin(PgBase):
             for lk in links:  # a source account the user authenticated as adds its own grants, and its badges', inside that connector
                 if not lk["cid"] or lk["cid"] not in by_conn:
                     continue
-                badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
+                badges = [(r["to_coll"], r["to_id"]) for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_coll, b.to_id FROM graph.edges b WHERE b.org_id = $1
                     AND b.coll = 'permission' AND b.from_coll = $3 AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"], lk["to_coll"])]
-                # not from an organization here: the edges are read for the account and its groups only
-                by_conn[lk["cid"]].extend((await access_sql.granted_targets(tx, org, [lk["to_id"], *badges], []))
+                # not from an organization here: the edges are read for the account and its groups only, each by its collection and id
+                by_conn[lk["cid"]].extend((await access_sql.granted_targets(tx, org, [], [], nodes=[(lk["to_coll"], lk["to_id"]), *badges]))
                                           .get(lk["cid"], []))
             return {"grantee_ids": grantees, "gated_app_ids": gated, "by_connector": {k: list(dict.fromkeys(v)) for k, v in by_conn.items()}}
         return await self._q(go, transaction)
@@ -487,7 +487,8 @@ class PermissionsMixin(PgBase):
     async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str, ranks: dict[str, int] = _CTX_RANK) -> tuple[str, str] | None:
         """The highest role the user holds on a record or record group: their own grant, a group's, a role's, a team's (never above WRITER) or the
         organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to; a source account the user authenticated
-        as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
+        as counts inside that connector with its own and its groups' grants, not an organisation's (the access check's rule). ``(role, source)``, a retired role read
+        as READER; None when no grant gives one."""
         rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth) AS (
               SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
               UNION
@@ -521,8 +522,8 @@ class PermissionsMixin(PgBase):
               JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
                 AND m.doc->>'type' = 'USER'
             UNION ALL
-            SELECT 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON true
-              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = pr.coll AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
+            SELECT 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.coll = 'users' AND pr.id = $4
+              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
               JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, node_id, user_key)
@@ -569,8 +570,8 @@ class PermissionsMixin(PgBase):
               JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
                 AND m.doc->>'type' = 'USER'
             UNION ALL
-            SELECT t.origin, 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.origin = t.origin
-              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = pr.coll AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
+            SELECT t.origin, 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.origin = t.origin AND pr.coll = 'users' AND pr.id = $4
+              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
               JOIN graph.nodes o2 ON o2.org_id = $1 AND o2.coll = 'organizations' AND o2.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o2.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, ids, user_key)

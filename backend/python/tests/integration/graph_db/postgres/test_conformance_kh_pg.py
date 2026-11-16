@@ -463,7 +463,7 @@ async def test_linked_source_accounts_list_what_the_viewer_may_read(kh_layer, mo
     are still the oracle's, from kg and from the walk."""
     from tests.permissions.gen import adversarial
     monkeypatch.setattr(adversarial, "RULES", [r for r in adversarial.RULES if r != "INHERITED"])      # as test_generated_worlds_list_what_the_viewer_may_read
-    kh_layer.accounts = True
+    kh_layer.variant = "accounts"
     worlds = [*dict.fromkeys(w for w in (*(s.final_world() for s in load_all()), *KH_WORLDS) if w.links), *(w for _, w in gen.linked(6))]
     assert worlds
     bad: list[KhFinding] = []

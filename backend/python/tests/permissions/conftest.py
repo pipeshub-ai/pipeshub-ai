@@ -31,5 +31,14 @@ def account_layers(
     neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
 ) -> list[GraphCheckLayer]:
     """The same stores, with every linked source account stored as a SourceAccount node."""
-    return [neo4j_layer(neo4j_provider, neo4j_settings, accounts=True),
-            arango_layer(arango_provider, arango_settings, accounts=True)]
+    return [neo4j_layer(neo4j_provider, neo4j_settings, variant="accounts"),
+            arango_layer(arango_provider, arango_settings, variant="accounts")]
+
+
+@pytest.fixture(scope="module")
+def no_source_org_layers(
+    neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
+) -> list[GraphCheckLayer]:
+    """The same stores, with the linked accounts' organisation memberships removed (`graph.without_link_source_orgs`)."""
+    return [neo4j_layer(neo4j_provider, neo4j_settings, variant="no_source_org"),
+            arango_layer(arango_provider, arango_settings, variant="no_source_org")]

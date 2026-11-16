@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import os
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,7 +15,13 @@ import pytest
 from app.core.org_context import OrgContext, bind
 from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGETS
 from tests.permissions import gen
-from tests.permissions.graph import Graph, Namespace, as_source_accounts, compile_world
+from tests.permissions.graph import VARIANTS, Graph, Namespace, compile_world
+from tests.permissions.linked_readers import (
+    findings,
+    linked_viewers,
+    linked_worlds,
+    snapshot,
+)
 from tests.permissions.runner import ConformanceRunner, Report
 from tests.permissions.scenario import Scenario, load_all
 
@@ -26,13 +32,14 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(1800)]
 
-_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
-_COUNTER = itertools.count(int(_WORKER[2:]) * 1_000_000 if _WORKER[2:].isdigit() else 0)      # a prefix is never reused by two workers
+# A prefix (and so an org) is never reused by two workers or two runs against one database: each would wipe the other's worlds (``_wipe``).
+_RUN = uuid.uuid4().hex[:8]
+_COUNTER = itertools.count()
 
 
 def _hex(org: str) -> str:
     """The kernel wants a 24-hex org id; the harness names orgs ``org-<prefix>``."""
-    return hashlib.sha1(org.encode()).hexdigest()[:24]
+    return hashlib.sha256(org.encode()).hexdigest()[:24]
 
 
 def _props(props: dict) -> dict:
@@ -43,18 +50,18 @@ class PgLayer:
     """An access layer (see ``tests/permissions/runner.py``) over a live PostgreSQL provider: a world is stored and asked about under its own org."""
 
     name = "postgres"
-    accounts = False      # every linked source account stored as a SourceAccount node (``as_source_accounts``)
+    variant = ""      # how a world is stored (``tests.permissions.graph.VARIANTS``)
 
     def __init__(self, provider, db) -> None:
         self._provider, self._db = provider, db
         self._prefix: dict[World, str] = {}
 
     def shape(self, graph: Graph) -> Graph:
-        return as_source_accounts(graph) if self.accounts else graph
+        return VARIANTS[self.variant](graph)
 
     async def preload(self, worlds: Iterable[World]) -> None:
         for w in (w for w in dict.fromkeys(worlds) if w not in self._prefix):
-            self._prefix[w] = f"w{next(_COUNTER)}"
+            self._prefix[w] = f"w{_RUN}{next(_COUNTER)}"
             graph = self.shape(compile_world(w, self._prefix[w]))
             org = _hex(Namespace(self._prefix[w]).org)
             kind = {n["id"]: NODE_TARGETS[n["kind"]] for n in graph["nodes"]}
@@ -148,7 +155,7 @@ async def test_generated_worlds_equal_the_oracle(layer: PgLayer, kind: str) -> N
 async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
     """Every world that links a user to a source account, with the account stored as a SourceAccount node instead of a User: the walk must still
     answer as the oracle does (the account's grants and badges reach the user inside the link's connector only, and nothing else)."""
-    layer.accounts = True
+    layer.variant = "accounts"
     scenarios = [s for s in load_all() if s.final_world().links]
     generated = gen.linked(25)
     assert scenarios and generated
@@ -162,3 +169,27 @@ async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
     assert total.pairs > 100, f"the corpus asked {total.pairs} pairs: nothing was checked"
     assert not total.over_admits, f"over-admits (an over-share)\n{_describe(total)}"
     assert not total.findings, _describe(total)
+
+
+async def test_linked_accounts_add_no_organisation_to_roles_details_or_search(layer: PgLayer, pg_provider, pg_db) -> None:
+    """The context role, the record access details and the search scope, in every world that links a user to a source account: the same with
+    the linked accounts' organisations removed, and no ability on a node ``check_access`` refuses."""
+    without = PgLayer(pg_provider, pg_db)
+    without.variant = "no_source_org"
+    worlds = linked_worlds(4)
+    found: list[str] = []
+    try:
+        await layer.preload(w for _, w in worlds)
+        await without.preload(w for _, w in worlds)
+        for name, world in worlds:
+            ns, ns_without = await layer._ns(world), await without._ns(world)
+            for viewer in linked_viewers(world):
+                admitted = await layer.admitted(world, viewer, [n.id for n in world.nodes])
+                with bind(OrgContext(_hex(ns.org), None, "job", "job:test", "t")):
+                    plain = await snapshot(pg_provider, world, viewer, ns, _hex(ns.org))
+                with bind(OrgContext(_hex(ns_without.org), None, "job", "job:test", "t")):
+                    stripped = await snapshot(pg_provider, world, viewer, ns_without, _hex(ns_without.org))
+                found += findings(name, viewer, plain, stripped, admitted)
+    finally:
+        await without.release(list(without._prefix))
+    assert not found, "\n".join(found[:40])

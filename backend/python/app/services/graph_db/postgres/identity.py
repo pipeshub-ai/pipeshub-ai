@@ -549,6 +549,7 @@ class IdentityMixin(PgBase):
                 AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
               UNION
               SELECT p.to_id FROM u JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = u.id
+                AND l.to_coll IN ('users', 'sourceAccounts')
                 JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = l.to_coll AND p.from_id = l.to_id AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
                 JOIN graph.nodes sg ON sg.org_id = $1 AND sg.coll = 'groups' AND sg.id = p.to_id AND sg.doc->>'connectorId' = l.doc->>'connectorId')
             SELECT g.id AS "id", coalesce(g.doc->>'externalGroupId', '') AS "externalId", coalesce(g.doc->>'name', '') AS "name",
