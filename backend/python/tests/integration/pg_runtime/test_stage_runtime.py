@@ -309,10 +309,18 @@ async def test_hand_backs_back_off_per_message_and_a_backstopped_one_is_charged(
     so the delivery limit ends it."""
     monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.05")
     monkeypatch.setenv("PG_QUEUE_HANDBACK_LIMIT", "3")
-    stamps: list[float] = []
+    nacks: list[tuple[float, bool]] = []
+    real_nack = stage.q.nack
+
+    async def recording_nack(group_id, d, delay_s, error="", *, refund=False) -> bool:
+        nacks.append((delay_s, refund))
+        return await real_nack(group_id, d, delay_s, error, refund=refund)
+
+    # The delay each hand-back asks the queue for, not the gaps between deliveries: those also hold the consumer's
+    # wake-up and claim, and one slow wake on a busy runner made the first gap twice the fourth.
+    monkeypatch.setattr(stage.q, "nack", recording_nack)
 
     async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
-        stamps.append(asyncio.get_running_loop().time())
         raise RequeueWithoutAttempt("held elsewhere", delay_s=0.0)
         yield  # pragma: no cover
 
@@ -323,8 +331,9 @@ async def test_hand_backs_back_off_per_message_and_a_backstopped_one_is_charged(
             break
         await asyncio.sleep(0.05)
     assert (await stage.q.backlog("stage_g", [stage.topic])).get("dead") == 1       # charged after 3 hand-backs, then 3 attempts
-    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
-    assert gaps[3] > gaps[0]                                                         # 0.05, 0.1, 0.2 ...: it grows
+    # the delay doubles with every hand-back of the message; after 3 the backstop charges it, and 3 charged attempts end it
+    assert [delay for delay, _ in nacks] == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8, 1.6])
+    assert [refund for _, refund in nacks] == [True, True, True, False, False, False]
 
 
 # -- the code graph ---------------------------------------------------------------------------------------------------------

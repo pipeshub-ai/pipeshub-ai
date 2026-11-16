@@ -1,0 +1,77 @@
+# Run parsing in its own container (the same split as on Kubernetes, on one machine).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.parsing.yml up -d
+#
+# The app container is pointed at the parsing container and no longer starts a
+# local Parsing service. The parsing container runs the same image with
+# PIPESHUB_ROLE=parsing and shares the app's configuration store.
+services:
+  pipeshub-ai:
+    environment:
+      - USE_PARSING_SERVICE=true
+      - PARSING_SERVICE_URL=http://parsing:8092
+      # Parses in flight per app process toward the parsing service; empty keeps the CPU-derived slots.
+      - PARSING_SERVICE_CONCURRENCY=${PARSING_SERVICE_CONCURRENCY:-}
+    depends_on:
+      parsing:
+        condition: service_healthy
+
+  parsing:
+    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    restart: always
+    # On stop the parsing process finishes its in-flight parses, then Docling stops;
+    # Compose's default 10 s would kill a parse that needs longer. Matches the Helm
+    # chart's parsing.terminationGracePeriodSeconds.
+    stop_grace_period: ${PARSING_STOP_GRACE_PERIOD:-120s}
+    environment:
+      - PIPESHUB_ROLE=parsing
+      - PARSING_SERVICE_PORT=8092
+      # Requests in the route beyond this get 429 at once; empty = not limited by count.
+      - PARSING_MAX_CONCURRENT=${PARSING_MAX_CONCURRENT:-}
+      # Model credentials and endpoints the parser may need when a saved model configuration omits them
+      # (OCR and table summaries run here): the same values as the app.
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+      - OLLAMA_API_URL=http://host.docker.internal:11434
+      # The configuration store and secrets are the app's: same values, same stores.
+      - SECRET_KEY=${SECRET_KEY:-}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_USERNAME=${REDIS_USERNAME:-}
+      - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
+      - REDIS_KEY_NAMESPACE=${REDIS_KEY_NAMESPACE:-}
+      # The same Redis provider and cluster the app selects, and its TLS settings.
+      - REDIS_MODE=${REDIS_MODE:-standalone}
+      - REDIS_CLUSTER_ENDPOINTS=${REDIS_CLUSTER_ENDPOINTS:-}
+      - REDIS_CLUSTER_SCALE_READS=${REDIS_CLUSTER_SCALE_READS:-master}
+      - REDIS_CLUSTER_NAT_MAP=${REDIS_CLUSTER_NAT_MAP:-}
+      - REDIS_PROVIDER_MODULE=${REDIS_PROVIDER_MODULE:-}
+      - REDIS_TLS_ENABLED=${REDIS_TLS_ENABLED:-false}
+      - REDIS_TLS_REJECT_UNAUTHORIZED=${REDIS_TLS_REJECT_UNAUTHORIZED:-true}
+      - REDIS_TLS_CA_PATH=${REDIS_TLS_CA_PATH:-}
+      # Where the app keeps its configuration in Redis: the same key space and database.
+      - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
+      - REDIS_DB=${REDIS_DB:-0}
+      # The same outbound-address policy as the app, for the model endpoints this service calls.
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - ETCD_URL=http://etcd:2379
+      - ETCD_HOST=etcd
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8092/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    depends_on:
+      - redis
+    networks:
+      - pipeshub
+    # Model endpoints on the host (for example Ollama) are reached by this name, as from the app.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
