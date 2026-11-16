@@ -59,6 +59,7 @@ def _make_mock_deps():
     dep.on_updated_record_permissions = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.holds_source_account = AsyncMock(return_value=False)
     dep.get_user_group_by_external_id = AsyncMock(return_value=None)
 
     dsp = MagicMock()

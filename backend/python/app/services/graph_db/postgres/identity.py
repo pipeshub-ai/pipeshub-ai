@@ -628,6 +628,7 @@ class IdentityMixin(PgBase):
         async def go(tx: Any) -> None:  # noqa: ANN401
             if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1
                 AND ((coll = 'users' AND id = $2) OR (coll = $4 AND id = $3))""", org, creator_key, source_user_key, target_collection) < len({("users", creator_key), (target_collection, source_user_key)}):
+                self.logger.warning("Connector %s: the authenticated-as link is not written, its user or its %s node is not stored", connector_id, target_collection)
                 return
             await tx.execute("""/* pipeshub:graph.authenticated_as_drop_stale */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
                 AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator'
@@ -639,8 +640,9 @@ class IdentityMixin(PgBase):
                              _j(link), ts, ekey, target_collection)
         await self._q(go, transaction, write=True)
 
-    async def set_directory_link(self, user_key: str, connector_id: str, account_key: str | None, org_id: str, transaction: str | None = None) -> None:
-        """Directory links only (``via: directory``, their own edge key): an authenticator link of the same pair is another edge and stays."""
+    async def set_directory_link(self, user_key: str, connector_id: str, email: str, org_id: str, transaction: str | None = None) -> None:
+        """Directory links only (``via: directory``, their own edge key): an authenticator link of the same pair is another edge and stays. The
+        accounts with the address and the user are locked (``FOR UPDATE``) before the choice, as a withdrawal or a delete writes them."""
         self._require_org(org_id)
         org, ts = current_org_id(), get_epoch_timestamp_in_ms()
         link = {"connectorId": connector_id, "orgId": org, "via": "directory", "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
@@ -648,16 +650,21 @@ class IdentityMixin(PgBase):
         ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
+            user = await tx.fetchrow("""/* pipeshub:graph.directory_link_user */ SELECT doc->>'isActive' AS active FROM graph.nodes
+                WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR UPDATE""", org, user_key)
+            live = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.directory_link_accounts */ SELECT id, doc->>'state' AS state FROM graph.nodes
+                WHERE org_id = $1 AND coll = 'sourceAccounts' AND doc->>'connectorId' = $2 AND doc->>'email' = $3 ORDER BY id FOR UPDATE""",
+                                                    org, connector_id, email) if r["state"] != "withdrawn"]
+            want = live[0] if user is not None and user["active"] != "false" and len(live) == 1 else None
             await tx.execute("""/* pipeshub:graph.directory_link_drop */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
                 AND from_coll = 'users' AND from_id = $2 AND ekey = $3 AND NOT (to_coll = 'sourceAccounts' AND to_id IS NOT DISTINCT FROM $4)""",
-                             org, user_key, ekey, account_key)
-            if account_key is None:
+                             org, user_key, ekey, want)
+            if want is None:
                 return
             await tx.execute("""/* pipeshub:graph.directory_link_upsert */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-                SELECT $1, 'authenticatedAs', 'users', $2, 'sourceAccounts', $3, $4, $5::jsonb
-                WHERE (SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND ((coll = 'users' AND id = $2) OR (coll = 'sourceAccounts' AND id = $3))) = 2
+                VALUES ($1, 'authenticatedAs', 'users', $2, 'sourceAccounts', $3, $4, $5::jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('updatedAtTimestamp', $6::bigint)""",
-                             org, user_key, account_key, ekey, _j(link), ts)
+                             org, user_key, want, ekey, _j(link), ts)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:

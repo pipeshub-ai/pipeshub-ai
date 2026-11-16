@@ -1163,8 +1163,8 @@ class GraphTransactionStore(TransactionStore):
             creator_key, source_user_key, connector_id, org_id, transaction=self.txn, target_collection=target_collection
         )
 
-    async def set_directory_link(self, user_key: str, connector_id: str, account_key: str | None, org_id: str) -> None:
-        await self.graph_provider.set_directory_link(user_key, connector_id, account_key, org_id, transaction=self.txn)
+    async def set_directory_link(self, user_key: str, connector_id: str, email: str, org_id: str) -> None:
+        await self.graph_provider.set_directory_link(user_key, connector_id, email, org_id, transaction=self.txn)
 
     async def remove_authenticated_as(self, connector_id: str) -> bool:
         return await self.graph_provider.remove_authenticated_as(connector_id, transaction=self.txn)

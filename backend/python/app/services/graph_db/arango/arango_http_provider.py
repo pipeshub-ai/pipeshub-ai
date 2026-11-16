@@ -11416,32 +11416,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_key: str,
         connector_id: str,
-        account_key: str | None,
+        email: str,
         org_id: str,
         transaction: str | None = None,
     ) -> None:
-        # Directory links only: the authenticator link (keyed by the connector) and links without via are never read or written here.
-        links = CollectionNames.AUTHENTICATED_AS.value
-        frm = f"{CollectionNames.USERS.value}/{user_key}"
-        to = f"{CollectionNames.SOURCE_ACCOUNTS.value}/{account_key}" if account_key else None
-        await self.execute_query(f"""
-        FOR link IN {links}
-            FILTER link._from == @from AND link.connectorId == @connectorId AND link.via == 'directory' AND link._to != @to
-            REMOVE link IN {links}
-        """, bind_vars={"from": frm, "connectorId": connector_id, "to": to}, transaction=transaction)
-        if to is None:
+        # The empty updates write the user and the accounts, so a concurrent withdrawal or delete conflicts with this one instead of being
+        # missed. Directory links only: the authenticator link (keyed by the connector) and links without via are never touched.
+        links, users, accounts = CollectionNames.AUTHENTICATED_AS.value, CollectionNames.USERS.value, CollectionNames.SOURCE_ACCOUNTS.value
+        frm = f"{users}/{user_key}"
+        rows = await self.execute_query(f"""
+        LET user = FIRST(FOR x IN {users} FILTER x._key == @userKey AND x.orgId == @orgId UPDATE x WITH {{}} IN {users} RETURN NEW)
+        LET live = (FOR s IN {accounts}
+            FILTER s.orgId == @orgId AND s.connectorId == @connectorId AND s.email == @email
+            UPDATE s WITH {{}} IN {accounts}
+            FILTER NEW.state != 'withdrawn'
+            RETURN NEW._id)
+        LET want = (user != null AND user.isActive != false AND LENGTH(live) == 1) ? live[0] : null
+        LET gone = (FOR link IN {links}
+            FILTER link._from == @from AND link.connectorId == @connectorId AND link.via == 'directory' AND link._to != want
+            REMOVE link IN {links} RETURN 1)
+        RETURN want
+        """, bind_vars={"userKey": user_key, "orgId": org_id, "connectorId": connector_id, "email": email, "from": frm},
+            transaction=transaction)
+        want = rows[0] if rows else None
+        if not want:
             return
         ts = get_epoch_timestamp_in_ms()
         await self.execute_query(f"""
-        LET user = DOCUMENT(@from)
-        LET account = DOCUMENT(@to)
-        FILTER user != null AND user.orgId == @orgId AND account != null AND account.orgId == @orgId
         UPSERT {{ _from: @from, _to: @to, connectorId: @connectorId, via: 'directory' }}
         INSERT {{ _from: @from, _to: @to, connectorId: @connectorId, via: 'directory', orgId: @orgId,
                   createdAtTimestamp: @ts, updatedAtTimestamp: @ts }}
         UPDATE {{ updatedAtTimestamp: @ts }}
         IN {links}
-        """, bind_vars={"from": frm, "to": to, "connectorId": connector_id, "orgId": org_id, "ts": ts}, transaction=transaction)
+        """, bind_vars={"from": frm, "to": want, "connectorId": connector_id, "orgId": org_id, "ts": ts}, transaction=transaction)
 
     async def remove_authenticated_as(
         self,

@@ -386,6 +386,12 @@ class SourceAccountGraph:
             self._known.add(node)
         return node, ACCOUNTS
 
+    async def holding(self, tx_store: "TransactionStore", address: str) -> list[str]:
+        """The keys of this connector's accounts (any state) whose address is ``address``: what a grant or a membership revoked by
+        address was written on. A failed read raises."""
+        return [k for a in await tx_store.get_nodes_by_field_in(ACCOUNTS, "email", [address.lower()], raise_on_error=True)
+                if (k := a.get("_key") or a.get("id")) == self.node_id(a.get("sourceUserId"))]
+
     @staticmethod
     async def stored(tx_store: "TransactionStore", nodes: list[str]) -> list[dict]:
         """The stored account documents among ``nodes``. A failed read raises."""
@@ -422,7 +428,8 @@ class SourceAccountGraph:
 
     async def relink(self, tx_store: "TransactionStore", addresses: list[str]) -> None:
         """Link each address's PipesHub user to the one live account of this connector with that address, and to nothing
-        when there is none or several; every other directory link of that user in this connector goes."""
+        when there is none or several, or when the user is deactivated; every other directory link of that user in this connector
+        goes. The store makes the choice under locks (``set_directory_link``), so a sync and a user event cannot race it."""
         if not addresses:
             return
         accounts = [a for a in await tx_store.get_nodes_by_field_in(ACCOUNTS, "email", addresses, raise_on_error=True)
@@ -433,13 +440,11 @@ class SourceAccountGraph:
             user = users.get(address)
             if user is None:
                 continue
-            live = sorted(a.get("_key") or a.get("id") for a in accounts if a.get("email") == address)
-            if len(live) > 1:
+            if sum(a.get("email") == address for a in accounts) > 1:
                 self.logger.warning(
-                    "Connector %s lists %d accounts with one address; their PipesHub user is linked to none of them",
-                    self.connector_id, len(live),
+                    "Connector %s lists several accounts with one address; their PipesHub user is linked to none of them", self.connector_id,
                 )
-            await tx_store.set_directory_link(user.id, self.connector_id, live[0] if len(live) == 1 else None, self.org_id)
+            await tx_store.set_directory_link(user.id, self.connector_id, address, self.org_id)
 
     async def withdraw(self, tx_store: "TransactionStore", users: list["AppUser"]) -> None:
         """Mark the stored accounts of ``users`` withdrawn (kept: they hold the grants, and the addresses they had), then

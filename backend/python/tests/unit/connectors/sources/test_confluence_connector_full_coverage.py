@@ -46,6 +46,7 @@ def _make_mock_deps():
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.holds_source_account = AsyncMock(return_value=False)
     dep.get_user_group_by_external_id = AsyncMock(return_value=None)
 
     dsp = MagicMock()

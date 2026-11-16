@@ -518,8 +518,8 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def set_directory_link(self, user_key: str, connector_id: str, account_key: str | None, org_id: str) -> None:
-        """The user's only directory link in the connector goes to ``account_key``, or none when None; other links stay."""
+    async def set_directory_link(self, user_key: str, connector_id: str, email: str, org_id: str) -> None:
+        """The user's only directory link in the connector goes to the one live account with ``email``, or none; other links stay."""
         pass
 
     @abstractmethod

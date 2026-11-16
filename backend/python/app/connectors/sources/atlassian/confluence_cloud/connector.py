@@ -4422,6 +4422,10 @@ class ConfluenceConnector(BaseConnector):
                         entity_type=entity_type
                     )
 
+                # A stored account holds its own grants, linked to a PipesHub user or not (two accounts may share an address)
+                if await self.data_entities_processor.holds_source_account(self.connector_id, principal_id):
+                    return Permission(external_id=principal_id, type=permission_type, entity_type=entity_type)
+
                 # User not found - check if pseudo-group exists or should be created
                 if create_pseudo_group_if_missing:
                     # Check for existing pseudo-group

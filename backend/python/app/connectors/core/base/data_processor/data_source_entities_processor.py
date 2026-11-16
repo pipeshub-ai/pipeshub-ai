@@ -508,6 +508,15 @@ class DataSourceEntitiesProcessor:
             self._account_graphs[connector_id] = SourceAccountGraph(connector_id, self.org_id, self.logger) if enabled else None
         return self._account_graphs[connector_id]
 
+    async def holds_source_account(self, connector_id: str, source_user_id: str) -> bool:
+        """Whether the connector keeps its accounts in the graph and has stored this one: a grant naming it by id is then written on it,
+        with or without a PipesHub user linked to it. A failed read raises."""
+        graph = await self._account_graph(connector_id)
+        if graph is None:
+            return False
+        async with self.data_store_provider.transaction() as tx_store:
+            return await graph.principal(tx_store, source_user_id) is not None
+
     async def _account_principal(
         self, tx_store: TransactionStore, connector_id: str | None, source_id: str | None
     ) -> tuple[str, str] | None:
@@ -5648,6 +5657,9 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(
                     f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
                 )
+            elif authenticator.get("isActive") is False:
+                # a deleted user is linked again only when restored (a missing field is a live user written before it existed)
+                self.logger.info(f"User {authenticated_by} is deactivated; connector {connector_id} is not linked to its source account")
             elif account:
                 # Signing the connector in as the account shows the user holds it, whatever the address says: linked even
                 # where two accounts share the address and the directory links neither.
@@ -6453,7 +6465,11 @@ class DataSourceEntitiesProcessor:
             # A user or group that could not be read is not one that is not there:
             # returning False on a failed read would leave the user in the group.
             user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
-            if not user:
+            # With the connector's accounts in the graph, the membership may sit on the account that holds the address.
+            graph = await self._account_graph(connector_id)
+            members = [(user.id, CollectionNames.USERS.value)] if user else []
+            members += [(k, ACCOUNTS) for k in (await graph.holding(tx_store, user_email) if graph else [])]
+            if not members:
                 self.logger.warning(
                     f"Cannot remove member from group {external_group_id}: "
                     f"User with email {user_email} not found in database"
@@ -6475,12 +6491,8 @@ class DataSourceEntitiesProcessor:
             # Not delete_edge: ArangoDB's answers False when the delete fails, the
             # same answer as "was not a member".
             deleted = await tx_store.batch_delete_edges(
-                [{
-                    "from_id": user.id,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": user_group.id,
-                    "to_collection": CollectionNames.GROUPS.value,
-                }],
+                [{"from_id": key, "from_collection": coll, "to_id": user_group.id, "to_collection": CollectionNames.GROUPS.value}
+                 for key, coll in members],
                 collection=CollectionNames.PERMISSION.value,
             )
 
@@ -7309,23 +7321,22 @@ class DataSourceEntitiesProcessor:
             # A user who could not be read is not a user who is not there: returning
             # here on a failed read would leave the permission in place unreported.
             user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
-            if not user:
-                self.logger.warning(f"User with email {user_email} not found in database")
-                return
-
             if connector_id is None:
                 stored = await tx_store.get_record_by_key(record_id, raise_on_error=True)
                 connector_id = (stored or {}).get("connectorId")
+            # With the connector's accounts in the graph, the grant may sit on the account that holds the address.
+            graph = await self._account_graph(connector_id)
+            holders = [(user.id, CollectionNames.USERS.value)] if user else []
+            holders += [(k, ACCOUNTS) for k in (await graph.holding(tx_store, user_email) if graph else [])]
+            if not holders:
+                self.logger.warning(f"User with email {user_email} not found in database")
+                return
 
             # Not delete_edge: ArangoDB's answers False when the delete fails, which
             # read here as "nothing to delete" and left the user with the permission.
             deleted = await tx_store.batch_delete_edges(
-                [{
-                    "from_id": user.id,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": record_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                }],
+                [{"from_id": key, "from_collection": coll, "to_id": record_id, "to_collection": CollectionNames.RECORDS.value}
+                 for key, coll in holders],
                 collection=CollectionNames.PERMISSION.value,
             )
 

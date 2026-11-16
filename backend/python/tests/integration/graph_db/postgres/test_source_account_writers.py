@@ -141,6 +141,8 @@ async def test_a_deleted_user_reads_nothing_through_its_account_and_a_restore_gi
 
     async def deleted() -> None:
         assert await reads() == (False, False)
+        await scenario.a_deleted_user_is_not_linked_again(setup.processor, setup.w.p, APP, setup.emails, setup.users, "uid-cal")
+        assert await reads() == (False, False), "nor does the next listing or its own sign-in give it back"
 
     async def restored() -> None:
         assert await reads() == (True, True)
@@ -190,3 +192,11 @@ async def test_an_old_accounts_role_memberships_never_reach_the_new_holder_of_it
     await scenario.enable(setup.processor, APP)
     await setup.write()
     await scenario.role_memberships_stay_with_the_old_account(setup.processor, setup.w.p, APP, setup.w.org, setup.emails, setup.users)
+
+
+async def test_a_revoked_grant_and_a_removed_membership_are_taken_from_the_account(setup: Setup) -> None:
+    await scenario.enable(setup.processor, APP)
+    records = await setup.write()
+    await scenario.revocations_reach_the_account(setup.processor, setup.w.p, APP, setup.emails, records)
+    readers = await setup.readers(records)
+    assert "ana" not in readers["by-id"] and "cal" not in readers["by-group"]

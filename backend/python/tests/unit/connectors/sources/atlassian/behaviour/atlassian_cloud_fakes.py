@@ -84,6 +84,9 @@ class CloudRecordsDb(FakeRecordsDb):
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> object:
         return self.groups_by_external_id.get(external_id)
 
+    async def holds_source_account(self, connector_id: str, source_user_id: str) -> bool:
+        return False      # the connector's accounts are not kept as SourceAccount nodes here (the setting is off)
+
     async def get_placeholder_records(self, connector_id: str) -> list[Any]:
         return list(self.placeholders)
 

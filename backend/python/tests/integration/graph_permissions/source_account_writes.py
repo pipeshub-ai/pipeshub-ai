@@ -162,6 +162,9 @@ async def authenticator_survives_relinks(processor: Any, provider: Any, connecto
     await processor.withdraw_app_user_access(connector_id, [account(connector_id, emails, "s-cal", "ana2").model_copy(update={"id": users["ana2"]})])
     got = await links_of(provider, cal)
     assert signed_in in got, f"a withdrawal relinks the addresses; the sign-in stays: {got}"
+    # a relink that chose s-cal before the withdrawal (a user event racing the sync) writes after it: the store decides again and links nobody
+    await provider.set_directory_link(users["ana2"], connector_id, emails["ana2"], org_id)
+    assert listed not in await links_of(provider, users["ana2"]), "a withdrawn account is never linked again"
 
 
 async def another_orgs_user_is_not_linked(provider: Any, org_id: str, connector_id: str, users: dict[str, str], foreign_key: str) -> None:  # noqa: ANN401
@@ -207,3 +210,39 @@ async def role_memberships_stay_with_the_old_account(processor: Any, provider: A
     assert await linked_to(old) == set(), "a withdrawn account's memberships grant nobody"
     assert ana in await linked_to(new), "the address now links the new account"
     assert await roles_of(new) == set() and await roles_of(ana) == set(), "the new holder has none of the old account's memberships"
+
+
+async def a_deleted_user_is_not_linked_again(processor: Any, provider: Any, connector_id: str, emails: dict[str, str], users: dict[str, str],  # noqa: ANN401
+                                            cal_user_id: str) -> None:
+    """While cal is deleted: the next listing of its account and its own sign-in as that account link nothing."""
+    await processor.on_new_app_users([account(connector_id, emails, "s-cal")])
+    await processor.link_authenticator_to_source_user(connector_id, cal_user_id, emails["cal"], "s-cal", APP)
+    assert not [link for link in await links_of(provider, users["cal"]) if link[0].startswith(f"{ACCOUNTS_COLL}/")], \
+        "a deleted user is linked to no source account until restored"
+
+
+async def revocations_reach_the_account(processor: Any, provider: Any, connector_id: str, emails: dict[str, str],  # noqa: ANN401
+                                        records: dict[str, FileRecord]) -> None:
+    """After ``write`` with the setting on: a grant and a membership revoked by address are taken from the account that holds them."""
+    from app.config.constants.arangodb import CollectionNames
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+
+    org_id = records["by-id"].org_id
+
+    async def targets(source_id: str) -> set[str]:
+        node = f"{ACCOUNTS_COLL}/{account_node_id(org_id, connector_id, source_id)}"
+        edges = await provider.get_edges_from_node(node, CollectionNames.PERMISSION.value, raise_on_error=True)
+        return {e.get("_to") or f"{e.get('to_collection')}/{e.get('to_id')}" for e in edges}
+
+    by_id = f"{CollectionNames.RECORDS.value}/{records['by-id'].id}"
+    assert by_id in await targets("s-ana")
+    await processor.delete_permission_from_record(records["by-id"].id, emails["ana"], connector_id)
+    assert by_id not in await targets("s-ana"), "the revoked grant is taken from the account"
+
+    granted_by = await provider.get_edges_to_node(f"{CollectionNames.RECORDS.value}/{records['by-group'].id}", CollectionNames.PERMISSION.value,
+                                                  raise_on_error=True)
+    in_group = next(h for e in granted_by if (h := e.get("_from") or f"{e.get('from_collection')}/{e.get('from_id')}").startswith("groups/"))
+    group_id = (await provider.get_document(in_group.split("/", 1)[1], CollectionNames.GROUPS.value))["externalGroupId"]
+    assert in_group in await targets("s-cal")
+    assert await processor.on_user_group_member_removed(group_id, emails["cal"], connector_id)
+    assert in_group not in await targets("s-cal"), "the removed membership is taken from the account"

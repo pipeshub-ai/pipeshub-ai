@@ -10856,27 +10856,32 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_key: str,
         connector_id: str,
-        account_key: str | None,
+        email: str,
         org_id: str,
         transaction: str | None = None,
     ) -> None:
-        # The MERGE pattern names via, so an authenticator link of the same pair is never taken for this one, and the delete reads
-        # directory links only.
+        # The SETs take the write locks a withdrawal or a delete also takes, so the state and isActive read after them are current. The
+        # MERGE pattern names via, so an authenticator link of the same pair is never taken for this one.
         query = """
         MATCH (u:User {id: $user_key, orgId: $org_id})
+        SET u.updatedAtTimestamp = u.updatedAtTimestamp
+        WITH u
+        OPTIONAL MATCH (s:SourceAccount {orgId: $org_id, connectorId: $connector_id, email: $email})
+        SET s.updatedAtTimestamp = s.updatedAtTimestamp
+        WITH u, [x IN collect(s) WHERE coalesce(x.state, '') <> 'withdrawn'] AS live
+        WITH u, CASE WHEN size(live) = 1 AND coalesce(u.isActive, true) <> false THEN live[0] END AS want
         OPTIONAL MATCH (u)-[old:AUTHENTICATED_AS {connectorId: $connector_id, via: 'directory'}]->(a)
-        WHERE $account_key IS NULL OR NOT (a:SourceAccount AND a.id = $account_key)
+        WHERE want IS NULL OR a <> want
         DELETE old
-        WITH DISTINCT u
-        OPTIONAL MATCH (s:SourceAccount {id: $account_key, orgId: $org_id})
-        FOREACH (_ IN CASE WHEN s IS NULL THEN [] ELSE [1] END |
-            MERGE (u)-[r:AUTHENTICATED_AS {connectorId: $connector_id, via: 'directory'}]->(s)
+        WITH DISTINCT u, want
+        FOREACH (_ IN CASE WHEN want IS NULL THEN [] ELSE [1] END |
+            MERGE (u)-[r:AUTHENTICATED_AS {connectorId: $connector_id, via: 'directory'}]->(want)
             ON CREATE SET r.orgId = $org_id, r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
             ON MATCH SET r.updatedAtTimestamp = $ts)
         """
         await self.client.execute_query(
             query,
-            parameters={"user_key": user_key, "connector_id": connector_id, "account_key": account_key, "org_id": org_id,
+            parameters={"user_key": user_key, "connector_id": connector_id, "email": email, "org_id": org_id,
                         "ts": get_epoch_timestamp_in_ms()},
             txn_id=transaction,
         )

@@ -5680,14 +5680,16 @@ class IGraphDBProvider(ABC):
         self,
         user_key: str,
         connector_id: str,
-        account_key: str | None,
+        email: str,
         org_id: str,
         transaction: str | None = None,
     ) -> None:
         """
-        Make ``account_key`` (a ``sourceAccounts`` node) the user's only directory link (``via``: ``directory``) in the connector, or
-        remove every one when it is None. Only directory links are read, written or removed: an authenticator link of the same pair,
-        or a link without ``via``, is another edge and stays.
+        The user's only directory link (``via``: ``directory``) in the connector goes to the one account of the connector whose address is
+        ``email`` and that is not withdrawn; with none or several, or when the user is deactivated (``isActive`` false; a missing field is a
+        live user), the user has none. The accounts and the user are locked before they are read, so a concurrent withdrawal or delete is
+        seen, whoever chose the address. Only directory links are read, written or removed: an authenticator link of the same pair, or a
+        link without ``via``, is another edge and stays.
         """
         pass
 
