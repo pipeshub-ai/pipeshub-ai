@@ -312,7 +312,7 @@ class _Watcher:
         with self._lock:
             self._entries.pop(token, None)
 
-    def _pick(self, entries: list[tuple[object, tuple[bool, bool, Any]]], llm: bool, n: int, *, fallback: bool) -> list[Any]:
+    def _pick(self, entries: list[tuple[object, tuple[bool, bool, Any]]], n: int, *, llm: bool, fallback: bool) -> list[Any]:
         side = sorted((e for e in entries if e[1][0] == llm), key=lambda e: not e[1][1])  # critical first, then oldest
         if not side:
             return []
