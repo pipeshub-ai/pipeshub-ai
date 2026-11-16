@@ -2320,8 +2320,10 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 return []
 
             mailbox_external_id = self._mailbox_external_id(user)
+            # The object id lets a re-used address's new holder keep their own mailbox (see SourceAccounts).
             owner_permission = Permission(
                 email=user.email,
+                external_id=user_id,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER,
             )

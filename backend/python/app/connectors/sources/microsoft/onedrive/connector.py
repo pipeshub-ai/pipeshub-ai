@@ -2074,8 +2074,10 @@ class OneDriveConnector(BaseConnector):
                             description=f"OneDrive for {display_name or user_email}",
                         )
 
+                        # The object id lets a re-used address's new holder keep their own drive (see SourceAccounts).
                         owner_permission = Permission(
                             email=user_email,
+                            external_id=user_id,
                             type=PermissionType.OWNER,
                             entity_type=EntityType.USER
                         )
