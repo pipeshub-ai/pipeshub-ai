@@ -33,7 +33,8 @@ EDITED = {
     },
     "memory_budget.py": {
         "kind_reservation_cost",  # new; record_memory_cost itself is unchanged
-        "MemoryBudget._enqueue", "MemoryBudget.reserve",  # PARSE_ADMISSION=classes: one keyword (ahead, default False); without it the queue order is unchanged (test_memory_ahead_off_is_unchanged)
+        "MemoryBudget._enqueue", "MemoryBudget.reserve", "MemoryBudget.__init__",  # __init__: the set of ahead waiters (empty unless ahead is passed)
+        # PARSE_ADMISSION=classes: one keyword (ahead, default False); without it the queue order is unchanged (test_memory_ahead_off_is_unchanged)
     },
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
