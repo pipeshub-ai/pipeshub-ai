@@ -8,6 +8,9 @@ missed some spelling GitHub accepts. The rest is pattern-based.
 import hashlib
 import os
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -1847,6 +1850,23 @@ class TestQaAgentWorkflows(unittest.TestCase):
         check, apply = script.index("git apply --numstat"), script.index('git apply --exclude=')
         self.assertLess(check, apply)
         self.assertIn("--exclude='qa-engine/*'", script[apply:apply + 80])
+
+    def test_the_clean_engine_copy_still_recognises_test_files(self) -> None:
+        """The copy must keep scripts/ so the engine finds its rules; without them no file is a test and nothing publishes."""
+        steps = self.load("qa-agent-publish.yml")["jobs"]["publish"]["steps"]
+        copy = next(s["run"] for s in steps if s.get("name") == "Keep a clean copy of the engine")
+        env = next(s["env"] for s in steps if "ENGINE_SCRIPTS" in s.get("env", {}))
+        dest = re.search(r'cp -a qa-engine/scripts "\$RUNNER_TEMP/([^"]+)"', copy).group(1)
+        self.assertEqual(env["ENGINE_SCRIPTS"], "${{ runner.temp }}/" + dest)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / dest
+            shutil.copytree(REPO / "scripts", target, ignore=shutil.ignore_patterns("__pycache__"))
+            probe = ("import sys; sys.path.insert(0, sys.argv[1]); from qa import agent, config; "
+                     "sys.exit(0 if agent.is_test_path(config.load(), sys.argv[2]) else 1)")
+            test_file = "backend/python/tests/unit/api/routes/test_toolsets_personal.py"
+            run = subprocess.run([sys.executable, "-I", "-c", probe, str(target), test_file],
+                                 env={**os.environ, "QA_ROOT": str(REPO)}, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_claude_credentials_reach_only_steps_behind_the_agent_or_model_switches(self) -> None:
         for name in ("qa-pipeline.yml", "qa-tests.yml"):
