@@ -582,10 +582,11 @@ def _dead_pid() -> int:
     return proc.pid
 
 
-def test_a_temp_file_of_a_dead_writer_is_collected(tmp_path: Path) -> None:
+def test_a_temp_file_of_a_dead_writer_is_collected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sig = tmp_path / "signals"
     sig.mkdir()
     dead = _dead_pid()
+    monkeypatch.setattr(ox, "_pid_gone", lambda pid: pid == dead)  # the answer must not depend on /proc
     leftovers = [sig / f".{dead}-1.json.{dead}.tmp", tmp_path / f".counters-carry.json.{dead}.tmp"]
     for leftover in leftovers:
         leftover.write_text('{"pid": 1')

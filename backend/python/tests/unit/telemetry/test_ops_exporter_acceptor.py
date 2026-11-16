@@ -97,10 +97,11 @@ def test_the_loop_of_a_non_holder_logs_nothing_above_debug(tmp_path: Path, caplo
         with caplog.at_level(logging.DEBUG, logger="app.telemetry.ops_exporter"):
             other.start()
             assert _wait_until(lambda: len(tries) >= 3, 10), "the loop did not retry the bind"
-            other.stop()
+        other.stop()
         loud = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert not loud, loud
     finally:
+        other.stop()  # its loop must not outlive the test and bind the released port
         _close(holder)
 
 

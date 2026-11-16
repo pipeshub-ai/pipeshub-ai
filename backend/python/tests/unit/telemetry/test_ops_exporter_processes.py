@@ -19,6 +19,7 @@ import pytest
 from tests.support.free_port import free_port
 
 PY = Path(__file__).resolve().parents[3]
+pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
 WORKER = textwrap.dedent(
     """

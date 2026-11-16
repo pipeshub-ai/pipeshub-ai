@@ -211,3 +211,46 @@ def test_a_bind_in_progress_when_stop_runs_is_closed_before_stop_returns(tmp_pat
     assert not stopper.is_alive()
     assert exporter._server is None
     assert _wait_until(lambda: socket.socket().connect_ex((HOST, port)) != 0, 5), "the port is still served after stop()"
+
+
+# -- an unknown memory domain ---------------------------------------------------
+
+
+def test_a_fold_works_when_the_memory_domain_is_unknown(tmp_path: Path) -> None:
+    """No readable cgroup (domain None): the carry still has its domain key, so a vanished process folds."""
+    path = _snapshot(tmp_path, 1, brakes=4, domain=None)
+    collector = ox.SignalCollector(tmp_path, clock=lambda: 1000.0, cache_ttl=0, is_alive=lambda *_: False, domain=lambda: None)
+    assert _served(collector)[BRAKES] == 4.0
+    assert not path.exists()  # folded, not left behind
+    assert json.loads((tmp_path / ox.CARRY_FILE).read_text())["values"]
+    assert _served(collector)[BRAKES] == 4.0
+
+
+# -- stop never calls the source beside a round still inside it -----------------
+
+
+def test_stop_does_not_call_the_source_while_a_round_is_still_in_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ox, "STOP_JOIN_S", 0.1)
+    inside, release = threading.Event(), threading.Event()
+    running = [0]
+    peak = [0]
+    lock = threading.Lock()
+
+    def source() -> tuple[dict, dict]:
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        inside.set()
+        release.wait(10)
+        with lock:
+            running[0] -= 1
+        return {}, {}
+
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=source, bind=HOST, interval=0.01)
+    exporter.start()
+    assert inside.wait(5)
+    try:
+        exporter.stop()  # the round is stuck in the source: stop leaves it alone
+        assert peak[0] == 1, "the source was called concurrently"
+    finally:
+        release.set()

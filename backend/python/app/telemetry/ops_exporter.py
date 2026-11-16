@@ -62,6 +62,7 @@ DEFAULT_RUN_DIR = "/tmp/pipeshub-run"
 SNAPSHOT_INTERVAL_S = 5.0
 STALE_AFTER_S = 20.0
 REBIND_INTERVAL_S = 30.0
+STOP_JOIN_S = 2.0  # how long stop() waits for a round in progress before it leaves the last snapshot as it is
 MAX_FILES = 64
 CARRY_FILE = "counters-carry.json"
 _FOLDED_KEPT = 256
@@ -506,7 +507,7 @@ class SignalCollector:
         domain = self._domain()
         if carry.get("domain") != domain:
             carry["hw"] = {}
-            carry["domain"] = domain
+        carry["domain"] = domain  # also when the domain is unknown (None): a fold reads it
         return carry
 
     @contextlib.contextmanager
@@ -1119,9 +1120,12 @@ class OpsExporter:
     def stop(self) -> None:
         """Graceful exit: stop writing, fold this process's counters into the carry and remove its file."""
         self._stop.set()
+        round_running = False
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        self.writer.write()
+            self._thread.join(timeout=STOP_JOIN_S)
+            round_running = self._thread.is_alive()
+        if not round_running:  # never call the source beside a round that is still inside it
+            self.writer.write()
         self.writer.retire()  # a round still running past the join must not bring the file back
         with contextlib.suppress(Exception):
             self.collector.retire(self.writer.path)
