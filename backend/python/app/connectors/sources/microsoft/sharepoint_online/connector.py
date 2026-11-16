@@ -2691,6 +2691,7 @@ class SharePointConnector(BaseConnector):
         and role assignments.
         """
         self._require_known_disabled_set()
+        await self.source_accounts.ensure_loaded()     # a member written by address must be the account holding it now
         group = self.client.groups.by_group_id(group_id)
         builder = group.owners if is_owner else group.transitive_members
         users: list[dict] = []
@@ -2705,7 +2706,7 @@ class SharePointConnector(BaseConnector):
         while response:
             for item in response.value or []:
                 user = self._graph_member_user(item)
-                if user and user['email'].lower() not in self._inactive_emails:
+                if user and user['email'].lower() not in self._inactive_emails and self._names_current_holder(user):
                     users.append(user)
             next_link = getattr(response, 'odata_next_link', None)
             if not next_link:
@@ -3037,6 +3038,7 @@ class SharePointConnector(BaseConnector):
         if role_id in self._directory_role_members:
             return self._directory_role_members[role_id]
         self._require_known_disabled_set()
+        await self.source_accounts.ensure_loaded()
         users: list[dict] = []
         members = self.client.directory_roles.by_directory_role_id(role_id).members
         async with self.rate_limiter:
@@ -3045,7 +3047,7 @@ class SharePointConnector(BaseConnector):
             for member in response.value or []:
                 user = self._graph_member_user(member)
                 if user:
-                    if user['email'].lower() not in self._inactive_emails:
+                    if user['email'].lower() not in self._inactive_emails and self._names_current_holder(user):
                         users.append(user)
                 elif 'group' in (getattr(member, 'odata_type', None) or '').lower() and getattr(member, 'id', None):
                     users.extend(await self._fetch_graph_group_members(member.id))
@@ -3716,7 +3718,15 @@ class SharePointConnector(BaseConnector):
                 recipient_user_ids=[self.created_by],
             )
             raise
-        await self.data_entities_processor.on_new_app_users(users)
+        # A disabled account is not linked, as in OneDrive: Entra keeps the UPN and the proxy addresses each unique
+        # ("These two attributes are required to be unique across all User, Group, or Contact objects",
+        # https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-syncservice-duplicate-attribute-resiliency)
+        # but says nothing of one account's mail against another's UPN, and the address here is either. Linked, a
+        # disabled account sharing an enabled one's address reads as that address changing hands. Enabled again, it
+        # is linked on the next listing; one linked before stays, with its access held back (_inactive_emails).
+        enabled = [u for u in users if u.is_active is not False]
+        if enabled:
+            await self.data_entities_processor.on_new_app_users(enabled)
         self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
         trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
@@ -4296,6 +4306,8 @@ class SharePointConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
+                # judged while the batch was read; an account admitted meanwhile must not be handed them
+                updated_records = [(r, await self.source_accounts.recheck(p)) for r, p in updated_records]
                 await self.data_entities_processor.on_new_records(updated_records)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 

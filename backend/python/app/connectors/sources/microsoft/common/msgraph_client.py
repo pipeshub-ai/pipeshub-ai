@@ -151,7 +151,12 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
 
 async def list_deleted_users(graph: GraphServiceClient) -> dict[str, str]:
     """Address (mail and user principal name, lower-cased) -> object id of every user in the directory's deleted
-    items (https://learn.microsoft.com/en-us/graph/api/directory-deleteditems-list). A failed read raises."""
+    items (https://learn.microsoft.com/en-us/graph/api/directory-deleteditems-list). A failed read raises.
+
+    A deleted user's userPrincipalName comes back with its object id in front of the address
+    (https://learn.microsoft.com/en-us/powershell/module/microsoft.entra.users/get-entradeleteduser shows
+    ``dddddddd-3333-4444-5555-eeeeeeeeeeeeAveryS@contoso.com``; Graph has also been seen to drop the hyphens), so that
+    prefix is taken off; mail is kept as it was."""
     query = GraphUserRequestBuilder.GraphUserRequestBuilderGetQueryParameters(
         select=["id", "mail", "userPrincipalName"], top=999,
     )
@@ -159,8 +164,15 @@ async def list_deleted_users(graph: GraphServiceClient) -> dict[str, str]:
     out: dict[str, str] = {}
     while page is not None:
         for user in page.value or []:
-            for address in (user.mail, user.user_principal_name):
-                if address and user.id:
+            if not user.id:
+                continue
+            upn = (user.user_principal_name or "").lower()
+            for prefix in (user.id.lower(), user.id.lower().replace("-", "")):
+                if upn.startswith(prefix) and "@" in upn[len(prefix):]:
+                    upn = upn[len(prefix):]
+                    break
+            for address in (user.mail, upn):
+                if address:
                     out[address.lower()] = user.id
         if not page.odata_next_link:
             break

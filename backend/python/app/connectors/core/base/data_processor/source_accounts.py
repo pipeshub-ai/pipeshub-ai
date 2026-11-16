@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     )
     from app.connectors.core.base.data_store.data_store import TransactionStore
     from app.models.entities import AppUser
+    from app.models.permission import Permission
 
 # Connectors whose linked users are not accounts of a source directory: a personal connector links the person who
 # set it up, whoever the source account is, and these storage, database and web connectors link PipesHub's own users.
@@ -48,6 +50,9 @@ NOT_SOURCE_ACCOUNTS = frozenset({
 
 
 BUCKETS = 256     # the state is split by address so no one config value grows with the directory
+# How long a loaded state is trusted before a grant decision checks it again: another instance of the connector may
+# have admitted a new account for an address since (a reindex worker beside a sync).
+STATE_MAX_AGE_SECONDS = 5.0
 
 
 def source_accounts_key(connector_id: str, bucket: int | None = None) -> str:
@@ -76,6 +81,10 @@ def _legacy_reused(value: dict) -> dict[str, str]:
     return reused if isinstance(reused, dict) else dict.fromkeys(reused, "")   # no holder kept: fails closed
 
 
+def _lower(values: dict | None) -> dict[str, str]:
+    return {e.lower(): sid for e, sid in (values or {}).items()}
+
+
 def _mapping(value: object, connector_id: str) -> dict:
     if not isinstance(value, dict):
         raise TypeError(f"the saved account state of connector {connector_id} is not a mapping")
@@ -88,9 +97,15 @@ def _account_id(source_user_id: str | None) -> str | None:
 
 
 class SourceAccounts:
-    """Per address, the source id this connector last linked it to (``linked``) and, for an address another account
-    held before, the source id that holds it now (``reused``). Kept in ``BUCKETS`` config values by address hash:
-    a run reads and writes only the buckets of the addresses it lists."""
+    """Per address, in ``BUCKETS`` config values by address hash: ``linked``, the source id this connector last linked
+    the address to (it stays after the account is withdrawn); ``reused``, for an address another account held before,
+    the source id that holds it now; and ``deleted``, a deleted account the source still lists with the address,
+    kept until a listing shows that address. A run reads and writes only the buckets of the addresses it lists.
+
+    The value at the base key (the marker) says whether the stored links were noted once (``seeded``), whether the
+    source's deleted accounts were read (``deletedChecked``, absent for a connector that reads none) and a
+    ``version`` that every change bumps, so a loaded copy older than STATE_MAX_AGE_SECONDS is read again only when
+    something changed."""
 
     def __init__(
         self, processor: "DataSourceEntitiesProcessor", connector_id: str, config_service: "ConfigurationService",
@@ -104,11 +119,18 @@ class SourceAccounts:
         # read once to find addresses an earlier version linked to their new account before this state was kept.
         self.deleted_users = deleted_users
         self.loaded = False                   # every bucket read; until a bucket is read, no grant to it is written
+        self.loaded_at = 0.0                  # when the marker was last checked
         self.admission_failed = False         # the stored links could not be read this run: no grant is written
+        self.deleted_pending = False          # deleted accounts not read yet: an address may still be a moved one
+        self._version: object = None
         self._read: set[int] = set()
         self._linked: dict[int, dict[str, str]] = {}
         self._reused: dict[int, dict[str, str]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
+        # One read-update-save at a time per connector in this process: a connector may list users in parallel tasks,
+        # and two saves of one bucket would drop each other's entries. shortcut: two processes syncing one connector
+        # are not serialized (the config store offers no compare-and-set); one sync per connector at a time keeps it.
+        self._lock = asyncio.Lock()
 
     # Flat views, for reading and for tests that set a state directly.
     @property
@@ -131,123 +153,160 @@ class SourceAccounts:
         for e, sid in value.items():
             self._reused.setdefault(_bucket(e.lower()), {})[e.lower()] = sid
 
-    async def _load(self, buckets: Iterable[int]) -> None:
-        """Read these buckets. A failed read raises: without the state no grant may be judged."""
+    async def _get(self, key: str) -> dict:
+        """A saved value; a failed read raises, and so does one that is not a mapping: no grant may be judged."""
+        return _mapping(await self.config_service.get_config(key, use_cache=False, raise_on_error=True) or {},
+                        self.connector_id)
+
+    async def _load(self, buckets: Iterable[int]) -> dict[int, dict[str, str]]:
+        """Read these buckets; returns each one's kept deleted-account evidence."""
+        deleted: dict[int, dict[str, str]] = {}
+
         async def one(bucket: int) -> None:
-            stored = _mapping(await self.config_service.get_config(
-                source_accounts_key(self.connector_id, bucket), use_cache=False, raise_on_error=True
-            ) or {}, self.connector_id)
-            self._linked[bucket] = {e.lower(): sid for e, sid in (stored.get("linked") or {}).items()}
-            self._reused[bucket] = {e.lower(): sid for e, sid in (stored.get("reused") or {}).items()}
+            stored = await self._get(source_accounts_key(self.connector_id, bucket))
+            self._linked[bucket], self._reused[bucket] = _lower(stored.get("linked")), _lower(stored.get("reused"))
+            deleted[bucket] = _lower(stored.get("deleted"))
             self._read.add(bucket)
         await asyncio.gather(*(one(b) for b in set(buckets)))
+        return deleted
+
+    def _take_marker(self, marker: dict) -> None:
+        self._version = marker.get("version")
+        self.deleted_pending = marker.get("deletedChecked") is False
+        self._legacy = {} if marker.get("seeded") else _lower(_legacy_reused(marker))
+        self.loaded_at = time.monotonic()
 
     async def ensure_loaded(self, emails: Iterable[str] | None = None) -> None:
-        """Read, once, the buckets of ``emails`` (every bucket when None) before a grant to them is judged in any
-        path (a sync, a reindex, a webhook). A failed read raises, and so does a run whose stored links could not be
-        read, so the caller writes nothing and keeps what is stored."""
+        """Read the buckets of ``emails`` (every bucket when None) before a grant to them is judged in any path (a
+        sync, a reindex, a webhook), and read again what is loaded once it is older than STATE_MAX_AGE_SECONDS and
+        has changed since. A failed read raises, and so does a run whose stored links could not be read, so the
+        caller writes nothing and keeps what is stored."""
         if self.admission_failed:
             raise RuntimeError(f"the stored users of connector {self.connector_id} could not be read this run")
-        if self.loaded:
-            return
         wanted = set(range(BUCKETS)) if emails is None else {_bucket(e.lower()) for e in emails}
-        if not self._read:
-            await self._load_legacy()
-        await self._load(wanted - self._read)
-        self.loaded = self.loaded or len(self._read) == BUCKETS
+        stale: set[int] = set()
+        if not self.loaded_at or time.monotonic() - self.loaded_at > STATE_MAX_AGE_SECONDS:
+            marker = await self._get(source_accounts_key(self.connector_id))
+            if self.loaded_at and marker.get("version") != self._version:
+                stale = set(self._read)
+            self._take_marker(marker)
+        if self.loaded and not stale:
+            return
+        missing = (wanted - self._read) | stale
+        if missing:
+            async with self._lock:
+                await self._load(missing)
+        self.loaded = len(self._read) == BUCKETS
 
-    async def _load_legacy(self) -> None:
-        """Re-used addresses an earlier version saved in one value, until the next user sync moves them (``before_link``)."""
-        marker = await self._marker()
-        self._legacy = {e.lower(): sid for e, sid in _legacy_reused(marker).items()}
+    async def recheck(self, permissions: list["Permission"]) -> list["Permission"]:
+        """``permissions`` without the user grants the saved state, read again now, refuses: for a write that comes a
+        while after its grants were judged (a reindex batch), so an account admitted meanwhile is not handed them."""
+        if self.admission_failed:
+            raise RuntimeError(f"the stored users of connector {self.connector_id} could not be read this run")
+        users = [p for p in permissions if getattr(p.entity_type, "value", p.entity_type) == "USER" and p.email]
+        async with self._lock:
+            self._take_marker(await self._get(source_accounts_key(self.connector_id)))
+            await self._load({_bucket(p.email.lower()) for p in users})
+        refused = {id(p) for p in users if not self.may_grant(p.email, p.external_id)}
+        return [p for p in permissions if id(p) not in refused]
 
-    async def _save(self, buckets: Iterable[int]) -> None:
+    async def _save(self, buckets: Iterable[int], deleted: dict[int, dict[str, str]]) -> None:
         for bucket in sorted(set(buckets)):
-            saved = await self.config_service.set_config(
-                source_accounts_key(self.connector_id, bucket),
-                {"linked": self._linked.get(bucket, {}), "reused": self._reused.get(bucket, {})},
-            )
-            if not saved:
+            value = {"linked": self._linked.get(bucket, {}), "reused": self._reused.get(bucket, {})}
+            if deleted.get(bucket):
+                value["deleted"] = deleted[bucket]
+            if not await self.config_service.set_config(source_accounts_key(self.connector_id, bucket), value):
                 raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
 
-    async def _marker(self) -> dict:
-        return _mapping(await self.config_service.get_config(
-            source_accounts_key(self.connector_id), use_cache=False, raise_on_error=True
-        ) or {}, self.connector_id)
-
-    async def _deleted(self, marker: dict) -> dict[str, str]:
-        """The source's deleted accounts by address, read once (``deletedChecked``); a failed read is tried again."""
-        if marker.get("deletedChecked") or self.deleted_users is None:
-            return {}
+    async def _read_deleted(self) -> dict[str, str] | None:
+        """The source's deleted accounts by address, or None when the read failed (tried again next run)."""
         try:
-            deleted = {address.lower(): sid for address, sid in (await self.deleted_users()).items()}
+            return _lower(await self.deleted_users())
         except Exception as e:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
-            return {}
-        marker["deletedChecked"] = True
-        return deleted
+            return None
 
     async def before_link(self, users: list["AppUser"]) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
         to a different account than the one it was linked to before. False when the stored links could not be read:
         then nobody is linked and no grant is written this run (``ensure_loaded`` raises)."""
+        async with self._lock:
+            return await self._before_link(users)
+
+    async def _before_link(self, users: list["AppUser"]) -> bool:
         try:
-            marker = await self._marker()
+            marker = await self._get(source_accounts_key(self.connector_id))
             links = await self.processor.get_app_user_links(self.connector_id)
         except Exception as e:
             self.admission_failed = True
             self.logger.error(f"Could not read the stored users; no user is linked and no grant written this run: {e}")
             return False
         self.admission_failed = False
-        noted = dict(marker)
         by_address = {link.email.lower(): sid for link in links
                       if getattr(link, "email", None) and (sid := _account_id(link.source_user_id))}
         seeded = bool(marker.get("seeded"))
-        deleted = await self._deleted(marker)
+        read_deleted = None
+        if self.deleted_users is not None and not marker.get("deletedChecked"):
+            read_deleted = await self._read_deleted()
+        # What an earlier version saved in one value: its re-used addresses, deleted evidence and withdrawn accounts.
+        legacy = {} if seeded else {"reused": _lower(_legacy_reused(marker)), "deleted": _lower(marker.get("deleted")),
+                                    "linked": _lower(marker.get("withdrawnByAddress"))}
+        new_deleted = {**legacy.get("deleted", {}), **(read_deleted or {})}
         listed = [(account, u.email.lower()) for u in users if u.email and (account := _account_id(u.source_user_id))]
-        touched = {_bucket(email) for _, email in listed}
+        touched = {_bucket(email) for _, email in listed} | {_bucket(e) for e in new_deleted}
         if not seeded:
-            touched |= {_bucket(e) for e in by_address} | {_bucket(e.lower()) for e in _legacy_reused(marker)}
-        await self._load(touched)     # fresh: another process may have written
+            touched |= {_bucket(e) for part in (by_address, legacy["reused"], legacy["linked"]) for e in part}
+        deleted = await self._load(touched)     # fresh: another process may have written
         changed: set[int] = set()
-        if not seeded:
-            # Once: note the account every stored link names, so an address whose account is withdrawn before it is
-            # listed again is still compared when a new account takes it.
-            for email, sid in by_address.items():
-                self._linked.setdefault(_bucket(email), {}).setdefault(email, sid)
+
+        def note(part: dict[int, dict[str, str]], email: str, sid: str, *, keep: bool = True) -> None:
+            entries = part.setdefault(_bucket(email), {})
+            if entries.get(email) != sid and not (keep and email in entries):
+                entries[email] = sid
                 changed.add(_bucket(email))
-            for email, sid in _legacy_reused(marker).items():
-                self._reused.setdefault(_bucket(email.lower()), {}).setdefault(email.lower(), sid)
-                changed.add(_bucket(email.lower()))
+
+        if not seeded:
+            # Once: note the account every stored link names (and the withdrawn ones an earlier version kept), so an
+            # address whose account is withdrawn before it is listed again is still compared when a new one takes it.
+            for email, sid in {**legacy["linked"], **by_address}.items():
+                note(self._linked, email, sid)
+            for email, sid in legacy["reused"].items():
+                note(self._reused, email, sid)
+        for email, sid in new_deleted.items():
+            note(deleted, email, sid)
         for account, email in listed:
             bucket = _bucket(email)
-            linked = self._linked.setdefault(bucket, {})
+            linked, reused = self._linked.setdefault(bucket, {}), self._reused.setdefault(bucket, {})
+            old = deleted.get(bucket, {}).pop(email, None)       # the listing reconciles the deleted evidence
+            if old is not None:
+                changed.add(bucket)
             # Each address is compared with the accounts it was linked to: the one this connector remembers, the one
             # its stored link names (another writer may have rewritten it already), and a deleted account the source
             # still lists with it. The listed id being linked to some other address says nothing about this one.
-            before = {linked.get(email), by_address.get(email)}
-            if email not in self._reused.get(bucket, {}):
-                before.add(deleted.get(email))
+            before = {linked.get(email), by_address.get(email), None if email in reused else old}
             # shortcut: two live accounts listed with one address (Jira Data Center and Salesforce allow it) read as
             # a change of hands on every run, so the address keeps only the last-linked account's grants and they are
             # removed and written again each run; keying PipesHub users by source id would tell them apart.
             if before - {None, account}:
                 removed = await self.processor.remove_user_access_to_connector(self.connector_id, email)
-                self._reused.setdefault(bucket, {})[email] = account
+                reused[email] = account
                 changed.add(bucket)
                 self.logger.info(
                     "An address of connector %s belongs to a new account now; removed %d grant(s) of the previous one",
                     self.connector_id, removed,
                 )
             # else, nothing remembered: shortcut: a change of hands made before this state existed, with the link
-            # already naming the new account, is caught only where ``deleted_users`` still lists the old account.
+            # already naming the new account, is caught only where ``deleted_users`` lists the old account.
             if linked.get(email) != account:
                 linked[email] = account
                 changed.add(bucket)
-        await self._save(changed)
-        marker = {"seeded": True, **({"deletedChecked": True} if marker.get("deletedChecked") else {})}
-        if marker != noted and not await self.config_service.set_config(source_accounts_key(self.connector_id), marker):
+        await self._save(changed, deleted)
+        noted = {"seeded": True, "version": marker.get("version", 0) + (1 if changed else 0)}
+        if self.deleted_users is not None or "deletedChecked" in marker:
+            noted["deletedChecked"] = bool(marker.get("deletedChecked")) or read_deleted is not None
+        if noted != marker and not await self.config_service.set_config(source_accounts_key(self.connector_id), noted):
             raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
+        self._take_marker(noted)
         return True
 
     def may_grant(self, email: str, object_id: str | None) -> bool:
@@ -261,6 +320,11 @@ class SourceAccounts:
             return False
         if self._holder(email) is not None:
             return self.holds(email, object_id)
+        if object_id is None and self.deleted_pending:
+            # shortcut: until the source's deleted accounts are read, any address may be one an earlier version moved
+            # to a new account, so a grant naming no account (a SharePoint principal) waits; one naming its account
+            # is judged by id. Narrow to addresses linked before this state once that read is known to fail for good.
+            return False
         linked = self._linked.get(bucket, {}).get(email)
         if object_id is not None and linked is not None:
             return linked == object_id

@@ -2794,7 +2794,7 @@ class OneDriveConnector(BaseConnector):
                     if record_update.permissions_changed:
                         await self.data_entities_processor.on_updated_record_permissions(
                             record_update.record,
-                            record_update.new_permissions
+                            await self.source_accounts.recheck(record_update.new_permissions or []),
                         )
 
             self.logger.info(f"Completed reindex for record {record_id}")
@@ -3051,6 +3051,8 @@ class OneDriveConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
+                # judged while the batch was read; an account admitted meanwhile must not be handed them
+                updated_records = [(r, await self.source_accounts.recheck(p)) for r, p in updated_records]
                 await self.data_entities_processor.on_new_records(updated_records)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 

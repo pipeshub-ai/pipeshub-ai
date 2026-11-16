@@ -578,6 +578,19 @@ class UsersSync:
         total_users_synced = total_users_skipped = 0
         app_users: list[AppUser] = []
         for member_id, member in dict_member.items():
+            # Member and user rows carry the account `state` ("active" in the docs' examples), members also a
+            # membership state, "one of awaiting or active" (https://docs.gitlab.com/api/members/). Anything else
+            # cannot use GitLab: "A banned user: Cannot sign in or access any repositories", a deactivated one
+            # "Cannot access repositories or the API", one pending approval "Is functionally identical to a
+            # blocked user" (https://docs.gitlab.com/administration/moderate_users/). Linked, such an account
+            # sharing an active user's address would read as that address changing hands. A row without the
+            # field (the creator stand-in) is not judged by it.
+            if any(
+                isinstance(state := getattr(member, field, None), str) and state != "active"
+                for field in ("state", "membership_state")
+            ):
+                total_users_skipped += 1
+                continue
             raw_email = getattr(member, "public_email", None)
             if isinstance(raw_email, str) and raw_email.strip():
                 user_email = raw_email.strip()

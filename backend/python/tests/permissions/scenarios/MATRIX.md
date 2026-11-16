@@ -19,11 +19,11 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
 | `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
 | `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py:1190` | writer read |
-| `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py:1655` | writer read |
+| `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py:1660` | writer read |
 | `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:332` | writer read |
 | `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1787` | writer read |
 | `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py:131` | writer read |
-| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1192` | writer read |
+| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1194` | writer read |
 | `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py:167` | writer read |
 | `github_teams` | container | container | repositories and projects | `app/connectors/sources/github_teams/projects.py:526` | writer read |
 | `github` | container | container | the whole app | `app/connectors/sources/github/connector.py:178` | writer read |
@@ -49,11 +49,11 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `snowflake` | container | container | the whole app | `app/connectors/sources/snowflake/connector.py:399` | writer read |
 | `rss` | container | container | the whole app | `app/connectors/sources/rss/connector.py:106` | writer read |
 | `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
-| `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:522` | grep, to confirm |
+| `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:528` | grep, to confirm |
 | `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:115` | grep, to confirm |
-| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3751` | grep, to confirm |
-| `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3765` | grep, to confirm |
-| `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2057` | grep, to confirm |
+| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3755` | grep, to confirm |
+| `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3776` | grep, to confirm |
+| `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2065` | grep, to confirm |
 | `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py:2003` | grep, to confirm |
 | `zoom` | item-acl | override | - | `app/connectors/sources/zoom/connector.py:907` | grep, to confirm |
 | `drupal_wiki` | item-acl | override | - | `app/connectors/sources/drupal_wiki/connector.py:997` | grep, to confirm |
