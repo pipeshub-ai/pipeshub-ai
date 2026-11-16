@@ -2050,14 +2050,17 @@ class TestIssueGrantsNameListedAccountsOnly:
     @pytest.mark.asyncio
     async def test_a_synced_account_whose_directory_entry_has_no_email_keeps_its_level_grant_by_account(self) -> None:
         """acc-9 is synced but stored without an email (as a stored user missing one is read back); the level names it
-        with its email in the payload. Its grant must survive the directory filter, or a write would drop it."""
+        with its email in the payload. Its level's group grants it by account, or the write would drop it."""
         c = _connector()
-        c._issue_security[PROJECT_ID] = _present({"10102": [
+        security = _present({"10102": [
             {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9", "emailAddress": "mia@x.com"}}]})
         users = [*_users()[:2], AppUser(app_name="JIRA", connector_id="conn-sec", source_user_id="acc-9", org_id="org-1",
                                          email="", full_name="Mia", is_active=True)]
-        records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, users)
-        assert {(p.email, p.external_id) for p in records[0][1]} == {(None, "acc-9")}  # by account, reaching that user
+        # The directory the sync writes the levels' groups from.
+        await c._write_level_groups(PROJECT_ID, "PROJ", security, ["10102"],
+                                    c._grant_directory({u.source_user_id: u for u in users}))
+        (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert {(p.email, p.external_id) for p in grants} == {(None, "acc-9")}  # by account, reaching that user
 
     @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
     def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:
@@ -2225,11 +2228,15 @@ class TestIssueGrantsNameListedAccountsOnly:
             c._listed_account_ids = {"acc-1", "acc-2"}
             c._seen_account_ids = {"acc-1", "acc-2"} | ({"acc-9"} if shown_deactivated else set())
             c._user_read_unfinished = not complete
-            c._issue_security[PROJECT_ID] = _present(members={"10102": [
+            security = _present(members={"10102": [
                 {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9"}}]})
-            c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-            records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, _users()[:2])
-            assert {p.email for p in records[0][1]} == (set() if complete or shown_deactivated else {"mia@x.com"})
+            c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+            # The level's group, written from the directory the sync passes (the synced users, and the linked accounts a
+            # list cut short did not show).
+            await c._write_level_groups(PROJECT_ID, "PROJ", security, ["10102"],
+                                        c._grant_directory({u.source_user_id: u for u in _users()[:2]}))
+            (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+            assert {p.email for p in grants} == (set() if complete or shown_deactivated else {"mia@x.com"})
 
     @pytest.mark.asyncio
     async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:

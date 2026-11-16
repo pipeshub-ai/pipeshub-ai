@@ -1049,13 +1049,14 @@ class TestBrowseAndLevelNamedOnTheIssue:
         {"type": "user", "parameter": "acc-2", "user": {"accountId": "acc-2", "emailAddress": "two@x.com"}},
     ]}
 
-    def _apply(self, browse: list[dict] | None, members: dict | None = None, **emails: str) -> tuple[Record, list]:
+    def _apply(self, browse: list[dict] | None, members: dict | None = None, users: dict | None = None,
+               **emails: str) -> tuple[Record, list]:
         context = _present(members=members or self.LEVEL)
         context.browse_holders = browse
         rec = _record()
         grants, _, settled = apply_issue_access_settled(
             rec, {"security": {"id": next(iter(context.members_by_level))}}, is_subtask=False, project_key="JUNI", context=context,
-            project_id="p-1", **emails)
+            project_id="p-1", user_by_account_id=users, **emails)
         assert settled
         return rec, grants
 
@@ -1068,7 +1069,8 @@ class TestBrowseAndLevelNamedOnTheIssue:
         rec, grants = self._apply([{"type": "assignee"}], assignee_email="one@x.com", reporter_email="angela@x.com")
         assert rec.access_rule == AccessRule.STRICT  # the reporter's grant needs the project: Browse does not name them on it
         rec, grants = self._apply([{"type": "assignee"}], members={"7": [{"type": "user", "parameter": "acc-1",
-                                  "user": {"accountId": "acc-1", "emailAddress": "one@x.com"}}]}, assignee_email="one@x.com")
+                                  "user": {"accountId": "acc-1", "emailAddress": "one@x.com"}}]}, assignee_email="one@x.com",
+                                  users={"acc-1": type("U", (), {"email": "one@x.com"})()})  # a user holder resolves through the directory
         assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["one@x.com"])
 
     def test_without_browse_named_on_the_issue_the_reporter_needs_the_project(self) -> None:

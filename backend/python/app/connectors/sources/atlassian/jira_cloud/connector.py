@@ -4453,7 +4453,8 @@ class JiraConnector(BaseConnector):
             await self._write_level_groups(
                 project_id, project_key, security,
                 [*security.members_by_level, *closed_level_groups(stored_levels, levels_to_save)],
-                {user.source_user_id: user for user in jira_users if user.source_user_id},
+                # As an issue's own grants: the synced directory, and the linked accounts a list cut short did not show.
+                self._grant_directory({user.source_user_id: user for user in jira_users if user.source_user_id}),
             )
         # A changed level's issues are read again even when its group's write holds the change: a sub-task holds a copy of
         # its level's holders, and an OPEN issue a grant to a user holder who reads it alone (``_reads_alone``).
