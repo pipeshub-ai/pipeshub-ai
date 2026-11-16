@@ -2210,6 +2210,54 @@ class TestRestrictedComments:
 
         assert "1" in tickets(db), "the issue the cursor passed is read again by id"
 
+    async def test_an_issue_read_again_by_id_reads_its_sub_tasks_again(self, api, db, checkpoints, search) -> None:
+        """The parent failed to build, so the next sync reads it by id. Its level may be new, which Jira copies onto its sub-tasks
+        without moving their `updated`, so its stored sub-tasks are read again with it."""
+        child = issue(2, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        child["fields"]["parent"] = {"id": "1", "key": "ENG-1", "fields": {"summary": "Issue 1"}}
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        build = connector._build_records_for_issue
+        calls = {"n": 0}
+
+        async def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("malformed issue")
+            return await build(*args, **kwargs)
+        connector._build_records_for_issue = fails_once
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" not in tickets(db) and "2" in tickets(db)
+        reads = len(search.bodies)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        jql = [b["jql"] for b in search.bodies[reads:]]
+        replay = next(i for i, q in enumerate(jql) if "id in (1)" in q)
+        assert any("parent in (1)" in q for q in jql[replay + 1:]), "the replayed issue's sub-tasks are read again"
+
+    async def test_an_attachment_that_failed_to_build_keeps_the_issue_to_be_read_again(self, api, db, checkpoints, search) -> None:
+        """The file's record could not be built this read, so it is left out; the issue stays changed and the next sync reads it by
+        id (the incremental search no longer lists it) and writes the file."""
+        search.add("ENG", None, [{"issues": [issue(1, "2024-05-01T10:00:00.000+0000", attachments=[NOTES])]}, {"issues": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        create = connector._create_attachment_file_record
+        calls = {"n": 0}
+
+        def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("attachment lookup timed out")
+            return create(*args, **kwargs)
+        connector._create_attachment_file_record = fails_once
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" in tickets(db) and "attachment_902" not in db.records
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "attachment_902" in db.records, "the issue is read again and its file written"
+
     async def test_opening_an_issue_does_not_offer_a_file_from_a_restricted_comment(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
         connector, _ = await ready_connector(db, checkpoints)

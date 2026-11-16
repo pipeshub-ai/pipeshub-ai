@@ -2097,14 +2097,14 @@ class TestInlineResolverEdges:
 class TestFetchIssueAttachmentsEdges:
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self):
+    async def test_exception_is_raised_for_the_caller_to_retry_the_issue(self):
         connector = _make_connector()
         connector._resolve_inline_image_attachment_ids = MagicMock(side_effect=RuntimeError("x"))
-        result = await connector._fetch_issue_attachments(
-            "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
-            RecordGroupType.PROJECT, AsyncMock(),
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await connector._fetch_issue_attachments(
+                "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
+                RecordGroupType.PROJECT, AsyncMock(),
+            )
 
     @pytest.mark.asyncio
     async def test_no_attachments_returns_empty(self):

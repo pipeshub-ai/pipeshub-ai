@@ -4362,7 +4362,14 @@ class JiraConnector(BaseConnector):
                     project_key, project_id, jira_users, None, None, issue_ids=retry_ids[start:start + SUBTASK_REREAD_CHUNK],
                 ):
                     if retry_batch:
+                        # As in the walk below: a replayed issue's new level may be copied onto its sub-tasks without moving their `updated`.
+                        replayed = [item[0].external_record_id for item in retry_batch
+                                    if isinstance(item[0], TicketRecord) and item[0].external_record_id not in self._subtask_ids]
+                        self._subtask_ids.clear()
                         await self._process_new_records(retry_batch, project_key, stats)
+                        if replayed:
+                            unsettled_parents = await self._settle_subtasks(
+                                project_key, project_id, jira_users, stats, replayed, unsettled_parents)
         saved_retry = await self._save_issues_to_retry(project_key, retry_ids)
 
         async for issues_batch, _has_more, last_issue_timestamp in self._fetch_issues_batched(
@@ -5489,6 +5496,7 @@ class JiraConnector(BaseConnector):
 
         # Fetch attachments and create FileRecords
         try:
+            failed_attachments: list[str] = []
             attachment_records = await self._fetch_issue_attachments(
                 issue_id,
                 issue_key,
@@ -5498,7 +5506,11 @@ class JiraConnector(BaseConnector):
                 record_group_type,
                 parent_node_id=issue_record.id,
                 rendered_fields=rendered_fields,
+                failed=failed_attachments,
             )
+            if failed_attachments:
+                # A file left out keeps its stored place (and access) until the issue is read again: it stays changed and is retried.
+                self._leave_changed(issue_record, existing_record, retry=True)
             for attachment_record, _, _ in attachment_records if owner_of else []:
                 owner = owner_of.get(attachment_record.external_record_id.removeprefix("attachment_"))
                 if owner is not None:
@@ -5831,9 +5843,11 @@ class JiraConnector(BaseConnector):
         parent_record_group_type: RecordGroupType,
         parent_node_id: Optional[str] = None,
         rendered_fields: dict[str, Any] | None = None,
+        failed: list[str] | None = None,
     ) -> list[tuple[FileRecord, list[Permission], bool]]:
         """
-        Fetch attachments for an issue from issue fields.
+        Fetch attachments for an issue from issue fields. An attachment whose record could not be built is
+        left out and its id appended to ``failed``; a failure for the whole issue raises.
         All attachments have the issue as their parent.
 
         New inline image attachments (referenced in description/comment) are not
@@ -5927,6 +5941,8 @@ class JiraConnector(BaseConnector):
                         f"❌ Skipping attachment {attachment_id} on issue {issue_key} — failed to build record: {e}",
                         exc_info=True,
                     )
+                    if failed is not None:
+                        failed.append(str(attachment_id))
                     continue
 
             self.logger.debug(f"📎 Returning {len(attachment_records)} attachment records for issue {issue_key}")
@@ -5934,7 +5950,7 @@ class JiraConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}", exc_info=True)
-            return []
+            raise
 
     def _extract_attachment_filenames_from_wiki(self, text: str) -> set[str]:
         """
