@@ -5403,6 +5403,7 @@
     "mcpServerNeedsToolsTooltip": "Elige herramientas para cada servidor MCP o activa «Todas las herramientas».",
     "mcpServerNeedsToolsBanner": "Elige al menos una herramienta para {{names}} o activa «Todas las herramientas».",
     "mcpPersonalOnSharedAgentNotify": "{{name}} es tu servidor MCP personal. No se puede añadir a un agente compartido con tu organización ni a uno que se ejecute como cuenta de servicio.",
+    "serviceAgentCollectionsNeedBinding": "Las colecciones se pueden añadir cuando este agente de servicio esté vinculado a una cuenta de servicio.",
     "mcpAgentApprovalsEnterprise": "Las aprobaciones de herramientas por agente forman parte de la Enterprise Edition. Aquí se aplican las aprobaciones propias de cada persona.",
     "mcpAgentApprovals": "Aprobaciones de herramientas por agente",
     "limitSource": "Elegir qué busca {{name}}",
