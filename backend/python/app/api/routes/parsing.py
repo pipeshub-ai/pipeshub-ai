@@ -48,7 +48,7 @@ from app.services.parsing.interface import (
     ParseErrorCode,
     ParserProvider,
 )
-from app.services.parsing.load import parse_load, parsing_max_concurrent
+from app.services.parsing.load import parse_load, parsing_max_concurrent, stuck_conversions
 from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
@@ -72,7 +72,6 @@ from app.services.resource_governor.memory_domain import (
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
-from app.telemetry.backend import METRICS_BACKEND
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
@@ -131,24 +130,7 @@ THREAD_OVERRUN_WARN_SECONDS = 30.0
 #: How often a held admission is re-reported and the stuck-conversion gauges refreshed.
 STUCK_TICK_SECONDS = 30.0
 
-_STUCK_COUNT = METRICS_BACKEND.gauge(
-    "pipeshub_parse_stuck_conversions",
-    "Parses whose conversion threads still run after the parse ended, so their permit is held",
-    ["pool"],
-)
-_STUCK_OLDEST = METRICS_BACKEND.gauge(
-    "pipeshub_parse_stuck_oldest_seconds",
-    "Age of the oldest conversion held after its parse ended",
-    ["pool"],
-)
-#: Held admissions (event loop thread only): token -> (when the parse ended, record name).
-_held_after_parse: dict[int, tuple[float, str]] = {}
-
-
-def _publish_stuck() -> None:
-    now = time.monotonic()
-    _STUCK_COUNT.set("parse", value=float(len(_held_after_parse)))
-    _STUCK_OLDEST.set("parse", value=max((now - at for at, _ in _held_after_parse.values()), default=0.0))
+#: Held admissions are counted on the parsing service's ``/metrics`` (``pipeshub_parse_stuck_*``).
 
 
 def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, record_name: str) -> None:  # noqa: ANN401
@@ -165,8 +147,7 @@ def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, 
         "Parse ended with %d conversion(s) still running in threads; the permit is held until they return",
         work.running(),
     )
-    _held_after_parse[token] = (deadline_at, record_name)
-    _publish_stuck()
+    stuck_conversions().add(token, deadline_at)
 
     def tick() -> None:
         if done.is_set():
@@ -174,7 +155,6 @@ def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, 
         age = time.monotonic() - deadline_at
         if age > THREAD_OVERRUN_WARN_SECONDS:
             logger.warning("A conversion for '%s' still runs %.0f s after its parse; its permit is held", record_name, age)
-        _publish_stuck()
         loop.call_later(STUCK_TICK_SECONDS, tick)
 
     loop.call_later(STUCK_TICK_SECONDS, tick)
@@ -183,8 +163,7 @@ def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, 
         if done.is_set():
             return
         done.set()
-        _held_after_parse.pop(token, None)
-        _publish_stuck()
+        stuck_conversions().remove(token)
         over = time.monotonic() - deadline_at
         if over > THREAD_OVERRUN_WARN_SECONDS:
             logger.warning("A conversion for '%s' ended %.0f s after its parse", record_name, over)
@@ -194,11 +173,12 @@ def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, 
         # Runs on the thread that finished last. A loop that is already closed means the process is stopping: the
         # release has nothing left to free and is dropped quietly.
         if loop.is_closed():
+            stuck_conversions().remove(token)
             return
         try:
             loop.call_soon_threadsafe(free)
         except RuntimeError:
-            return
+            stuck_conversions().remove(token)
 
     work.when_idle(hop_to_loop)
 

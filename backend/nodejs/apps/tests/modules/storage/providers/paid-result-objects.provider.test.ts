@@ -77,6 +77,32 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       expect((await a.listObjects(`${ROOT}/`, { limit: 10 })).objects).to.have.length(1)
     })
 
+    it('listObjects skips a file that vanished (ENOENT) but fails on any other stat error, so a sweep never works from a partial listing', async () => {
+      const a = adapter()
+      for (const n of [1, 2]) await a.writeObjectIfAbsent(key(n), Buffer.from('x'))
+      const real = fsp.lstat.bind(fsp)
+      const fail = (code: string) =>
+        sinon.stub(fsp, 'lstat').callsFake(((p: string, ...rest: unknown[]) =>
+          String(p).endsWith(key(2).split('/').pop()!)
+            ? Promise.reject(Object.assign(new Error(code), { code }))
+            : (real as any)(p, ...rest)) as never)
+
+      const gone = fail('ENOENT')
+      expect((await a.listObjects(`${ROOT}/`, { limit: 10 })).objects.map((o) => o.key)).to.deep.equal([key(1)])
+      gone.restore()
+      for (const code of ['EACCES', 'EIO']) {
+        const stub = fail(code)
+        let thrown: any
+        try {
+          await a.listObjects(`${ROOT}/`, { limit: 10 })
+        } catch (e) {
+          thrown = e
+        }
+        stub.restore()
+        expect(thrown, code).to.be.an('error')
+      }
+    })
+
     it('listObjects of an exact page boundary reports no next page', async () => {
       const a = adapter()
       for (const n of [1, 2]) await a.writeObjectIfAbsent(key(n), Buffer.from('x'))

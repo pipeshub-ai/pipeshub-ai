@@ -157,53 +157,62 @@ async def test_a_timeout_raised_inside_the_parser_also_holds_the_permit_while_it
         assert gate.in_use == 0
 
 
-class _Gauge:
-    def __init__(self) -> None:
-        self.values: list[float] = []
-
-    def set(self, *_labels: str, value: float) -> None:
-        self.values.append(value)
-
-    def clear(self) -> None:
-        self.values.clear()
-
-
-async def test_a_conversion_that_never_returns_is_reported_with_its_age_and_on_the_gauges(
+async def test_a_conversion_that_never_returns_is_on_the_parsing_services_metrics_with_a_growing_age(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import re
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
+    from app import parsing_main
     from app.api.routes import parsing
+    from app.services.parsing.load import StuckConversions
     from app.services.parsing.thread_work import ThreadWork
 
-    count, oldest = _Gauge(), _Gauge()
-    monkeypatch.setattr(parsing, "_held_after_parse", {})
-    monkeypatch.setattr(parsing, "_STUCK_COUNT", count)
-    monkeypatch.setattr(parsing, "_STUCK_OLDEST", oldest)
+    import time
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("app.services.parsing.load._stuck", StuckConversions())
+    skew = [0.0]
+    monkeypatch.setattr(
+        "app.services.parsing.load.time", SimpleNamespace(monotonic=lambda: time.monotonic() + skew[0]),
+    )
     monkeypatch.setattr(parsing, "STUCK_TICK_SECONDS", 0.05)
     monkeypatch.setattr(parsing, "THREAD_OVERRUN_WARN_SECONDS", 0.0)
     released: list[int] = []
     stop = threading.Event()
     pool = ThreadPoolExecutor(max_workers=1)
     work = ThreadWork()
+
+    async def scrape(client: httpx.AsyncClient) -> tuple[int, int]:
+        text = (await client.get("/metrics")).text
+        count = int(re.search(r"^pipeshub_parse_stuck_conversions (\d+)$", text, re.M).group(1))
+        oldest = int(re.search(r"^pipeshub_parse_stuck_oldest_seconds (\d+)$", text, re.M).group(1))
+        assert "pipeshub_parsing_in_flight" in text                  # next to the rest of the parsing metrics
+        return count, oldest
+
     try:
-        work.add(pool.submit(stop.wait, 20))                         # a conversion that does not return
-        with caplog.at_level("WARNING"):
-            parsing._release_when_work_ends(lambda: released.append(1), work, time_now(), "big.pdf")
-            for _ in range(500):                                      # bounded wait for the monitor's observations
-                if any("still runs" in r.getMessage() for r in caplog.records) and len(count.values) >= 2:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=parsing_main.app), base_url="http://p.test") as client:
+            assert await scrape(client) == (0, 0)
+            work.add(pool.submit(stop.wait, 20))                     # a conversion that does not return
+            with caplog.at_level("WARNING"):
+                parsing._release_when_work_ends(lambda: released.append(1), work, time_now(), "big.pdf")
+                for _ in range(500):                                 # bounded wait for the monitor's warning
+                    if any("still runs" in r.getMessage() and "big.pdf" in r.getMessage() for r in caplog.records):
+                        break
+                    await asyncio.sleep(0.01)
+            assert any("still runs" in r.getMessage() and "big.pdf" in r.getMessage() for r in caplog.records)
+            count, first_age = await scrape(client)
+            skew[0] += 5.0                                           # five seconds pass
+            _, later_age = await scrape(client)
+            assert released == [], "the permit was freed while the conversion still runs"
+            assert count == 1 and later_age >= first_age + 5
+            stop.set()
+            for _ in range(500):
+                if released:
                     break
                 await asyncio.sleep(0.01)
-        assert released == [], "the permit was freed while the conversion still runs"
-        assert any("still runs" in r.getMessage() and "big.pdf" in r.getMessage() for r in caplog.records)
-        assert count.values[-1] == 1 and oldest.values[-1] > 0
-        stop.set()
-        for _ in range(100):
-            if released:
-                break
-            await asyncio.sleep(0.02)
-        assert released == [1] and count.values[-1] == 0
+            assert released == [1] and await scrape(client) == (0, 0)
     finally:
         stop.set()
         pool.shutdown(wait=True)
