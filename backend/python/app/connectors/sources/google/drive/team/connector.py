@@ -299,6 +299,11 @@ def _add_reach_candidate(candidates: list[dict], candidate: dict) -> None:
         candidates.append(candidate)
 
 
+def _role_rank(permission: Permission | None, stored_role: str | None = None) -> int:
+    """How much a grant (or, without one, a stored role) allows, to keep a person's highest."""
+    return PERMISSION_HIERARCHY.get(permission.type.value if permission else stored_role or "", 0)
+
+
 def _delegated_scopes() -> list[str]:
     """Every scope this connector's delegated tokens ask for: Drive as each user, the directory as the admin.
     A domain-wide delegation grant missing any of them makes Google refuse the whole token request."""
@@ -2274,14 +2279,15 @@ class GoogleDriveTeamConnector(BaseConnector):
         ]
         kept = await restrict(held)
         kept_groups = {p.external_id for p in kept if p.entity_type == EntityType.GROUP}
-        # A grant replaces the person's edge, so one that would lower a higher role of their own is not written.
-        if people := [
-            p for p in kept
-            if p.entity_type != EntityType.GROUP
-            and PERMISSION_HIERARCHY.get(user_roles.get((p.email or "").lower(), ""), 0)
-            < PERMISSION_HIERARCHY.get(p.type.value, 0)
-        ]:
-            await self.data_entities_processor.add_permission_to_record(record, people)
+        # A person has one edge and a grant replaces it, so each gets only their highest role from the split groups,
+        # and only when it is above the role they already hold.
+        best: dict[str, Permission] = {}
+        for p in kept:
+            email = (p.email or "").lower()
+            if p.entity_type != EntityType.GROUP and _role_rank(p) > _role_rank(best.get(email), user_roles.get(email)):
+                best[email] = p
+        if best:
+            await self.data_entities_processor.add_permission_to_record(record, list(best.values()))
         for group in held:
             if group.external_id not in kept_groups:
                 await self.data_entities_processor.delete_group_permission_from_record(

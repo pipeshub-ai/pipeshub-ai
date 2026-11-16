@@ -2967,29 +2967,39 @@ async def test_a_group_share_a_non_member_joins_goes_when_only_a_reader_reads_th
     assert CAROL not in f1_people(ws) and BOB in f1_people(ws)
 
 
+DEE = "dee@example.com"
+
+
 async def test_a_writer_group_split_on_a_relist_with_an_empty_list_keeps_its_passing_members_writers(
     ws: Workspace,
 ) -> None:
     ws.world.add_user(CAROL)
-    ws.world.add_group("eng@example.com", [BOB])
-    ws.world.add_group("kept@example.com", [BOB])
+    # Dee, a drive member through eng, is in a writer group and a reader group, and is not the one relisting.
+    ws.world.add_group("eng@example.com", [BOB, DEE])
+    ws.world.add_group("kept@example.com", [BOB, DEE])
+    ws.world.add_group("readers@example.com", [DEE])
     ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
     ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
         {"type": "group", "role": "writer", "emailAddress": "kept@example.com"},
+        {"type": "group", "role": "reader", "emailAddress": "readers@example.com"},
     ])
     await ws.sync()
-    assert ("kept@example.com", "GROUP", "WRITE") in ws.grants("f1")
+    assert {("kept@example.com", "GROUP", "WRITE"), ("readers@example.com", "GROUP", "READ")} <= ws.grants("f1")
 
-    # Alice leaves, Carol, not a member, joins the group, and the relist only ever sees an empty list: the drive
-    # does not let its writers share, so Bob, writing through the group, reads no sharing.
+    # Alice leaves, Carol, not a member, joins both groups, and the relist only ever sees an empty list: the drive
+    # does not let its writers share, so Bob, writing through a group, reads no sharing.
     del ws.world.drives["sd-1"]["members"][ALICE]
-    join_group(ws, "kept@example.com", CAROL)
+    for group in ("kept@example.com", "readers@example.com"):
+        join_group(ws, group, CAROL)
     ws.world.files["f1"].perm_access = "empty"
     ws.world.files["f1"].meta["capabilities"] = {"canShare": False, "canListChildren": False}
     await ws.sync()
 
-    assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws)
+    assert not {"kept@example.com", "readers@example.com", CAROL} & f1_people(ws)
     assert (BOB, "USER", "WRITE") in ws.grants("f1"), "Bob, a member, writes through the group as before"
+    assert {g for g in ws.grants("f1") if g[0] == DEE} == {(DEE, "USER", "WRITE")}, (
+        "Dee writes through one group and reads through the other: she stays a writer"
+    )
 
 
 async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a_reader_reads_it_again(
