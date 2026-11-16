@@ -5345,6 +5345,7 @@
     "mcpServerNeedsToolsTooltip": "Choose tools for every MCP server, or turn on All tools.",
     "mcpServerNeedsToolsBanner": "Choose at least one tool for {{names}}, or turn on All tools.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} is your personal MCP server. It can't be added to an agent shared with your organization or running as a service account.",
+    "serviceAgentCollectionsNeedBinding": "Collections can be added once this service agent is bound to a service account.",
     "mcpAgentApprovalsEnterprise": "Tool approvals per agent are part of the Enterprise Edition. Here, each person's own tool approvals apply.",
     "mcpAgentApprovals": "Tool approvals per agent",
     "limitSource": "Choose what {{name}} searches",
