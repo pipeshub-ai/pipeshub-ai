@@ -110,3 +110,15 @@ def test_llm_calls_are_counted_in_the_llm_family_not_in_cpu_tokens(ledger: Path)
     sig = controller.load_signal()
     assert sig["families"]["llm"]["used"] == 2 and sig["used"] == 0
     assert all(permits)
+
+
+def test_a_controller_that_lost_the_role_stops_publishing_the_signal(ledger: Path) -> None:
+    """A missed two ticks and B took over: A still holds an epoch of its own, but the ledger names B."""
+    a = small(ledger, "a")
+    first = ElectedController(a, 15)
+    first.tick(lambda s, d: {"n": 1}, now_ms=1_000_000)
+    assert first.load_signal() is not None
+    taker = small(ledger, "b")
+    assert taker.elect_controller(15, now_ms=1_000_000 + 60_000) is not None  # A's beat is stale: B takes over
+    assert first.is_controller  # A has not noticed yet
+    assert first.load_signal() is None  # and must not publish for B's epoch

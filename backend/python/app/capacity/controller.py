@@ -11,6 +11,7 @@ instead of warm-starting. This module is the loop's step; the maths it runs is t
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -79,7 +80,12 @@ class ElectedController:
         """The ``budget`` block of the load signal. Only the controller publishes it, so the container is counted once."""
         if self.epoch is None:
             return None
-        return budget_signal(self.budget.snapshot(), self.saturation, floors_over_capacity=floors_over_capacity)
+        snap = self.budget.snapshot()
+        held = snap["controller"]
+        if held["epoch"] != self.epoch or held["pid"] != os.getpid():
+            # Another process took the role (this one missed two ticks): it is not this holder's block to publish.
+            return None
+        return budget_signal(snap, self.saturation, floors_over_capacity=floors_over_capacity)
 
 
 def _now_ms() -> int:

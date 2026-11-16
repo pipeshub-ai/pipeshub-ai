@@ -428,9 +428,14 @@ def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
 _LANE_WAIT_S = 3600.0  # a wait for the member budget is always bounded
 
 
-def _lane_demand() -> Demand:
-    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work)."""
-    return Demand(Family.PARSE, 1)
+def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
+    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work), and the memory
+    its worker is charged for this kind of job (an Excel load grows to ``EXCEL_LOAD_MAX_MB``; it is held nowhere else
+    in the container's budget). A job of no known kind reserves no memory, as before."""
+    from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
+
+    memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
+    return Demand(Family.PARSE, 1, memory)
 
 
 class _EventToken:
@@ -487,17 +492,23 @@ async def submit(
     # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
     wait_s = timeout or _LANE_WAIT_S
     try:
-        held = await reserve_or_adopt(permit, _lane_demand(), deadline_s=wait_s)
+        held = await reserve_or_adopt(permit, _lane_demand(kind, size), deadline_s=wait_s)
     except AdmissionTimeout as exc:
         raise _capacity_timeout(wait_s) from exc
     release_here = held is not None
     try:
         pool = _pool(interactive=interactive)
         if pool is not None:
+            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            if held is not None:
+                # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
+                # while still queued. The tokens go back then, not when the awaiting caller goes away.
+                job.future.add_done_callback(lambda _f, p=held: p.release())
+                release_here = False
             try:
-                return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
+                return await pool.submit(job)
             except _PoolClosed:
-                pass
+                release_here = held is not None  # never enqueued: nothing else will release it
         # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
         # ends, so the permit is released when the thread does, not when the caller goes away.
         future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
@@ -548,7 +559,7 @@ def run_blocking(
     wait_s = timeout or _LANE_WAIT_S
     try:
         held = reserve_or_adopt_blocking(
-            permit, _lane_demand(), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
+            permit, _lane_demand(kind, size), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
         )
     except AdmissionTimeout as exc:
         raise _capacity_timeout(wait_s) from exc

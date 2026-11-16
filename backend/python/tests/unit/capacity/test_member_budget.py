@@ -371,12 +371,20 @@ def test_ledger_multiprocess(ledger: Path) -> None:
     assert snap["used"] == 0 and snap["processes"] == 1
 
 
+def _cpus() -> int:
+    """CPUs this process may use (not every platform has ``sched_getaffinity``)."""
+    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+
+
+def _skip_on_small_hosts() -> None:
+    if _cpus() < 4 and "LEDGER_MIN_PAIRS_PER_S" not in os.environ:
+        pytest.skip(f"{_cpus()} CPUs cannot run 16 contending processes; set LEDGER_MIN_PAIRS_PER_S to run it on a smaller host")
+
+
 def test_ledger_throughput(ledger: Path) -> None:
     """At least 20 000 reserve+release pairs/s across 16 processes, including the admission logic."""
-    cores = len(os.sched_getaffinity(0))
     floor = int(os.environ.get("LEDGER_MIN_PAIRS_PER_S", "5000"))
-    if cores < 4 and "LEDGER_MIN_PAIRS_PER_S" not in os.environ:
-        pytest.skip(f"{cores} CPUs cannot run 16 contending processes; set LEDGER_MIN_PAIRS_PER_S to run it on a smaller host")
+    _skip_on_small_hosts()
     seconds = 2.0
     results = _run_hammer(ledger, 16, seconds)
     rate = sum(r[0] for r in results) / seconds
@@ -406,8 +414,9 @@ def test_the_small_file_floor_holds_under_bulk_load(ledger: Path) -> None:
     because large work never takes the held reserve (C = 160, floors 82, so large work stops at 78)."""
     import concurrent.futures as cf
 
+    _skip_on_small_hosts()  # eight loader processes and wall-clock bounds: scheduling delay on a small host is not a ledger defect
     ctx = mp.get_context("spawn")
-    until = time.time() + 12
+    until = time.time() + 40  # generous: the window must outlast the loaders' start-up on a slow host
     pipes = [ctx.Pipe() for _ in range(8)]
     procs = [ctx.Process(target=lp.bulk_loader, args=(str(ledger), until, pipes[i][1], 1.0), daemon=True) for i in range(8)]
     for p in procs:

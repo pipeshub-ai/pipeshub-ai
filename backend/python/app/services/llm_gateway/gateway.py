@@ -543,7 +543,9 @@ class LLMGateway:
             admission = None
             lease = None
             try:
-                async with self._limiter.slot(), self._member_slot(provider, pk, cls):
+                async with self._limiter.slot(), self._member_slot(
+                    provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
+                ):
                     # Admitted with the slot held, right before the request: a call that waited for a slot while others
                     # opened the breaker must see the breaker as it is now.
                     if fleet is not None:
@@ -646,7 +648,9 @@ class LLMGateway:
         raise AssertionError("unreachable: the last attempt returns or raises")
 
     @contextlib.asynccontextmanager
-    async def _member_slot(self, provider: str, pk: str, cls: str) -> AsyncIterator[None]:
+    async def _member_slot(
+        self, provider: str, pk: str, cls: str, *, sent_any: bool, requests: int, charged: int
+    ) -> AsyncIterator[None]:
         """The container's member LLM slot for one call. When the wait for it runs out, the caller sees the outage it
         already handles (nothing was sent), not a raw ledger timeout."""
         from app.capacity.member_budget import AdmissionTimeout
@@ -657,7 +661,8 @@ class LLMGateway:
         except AdmissionTimeout as exc:
             raise ProviderUnavailableError(
                 f"{provider}: no LLM slot came free in this container; not calling the model",
-                provider=provider, sent=False, pk=pk, size_class=cls,
+                provider=provider, sent=sent_any, chargeable=charged > 0, pk=pk, size_class=cls,
+                requests=requests, charged=charged,  # what the job's earlier attempts already sent and were charged
             ) from exc
         async with stack:
             yield
