@@ -83,7 +83,7 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       const real = fsp.lstat.bind(fsp)
       const fail = (code: string) =>
         sinon.stub(fsp, 'lstat').callsFake(((p: string, ...rest: unknown[]) =>
-          String(p).endsWith(key(2).split('/').pop()!)
+          p.endsWith(key(2).split('/').pop()!)
             ? Promise.reject(Object.assign(new Error(code), { code }))
             : (real as any)(p, ...rest)) as never)
 

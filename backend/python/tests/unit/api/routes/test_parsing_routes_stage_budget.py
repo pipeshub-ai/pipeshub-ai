@@ -162,15 +162,14 @@ async def test_a_conversion_that_never_returns_is_on_the_parsing_services_metric
 ) -> None:
     import re
     import threading
+    import time
     from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
 
     from app import parsing_main
     from app.api.routes import parsing
     from app.services.parsing.load import StuckConversions
     from app.services.parsing.thread_work import ThreadWork
-
-    import time
-    from types import SimpleNamespace
 
     monkeypatch.setattr("app.services.parsing.load._stuck", StuckConversions())
     skew = [0.0]
