@@ -337,37 +337,6 @@ FOR r IN records
 
 Only a record that was being embedded, or whose last attempt failed, carries them. The vector points keep their `contentRev` and `embedKey` payload fields, which older code ignores.
 
-## 3. Light and heavy documents
-
-Every record is classified once, from the event payload's `extension` and `mimeType`, by `app/services/resource_governor/tiers.py::classify`:
-
-| Tier | Formats | Why it is separate |
-| --- | --- | --- |
-| **HEAVY** | pdf, doc/docx, ppt/pptx, xls/xlsx, png/jpg/jpeg/webp/svg, and **anything unrecognised** | Docling layout analysis, OCR, LibreOffice, VLM image description: CPU-bound for minutes, ~1.5 GiB RSS per parse. |
-| **LIGHT** | txt, md, html, csv/tsv, json/yaml, source code, `application/blocks` (Jira/Confluence/Slack-shaped payloads), `text/gmail_content` | Milliseconds of CPU on a few KB; wall time is I/O (embedding, graph, vector writes). The exception is a large text, code or CSV file, which is seconds of CPU: from 256 KiB up those parse steps run in a parse worker process when the process has a pool (section 4.7); JSON, YAML and HTML stay on threads at any size. |
-
-Jira issues and Confluence pages are published as `application/blocks` (Jira) or blocks/HTML (Confluence), so they are LIGHT. Their **attachments** are published with the attachment's real media type: PDFs, screenshots, Office files. Those are HEAVY. A Jira/Confluence sync is therefore a mixed stream: mostly light records with a heavy minority interleaved. That mix is the precondition for the bug in section 5.
-
-The tier decides four things, all in `consumer_concurrency.py` and `resource_governor/`:
-
-1. **Which index pool** the record holds for its whole lifetime: `Pool.INDEX_HEAVY` or `Pool.INDEX_LIGHT` (`acquire_index_slot`). This permit is taken before the handler runs and released on `INDEXING_COMPLETE`, so it covers download, the wait for a parse slot, parsing and embedding. Classification is outside it, on the `classify` stage's own permits (§2.3).
-2. **Which parse pool** the record waits on at `START_PARSING`: `HEAVY_PARSE` or `LIGHT_PARSE`, cost 2 permits for a heavy file over 25 MiB.
-3. **Which cluster-wide Redis lease** it takes: `parsing` vs `parsing:light` always; `indexing` vs `indexing:light` only once `INDEXING_SPLIT_LEASE_POOLS=true`.
-4. **The ceilings and floors** the governor sizes each pool with (section 4.3).
-
-The tier also decides two things at the dispatch layer (added by the fix in section 5.8):
-
-5. **Which read-ahead bucket** a spawned task counts in: `GateWaiters` keeps one count per tier, and `DispatchBudget` gives heavy its own ceiling (2× the current `INDEX_HEAVY` limit, at least 8) under the shared total.
-6. **Which leaf of the fairness tree** the message is buffered in: the fairness key is `(orgId, connectorId, tier)`, so a connector's heavy and light records are sibling queues and DRR can pass over a blocked heavy head.
-
-With `PARSE_ADMISSION=classes` a heavy-format record is dispatched, admitted and parsed by **cost class** instead of the single heavy tier (section 4.3, *Cost classes*).
-
-The tier does not influence the lane a message lands in (a lane belongs to a connector, section 4.9) or the read-phase read-ahead, which is bounded by buffer room.
-
----
-
-## 4. Low-level design
-
 ### 2.6 Record processing diagnostics
 
 A stored record may carry four optional facts about how its processing went. They are for diagnosis only: they are in `INTERNAL_RECORD_FIELDS`, so the record endpoint never returns them and `pipeshub-openapi.yaml` does not describe them. They are declared in the records schema (ArangoDB; Neo4j and PostgreSQL read the same registry) before anything writes them, so a process on the previous schema never meets a key it rejects. Each field is either a number of the stated kind or unknown; absent and JSON null both mean "unknown". The schema refuses any other value on every store (a string, a fraction where an integer is stated, a negative attempt count, a page count below 1), so a reader meets only a valid number, absent, or null.
@@ -405,6 +374,8 @@ The tier also decides two things at the dispatch layer (added by the fix in sect
 
 5. **Which read-ahead bucket** a spawned task counts in: `GateWaiters` keeps one count per tier, and `DispatchBudget` gives heavy its own ceiling (2× the current `INDEX_HEAVY` limit, at least 8) under the shared total.
 6. **Which leaf of the fairness tree** the message is buffered in: the fairness key is `(orgId, connectorId, tier)`, so a connector's heavy and light records are sibling queues and DRR can pass over a blocked heavy head.
+
+With `PARSE_ADMISSION=classes` a heavy-format record is dispatched, admitted and parsed by **cost class** instead of the single heavy tier (section 4.3, *Cost classes*).
 
 The tier does not influence the lane a message lands in (a lane belongs to a connector, section 4.9) or the read-phase read-ahead, which is bounded by buffer room.
 
@@ -563,7 +534,7 @@ One instance per process (`indexing_main.py` lifespan). It resolves **ceilings**
 - every LLM gateway call holds one of the container's member slots (24 per LLM-calling service, 72 with `USE_PARSING_SERVICE=true`), whichever cell or service makes it;
 - the embedding server sizes its default executor to its encode slots plus the reserved query slots plus two, so 74 slots at 128 CPUs are not capped at the stdlib's 32 threads.
 
-`reserve` and `reserve_blocking` need a deadline or a `CancelToken`, so no wait is unbounded and uncancellable. Order is held in the ledger: query embedding, then small, large and huge work, first come first served; a token freed anywhere goes first to the family that owns the floor it came from, then to the oldest latency-class waiter in any process, and while that head does not fit the tokens are held for it (head of line). Big work is capped at `C` less the held floors, and idle floor tokens are lent inside the latency class. A holder that dies has its slot reclaimed by the next reserver (the kernel frees its lifetime lock) and the totals are rebuilt from the live slots, so a holder killed between its two writes never leaks or double-counts tokens. A forked child takes a slot of its own and cannot release a permit it inherited. Waiters do not poll the ledger: one watcher thread per process reads two change counters (CPU side, LLM side) and wakes the waiters of the side that changed, with a jittered 50 ms fallback; an LLM waiter also skips the ledger lock when its counter has not moved. LLM calls are not ordered, so they take no waiter place and cannot crowd out critical waiters. Memory is charged `max(actual, estimate)` once per unit.
+`reserve` and `reserve_blocking` need a deadline or a `CancelToken`, so no wait is unbounded and uncancellable. Order is held in the ledger: query embedding, then small, large and huge work, first come first served; a token freed anywhere goes first to the family that owns the floor it came from, then to the oldest latency-class waiter in any process, and while that head does not fit the tokens are held for it (head of line). Big work is capped at `C` less the held floors, and idle floor tokens are lent inside the latency class. A holder that dies has its slot reclaimed by the next reserver (the kernel frees its lifetime lock) and the totals are rebuilt from the live slots, so a holder killed between its two writes never leaks or double-counts tokens. A forked child takes a slot of its own and cannot release a permit it inherited. Waiters do not poll the ledger: one watcher thread per process reads two change counters (CPU side, LLM side). A CPU change wakes the CPU waiters; each freed LLM slot wakes one LLM waiter, oldest first, and an LLM waiter tries only after it is woken, so a crowd of idle LLM waiters costs one jittered fallback wake per tick (about one attempt per 50 to 100 ms per process). The watcher also looks for dead holders every 0.5 s, without the ledger lock, and reaps them. LLM calls are not ordered, so they take no waiter place and cannot crowd out critical waiters. Memory is charged `max(actual, estimate)` once per unit.
 
 One elected process runs the adaptive part for the whole container: the controller. Any governed process can hold the role (an indexing cell, Docling, parsing, query, embedding, or a parse process in a pod with no indexing process). The ledger names it (its slot, an epoch, a heartbeat the holder writes every governor sample) and keeps its state block (limits, ramp position, cooldowns, hold averages; at most 1 KiB). A successor resumes that state instead of warm-starting, so a process that crash-loops cannot hold the container at the warm start; a controller whose process died is replaced at once, and one that hangs is replaced when its beat is older than two ticks, with the epoch fencing the old holder's later writes. The controller sums every process's published demand, runs the governor's `next_limits` once on the container's fleet ceilings and publishes the result; each cell takes its share of the limits. A process that finds no usable state (no controller yet, or a stale beat) keeps the limits its own governor computed. Downstream feedback is read by each process for itself and only the controller's own is applied to the shared step.
 
