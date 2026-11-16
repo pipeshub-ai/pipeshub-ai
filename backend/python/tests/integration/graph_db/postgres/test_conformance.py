@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import os
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -32,8 +32,9 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(1800)]
 
-_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
-_COUNTER = itertools.count(int(_WORKER[2:]) * 1_000_000 if _WORKER[2:].isdigit() else 0)      # a prefix is never reused by two workers
+# A prefix (and so an org) is never reused by two workers or two runs against one database: each would wipe the other's worlds (``_wipe``).
+_RUN = uuid.uuid4().hex[:8]
+_COUNTER = itertools.count()
 
 
 def _hex(org: str) -> str:
@@ -60,7 +61,7 @@ class PgLayer:
 
     async def preload(self, worlds: Iterable[World]) -> None:
         for w in (w for w in dict.fromkeys(worlds) if w not in self._prefix):
-            self._prefix[w] = f"w{next(_COUNTER)}"
+            self._prefix[w] = f"w{_RUN}{next(_COUNTER)}"
             graph = self.shape(compile_world(w, self._prefix[w]))
             org = _hex(Namespace(self._prefix[w]).org)
             kind = {n["id"]: NODE_TARGETS[n["kind"]] for n in graph["nodes"]}
