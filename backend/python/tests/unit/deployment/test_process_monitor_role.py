@@ -26,7 +26,8 @@ def _run(tmp_path: pathlib.Path, env: dict[str, str], seconds: float = 5) -> tup
     calls = tmp_path / "calls"
     for name in ("python", "node"):
         stub = bin_dir / name
-        stub.write_text(f'#!/bin/bash\necho "{name} $*" >> {calls}\nexec sleep 60\n')
+        # The monitor asks `python -m app.capacity facts` for the container's facts before it starts anything.
+        stub.write_text(f'#!/bin/bash\ncase "$*" in *app.capacity*) exit 0 ;; esac\necho "{name} $*" >> {calls}\nexec sleep 60\n')
         stub.chmod(0o755)
     curl = bin_dir / "curl"
     curl.write_text("#!/bin/bash\nexit 0\n")
@@ -111,6 +112,7 @@ def test_parsing_role_drains_in_flight_parses_before_stopping_docling(tmp_path: 
     python.write_text(
         "#!/bin/bash\n"
         'case "$*" in\n'
+        "  *app.capacity*) exit 0 ;;\n"
         f'  *parsing_main*) trap \'sleep 2; echo parsing-exit >> {events}; exit 0\' TERM ;;\n'
         f'  *) trap \'echo docling-term >> {events}; exit 0\' TERM ;;\n'
         "esac\n"
