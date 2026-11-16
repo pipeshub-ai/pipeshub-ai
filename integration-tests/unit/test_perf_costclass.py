@@ -1961,7 +1961,7 @@ def test_a_tier_list_with_a_repeated_name_is_refused_before_any_stack_starts(tmp
 
 def test_each_tier_is_planned_again_after_its_quiet_check(tmp_path: Path) -> None:
     """The cores a tier gets are the idlest at its own start: the runner plans each tier again, once per tier."""
-    tree, log, env = _stub_tree(tmp_path)
+    tree, _log, env = _stub_tree(tmp_path)
     counter = tmp_path / "plans"
     perf = tree / "integration-tests/perf/tiers.py"
     perf.write_text(perf.read_text().replace(

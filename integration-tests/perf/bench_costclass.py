@@ -1725,13 +1725,12 @@ def _wait_all(kb_client: Any, kb_id: str, run: Run, futures: list[Any], deadline
             if s.upload_error or s.seq in detailed:
                 continue
             status = run.status_by_record.get(s.record_id or "")
-            if status in FINAL_STATUSES:
-                # a failed or non-final detail read leaves the sample open: the next poll reads it again
-                if _fetch_details(kb_client, s, status):
-                    s.record_count = max(s.record_count, len(run.names_seen.get(s.name, [])) or s.record_count)
-                    detailed.add(s.seq)
-                    run.final_event(s.seq).set()
-                    continue
+            # a failed or non-final detail read leaves the sample open: the next poll reads it again
+            if status in FINAL_STATUSES and _fetch_details(kb_client, s, status):
+                s.record_count = max(s.record_count, len(run.names_seen.get(s.name, [])) or s.record_count)
+                detailed.add(s.seq)
+                run.final_event(s.seq).set()
+                continue
             if s.role != "load":  # background load is never waited for: the probes decide when the run is over
                 pending += 1
         if uploads_done and pending == 0:
