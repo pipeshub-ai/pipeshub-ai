@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
 from app.api.routes.parsing import router as parsing_router
@@ -80,6 +80,7 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.services.parsing.load import parse_load, render_metrics
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.lanes import lanes_health
 from app.services.resource_governor.probe import (
@@ -391,6 +392,17 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(parsing_router)
 
 
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> PlainTextResponse:
+    """In-flight and saturation counters in Prometheus text format, for an autoscaler to read."""
+    governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+    default_capacity = governor.ceilings.heavy if governor is not None else None
+    return PlainTextResponse(
+        render_metrics(default_capacity=default_capacity),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 @app.get("/health")
 async def health_check() -> JSONResponse:
     registry: ParserRegistry = app.state.parser_registry
@@ -398,6 +410,7 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
+        "load": parse_load().snapshot(),
         "cpu": {
             "effective_cpus": effective_cpu_count(),
             "source": effective_cpu_source(),

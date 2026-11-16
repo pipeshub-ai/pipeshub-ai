@@ -42,6 +42,10 @@ from app.services.messaging.distributed_concurrency import (
     lease_kind,
 )
 from app.services.messaging.redis_errors import report_redis_error
+from app.services.parsing.remote_concurrency import (
+    remote_parse_concurrency,
+    remote_parse_slots,
+)
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
 from app.services.resource_governor.kinds import (
     EXCESS_WAIT_SECONDS,
@@ -1427,6 +1431,16 @@ async def acquire_parsing_slot(
     part of the kind's excess still missing is reserved here, but a permit holder never waits for
     memory longer than ``EXCESS_WAIT_SECONDS``: it gives the permit back and the caller queues again.
     """
+    remote = remote_parse_concurrency()
+    if remote is not None:
+        # The parse runs in the parsing service, so this process's CPUs do not bound it: the
+        # configured concurrency does. Memory reserved for the record and the download gates
+        # were taken before this call and still apply.
+        slots = remote_parse_slots(remote)
+        if not await slots.acquire(timeout):
+            raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
+        return Admission(tier=tier, cost=1, _release=slots.release)
+
     governor = host.governor
     if governor is not None:
         resolved_tier = tier if tier is not None else ParseTier.HEAVY

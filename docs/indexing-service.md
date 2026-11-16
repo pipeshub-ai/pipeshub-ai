@@ -655,6 +655,16 @@ The page count is the one inspection already made, so routing opens the file no 
 
 What still pauses the loop, measured with a 50 ms heartbeat on a 20 MB CSV and a 4.9 MB source file: one full garbage collection of about 0.3 s when tens of thousands of parsed blocks are rebuilt in the indexing process (the cost of holding that many objects, there before this change too), up to 0.6 s of the same while a 290,000-row CSV becomes row blocks, and 0.1–0.3 s while that CSV's rows are unpickled. Before, the source file held the loop for 3–7 s, reading the CSV for 2 s, and building its row blocks for 9.7 s.
 
+### 4.7a Remote parse concurrency and parsing saturation
+
+**What bounds parses in flight today.** With `USE_PARSING_SERVICE=true` each record still takes a local parse permit before it calls the parsing service (`acquire_parsing_slot`, `app/services/messaging/consumer_concurrency.py`). That permit comes from the governor's heavy and light gates, whose ceilings derive from the indexing pod's CPUs (`resolve_ceilings`, `app/services/resource_governor/policy.py`: heavy about one slot per CPU, light ten), and the cluster parse lease uses the same ceiling. Index permits (about twice the parse ceiling) bound the records around it. Below those, `BaseServiceClient` allowed 10 connections to the service. So a 2-CPU indexing pod drove about 2 heavy parses into any number of parsing pods.
+
+**`PARSING_SERVICE_CONCURRENCY`.** When parsing is remote and this is a positive integer, `acquire_parsing_slot` admits that many parses per indexing process through one remote-parse semaphore (both tiers), instead of the CPU-derived gates. The same number raises the governor ceilings (`lift_ceilings`, `app/services/parsing/remote_concurrency.py`): the cluster parse lease and the index permits (`ceil(N x GOVERNOR_INDEX_HEADROOM)` per tier), never lowering them, and sizes the `ParsingClient` connection pool (`max_connections = max(10, N)`). The record memory reservation and the download gates still apply before the permit. Unset, empty, 0 or invalid keeps today's behaviour; it is read only with `USE_PARSING_SERVICE=true`. The cluster parse lease is shared by all indexing pods, so N is also the fleet-wide ceiling while distributed concurrency is on; size it as the number of parsing pods times each pod's `PARSING_MAX_CONCURRENT`.
+
+**Saturation signal.** The parsing service counts the parse requests inside its route (`app/services/parsing/load.py`). With `PARSING_MAX_CONCURRENT` set, a request beyond that count is answered at once with `429` and `Retry-After: 5` (error code `PARSE_BACKPRESSURE`) before it reads or queues anything. Unset, nothing is shed on count and the governor's gate still queues a request up to 120 s before its own 429. Every 429 from the route counts as saturation. `ParsingClient` (`BaseServiceClient`) treats `429` with `Retry-After` as backpressure: it waits and retries on its own 30-attempt budget, which is not counted as a failure or toward the circuit breaker; if the budget runs out the error is `PARSE_BACKPRESSURE`, which the error classifier treats as transient, so the record is retried and never failed for it.
+
+**Metrics.** `GET /metrics` on the parsing service (port 8092, no auth, like `/health`) returns Prometheus text: `pipeshub_parsing_in_flight` (gauge: requests in the route, waiting or parsing), `pipeshub_parsing_capacity` (gauge: `PARSING_MAX_CONCURRENT`, else the pod's heavy-parse ceiling), `pipeshub_parsing_saturated_total` (counter of 429s) and `pipeshub_parsing_requests_total`. `/health` carries the same figures under `load`. The counters are per process: keep `PARSING_UVICORN_WORKERS=1` (the default) when scaling on them.
+
 ### 4.8 Files from code repositories
 
 GitLab and GitHub sync every file of a repository as a `CODE_FILE` record, and a repository holds more than source code. `app/modules/parsers/code_parser/routing.py::plan_code_file` decides how each one is read. `Processor.process_code_document` applies it in-process; with `USE_PARSING_SERVICE=true`, `EventProcessor` applies it before the bytes are sent, because the parsing service chooses a parser from mime type and extension alone.
@@ -973,6 +983,8 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `MAX_CONCURRENT_PARSING` | derived | caps both parse ceilings |
+| `PARSING_SERVICE_CONCURRENCY` | unset | with `USE_PARSING_SERVICE=true`: parses in flight per indexing process (and the parse lease, index permits and client pool), instead of the CPU-derived slots (4.7a) |
+| `PARSING_MAX_CONCURRENT` | unset | parsing service: requests in the route beyond this get 429 + Retry-After at once (4.7a) |
 | `MAX_CONCURRENT_INDEXING` | derived (`6 × cpus`, 24–96) | total in-flight budget across both index tiers |
 | `MAX_PENDING_INDEXING_TASKS` | derived (`2 × index limits`, 64–256) | total dispatch budget; the heavy tier's ceiling is derived under it (see 4.2 layer 2) |
 | `RECORD_PROCESSING_TIMEOUT` | 1800s | active-processing budget and parse-slot wait bound |
