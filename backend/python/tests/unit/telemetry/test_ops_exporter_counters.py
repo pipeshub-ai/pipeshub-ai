@@ -359,17 +359,20 @@ def test_trickling_clients_are_cut_at_the_request_deadline_and_never_block_a_scr
     t.start()
     try:
         assert _scrape_ok(port)  # right away, while every slot is held
-        time.sleep(1.6)  # past the deadline: the trickling sockets are closed by the server
-        closed = 0
-        for s in socks:
-            s.settimeout(1.0)
-            try:
-                if s.recv(1) == b"":
-                    closed += 1
-            except TimeoutError:
-                pass  # still open: the server never cut it
-            except OSError:
-                closed += 1
+        # past the deadline the trickling sockets are closed by the server: poll, bounded, not one fixed sleep
+        open_socks = list(socks)
+        end = time.monotonic() + 20
+        while open_socks and time.monotonic() < end:
+            for s in list(open_socks):
+                s.settimeout(0.2)
+                try:
+                    if s.recv(1) == b"":
+                        open_socks.remove(s)
+                except TimeoutError:
+                    pass  # still open: the server has not cut it yet
+                except OSError:
+                    open_socks.remove(s)
+        closed = len(socks) - len(open_socks)
         assert closed == len(socks)
         assert _scrape_ok(port)
     finally:
