@@ -125,11 +125,13 @@ class TestBatchShapes:
 
         async def call_llm(image_base64: str, page_number: int) -> str:
             nonlocal filled
-            # The first calls are held until the producer has rendered a full window. Left to the wall clock,
+            # The first calls are held until the render thread has recorded a full window. Left to the wall clock,
             # the 1-3 ms calls outran a render thread on a busy runner and the window never filled (peak 4).
+            # The recorded peak, not len(live): images are alive before the thread samples them, and calls
+            # released in between could drop some first.
             async with asyncio.timeout(20):  # bounds a hang only: a window that never fills fails here
                 while not filled:
-                    filled = len(live) >= 8
+                    filled = peak >= 8
                     await asyncio.sleep(0.001)
             await asyncio.sleep(0.001 * (page_number % 4))
             return "x"
