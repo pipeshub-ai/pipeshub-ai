@@ -604,6 +604,8 @@ class JiraConnector(BaseConnector):
         self._never_tightened_security: set[str] = set()
         self._skipped_holders_logged: set[tuple[str, str | None, str]] = set()
         self._issue_build_failures = 0  # issues skipped because they failed to build
+        # issue external id -> the time of its read, stored once its comments and files are written (`_process_new_records`)
+        self._settle_after_dependents: dict[str, int] = {}
         # Parents of stories, by issue id, as read this sync: an epic read with its project's
         # issues, or asked for when a story names it. None: Jira gave no usable answer.
         self._parent_levels: dict[str, _ParentLevel | None] = {}
@@ -4845,6 +4847,14 @@ class JiraConnector(BaseConnector):
                 f"{len(changed_records)} updated, {edge_rebuild_count} edge-rebuild)"
             )
 
+        # Every comment and file of these issues is written: each issue takes the time of its read now. A batch
+        # that raised above leaves them stored as changed, so the next sync reads them again.
+        for record, _, _ in sorted_records:
+            settled = self._settle_after_dependents.pop(record.external_record_id, None) if isinstance(record, TicketRecord) else None
+            if settled is not None:
+                record.source_updated_at = settled
+                await self.data_entities_processor.on_record_metadata_update(record)
+
     # ============================================================================
     # Issue Processing
     # ============================================================================
@@ -5405,15 +5415,18 @@ class JiraConnector(BaseConnector):
             )
             if existing_record is not None:
                 delete_ids.extend(await self._with_their_files(await self._stored_comment_records(issue_id)))
+            self._leave_changed(issue_record, existing_record)
             return records, delete_ids, False
         # Not returned: the stored comment records stay. A personal connector's one reader is the
         # account the comments were read as, so it has no restricted comment to write.
         comment_records: dict[str, Record] = {}
         if self._enforces_issue_security and isinstance(fields.get("comment"), dict):
-            built_comments, stale_ids = await self._restricted_comment_records(
+            built_comments, stale_ids, unresolved = await self._restricted_comment_records(
                 issue_record, fields["comment"].get("comments") or [], project_key, issue_key,
                 stored=existing_record is not None,
             )
+            if unresolved:
+                self._leave_changed(issue_record, existing_record)
             records.extend(built_comments)
             delete_ids.extend(stale_ids)
             comment_records = {r.external_record_id: r for r, _, _ in built_comments}
@@ -5456,8 +5469,22 @@ class JiraConnector(BaseConnector):
                 records.extend(attachment_records)
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
+            self._leave_changed(issue_record, existing_record)
 
+        if len(records) > 1 and issue_record.source_updated_at == updated_at:
+            # Its comments and files are written after it: it is stored as changed and takes this read's
+            # time only once they are (`_process_new_records`), so a write that fails is read again.
+            self._leave_changed(issue_record, existing_record)
+            self._settle_after_dependents[issue_record.external_record_id] = updated_at
         return records, delete_ids, False
+
+    def _leave_changed(self, issue_record: TicketRecord, existing_record: Record | None) -> None:
+        """Store the issue with the time of the last read that completed, not this read's (0 for a new issue, or when that
+        time is this read's: a full sync of an unchanged issue): the next sync takes it as changed and reads it, its
+        comments, their grants and its files again."""
+        self._settle_after_dependents.pop(issue_record.external_record_id, None)
+        stored = existing_record.source_updated_at if existing_record is not None else None
+        issue_record.source_updated_at = stored if stored and stored != issue_record.updated_at else 0
 
     # ============================================================================
     # Attachments
@@ -5542,10 +5569,11 @@ class JiraConnector(BaseConnector):
 
     async def _restricted_comment_records(
         self, issue_record: TicketRecord, comments: list[Any], project_key: str, issue_key: str, *, stored: bool,
-    ) -> tuple[list[tuple[Record, list[Permission], bool]], list[str]]:
-        """A record under the issue for each comment only some of its readers may read, and the ids
+    ) -> tuple[list[tuple[Record, list[Permission], bool]], list[str], bool]:
+        """A record under the issue for each comment only some of its readers may read, the ids
         of the stored ones that are gone or now public (the issue's own content shows those), with
-        the files filed under them; a file still on the issue is filed again by this read.
+        the files filed under them (a file still on the issue is filed again by this read), and
+        whether a comment's role, group or product access could not be resolved.
 
         Each is PARENT_AND_GRANT under the issue: read by those who read the issue, by any path (a
         reporter who reads it only as its reporter, too), and are named by its ``visibility`` (or, for
@@ -5556,6 +5584,7 @@ class JiraConnector(BaseConnector):
         } if stored else {}
         product_access_groups = self._product_access_groups()
         out: list[tuple[Record, list[Permission], bool]] = []
+        unresolved = False
         for comment in comments:
             if not isinstance(comment, dict) or not comment.get("id") or not is_restricted_comment(comment):
                 continue
@@ -5600,12 +5629,13 @@ class JiraConnector(BaseConnector):
                 product_access_groups=product_access_groups,
             )
             if not grants:
+                unresolved = True
                 self.logger.warning(
                     "Comment %s of issue %s names no role, group or product access that could be read; "
                     "no one reads it until a sync resolves it", comment["id"], issue_key,
                 )
             out.append((record, grants, changed))
-        return out, await self._with_their_files(list(stored_by_id.values()))
+        return out, await self._with_their_files(list(stored_by_id.values())), unresolved
 
     async def _read_issue_comments(self, issue_id: str) -> list[dict[str, Any]]:
         """Every comment of the issue with its rendered HTML, read page by page.

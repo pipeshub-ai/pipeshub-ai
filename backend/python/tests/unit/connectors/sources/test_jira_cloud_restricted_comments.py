@@ -354,3 +354,69 @@ async def test_a_reindex_leaves_an_issue_with_restricted_comments_to_the_sync(
     _reindexable(connector, _issue(comments))
     result = await connector._check_and_fetch_updated_issue(_stored_issue(), {})
     assert (result is None) is left_to_the_sync
+
+
+def _stored_ticket(source_updated_at: int = 1) -> MagicMock:
+    return MagicMock(id="ticket-1", is_placeholder=False, source_updated_at=source_updated_at, version=3, parent_external_record_id=None)
+
+
+def _ticket(records: list) -> TicketRecord:
+    return next(r for r, _, _ in records if isinstance(r, TicketRecord))
+
+
+async def test_an_issue_whose_comments_could_not_be_read_stays_changed_for_the_next_sync() -> None:
+    """The stored comment records go (fail closed) and the issue keeps the time of its last complete read, so the next sync reads it and its
+    comments again rather than skipping it as unchanged."""
+    connector = _connector()
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored_ticket(1))
+    connector._read_issue_comments = AsyncMock(side_effect=RuntimeError("HTTP 503"))
+    records, _ = await _build(connector, _issue([PUBLIC_COMMENT], total=30))
+    assert _ticket(records).source_updated_at == 1
+    assert "100" not in connector._settle_after_dependents
+
+
+async def test_an_issue_whose_comment_grants_could_not_be_resolved_stays_changed_for_the_next_sync() -> None:
+    """A fresh connector that could not read the project roles writes the comment with no grant (fail closed) and leaves the issue changed: the
+    next sync, which may read the roles, rebuilds the comment instead of skipping the issue."""
+    connector = _connector()
+    connector._role_ids = {}
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored_ticket(1))
+    records, _ = await _build(connector, _issue([ROLE_COMMENT]))
+    comment = next((r, p) for r, p, _ in records if isinstance(r, CommentRecord))
+    assert comment[1] == []
+    assert _ticket(records).source_updated_at == 1 and "100" not in connector._settle_after_dependents
+    # a new issue in the same case is stored as never read
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    records, _ = await _build(connector, _issue([ROLE_COMMENT]))
+    assert _ticket(records).source_updated_at == 0
+
+
+async def test_an_issue_takes_the_time_of_its_read_only_once_its_comments_are_written() -> None:
+    """The issue is written first (its comments name it), stored as changed, and takes this read's time by a metadata write after every comment
+    and file of the call is written. A comment batch that raises leaves it changed, so the next sync writes the comments again."""
+    read_at = JiraConnector._parse_jira_timestamp(_connector(), "2024-01-20T00:00:00.000+0000")
+    connector = _connector()
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored_ticket(1))
+    records, _ = await _build(connector, _issue([GROUP_COMMENT]))
+    assert _ticket(records).source_updated_at == 1 and connector._settle_after_dependents == {"100": read_at}
+    dep = connector.data_entities_processor
+    dep.on_new_records, dep.on_record_content_update, dep.on_record_metadata_update = AsyncMock(), AsyncMock(), AsyncMock()
+    await connector._process_new_records(records, "PROJ", {"new_count": 0, "updated_count": 0})
+    dep.on_record_metadata_update.assert_awaited_once()
+    assert dep.on_record_metadata_update.await_args.args[0].source_updated_at == read_at and not connector._settle_after_dependents
+
+    connector = _connector()
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored_ticket(1))
+    records, _ = await _build(connector, _issue([GROUP_COMMENT]))
+    dep = connector.data_entities_processor
+
+    async def comments_fail(batch: list) -> None:
+        if any(isinstance(r, CommentRecord) for r, _ in batch):
+            raise RuntimeError("store down")
+    dep.on_new_records, dep.on_record_content_update, dep.on_record_metadata_update = AsyncMock(side_effect=comments_fail), AsyncMock(), AsyncMock()
+    with pytest.raises(RuntimeError):
+        await connector._process_new_records(records, "PROJ", {"new_count": 0, "updated_count": 0})
+    written = [r for call in dep.on_record_content_update.await_args_list for r in call.args[:1]] + [
+        r for call in dep.on_new_records.await_args_list for r, _ in call.args[0]]
+    assert next(r for r in written if isinstance(r, TicketRecord)).source_updated_at == 1
+    dep.on_record_metadata_update.assert_not_awaited()
