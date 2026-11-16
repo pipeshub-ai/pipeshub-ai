@@ -57,3 +57,25 @@ async def test_a_grant_by_address_reaches_only_this_orgs_user(backend) -> None:
         assert await processor.get_user_by_email(only_elsewhere) is None, "an address only another org holds names nobody here"
     finally:
         await backend.provider.delete_nodes_and_edges([foreign, foreign_only], CollectionNames.USERS.value)
+
+
+async def test_deleting_a_user_deactivates_only_that_orgs_user_with_the_address(backend) -> None:
+    """The user-deleted event names an org; another org's user with the same address, written first, stays active and in its org."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+    shared, other_org = f"shared-{_suffix()}@acme.com", f"org-other-{_suffix()}"
+    foreign, mine = f"a0-foreign-{_suffix()}", f"user-{_suffix()}"
+    await _user(backend, foreign, shared, other_org)
+    await _user(backend, mine, shared, ORG)
+    service = EntityEventService(logging.getLogger("user-deleted"), backend.provider, MagicMock())
+    try:
+        with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+            assert await service._handle_user_deleted({"email": shared, "orgId": ORG})
+        users = {u.get("_key") or u.get("id"): u for u in await backend.provider.get_nodes_by_filters(CollectionNames.USERS.value, {"email": shared})}
+        assert users[foreign].get("isActive") is True and users[foreign].get("orgId") == other_org, "another org's user is untouched"
+        assert users[mine].get("isActive") is False and users[mine].get("orgId") == ORG, "this org's user is deactivated"
+    finally:
+        await backend.provider.delete_nodes_and_edges([foreign, mine], CollectionNames.USERS.value)

@@ -5798,10 +5798,13 @@ class IGraphDBProvider(ABC):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
         """
-        Get entity ID (user or group) by email.
+        Get the ID of the user, group or person of org ``org_id`` with this email. The org is required: an address
+        is unique only within an org.
 
         Args:
             email (str): Email address
@@ -5816,10 +5819,12 @@ class IGraphDBProvider(ABC):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """
-        Bulk get entity IDs for multiple emails.
+        Bulk get entity IDs of org ``org_id`` for multiple emails (the org is required, as for get_entity_id_by_email).
 
         Args:
             emails (List[str]): List of email addresses
@@ -6418,7 +6423,9 @@ class IGraphDBProvider(ABC):
         self,
         user_email: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Get user's sync state for a specific service.
@@ -6439,7 +6446,9 @@ class IGraphDBProvider(ABC):
         user_email: str,
         state: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Update user's sync state for a specific service.

@@ -2126,7 +2126,7 @@ class TestBatchCreateUserAppEdges:
 class TestGetEntityIdByEmail:
     async def test_found_in_users(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = ["u1"]
-        result = await connected_provider.get_entity_id_by_email("user@example.com")
+        result = await connected_provider.get_entity_id_by_email("user@example.com", org_id="org-1")
         assert result == "u1"
 
     async def test_found_in_groups(self, connected_provider):
@@ -2134,7 +2134,7 @@ class TestGetEntityIdByEmail:
             [],      # users
             ["g1"],  # groups
         ]
-        result = await connected_provider.get_entity_id_by_email("group@example.com")
+        result = await connected_provider.get_entity_id_by_email("group@example.com", org_id="org-1")
         assert result == "g1"
 
     async def test_found_in_people(self, connected_provider):
@@ -2143,17 +2143,17 @@ class TestGetEntityIdByEmail:
             [],      # groups
             ["p1"],  # people
         ]
-        result = await connected_provider.get_entity_id_by_email("external@example.com")
+        result = await connected_provider.get_entity_id_by_email("external@example.com", org_id="org-1")
         assert result == "p1"
 
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [[], [], []]
-        result = await connected_provider.get_entity_id_by_email("nobody@example.com")
+        result = await connected_provider.get_entity_id_by_email("nobody@example.com", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_entity_id_by_email("user@example.com")
+        result = await connected_provider.get_entity_id_by_email("user@example.com", org_id="org-1")
         assert result is None
 
 
@@ -2163,7 +2163,7 @@ class TestGetEntityIdByEmail:
 
 class TestBulkGetEntityIdsByEmail:
     async def test_empty_input(self, connected_provider):
-        result = await connected_provider.bulk_get_entity_ids_by_email([])
+        result = await connected_provider.bulk_get_entity_ids_by_email([], org_id="org-1")
         assert result == {}
 
     async def test_found_in_users(self, connected_provider):
@@ -2173,16 +2173,14 @@ class TestBulkGetEntityIdsByEmail:
             [],  # people (remaining)
         ]
         result = await connected_provider.bulk_get_entity_ids_by_email(
-            ["user@example.com"]
-        )
+            ["user@example.com"], org_id="org-1")
         assert "user@example.com" in result
         assert result["user@example.com"][0] == "u1"
 
     async def test_exception_returns_empty(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
         result = await connected_provider.bulk_get_entity_ids_by_email(
-            ["user@example.com"]
-        )
+            ["user@example.com"], org_id="org-1")
         assert result == {}
 
 
@@ -2554,24 +2552,21 @@ class TestGetUserSyncState:
             {"syncState": "IN_PROGRESS", "_key": "edge1"}
         ]
         result = await connected_provider.get_user_sync_state(
-            user_email="user@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="user@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is not None
         assert result["syncState"] == "IN_PROGRESS"
 
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value=None)
         result = await connected_provider.get_user_sync_state(
-            user_email="none@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="none@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is None
 
     async def test_no_sync_edge(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value="u1")
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.get_user_sync_state(
-            user_email="user@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="user@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
@@ -2579,8 +2574,7 @@ class TestGetUserSyncState:
             side_effect=Exception("err")
         )
         result = await connected_provider.get_user_sync_state(
-            user_email="user@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="user@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is None
 
 
@@ -2595,15 +2589,13 @@ class TestUpdateUserSyncState:
             {"syncState": "COMPLETED"}
         ]
         result = await connected_provider.update_user_sync_state(
-            user_email="user@example.com", state="COMPLETED",
-        )
+            user_email="user@example.com", state="COMPLETED", org_id="org-1")
         assert result is not None
 
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value=None)
         result = await connected_provider.update_user_sync_state(
-            user_email="none@example.com", state="COMPLETED",
-        )
+            user_email="none@example.com", state="COMPLETED", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
@@ -2611,8 +2603,7 @@ class TestUpdateUserSyncState:
             side_effect=Exception("err")
         )
         result = await connected_provider.update_user_sync_state(
-            user_email="user@example.com", state="COMPLETED",
-        )
+            user_email="user@example.com", state="COMPLETED", org_id="org-1")
         assert result is None
 
 

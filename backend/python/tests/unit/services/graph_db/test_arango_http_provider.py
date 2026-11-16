@@ -2063,13 +2063,13 @@ class TestGetEntityIdByEmailPeopleFallback:
             [],  # groups
             ["person_key1"],  # people
         ]
-        result = await connected_provider.get_entity_id_by_email("person@test.com")
+        result = await connected_provider.get_entity_id_by_email("person@test.com", org_id="org-1")
         assert result == "person_key1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [[], [], []]
-        result = await connected_provider.get_entity_id_by_email("missing@test.com")
+        result = await connected_provider.get_entity_id_by_email("missing@test.com", org_id="org-1")
         assert result is None
 
 
@@ -2084,14 +2084,14 @@ class TestBulkGetEntityIdsByEmailUsersAndErrors:
         connected_provider.http_client.execute_aql.side_effect = [
             [{"email": "u@test.com", "id": "u1"}],  # users
         ]
-        result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"], org_id="org-1")
         assert "u@test.com" in result
         assert result["u@test.com"][0] == "u1"
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"], org_id="org-1")
         assert result == {}
 
 
@@ -2865,8 +2865,7 @@ class TestGetUserSyncStateNotFoundAndError:
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.get_user_sync_state(
-                "missing@test.com", "DRIVE"
-            )
+                "missing@test.com", "DRIVE", org_id="org-1")
             assert result is None
 
     @pytest.mark.asyncio
@@ -2876,8 +2875,7 @@ class TestGetUserSyncStateNotFoundAndError:
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
             result = await connected_provider.get_user_sync_state(
-                "user@test.com", "DRIVE"
-            )
+                "user@test.com", "DRIVE", org_id="org-1")
             assert result is None
 
 
@@ -2895,8 +2893,7 @@ class TestUpdateUserSyncStateNotFoundAndError:
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.update_user_sync_state(
-                "missing@test.com", "RUNNING"
-            )
+                "missing@test.com", "RUNNING", org_id="org-1")
             assert result is None
 
     @pytest.mark.asyncio
@@ -2906,8 +2903,7 @@ class TestUpdateUserSyncStateNotFoundAndError:
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
             result = await connected_provider.update_user_sync_state(
-                "user@test.com", "RUNNING"
-            )
+                "user@test.com", "RUNNING", org_id="org-1")
             assert result is None
 
 
@@ -5508,7 +5504,7 @@ class TestBulkGetEntityIdsByEmailFull:
             [],  # users - empty
             [{"email": "group@test.com", "id": "g1"}],  # groups
         ]
-        result = await connected_provider.bulk_get_entity_ids_by_email(["group@test.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["group@test.com"], org_id="org-1")
         assert "group@test.com" in result
         assert result["group@test.com"][1] == "groups"
         assert result["group@test.com"][2] == "GROUP"
@@ -5520,7 +5516,7 @@ class TestBulkGetEntityIdsByEmailFull:
             [],  # groups
             [{"email": "person@test.com", "id": "p1"}],  # people
         ]
-        result = await connected_provider.bulk_get_entity_ids_by_email(["person@test.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["person@test.com"], org_id="org-1")
         assert "person@test.com" in result
         assert result["person@test.com"][1] == "person"
         assert result["person@test.com"][2] == "USER"
@@ -5531,8 +5527,7 @@ class TestBulkGetEntityIdsByEmailFull:
             [{"email": "u@test.com", "id": "u1"}],  # users
         ]
         result = await connected_provider.bulk_get_entity_ids_by_email(
-            ["u@test.com", "u@test.com"]  # duplicate
-        )
+            ["u@test.com", "u@test.com"], org_id="org-1")  # duplicate
         assert len(result) == 1
 
     @pytest.mark.asyncio
@@ -5541,7 +5536,7 @@ class TestBulkGetEntityIdsByEmailFull:
             Exception("user query fail"),  # users fail
         ]
         # Should not raise, should return empty
-        result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["u@test.com"], org_id="org-1")
         assert result == {}
 
 
@@ -6588,26 +6583,26 @@ class TestGetEntityIdByEmailLookupOrder:
     @pytest.mark.asyncio
     async def test_user_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = ["u1"]
-        result = await connected_provider.get_entity_id_by_email("user@test.com")
+        result = await connected_provider.get_entity_id_by_email("user@test.com", org_id="org-1")
         assert result == "u1"
 
     @pytest.mark.asyncio
     async def test_not_found_in_users_check_groups(self, connected_provider):
         # First call (users) returns empty, second (groups) returns match
         connected_provider.http_client.execute_aql.side_effect = [[], ["g1"]]
-        result = await connected_provider.get_entity_id_by_email("group@test.com")
+        result = await connected_provider.get_entity_id_by_email("group@test.com", org_id="org-1")
         assert result == "g1"
 
     @pytest.mark.asyncio
     async def test_not_found_anywhere(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [[], []]
-        result = await connected_provider.get_entity_id_by_email("nobody@test.com")
+        result = await connected_provider.get_entity_id_by_email("nobody@test.com", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_entity_id_by_email("user@test.com")
+        result = await connected_provider.get_entity_id_by_email("user@test.com", org_id="org-1")
         assert result is None
 
 
@@ -7706,7 +7701,7 @@ class TestGetEntityIdByEmail:
     @pytest.mark.asyncio
     async def test_found_in_users(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=["user_key1"])
-        result = await connected_provider.get_entity_id_by_email("test@example.com")
+        result = await connected_provider.get_entity_id_by_email("test@example.com", org_id="org-1")
         assert result == "user_key1"
 
     @pytest.mark.asyncio
@@ -7715,7 +7710,7 @@ class TestGetEntityIdByEmail:
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[[], ["group_key1"], []]
         )
-        result = await connected_provider.get_entity_id_by_email("group@example.com")
+        result = await connected_provider.get_entity_id_by_email("group@example.com", org_id="org-1")
         assert result == "group_key1"
 
     @pytest.mark.asyncio
@@ -7723,7 +7718,7 @@ class TestGetEntityIdByEmail:
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[[], [], ["person_key1"]]
         )
-        result = await connected_provider.get_entity_id_by_email("person@example.com")
+        result = await connected_provider.get_entity_id_by_email("person@example.com", org_id="org-1")
         assert result == "person_key1"
 
     @pytest.mark.asyncio
@@ -7731,13 +7726,13 @@ class TestGetEntityIdByEmail:
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[[], [], []]
         )
-        result = await connected_provider.get_entity_id_by_email("nobody@example.com")
+        result = await connected_provider.get_entity_id_by_email("nobody@example.com", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_entity_id_by_email("test@example.com")
+        result = await connected_provider.get_entity_id_by_email("test@example.com", org_id="org-1")
         assert result is None
 
 
@@ -7749,7 +7744,7 @@ class TestGetEntityIdByEmail:
 class TestBulkGetEntityIdsByEmail:
     @pytest.mark.asyncio
     async def test_empty_emails(self, connected_provider):
-        result = await connected_provider.bulk_get_entity_ids_by_email([])
+        result = await connected_provider.bulk_get_entity_ids_by_email([], org_id="org-1")
         assert result == {}
 
     @pytest.mark.asyncio
@@ -7761,7 +7756,7 @@ class TestBulkGetEntityIdsByEmail:
                 [],  # people
             ]
         )
-        result = await connected_provider.bulk_get_entity_ids_by_email(["u1@ex.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["u1@ex.com"], org_id="org-1")
         assert "u1@ex.com" in result
         assert result["u1@ex.com"][0] == "u1key"
 
@@ -7775,14 +7770,13 @@ class TestBulkGetEntityIdsByEmail:
             ]
         )
         result = await connected_provider.bulk_get_entity_ids_by_email(
-            ["u1@ex.com", "g1@ex.com", "p1@ex.com"]
-        )
+            ["u1@ex.com", "g1@ex.com", "p1@ex.com"], org_id="org-1")
         assert len(result) == 3
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.bulk_get_entity_ids_by_email(["test@ex.com"])
+        result = await connected_provider.bulk_get_entity_ids_by_email(["test@ex.com"], org_id="org-1")
         assert result == {}
 
 
@@ -9188,7 +9182,7 @@ class TestGetEntityIdByEmailProvider2:
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[["u1_key"], None, None]
         )
-        result = await connected_provider.get_entity_id_by_email("user@test.com")
+        result = await connected_provider.get_entity_id_by_email("user@test.com", org_id="org-1")
         assert result == "u1_key"
 
     @pytest.mark.asyncio
@@ -9196,7 +9190,7 @@ class TestGetEntityIdByEmailProvider2:
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[[], ["g1_key"], None]
         )
-        result = await connected_provider.get_entity_id_by_email("group@test.com")
+        result = await connected_provider.get_entity_id_by_email("group@test.com", org_id="org-1")
         assert result == "g1_key"
 
     @pytest.mark.asyncio
@@ -9204,13 +9198,13 @@ class TestGetEntityIdByEmailProvider2:
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[[], [], []]
         )
-        result = await connected_provider.get_entity_id_by_email("unknown@test.com")
+        result = await connected_provider.get_entity_id_by_email("unknown@test.com", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_entity_id_by_email("user@test.com")
+        result = await connected_provider.get_entity_id_by_email("user@test.com", org_id="org-1")
         assert result is None
 
 
@@ -10802,7 +10796,7 @@ class TestGetEntityIdByEmailExpanded:
     @pytest.mark.asyncio
     async def test_empty_email(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [[], [], []]
-        result = await connected_provider.get_entity_id_by_email("")
+        result = await connected_provider.get_entity_id_by_email("", org_id="org-1")
         assert result is None
 
 
@@ -14567,27 +14561,27 @@ class TestGetUserSyncState:
         connected_provider.http_client.execute_aql = AsyncMock(
             return_value=[{"_key": "edge1", "syncState": "COMPLETED"}]
         )
-        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE")
+        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE", org_id="org-1")
         assert result is not None
         assert result["syncState"] == "COMPLETED"
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value=None)
-        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE")
+        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_no_results(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value="user_key1")
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE")
+        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(side_effect=Exception("db error"))
-        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE")
+        result = await connected_provider.get_user_sync_state("user@test.com", "DRIVE", org_id="org-1")
         assert result is None
 
 
@@ -14603,27 +14597,27 @@ class TestUpdateUserSyncState:
         connected_provider.http_client.execute_aql = AsyncMock(
             return_value=[{"_key": "edge1", "syncState": "RUNNING"}]
         )
-        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING", "DRIVE")
+        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING", "DRIVE", org_id="org-1")
         assert result is not None
         assert result["syncState"] == "RUNNING"
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value=None)
-        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING")
+        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_no_relation_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value="user_key1")
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING")
+        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING")
+        result = await connected_provider.update_user_sync_state("user@test.com", "RUNNING", org_id="org-1")
         assert result is None
 
 

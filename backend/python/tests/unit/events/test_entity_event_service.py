@@ -325,7 +325,7 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_not_found(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(return_value=None)
+        gp.get_user_by_email = AsyncMock(return_value=None)
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "ghost@example.com"
         })
@@ -334,7 +334,7 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_found_and_soft_deleted(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
+        gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-1"))
         gp.batch_upsert_nodes = AsyncMock()
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "alice@example.com"
@@ -344,7 +344,7 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(side_effect=Exception("fail"))
+        gp.get_user_by_email = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(Exception, match="fail"):
             await svc.process_event("userDeleted", {
                 "orgId": "org-1", "email": "x@x.com"

@@ -10921,21 +10921,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
-        """Get entity ID (user or group) by email"""
+        """Get the ID of the user, group or person of the org with this email"""
         try:
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) = toLower($email)
+            AND toLower(n.email) = toLower($email) AND n.orgId = $org_id
             RETURN n.id AS id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -10948,7 +10950,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """Bulk get entity IDs for multiple emails"""
         try:
@@ -10960,13 +10964,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) IN [e IN $emails | toLower(e)]
+            AND toLower(n.email) IN [e IN $emails | toLower(e)] AND n.orgId = $org_id
             RETURN n.email AS email, n.id AS id, labels(n) AS labels
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"emails": unique_emails},
+                parameters={"emails": unique_emails, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -14119,19 +14123,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_email: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """Get user's sync state for a specific service"""
         try:
             query = """
-            MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
             RETURN rel, u.id AS from_id, app.id AS to_id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"user_email": user_email, "service_type": service_type},
+                parameters={"user_email": user_email, "service_type": service_type, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -14155,7 +14161,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_email: str,
         state: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """Update user's sync state for a specific service"""
         try:
@@ -14165,7 +14173,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             query = """
-            MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
             SET rel.syncState = $state, rel.lastSyncUpdate = $updated_timestamp
             RETURN rel, u.id AS from_id, app.id AS to_id
             """
@@ -14174,6 +14182,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query,
                 parameters={
                     "user_email": user_email,
+                    "org_id": org_id,
                     "service_type": service_type,
                     "state": state,
                     "updated_timestamp": updated_timestamp

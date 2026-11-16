@@ -576,15 +576,15 @@ class EntityEventService(BaseEventService):
         """Handle user deletion event"""
         try:
             self.logger.debug("Processing user deleted event for user %s", payload.get("userId"))
-            # Find existing user by email
-            existing_user_id = await self.graph_provider.get_entity_id_by_email(
-                payload["email"]
-            )
-            if not existing_user_id:
+            org_id = payload["orgId"]
+            # The user of the event's org with this address, never a group, a person or another org's user. raise_on_error: a
+            # failed read must not read as "no such user".
+            existing_user = await self.graph_provider.get_user_by_email(payload["email"], raise_on_error=True, org_id=org_id)
+            if existing_user is None:
                 self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
                 return False
+            existing_user_id = existing_user.id
 
-            org_id = payload["orgId"]
             user_data = {
                 "id": existing_user_id,
                 "orgId": org_id,

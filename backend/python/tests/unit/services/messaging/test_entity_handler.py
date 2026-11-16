@@ -603,9 +603,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            return_value="user-key-1"
-        )
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1"))
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -625,7 +623,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -639,8 +637,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_db_error_raises(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB fail")
+        graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB fail")
         )
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -1370,8 +1367,7 @@ class TestHandleUserDeletedExtended:
     @pytest.mark.asyncio
     async def test_user_deleted_exception(self):
         svc = _make_service()
-        svc.graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB error")
+        svc.graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB error")
         )
         with pytest.raises(Exception, match="DB error"):
             await svc.process_event(

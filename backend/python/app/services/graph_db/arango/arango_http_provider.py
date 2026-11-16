@@ -11487,10 +11487,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
         """
-        Get entity ID by email (searches users and groups).
+        Get the entity ID of the org with this email (searches users, groups and people of org ``org_id``).
 
         Generic method that works for both users and groups.
 
@@ -11504,7 +11506,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # First check users
         query = f"""
         FOR doc IN {CollectionNames.USERS.value}
-            FILTER doc.email == @email
+            FILTER doc.email == @email AND doc.orgId == @org_id
             LIMIT 1
             RETURN doc._key
         """
@@ -11512,7 +11514,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
             if results:
@@ -11521,14 +11523,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # If not found in users, check groups
             query = f"""
             FOR doc IN {CollectionNames.GROUPS.value}
-                FILTER doc.email == @email
+                FILTER doc.email == @email AND doc.orgId == @org_id
                 LIMIT 1
                 RETURN doc._key
             """
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
             if results:
@@ -11536,14 +11538,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.email == LOWER(@email)
+                FILTER doc.email == LOWER(@email) AND doc.orgId == @org_id
                 LIMIT 1
                 RETURN doc._key
             """
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
             if results:
@@ -11557,7 +11559,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """
         Bulk get entity IDs for multiple emails across users, groups, and people collections.
@@ -11590,13 +11594,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # QUERY 1: Check users collection
             user_query = f"""
             FOR doc IN {CollectionNames.USERS.value}
-                FILTER doc.email IN @emails
+                FILTER doc.email IN @emails AND doc.orgId == @org_id
                 RETURN {{email: doc.email, id: doc._key}}
             """
             try:
                 users = await self.http_client.execute_aql(
                     user_query,
-                    bind_vars={"emails": unique_emails},
+                    bind_vars={"emails": unique_emails, "org_id": org_id},
                     txn_id=transaction
                 )
                 for user in users:
@@ -11614,13 +11618,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if remaining_emails:
                 group_query = f"""
                 FOR doc IN {CollectionNames.GROUPS.value}
-                    FILTER doc.email IN @emails
+                    FILTER doc.email IN @emails AND doc.orgId == @org_id
                     RETURN {{email: doc.email, id: doc._key}}
                 """
                 try:
                     groups = await self.http_client.execute_aql(
                         group_query,
-                        bind_vars={"emails": remaining_emails},
+                        bind_vars={"emails": remaining_emails, "org_id": org_id},
                         txn_id=transaction
                     )
                     for group in groups:
@@ -11638,13 +11642,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if remaining_emails:
                 people_query = f"""
                 FOR doc IN {CollectionNames.PEOPLE.value}
-                    FILTER doc.email IN @emails
+                    FILTER doc.email IN @emails AND doc.orgId == @org_id
                     RETURN {{email: doc.email, id: doc._key}}
                 """
                 try:
                     people = await self.http_client.execute_aql(
                         people_query,
-                        bind_vars={"emails": remaining_emails},
+                        bind_vars={"emails": remaining_emails, "org_id": org_id},
                         txn_id=transaction
                     )
                     for person in people:
@@ -14328,7 +14332,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_user_sync_state(
         self,
         user_email: str,
-        service_type: str
+        service_type: str,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Get user's sync state for a specific service.
@@ -14336,7 +14342,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Queries the user-app relation edge to get sync state.
         """
         try:
-            user_key = await self.get_entity_id_by_email(user_email)
+            user_key = await self.get_entity_id_by_email(user_email, org_id=org_id)
             if not user_key:
                 return None
 
@@ -14369,7 +14375,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_email: str,
         state: str,
-        service_type: str = Connectors.GOOGLE_DRIVE.value
+        service_type: str = Connectors.GOOGLE_DRIVE.value,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Update user's sync state in USER_APP_RELATION collection for specific service.
@@ -14385,7 +14393,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             self.logger.debug("Updating a user's %s sync state to %s", service_type, state)
 
-            user_key = await self.get_entity_id_by_email(user_email)
+            user_key = await self.get_entity_id_by_email(user_email, org_id=org_id)
             if not user_key:
                 self.logger.warning("No user found by email for the %s sync state update", service_type)
                 return None

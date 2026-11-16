@@ -49,21 +49,21 @@ async def test_a_users_sync_state_is_the_relation_to_the_app_of_that_name_in_thi
     await w.edge("userAppRelation", ("users", "u1"), ("apps", "drive"), syncState="NOT_STARTED")
     await w.edge("userAppRelation", ("users", "u1"), ("apps", "mail"), syncState="DONE")
     await w.edge("userAppRelation", ("users", "u2"), ("apps", "drive"), syncState="DONE")
-    s = await w.p.get_user_sync_state("a@x.io", "DRIVE")
+    s = await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org)
     assert s == {"syncState": "NOT_STARTED", "from_id": "u1", "from_collection": "users", "to_id": "drive", "to_collection": "apps"}
-    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL"))["syncState"] == "DONE"
-    assert await w.p.get_user_sync_state("A@x.io", "DRIVE") is None and await w.p.get_user_sync_state("a@x.io", "SLACK") is None
-    assert await w.p.get_user_sync_state("nobody@x.io", "DRIVE") is None
-    u = await w.p.update_user_sync_state("a@x.io", "IN_PROGRESS", "DRIVE")
+    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL", org_id=w.org))["syncState"] == "DONE"
+    assert await w.p.get_user_sync_state("A@x.io", "DRIVE", org_id=w.org) is None and await w.p.get_user_sync_state("a@x.io", "SLACK", org_id=w.org) is None
+    assert await w.p.get_user_sync_state("nobody@x.io", "DRIVE", org_id=w.org) is None
+    u = await w.p.update_user_sync_state("a@x.io", "IN_PROGRESS", "DRIVE", org_id=w.org)
     assert u["syncState"] == "IN_PROGRESS" and u["lastSyncUpdate"] > 0 and (u["from_id"], u["to_id"]) == ("u1", "drive")
-    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE"))["syncState"] == "IN_PROGRESS"
-    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL"))["syncState"] == "DONE"                  # the user's other app
-    assert (await w.p.get_user_sync_state("b@x.io", "DRIVE"))["syncState"] == "DONE"                  # another user's relation to the same app
-    assert await w.p.update_user_sync_state("a@x.io", "X", "SLACK") is None and await w.p.update_user_sync_state("nobody@x.io", "X", "DRIVE") is None
+    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org))["syncState"] == "IN_PROGRESS"
+    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL", org_id=w.org))["syncState"] == "DONE"                  # the user's other app
+    assert (await w.p.get_user_sync_state("b@x.io", "DRIVE", org_id=w.org))["syncState"] == "DONE"                  # another user's relation to the same app
+    assert await w.p.update_user_sync_state("a@x.io", "X", "SLACK", org_id=w.org) is None and await w.p.update_user_sync_state("nobody@x.io", "X", "DRIVE", org_id=w.org) is None
     with other_org():
-        assert await w.p.get_user_sync_state("a@x.io", "DRIVE") is None
-        assert await w.p.update_user_sync_state("a@x.io", "HACKED", "DRIVE") is None
-    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE"))["syncState"] == "IN_PROGRESS"
+        assert await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org) is None
+        assert await w.p.update_user_sync_state("a@x.io", "HACKED", "DRIVE", org_id=w.org) is None
+    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org))["syncState"] == "IN_PROGRESS"
 
 
 async def test_a_drives_sync_state_is_read_and_set_on_its_own_node(w: World) -> None:
