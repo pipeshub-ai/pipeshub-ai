@@ -1,0 +1,1241 @@
+# Feature map: agents (flow `agents-toolsets-mcp`). Agents and their chats, the agent runtime, skills, and the prompts page.
+
+[[feature]]
+id = "agents.crud"
+title = "Agents: create, list, read, update, delete"
+flow = "agents-toolsets-mcp"
+what = "A user creates an agent with a name, models, instructions and attachments, lists the agents they can reach, reads one, edits it and deletes it. Every route needs the agent:read or agent:write scope."
+routes = [
+  "GET /api/v1/agents",
+  "POST /api/v1/agents/create",
+  "GET /api/v1/agents/{agentKey}",
+  "PUT /api/v1/agents/{agentKey}",
+  "DELETE /api/v1/agents/{agentKey}",
+]
+code = [
+  "backend/python/app/api/routes/agent.py",
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/validators/es_validators.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.crud.create-read"
+  says = "POST /api/v1/agents/create with a name returns the new agent; GET /api/v1/agents/{agentKey} returns it with the caller's edit rights and its models enriched from the model catalogue. The creator and organisation come from the caller, never from the body."
+  priority = "P0"
+  tests = [
+    "e2e:tests/e2e/agents/agent-create-chat.spec.ts",
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.crud.auth"
+  says = "Create, list, read, update and delete without credentials are refused, and an OAuth token without agent:read (reads) or agent:write (writes) gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py::TestDeleteAgent::test_delete_agent_requires_auth",
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py::TestListAgents::test_list_agents_requires_auth",
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py::TestGetAgent::test_get_agent_requires_auth",
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py::TestUpdateAgent::test_update_agent_requires_auth",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.crud.validation"
+  says = "Create refuses a body without a name, a model list with no reasoning model, a model object without a model key and unknown top-level fields. An update with an empty body, a malformed body or a name over the limit is refused, and an empty models list reverts to the organisation default model."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py",
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.crud.delete"
+  says = "Only the owner deletes an agent; the delete is a soft delete, an agent outside the caller's reach reads as 404, and a failed delete is rolled back."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py::TestDeleteAgent::test_delete_agent_lifecycle",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.crud.list"
+  says = "GET /api/v1/agents returns a paginated envelope, supports search, page, limit and sort order, ignores owner ids sent in the query and uses the caller's identity, and hides deleted agents unless asked."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/agents/integration_test_agents.py",
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.crud.outage"
+  says = "A graph database outage while reading or updating an agent is reported as a server error in plain words, never as 404."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+[[feature]]
+id = "agents.access"
+title = "Agent permissions and organisation sharing"
+flow = "agents-toolsets-mcp"
+what = "An agent is private to its owner until the owner or an organizer shares it with the organisation. Owners and writers edit, only the owner deletes, and a colleague with read access can chat but not change it."
+code = [
+  "backend/python/app/api/routes/agent.py",
+  "backend/python/app/services/graph_db/arango/arango_http_provider.py",
+  "backend/python/app/services/graph_db/neo4j/neo4j_provider.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.access.private-by-default"
+  says = "A new agent is not shared: no other user in the organisation can read, edit or chat with it, and it reads as 404 for them."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.access.org-share-read-only"
+  says = "An agent shared with the organisation is read-only for a colleague (GET works, PUT and DELETE return 403) and invisible to a user from another organisation."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.access.share-right"
+  says = "Only the owner or an organizer can turn organisation sharing on; a writer who tries gets 403, but a writer re-saving an agent whose sharing is unchanged is not refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.access.ownership-fields"
+  says = "An update body cannot rewrite ownership fields, and sharing can only be with the caller's own organisation."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.access.personal-resources"
+  says = "A personal toolset or personal MCP server cannot be attached to an agent shared with the organisation, and an agent that has one cannot be shared; a co-editor cannot share an agent that carries the owner's personal server."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_personal_mcp_servers.py",
+    "py:tests/unit/api/routes/test_agent_personal_toolsets.py",
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.access.chat-needs-permission"
+  says = "Chatting with a named agent needs a permission edge to it (own or organisation); without one the chat route returns 404 and nothing is run."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_chat_route.py"]
+
+[[feature]]
+id = "agents.service-agents"
+title = "Service agents"
+flow = "agents-toolsets-mcp"
+what = "An agent can be marked as a service agent: it is shared with the whole organisation, searches as a bound service account or as its creator, and runs with its own toolset credentials. The conversion cannot be undone."
+code = [
+  "backend/python/app/api/routes/agent.py",
+  "backend/nodejs/apps/src/modules/oauth_provider/services/agent-registration.service.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.service-agents.always-shared"
+  says = "Creating or converting an agent as a service agent forces organisation sharing, and a service agent cannot be unshared."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.service-agents.no-downgrade"
+  says = "A service agent cannot be converted back to a regular agent; the update returns 400."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.service-agents.convert-admin-only"
+  says = "Only the owner or an administrator can turn an agent into a service agent, and only an administrator can choose the service account it searches as. If the caller's role cannot be confirmed, nothing is saved and the answer is 503, not 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.service-agents.org-isolation"
+  says = "A service agent of another organisation, or one whose creator is in another organisation, answers 404, the same as a missing agent. The internal service-account route answers 403 for a regular agent."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_chat_route.py",
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.service-agents.identity"
+  says = "A chat with a service agent retrieves as the bound account (or its creator), saves artifacts under the person chatting, and removes the agent's own MCP credentials when the agent is deleted."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_chat_route.py",
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+  ]
+
+[[feature]]
+id = "agents.attachments"
+title = "Agent knowledge, toolsets, MCP servers and skills"
+flow = "agents-toolsets-mcp"
+what = "When an agent is created or edited it can be given knowledge sources, toolset tools, MCP servers, API toolset tools, a web search provider and skills. Each attachment is validated against what the caller can see, and a failed save leaves the old attachments in place."
+code = [
+  "backend/python/app/api/routes/agent.py",
+  "backend/python/app/agents/toolset_store.py",
+  "backend/python/app/agents/registry/toolset_registry.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.attachments.visibility"
+  says = "A toolset instance, MCP server or skill that does not exist, belongs to another organisation or to another user's personal list is refused with an error and nothing is written."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.attachments.atomic"
+  says = "A failure while creating an agent rolls back the whole create, and a failure while replacing toolsets, MCP servers or knowledge in an update keeps the previous set."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.attachments.knowledge-limit"
+  says = "Saving an agent whose knowledge limit covers more records than the search cap (SEARCH_SELECTION_MAX_NODES) is refused with the number; a count that fails does not block the save. At chat time a caller's connection limit leaves out sources outside it, and a limit too large to check fails the turn with a clear message, unless internal search is off."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_knowledge_connection_limit.py",
+    "py:tests/unit/api/routes/test_agent_knowledge_scope.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.attachments.tool-selection"
+  says = "Only the tools picked for an agent are recorded and offered to the loop; an MCP server tool selection is kept per tool."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_mcp_tool_selection.py",
+    "py:tests/unit/agents/adapter/test_tool_loader_tool_selection.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.attachments.skills-own-or-builtin"
+  says = "Skills attach only if they are the caller's own or active built-in skills."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.attachments.knowledge-scope-chat"
+  says = "At chat time the agent searches only its own knowledge: a knowledge base or connector of another organisation, or a hidden collection the caller cannot read, never reaches the loop."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_knowledge_scope.py"]
+
+  [[feature.behavior]]
+  id = "agents.attachments.live-tool-and-knowledge"
+  says = "An agent built with a knowledge source and an MCP tool answers a knowledge question with citations without calling the tool, and calls the MCP tool for a tool question."
+  priority = "P1"
+  tests = ["it:ai_agents/integration_test_agent_tools_live.py"]
+
+[[feature]]
+id = "agents.usage-lookup"
+title = "Model and web search usage by agents"
+flow = "agents-toolsets-mcp"
+what = "An admin screen asks which agents use an AI model or a web search provider before removing it. The answer is scoped to the caller's organisation."
+routes = [
+  "GET /api/v1/agents/web-search-usage/{provider}",
+  "GET /api/v1/agents/model-usage/{model_key}",
+]
+code = ["backend/python/app/api/routes/agent.py"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.usage-lookup.org-scope"
+  says = "model-usage and web-search-usage list only agents of the caller's organisation, a blank model key or an unsupported provider returns an empty list, and a database failure is a 500 so callers fail closed."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.usage-lookup.scope"
+  says = "Both routes need the agent:read scope."
+  priority = "P1"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "agents.conversations"
+title = "Agent conversations"
+flow = "agents-toolsets-mcp"
+what = "A user lists, opens, renames, archives, unarchives, deletes and links to a project the conversations they had with an agent, and rates an answer. Only the owner reads or changes a conversation, unless it was shared read-only."
+routes = [
+  "GET /api/v1/agents/{agentKey}/conversations",
+  "POST /api/v1/agents/{agentKey}/conversations",
+  "GET /api/v1/agents/{agentKey}/conversations/{conversationId}",
+  "DELETE /api/v1/agents/{agentKey}/conversations/{conversationId}",
+  "PATCH /api/v1/agents/{agentKey}/conversations/{conversationId}/title",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/archive",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/unarchive",
+  "GET /api/v1/agents/conversations/show/archives",
+  "GET /api/v1/agents/{agentKey}/conversations/show/archives",
+  "PUT /api/v1/agents/{agentKey}/conversations/{conversationId}/project",
+  "PATCH /api/v1/agents/{agentKey}/conversations/{conversationId}/project-visibility",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback",
+]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/schema/agent.conversation.schema.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/validators/es_validators.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.conversations.ownership"
+  says = "A user who is not the owner, or a user of another organisation, gets 404 on an agent conversation and nothing is changed; the agent key in the URL must be the conversation's agent, otherwise the call is 404 or a no-op."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts",
+    "it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_update_delete.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.conversations.scopes"
+  says = "Listing and reading need agent:read; rename, delete, archive, share and project changes need agent:write; project changes also need project:write."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.agent-share.spec.test.ts"]
+
+  [[feature.behavior]]
+  id = "agents.conversations.list-and-open"
+  says = "The list is paginated and filterable, and reading by id returns the transcript; a bad id is 400 and an unknown one 404."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_listing.py",
+    "node:tests/modules/enterprise_search/controller/es_controller.listing.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.conversations.archive-delete"
+  says = "Archive and unarchive refuse a conversation already in that state; delete hides the conversation and a second delete changes nothing; rename needs a valid title and persists it."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_update_delete.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.conversations.feedback"
+  says = "Feedback is accepted on a bot answer with a valid category and refused on a user question (400) or an unknown message id."
+  priority = "P1"
+  tests = ["it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_feedback.py"]
+
+  [[feature.behavior]]
+  id = "agents.conversations.project-link"
+  says = "Only the person who started a conversation can link it to a project, and only to one they can open at any member role and that is not archived (404 otherwise); a null project id unlinks it. The call needs project:write as well as agent:write."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/controller/set-conversation-project.test.ts",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectConversationLinking::test_link_to_project_caller_cannot_see_returns_404",
+  ]
+
+[[feature]]
+id = "agents.chat"
+title = "Chatting with an agent"
+flow = "agents-toolsets-mcp"
+what = "A user sends a message to an agent and gets a streamed answer, or a plain JSON answer from the non-streaming routes. They can attach files, regenerate the last answer and fork a conversation from a message. Only the owner can regenerate or fork."
+routes = [
+  "POST /api/v1/agents/{agentKey}/conversations/stream",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/messages/stream",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/messages",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork",
+  "POST /api/v1/agents/{agentKey}/conversations/attachments/upload",
+  "DELETE /api/v1/agents/{agentKey}/conversations/attachments/{recordId}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/non-streaming-chat.controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/fork-conversation.ts",
+  "backend/python/app/api/routes/agent.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.chat.stream-answer"
+  says = "A message to an agent streams an answer that is saved to the conversation, and an agent built with no models answers with the organisation default model."
+  priority = "P0"
+  tests = [
+    "e2e:tests/e2e/agents/agent-create-chat.spec.ts",
+    "it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_stream.py",
+    "py:tests/integration/test_chat_stream_agent_loop_e2e.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.chat.auth-and-validation"
+  says = "A stream without credentials gets 401 or 403, an invalid body or conversation id 400, an unknown or wrong agent key 404, and a deleted agent fails with an error event."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_stream.py"]
+
+  [[feature.behavior]]
+  id = "agents.chat.execute-scope"
+  says = "An OAuth token needs agent:execute to chat with a named agent; the built-in universal agent also accepts conversation:chat."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_chat_route.py"]
+
+  [[feature.behavior]]
+  id = "agents.chat.non-streaming"
+  says = "The non-streaming routes run the same pipeline as the stream and return the saved conversation as JSON."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_chat_non_streaming.py",
+    "node:tests/modules/enterprise_search/controller/es_controller.non-streaming.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.chat.regenerate-fork-owner-only"
+  says = "Only the owner regenerates an answer or forks a conversation; a recipient of a shared conversation gets 404. Regenerate works only on the last answer, and a fork copies the artifacts of the earlier messages."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/utils/utils.regeneration.test.ts",
+    "node:tests/modules/enterprise_search/utils/fork-conversation.test.ts",
+    "it:response-validation/enterprise-search/conversations/integration_test_agent_conversation_update_delete.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.chat.attachments"
+  says = "Attachments upload up to 5 MB each and 10 files per request, need agent:execute, are returned as references the next message can name, and a delete returns 204."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_agent_attachment_upload.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.chat.context-limits"
+  says = "A first message or follow-up over the model's context length is refused with a clear message instead of failing mid-run."
+  priority = "P1"
+  tests = ["it:ai_agents/integration_test_ai_models_live.py"]
+
+  [[feature.behavior]]
+  id = "agents.chat.draining"
+  says = "While the server is draining for shutdown, new agent chat requests are refused instead of started."
+  priority = "P2"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.drain.test.ts"]
+
+[[feature]]
+id = "agents.cancel"
+title = "Stopping an agent run"
+flow = "agents-toolsets-mcp"
+what = "A user stops an agent answer that is still streaming. The run ends at its next checkpoint, and only the run's owner in that conversation can stop it, even across several query-service replicas."
+routes = ["POST /api/v1/agents/{agentKey}/conversations/{conversationId}/cancel"]
+code = [
+  "backend/python/app/agents/agent_loop/cancellation/**",
+  "backend/python/app/agents/agent_loop/cancellation_transport.py",
+  "backend/python/app/api/routes/chatbot.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.cancel.owner-only"
+  says = "A cancel from another user, another organisation or another conversation is refused with 403 and leaves the run going."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/agent_loop/cancellation/test_in_process.py",
+    "py:tests/unit/api/routes/test_chatbot_cancel.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.cancel.conversation-checked"
+  says = "The Node route first checks that the caller owns the conversation (404 otherwise) and forwards the conversation id so the owner check is scoped to it."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_chatbot_cancel.py",
+    "node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.cancel.outcomes"
+  says = "Cancelling an active run answers cancelled true; an unknown or already finished run answers cancelled false, not an error; a missing or non-UUID run id is 400."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_chatbot_cancel.py"]
+
+  [[feature.behavior]]
+  id = "agents.cancel.multi-replica"
+  says = "A cancel that lands on a replica that does not own the run is published through the key-value store and only the owning replica acts on it, after the same owner check."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/agent_loop/cancellation/test_kv_backed.py"]
+
+  [[feature.behavior]]
+  id = "agents.cancel.duplicate-run-id"
+  says = "Starting a chat with a runId that is already active returns 409."
+  priority = "P2"
+  tests = ["py:tests/unit/api/routes/test_agent_chat_route.py"]
+
+[[feature]]
+id = "agents.conversation-sharing"
+title = "Sharing an agent conversation"
+flow = "agents-toolsets-mcp"
+what = "The owner of an agent conversation shares it read-only with named colleagues and removes them again. A recipient opens the transcript but cannot continue, regenerate, fork or change it."
+routes = [
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/share",
+  "POST /api/v1/agents/{agentKey}/conversations/{conversationId}/unshare",
+]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/schema/agent.conversation.schema.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.conversation-sharing.owner-only"
+  says = "Only the owner shares or unshares; a recipient, a stranger or a user of another organisation gets 404 and nothing changes."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts"]
+
+  [[feature.behavior]]
+  id = "agents.conversation-sharing.read-only"
+  says = "Write access is refused: a share can only grant read access, and the recipient list is limited to fifty users."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts",
+    "node:tests/modules/enterprise_search/controller/es_controller.agent-share.spec.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.conversation-sharing.recipients"
+  says = "Recipients must be active members of the caller's organisation, one unknown user refuses the whole batch, sharing with yourself is refused, and repeats are stored once."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts"]
+
+  [[feature.behavior]]
+  id = "agents.conversation-sharing.unshare-revokes"
+  says = "After unsharing, the former recipient gets 404 and loses the conversation's artifacts and attachments; deleting a shared conversation also removes its artifacts."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts"]
+
+  [[feature.behavior]]
+  id = "agents.conversation-sharing.viewer-view"
+  says = "A recipient sees the owner as the sender and not the list of other recipients; a stale entry or isShared alone grants nothing."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts",
+    "node:tests/modules/enterprise_search/controller/es_controller.viewer-redaction.test.ts",
+  ]
+
+[[feature]]
+id = "agents.tool-approvals"
+title = "Tool approvals in agent chats"
+flow = "agents-toolsets-mcp"
+what = "Each MCP and toolset tool has a rule: allow, ask or block. An ask stops the turn on an approval card, and the answer resumes the same saved call. Where nobody can answer a card (API, Slack, service agents), ask is treated as block."
+code = [
+  "backend/python/app/agents/agent_loop/tool_approvals.py",
+  "backend/python/app/agents/agent_loop/parked_turn.py",
+  "backend/python/app/agents/mcp/tool_kind.py",
+  "frontend/app/(main)/chat/components/message-area/tool-approval-card.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.starting-rules"
+  says = "Without a saved rule an MCP tool starts from what it does: a read runs, a change asks and a delete is blocked. A toolset tool that reads or changes data runs and one that deletes asks."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/agent_loop/test_tool_approvals.py",
+    "py:tests/unit/agents/agent_loop/test_toolset_tool_approvals.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.block"
+  says = "A blocked tool does not run, and the model is told why and whose rule it is; an administrator's deny refuses even a read-only toolset tool."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/agent_loop/test_tool_approvals.py",
+    "py:tests/unit/agents/agent_loop/test_toolset_tool_approvals.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.ask-saves-call"
+  says = "An ask saves the call with the model's arguments, ends the turn with an approval card, and holds only one waiting call per request."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/agent_loop/test_tool_approvals.py"]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.unwatched-is-block"
+  says = "A run nobody can answer (an API or PAT client, Slack, the MCP gateway, a service account) treats ask as block, so only a pre-approved tool runs there. Only a web sign-in can claim the web app's client name."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/agent_loop/test_tool_approvals.py",
+    "py:tests/unit/agents/agent_loop/test_tool_approvals_wiring.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.answer-resumes"
+  says = "An allowed answer runs the saved call once, on the server, with the arguments it was asked with, and its result answers the call the model made. A deny runs nothing and tells the model. An admin's deny set after the card was shown still stops it."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/agent_loop/test_toolset_tool_approvals.py"]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.dont-ask-again"
+  says = "Don't ask again saves the person's rule for an MCP tool or personal toolset and sets no rule for an organisation toolset; a person's own MCP rules never apply to a toolset, and someone else's rules do not apply to them."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/agent_loop/test_toolset_tool_approvals.py",
+    "py:tests/unit/agents/agent_loop/test_tool_approvals.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.sql-kinds"
+  says = "A SQL tool takes the kind of its statement: a plain read runs, a write asks and anything that cannot be read as a read asks or is blocked."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/agents/agent_loop/test_tool_approvals.py"]
+
+  [[feature.behavior]]
+  id = "agents.tool-approvals.card-ui"
+  says = "The chat shows an approval card on the tool's row with Allow, Deny and, where allowed, Don't ask again, and sends the answer as the next request."
+  priority = "P1"
+  tests = [
+    "fe:app/(main)/chat/components/message-area/__tests__/tool-approval-card.test.tsx",
+    "fe:app/(main)/chat/__tests__/tool-approval.test.ts",
+    "fe:app/(main)/chat/__tests__/tool-approval-request.test.ts",
+  ]
+
+[[feature]]
+id = "agents.ask-user"
+title = "Questions from the agent"
+flow = "agents-toolsets-mcp"
+what = "When a request is ambiguous or the agent needs a choice, the turn ends with a question card. The answer arrives as the next request and continues the same turn, using the turn the model had kept for it."
+code = [
+  "backend/python/app/agents/agent_loop/clarification.py",
+  "backend/python/app/agents/agent_loop/hooks/ask_user_question.py",
+  "backend/python/app/agents/agent_loop/parked_turn.py",
+  "backend/python/app/agents/actions/internal_tools/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.ask-user.question-and-resume"
+  says = "A question ends the request with a structured card; the answer (User selections) resumes the same goal without adding a new user question."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/agents/adapter/test_ask_user_question.py",
+    "py:tests/unit/agents/adapter/test_ask_user_question_resume.py",
+    "py:tests/unit/agents/adapter/test_clarification.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.ask-user.kept-turn-owner"
+  says = "The kept turn is used only by its owner, in its own organisation and conversation, and only for the call being answered; an earlier answer or someone else's answer gets no turn. A question card expires after 24 hours."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/agent_loop/test_parked_turn.py"]
+
+  [[feature.behavior]]
+  id = "agents.ask-user.guardrails"
+  says = "The agent cannot ask more than the allowed number of questions or options, and a question written into the answer text is recovered into a card."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/agents/adapter/test_ask_user_question_guardrails.py",
+    "py:tests/unit/agents/adapter/test_ask_in_text_recovery.py",
+  ]
+
+[[feature]]
+id = "agents.loop"
+title = "Agent loop: modes, tools and limits"
+flow = "agents-toolsets-mcp"
+what = "A chat runs under a mode (quick, react, planExecute, deep or auto) that sets the loop and whether domain agents are composed. The loop loads the agent's tools, enforces a turn limit and always ends with an answer."
+code = [
+  "backend/python/app/agents/agent_loop/factory.py",
+  "backend/python/app/agents/agent_loop/modes.py",
+  "backend/python/app/agents/agent_loop/router.py",
+  "backend/python/app/agents/agent_loop/intent.py",
+  "backend/python/app/agents/agent_loop/tool_loader.py",
+  "backend/python/app/agents/agent_loop/loops/**",
+  "backend/python/app/agent_loop_lib/agent/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.loop.mode-selection"
+  says = "chatMode quick, react, planExecute (alias verification) and deep each select their loop; auto asks a classifier once and an unknown mode falls back to it. Quick skips the intent step."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/agents/adapter/test_modes.py",
+    "py:tests/unit/agents/adapter/test_router.py",
+    "py:tests/unit/agents/adapter/test_intent.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.loop.turn-limit"
+  says = "An agent that spends its last allowed turn on a tool call still produces a final answer from what it found, not the turn's narration or an error."
+  priority = "P0"
+  tests = [
+    "py:tests/integration/test_agent_turn_limit_e2e.py",
+    "py:tests/unit/agent_loop_lib/agent/test_max_turns_final_answer.py",
+    "py:tests/unit/agent_loop_lib/agent/test_max_turns_degradation.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.loop.deep-research"
+  says = "Deep research works only with a web search provider set up: then the loop gets 30 turns instead of 15, the prompt carries a research method that asks for at least two independent sources, and the answer gets a larger web search and page budget. Without a provider it is off."
+  priority = "P1"
+  tests = ["py:tests/unit/web/test_deep_research.py"]
+
+  [[feature.behavior]]
+  id = "agents.loop.tool-loading"
+  says = "The loop offers only the tools of the toolsets and MCP servers the agent has and the caller has credentials for, and loads tool schemas lazily; an internal toolset's tools are not approval-checked."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/adapter/test_tool_loader.py",
+    "py:tests/unit/agents/adapter/test_tool_loader_connector_credentials.py",
+    "py:tests/unit/agents/adapter/test_lazy_tools_wiring.py",
+    "py:tests/unit/agents/adapter/test_tool_loader_chat_mode_gates.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.loop.recovery"
+  says = "An empty model reply is nudged once or twice, a cut-off reply is continued and saved whole, a dropped stream is retried, and a content-filter stop ends the run with a message."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/adapter/test_completion_gate.py",
+    "py:tests/unit/agents/adapter/test_stream_drop_retry.py",
+    "py:tests/unit/agents/adapter/test_cut_off_answer_saved_whole.py",
+    "py:tests/unit/agents/adapter/test_content_filter_stops.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.loop.history-window"
+  says = "A long conversation replays newest exchanges whole and older ones reduced, so the current request always has room and the run does not fail with a context overflow; a follow-up after compaction is answered, not the first question again."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/agent_loop/test_history_window.py",
+    "it:ai_agents/integration_test_multi_turn_context_live.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.loop.citations"
+  says = "Answers built from knowledge carry citations that refer to the retrieved records, and the references stay valid across requests."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/adapter/test_citation_tracking.py",
+    "py:tests/unit/agents/adapter/test_citation_refs_across_requests.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.loop.coding-tool"
+  says = "A computation request runs code in the sandbox coding tool, and a document request loads the matching built-in skill."
+  priority = "P2"
+  tests = ["it:ai_agents/integration_test_agent_harness_live.py"]
+
+  [[feature.behavior]]
+  id = "agents.loop.artifacts"
+  says = "A document the agent creates is saved as an artifact with versions: updating it makes version two, both versions download, and the stream announces the same artifact."
+  priority = "P1"
+  tests = [
+    "it:ai_agents/integration_test_agent_harness_live.py",
+    "py:tests/unit/agents/actions/artifacts/test_artifacts.py",
+  ]
+
+[[feature]]
+id = "agents.stream-protocol"
+title = "Agent stream events"
+flow = "agents-toolsets-mcp"
+what = "An agent run is sent to the browser and API clients as server-sent AG-UI events: run start and finish, text, reasoning, tool calls and results, state and errors, with a heartbeat while the run is quiet."
+code = [
+  "backend/python/app/agents/agent_loop/protocol/**",
+  "backend/python/app/agents/agent_loop/sse_emitter.py",
+  "backend/python/app/agents/agent_loop/stream_bridge.py",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/agui.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/stream-lifecycle.ts",
+  "frontend/app/(main)/chat/**/agui*",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.stream-protocol.event-order"
+  says = "Every run opens with RUN_STARTED and ends with exactly one RUN_FINISHED or RUN_ERROR; text and tool calls are bracketed by start and end events."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/agents/adapter/test_agui_emitter.py",
+    "it:unit/test_agui_run.py",
+    "node:tests/modules/enterprise_search/utils/agui.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.stream-protocol.error-frame"
+  says = "A failure before or during the run is sent as an error event with a plain message, never a stack trace."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/controller/es_controller.error-stacks.test.ts",
+    "py:tests/unit/agents/adapter/test_error_classification.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.stream-protocol.client-handling"
+  says = "The chat client applies the events to its message state, including tool activity and approval requests."
+  priority = "P1"
+  tests = [
+    "fe:app/(main)/chat/__tests__/agui-event-handler.test.ts",
+    "fe:app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.stream-protocol.slack"
+  says = "The Slack bot reads the same AG-UI stream and renders it as a message."
+  priority = "P2"
+  tests = ["node:tests/integrations/slack-bot/agui-stream.test.ts"]
+
+[[feature]]
+id = "agents.skills-catalog"
+title = "Skills: list, read and edit"
+flow = "agents-toolsets-mcp"
+what = "A user lists and searches skills, reads one, creates a custom skill, edits it, exports it as SKILL.md and deletes it. Every route needs the skill:read or skill:write scope and the organisation's skills flag."
+routes = [
+  "GET /api/v1/skills",
+  "POST /api/v1/skills",
+  "GET /api/v1/skills/categories",
+  "GET /api/v1/skills/search",
+  "GET /api/v1/skills/{name}",
+  "PUT /api/v1/skills/{name}",
+  "DELETE /api/v1/skills/{name}",
+  "GET /api/v1/skills/{name}/export",
+  "PATCH /api/v1/skills/{name}/body",
+  "GET /api/v1/skills/{name}/usage",
+]
+code = [
+  "backend/python/app/api/routes/skills.py",
+  "backend/nodejs/apps/src/modules/skills/**",
+  "backend/python/app/agents/agent_loop/skills/graph_store.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.scopes"
+  says = "Reads need skill:read and writes need skill:write at the Node gateway; a request without the scope gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/skills/routes/skills.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.flag"
+  says = "Every skills route answers 403 when the skills platform flag is off for the organisation."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_skills_extended.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.create-update"
+  says = "Create needs a name and returns 201; a name reserved for a built-in skill is 409; update renders the frontmatter from the structured body, and an If-Match that is not the skill's current timestamp is 409 with the current token, a non-integer one 400."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/api/routes/test_skills.py",
+    "py:tests/unit/api/routes/test_skills_extended.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.isolation"
+  says = "A custom skill is visible and editable only by its creator in their organisation: another user's update or disable and another organisation's read fail."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_skills_custom_lifecycle.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.safe-delete"
+  says = "Deleting a skill that agents use is 409 with usedByAgents unless detach=true; a skill another skill requires can never be deleted, only deprecated."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/api/routes/test_skills.py",
+    "py:tests/unit/api/routes/test_skills_custom_lifecycle.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.patch-body"
+  says = "PATCH body replaces an exact string that appears once in the body; otherwise it is 400."
+  priority = "P2"
+  tests = ["py:tests/unit/api/routes/test_skills_extended.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-catalog.proxy-status"
+  says = "The Node proxy passes upstream status codes and bodies through, including the safe-delete 409 payload."
+  priority = "P1"
+  tests = ["node:tests/modules/skills/controller/skills.controller.test.ts"]
+
+[[feature]]
+id = "agents.skills-lifecycle"
+title = "Skills: status, versions and resources"
+flow = "agents-toolsets-mcp"
+what = "A skill can be disabled and enabled, deprecated, rolled back to an earlier version, and carry bundled resource files. Built-in skills cannot be edited; an admin can mute them."
+routes = [
+  "POST /api/v1/skills/{name}/deprecate",
+  "POST /api/v1/skills/{name}/disable",
+  "POST /api/v1/skills/{name}/enable",
+  "GET /api/v1/skills/{name}/versions",
+  "GET /api/v1/skills/{name}/versions/{version}",
+  "POST /api/v1/skills/{name}/rollback",
+  "GET /api/v1/skills/{name}/resource",
+  "PUT /api/v1/skills/{name}/resource",
+  "DELETE /api/v1/skills/{name}/resource",
+]
+code = [
+  "backend/python/app/api/routes/skills.py",
+  "backend/python/app/agents/agent_loop/skills/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.skills-lifecycle.builtin-readonly"
+  says = "Update, patch, rollback, deprecate, delete and resource writes on a built-in skill return 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_skills_custom_lifecycle.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-lifecycle.builtin-availability"
+  says = "Only an organisation administrator can disable or enable a built-in skill; a member gets 403, and a role that cannot be confirmed fails closed."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_skills_custom_lifecycle.py",
+    "py:tests/unit/api/middlewares/test_caller_role.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-lifecycle.transitions"
+  says = "Disable then enable round-trips; disabling a disabled skill or enabling an active one is 409; enable never undeprecates; editing a disabled or deprecated skill keeps its status and reason."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_skills_custom_lifecycle.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-lifecycle.versions"
+  says = "Each save adds a version, versions list and read by number, an unknown version is 404 and a rollback restores a prior version."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_skills_extended.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-lifecycle.resources"
+  says = "Bundled resources read, write and remove by path; a missing resource is 404."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_skills_extended.py"]
+
+[[feature]]
+id = "agents.skills-import"
+title = "Skills: import from npm, URL or upload"
+flow = "agents-toolsets-mcp"
+what = "A user previews a skill package from an npm command, a URL or an uploaded archive, then finalizes the import under a name. The preview writes nothing."
+routes = [
+  "POST /api/v1/skills/import/npm/preview",
+  "POST /api/v1/skills/import/url/preview",
+  "POST /api/v1/skills/import/upload/preview",
+  "POST /api/v1/skills/import/finalize",
+]
+code = [
+  "backend/python/app/api/routes/skills.py",
+  "backend/python/app/services/skills/package_importer.py",
+  "backend/python/app/services/skills/npm_command_parser.py",
+  "frontend/app/(main)/workspace/skills/personal/components/skill-import-dialog.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.skills-import.url-guard"
+  says = "A URL import is fetched through the SSRF-safe fetcher: a URL that does not point to a public address is refused with 400."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/services/skills/test_package_importer.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-import.npm-command"
+  says = "The npm field accepts an install command, a package name, a GitHub URL or a catalog slug and refuses anything else with 400."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/skills/test_npm_command_parser.py",
+    "py:tests/integration/skills/test_npm_import_live.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-import.finalize"
+  says = "Finalize creates the skill and its resources from any of the three previews; a name reserved for a built-in skill is 409, and a preview that uses a reserved name is flagged."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_skills_extended.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-import.upload"
+  says = "An uploaded archive is previewed from its SKILL.md and bundled files, and a malformed archive is refused with 400."
+  priority = "P1"
+  tests = ["py:tests/unit/services/skills/test_package_importer.py"]
+
+[[feature]]
+id = "agents.skills-candidates"
+title = "Skills: learning-loop candidates"
+flow = "agents-toolsets-mcp"
+what = "An agent run can propose a new skill from what worked. A person reviews the pending candidates and approves or rejects them; nothing becomes a skill without that approval."
+routes = [
+  "GET /api/v1/skills/candidates/pending",
+  "POST /api/v1/skills/candidates/{candidateId}/approve",
+  "POST /api/v1/skills/candidates/{candidateId}/reject",
+]
+code = [
+  "backend/python/app/api/routes/skills.py",
+  "backend/python/app/agent_loop_lib/hooks/middleware/builtin/skill_learning.py",
+  "frontend/app/(main)/workspace/skills/personal/components/skill-candidates-panel.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.skills-candidates.review"
+  says = "Pending candidates list for the caller; approve turns one into a skill and reject discards it; an unknown candidate is an error."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_skills_extended.py"]
+
+  [[feature.behavior]]
+  id = "agents.skills-candidates.manual-gate"
+  says = "A learned skill is created only after approval, and the audit trail records who created or deprecated it."
+  priority = "P1"
+  tests = ["py:tests/unit/agent_loop_lib/hooks/middleware/builtin/test_skill_learning.py"]
+
+[[feature]]
+id = "agents.skills-runtime"
+title = "Skills in agent runs"
+flow = "agents-toolsets-mcp"
+what = "A run sees the caller's active skills and the organisation's built-in skills. The agent loads a skill's instructions on demand, a skill the agent pins is preloaded, and built-in skills are seeded per organisation."
+code = [
+  "backend/python/app/agents/agent_loop/skills_wiring.py",
+  "backend/python/app/agents/agent_loop/skills/**",
+  "backend/python/app/agent_loop_lib/modules/providers/skills/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.skills-runtime.gates"
+  says = "Skills reach a run only when the deployment switch and the organisation flag are both on and the request has a graph provider."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/adapter/test_skills_wiring_gate.py",
+    "py:tests/unit/agents/adapter/test_factory_skills_pinning.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-runtime.scope"
+  says = "A run reads only the caller's own and built-in skills of the caller's organisation."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/adapter/test_scoped_skill_manager.py",
+    "py:tests/unit/agents/adapter/test_skills_graph_store.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-runtime.builtin-seeding"
+  says = "Built-in skills are seeded once per organisation and version; an organisation's edit is never overwritten by a later pack upgrade."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/adapter/test_builtin_skill_seeder.py",
+    "py:tests/unit/agents/agent_loop/skills/test_builtin_reconcile.py",
+    "py:tests/unit/agents/adapter/test_builtin_packs_conformance.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.skills-runtime.pinning"
+  says = "Skills attached to an agent are pinned: their instructions are available to the loop without a search."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/adapter/test_factory_skills_pinning.py"]
+
+[[feature]]
+id = "agents.ui-agents"
+title = "Agents pages and builder"
+flow = "agents-toolsets-mcp"
+what = "The agents page lists the user's agents and templates, a dialog creates one, and the builder canvas edits an agent's models, knowledge, toolsets, MCP servers and skills. A user without edit rights sees the agent read-only."
+pages = [
+  "frontend/app/(main)/agents/page.tsx",
+  "frontend/app/(main)/agents/new/page.tsx",
+  "frontend/app/(main)/agents/edit/page.tsx",
+  "frontend/app/(main)/@sidebar/agents/page.tsx",
+  "frontend/app/(main)/@sidebar/agents/new/page.tsx",
+  "frontend/app/(main)/@sidebar/agents/edit/page.tsx",
+]
+code = [
+  "frontend/app/(main)/agents/**",
+  "frontend/app/(main)/chat/sidebar/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.ui-agents.create-and-chat"
+  says = "A user creates an agent from the dialog, opens the builder and chats with the agent."
+  priority = "P0"
+  tests = [
+    "e2e:tests/e2e/agents/agent-create-chat.spec.ts",
+    "fe:app/(main)/agents/components/__tests__/create-agent-dialog.test.tsx",
+    "fe:app/(main)/agents/__tests__/agent-pages.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.ui-agents.read-only"
+  says = "The builder is read-only for a user without edit rights, and a personal toolset or MCP server cannot be attached to an agent shared with the organisation."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "fe:app/(main)/agents/agent-builder/__tests__/agent-builder-permissions.test.ts",
+    "fe:app/(main)/agents/agent-builder/__tests__/mcp-tool-selection.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.ui-agents.builder"
+  says = "The builder adds knowledge, toolset, MCP, skill and API toolset nodes and saves them; on a phone the builder is usable."
+  priority = "P1"
+  tests = [
+    "fe:app/(main)/agents/agent-builder/__tests__/agent-builder.test.tsx",
+    "fe:app/(main)/agents/agent-builder/__tests__/agent-builder-mobile.test.tsx",
+    "fe:app/(main)/agents/agent-builder/__tests__/api-toolset-attachments.test.tsx",
+    "fe:app/(main)/agents/__tests__/agent-knowledge-nodes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.ui-agents.sidebar"
+  says = "The chat sidebar lists the user's agents and each agent's chats."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/chat/sidebar/__tests__/agents-sidebar.test.tsx",
+    "fe:app/(main)/chat/sidebar/__tests__/my-agents-section.test.tsx",
+  ]
+
+[[feature]]
+id = "agents.ui-skills"
+title = "Skills page"
+flow = "agents-toolsets-mcp"
+what = "The personal skills page lists, searches, creates, edits, imports and mutes skills in a markdown editor, and reviews learned candidates. It is hidden when the organisation's skills flag is off."
+pages = [
+  "frontend/app/(main)/workspace/skills/personal/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/skills/personal/page.tsx",
+]
+code = [
+  "frontend/app/(main)/workspace/skills/**",
+  "frontend/app/(main)/workspace/sidebar/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.ui-skills.page"
+  says = "The page lists skills, opens the editor and the import dialog, and shows built-in skills as read-only with a mute switch only for an admin."
+  priority = "P1"
+  tests = [
+    "fe:app/(main)/workspace/skills/personal/components/__tests__/skill-page-layout.test.tsx",
+    "fe:app/(main)/workspace/skills/personal/__tests__/skill-availability.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.ui-skills.api-client"
+  says = "The page calls the skills API with If-Match on edits and shows the conflict when someone else saved first."
+  priority = "P1"
+  tests = ["fe:app/(main)/workspace/skills/personal/__tests__/api.test.ts"]
+
+  [[feature.behavior]]
+  id = "agents.ui-skills.sidebar-visibility"
+  says = "The Skills entry in the workspace sidebar shows only when skills are enabled."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/sidebar/__tests__/sidebar-skills-visibility.test.tsx"]
+
+[[feature]]
+id = "agents.ui-prompts"
+title = "Custom instructions page"
+flow = "agents-toolsets-mcp"
+what = "An admin sets the organisation's custom instructions for internal search chats, web search chats and agent mode chats. The agent-mode text is added to universal-agent chats, not to Agent Builder agents, which use their own system prompt."
+pages = [
+  "frontend/app/(main)/workspace/prompts/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/prompts/page.tsx",
+]
+code = [
+  "frontend/app/(main)/workspace/prompts/**",
+  "backend/python/app/agents/chat_modes/custom_instructions.py",
+  "backend/python/app/agents/chat_modes/policy.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.ui-prompts.admin-only"
+  says = "A non-admin who opens the page is sent away, and the prompts API (GET and PUT /api/v1/configurationManager/prompts/system) needs an admin plus the config scopes."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "fe:app/(main)/workspace/prompts/__tests__/page.test.tsx",
+    "node:tests/modules/configuration_manager/routes/cm_routes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.ui-prompts.save"
+  says = "Saving stores the three prompts and a reload shows them."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/workspace/prompts.spec.ts"]
+
+  [[feature.behavior]]
+  id = "agents.ui-prompts.applied"
+  says = "The saved text for the active chat mode reaches the model's prompt, a blank value adds no section, and a builder agent ignores it."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/chat_modes/test_bridge.py"]
+
+[ignore]
+routes = []
+
+
+[[feature]]
+id = "agents.templates"
+title = "Agent templates"
+flow = "agents-toolsets-mcp"
+what = "A user saves an agent setup (name, description, system prompt, tools, models, memory, tags) as a template, lists the templates they can open, opens, edits, copies and deletes one. The Python service serves these at POST /api/v1/agent/template/create, GET /api/v1/agent/template/list, GET, PUT and DELETE /api/v1/agent/template/{templateId} and POST /api/v1/agent/template/{templateId}/clone, none of which is in the OpenAPI spec; the Node API does not proxy them, and the web app does not call them. Reads need the agent:read scope and writes agent:write."
+code = ["backend/python/app/api/routes/agent.py"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "agents.templates.create"
+  says = "Creating a template needs a name, a description and a system prompt (400 names the missing field); the creator and organisation come from the caller, never from the body, and the creator gets the OWNER permission edge."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.templates.access"
+  says = "Only users with a permission edge to a template, or a team they belong to, can open or list it; anyone else gets 404 and an empty list. Only the owner can update or delete it, and a delete only marks it deleted."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_agent_route_access.py",
+    "py:tests/integration/graph_db/postgres/test_kb_listings.py",
+  ]
+
+  [[feature.behavior]]
+  id = "agents.templates.clone"
+  says = "Copying a template you can open makes a new template you own; a template you cannot open cannot be copied (404). If the copy's owner edge cannot be written, no copy is left behind."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
+
+  [[feature.behavior]]
+  id = "agents.templates.outage"
+  says = "When the graph cannot be read, listing, opening or deleting a template answers in plain words and leaks no internal detail."
+  priority = "P2"
+  tests = ["py:tests/unit/api/routes/test_agent_route_access.py"]
