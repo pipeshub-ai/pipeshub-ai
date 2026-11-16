@@ -39,6 +39,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 ARANGO_DB = "service_account_knowledge_it"
 APPS = CollectionNames.APPS.value
 ORGS = CollectionNames.ORGS.value
+AGENTS = CollectionNames.AGENT_INSTANCES.value
+KNOWLEDGE = CollectionNames.AGENT_KNOWLEDGE.value
 logger = logging.getLogger("service-account-knowledge-it")
 
 
@@ -58,6 +60,8 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
         "other_org": (f"pg-other-{run}", pg, "team", other_org, f"other-{run}"),
     }
     key = {name: spec[0] for name, spec in apps.items()}
+    agent_key = f"agent-{run}"
+    linked = ("pg_team", "other_org")
     try:
         for app_key, app_type, scope, app_org, created_by in apps.values():
             with for_org(app_org, job="test"):
@@ -72,6 +76,35 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                 await graph.batch_create_edges([{
                     "from_id": app_org, "from_collection": ORGS, "to_id": app_key, "to_collection": APPS, "createdAtTimestamp": 1,
                 }], collection=CollectionNames.ORG_APP_RELATION.value)
+
+        with for_org(org, job="test"):
+            # An agent whose knowledge names one of its org's apps and one of another org's.
+            await graph.batch_upsert_nodes([{
+                "_key": agent_key, "name": "agent", "description": "d", "startMessage": "s", "systemPrompt": "p",
+                "models": [], "createdBy": creator, "isDeleted": False, "isServiceAccount": True,
+                "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+            }], AGENTS)
+            await graph.batch_upsert_nodes([{
+                "_key": f"k-{name}-{run}", "connectorId": key[name], "filters": "{}", "createdBy": creator,
+                "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+            } for name in linked], KNOWLEDGE)
+            await graph.batch_create_edges([{
+                "from_id": agent_key, "from_collection": AGENTS, "to_id": f"k-{name}-{run}", "to_collection": KNOWLEDGE,
+                "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+            } for name in linked], collection=CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+            agent = await graph.get_agent(agent_key, org)
+            assert agent is not None
+            projected = {k["connectorId"]: (k["type"], k["name"]) for k in agent["knowledge"]}
+            assert projected == {
+                key["pg_team"]: (pg, f"Name {key['pg_team']}"),
+                # Another org's app is unresolved: neither its type nor its name crosses over.
+                key["other_org"]: ("UNKNOWN", key["other_org"]),
+            }
+            # The id filter reads only the org's apps among the ids asked.
+            by_id = await graph.get_org_apps(
+                org, active_only=False, app_ids=[key["pg_team"], key["other_org"], f"missing-{run}"],
+            )
+        assert [a.get("_key") or a.get("id") for a in by_id] == [key["pg_team"]]
 
         knowledge = [{"connectorId": app_key, "type": app_type} for app_key, app_type, *_ in apps.values()]
         with for_org(org, job="test"):
@@ -103,6 +136,9 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                     await graph.client.execute_query("MATCH (n) WHERE n.id ENDS WITH $run DETACH DELETE n", parameters={"run": run})
                     continue
                 await graph.delete_nodes_and_edges([s[0] for s in apps.values() if s[3] == o], APPS)
+                if o == org:
+                    await graph.delete_nodes_and_edges([agent_key], AGENTS)
+                    await graph.delete_nodes([f"k-{name}-{run}" for name in linked], KNOWLEDGE)
                 await graph.delete_nodes([o], ORGS)
 
 

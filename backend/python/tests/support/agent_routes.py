@@ -183,12 +183,14 @@ class InMemoryGraph:
 
     async def get_org_apps(
         self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         self._enter("get_org_apps", org_id)
         return [
             {**copy.deepcopy(doc), "id": doc["_key"]} for doc in self.nodes.get("apps", {}).values()
             if doc.get("orgId") == org_id and (not active_only or doc.get("isActive"))
             and (app_type is None or doc.get("type") == app_type)
+            and (app_ids is None or doc["_key"] in app_ids)
         ]
 
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:

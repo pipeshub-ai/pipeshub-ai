@@ -1738,19 +1738,13 @@ async def _assert_service_account_knowledge(
     if not ids:
         return
     try:
-        # shortcut: lists every app of the org to read a few; give get_org_apps an id filter
-        # if an org's collections reach the many thousands.
-        wanted = set(ids)
-        apps = [
-            a for a in await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True)
-            if str(a.get("_key") or a.get("id")) in wanted
-        ]
+        apps = await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True, app_ids=ids)
     except Exception as e:
         raise AgentError(
             "This agent's knowledge couldn't be checked, so it can't be saved right now. Please try again in a moment.",
             status_code=503,
         ) from e
-    missing = len(wanted) - len(apps)
+    missing = len(ids) - len(apps)
     if missing:
         raise InvalidRequestError(f"{missing} knowledge source(s) of this agent were not found in your organization.")
     kb = Connectors.KNOWLEDGE_BASE.value
