@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.utils.user_lookup import get_caller_user
 
 from .models import Actor
 
@@ -94,7 +95,7 @@ class AccessPolicy:
         user record itself cannot be resolved — this should never happen
         for an authenticated request, but failing closed is the only safe
         default."""
-        user_doc = await self._graph_provider.get_user_by_user_id(actor.user_id)
+        user_doc = await get_caller_user(self._graph_provider, actor.user_id)
         if not user_doc:
             raise ArtifactNotFoundError(f"User not found for userId: {actor.user_id}")
         user_key = user_doc.get("_key") or user_doc.get("id")
