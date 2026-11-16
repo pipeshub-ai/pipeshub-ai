@@ -1757,19 +1757,28 @@ class TestLifespan:
             patch("app.indexing_main._CELL_CLAIM_RETRY_MAX_S", 0.01),
             patch("app.indexing_main._publish_cell_stats", new=publish),
             patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.adopt_claim") as adopt,
         ):
             # Two workers so that the claim path is taken; the directory is sized to the one index the old
             # worker holds, and the test releases it below.
             with patch("app.indexing_main.process_claim", wraps=lambda d, n: cells.process_claim(d, 1)):
-                await _start_cell(app, MagicMock())
-                assert app.state.cell_claim is None and app.state.cell_task is not None
-                assert not published.is_set()
-                old.release()
-                await asyncio.wait_for(published.wait(), 5)
-                assert app.state.cell_claim is not None and app.state.cell_claim.index == 0
-                _stop_cell(app)
-        assert not cells._slot_held(directory, 0), "the late claim was not released at shutdown"
-        cells._PROCESS.clear()
+                try:
+                    await _start_cell(app, MagicMock())
+                    assert app.state.cell_claim is None and app.state.cell_task is not None
+                    assert not published.is_set()
+                    old.release()
+                    await asyncio.wait_for(published.wait(), 5)
+                    assert app.state.cell_claim is not None and app.state.cell_claim.index == 0
+                    adopt.assert_called_once_with(0)  # a late claim places the process on its node
+                    _stop_cell(app)
+                    assert not cells._slot_held(directory, 0), "the late claim was not released at shutdown"
+                finally:  # on failure too: no task and no claim may outlive the test
+                    _stop_cell(app)
+                    task = app.state.cell_task
+                    if isinstance(task, asyncio.Task):
+                        await asyncio.gather(task, return_exceptions=True)
+                    old.release()
+                    cells._PROCESS.clear()
 
     async def test_no_sleep_follows_the_last_failed_attempt(self, tmp_path) -> None:
         from app.capacity.cells import CLAIM_ATTEMPTS
@@ -1782,9 +1791,12 @@ class TestLifespan:
             patch("app.indexing_main.cells_directory", return_value=tmp_path),
             patch("app.indexing_main.process_claim", return_value=None),
             patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("app.indexing_main.spawn_detached") as spawn,  # the background claimant is not started here
+            patch("app.indexing_main._claim_and_publish", new=MagicMock()),
         ):
             await _start_cell(app, MagicMock())
         assert sleep.await_count == CLAIM_ATTEMPTS - 1
+        spawn.assert_called_once()
 
     async def test_an_unsafe_cells_directory_is_not_retried_and_logs_one_warning_naming_the_cause(self, tmp_path, caplog) -> None:
         import logging

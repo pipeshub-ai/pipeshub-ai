@@ -20,7 +20,10 @@ if TYPE_CHECKING:
     from app.capacity.plan import CapacityPlan, ServicePlan
 
 SERVICE_ENV = "PIPESHUB_SERVICE"
+CELL_PENDING = "pending"  # CELL_ENV while a cell process holds no index yet
 CELL_ENV = "PIPESHUB_CELL_INDEX"  # set by the process that claimed a cell; its children inherit it and the pinning
+
+_DEFERRED_MASKS: list[tuple[tuple[int, ...], ...]] = []  # the masks of a pin that waits for a late claim
 
 _FAILURE: list[tuple[str, str]] = []  # (requested profile, why) of the last plan that could not be built; empty when it was
 
@@ -115,6 +118,37 @@ def _pin_numa(plan: CapacityPlan, facts: CapacityFacts, env: MutableMapping[str,
     if claim is not None:
         numa.pin(claim.index, masks, env)
         env[CELL_ENV] = str(claim.index)
+    else:
+        # No index is held yet (a replacement worker, or no cells directory). Children must not take one
+        # for themselves, so the process is marked; the claim and the pin follow in ``adopt_claim``.
+        env[CELL_ENV] = CELL_PENDING
+        if directory is not None:
+            _DEFERRED_MASKS[:] = [masks]
+
+
+def adopt_claim(index: int, env: MutableMapping[str, str] | None = None) -> bool:
+    """Record this process's cell index for its children, and pin it if the pin was deferred.
+
+    One rule for every claim:
+    - Only a process that serves a cell claims (``_serves_a_cell``): not the uvicorn master and not a
+      child of a cell. A cell's children inherit ``CELL_ENV``, either its index or ``pending`` while it
+      holds none, so a spawned child can never take an index a serving worker is waiting for.
+    - The service calls this whenever it obtains a claim: at start-up, or later in the background. A
+      replacement worker starts while the worker it replaces still holds the index and becoming ready
+      cannot wait for it (the old worker is retired only once the new one answers).
+    - NUMA placement follows the claim. Threads that exist are moved to the node, and so is every
+      process started afterwards. Memory already allocated stays where it is; a cell that never gets
+      an index stays unpinned and says so in its start-up WARNING.
+    Returns True when this call pinned the process.
+    """
+    target = os.environ if env is None else env
+    already = (target.get(CELL_ENV) or "").isdigit()
+    target[CELL_ENV] = str(index)
+    if already or not _DEFERRED_MASKS:
+        return False
+    pinned = numa.pin(index, _DEFERRED_MASKS[0], target, all_threads=True)
+    _DEFERRED_MASKS.clear()
+    return pinned
 
 
 def log_line(plan: CapacityPlan | None, env: MutableMapping[str, str] | None = None) -> str:

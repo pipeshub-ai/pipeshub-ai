@@ -104,7 +104,7 @@ def _omp(env: Mapping[str, str], cpus: float) -> tuple[str, str]:
 def _embedding_widths(c: int, omp_n: int, override: int | None, *, cuda: bool, gpus: int) -> tuple[int, int]:
     """``(slots, processes)`` of the embedding service for ``c`` CPU tokens."""
     if cuda:
-        return 2 * gpus, gpus
+        return override or 2 * gpus, gpus
     slots = override or max(2, (c - QUERY_EMBED_WEIGHT) // max(1, omp_n))
     return slots, max(1, math.ceil(slots / EMBED_SLOTS_PER_PROCESS))
 

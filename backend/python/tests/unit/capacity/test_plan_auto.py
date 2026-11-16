@@ -198,3 +198,13 @@ def test_the_reported_reservation_is_what_the_fleet_ceiling_leaves(cpus: int) ->
     assert gpu.fleet_ceilings[0] >= cpu_only.fleet_ceilings[0]
     if cpus >= 32:
         assert gpu.fleet_ceilings[0] > cpu_only.fleet_ceilings[0], "the freed CPUs reach the heavy ceiling"
+
+
+@pytest.mark.parametrize("override", [1, 3, 12])
+def test_the_embedding_slot_override_applies_with_a_gpu(override: int) -> None:
+    """With a free GPU the default is two slots per GPU, but an explicit ``EMBEDDING_SERVER_MAX_CONCURRENCY`` wins."""
+    gpu = {"gpus": ((0, 24 * GIB, 1 * GIB),)}
+    plan = _plan(16, 64, {"EMBEDDING_SERVER_MAX_CONCURRENCY": str(override)}, **gpu)
+    assert plan.embed_device == "cuda" and plan.widths.embed_slots == override
+    assert plan.provenance["widths.embed_slots"].source_class == "override"
+    assert _plan(16, 64, **gpu).widths.embed_slots == 2

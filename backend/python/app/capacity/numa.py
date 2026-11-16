@@ -7,6 +7,7 @@ node-local. It needs more than one node and at least as many cells as nodes. Pur
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import TYPE_CHECKING
 
@@ -34,8 +35,18 @@ def masks(facts: CapacityFacts, cells: int) -> tuple[tuple[int, ...], ...]:
     return tuple(nodes[i % len(nodes)] for i in range(cells))
 
 
-def pin(index: int, all_masks: tuple[tuple[int, ...], ...], env: MutableMapping[str, str] | None = None) -> bool:
+def pin(
+    index: int,
+    all_masks: tuple[tuple[int, ...], ...],
+    env: MutableMapping[str, str] | None = None,
+    *,
+    all_threads: bool = False,
+) -> bool:
     """Restrict this process to its cell's node. False when there is nothing to do or the OS refuses.
+
+    ``all_threads`` also moves the threads that already exist: the affinity of ``pid 0`` is the calling
+    thread's, and threads started later inherit it. A cell pinned at import has no other thread yet;
+    one pinned later (see ``apply.pin_claimed_cell``) does.
 
     On success the CPU count before the pin is left in ``env`` (default ``os.environ``) as
     ``CONTAINER_CPUS_ENV``, for the resource governor and the processes this one starts.
@@ -43,10 +54,19 @@ def pin(index: int, all_masks: tuple[tuple[int, ...], ...], env: MutableMapping[
     if not all_masks or not hasattr(os, "sched_setaffinity"):
         return False
     target = os.environ if env is None else env
+    mask = set(all_masks[index % len(all_masks)])
     try:
         before = len(os.sched_getaffinity(0))
-        os.sched_setaffinity(0, set(all_masks[index % len(all_masks)]))
+        os.sched_setaffinity(0, mask)
     except OSError:
         return False
+    if all_threads:
+        try:
+            tids = [int(t) for t in os.listdir("/proc/self/task")]
+        except (OSError, ValueError):
+            tids = []
+        for tid in tids:
+            with contextlib.suppress(OSError):  # a thread that just exited
+                os.sched_setaffinity(tid, mask)
     target.setdefault(CONTAINER_CPUS_ENV, str(before))
     return True

@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.request_log import install_request_logging
 from app.api.validation_errors import input_free_422
+from app.capacity.apply import adopt_claim
 from app.capacity.cells import (
     CLAIM_ATTEMPTS,
     CLAIM_BACKOFF_S,
@@ -2263,6 +2264,7 @@ async def _claim_and_publish(app: FastAPI, governor: ResourceGovernor, cells_dir
         await asyncio.sleep(delay)
         delay = min(delay * 2, _CELL_CLAIM_RETRY_MAX_S)
     app.state.cell_claim = claim
+    adopt_claim(claim.index)
     logger.info("Claimed cell index %d after waiting for a free one", claim.index)
     await _publish_cell_stats(claim, governor)
 
@@ -2302,6 +2304,7 @@ async def _start_cell(app: FastAPI, governor: ResourceGovernor) -> None:
         app.state.cell_task = spawn_detached(_claim_and_publish(app, governor, cells_dir, workers), name="cell-claim")
         return
     app.state.cell_claim = claim
+    adopt_claim(claim.index)  # marks the process for its children; pins it if start-up found every index held
     app.state.cell_task = spawn_detached(_publish_cell_stats(claim, governor), name="cell-stats")
 
 

@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator  # noqa: TC003 - the fixture's return annotation
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -170,17 +171,19 @@ def test_an_indexing_worker_claims_pins_and_marks_its_children(tmp_path: Path) -
     assert env[apply.CELL_ENV] == "3"
 
 
-def test_a_failed_claim_leaves_no_marker(tmp_path: Path) -> None:
+def test_a_failed_claim_marks_the_process_as_pending_not_as_a_cell(tmp_path: Path) -> None:
     plan = _plan_with_masks()
     env = dict(RUNNING)
     with (
         patch("app.capacity.cells.cells_directory", return_value=tmp_path),
         patch("app.capacity.cells.process_claim", return_value=None),
         patch("app.capacity.numa.pin") as pin,
+        patch("app.capacity.apply.multiprocessing.current_process", return_value=SimpleNamespace(name="SpawnProcess-1")),
     ):
         apply._pin_numa(plan, FACTS64, env, "indexing")
     pin.assert_not_called()
-    assert apply.CELL_ENV not in env
+    assert env[apply.CELL_ENV] == apply.CELL_PENDING, "a child of this process must not claim an index"
+    assert not apply._serves_a_cell(env)
 
 
 def test_the_workers_that_run_decide_the_placement_not_the_planned_cells(tmp_path: Path) -> None:
@@ -205,3 +208,70 @@ def test_pinning_needs_the_auto_profile(tmp_path: Path) -> None:
         apply._pin_numa(legacy, FACTS64, dict(RUNNING), "indexing")
     claim.assert_not_called()
     pin.assert_not_called()
+
+
+def test_a_replacement_worker_that_finds_every_index_held_pins_when_it_claims_later(tmp_path: Path) -> None:
+    """At start-up the old worker still holds the index: nothing is pinned, the masks wait, and the
+    later claim (from the service) pins the process and marks its children."""
+    plan = _plan_with_masks()
+    env = dict(RUNNING)
+    apply._DEFERRED_MASKS.clear()
+    try:
+        with (
+            patch("app.capacity.cells.cells_directory", return_value=tmp_path),
+            patch("app.capacity.cells.process_claim", return_value=None),
+            patch("app.capacity.numa.pin") as pin,
+            patch("app.capacity.apply.multiprocessing.current_process", return_value=SimpleNamespace(name="SpawnProcess-1")),
+        ):
+            apply._pin_numa(plan, FACTS64, env, "indexing")
+            pin.assert_not_called()
+            assert env[apply.CELL_ENV] == apply.CELL_PENDING and apply._DEFERRED_MASKS
+            assert apply.adopt_claim(1, env)
+            pin.assert_called_once_with(1, numa.masks(FACTS64, 4), env, all_threads=True)
+            assert env[apply.CELL_ENV] == "1" and not apply._DEFERRED_MASKS
+            assert not apply.adopt_claim(1, env), "pinned once"
+    finally:
+        apply._DEFERRED_MASKS.clear()
+
+
+def test_a_late_claim_without_a_deferred_pin_only_marks_the_process() -> None:
+    """NUMA pinning off (or nothing deferred): the claim still tells the process's children it is a cell."""
+    env: dict[str, str] = {}
+    with patch("app.capacity.numa.pin") as pin:
+        assert not apply.adopt_claim(0, env)
+    pin.assert_not_called()
+    assert env[apply.CELL_ENV] == "0" and not apply._serves_a_cell(env)
+
+
+@pytest.fixture(autouse=True)
+def _no_deferred_pin() -> Iterator[None]:
+    apply._DEFERRED_MASKS.clear()
+    yield
+    apply._DEFERRED_MASKS.clear()
+
+
+@pytest.mark.skipif(not hasattr(os, "sched_setaffinity") or not os.path.isdir("/proc/self/task"), reason="needs per-thread affinity")
+def test_pinning_later_moves_the_threads_that_already_exist() -> None:
+    """``sched_setaffinity(0)`` is the calling thread's only; a thread started before the pin keeps the old mask without ``all_threads``."""
+    import threading
+
+    before = os.sched_getaffinity(0)
+    cpu = min(before)
+    started, release = threading.Event(), threading.Event()
+    seen: dict[str, int] = {}
+
+    def worker() -> None:
+        seen["tid"] = threading.get_native_id()
+        started.set()
+        release.wait(10)
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert started.wait(10)
+    try:
+        assert numa.pin(0, ((cpu,),), {}, all_threads=True)
+        assert os.sched_getaffinity(seen["tid"]) == {cpu}
+    finally:
+        release.set()
+        t.join()
+        os.sched_setaffinity(0, before)

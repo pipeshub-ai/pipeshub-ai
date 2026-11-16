@@ -97,23 +97,22 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
     (non-namespaced) cgroupfs — see corner case: "Nested/host-mounted
     cgroupfs".
 
-    Tries, in order: the v2 unified path directly under the cgroup root (true
-    where the container's own cgroup is mounted at ``/sys/fs/cgroup``), then
-    this process's own relative path via ``/proc/self/cgroup`` joined onto the
-    root (needed when the host's full cgroupfs is bind-mounted), then the v1
-    controller path directly under the root (the container's own v1 cgroup
-    mounted at the controller directory).
+    Tries, in order: this process's own relative path via ``/proc/self/cgroup``
+    joined onto the cgroup root (the host's full cgroupfs, or a cgroup
+    namespace rooted above this process), then the v2 file and the v1
+    controller file directly under the root (the container's own cgroup mounted
+    at ``/sys/fs/cgroup``, where its membership path is not visible).
     """
     v2_name = v2_filename or v1_filename
     direct_v2 = _CGROUP_ROOT / v2_name
-    if direct_v2.exists():
-        return direct_v2
     direct_v1 = _CGROUP_ROOT / v1_controller / v1_filename
 
-    # A v1 file directly under the controller directory is the hierarchy
-    # root's when the full hierarchy is mounted, so this process's own
-    # membership is tried first; the direct file answers when only the
-    # container's own cgroup is mounted (its membership path is then "/").
+    # The mount root is the hierarchy root, or, in a cgroup namespace, the
+    # namespace's root cgroup: the file directly under it is that cgroup's,
+    # not this process's. So this process's own membership
+    # (``/proc/self/cgroup``, relative to the same root) is tried first; a
+    # direct file answers only when the membership path is not mounted, i.e.
+    # only the container's own cgroup is (a private namespace or subtree mount).
     cgroup_self = _read_text(_PROC_SELF_CGROUP)
     for line in (cgroup_self or "").splitlines():
         parts = line.split(":", 2)
@@ -129,7 +128,10 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
             candidate = _CGROUP_ROOT / v1_controller / rel / v1_filename
             if candidate.exists():
                 return candidate
-    return direct_v1 if direct_v1.exists() else None
+    for direct in (direct_v2, direct_v1):
+        if direct.exists():
+            return direct
+    return None
 
 
 @functools.cache

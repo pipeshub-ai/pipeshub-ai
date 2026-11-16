@@ -150,9 +150,10 @@ def test_a_health_read_does_not_leave_the_second_worker_without_a_cell(tmp_path:
     assert outcome and outcome[0] is not None and outcome[0].index == 1
 
 
-def _reader(directory: str, stop: float) -> None:
+def _reader(directory: str, stop: float, ready: object) -> None:
     while time.time() < stop:
         read_cells(Path(directory), 2)
+        ready.set()  # type: ignore[attr-defined]
 
 
 CLAIM_ATTEMPTS_UNDER_LOAD = 1500
@@ -164,11 +165,14 @@ def test_no_claim_is_missed_while_health_is_read_under_load(tmp_path: Path) -> N
     held = claim_cell(tmp_path, 2)
     assert held is not None
     stop = time.time() + 120.0
-    readers = [mp.get_context("fork").Process(target=_reader, args=(str(tmp_path), stop)) for _ in range(2)]
+    ctx = mp.get_context("fork")
+    ready = [ctx.Event() for _ in range(2)]
+    readers = [ctx.Process(target=_reader, args=(str(tmp_path), stop, ready[i])) for i in range(2)]
     for r in readers:
         r.start()
     misses = 0
     try:
+        assert all(e.wait(30) for e in ready), "a reader never completed a read, so the claims would not overlap one"
         for _ in range(CLAIM_ATTEMPTS_UNDER_LOAD):
             c = claim_cell(tmp_path, 2)
             if c is None:
@@ -176,6 +180,7 @@ def test_no_claim_is_missed_while_health_is_read_under_load(tmp_path: Path) -> N
             else:
                 c.release()
             assert time.time() < stop, "the claims did not finish: a hang, not a miss"
+        assert all(r.is_alive() for r in readers), "a reader stopped before the claims ended"
     finally:
         for r in readers:
             r.terminate()
