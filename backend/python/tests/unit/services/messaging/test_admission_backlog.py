@@ -604,6 +604,30 @@ class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
         # order-of-magnitude regression the old timing bound was for (a log line, a lookup through other objects).
         assert python_calls <= 20 and instructions <= 600, (python_calls, instructions)
 
+    def test_the_hot_path_calls_only_the_c_functions_it_needs(self) -> None:
+        # A blocking call into C (a read, a sleep, a socket send) is one call and a handful of instructions, so it
+        # passes the work bounds above; it is caught here by name. These are the C functions a round calls today.
+        import sys
+
+        host = self._host()
+        called: set[str] = set()
+
+        def record(_frame: object, event: str, arg: object) -> None:
+            if event == "c_call":
+                called.add(getattr(arg, "__qualname__", repr(arg)))
+
+        previous = sys.getprofile()
+        sys.setprofile(record)
+        try:
+            token = GateWaiterToken(host, H)
+            token.enter_gate()
+            token.admit()
+            token.release()
+        finally:
+            sys.setprofile(previous)
+        allowed = {"allocate_lock", "getattr", "isinstance", "lock.__enter__", "lock.__exit__", "setprofile"}
+        assert called <= allowed, sorted(called - allowed)
+
 
 class TestBufferedIsNotCountedTwiceForTheLane:
     def test_an_admitted_lane_record_is_in_flight_and_not_buffered(self) -> None:
