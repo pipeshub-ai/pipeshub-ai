@@ -106,7 +106,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("atlassian/jira_data_center_personal", "container", CONTAINER, "atlassian/jira_data_center_personal/connector.py:66"),
     Connector("microsoft/sharepoint_online", "sharepoint", OVERRIDE, "microsoft/sharepoint_online/connector.py:1690",
               "unique item inherit=False + own role assignments"),
-    Connector("microsoft/onedrive", "onedrive", OVERRIDE, "microsoft/onedrive/connector.py:1060",
+    Connector("microsoft/onedrive", "onedrive", OVERRIDE, "microsoft/onedrive/connector.py:1069",
               "every item inherit=False with the full effective list"),
     Connector("google/drive/team", "drive", UNION, "google/drive/team/drive_access.py:64",
               "My Drive: full list, no inherit; shared drive: inherit unless limited"),
