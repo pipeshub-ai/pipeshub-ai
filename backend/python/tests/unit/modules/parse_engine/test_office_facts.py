@@ -57,7 +57,7 @@ def test_facts_correct_a_prior_that_would_leave_a_big_document_small() -> None:
     assert estimate(CostInputs(FormatKind.XLSX, None, cells=office_facts(_xlsx("A1:Z400000")).cells)).cls is not CostClass.SMALL
 
 
-async def test_inspection_reads_office_facts_and_moves_a_sizeless_record_out_of_small(monkeypatch) -> None:  # noqa: ANN001
+async def test_inspection_reads_office_facts_and_moves_a_sizeless_record_out_of_small(monkeypatch) -> None:
     from app.modules.parse_engine import wiring
     from app.modules.parse_engine.inspection import inspect_facts, wants_inspection
 
