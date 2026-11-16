@@ -6746,7 +6746,7 @@ class SalesforceConnector(BaseConnector):
         if readers is None:
             return
         permissions = [
-            Permission(email=u["Email"], type=PermissionType.READ, entity_type=EntityType.USER)
+            Permission(email=u["Email"], external_id=u["Id"], type=PermissionType.READ, entity_type=EntityType.USER)
             for u in sf_users if u.get("Id") in readers
         ]
         await self.data_entities_processor.on_new_record_groups([(self._product_record_group(), permissions)])

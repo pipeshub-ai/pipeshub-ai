@@ -3814,6 +3814,24 @@ class TestPermissionsFollowTheAddressHolder:
         assert connector.data_entities_processor.remove_user_access_to_connector.await_count == removals
 
 
+class TestProductReadersFollowTheAddressHolder:
+    @pytest.mark.asyncio
+    async def test_after_a_handoff_the_new_holder_keeps_product_access(self) -> None:
+        """The processor writes a product-group grant only for the account holding the address: the grant names it."""
+        connector, accounts = TestPermissionsFollowTheAddressHolder._connector()
+        old, new = "005000000000001AAA", "005000000000002AAA"
+        assert await accounts.before_link([TestPermissionsFollowTheAddressHolder._sf_user(old)])
+        assert await accounts.before_link([TestPermissionsFollowTheAddressHolder._sf_user(new)])
+        await accounts.ensure_loaded()
+        eligibility = MagicMock(product_reader_ids=AsyncMock(return_value={new}))
+        connector.data_entities_processor.on_new_record_groups = AsyncMock()
+
+        await connector._sync_product_readers(eligibility, [{"Id": new, "Email": "alice@example.com"}])
+
+        [(_, permissions)] = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert [accounts.holds(p.email, p.external_id) for p in permissions] == [True]
+
+
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:
 
     @pytest.mark.asyncio
