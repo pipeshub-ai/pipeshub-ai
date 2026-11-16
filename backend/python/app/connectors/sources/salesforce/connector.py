@@ -2747,15 +2747,7 @@ class SalesforceConnector(BaseConnector):
                 else:
                     soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
                     self.logger.debug("Full user sync: no previous sync point, fetching all users")
-                inactive_user_ids = await self._sync_users(
-                    self._soql_query_paginated(api_version=api_version, q=soql_query),
-                    frozen=await self._eligibility(api_version).frozen_user_ids(),
-                )
-                await self._withdraw_ineligible_users(api_version, inactive_user_ids)
-                await self.user_sync_point.update_sync_point(
-                    USERS_SYNC_POINT_KEY,
-                    {"lastSyncTimestamp": checkpoint_for(run_started_ms)},
-                )
+                await self._sync_users_step(api_version, soql_query, checkpoint_for(run_started_ms))
 
                 # Step 2: Incremental sync for roles
                 self.logger.info("Syncing roles and role permissions (incremental)...")
@@ -3427,19 +3419,35 @@ class SalesforceConnector(BaseConnector):
             return None
         return emails
 
-    async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: set[str]) -> None:
+    async def _sync_users_step(self, api_version: str, soql_query: str, checkpoint: int) -> None:
+        """Link the users the query lists and withdraw the ones who cannot sign in, judged by one read of the frozen
+        users. Unreadable, nobody is linked and the checkpoint stays: a frozen duplicate linked would read as its
+        address changing hands and take the active user's access, and a skipped user must be listed again."""
+        frozen = await self._eligibility(api_version).frozen_user_ids()
+        if frozen is None:
+            self.logger.warning("Salesforce frozen users unreadable; users are synced next run")
+            return
+        inactive_user_ids = await self._sync_users(
+            self._soql_query_paginated(api_version=api_version, q=soql_query), frozen=frozen,
+        )
+        await self._withdraw_ineligible_users(api_version, inactive_user_ids, frozen)
+        await self.user_sync_point.update_sync_point(USERS_SYNC_POINT_KEY, {"lastSyncTimestamp": checkpoint})
+
+    async def _withdraw_ineligible_users(
+        self, api_version: str, inactive_user_ids: set[str], frozen: set[str],
+    ) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and
         frozen ones (both read in full every sync; freezing does not change the User row).
-        A user unfrozen since the last sync is linked again. A list that cannot be read
-        withdraws nobody on its account."""
+        ``frozen`` is the read the user list was judged by, so a user skipped as frozen is in
+        the saved list and is linked when a later sync sees it unfrozen. A list that cannot be
+        read withdraws nobody on its account."""
         eligibility = self._eligibility(api_version)
         # Read in full every sync: an install upgraded from a version that linked inactive
         # users never sees them again in the incremental user list.
         inactive = await eligibility.inactive_user_ids()
-        frozen = await eligibility.frozen_user_ids()
         point = await self.user_sync_point.read_sync_point(FROZEN_USERS_SYNC_POINT_KEY) or {}
         previously_frozen = set(point.get("userIds") or [])
-        ineligible = set(inactive_user_ids) | (inactive or set()) | (frozen or set())
+        ineligible = set(inactive_user_ids) | (inactive or set()) | frozen
         if ineligible:
             # Salesforce emails are not unique: a PipesHub user keeps the connector while any
             # Salesforce user with their email can still sign in.
@@ -3450,8 +3458,6 @@ class SalesforceConnector(BaseConnector):
                         if u.source_user_id in ineligible and (u.email or "").lower() not in eligible]
                 if gone:
                     await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
-        if frozen is None:
-            return
         thawed = sorted(previously_frozen - frozen)
         if thawed:
             safe = _sanitize_soql_ids_batch(thawed, self.logger, "unfrozen users")
