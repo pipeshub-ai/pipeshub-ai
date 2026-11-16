@@ -552,8 +552,9 @@ class EntityEventService(BaseEventService):
                 [user_data], CollectionNames.USERS.value
             )
             new_email = payload.get("email")
-            if new_email and new_email.lower() != (existing_user.get("email") or "").lower():
-                # the source accounts at the old address are not this user's any more; the ones at the new one may be
+            if new_email:
+                # the source accounts at an old address are not this user's any more; the ones at this one may be. Run even when the
+                # stored address already matches: a redelivery after a failed move finds it stored, and the move is idempotent.
                 await self._relink_source_accounts(org_id, new_email, user_key=user_id)
 
             # A node written before the field existed carries no `isActive`,

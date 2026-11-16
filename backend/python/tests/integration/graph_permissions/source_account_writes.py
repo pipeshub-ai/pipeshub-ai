@@ -282,6 +282,7 @@ async def an_address_change_moves_the_directory_link(provider: Any, config_servi
                                                      emails: dict[str, str], users: dict[str, str], user_id: str) -> None:
     """After ``write`` with the setting on: cal's PipesHub address changes (the user-updated event). The link to the account at the old
     address goes, and the account at the new address is linked when it is the only live one there."""
+    import contextlib
     import logging
     from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -298,6 +299,11 @@ async def an_address_change_moves_the_directory_link(provider: Any, config_servi
     service = EntityEventService(logging.getLogger("source-accounts"), provider, container)
     with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
         moved = f"moved-{uuid.uuid4().hex[:8]}@acme.com"
+        # the address is stored, then the move fails: the event is delivered again and must still move the link
+        with patch.object(service, "_relink_source_accounts", AsyncMock(side_effect=RuntimeError("relink failed"))), \
+                contextlib.suppress(RuntimeError):
+            await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": moved})
+        assert directory(await links_of(provider, users["cal"])) == {old}
         assert await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": moved})
         assert directory(await links_of(provider, users["cal"])) == set(), "no account holds the new address: the old link goes"
         assert await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": emails["cal"]})
