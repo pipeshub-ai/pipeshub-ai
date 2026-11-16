@@ -632,6 +632,31 @@ async def test_a_restart_that_demotes_the_copy_while_a_batch_runs_is_not_overwri
     assert await state(pg_db, org, "app1") == ("done", "legacy", CODE_EPOCH)
 
 
+@pytest.mark.parametrize("calls", ["one_call", "a_batch_per_call"])
+async def test_a_copy_that_meets_a_value_kg_refuses_goes_on_past_it_and_ends_not_listed_from(pg_db, calls: str) -> None:
+    """The projection takes a connector off the readers when it writes a row without a value kg refuses, and clears its copy cursor with it. A copy that meets such a
+    record after earlier batches have committed goes on past it and ends, not listed from (epoch 0), in one call or a batch per call as the bootstrap copies; it never
+    starts again from the first node (where it would meet the same record every time)."""
+    p, org = await fresh_world(pg_db)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "zz-refused", "recordName": "Z", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR",
+                                     "accessRule": "INHERITED"}], "records")
+    await bf.backfill_scope(pg_db, org, None)
+
+    async def copy() -> int:
+        if calls == "one_call":
+            return await bf.backfill_scope(pg_db, org, "app1", page=2)
+        n = 0
+        for _ in range(50):
+            n += await bf.backfill_scope(pg_db, org, "app1", page=2, max_batches=1)
+            if (await state(pg_db, org, "app1"))[0] == "done":
+                return n
+        raise AssertionError("the copy did not end in 50 calls")
+    batches = await asyncio.wait_for(copy(), timeout=60)      # on main the copy starts again from the first node at the refused record, forever
+    assert batches >= 3
+    assert await state(pg_db, org, "app1") == ("done", "legacy", 0)
+
+
 async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -> None:
     p, org = await shadowed(pg_db)
     async def stamped(tx) -> int:
