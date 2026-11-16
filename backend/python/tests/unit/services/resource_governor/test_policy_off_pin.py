@@ -34,6 +34,7 @@ EDITED = {
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
+        "parse_ceiling", "parse_lease_pool",  # one heavy lease for both tiers, only with USE_PARSING_SERVICE and PARSING_SERVICE_CONCURRENCY set; otherwise unchanged
         "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
         "RequeueWithoutAttempt.__init__",  # adds the level the consumer logs the hand-back at; reserves nothing
         "class ProgressRequeue", "ProgressRequeue.__init__", "ProgressRequeue.counts_toward_backstop",  # new exception, raised after the handler has unwound and its memory is released

@@ -2,7 +2,8 @@
 returns, and it is used only while the ENABLE_KH_SCOPE_LISTING flag is on and the connector's stamp is fresh.
 
 The graph is built to be eligible (no declarations, no hidden or multi-parent nodes) and to hold every hop kind
-the stamp classifies: free chains, a gate, a nested gate, a RESTRICTED gate, a block with seeds below it, a chain
+the stamp classifies: free chains, a gate, a nested gate, a RESTRICTED gate, a PARENT_AND_GRANT gate, a block with
+seeds below it (and PARENT_AND_GRANT records below a seed), a chain
 deeper than the walk's 50 hops, a null name, and a null-named seed. A second, small App has no null names.
 Every listing is compared page by page, both directions, against the full query (KH_SCOPE_MODE=off).
 """
@@ -75,6 +76,13 @@ def _graph() -> tuple[list, list]:
         r("r-seed", "Seed"), r("r-seed-1", "Below the seed"), r("r-seed-strict", "Strict below the seed",
                                                                rule="STRICT"),
         r("r-seed-null", None),
+        # PARENT_AND_GRANT: a gate that inherits (opens with its own grant), and below the seed a record that
+        # inherits and is granted (listed, with its OPEN child) and one that inherits without a grant (not listed).
+        rg("g-pag", "Parent and grant site", rule="PARENT_AND_GRANT", **group),
+        r("r-pag-1", "In the parent and grant site"),
+        r("r-seed-pag", "Parent and grant below the seed", rule="PARENT_AND_GRANT"),
+        r("r-seed-pag-1", "Below the parent and grant record"),
+        r("r-seed-pag-no", "Parent and grant without a grant", rule="PARENT_AND_GRANT"),
         # The small App: no null names anywhere.
         app(SMALL, "Small App", connector="SHAREPOINT ONLINE", app_group="Microsoft"),
         r("s-1", "small one", app_id=SMALL), r("s-2", "small two", app_id=SMALL),
@@ -96,6 +104,10 @@ def _graph() -> tuple[list, list]:
         nr("g-block", "r-seed"), nr("r-seed", "r-seed-1"), ip("r-seed-1", "r-seed"),
         nr("r-seed", "r-seed-strict"), ip("r-seed-strict", "r-seed"),
         nr("g-block", "r-seed-null"),
+        nr(APP, "g-pag"), ip("g-pag", APP), nr("g-pag", "r-pag-1"), ip("r-pag-1", "g-pag"),
+        nr("r-seed", "r-seed-pag"), ip("r-seed-pag", "r-seed"), nr("r-seed-pag", "r-seed-pag-1"),
+        ip("r-seed-pag-1", "r-seed-pag"), nr("r-seed", "r-seed-pag-no"), ip("r-seed-pag-no", "r-seed"),
+        perm(USER_U, "g-pag"), perm(USER_U, "r-seed-pag"),
         perm(USER_U, "g-gate"), perm(USER_U, "r-nested"), perm(USER_U, "g-restricted"),
         perm(USER_U, "r-seed"), perm(USER_U, "r-seed-null"),
         nr(SMALL, "s-1"), ip("s-1", SMALL), nr(SMALL, "s-2"), ip("s-2", SMALL),
@@ -218,6 +230,18 @@ async def test_the_walk_stops_at_fifty_hops(scope_graph, neo4j_provider, monkeyp
     deep = sorted(r[0] for r in rows if r[0].startswith("deep-"))
     # The App is hop 0, the site hop 1: deep-0 is hop 2, so hops 2..50 are deep-0..deep-48.
     assert deep == sorted(f"deep-{i}" for i in range(49))
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+async def test_a_parent_and_grant_node_is_listed_only_where_it_inherits_and_is_granted(
+    scope_graph, neo4j_provider, monkeypatch, mode,
+) -> None:
+    """From the App (a gate) and below a seed; never without its own grant, and never to a viewer without one."""
+    monkeypatch.setenv("KH_SCOPE_MODE", mode)
+    pag = {"g-pag", "r-pag-1", "r-seed-pag", "r-seed-pag-1", "r-seed-pag-no"}
+    for user, want in ((USER_U, pag - {"r-seed-pag-no"}), (USER_V, set())):
+        rows = {r[0] for p in await _walk(neo4j_provider, user, APP, 500) if p != ("back",) for r in p[0]}
+        assert rows & pag == want, user
 
 
 async def test_a_null_named_seed_is_listed_and_counted_once(scope_graph, neo4j_provider, monkeypatch) -> None:

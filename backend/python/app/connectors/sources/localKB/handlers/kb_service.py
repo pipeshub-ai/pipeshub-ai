@@ -74,6 +74,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_caller_user
 from app.utils.user_messages import PEOPLE_GONE, action_failed, folder_in_trash, not_found
 
 if TYPE_CHECKING:
@@ -443,7 +444,7 @@ class KnowledgeBaseService:
             for_write: refuse (409) a KB that is being deleted. Checked after the role, so
                 a caller with no access cannot learn that the KB is being deleted.
         """
-        user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        user = await get_caller_user(self.graph_provider, user_id)
         if not user:
             self.logger.warning(f"⚠️ User not found: {user_id}")
             return None, None, {
@@ -663,7 +664,7 @@ class KnowledgeBaseService:
                 return {"success": False, "code": 400, "reason": reason}
 
             # Step 1: Look up user
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await get_caller_user(self.graph_provider, user_id)
             if not user:
                 self.logger.warning(f"⚠️ User not found: {user_id}")
                 return {
@@ -953,7 +954,7 @@ class KnowledgeBaseService:
             self.logger.info(f" Listing knowledge bases for user {user_id}")
 
             self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await get_caller_user(self.graph_provider, user_id)
 
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
@@ -1765,7 +1766,7 @@ class KnowledgeBaseService:
                 "code": 404,
                 "reason": "Knowledge base context not found for record",
             }
-        user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        user = await get_caller_user(self.graph_provider, user_id)
         if not user:
             return None, {
                 "success": False,
@@ -3160,7 +3161,7 @@ class KnowledgeBaseService:
         rely on receiving an empty result when the user has no access to a particular KB.
         """
         try:
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
+            user = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
                 return {

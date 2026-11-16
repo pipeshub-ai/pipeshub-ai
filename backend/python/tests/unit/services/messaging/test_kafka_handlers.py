@@ -404,7 +404,7 @@ class TestEntityEventService:
     @pytest.mark.asyncio
     async def test_user_deleted_success(self):
         svc = self._make_service()
-        svc.graph_provider.get_entity_id_by_email = AsyncMock(return_value="key1")
+        svc.graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key1"))
         svc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
         payload = {"email": "test@example.com", "orgId": "org1"}
@@ -414,7 +414,7 @@ class TestEntityEventService:
     @pytest.mark.asyncio
     async def test_user_deleted_not_found(self):
         svc = self._make_service()
-        svc.graph_provider.get_entity_id_by_email = AsyncMock(return_value=None)
+        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
 
         payload = {"email": "missing@x.com", "orgId": "org1"}
         result = await svc.process_event("userDeleted", payload)

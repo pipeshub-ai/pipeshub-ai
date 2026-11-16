@@ -19,6 +19,17 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.request_log import install_request_logging
 from app.api.validation_errors import input_free_422
+from app.capacity.apply import adopt_claim
+from app.capacity.cells import (
+    CLAIM_ATTEMPTS,
+    CLAIM_BACKOFF_S,
+    CellClaim,
+    cells_directory,
+    directory_problem,
+    process_claim,
+    read_cells,
+    write_cell,
+)
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -124,6 +135,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
@@ -148,6 +160,8 @@ from app.utils.user_errors import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from app.modules.indexing.run import IndexingPipeline
     from app.modules.pipeline.runtime import PipelineRuntime
     from app.services.messaging.interface.producer import IMessagingProducer
@@ -2225,6 +2239,105 @@ def _indexing_worker_count() -> int:
     return indexing_worker_count()
 
 
+_CELL_TICK_S = 5.0
+
+
+async def _publish_cell_stats(claim: CellClaim, governor: ResourceGovernor) -> None:
+    """Write this cell's stats file every tick, so any worker can serve the merged ``/health``."""
+    while True:
+        worker = getattr(container, "worker_loop", None)
+        failure = worker.failure if isinstance(worker, WorkerLoop) else None
+        try:
+            stats = await run_for_health(governor.stats)
+            write_cell(
+                claim,
+                stats,
+                loop_failure=type(failure).__name__ if failure is not None else None,
+                tick_s=_CELL_TICK_S,
+            )
+        except Exception as exc:  # a missed tick shows as a stale file, which /health reports
+            container.logger().warning("Cell stats write failed: %s", exc)
+        await asyncio.sleep(_CELL_TICK_S)
+
+
+_CELL_CLAIM_RETRY_MAX_S = 5.0
+
+
+async def _claim_and_publish(app: FastAPI, governor: ResourceGovernor, cells_dir: "Path", workers: int) -> None:
+    """Keep trying for an index in the background, then publish this cell's stats.
+
+    A replacement worker can start while every index is still held by the worker it replaces (the
+    supervisor retires the old one only after the new one answers). Start-up must not wait for that,
+    so the claim goes on after the service is ready and is taken when the old worker lets go.
+    """
+    logger = container.logger()
+    delay = CLAIM_BACKOFF_S * 2 ** (CLAIM_ATTEMPTS - 1)
+    while True:
+        try:
+            claim = process_claim(cells_dir, workers)
+        except OSError as exc:
+            logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
+            return
+        if claim is not None:
+            break
+        if directory_problem(cells_dir) is not None:
+            return
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _CELL_CLAIM_RETRY_MAX_S)
+    app.state.cell_claim = claim
+    adopt_claim(claim.index)
+    logger.info("Claimed cell index %d after waiting for a free one", claim.index)
+    await _publish_cell_stats(claim, governor)
+
+
+async def _start_cell(app: FastAPI, governor: ResourceGovernor) -> None:
+    """Claim this worker's cell index and start publishing its stats.
+
+    A claim that finds every index taken is retried briefly. If it still finds none, this worker logs
+    one WARNING and goes on trying in the background, so it publishes as soon as an index is free;
+    until then it serves without a cells block.
+    """
+    app.state.cell_claim = None
+    app.state.cell_task = None
+    workers = _indexing_worker_count()
+    cells_dir = cells_directory() if workers > 1 else None
+    if cells_dir is None:
+        return
+    logger = container.logger()
+    claim: CellClaim | None = None
+    try:
+        for attempt in range(CLAIM_ATTEMPTS):
+            claim = process_claim(cells_dir, workers)
+            if claim is not None:
+                break
+            if directory_problem(cells_dir) is not None:
+                return  # permanent, and claim_cell has logged why: retrying cannot help
+            if attempt < CLAIM_ATTEMPTS - 1:
+                await asyncio.sleep(CLAIM_BACKOFF_S * 2**attempt)
+    except OSError as exc:
+        logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
+        return
+    if claim is None:
+        logger.warning(
+            "No free cell index in %s after %d attempts: this worker keeps trying in the background and serves without a cells block until it has one",
+            cells_dir, CLAIM_ATTEMPTS,
+        )
+        app.state.cell_task = spawn_detached(_claim_and_publish(app, governor, cells_dir, workers), name="cell-claim")
+        return
+    app.state.cell_claim = claim
+    adopt_claim(claim.index)  # marks the process for its children; pins it if start-up found every index held
+    app.state.cell_task = spawn_detached(_publish_cell_stats(claim, governor), name="cell-stats")
+
+
+def _stop_cell(app: FastAPI) -> None:
+    task = getattr(app.state, "cell_task", None)
+    if task is not None:
+        task.cancel()
+    claim = getattr(app.state, "cell_claim", None)
+    if claim is not None:
+        claim.release()
+
+
 def _distributed_leases_wanted() -> bool:
     """On PostgreSQL state the leases are rows in the database, so they are always kept: a stage and a re-index of one record
     exclude each other (``record:<id>``) whatever the capacity switch says."""
@@ -2717,10 +2830,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
+        remote_parse_slots=remote_parse_concurrency(),
     )
     app.state.governor = governor
     app_container.resource_governor = governor
     governor_task = asyncio.create_task(governor.run())
+    # With several worker processes, each claims a cell index and publishes its stats, so that
+    # whichever worker answers /health serves every cell's.
+    await _start_cell(app, governor)
     # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
     # straight into the governor's fast incident path instead of only the
     # periodic sampler noticing the pressure it already caused.
@@ -3056,6 +3173,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.
     governor.stop()
+    _stop_cell(app)
     governor_task.cancel()
     try:
         await governor_task
@@ -3202,8 +3320,17 @@ async def health_check(request: Request) -> JSONResponse:
             # restarts. The type only: the traceback is in the CRITICAL log line.
             content["status"] = "unhealthy"
             content["worker_loop_failure"] = type(failure).__name__
+        cell_claim = getattr(request.app.state, "cell_claim", None)
+        cells_unhealthy = False
+        if isinstance(cell_claim, CellClaim):
+            # Every cell's stats file, whichever worker answers; one stale or dead cell is a 503.
+            merged = read_cells(cell_claim.directory, _indexing_worker_count())
+            content["cells"] = merged.as_dict()
+            if not merged.healthy:
+                cells_unhealthy = True
+                content["status"] = "unhealthy"
         return JSONResponse(
-            status_code=503 if failure is not None else 200,
+            status_code=503 if failure is not None or cells_unhealthy else 200,
             content=content,
         )
     except Exception:

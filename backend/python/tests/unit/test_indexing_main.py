@@ -1681,6 +1681,179 @@ class TestLifespan:
             assert parse_pool._State.governor is None
             assert parse_pool._State.pool is None
 
+    async def test_the_lifespan_claims_a_cell_publishes_its_stats_and_releases_it(self, tmp_path) -> None:
+        """The product's own wiring, not a support app: claim at start, a stats file every tick, release at stop."""
+        import json
+        from pathlib import Path
+
+        from app.capacity import cells
+        from app.indexing_main import lifespan
+
+        directory = tmp_path / "cells"
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider()
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        with (
+            patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+        ):
+            async with lifespan(mock_app):
+                claim = mock_app.state.cell_claim
+                assert claim is not None and claim.index == 0 and claim.directory == directory
+                for _ in range(100):  # the first tick writes at once
+                    if (directory / "0.json").exists():
+                        break
+                    await asyncio.sleep(0.05)
+                body = json.loads((directory / "0.json").read_text())
+                assert body["cell"] == 0 and body["pid"] == os.getpid() and "stats" in body
+                assert cells.read_cells(Path(directory), 2).cells[0]["status"] == "healthy"
+                task = mock_app.state.cell_task
+            assert task.cancelled() or task.done()
+            assert not cells._slot_held(directory, 0), "the claim was not released at shutdown"
+        assert cells._PROCESS == []
+
+    async def test_a_worker_that_finds_no_free_cell_retries_warns_once_and_keeps_trying(self, tmp_path) -> None:
+
+        from app.capacity.cells import CLAIM_ATTEMPTS
+        from app.indexing_main import _start_cell
+
+        mock_container = _make_container()
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path),
+            patch("app.indexing_main.process_claim", return_value=None) as claim,
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.0),
+            patch("app.indexing_main.spawn_detached") as spawn,
+            patch("app.indexing_main._claim_and_publish", new=MagicMock()),
+        ):
+            await _start_cell(app, MagicMock())
+        assert claim.call_count == CLAIM_ATTEMPTS
+        assert app.state.cell_claim is None
+        spawn.assert_called_once()  # the claim goes on in the background
+        assert spawn.call_args.kwargs["name"] == "cell-claim"
+        assert mock_container.logger().warning.call_count == 1
+
+    async def test_a_replacement_worker_claims_the_index_the_old_worker_releases(self, tmp_path) -> None:
+        """Every index is held at start-up (the worker being replaced still holds its own). The
+        replacement must serve at once, then claim and publish when the old worker lets go."""
+        import asyncio
+
+        from app.capacity import cells
+        from app.indexing_main import _start_cell, _stop_cell
+
+        directory = tmp_path / "cells"
+        old = cells.claim_cell(directory, 1)
+        assert old is not None
+        mock_container = _make_container()
+        app = MagicMock()
+        published = asyncio.Event()
+
+        async def publish(claim, _governor) -> None:
+            published.set()
+            await asyncio.sleep(3600)
+
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.001),
+            patch("app.indexing_main._CELL_CLAIM_RETRY_MAX_S", 0.01),
+            patch("app.indexing_main._publish_cell_stats", new=publish),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.adopt_claim") as adopt,
+        ):
+            # Two workers so that the claim path is taken; the directory is sized to the one index the old
+            # worker holds, and the test releases it below.
+            with patch("app.indexing_main.process_claim", wraps=lambda d, n: cells.process_claim(d, 1)):
+                try:
+                    await _start_cell(app, MagicMock())
+                    assert app.state.cell_claim is None and app.state.cell_task is not None
+                    assert not published.is_set()
+                    old.release()
+                    await asyncio.wait_for(published.wait(), 5)
+                    assert app.state.cell_claim is not None and app.state.cell_claim.index == 0
+                    adopt.assert_called_once_with(0)  # a late claim places the process on its node
+                    _stop_cell(app)
+                    assert not cells._slot_held(directory, 0), "the late claim was not released at shutdown"
+                finally:  # on failure too: no task and no claim may outlive the test
+                    _stop_cell(app)
+                    task = app.state.cell_task
+                    if isinstance(task, asyncio.Task):
+                        await asyncio.gather(task, return_exceptions=True)
+                    old.release()
+                    cells._PROCESS.clear()
+
+    async def test_no_sleep_follows_the_last_failed_attempt(self, tmp_path) -> None:
+        from app.capacity.cells import CLAIM_ATTEMPTS
+        from app.indexing_main import _start_cell
+
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path),
+            patch("app.indexing_main.process_claim", return_value=None),
+            patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("app.indexing_main.spawn_detached") as spawn,  # the background claimant is not started here
+            patch("app.indexing_main._claim_and_publish", new=MagicMock()),
+        ):
+            await _start_cell(app, MagicMock())
+        assert sleep.await_count == CLAIM_ATTEMPTS - 1
+        spawn.assert_called_once()
+
+    async def test_an_unsafe_cells_directory_is_not_retried_and_logs_one_warning_naming_the_cause(self, tmp_path, caplog) -> None:
+        import logging
+
+        from app.capacity import cells
+        from app.indexing_main import _start_cell
+
+        directory = tmp_path / "cells"
+        directory.mkdir()
+        directory.chmod(0o777)
+        cells._warned.clear()
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+            patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+            caplog.at_level(logging.WARNING),
+        ):
+            await _start_cell(app, MagicMock())
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1 and "writable by others" in warnings[0], warnings
+        assert sleep.await_count == 0
+        assert app.state.cell_claim is None and app.state.cell_task is None
+
+    async def test_a_claim_that_fails_at_first_is_retried_and_published(self, tmp_path) -> None:
+        from app.capacity.cells import claim_cell
+        from app.indexing_main import _start_cell
+
+        mock_container = _make_container()
+        real = claim_cell(tmp_path / "cells", 2)
+        outcomes = [None, None, real]
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path / "cells"),
+            patch("app.indexing_main.process_claim", side_effect=outcomes),
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.0),
+            patch("app.indexing_main.spawn_detached") as spawn,
+            patch("app.indexing_main._publish_cell_stats", new=MagicMock()),
+        ):
+            await _start_cell(app, MagicMock())
+        assert app.state.cell_claim is real
+        spawn.assert_called_once()
+        assert mock_container.logger().warning.call_count == 0
+        real.release()
+
     async def test_the_class_units_backfill_runs_on_the_record_consumers_loop_on_every_store(self) -> None:
         """It embeds through the consumers' VectorStore, whose clients belong to their loop, so it is
         scheduled there on ArangoDB too, not only on Neo4j."""

@@ -517,7 +517,7 @@ class MockTransactionStore:
                 ))
         return results
 
-    async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: List[AppUser], org_id: str) -> None:
         for user in users:
             doc = user.to_arango_base_user()
             doc["appName"] = user.app_name.value
