@@ -135,3 +135,58 @@ def test_parsing_role_drains_in_flight_parses_before_stopping_docling(tmp_path: 
     out, _ = proc.communicate(timeout=20)
     assert proc.returncode == 0, out
     assert events.read_text().split() == ["parsing-exit", "docling-term"], out
+
+
+def _run_with_curl(tmp_path: pathlib.Path, curl_body: str, env: dict[str, str], seconds: float) -> tuple[int, set[str], str]:
+    app = tmp_path / "app"
+    (app / "python").mkdir(parents=True)
+    (app / "backend").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name in ("python", "node"):
+        stub = bin_dir / name
+        stub.write_text(f'#!/bin/bash\ncase "$*" in *app.capacity*) exit 0 ;; esac\necho "{name} $*" >> {calls}\nexec sleep 60\n')
+        stub.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text(f"#!/bin/bash\n{curl_body}\n")
+    curl.chmod(0o755)
+    script = tmp_path / "process_monitor.sh"
+    script.write_text(SCRIPT.read_text().replace("/app/", f"{app}/"))
+    log = tmp_path / "monitor.log"  # a file, not a pipe: a monitor that exits leaves its stub children holding a pipe open
+    with log.open("w") as sink:
+        proc = subprocess.Popen(
+            ["bash", str(script)],
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin", "CHECK_INTERVAL": "1", "STARTUP_POLL_SECONDS": "1",
+                 "STARTUP_STALL_SECONDS": "1", "STARTUP_MAX_SECONDS": "3", **env},
+            stdout=sink, stderr=subprocess.STDOUT, text=True,
+        )
+        time.sleep(seconds)
+        code = proc.poll()
+        if code is None:
+            proc.terminate()
+            proc.wait(timeout=20)
+    out = log.read_text()
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    return (code if code is not None else -1), {ln.split("-m ", 1)[1].split()[0] for ln in lines if ln.startswith("python -m ")}, out
+
+
+REMOTE = {"USE_PARSING_SERVICE": "true", "PARSING_SERVICE_URL": "http://rel-parsing:8092"}
+
+
+def test_indexing_does_not_start_before_a_remote_parsing_service_is_ready(tmp_path: pathlib.Path) -> None:
+    code, modules, out = _run_with_curl(
+        tmp_path, 'case "$*" in *rel-parsing*) exit 22 ;; esac\nexit 0', REMOTE, seconds=8,
+    )
+    assert code == 1, out
+    assert "app.indexing_main" not in modules
+    assert "Remote Parsing service did not become healthy" in out
+
+
+def test_indexing_starts_once_a_remote_parsing_service_is_ready(tmp_path: pathlib.Path) -> None:
+    code, modules, out = _run_with_curl(
+        tmp_path, f'echo "$*" >> {tmp_path}/curls\nexit 0', REMOTE, seconds=5,
+    )
+    assert code == -1, out
+    assert "app.indexing_main" in modules
+    assert "http://rel-parsing:8092/health/ready" in (tmp_path / "curls").read_text()

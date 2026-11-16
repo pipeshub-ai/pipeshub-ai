@@ -109,7 +109,7 @@ spec:
             failureThreshold: {{ .Values.parsing.healthCheck.startupProbe.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: parsing
             periodSeconds: {{ .Values.parsing.healthCheck.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.parsing.healthCheck.readinessProbe.timeoutSeconds }}

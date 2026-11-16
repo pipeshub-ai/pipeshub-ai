@@ -142,6 +142,7 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-parsing 'value: "2"' present 'name: PARSING_MAX_CONCURRENT'
   expect local-parsing 'value: "8"' present 'name: PARSING_SERVICE_CONCURRENCY'
   expect local-parsing 'name: PARSING_UVICORN_WORKERS' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'path: /health/ready' present 'name: PIPESHUB_ROLE'
   expect local-parsing 'value: "4"' absent 'name: PARSING_UVICORN_WORKERS'
   expect local-parsing 'extra-marker' present 'name: PIPESHUB_ROLE'
   expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent

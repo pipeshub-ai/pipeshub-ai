@@ -19,10 +19,15 @@ def _services() -> tuple[dict, dict]:
 
 def test_parsing_reads_the_apps_redis_key_space_and_database() -> None:
     base, parsing = _services()
-    for key in ("REDIS_KV_PREFIX", "REDIS_DB"):
+    for key in ("REDIS_KV_PREFIX", "REDIS_DB", "PIPESHUB_BLOCK_PRIVATE_ADDRESSES"):
         assert _env(parsing)[key] == _env(base)[key], key
 
 
 def test_parsing_has_time_to_drain_before_the_kill() -> None:
     _, parsing = _services()
     assert "120s" in parsing["stop_grace_period"]
+
+
+def test_parsing_is_healthy_only_when_docling_answers() -> None:
+    _, parsing = _services()
+    assert parsing["healthcheck"]["test"][-1].endswith("/health/ready")

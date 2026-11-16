@@ -355,7 +355,10 @@ run_parsing_role() {
     trap cleanup_parsing_role SIGTERM SIGINT SIGQUIT
     start_docling
     spawn_parsing
-    await_services "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" || exit 1
+    # Docling is waited for too: a parse pod that cannot reach it would take parses and fail them.
+    await_services \
+        "Docling" "$DOCLING_PID" "http://localhost:8081/health" \
+        "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" || exit 1
     log "Parsing role started. Monitoring (checking every ${CHECK_INTERVAL}s)..."
     while true; do
         # Sleep in the background so a signal is handled at once, not after
@@ -419,6 +422,28 @@ else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
 fi
 
+# A remote Parsing service has no PID here, so it is polled by URL under the same overall bound. Indexing
+# recovers in-progress records the moment it starts, and a recovery call to an unready service would use up
+# a delivery attempt of each record.
+wait_url_ready() {
+    local name=$1 url=$2 began=$SECONDS limit
+    log "Waiting for $name health check..."
+    while true; do
+        limit=$((STARTUP_MAX_SECONDS - (SECONDS - began)))
+        [ "$limit" -le "$STARTUP_STALL_SECONDS" ] || limit=$STARTUP_STALL_SECONDS
+        [ "$limit" -ge 1 ] || limit=1
+        if curl -s -f --max-time "$limit" "$url" > /dev/null 2>&1; then
+            log "$name health check passed after $((SECONDS - began))s!"
+            return 0
+        fi
+        if [ $((SECONDS - began)) -ge "$STARTUP_MAX_SECONDS" ]; then
+            log "ERROR: $name did not become healthy within ${STARTUP_MAX_SECONDS}s"
+            return 1
+        fi
+        sleep "${STARTUP_POLL_SECONDS:-2}"
+    done
+}
+
 # The first failed wait ends the monitor, as it did when the waits were serial.
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     await_services \
@@ -430,6 +455,10 @@ else
     await_services \
         "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
         "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" || exit 1
+fi
+
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ] && [ "$RUN_LOCAL_PARSING" != "true" ]; then
+    wait_url_ready "Remote Parsing service" "${PARSING_SERVICE_URL%/}/health/ready" || exit 1
 fi
 
 start_indexing

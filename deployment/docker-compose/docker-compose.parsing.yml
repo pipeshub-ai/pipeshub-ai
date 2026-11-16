@@ -33,12 +33,14 @@ services:
       # Where the app keeps its configuration in Redis: the same key space and database.
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_DB=${REDIS_DB:-0}
+      # The same outbound-address policy as the app, for the model endpoints this service calls.
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
       - LOG_LEVEL=${LOG_LEVEL:-info}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8092/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8092/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 20

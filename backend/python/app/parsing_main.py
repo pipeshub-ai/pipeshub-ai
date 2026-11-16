@@ -463,6 +463,31 @@ async def health_check() -> JSONResponse:
     return JSONResponse(content=content)
 
 
+DOCLING_READY_TIMEOUT_SECONDS = 2.0
+
+
+@app.get("/health/ready")
+async def readiness() -> JSONResponse:
+    """Ready to take parses: this process is up and the Docling service it calls on localhost answers.
+
+    ``/health`` stays the liveness signal and does not look at Docling, so a busy Docling cannot get a
+    pod restarted; this one is for readiness probes, which only take the pod out of rotation.
+    """
+    import httpx
+
+    url = os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081").rstrip("/") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=DOCLING_READY_TIMEOUT_SECONDS) as client:
+            response = await client.get(url)
+        ready = response.status_code == 200
+    except httpx.HTTPError:
+        ready = False
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "unavailable", "docling": "ok" if ready else "unavailable"},
+    )
+
+
 def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:
     """Run the Parsing Service.
 
