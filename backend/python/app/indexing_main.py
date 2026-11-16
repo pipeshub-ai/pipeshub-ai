@@ -953,9 +953,10 @@ ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor: dict[str, int] = {}
 # A VRID whose mapping was kept because another org still holds points on it is
 # rechecked after this long, not every tick: until that org lets go, each pass
-# would repeat the same no-op delete. Per process, like the cursor.
+# would repeat the same no-op delete. Keyed by (org, VRID): on PostgreSQL each org
+# has its own mapping row for a shared VRID. Per process, like the cursor.
 ORPHAN_KEPT_RECHECK_SECONDS = 3600.0
-_orphan_kept_until: dict[str, float] = {}
+_orphan_kept_until: dict[tuple[str, str], float] = {}
 
 
 
@@ -1204,8 +1205,8 @@ async def _sweep_orphaned_virtual_record_mappings(
     offset = _orphan_sweep_cursor.get(org_id, 0)
     pages_scanned = 0
     now = time.monotonic()
-    for vrid in [v for v, until in _orphan_kept_until.items() if until <= now]:
-        del _orphan_kept_until[vrid]
+    for key in [k for k, until in _orphan_kept_until.items() if until <= now]:
+        del _orphan_kept_until[key]
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
@@ -1262,7 +1263,7 @@ async def _sweep_orphaned_virtual_record_mappings(
                 continue
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
-            if vrid in _orphan_kept_until:
+            if (org_of[vrid], vrid) in _orphan_kept_until:
                 continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
@@ -1278,7 +1279,7 @@ async def _sweep_orphaned_virtual_record_mappings(
                 swept += 1
                 swept_this_page += 1
             elif outcome == "kept":
-                _orphan_kept_until[vrid] = time.monotonic() + ORPHAN_KEPT_RECHECK_SECONDS
+                _orphan_kept_until[(org_of[vrid], vrid)] = time.monotonic() + ORPHAN_KEPT_RECHECK_SECONDS
         await pacer.pause()
 
         if len(page) < page_size:

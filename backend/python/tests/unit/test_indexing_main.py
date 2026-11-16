@@ -3145,7 +3145,15 @@ class TestOrphanSweepWhileAnotherOrgHoldsTheVrid:
 
         vdb.delete_points = _spy_delete
 
-        graph = _orphan_graph([{"_key": "vr-shared"}], records_by_vrid={})
+        graph = _orphan_graph([], records_by_vrid={})
+        rows = [{"_key": "vr-shared", "orgId": "o1"}]
+
+        async def _paged(collection, skip=0, limit=50, filters=None, sort_field=None, transaction=None,
+                         raise_on_error=False) -> list[dict]:
+            # Each org reads only its own mapping rows, as on PostgreSQL where every org has its own row.
+            return [r for r in rows if r["orgId"] == (filters or {}).get("orgId")][skip : skip + limit]
+
+        graph.get_documents_paginated = AsyncMock(side_effect=_paged)
         graph.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         released: list[str] = []
 
@@ -3161,13 +3169,13 @@ class TestOrphanSweepWhileAnotherOrgHoldsTheVrid:
         pipeline = MagicMock()
         pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=_cleanup)
 
-        async def sweep() -> int:
+        async def sweep(org_id: str = "o1") -> int:
             return await m._sweep_orphaned_virtual_record_mappings(
                 graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
-                org_id="o1",
+                org_id=org_id,
             )
 
-        return {"vdb": vdb, "deletes": deletes, "released": released, "sweep": sweep}
+        return {"vdb": vdb, "deletes": deletes, "released": released, "sweep": sweep, "rows": rows}
 
     @pytest.mark.asyncio
     async def test_a_held_vrid_is_not_counted_and_not_redone_every_tick(self, world) -> None:
@@ -3189,10 +3197,29 @@ class TestOrphanSweepWhileAnotherOrgHoldsTheVrid:
         assert await world["sweep"]() == 0, "inside the back-off the row is not rechecked"
         assert world["released"] == []
 
-        m._orphan_kept_until["vr-shared"] = 0.0  # the back-off ran out
+        m._orphan_kept_until[("o1", "vr-shared")] = 0.0  # the back-off ran out
         assert await world["sweep"]() == 1
         assert world["released"] == ["vr-shared"]
         assert m._orphan_kept_until == {}
+
+    @pytest.mark.asyncio
+    async def test_one_orgs_kept_row_does_not_hold_back_another_orgs_row(self, world) -> None:
+        """Two orgs each have their own mapping row for the same id, and a third org still holds points."""
+        from app.services.vector_db.models import VectorPoint
+
+        world["rows"].append({"_key": "vr-shared", "orgId": "o2"})
+        for org in ("o1", "o2"):
+            world["vdb"].collections["records"][f"{org}-1"] = VectorPoint(
+                id=f"{org}-1", dense_vector=[1.0],
+                payload={"metadata": {"orgId": org, "virtualRecordId": "vr-shared"}},
+            )
+
+        assert await world["sweep"]("o1") == 0
+        assert await world["sweep"]("o2") == 0
+
+        assert set(world["vdb"].collections["records"]) == {"b-1"}, "o2's points stayed behind o1's back-off"
+        assert world["deletes"] == ["records", "records"]
+        assert world["released"] == []
 
 
 # ===================================================================
