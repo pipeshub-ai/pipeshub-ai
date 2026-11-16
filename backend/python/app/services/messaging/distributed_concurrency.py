@@ -203,6 +203,10 @@ class DistributedConcurrencyManager(IDistributedLeaseManager):
         namespace = f"{self._key_namespace}:" if self._key_namespace else ""
         return f"{namespace}{self.key_prefix}:{pool}"
 
+    def pool_key(self, pool: str) -> str:
+        """The Redis key of *pool*'s lease set, the one the acquire script uses."""
+        return self._key(pool)
+
     def _client(self) -> Redis:
         """The Redis client bound to the calling event loop.
 
