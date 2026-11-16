@@ -189,7 +189,7 @@ def _service() -> tuple[TestClient, asyncio.Event]:
     return TestClient(app), gate_open
 
 
-def _post(client: TestClient):
+def _post(client: TestClient) -> httpx.Response:
     return client.post(
         "/api/v1/parse",
         files={"file": ("a.py", b"x = 1\n", "text/x-python")},

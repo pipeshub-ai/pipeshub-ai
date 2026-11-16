@@ -36,7 +36,6 @@ from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.json.json_parser import JSONParser
@@ -73,6 +72,7 @@ from app.services.docling.client import DoclingClient
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
+from app.services.parsing.load import parse_load, render_metrics
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
 from app.services.parsing.providers.local_docling_parser import LocalDoclingParser
 from app.services.parsing.providers.ocr_parser import OCRParser
@@ -80,7 +80,6 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
-from app.services.parsing.load import parse_load, render_metrics
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.lanes import lanes_health
 from app.services.resource_governor.probe import (

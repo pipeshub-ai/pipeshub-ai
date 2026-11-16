@@ -1,6 +1,5 @@
 """PIPESHUB_ROLE: `all` starts what it always did; `parsing` starts only the parse processes."""
 
-import os
 import pathlib
 import subprocess
 import time

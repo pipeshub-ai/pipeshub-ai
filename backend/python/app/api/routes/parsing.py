@@ -144,7 +144,7 @@ async def parse_file(
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
-    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
@@ -174,7 +174,7 @@ async def _parse_file(
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
-    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.

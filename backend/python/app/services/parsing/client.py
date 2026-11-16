@@ -43,8 +43,6 @@ from app.utils.converters.caption_map import apply_caption_map
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
     from app.modules.parsers.pdf.docling_processor import DoclingProcessor
-    from app.modules.parsers.pdf.docling_processor import DoclingProcessor
-    from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
 

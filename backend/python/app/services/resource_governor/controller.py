@@ -163,7 +163,7 @@ class ResourceGovernor:
             reserve_embedding_cpus=reserve_embedding_cpus,
         )
         if remote_parse_slots:
-            from app.services.parsing.remote_concurrency import lift_ceilings  # noqa: PLC0415
+            from app.services.parsing.remote_concurrency import lift_ceilings
             # Parsing runs in another pod: the ceilings hold that many parses, not this CPU's share.
             self._fleet_ceilings = lift_ceilings(self._fleet_ceilings, remote_parse_slots)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
