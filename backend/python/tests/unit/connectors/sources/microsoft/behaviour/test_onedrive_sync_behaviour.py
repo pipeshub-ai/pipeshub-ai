@@ -7,6 +7,7 @@ answered by an in-memory stub, and our databases are in-memory fakes.
 """
 
 import base64
+import contextlib
 import logging
 import re
 import sys
@@ -2867,6 +2868,33 @@ class TestReusedAddressOutsideAUserSync:
         await connector.reindex_records([db.records["f1"]])
 
         assert {p.email for p in db.record_permissions["f1"]} == {"ana@acme.com"}
+
+    async def test_a_delta_page_read_while_the_state_is_unreadable_is_read_again_once_it_can_be(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        """No grant can be judged, so the file is not saved; the delta link must stay, or the unchanged file is never
+        listed again once the store is back."""
+        self.shared_with_old_bo(tenant)
+        connector = await self.fresh_connector(db, checkpoints)
+        real_get = connector.config_service.get_config
+        down = True
+
+        async def get_config(path: str, *args: object, **kwargs: object) -> object:
+            if down and "/sourceAccounts" in path:
+                raise RuntimeError("store down")
+            return await real_get(path, *args, **kwargs)
+
+        connector.config_service.get_config = get_config
+        with contextlib.suppress(Exception):
+            await connector.run_sync()
+        assert "f1" not in db.records
+        assert (drive_checkpoint(checkpoints) or {}).get("deltaLink") is None
+
+        down = False
+        await connector.run_sync()
+
+        assert "f1" in db.records
+        assert {p.email for p in db.record_permissions["f1"]} == {"ana@acme.com", "bo@acme.com"}
 
     async def test_a_state_that_cannot_be_read_writes_nothing(self, cloud, tenant, db, checkpoints) -> None:
         self.shared_with_old_bo(tenant)

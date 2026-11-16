@@ -1056,7 +1056,14 @@ class OneDriveConnector(BaseConnector):
                 if unresolved_access is not None:
                     unresolved_access.append(item.id)
 
-            new_permissions = await self._convert_to_permissions(permission_result)
+            try:
+                new_permissions = await self._convert_to_permissions(permission_result)
+            except Exception as state_error:
+                # The account state could not be read, so no grant can be judged: the page is read again rather than
+                # moved past an item it did not save, which an unchanged item never brings back.
+                if hold_page_on_incomplete_walk:
+                    raise DrivePageIncompleteError(f"account state for item {item.id} could not be read") from state_error
+                raise
 
             if permission_failure is None:
                 # Graph's list is the item's whole effective access and does not say which
