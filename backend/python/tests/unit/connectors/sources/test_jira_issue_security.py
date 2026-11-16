@@ -815,11 +815,13 @@ class TestUnresolvedUserHolders:
             {"other": type("U", (), {"email": "k@example.com"})()})
         assert grants == [] and skipped == []  # no access, like a deactivated account: the other holders are written
 
-    def test_a_synced_account_without_an_email_in_the_directory_is_granted_the_email_on_the_holder(self) -> None:
+    def test_a_synced_account_without_an_email_in_the_directory_is_granted_by_its_account(self) -> None:
+        """By its source id, which reaches that linked user: the payload's email would reach whoever holds it in
+        PipesHub, or a new external person, since the linked user has none."""
         grants, skipped, _ = self._grants(
             {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}},
-            {"k": type("U", (), {"email": None})()})
-        assert [g.email for g in grants] == ["k@example.com"] and skipped == []
+            {"k": type("U", (), {"email": None, "source_user_id": "k"})()})
+        assert [(g.email, g.external_id) for g in grants] == [(None, "k")] and skipped == []
 
     def test_an_email_with_no_account_names_the_one_synced_account_holding_it(self) -> None:
         one = {"a": type("U", (), {"email": "k@example.com"})()}
