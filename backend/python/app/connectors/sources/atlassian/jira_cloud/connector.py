@@ -84,6 +84,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    check_unlisted_holders,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
@@ -1209,7 +1210,11 @@ class JiraConnector(BaseConnector):
                     # (PARENT_CHILD) — which a full sync deletes are still restored.
                     record = stub
                 record.is_placeholder = True
-                backfills.append((record, self._secure_ancestor_stub(record, issue, user_by_account_id)))
+                stub_grants = self._secure_ancestor_stub(record, issue, user_by_account_id)
+                await check_unlisted_holders(
+                    self, stub_grants, user_by_account_id
+                )
+                backfills.append((record, stub_grants))
                 if record.parent_external_record_id:
                     parent_refs.append(record.parent_external_record_id)
 
@@ -2861,6 +2866,7 @@ class JiraConnector(BaseConnector):
                     )
                     continue
 
+            await check_unlisted_holders(self, permissions, user_by_account_id or {})
             return permissions
 
         except Exception as e:
@@ -5351,6 +5357,9 @@ class JiraConnector(BaseConnector):
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
             )
+            await check_unlisted_holders(
+                self, permissions, user_by_account_id
+            )
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                     not in self._skipped_holders_logged:
                 self._skipped_holders_logged.add(logged)
@@ -7228,6 +7237,10 @@ class JiraConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
+            )
+            # The synced directory alone: this map also holds the issue's own people, read from its payload.
+            await check_unlisted_holders(
+                self, permissions, synced_user_by_account_id or {}
             )
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
@@ -17,6 +18,7 @@ from app.connectors.sources.atlassian.jira_data_center_personal.connector import
     JiraDataCenterPersonalConnector,
 )
 from app.models.entities import AppUser, RecordType, TicketRecord
+from tests.support.in_memory_config import InMemoryConfigService
 
 
 def _connector(cls=JiraDataCenterConnector) -> JiraDataCenterConnector:
@@ -243,3 +245,30 @@ class TestParentKeyLookup:
             return_value=MagicMock(status=200, json=MagicMock(return_value={"id": "8"})))))
         assert await connector._resolve_issue_id_from_key_or_id(issue_id=None, issue_key="P-8", context="x") == "8"
         assert connector._issue_id_to_key_cache["8"] == "P-8"
+
+
+class TestHoldersOutsideTheListingGoThroughTheAccountCheck:
+    """A level holder resolved from the issue payload (not in the user listing) is checked by its user key."""
+
+    async def test_a_payload_holders_address_handed_to_another_account_loses_the_earlier_accounts_grants(self) -> None:
+        connector = _connector()
+        dep = connector.data_entities_processor
+        dep.get_app_user_links = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="pipeshub-guest"))
+        dep.remove_user_access_to_connector = AsyncMock(return_value=1)
+        accounts = SourceAccounts(dep, "c", InMemoryConfigService(), logging.getLogger("t"))
+        dep.source_accounts = MagicMock(return_value=accounts)
+
+        def level(key: str) -> IssueSecurityContext:
+            return IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": [
+                {"type": "user", "parameter": key, "user": {"key": key, "emailAddress": "guest@example.org", "active": True}}]})
+
+        connector._issue_security["10"] = level("JIRAUSER1")
+        await connector._build_issue_records([_issue("1", "P-1", level="1")], "10", [_user("u1", "u1@example.com")])
+        dep.remove_user_access_to_connector.assert_not_awaited()
+        connector._issue_security["10"] = level("JIRAUSER2")
+        await connector._build_issue_records([_issue("2", "P-2", level="1")], "10", [_user("u1", "u1@example.com")])
+
+        dep.remove_user_access_to_connector.assert_awaited_once_with("c", "guest@example.org")
+        assert accounts.holds("guest@example.org", "JIRAUSER2") and not accounts.holds("guest@example.org", "JIRAUSER1")

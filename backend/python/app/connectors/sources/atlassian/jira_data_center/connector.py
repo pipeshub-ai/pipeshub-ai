@@ -72,6 +72,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
     inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    check_unlisted_holders,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
@@ -2369,6 +2370,7 @@ class JiraDataCenterConnector(BaseConnector):
                 else:
                     self.logger.warning(f"⚠️  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
 
+            await check_unlisted_holders(self, permissions, user_by_key or {})
             return permissions
 
         except Exception as e:
@@ -4266,7 +4268,11 @@ class JiraDataCenterConnector(BaseConnector):
                 else:
                     record = stub
                 record.is_placeholder = True
-                backfills.append((record, self._secure_ancestor_stub(record, issue, level_users) if issue else []))
+                stub_grants = self._secure_ancestor_stub(record, issue, level_users) if issue else []
+                await check_unlisted_holders(
+                    self, stub_grants, level_users
+                )
+                backfills.append((record, stub_grants))
                 if record.parent_external_record_id:
                     parent_refs.append(record.parent_external_record_id)
 
@@ -4902,6 +4908,9 @@ class JiraDataCenterConnector(BaseConnector):
                         app_roles_mapping=self._app_roles_mapping,
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
+                    )
+                    await check_unlisted_holders(
+                        self, permissions, level_users
                     )
                     if (
                         issue_record.access_rule == AccessRule.RESTRICTED and not issue_record.rewrite_permissions
@@ -6527,6 +6536,10 @@ class JiraDataCenterConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
+            )
+            # The synced directory alone: the ChainMap also holds the issue's own people, read from its payload.
+            await check_unlisted_holders(
+                self, permissions, synced_users
             )
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
                 # Stored open, and the issue is not known to be without a level now: closed, not left readable
