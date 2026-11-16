@@ -517,7 +517,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
           uv pip install --system -e ".[dev]"
 
       - name: Run the spend-safety suites on a real Redis
@@ -526,6 +526,9 @@ jobs:
           SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
           # A test that needs the real Redis fails here, never skips, if the variable goes missing.
           SPEND_IT_REQUIRE_REDIS: "1"
+        # Four workers (the runner has four CPUs), each on its own Redis logical database (tests/support/spend_world.py
+        # moves the URL's database up by the worker index), so no two workers share a keyspace. worksteal hands the
+        # longest simulations out first-come, so one 1000-job case does not hold a worker while others sit idle.
         run: |
           pytest tests/integration/spend \
             tests/unit/services/llm_gateway/test_fleet_breaker.py \
@@ -533,7 +536,8 @@ jobs:
             tests/unit/modules/pipeline/test_pause_budget_simulation.py \
             tests/unit/services/messaging/test_fleet_state_startup.py \
             -m "not live_smoke" \
-            -v --timeout=900 --session-timeout=1500 --junitxml="$RUNNER_TEMP/spend.xml"
+            -n 4 --dist worksteal --durations=15 \
+            -v --timeout=600 --session-timeout=1200 --junitxml="$RUNNER_TEMP/spend.xml"
 
       # A store that is down must fail these tests, never skip them.
       - name: Fail on skipped tests
