@@ -50,7 +50,6 @@ from app.services.parsing.interface import (
 )
 from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
-from app.telemetry.backend import METRICS_BACKEND
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
     classify,
@@ -72,6 +71,7 @@ from app.services.resource_governor.memory_domain import (
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
+from app.telemetry.backend import METRICS_BACKEND
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
