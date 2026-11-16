@@ -25,7 +25,7 @@ import pytest
 from app.capacity.member_budget import MemberBudget as RealLedger
 from app.modules.parse_engine import wiring
 from app.services.messaging import consumer_concurrency as cc
-from app.services.resource_governor import StartRateLimiter
+from app.services.resource_governor.gate import StartRateLimiter
 from app.services.resource_governor.models import ParseTier, Pool
 from tests.support.fake_member_budget import FakeMemberBudget
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
@@ -122,9 +122,12 @@ def _measure(
     # A 16-CPU container's steady-state limits (the governor ramps to them; no sampler runs here).
     governor._registry.set(Pool.HEAVY_PARSE, 8)
     governor._registry.set(Pool.INDEX_HEAVY, 16)
-    # The governor's start-rate limiter spaces real heavy parses at about one per two seconds in absolute time; this
-    # simulation runs durations scaled down by ~100x, so it is opened wide (it is not what is under test).
-    governor.gate(Pool.HEAVY_PARSE)._rate_limiter = StartRateLimiter(0.0005, 100_000)
+    if mode != "classes":
+        # The legacy control spaces every parse, small ones included, at about one per two seconds in absolute time;
+        # this simulation runs durations scaled down ~100x, so the control opens it (what it shows is the queueing).
+        governor.gate(Pool.HEAVY_PARSE)._rate_limiter = StartRateLimiter(0.0005, 100_000)
+    # With classes on the governor's own start-rate limiter stays as shipped: large parses wait for start tokens at
+    # the heavy gate and the small ones must never queue behind them.
     host = SimpleNamespace(governor=governor, logger=logging.getLogger("test.sim"), priority_lane=None)
     try:
         return asyncio.run(_run(host, large=large, make_large=make_large))

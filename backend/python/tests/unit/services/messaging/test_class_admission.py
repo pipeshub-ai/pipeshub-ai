@@ -272,6 +272,54 @@ def test_a_big_wait_that_times_out_is_uncounted_and_carries_its_first_wait(monke
     assert err.parse_enqueued_at_ms is not None and err.parse_enqueued_at_ms <= time.time() * 1000
 
 
+def _fill_the_governors_heavy_gate(h: object) -> list[object]:
+    """Take every permit of the governor's HEAVY_PARSE gate directly, so a class-gate grant then waits behind it."""
+    gate = h.governor.gate(Pool.HEAVY_PARSE)  # type: ignore[attr-defined]
+    limit = h.governor.limit(Pool.HEAVY_PARSE)  # type: ignore[attr-defined]
+    return [gate, limit]
+
+
+def test_a_big_wait_at_the_governors_gate_is_also_handed_back_uncounted(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> cc.ParseAdmissionTimeout:
+        h = host()
+        ctx = wiring.class_context(msg("pdf", 150 * MIB).payload)
+        gate, limit = _fill_the_governors_heavy_gate(h)
+        for _ in range(limit):
+            assert await gate.acquire(1, 1.0, spaced=False)  # type: ignore[attr-defined]
+        with pytest.raises(cc.ParseAdmissionTimeout) as err:
+            await cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=0.3, ctx=ctx)
+        return err.value
+
+    err = asyncio.run(run())
+    assert isinstance(err, cc.BigAdmissionTimeout)
+    assert err.counts_toward_backstop is False and err.pauses_consumer is False
+    assert err.parse_enqueued_at_ms is not None and err.parse_enqueued_at_ms <= time.time() * 1000
+
+
+def test_a_big_wait_is_bounded_by_parse_big_wait_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PARSE_BIG_WAIT_SECONDS", "0.3")
+
+    async def run() -> float:
+        h = host()
+        ctx = wiring.class_context(msg("pdf", 150 * MIB).payload)
+        gate, limit = _fill_the_governors_heavy_gate(h)
+        for _ in range(limit):
+            assert await gate.acquire(1, 1.0, spaced=False)  # type: ignore[attr-defined]
+        started = time.monotonic()
+        with pytest.raises(cc.BigAdmissionTimeout):
+            await cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=30, ctx=ctx)  # the caller's own bound is far longer
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 5.0
+
+
+def test_the_big_wait_setting_defaults_to_ten_minutes_and_rejects_nonsense() -> None:
+    assert wiring.big_wait_seconds({}) == 600.0
+    assert wiring.big_wait_seconds({"PARSE_BIG_WAIT_SECONDS": "90"}) == 90.0
+    for bad in ("0", "-5", "abc", "nan", "inf"):
+        assert wiring.big_wait_seconds({"PARSE_BIG_WAIT_SECONDS": bad}) == 600.0
+
+
 def test_download_ahead_has_places_per_class(monkeypatch: pytest.MonkeyPatch) -> None:
     """small 4 places, big 2; a full big set does not stop a small record's download."""
     monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
@@ -330,3 +378,46 @@ def test_memory_goes_ahead_only_for_small_requests_up_to_a_gib() -> None:
     assert not wiring.memory_goes_ahead(L, 1 << 20)
     assert not wiring.memory_goes_ahead(None, 1 << 20)
     assert not wiring.memory_goes_ahead(S, 0)
+
+
+def test_a_small_cpu_parse_never_waits_behind_a_large_one_waiting_for_a_start_token() -> None:
+    """With the governor's own start-rate limiter, large parses queue at the heavy gate for start tokens; a small
+    workbook (a CPU parse that skips the limiter) is admitted at once, not behind them."""
+
+    async def record(h: SimpleNamespace, payload: dict, hold: float, out: list, kind: str) -> None:
+        level = cc.dispatch_tier(h, SimpleNamespace(payload=payload))
+        ctx = cc.class_context(h, payload)
+        started = time.monotonic()
+        index = await cc.acquire_index_slot(h, level, **cc.class_kwargs(ctx))
+        cc.reclass_index_slot(index, ctx, payload["sizeInBytes"])
+        try:
+            parse = await cc.acquire_parsing_slot(h, ParseTier.HEAVY, payload["sizeInBytes"], timeout=60.0, **cc.class_kwargs(ctx))
+            out.append((kind, time.monotonic() - started))
+            await asyncio.sleep(hold)
+            cc.release_admission(parse)
+        finally:
+            cc.release_admission(index)
+
+    async def run() -> list[float]:
+        h = host()
+        h.governor._registry.set(Pool.HEAVY_PARSE, 8)
+        h.governor._registry.set(Pool.INDEX_HEAVY, 16)
+        out: list = []
+        tasks = [
+            asyncio.create_task(record(
+                h, {"extension": "pdf", "mimeType": "application/pdf", "orgId": "o", "recordId": f"l{i}", "sizeInBytes": 150 * MIB},
+                3.0, out, "large",
+            ))
+            for i in range(8)
+        ]
+        await asyncio.sleep(0.1)
+        for i in range(20):
+            tasks.append(asyncio.create_task(record(
+                h, {"extension": "xlsx", "mimeType": "", "orgId": "o", "recordId": f"s{i}", "sizeInBytes": 1 * MIB}, 0.02, out, "small",
+            )))
+            await asyncio.sleep(0.05)
+        await asyncio.gather(*tasks)
+        return sorted(w for kind, w in out if kind == "small")
+
+    waits = asyncio.run(run())
+    assert waits[-1] < 0.5, waits  # without the fix the slowest small waits 1.5-2 s for a start token

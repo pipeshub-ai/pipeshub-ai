@@ -81,6 +81,14 @@ async def test_the_call_carries_its_class_and_a_deadline_for_a_small_file(monkey
     assert 60_000 <= int(sent[-1][PARSE_DEADLINE_HEADER]) <= 120_000
 
 
+async def test_the_deadline_follows_the_estimated_parse_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """min(120, max(60, 4 x estimate)): 20 s of parse is a deadline of 80 s, not a fixed 60 s."""
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    pools.set_class(CostClass.SMALL, 20.0)
+    _, sent = await _parse(DoclingClient(service_url="http://docling.test"))
+    assert int(sent[-1][PARSE_DEADLINE_HEADER]) == 80_000
+
+
 async def test_a_big_file_carries_its_class_and_no_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PARSE_ADMISSION", "classes")
     pools.set_class(CostClass.LARGE)

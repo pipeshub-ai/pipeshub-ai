@@ -3810,7 +3810,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         # The size and what the inspection found are known now: the index permit
                                         # moves to its class in place.
                                         if class_ctx is not None and event.data is not None:
-                                            class_ctx = class_ctx.inspected(event.data.pages, scanned=event.data.scanned)
+                                            class_ctx = class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)
                                         concurrency.reclass_index_slot(index_admission, class_ctx, size_bytes)
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,

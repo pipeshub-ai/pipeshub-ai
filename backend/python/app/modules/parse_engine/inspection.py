@@ -19,19 +19,34 @@ _logger = logging.getLogger(__name__)
 class InspectedFacts:
     pages: int | None = None
     scanned: bool | None = None
+    cells: int | None = None  # a workbook's cell area
 
 
 def wants_inspection(extension: str | None, mime_type: str | None, content: object) -> bool:
-    """A PDF whose bytes are in hand, with classes on."""
+    """A PDF or an Office document whose bytes are in hand, with classes on."""
     return (
         wiring.classes_enabled()
         and isinstance(content, (bytes, bytearray))
-        and wiring.format_kind(extension, mime_type) is FormatKind.PDF
+        and wiring.format_kind(extension, mime_type) in _INSPECTED
     )
 
 
-async def inspect_facts(content: bytes, *, label: str = "") -> InspectedFacts:
-    """Page count and scanned flag of a PDF; empty when it cannot be read cheaply."""
+_INSPECTED = (FormatKind.PDF, FormatKind.DOCX, FormatKind.PPTX, FormatKind.XLSX)
+
+
+async def inspect_facts(
+    content: bytes, *, label: str = "", extension: str | None = None, mime_type: str | None = None
+) -> InspectedFacts:
+    """Page count and scanned flag of a PDF, the page or slide count of a docx or pptx, or the cell area of an
+    xlsx; empty when it cannot be read cheaply."""
+    kind = wiring.format_kind(extension, mime_type)
+    if kind in (FormatKind.DOCX, FormatKind.PPTX, FormatKind.XLSX):
+        import asyncio
+
+        from app.modules.parse_engine.office_facts import office_facts
+
+        office = await asyncio.to_thread(office_facts, bytes(content))
+        return InspectedFacts(pages=office.pages, cells=office.cells)
     from app.modules.parsers.pdf.untrusted_pdf import inspect_for_class
 
     facts = await inspect_for_class(bytes(content), label=label)

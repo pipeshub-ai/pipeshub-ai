@@ -30,6 +30,7 @@ __all__ = [
     "Route",
     "WidthBudget",
     "current_class",
+    "current_est_seconds",
     "enter_permit",
     "lane_permit",
     "parse_scope",
@@ -39,6 +40,7 @@ __all__ = [
 ]
 
 _class_var: contextvars.ContextVar[CostClass | None] = contextvars.ContextVar("parse_class", default=None)
+_est_var: contextvars.ContextVar[float | None] = contextvars.ContextVar("parse_est_seconds", default=None)
 _permit_var: contextvars.ContextVar[object | None] = contextvars.ContextVar("parse_permit", default=None)
 _unscoped = 0
 _unscoped_lock = threading.Lock()
@@ -101,10 +103,16 @@ def _reset(var: contextvars.ContextVar, token: contextvars.Token) -> None:
         var.set(None)
 
 
-def set_class(cls: CostClass | None) -> None:
+def set_class(cls: CostClass | None, est_seconds: float | None = None) -> None:
     """The class of the record this task is processing, for everything downstream of its parse admission
-    (the embedding request carries it as ``X-Parse-Class``). It lives as long as the task's context."""
+    (the embedding request carries it as ``X-Parse-Class``), and its estimated parse seconds (the Docling
+    call's deadline comes from them). It lives as long as the task's context."""
     _class_var.set(cls)
+    _est_var.set(est_seconds)
+
+
+def current_est_seconds() -> float | None:
+    return _est_var.get()
 
 
 def enter_permit(permit: object | None) -> Callable[[], None]:

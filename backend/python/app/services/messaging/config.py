@@ -101,6 +101,7 @@ class PipelineEventData(BaseModel):
     # Inspected facts (PARSE_ADMISSION=classes), carried by START_PARSING; None when nothing was inspected.
     pages: int | None = None
     scanned: bool | None = None
+    cells: int | None = None
 
 
 class PipelineEvent(BaseModel):

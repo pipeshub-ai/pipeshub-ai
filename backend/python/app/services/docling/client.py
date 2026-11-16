@@ -226,14 +226,14 @@ class DoclingClient(BaseServiceClient):
         from app.capacity.classes import CostClass
         from app.config.constants.ai_models import PARSE_CLASS_HEADER
         from app.modules.parse_engine.engines import docling_deadline_s
-        from app.modules.parse_engine.pools import current_class
+        from app.modules.parse_engine.pools import current_class, current_est_seconds
 
         cls = current_class()
         if cls is None:
             return {}
         headers = {PARSE_CLASS_HEADER: cls.value}
         if cls is CostClass.SMALL:
-            headers[PARSE_DEADLINE_HEADER] = str(int(docling_deadline_s(0.0) * 1000))
+            headers[PARSE_DEADLINE_HEADER] = str(int(docling_deadline_s(current_est_seconds() or 0.0) * 1000))
         return headers
 
     async def _call_parse_pdf(self, record_name: str, pdf_binary: bytes, form_data: dict) -> httpx.Response:

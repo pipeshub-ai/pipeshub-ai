@@ -1912,14 +1912,20 @@ class EventProcessor:
                         record_id=record_id, tier=classify(extension, mime_type), size_bytes=size_bytes
                     ),
                 )
-                inspected = await inspect_facts(file_content, label=record_name)
+                inspected = await inspect_facts(
+                    file_content, label=record_name, extension=extension, mime_type=mime_type
+                )
             yield PipelineEvent(
                 event=IndexingEvent.START_PARSING,
                 data=PipelineEventData(
                     record_id=record_id,
                     tier=classify(extension, mime_type),
                     size_bytes=size_bytes,
-                    **({"pages": inspected.pages, "scanned": inspected.scanned} if inspected.pages else {}),
+                    **(
+                        {"pages": inspected.pages, "scanned": inspected.scanned}
+                        if inspected.pages
+                        else {"cells": inspected.cells} if inspected.cells else {}
+                    ),
                 ),
             )
 

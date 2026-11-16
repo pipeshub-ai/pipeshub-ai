@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 import os
 import time
 import weakref
@@ -113,6 +114,26 @@ def classes_enabled(environ: Mapping[str, str] | None = None) -> bool:
     return admission_mode(environ) == "classes"
 
 
+BIG_WAIT_ENV = "PARSE_BIG_WAIT_SECONDS"
+BIG_WAIT_DEFAULT_S = 600.0
+
+
+def big_wait_seconds(environ: Mapping[str, str] | None = None) -> float:
+    """How long a large or huge record waits for its turn at the gates before it goes back to the broker."""
+    env = os.environ if environ is None else environ
+    raw = (env.get(BIG_WAIT_ENV) or "").strip()
+    if not raw:
+        return BIG_WAIT_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not math.isfinite(value) or value <= 0:
+        _logger.warning("%s=%r is not a positive number; using %s", BIG_WAIT_ENV, raw, BIG_WAIT_DEFAULT_S)
+        return BIG_WAIT_DEFAULT_S
+    return value
+
+
 def assert_compatible(environ: Mapping[str, str] | None = None) -> None:
     if classes_enabled(environ) and parse_lanes_mode(environ) == "on":
         raise AdmissionConfigError(
@@ -185,6 +206,7 @@ class ClassContext:
     first_seen_ms: int | None = None  # epoch ms the record first queued for parsing; a hand-back keeps it
     pages: int | None = None  # inspected facts (START_INSPECT): they replace the size prior of the estimate
     scanned: bool | None = None
+    cells: int | None = None  # a workbook's cell area
 
     def facts(self) -> dict[str, Any]:
         """The inspected facts the estimator takes, none when nothing was inspected."""
@@ -193,13 +215,22 @@ class ClassContext:
             out["pages"] = self.pages
         if self.scanned is not None:
             out["scanned"] = self.scanned
+        if self.cells is not None:
+            out["cells"] = self.cells
         return out
 
-    def inspected(self, pages: int | None = None, *, scanned: bool | None = None) -> ClassContext:
+    def inspected(
+        self, pages: int | None = None, *, scanned: bool | None = None, cells: int | None = None
+    ) -> ClassContext:
         """This context with what the inspection found; unchanged when it found nothing."""
-        if pages is None and scanned is None:
+        if pages is None and scanned is None and cells is None:
             return self
-        return dataclasses.replace(self, pages=pages if pages is not None else self.pages, scanned=scanned)
+        return dataclasses.replace(
+            self,
+            pages=pages if pages is not None else self.pages,
+            scanned=scanned,
+            cells=cells if cells is not None else self.cells,
+        )
 
     def first_seen_s(self, clock: Callable[[], float] = time.monotonic) -> float | None:
         if self.first_seen_ms is None:

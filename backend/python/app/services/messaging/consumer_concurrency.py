@@ -1924,13 +1924,25 @@ async def _acquire_parsing_slot_by_class(
     )
     request = dataclasses.replace(request, mem_bytes=0)  # memory is admitted by the record reservation (the governor's budget)
     started = time.monotonic()
+    big = est.cls in BIG_CLASSES
+    if big:
+        # A big record waits at most PARSE_BIG_WAIT_SECONDS for its turn (at the class gate and the governor's gate
+        # together), then goes back to the broker uncounted and keeps its first-wait time.
+        bound = wiring.big_wait_seconds()
+        timeout = bound if timeout is None else min(timeout, bound)
+
+    def _handed_back(pool: str) -> ParseAdmissionTimeout:
+        waited = time.monotonic() - started
+        if big:
+            return BigAdmissionTimeout(
+                pool, waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
+            )
+        return ParseAdmissionTimeout(pool, waited)
+
     try:
         ticket = await gate.acquire(request, deadline_s=timeout, cancel=wiring.NEVER)
     except AdmissionTimeout:
-        waited = time.monotonic() - started
-        if est.cls in BIG_CLASSES:
-            raise BigAdmissionTimeout(gate.name, waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)) from None
-        raise ParseAdmissionTimeout(gate.name, waited) from None
+        raise _handed_back(gate.name) from None
     inner: Admission | None = None
     if not est.needs_docling_permit:
         try:
@@ -1942,10 +1954,15 @@ async def _acquire_parsing_slot_by_class(
                 # A small parse is light: the heavy start-rate limiter exists to space memory-heavy starts.
                 spaced=est.cls is not CostClass.SMALL,
             )
+        except ParseAdmissionTimeout as exc:
+            ticket.release()
+            if big:
+                raise _handed_back(exc.pool) from None
+            raise
         except BaseException:
             ticket.release()
             raise
-    class_pools.set_class(est.cls)  # downstream (the embedding request) reads it; it ends with the task
+    class_pools.set_class(est.cls, est.est_seconds)  # downstream (the embedding request) reads it; it ends with the task
     undo = class_pools.enter_permit(ticket if not est.needs_docling_permit else None)
 
     def _release() -> None:
