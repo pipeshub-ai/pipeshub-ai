@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 APP = Path(__file__).resolve().parents[4] / "app"
 INDEXING_PATHS = [APP / "modules" / "parsers", APP / "modules" / "transformers", APP / "modules" / "extraction",
                   APP / "modules" / "named_entities", APP / "modules" / "entity_resolution",
@@ -88,9 +90,15 @@ PAID_CALL_PATHS = [
     APP / "events" / "processor.py",
     APP / "modules" / "pipeline",
 ]
-_RAW_CALL = re.compile(r"^(ainvoke|invoke|astream|stream|agenerate|generate|a?embed_\w+)$")
-# A receiver that is a gateway: the call is the gateway's own.
-_GATEWAY_RECEIVER = re.compile(r"(get_llm_gateway\(\)|get_embedding_gateway\(\)|\bgateway\b|^self\._gateway)")
+_RAW_CALL = re.compile(
+    r"^(ainvoke|invoke|astream|astream_events|astream_log|stream|agenerate|generate|abatch|batch"
+    r"|a?embed_(query|documents|images?|content|texts?|batch))$"
+)
+# The names a gateway goes by in the paid modules.
+_GATEWAYS = frozenset({
+    "get_llm_gateway()", "get_embedding_gateway()", "gateway", "llm_gateway", "embedding_gateway", "self._gateway",
+    "self.gateway", "self._llm_gateway", "self._embedding_gateway",
+})
 
 # (file relative to app/, enclosing function) -> why a raw call is allowed there. A listed function that stops existing
 # fails the test, so the list cannot rot into permission for something else.
@@ -108,50 +116,56 @@ RAW_CALL_ALLOWANCES = {
         "the per-attempt body of the loop whose retry decision is EmbeddingGateway.decide (asserted below)",
     ("modules/transformers/vectorstore.py", "_process_image_embeddings"):
         "multimodal providers: each paid request inside them goes through EmbeddingGateway.call (asserted below)",
+    ("modules/parsers/pdf/opencv_layout_analyzer.py", "_rasterize_page"): "a PDF byte stream, not a model",
     ("modules/named_entities/strategies/agent/transport.py", "_stream"):
         "an agent turn streamed under the indexing slot; the agent's retries are off (transports)",
 }
 
 
+def _is_gateway(receiver: ast.AST) -> bool:
+    """Whether ``receiver`` is, by name, a gateway (``get_llm_gateway()``, ``gateway``, ``self._gateway`` ...), and not an
+    object that merely has one in its name (``gateway.model``)."""
+    return ast.unparse(receiver) in _GATEWAYS
+
+
 def _raw_calls(path: Path) -> list[tuple[int, str, str]]:
-    """(line, attribute, enclosing function) of every call to a model or embedder method that is not a gateway's, whether it
-    is called (``model.ainvoke(x)``) or handed over to be called (``asyncio.to_thread(embeddings.embed_documents, x)``)."""
+    """(line, attribute, enclosing function) of every use of a model or embedder method that is not a gateway's: called
+    (``model.ainvoke(x)``), handed over (``asyncio.to_thread(embeddings.embed_documents, x)``, ``functools.partial``),
+    aliased (``call = model.ainvoke``) or looked up by name (``getattr(model, "ainvoke")``). Inside a gateway call only a
+    method reference passed to it, or a call in a deferred ``lambda``, is the gateway's own; an eagerly evaluated argument
+    (``gateway.invoke(llm, llm.invoke(m))``) runs before the gateway starts."""
     tree = ast.parse(path.read_bytes())
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     found = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            candidates = [node.func]
-        elif isinstance(node, ast.Call):
-            candidates = []
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and _RAW_CALL.match(node.attr):
+            attribute, receiver = node.attr, node.value
+        elif (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+            and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)
+            and _RAW_CALL.match(node.args[1].value)
+        ):
+            attribute, receiver = node.args[1].value, node.args[0]
         else:
             continue
-        # A method passed by reference: an argument that is itself ``receiver.method``.
-        candidates += [a for a in [*node.args, *(k.value for k in node.keywords)] if isinstance(a, ast.Attribute)]
-        for target in candidates:
-            if not _RAW_CALL.match(target.attr) or _GATEWAY_RECEIVER.search(ast.unparse(target.value)):
-                continue
-            # Handed to a gateway to call (a method reference, or inside a deferred ``lambda`` passed to it): its own. An
-            # eagerly evaluated argument (``gateway.invoke(llm, llm.invoke(m))``) runs before the gateway starts: raw.
-            by_reference = target is not node.func
-            inside_gateway = (
-                isinstance(node.func, ast.Attribute) and bool(_GATEWAY_RECEIVER.search(ast.unparse(node.func.value)))
-                and by_reference
-            )
-            ancestor, crossed_deferred = parents.get(node), False
-            child: ast.AST = node
-            while ancestor is not None and not inside_gateway:
-                crossed_deferred = crossed_deferred or isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef))
-                if isinstance(ancestor, ast.Call) and isinstance(ancestor.func, ast.Attribute) \
-                        and _GATEWAY_RECEIVER.search(ast.unparse(ancestor.func.value)) and crossed_deferred:
-                    inside_gateway = True
-                child, ancestor = ancestor, parents.get(ancestor)
-            if inside_gateway:
-                continue
-            scope: ast.AST | None = node
-            while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                scope = parents.get(scope)
-            found.append((target.lineno, target.attr, scope.name if scope is not None else "<module>"))  # type: ignore[union-attr]
+        if _is_gateway(receiver):
+            continue
+        child: ast.AST = node
+        ancestor = parents.get(node)
+        crossed_deferred, steps, exempt = False, 1, False
+        while ancestor is not None:
+            crossed_deferred = crossed_deferred or isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(ancestor, ast.Call) and isinstance(ancestor.func, ast.Attribute) and _is_gateway(ancestor.func.value):
+                # A method reference passed straight to the gateway, or anything inside a callback it will call.
+                exempt = crossed_deferred or (steps == 1 and child is node)
+                break
+            child, ancestor, steps = ancestor, parents.get(ancestor), steps + 1
+        if exempt:
+            continue
+        scope: ast.AST | None = node
+        while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = parents.get(scope)
+        found.append((node.lineno, attribute, scope.name if scope is not None else "<module>"))  # type: ignore[union-attr]
     return found
 
 
@@ -244,3 +258,31 @@ def test_the_scan_flags_a_raw_call_evaluated_eagerly_as_a_gateway_argument(tmp_p
     assert [attr for _line, attr, _function in found] == ["invoke"]
     deferred = _scan(tmp_path, "async def f(e, t):\n    return await get_embedding_gateway().call(lambda: e.aembed_documents(t))\n")
     assert deferred == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "async def f(m):\n    return await m.ainvoke('x')\n",
+        "import functools\nasync def f(m):\n    return await functools.partial(m.ainvoke, 'x')()\n",
+        "async def f(m):\n    call = m.ainvoke\n    return await call('x')\n",
+        "async def f(m):\n    return await getattr(m, 'ainvoke')('x')\n",
+        "async def f(gateway):\n    return await gateway.model.ainvoke('x')\n",
+        "async def f(m, other):\n    return await get_llm_gateway().invoke(m, await other.ainvoke('x'))\n",
+        "async def f(m, xs):\n    return await m.abatch(xs)\n",
+    ],
+    ids=["direct", "partial", "alias", "getattr", "receiver-named-gateway", "eager-argument", "abatch"],
+)
+def test_the_scan_names_every_shape_of_a_raw_paid_call(tmp_path: Path, source: str) -> None:
+    assert _scan(tmp_path, source), "a raw paid call the lint does not see"
+
+
+def test_the_scan_still_accepts_what_goes_through_a_gateway(tmp_path: Path) -> None:
+    source = (
+        "async def f(llm, m, self):\n"
+        "    await get_llm_gateway().invoke(llm, m)\n"
+        "    await get_embedding_gateway().call(lambda: llm.aembed_query('x'))\n"
+        "    await get_embedding_gateway().call(llm.aembed_query)\n"
+        "    await self._gateway.call(lambda: llm.ainvoke(m))\n"
+    )
+    assert _scan(tmp_path, source) == []

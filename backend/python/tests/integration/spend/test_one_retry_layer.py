@@ -83,10 +83,11 @@ async def test_one_request_per_attempt(monkeypatch: pytest.MonkeyPatch, site: st
 
 
 async def test_negative_control_sdk_defaults_multiply_the_sends(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Built without the indexing setting, the OpenAI client retries a 429 twice inside each gateway attempt: nine requests
-    for one logical call (and for a 500 the gateway stands back, seeing the SDK has already repeated it)."""
+    """Built without the indexing setting, the OpenAI client retries a 429 twice inside each gateway attempt: more requests
+    reach the provider than the three one logical call is allowed (nine, until the process breaker opens after five failures
+    and the next attempt is refused: six)."""
     total, _ = await _requests_for_one_logical_call(monkeypatch, "openAI", sdk_retries=None, status=429)
-    assert total == MAX_ATTEMPTS * 3
+    assert total > MAX_ATTEMPTS
 
 
 @pytest.mark.parametrize("provider", ["openAI", "openAICompatible", "together"])

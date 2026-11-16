@@ -51,6 +51,8 @@ RATE_LIMITED_SINCE_FIELD = "rateLimitedSince"
 # fires. The recovery scans leave the record alone until then. ``processingStartedAt`` stays the time processing really
 # began; nothing is dated into the future.
 DEFERRED_UNTIL_FIELD = "deferredUntilMs"
+# The time (ms) a record has spent handed back for a model provider's rate limit, over all its hand-backs.
+RATE_LIMITED_FOR_FIELD = "rateLimitedForMs"
 
 # A Retry-After of 0 still has to land after the queue time it is written
 # with, or the sweep could not tell the wait from an old one.

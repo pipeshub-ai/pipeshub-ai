@@ -374,6 +374,9 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
+                    if latest_record is not None and is_deferred_until_later(latest_record, get_epoch_timestamp_in_ms()):
+                        # Handed back for a provider's wait since the scan read it: not stuck, and not finished either.
+                        return None
                     if latest_record is None:
                         still_stuck = False
                     elif resume_enrichment:
@@ -1716,6 +1719,12 @@ async def _republish_stranded_records(
                 if not lock_held:
                     # Someone is working on it after all.
                     return False
+
+            # The scan's snapshot may be old: while it waited on other lookups the record can have been processed, handed
+            # back for a provider's wait and released. Read it again under the lease, before claiming or publishing.
+            fresh = await graph_provider.get_document(record_key, CollectionNames.RECORDS.value)
+            if fresh is not None and is_deferred_until_later(fresh, get_epoch_timestamp_in_ms()):
+                return False
 
             # The marker is a durable claim written BEFORE the send, not
             # a receipt written after it. Written after, a Neo4j failure

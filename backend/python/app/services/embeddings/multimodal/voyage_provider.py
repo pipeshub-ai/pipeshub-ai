@@ -16,7 +16,10 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
-from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
 
 _CONCURRENCY_LIMIT = 5
 _DEFAULT_BATCH_SIZE = 7
@@ -59,6 +62,8 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
                     return results
                 except NonRetryableError:
                     raise
+                except EmbeddingRateLimited:
+                    raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"Voyage batch {batch_start} failed: {e}")

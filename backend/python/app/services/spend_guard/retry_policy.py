@@ -122,11 +122,12 @@ def decide_retry(
     """
     if kind is None:
         return RetryDecision(False, 0.0, NOT_RETRYABLE)
-    if attempt + 1 >= max_attempts:
-        return RetryDecision(False, 0.0, ATTEMPTS_EXHAUSTED)
     remaining = max(0.0, MAX_TOTAL_SLEEP_S - slept_s)
+    # Checked before the attempt limit, so the last attempt reports a wait it may not spend the same way every other does.
     if retry_after_s is not None and retry_after_s > remaining:
         return RetryDecision(False, 0.0, RETRY_AFTER_BEYOND_BUDGET)
+    if attempt + 1 >= max_attempts:
+        return RetryDecision(False, 0.0, ATTEMPTS_EXHAUSTED)
     if not budget.try_spend(kind):
         return RetryDecision(False, 0.0, BUDGET_EXHAUSTED)
     jitter = (rng or random).uniform(0.0, BASE_S[kind] * 2**attempt)

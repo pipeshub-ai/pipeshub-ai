@@ -97,9 +97,17 @@ def signal_backpressure_if_rate_limited(
     of the outcome of) this call's own retry budget — mirrors
     BaseServiceClient._request_with_retry's signal-on-every-occurrence for
     ParsingClient/DoclingClient."""
-    if coordinator is None or not isinstance(exc, openai.RateLimitError):
+    if coordinator is None:
         return
-    retry_after = parse_retry_after(exc.response.headers.get("Retry-After"))
+    # Imported here: the gateway module imports this one. Any provider's throttle counts (an OpenAI error, a Cohere or Voyage
+    # error with a 429 status, a botocore throttle), and its Retry-After is read the one way every wait is: finite,
+    # non-negative and at most an hour (``parse_retry_after`` of the wire module).
+    from app.services.llm_gateway.embedding_gateway import EmbeddingGateway, retry_after_of
+    from app.services.spend_guard.retry_policy import RetryKind
+
+    if EmbeddingGateway.retry_kind(exc) is not RetryKind.THROTTLE:
+        return
+    retry_after = retry_after_of(exc)
     if retry_after is not None:
         coordinator.signal(service_name, retry_after)
 

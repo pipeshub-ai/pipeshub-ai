@@ -3,8 +3,8 @@
 import asyncio
 import os
 import time
-from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
 from typing import TYPE_CHECKING
+from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -4149,6 +4149,42 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
         claim = graph.update_node.await_args_list[0].args[2]
         assert set(claim) == {"lastRepublishedAt"}, "a rate-limit wait earns no stranded back-off"
         assert claim["lastRepublishedAt"] >= now
+
+    @pytest.mark.asyncio
+    async def test_a_record_handed_back_for_a_providers_wait_is_not_sent_before_it_ends(self) -> None:
+        """``deferredUntilMs``: the record carries a provider's wait; the sweep leaves it to the broker's delayed message."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, deferredUntilMs=now + HOUR_MS, retryNotBefore=None, rateLimitedSince=None)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_wait_set_while_the_sweep_was_looking_is_seen_under_the_lease(self) -> None:
+        """The scan's snapshot has no wait; by the time the sweep holds the record's lease the consumer has handed it back for
+        one. The record is read again before the claim is written or the event is sent."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=None, rateLimitedSince=None, queuedAtTimestamp=now - 3 * HOUR_MS)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        previous = graph.get_document.side_effect
+
+        async def get_document(key, collection, **kwargs):
+            if collection == CollectionNames.RECORDS.value:
+                return {**row, "deferredUntilMs": now + HOUR_MS}
+            return previous(key, collection, **kwargs)
+
+        graph.get_document = AsyncMock(side_effect=get_document)
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_not_sent_before_its_time(self) -> None:

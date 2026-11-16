@@ -30,7 +30,11 @@ from app.config.constants.service import (
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
-from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.exceptions.indexing_exceptions import (
+    IndexingError,
+    ProcessingError,
+    ProviderRateLimitedTooLongError,
+)
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
 from app.models.record_convert import convert_record_dict_to_record
@@ -73,6 +77,7 @@ from app.modules.indexing.parse_now_marker import (
 )
 from app.modules.indexing.rate_limit_deferral import (
     DEFERRED_UNTIL_FIELD,
+    RATE_LIMITED_FOR_FIELD,
     cleared_deferral,
     deferral_updates,
     is_deferred,
@@ -839,6 +844,43 @@ class RecordEventHandler(BaseEventService):
                 f"Could not end the enrichment of record {record_id}",
                 details={"record_id": record_id},
             )
+
+    @staticmethod
+    def _rate_limited_for_ms(record: dict | None) -> int:
+        """Milliseconds this record has already spent handed back for a model provider's rate limit."""
+        value = (record or {}).get(RATE_LIMITED_FOR_FIELD)
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else 0
+
+    def _rate_limited_too_long(
+        self, record_id: str, record: dict | None, wait_s: float
+    ) -> ProviderRateLimitedTooLongError | None:
+        """The error that ends the record when one more hand-back for ``wait_s`` would carry the time it has spent
+        rate-limited past ``RATE_LIMIT_MAX_WAIT_S``; None while it is within the limit."""
+        limit_s = messaging_env.rate_limit_max_wait_seconds
+        total_s = (self._rate_limited_for_ms(record) + int(wait_s * 1000)) / 1000.0
+        if total_s <= limit_s:
+            return None
+        hours = limit_s / 3600.0
+        self.logger.warning(
+            f"Record {record_id} has been rate-limited by its model provider for {total_s / 3600.0:.1f} h "
+            f"(limit {hours:g} h): failing it"
+        )
+        return ProviderRateLimitedTooLongError(
+            f"The model provider kept rate limiting this file for over {hours:g} hours, so PipesHub stopped trying. "
+            f"Reindex it later.",
+            doc_id=record_id,
+        )
+
+    async def _end_provider_rate_limit_total(self, record_id: str, record: dict | None) -> None:
+        """The record ended (indexed or failed): the time it spent rate-limited starts from zero next time (best effort)."""
+        if not record or record.get(RATE_LIMITED_FOR_FIELD) is None:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {RATE_LIMITED_FOR_FIELD: None}
+            )
+        except Exception as exc:
+            self.logger.warning(f"Could not clear the rate-limit total of record {record_id}: {exc}")
 
     async def _clear_handed_back_wait(self, record_id: str, record: dict | None) -> None:
         """The record is being processed again: the wait it was handed back for is over (best effort)."""
@@ -1619,6 +1661,7 @@ class RecordEventHandler(BaseEventService):
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
         handback_delay_s = 0.0
+        handback_total_ms = 0
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         record = None
@@ -2439,8 +2482,13 @@ class RecordEventHandler(BaseEventService):
             error_msg = str(ie)
             last_exception = ie
             if (wait := provider_rate_limit_wait(ie)) is not None:
+                too_long = self._rate_limited_too_long(record_id, record, wait)
+                if too_long is not None:
+                    last_exception, error_msg = too_long, str(too_long)
+                    raise too_long from ie
                 handed_back = True
                 handback_delay_s = wait
+                handback_total_ms = self._rate_limited_for_ms(record) + int(wait * 1000)
                 raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
@@ -2452,9 +2500,15 @@ class RecordEventHandler(BaseEventService):
             error_msg = str(e)
             last_exception = e
             if (wait := provider_rate_limit_wait(e)) is not None:
-                # The provider said when it can serve again: come back then, with no attempt spent on the wait.
+                # The provider said when it can serve again: come back then, with no attempt spent on the wait, until the
+                # time the record has spent rate-limited passes the limit.
+                too_long = self._rate_limited_too_long(record_id, record, wait)
+                if too_long is not None:
+                    last_exception, error_msg = too_long, str(too_long)
+                    raise too_long from e
                 handed_back = True
                 handback_delay_s = wait
+                handback_total_ms = self._rate_limited_for_ms(record) + int(wait * 1000)
                 raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
@@ -2518,7 +2572,10 @@ class RecordEventHandler(BaseEventService):
                         await self.event_processor.graph_provider.update_node(
                             record_id,
                             CollectionNames.RECORDS.value,
-                            {DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + int(handback_delay_s * 1000)},
+                            {
+                                DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + int(handback_delay_s * 1000),
+                                RATE_LIMITED_FOR_FIELD: handback_total_ms,
+                            },
                         )
                     except Exception as wait_exc:
                         self.logger.warning(f"Could not record the rate-limit wait of record {record_id}: {wait_exc}")
@@ -2686,6 +2743,7 @@ class RecordEventHandler(BaseEventService):
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value and not store_only:
                 # Update queued duplicates for ALL record types (not just FILE)
                 await self._release_queued_copies(record_id)
+                await self._end_provider_rate_limit_total(record_id, record)
 
             # Outside both branches above, because a repo's last file is as
             # likely to end FAILED or EMPTY as COMPLETED and only the success
@@ -2735,6 +2793,8 @@ class RecordEventHandler(BaseEventService):
             # Each of these statuses ends a record's wait on a rate limit.
             if is_deferred(record) and not store_only_active():
                 updates.update(cleared_deferral())
+            if record.get(RATE_LIMITED_FOR_FIELD) is not None:
+                updates[RATE_LIMITED_FOR_FIELD] = None
 
             success = await self.event_processor.graph_provider.update_node(
                 record_id,

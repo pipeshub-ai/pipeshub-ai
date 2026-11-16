@@ -11,14 +11,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.exceptions.indexing_exceptions import ProviderRateLimitedTooLongError
 from app.services.llm_gateway.embedding_gateway import EmbeddingRateLimited
 from app.services.llm_gateway.gateway import RateLimited
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
-from tests.unit.services.messaging.test_record_handler_parse_now import (
+from tests.support.record_event_harness import (
     Harness,
-    _payload,
-    _record,
+)
+from tests.support.record_event_harness import (
+    make_payload as _payload,
+)
+from tests.support.record_event_harness import (
+    make_record as _record,
 )
 
 
@@ -104,6 +109,58 @@ async def test_a_failed_cleanup_does_not_replace_the_hand_back() -> None:
     async def update(doc_id: str, collection: str, fields: dict) -> bool:
         if fields.get("indexingStatus") == "QUEUED":
             raise ConnectionError("graph unavailable")
+        return await real(doc_id, collection, fields) if real else True
+
+    harness.graph.update_node = AsyncMock(side_effect=update)
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert raised.value.delay_s == 300.0
+
+
+HOUR_MS = 3_600_000
+
+
+async def test_each_handback_adds_its_wait_to_the_records_rate_limited_total() -> None:
+    harness = Harness(_record(indexingStatus="QUEUED", rateLimitedForMs=2 * HOUR_MS))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=600.0)
+    with pytest.raises(ProviderRateLimitRequeue):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    totals = [w["rateLimitedForMs"] for w in harness.writes() if w.get("rateLimitedForMs")]
+    assert totals and totals[-1] == 2 * HOUR_MS + 600_000
+
+
+async def test_a_record_rate_limited_past_the_limit_fails_with_an_explicit_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bound is the time spent rate-limited, not the number of hand-backs: past ``RATE_LIMIT_MAX_WAIT_S`` the record is
+    failed, with the reason, never dead-lettered silently."""
+    from app.services.messaging.config import messaging_env
+
+    monkeypatch.setattr(type(messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 6 * 3600.0))
+    harness = Harness(_record(indexingStatus="IN_PROGRESS", rateLimitedForMs=6 * HOUR_MS - 100_000, processingStartedAt=1_000))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=600.0)
+    with pytest.raises(ProviderRateLimitedTooLongError):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    failed = [w for w in harness.writes() if w.get("indexingStatus") == "FAILED"]
+    assert failed and "rate limiting this file for over 6 hours" in failed[-1]["reason"]
+    assert failed[-1].get("rateLimitedForMs", 0) is None, "the total starts from zero if the record is reindexed"
+
+
+async def test_a_record_within_the_limit_is_still_handed_back() -> None:
+    harness = Harness(_record(indexingStatus="QUEUED", rateLimitedForMs=5 * HOUR_MS))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=600.0)
+    with pytest.raises(ProviderRateLimitRequeue):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+
+
+async def test_a_record_that_cannot_store_its_wait_is_still_handed_back() -> None:
+    """If the write of ``deferredUntilMs`` is refused (a process on an older record schema), the hand-back still carries the
+    provider's wait to the broker; the failure is logged, not raised."""
+    harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
+    real = harness.graph.update_node.side_effect
+
+    async def update(doc_id: str, collection: str, fields: dict) -> bool:
+        if "deferredUntilMs" in fields:
+            raise ValueError("document does not match the collection's schema")
         return await real(doc_id, collection, fields) if real else True
 
     harness.graph.update_node = AsyncMock(side_effect=update)

@@ -24,6 +24,7 @@ import time
 from typing import TYPE_CHECKING
 
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.services.spend_guard.retry_policy import clamp_retry_after
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -48,8 +49,12 @@ class BackpressureCoordinator:
     def signal(self, service_name: str, retry_after: float) -> None:
         """Record that *service_name* asked us to back off for
         *retry_after* seconds. A no-op for a non-positive duration."""
-        if retry_after <= 0:
+        # A provider's wait is untrusted input: finite and at most an hour, whatever it asked for, because this pause
+        # stops reads for every organisation on the process.
+        clamped = clamp_retry_after(retry_after)
+        if clamped is None or clamped <= 0:
             return
+        retry_after = clamped
         # The pause below stops new reads for the requested duration; the
         # governor additionally narrows the index pools so that when reads
         # resume they resume at a width the service just said it can take.

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import threading
 from typing import TYPE_CHECKING, TypeVar
 
@@ -22,11 +23,13 @@ import httpx
 import openai
 
 from app.exceptions.indexing_exceptions import EmbeddingError
+from app.services.llm_gateway import wire
 from app.services.llm_gateway.fleet_breaker import credential_of, provider_pk
 from app.services.llm_gateway.gateway import provider_key
 from app.services.llm_gateway.wire import parse_retry_after
 from app.services.spend_guard.retry_policy import (
     MAX_ATTEMPTS,
+    NOT_RETRYABLE,
     RETRY_AFTER_BEYOND_BUDGET,
     RetryBudget,
     RetryDecision,
@@ -95,13 +98,16 @@ def _is_connection_failure(exc: BaseException) -> bool:
     return False
 
 
-def _retry_after_of(exc: BaseException) -> float | None:
+def retry_after_of(exc: BaseException) -> float | None:
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         response = getattr(current, "response", None)
         headers = getattr(response, "headers", None)
+        if headers is None and isinstance(response, dict):
+            # botocore keeps them in the parsed error response.
+            headers = (response.get("ResponseMetadata") or {}).get("HTTPHeaders")
         if headers is not None:
             return parse_retry_after(headers)
         current = current.__cause__
@@ -135,15 +141,19 @@ class EmbeddingGateway:
         """After the failed attempt number ``attempt`` (0 for the first): send again, and after how long (full jitter, or
         the provider's Retry-After when longer)? A repeat costs a retry-budget token."""
         return decide_retry(
-            attempt=attempt, kind=self.retry_kind(exc), budget=self._retry_budget, retry_after_s=_retry_after_of(exc),
+            attempt=attempt, kind=self.retry_kind(exc), budget=self._retry_budget, retry_after_s=retry_after_of(exc),
             slept_s=slept_s, max_attempts=self._max_attempts,
         )
 
     def rate_limited(self, exc: BaseException, decision: RetryDecision) -> EmbeddingRateLimited | None:
-        """The error to raise when ``decision`` refused a retry only because the Retry-After was too long."""
-        if decision.reason != RETRY_AFTER_BEYOND_BUDGET:
+        """The error to raise when ``decision`` refused another send and the provider's wait should be handed to the caller: its
+        Retry-After is beyond the call's allowance, or a throttle that said how long to wait cannot be sent again (its
+        attempts or the retry budget are used up)."""
+        wait = retry_after_of(exc) or 0.0
+        if decision.retry or decision.reason == NOT_RETRYABLE or wait <= 0:
             return None
-        wait = _retry_after_of(exc) or 0.0
+        if decision.reason != RETRY_AFTER_BEYOND_BUDGET and self.retry_kind(exc) is not RetryKind.THROTTLE:
+            return None
         return EmbeddingRateLimited(
             f"the embedding provider asks for {wait:.0f}s, more than a call may wait", retry_after=wait,
         )
@@ -167,7 +177,7 @@ class EmbeddingGateway:
         as any other call. Raises what the provider raised once the policy gives up."""
         key = self._dimension_key(embeddings)
         if key is None:
-            return len(await self.call(lambda: embeddings.aembed_query("test")))
+            return len(await self.call(lambda: self._query(embeddings)))
         known = self._known_dimension(key)
         if known is not None:
             return known
@@ -178,10 +188,18 @@ class EmbeddingGateway:
             known = self._known_dimension(key)
             if known is not None:
                 return known
-            size = len(await self.call(lambda: embeddings.aembed_query("test")))
+            size = len(await self.call(lambda: self._query(embeddings)))
             with self._lock:
                 self._dimensions[key] = size
             return size
+
+    @staticmethod
+    async def _query(embeddings: Embeddings) -> list[float]:
+        """One probe request. An embeddings object without an async method (a stand-in) is called in a thread."""
+        probe = getattr(embeddings, "aembed_query", None)
+        if inspect.iscoroutinefunction(probe):
+            return await probe("test")
+        return await asyncio.to_thread(embeddings.embed_query, "test")
 
     def _known_dimension(self, key: str) -> int | None:
         with self._lock:
@@ -199,11 +217,15 @@ class EmbeddingGateway:
         slept = 0.0
         attempt = 0
         while True:
+            seen, token = wire.open_scope()
             try:
                 result = await make_call()
             except asyncio.CancelledError:
+                wire.charge_failed_sends(seen.requests)
                 raise
             except Exception as exc:
+                # What this attempt put on the wire failed: it counts against the stage job's sends, like a model call's.
+                wire.charge_failed_sends(seen.requests)
                 decision = self.decide(attempt, exc, slept_s=slept)
                 if not decision.retry:
                     limited = self.rate_limited(exc, decision)
@@ -214,6 +236,8 @@ class EmbeddingGateway:
                 attempt += 1
                 await asyncio.sleep(decision.delay_s)
                 continue
+            finally:
+                wire.close_scope(token)
             self.note_success()
             return result
 

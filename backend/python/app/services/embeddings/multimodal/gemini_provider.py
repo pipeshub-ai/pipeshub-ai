@@ -18,7 +18,10 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
-from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
 from app.utils.image_utils import get_mime_type_from_base64
 
 _CONCURRENCY_LIMIT = 5
@@ -76,6 +79,12 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
             if self.sdk_retries is not None else None
         )
         client = genai.Client(api_key=self.api_key, http_options=http_options)
+        if self.sdk_retries is not None:
+            # With aiohttp installed the SDK sends async requests through it and sends one again after a lost reply, whatever
+            # the retry options say: through httpx it repeats nothing.
+            from app.services.llm_gateway.wire import route_genai_through_httpx
+
+            route_genai_through_httpx(client)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
@@ -95,6 +104,8 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
                     return ImageEmbeddingResult(
                         index=i, embedding=list(response.embeddings[0].values)
                     )
+                except EmbeddingRateLimited:
+                    raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"Gemini image embed failed for index {i}: {e}")

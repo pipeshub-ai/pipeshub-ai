@@ -16,7 +16,10 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
-from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
 
 _CONCURRENCY_LIMIT = 10
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
@@ -152,6 +155,8 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         for i, r in enumerate(raw_results):
             if isinstance(r, ImageEmbeddingResult):
                 results.append(r)
+            elif isinstance(r, EmbeddingRateLimited):
+                raise r  # the provider's wait goes to the record handler, which hands the record back
             else:
                 if self.logger:
                     self.logger.warning(f"Bedrock embed failed for index {i}: {r}")

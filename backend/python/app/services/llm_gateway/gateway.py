@@ -418,6 +418,16 @@ def _is_timeout(exc: BaseException) -> bool:
     return False
 
 
+def _is_throttle(exc: BaseException, policy: GatewayPolicyError | None, seen: wire.WireOutcome) -> bool:
+    """Whether the failed attempt was a throttle. The wire status decides when one was seen (only a 429 is); the text of the
+    error is read only when no status is known (a model that could not be hooked), because a 400's body can mention "429"."""
+    if policy is not None:
+        return policy.retryable
+    if seen.status is not None:
+        return seen.status == _TOO_MANY_REQUESTS
+    return _is_rate_limited(exc, None)
+
+
 def _is_rate_limited(exc: BaseException, policy: GatewayPolicyError | None = None) -> bool:
     # A budget or model-access refusal from the gateway looks like a 429 or 4xx but
     # comes back unchanged however often it is retried.
@@ -845,14 +855,13 @@ class LLMGateway:
         """The provider's wait to hand to the caller as ``RateLimited``: its Retry-After when it is beyond the call's sleep
         allowance, and also when a throttled call may not be sent again for another reason (its attempts are used, or it was
         a half-open trial). The caller defers the work for that wait either way."""
-        if retry_after is None or reason == RETRY:
+        if retry_after is None or retry_after <= 0 or reason == RETRY:
             return None
         if reason == RETRY_AFTER_BEYOND_BUDGET:
             return retry_after
         if policy is not None and not policy.retryable:
             return None
-        throttled = _is_rate_limited(exc, policy) or seen.status == _TOO_MANY_REQUESTS
-        return retry_after if throttled else None
+        return retry_after if _is_throttle(exc, policy, seen) else None
 
     @staticmethod
     def _retry_kind(
@@ -873,7 +882,7 @@ class LLMGateway:
             # One request decides a half-open breaker: waiting and sending another is not the trial's to do (a throttled
             # trial would otherwise sleep before the breaker refuses its retry).
             return None
-        if _is_rate_limited(exc, policy) or seen.status == _TOO_MANY_REQUESTS:
+        if _is_throttle(exc, policy, seen):
             return RetryKind.THROTTLE
         if judged != wire.FAIL or trial or caller_expired or _is_timeout(exc):
             return None
@@ -951,7 +960,7 @@ class LLMGateway:
             # The provider's Retry-After is longer than this call may wait: say so at once, sleep nothing.
             LLM_CALLS.inc(site, "rate_limited_deferred")
             raise RateLimited(
-                f"{provider} is rate limiting; it asks for {rate_limited_after:.0f}s, more than this call may wait",
+                f"{provider} is rate limiting; it asks for {rate_limited_after:.0f}s, which this call does not wait for",
                 provider=provider,
                 retry_after=rate_limited_after,
                 sent=True,

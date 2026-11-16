@@ -15,7 +15,7 @@ from app.services.llm_gateway.embedding_gateway import (
     EmbeddingRateLimited,
 )
 from app.services.spend_guard.retry_policy import RetryBudget, RetryKind
-from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore
+from tests.support.vectorstore_world import make_vectorstore as _make_vectorstore
 
 pytestmark = pytest.mark.usefixtures("bound_org")
 
@@ -142,3 +142,33 @@ async def test_a_local_embedding_server_is_not_repeated_by_the_entity_store() ->
     with pytest.raises(openai.InternalServerError):
         await store._embed(["x"])
     assert calls == 1
+
+
+async def test_a_throttle_on_the_last_attempt_hands_its_wait_to_the_caller() -> None:
+    """Two outages, then a 429 asking for 300 s on the third and last attempt: the record is handed back for that wait, not
+    failed as an ordinary embedding error and retried on the 15 s backoff."""
+    vs = _store(_error(503), _error(503), _error(429, retry_after="300"))
+    result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
+    assert isinstance(result, EmbeddingRateLimited) and result.retry_after == 300.0
+
+
+async def test_the_failed_requests_of_the_batch_loop_are_charged_to_the_jobs_send_meter() -> None:
+    from app.services.llm_gateway import wire
+
+    class Counting:
+        calls = 0
+
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+            wire.note_request_sent()
+            wire.note_response(503)
+            Counting.calls += 1
+            raise _error(503)
+
+    vs = _make_vectorstore()
+    vs.embedding_provider = "openAI"
+    vs.dense_embeddings = Counting()
+    meter = wire.SendMeter(allowance=10)
+    with wire.metered(meter):
+        result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
+    assert isinstance(result, EmbeddingError) and Counting.calls == 3
+    assert meter.failed == 3

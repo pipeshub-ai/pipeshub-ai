@@ -486,6 +486,17 @@ class MessagingEnvConfig:
         return _env_seconds("REVISION_RETENTION_TICK_BUDGET_SECONDS", 20.0)
 
     @property
+    def rate_limit_max_wait_seconds(self) -> float:
+        """How long a record may spend handed back to the broker for a model provider's rate limit, in all.
+
+        Each hand-back (a call past its sleep allowance, a Retry-After the gateway did not wait out) is uncounted: no delivery
+        attempt, no broker redelivery budget. Its wait is added to the record's total instead; a hand-back that would carry
+        the total past this fails the record with a reason saying so. Not set or not positive: six hours.
+        """
+        value = _env_seconds("RATE_LIMIT_MAX_WAIT_S", 6 * 3600.0)
+        return value if value > 0 else 6 * 3600.0
+
+    @property
     def rate_limit_defer_max_seconds(self) -> float:
         """How long a record may wait in total on its source's rate limit.
 

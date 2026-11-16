@@ -395,6 +395,9 @@ record_schema = {
             # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
             # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).
             "deferredUntilMs": {"type": ["number", "null"]},
+            # The time (ms) a record has spent handed back for a model provider's rate limit, added up over its hand-backs
+            # (``RATE_LIMIT_MAX_WAIT_S`` bounds it). Cleared when the record ends.
+            "rateLimitedForMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",

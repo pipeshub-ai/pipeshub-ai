@@ -45,6 +45,28 @@ NOT_AN_SDK_RETRY_SITE = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_aws_lookup_leaves_the_process(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+    """Building a Bedrock client must not look credentials up: no instance-metadata request (the link-local address), no
+    STS call. Static dummy credentials and a disabled metadata service are set, and any request botocore would send is
+    recorded and refused; the test fails if one is attempted."""
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIADUMMY")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "dummy")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    attempted: list[str] = []
+
+    def refuse(self: Any, request: Any) -> Any:  # noqa: ANN401
+        attempted.append(str(getattr(request, "url", request)))
+        raise ConnectionError("a unit test must not send a request")
+
+    from botocore.httpsession import URLLib3Session
+
+    monkeypatch.setattr(URLLib3Session, "send", refuse)
+    yield
+    assert not attempted, f"building models sent requests: {attempted}"
+
+
 def test_the_indexing_constant_is_zero() -> None:
     assert INDEXING_SDK_RETRIES == 0
 

@@ -11,14 +11,18 @@ import time
 
 from app.indexing_main import recover_in_progress_records
 from app.modules.indexing.rate_limit_deferral import is_deferred_until_later
-from tests.unit.test_indexing_main import TestRecoverCutShortEnrichment, _make_container
+from tests.support.stale_scan_world import (
+    enrichment_twin,
+    make_container,
+    stale_scan_graph,
+)
 
 NOW_MS = lambda: int(time.time() * 1000)  # noqa: E731
 
 
 async def _scan(**fields: object) -> tuple[int, dict]:
-    graph, rows = TestRecoverCutShortEnrichment._graph([{**TestRecoverCutShortEnrichment._twin(1_000), **fields}])
-    container = _make_container()
+    graph, rows = stale_scan_graph([{**enrichment_twin(1_000), **fields}])
+    container = make_container()
     await recover_in_progress_records(container, graph)
     return container.kafka_consumers[0][2].send_event.await_count, rows["twin"]
 
@@ -44,3 +48,21 @@ def test_a_wait_is_read_only_while_it_is_in_the_future() -> None:
     assert is_deferred_until_later({"deferredUntilMs": 1_000}, 1_000) is False
     assert not any(is_deferred_until_later({"deferredUntilMs": v}, 1_000) for v in (None, "x", float("nan"), True))
     assert is_deferred_until_later({}, 1_000) is False
+
+
+async def test_a_wait_set_while_the_scan_was_looking_is_seen_under_the_lease() -> None:
+    """The page the scan read has no wait; when the record is read again under its lease it has been handed back for one."""
+    graph, rows = stale_scan_graph([enrichment_twin(1_000)])
+    previous = graph.get_document.side_effect
+
+    async def get_document(doc_id, collection, **kwargs):  # noqa: ANN001, ANN202
+        row = await previous(doc_id, collection, **kwargs)
+        if row and doc_id == "twin":
+            row["deferredUntilMs"] = NOW_MS() + 300_000
+        return row
+
+    graph.get_document.side_effect = get_document
+    container = make_container()
+    await recover_in_progress_records(container, graph)
+    assert container.kafka_consumers[0][2].send_event.await_count == 0
+    assert rows["twin"]["processingStartedAt"] == 1_000

@@ -22,7 +22,10 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
-from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
 
 _CONCURRENCY_LIMIT = 10
 
@@ -98,6 +101,8 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
                     return ImageEmbeddingResult(
                         index=i, embedding=list(response.embeddings.float[0])
                     )
+                except EmbeddingRateLimited:
+                    raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
                     if self.logger:
                         # An oversized image is an expected per-image skip;

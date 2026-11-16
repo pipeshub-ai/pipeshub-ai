@@ -152,6 +152,24 @@ def wire_scope() -> Iterator[WireOutcome]:
         _current.reset(token)
 
 
+def open_scope() -> tuple[WireOutcome, Any]:  # noqa: ANN401 - the contextvar token
+    """``wire_scope`` for a caller that cannot indent its code under a ``with``: pair with ``close_scope``."""
+    outcome = WireOutcome()
+    return outcome, _current.set(outcome)
+
+
+def close_scope(token: Any) -> None:  # noqa: ANN401
+    with contextlib.suppress(ValueError):  # a token from another context (a task that moved loops) cannot be reset
+        _current.reset(token)
+
+
+def charge_failed_sends(count: int) -> None:
+    """Add ``count`` failed requests to the stage job's send meter, when the call runs inside one."""
+    meter = _meter.get()
+    if meter is not None and count > 0:
+        meter.failed += count
+
+
 def current_wire() -> WireOutcome | None:
     return _current.get()
 
@@ -174,6 +192,16 @@ def note_response(status: int, retry_after: float | None = None) -> None:
         outcome.retry_after = retry_after
 
 
+def _header(headers: Any, name: str) -> Any:  # noqa: ANN401 - any mapping of header names to values
+    """``headers[name]`` whatever the case of its key (httpx and requests headers are case-insensitive; a plain dict is not)."""
+    value = headers.get(name)
+    if value is None and hasattr(headers, "items"):
+        for key, candidate in headers.items():
+            if isinstance(key, str) and key.lower() == name:
+                return candidate
+    return value
+
+
 def parse_retry_after(headers: Any) -> float | None:  # noqa: ANN401 - any mapping of header names to values
     """Seconds a provider asks to wait (``retry-after-ms``, else ``retry-after`` in seconds), or None.
 
@@ -183,7 +211,7 @@ def parse_retry_after(headers: Any) -> float | None:  # noqa: ANN401 - any mappi
     """
     for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
         try:
-            raw = headers.get(name)
+            raw = _header(headers, name)
             if raw is None:
                 continue
             value = clamp_retry_after(float(raw) / scale)

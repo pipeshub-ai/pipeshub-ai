@@ -85,6 +85,7 @@ from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway import wire
 from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
@@ -1987,8 +1988,9 @@ class VectorStore(Transformer):
         """Zip provider results back to their source chunk and build points.
 
         Skips any index that errored or came back without an embedding —
-        provider implementations always return one result per input index
-        (never raise), so this is the single place that decides what
+        provider implementations return one result per input index and do not
+        raise for a failed image (they do raise ``EmbeddingRateLimited``, a provider's wait
+        past the call's allowance, which hands the whole record back), so this is the single place that decides what
         "failed to embed" means for indexing purposes. Also skips any result
         whose dimension doesn't match the collection: mixing dimensions in
         one collection makes cosine similarity meaningless and some vector
@@ -2146,6 +2148,8 @@ class VectorStore(Transformer):
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
             if progress is not None:
                 progress.call_start()
+            # What the attempt puts on the wire is counted: a failed request is a send of the stage job it runs in.
+            attempt_wire, attempt_token = wire.open_scope() if gateway is not None else (None, None)
             try:
                 # The stall timer is off while the call runs: attempt_timeout, which may be longer
                 # than the stall floor on local CPU, is what bounds a hung batch. The gate is per
@@ -2169,6 +2173,8 @@ class VectorStore(Transformer):
                     return vectors
             except asyncio.TimeoutError as e:
                 last_error = e
+                if attempt_wire is not None:
+                    wire.charge_failed_sends(attempt_wire.requests)
                 # The gate has already reported its own fail-fast, once for all waiters.
                 if not isinstance(e, GateFailFast):
                     get_default_downstream_feedback().report_timeout(service_name)
@@ -2183,22 +2189,28 @@ class VectorStore(Transformer):
                 retriable = (
                     gateway.retry_kind(e) is not None if gateway is not None else is_retriable_embedding_error(e)
                 )
+                if attempt_wire is not None:
+                    wire.charge_failed_sends(attempt_wire.requests)
                 if not retriable:
                     raise
                 last_error = e
             finally:
+                if attempt_token is not None:
+                    wire.close_scope(attempt_token)
                 if progress is not None:
                     progress.call_end()
 
+            decision = gateway.decide(attempt - 1, last_error, slept_s=slept_s) if gateway is not None and last_error is not None else None
+            if decision is not None and gateway is not None and last_error is not None and not decision.retry:
+                # The provider's wait goes to the caller even when this was the last attempt (the record is handed back).
+                limited = gateway.rate_limited(last_error, decision)
+                if limited is not None:
+                    raise limited from last_error
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
             delay = retry_delay_seconds(attempt)
-            if gateway is not None and last_error is not None:
-                decision = gateway.decide(attempt - 1, last_error, slept_s=slept_s)
+            if decision is not None:
                 if not decision.retry:
-                    limited = gateway.rate_limited(last_error, decision)
-                    if limited is not None:
-                        raise limited from last_error
                     break
                 # The gateway's full-jitter wait, already capped to the call's sleep allowance: no fixed floor.
                 delay = decision.delay_s

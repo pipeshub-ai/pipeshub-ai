@@ -18,6 +18,7 @@ from app.services.llm_gateway.gateway import (
     LLMGateway,
     ProviderUnavailableError,
     RateLimited,
+    get_llm_gateway,
 )
 from app.services.spend_guard.retry_policy import (
     ATTEMPTS_EXHAUSTED,
@@ -293,3 +294,28 @@ async def test_the_process_breaker_probe_is_one_request_and_sleeps_nothing(
         await gateway.invoke(probe, "x", provider="P:m@h")
     assert probe.requests == 1, f"the half-open probe sent {probe.requests} requests (the breaker opened after {opened_at})"
     assert len(waits) == waited_before, "a failed probe must not sleep before the breaker refuses"
+
+
+def test_the_default_gateways_share_one_process_retry_budget() -> None:
+    """One process, one budget: the LLM and embeddings gateways draw on the same 500 tokens, so a struggling provider cannot
+    cost each of them its own."""
+    from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
+    from app.services.spend_guard.retry_policy import process_retry_budget
+
+    assert get_llm_gateway()._retry_budget is process_retry_budget()
+    assert get_embedding_gateway()._retry_budget is process_retry_budget()
+
+
+@pytest.mark.parametrize("slept", [50.0, 59.0, 59.99])
+def test_a_wait_never_carries_the_call_past_its_sleep_allowance(slept: float) -> None:
+    """Even the jitter is cut to what is left of the 60 s: a full-jitter draw at its top must not overrun it."""
+
+    class _Top:
+        def uniform(self, _low: float, high: float) -> float:
+            return high
+
+    for attempt in (0, 1):
+        decision = decide_retry(
+            attempt=attempt, kind=RetryKind.THROTTLE, budget=RetryBudget(), slept_s=slept, rng=_Top()  # type: ignore[arg-type]
+        )
+        assert decision.retry and slept + decision.delay_s <= MAX_TOTAL_SLEEP_S + 1e-9

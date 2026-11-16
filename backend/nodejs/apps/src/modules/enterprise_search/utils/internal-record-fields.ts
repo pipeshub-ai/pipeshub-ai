@@ -16,6 +16,7 @@ export const INTERNAL_RECORD_FIELDS: ReadonlySet<string> = new Set([
   'trashedExternalRecordId',
   'rateLimitedSince',
   'deferredUntilMs',
+  'rateLimitedForMs',
   'lastRepublishedAt',
   'republishCount',
   'firstQueuedAt',
