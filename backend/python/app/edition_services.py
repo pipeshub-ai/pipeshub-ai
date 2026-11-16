@@ -46,6 +46,17 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def admission_backlog() -> "AdmissionBacklog":
+    """The recorder of records waiting at each admission stage, one per indexing consumer.
+
+    OSS: counts per tier, stage and lease pool. An edition may return an ``AdmissionBacklog`` built with an
+    observer (``entered``/``left`` called with the tier, stage and message) to keep a breakdown of its own.
+    """
+    from app.services.messaging.consumer_concurrency import AdmissionBacklog
+
+    return AdmissionBacklog()
+
+
 def get_connector_registry_cls():
     """Return the ConnectorRegistry class (lazy to avoid circular imports)."""
     from app.connectors.core.registry.connector_registry import ConnectorRegistry
@@ -88,6 +99,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.services.messaging.consumer_concurrency import AdmissionBacklog
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
     from app.services.model_identity.groups import GroupMembershipResolver
     from app.web.ports import WebAccessGate
