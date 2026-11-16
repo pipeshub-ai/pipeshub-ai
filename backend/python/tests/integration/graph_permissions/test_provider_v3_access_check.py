@@ -295,3 +295,24 @@ async def test_the_search_verifier_knows_no_stranger(access_graph, provider) -> 
     assert (await provider.check_access(
         "no-such-user", ORG, virtual_record_ids=["vr-shared"], indexed_only=True,
     )).records_by_vrid == {}
+
+
+async def test_a_source_account_that_shares_the_viewers_id_gives_the_viewer_nothing(access_graph, provider) -> None:
+    """Ids are unique per label only, so a SourceAccount may share the viewer's id. Its grant is that account's: the one-record check
+    (which names the holders it counts) never takes it for the viewer's own."""
+    from app.config.constants.arangodb import CollectionNames
+
+    records = [n for n in access_graph["nodes"] if n["kind"] == "Record" and not n["props"].get("isDeleted")]
+    check = await provider.check_access(USER_U, ORG, node_ids=[n["id"] for n in records])
+    target = next(n for n in records if n["id"] not in check.node_ids and n["id"] not in check.placeholder_ids)
+    assert await provider.check_record_access_with_details(USER_U_ID, ORG, target["id"]) is None
+    await provider.batch_upsert_nodes([{"_key": USER_U, "orgId": ORG, "connectorId": target["props"]["connectorId"], "sourceUserId": "namesake",
+                                        "email": "namesake@acme.com", "state": "listed", "createdAtTimestamp": 1, "updatedAtTimestamp": 1}],
+                                      CollectionNames.SOURCE_ACCOUNTS.value)
+    try:
+        await provider.batch_create_edges([{"from_id": USER_U, "from_collection": CollectionNames.SOURCE_ACCOUNTS.value, "to_id": target["id"],
+                                            "to_collection": CollectionNames.RECORDS.value, "type": "USER", "role": "OWNER",
+                                            "createdAtTimestamp": 1, "updatedAtTimestamp": 1}], collection=CollectionNames.PERMISSION.value)
+        assert await provider.check_record_access_with_details(USER_U_ID, ORG, target["id"]) is None, "the namesake's grant is not the viewer's"
+    finally:
+        await provider.delete_nodes_and_edges([USER_U], CollectionNames.SOURCE_ACCOUNTS.value)
