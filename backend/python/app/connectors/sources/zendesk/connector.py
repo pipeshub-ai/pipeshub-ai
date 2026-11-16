@@ -354,6 +354,7 @@ class ZendeskConnector(BaseConnector):
             scope,
             created_by,
         )
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
         self.external_client: ZendeskClient | None = None
         self.data_source: ZendeskDataSource | None = None
         self.base_url: str | None = None
@@ -1565,7 +1566,7 @@ class ZendeskConnector(BaseConnector):
                 self.logger.error("Zendesk incremental_tickets omitted tickets")
                 complete = False
                 break
-            self._cache_sideloads(payload)
+            await self._cache_sideloads(payload)
             await self._add_sideloaded_org_members(payload)
             tickets = []
             for ticket in self._extract_list(payload, "tickets"):
@@ -1883,7 +1884,7 @@ class ZendeskConnector(BaseConnector):
                 )
                 still_pending.add(ticket_id)
                 continue
-            self._cache_sideloads(response.data)
+            await self._cache_sideloads(response.data)
             # Set aside, it missed whatever grant change the run it failed in made.
             _, _, failed_ids = await self._process_ticket_batch([ticket], replace_grants=True)
             still_pending.update(failed_ids)
@@ -2497,7 +2498,7 @@ class ZendeskConnector(BaseConnector):
                 self.logger.error("Zendesk incremental_articles omitted articles")
                 complete = False
                 break
-            self._cache_sideloads(payload)
+            await self._cache_sideloads(payload)
             page_articles = self._extract_list(payload, "articles")
             for article in page_articles:
                 article_id = article.get("id")
@@ -3036,7 +3037,7 @@ class ZendeskConnector(BaseConnector):
         ticket = self._extract_required_object(response.data, "ticket") if response.success else None
         if not ticket:
             raise ValueError(f"Failed to fetch Zendesk ticket {ticket_id} for its permissions")
-        self._cache_sideloads(response.data)
+        await self._cache_sideloads(response.data)
         return self._record_permissions(
             ticket.get("group_id"),
             self._user_data(ticket.get("requester_id")),
@@ -3836,7 +3837,7 @@ class ZendeskConnector(BaseConnector):
                 )
                 return results, False
             # Sideloads ride in the same payload; dropped, authors render as raw ids.
-            self._cache_sideloads(response.data)
+            await self._cache_sideloads(response.data)
             items = self._extract_list(response.data, key)
             if not items:
                 break
@@ -3912,14 +3913,28 @@ class ZendeskConnector(BaseConnector):
             return payload[key]
         return {}
 
-    def _cache_sideloads(self, payload: dict[str, Any]) -> None:
+    async def _cache_sideloads(self, payload: dict[str, Any]) -> None:
+        end_users: list[AppUser] = []
         for user in self._extract_list(payload, "users"):
             if user.get("id") is not None:
                 key = str(user["id"])
                 self._sideloaded_users[key] = user
                 self._sideloaded_users.move_to_end(key)
+                if (user.get("role") == "end-user" and user.get("active") is not False and not user.get("suspended")
+                        and (app_user := self._to_app_user(user))):
+                    end_users.append(app_user)
         while len(self._sideloaded_users) > SIDELOADED_USER_CACHE_SIZE:
             self._sideloaded_users.popitem(last=False)
+        if end_users:
+            # End users are never listed (STAFF_ROLES), yet a ticket grants them by address and id. Every one a page
+            # names goes through the same check as a listed account before its grants are written, so an address
+            # that passed to another account (Zendesk keeps a deleted user's tickets: active is "false if the user has
+            # been deleted", https://developer.zendesk.com/api-reference/ticketing/users/users/) loses the earlier
+            # account's grants and admits only the account that holds it now. A deleted or suspended user is left out:
+            # it is granted nothing, so it can never take an address back.
+            # shortcut: the check's saved state grows with every end user a page names; on a desk with millions of
+            # end users its buckets grow large, upgrade by keeping that state in a table.
+            await self.source_accounts.before_link(end_users)
         for group in self._extract_list(payload, "groups"):
             if group.get("id") is not None and not group.get("deleted"):
                 self._group_id_to_data[str(group["id"])] = group

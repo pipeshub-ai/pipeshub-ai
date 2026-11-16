@@ -264,6 +264,11 @@ class SourceAccounts:
         email = email.lower()
         holder = self.holder(email)
         if holder is None:
+            # shortcut: an address never seen to change hands takes any id, so a grantee that never goes through
+            # before_link (an external collaborator a connector does not list) is not checked when its address passes
+            # to another account; failing closed here would drop every such grant. A connector that writes grants to
+            # unlisted accounts it can see with an id passes them through before_link (Zendesk end users do); upgrade
+            # the others the same way.
             return True
         return source_id is not None and (
             source_id == holder or self._other.get(_bucket(email), {}).get(email) == [holder, source_id]

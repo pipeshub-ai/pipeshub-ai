@@ -27,7 +27,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.zendesk.connector import ZendeskConnector
-from app.models.entities import AppUser
+from app.models.entities import AppUser, AppUserGroup
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.sources.client.zendesk.zendesk import ZendeskResponse
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -279,3 +279,59 @@ async def test_removing_an_agent_from_the_group_revokes_their_access(env: _Env) 
 
     assert not await _can_find(env, "agent", ticket), "An agent removed from the group can still find its ticket."
     assert await _can_find(env, "requester", ticket), "Removing the agent also revoked the requester."
+
+
+async def _ticket_by(env: _Env, ticket_id: int, requester: dict) -> str:
+    """One ticket whose requester is an end user the page sideloads, as Zendesk's ticket pages do."""
+    await env.connector._cache_sideloads({"users": [requester]})
+    ticket = {
+        "id": ticket_id, "subject": f"Ticket {ticket_id}", "status": "open", "group_id": GROUP_ID,
+        "requester_id": requester["id"], "submitter_id": requester["id"], "collaborator_ids": [],
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+    }
+    stored, _, failed = await env.connector._process_ticket_batch([ticket])
+    assert (stored, failed) == (1, [])
+    record = await env.connector.data_entities_processor.get_record_by_external_id(
+        connector_id=env.connector.connector_id, external_record_id=str(ticket_id)
+    )
+    await env.graph.update_node(
+        record.id, CollectionNames.RECORDS.value,
+        {"indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": f"vr-{record.id}"},
+    )
+    return f"vr-{record.id}"
+
+
+async def test_an_end_user_who_takes_an_end_users_address_reads_only_its_own_tickets(env: _Env) -> None:
+    """End users are never listed; the account check sees them on the ticket pages instead."""
+    await _sync_group(env, agent_is_member=True)
+    email = env.users["requester"]["email"]
+    earlier = await _ticket_by(env, 301, {"id": 21, "email": email, "role": "end-user", "name": "first"})
+    assert await _can_find(env, "requester", earlier)
+
+    own = await _ticket_by(env, 302, {"id": 22, "email": email, "role": "end-user", "name": "second"})
+
+    assert await _can_find(env, "requester", own), "the new end user's own ticket"
+    assert not await _can_find(env, "requester", earlier), "the earlier end user's ticket"
+    assert await _can_find(env, "agent", earlier), "the group's agent keeps the ticket"
+
+
+async def test_an_end_user_who_takes_an_agents_address_reads_its_own_tickets_and_not_the_agents(env: _Env) -> None:
+    """A deleted agent's address given to an end user: the agent's group access goes, the end user's own tickets stay."""
+    processor = env.connector.data_entities_processor
+    cid, email = env.connector.connector_id, env.users["cc"]["email"]
+    former = AppUser(app_name=Connectors.ZENDESK, connector_id=cid, source_user_id="5", email=email,
+                     full_name="former agent", org_id=env.org_id)
+    agent = AppUser(app_name=Connectors.ZENDESK, connector_id=cid, source_user_id="1", email=env.users["agent"]["email"],
+                    full_name="agent", org_id=env.org_id)
+    assert await processor.source_accounts(cid).before_link([agent, former])     # the agent listing's check
+    await _sync_group(env, agent_is_member=True)
+    group = AppUserGroup(app_name=Connectors.ZENDESK, connector_id=cid, source_user_group_id=f"group_{GROUP_ID}",
+                         name="Support", org_id=env.org_id)
+    await processor.on_new_user_groups([(group, [agent, former])])
+    agents_ticket = await _ticket_by(env, 304, {"id": 41, "email": f"someone-{cid}@{DOMAIN}", "role": "end-user"})
+    assert await _can_find(env, "cc", agents_ticket), "the agent reads the group's ticket"
+
+    own = await _ticket_by(env, 303, {"id": 31, "email": email, "role": "end-user", "name": "new"})
+
+    assert await _can_find(env, "cc", own), "the end user who now holds the address"
+    assert not await _can_find(env, "cc", agents_ticket), "the deleted agent's group access"

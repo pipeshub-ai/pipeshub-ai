@@ -53,6 +53,8 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
 from tests.support.data_store import runs_in_its_transaction
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
+from tests.support.in_memory_config import InMemoryConfigService
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -148,6 +150,7 @@ def zendesk_connector(mock_logger, mock_data_entities_processor,
         )
     # The admin check and status lookup have their own tests; run_sync tests assume an
     # admin connection on an account without custom statuses.
+    stub_source_accounts(connector)
     connector._ensure_admin_account = AsyncMock()
     connector._fetch_custom_status_labels = AsyncMock(return_value={})
     # Groups sync before tickets, so the cache is populated by then.
@@ -1974,8 +1977,53 @@ class TestIncrementalCursor:
 
 
 class TestCacheSideloads:
-    def test_ignores_entries_without_id(self, zendesk_connector) -> None:
-        zendesk_connector._cache_sideloads({"users": [{"email": "x@acme.com"}]})
+    @staticmethod
+    def _accounts(connector, processor):
+        """The real account check over an in-memory config, and a processor answering what it asks."""
+        processor.get_app_user_links = AsyncMock(return_value=[])
+        processor.get_all_app_users = AsyncMock(return_value=[])
+        processor.get_user_by_email = AsyncMock(return_value=MagicMock(id="pipeshub-user"))
+        processor.remove_user_access_to_connector = AsyncMock(return_value=2)
+        connector.source_accounts.config_service = InMemoryConfigService()
+        return connector.source_accounts
+
+    @staticmethod
+    def _end_user(user_id: int, email: str = "end@customer.com", **extra: object) -> dict:
+        return {"users": [{"id": user_id, "email": email, "role": "end-user", **extra}]}
+
+    async def test_an_end_user_who_takes_an_end_users_address_takes_only_its_own_grants(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """End users are never listed, but every one a page names goes through the account check."""
+        accounts = self._accounts(zendesk_connector, mock_data_entities_processor)
+        await zendesk_connector._cache_sideloads(self._end_user(900))
+        mock_data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+
+        await zendesk_connector._cache_sideloads(self._end_user(950))       # the address passed to another end user
+
+        mock_data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(
+            "zd-conn-1", "end@customer.com"
+        )
+        assert accounts.holds("end@customer.com", "950") and not accounts.holds("end@customer.com", "900")
+        await zendesk_connector._cache_sideloads(self._end_user(900, active=False))   # deleted: never takes it back
+        await zendesk_connector._cache_sideloads(self._end_user(900, suspended=True))
+        assert accounts.holds("end@customer.com", "950") and not accounts.holds("end@customer.com", "900")
+
+    async def test_an_end_user_who_takes_an_agents_address_gets_its_own_grants(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        accounts = self._accounts(zendesk_connector, mock_data_entities_processor)
+        agent = AppUser(app_name=Connectors.ZENDESK, connector_id="zd-conn-1", source_user_id="1",
+                        email="agent@acme.com", full_name="agent")
+        assert await accounts.before_link([agent])                           # the agent listing
+
+        await zendesk_connector._cache_sideloads(self._end_user(31, "agent@acme.com"))
+
+        mock_data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with("zd-conn-1", "agent@acme.com")
+        assert accounts.holds("agent@acme.com", "31") and not accounts.holds("agent@acme.com", "1")
+
+    async def test_ignores_entries_without_id(self, zendesk_connector) -> None:
+        await zendesk_connector._cache_sideloads({"users": [{"email": "x@acme.com"}]})
         assert zendesk_connector._user_id_to_data == {}
 
 
@@ -4757,23 +4805,23 @@ class TestEndUsersComeFromTheTicketPages:
         assert datasource.show_ticket.await_args.kwargs["include"] == "users"
         assert "end@customer.com" in {p.email for p in permissions}
 
-    def test_sideload_cache_is_bounded(self, zendesk_connector) -> None:
+    async def test_sideload_cache_is_bounded(self, zendesk_connector) -> None:
         with patch("app.connectors.sources.zendesk.connector.SIDELOADED_USER_CACHE_SIZE", 3):
             for user_id in range(1, 6):
-                zendesk_connector._cache_sideloads({"users": [{"id": user_id}]})
+                await zendesk_connector._cache_sideloads({"users": [{"id": user_id}]})
 
         assert list(zendesk_connector._sideloaded_users) == ["3", "4", "5"]
 
-    def test_a_user_seen_again_is_kept_over_an_older_one(self, zendesk_connector) -> None:
+    async def test_a_user_seen_again_is_kept_over_an_older_one(self, zendesk_connector) -> None:
         with patch("app.connectors.sources.zendesk.connector.SIDELOADED_USER_CACHE_SIZE", 3):
             for user_id in (1, 2, 3, 1, 4):
-                zendesk_connector._cache_sideloads({"users": [{"id": user_id}]})
+                await zendesk_connector._cache_sideloads({"users": [{"id": user_id}]})
 
         assert list(zendesk_connector._sideloaded_users) == ["3", "1", "4"]
 
-    def test_staff_record_wins_over_a_sideload(self, zendesk_connector) -> None:
+    async def test_staff_record_wins_over_a_sideload(self, zendesk_connector) -> None:
         zendesk_connector._user_id_to_data = {"1": {"id": 1, "role": "admin"}}
-        zendesk_connector._cache_sideloads({"users": [{"id": 1, "role": "end-user"}]})
+        await zendesk_connector._cache_sideloads({"users": [{"id": 1, "role": "end-user"}]})
 
         assert zendesk_connector._user_data(1)["role"] == "admin"
 
@@ -5119,7 +5167,7 @@ class TestFolderReaders:
         return written
 
     @staticmethod
-    def _page(connector, *, public_comment=True) -> None:
+    async def _page(connector, *, public_comment=True) -> None:
         datasource = _ready(connector)
         comments = [{"id": 1, "public": True, "body": "hi"}] if public_comment else []
         datasource.list_comments = AsyncMock(
@@ -5128,7 +5176,7 @@ class TestFolderReaders:
         connector._user_id_to_data = {
             "1": {"id": 1, "role": "agent", "email": "agent@acme.com"},
         }
-        connector._cache_sideloads({"users": [
+        await connector._cache_sideloads({"users": [
             {"id": 900, "email": "end@customer.com", "role": "end-user"},
             {"id": 901, "email": "cc@customer.com", "role": "end-user"},
         ]})
@@ -5214,7 +5262,7 @@ class TestFolderReaders:
         await self._folders(
             zendesk_connector, mock_data_entities_processor, "group_7", UNASSIGNED_GROUP_ID
         )
-        self._page(zendesk_connector)
+        await self._page(zendesk_connector)
 
         await zendesk_connector._process_ticket_batch([self._ticket(group_id=group_id)])
 
@@ -5230,7 +5278,7 @@ class TestFolderReaders:
     ) -> None:
         """Until a ticket has a public comment Zendesk shows its customers nothing."""
         await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
-        self._page(zendesk_connector, public_comment=False)
+        await self._page(zendesk_connector, public_comment=False)
 
         await zendesk_connector._process_ticket_batch([self._ticket()])
 
@@ -5241,7 +5289,7 @@ class TestFolderReaders:
     ) -> None:
         zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
         await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
-        self._page(zendesk_connector)
+        await self._page(zendesk_connector)
 
         await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
 
@@ -5257,7 +5305,7 @@ class TestFolderReaders:
         """Its group is emptied every sync, so the grant would only cost a lookup."""
         zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": False}}
         await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
-        self._page(zendesk_connector)
+        await self._page(zendesk_connector)
 
         await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
 
@@ -5268,7 +5316,7 @@ class TestFolderReaders:
     ) -> None:
         zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
         await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
-        self._page(zendesk_connector)
+        await self._page(zendesk_connector)
 
         await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
         await zendesk_connector._process_ticket_batch([self._ticket(id=6, organization_id=21)])
@@ -5280,7 +5328,7 @@ class TestFolderReaders:
     ) -> None:
         """Their folder was not written, so there is no grant list to extend."""
         zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
-        self._page(zendesk_connector)
+        await self._page(zendesk_connector)
 
         await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
 
