@@ -167,11 +167,11 @@ def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[...,
                 # schema change does not wait for a transaction whose first records write was the refused one, so another
                 # process may have widened it between the refusal and the check below.
                 await self._abort_record_schema_refused_transaction(txn)
-                if await guard.is_wide() and not guard.narrowed:
-                    # as wide as ours and not seen narrower: the refusal is the data's (a wrong type) and stays permanent
-                    raise
-                guard.note_narrow()
-                self._widen_records_schema_in_background()
+                # Always the rerun error: a wide schema now cannot tell a bad value from a narrow schema widened since.
+                # A bad value is refused again on the rerun, whose attempts are bounded, and stays the cause of this error.
+                if not await guard.is_wide():
+                    guard.note_narrow()
+                    self._widen_records_schema_in_background()
                 raise RecordSchemaNarrowError(f"the records schema refused a write in transaction {txn}; it was aborted") from error
             # Outside a transaction the statement wrote nothing. Whatever the schema says now (another process may have widened
             # it between the refusal and this check), it is sent once more; a data error fails again and is raised.

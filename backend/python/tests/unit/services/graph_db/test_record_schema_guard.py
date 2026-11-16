@@ -238,14 +238,14 @@ class TestTheClientHook:
         with pytest.raises(RecordSchemaNarrowError):
             await _hooked(client)(client, "Q")
 
-    async def test_a_refusal_under_a_wide_schema_is_the_datas_and_raises_as_it_always_did(self) -> None:
-        """A wrong-typed value is refused by a schema that is as wide as ours: the error stays permanent, and the transaction
-        is still aborted, so a caller that catches it cannot commit the statements around it."""
+    async def test_a_refusal_under_a_wide_schema_aborts_and_is_run_again_with_the_refusal_as_its_cause(self) -> None:
+        """A wide schema at the check cannot tell a wrong-typed value from a narrow schema widened since, so the transaction
+        is aborted and run again (a bounded number of times); a bad value is refused again there and stays the cause."""
         client = _Client(FakeServer(live=RECORD_SCHEMA_GENERATION), [Exception(f"Query failed (status=400): {REFUSAL}")])
 
-        with pytest.raises(Exception, match="1620") as raised:
+        with pytest.raises(RecordSchemaNarrowError) as raised:
             await _hooked(client)(client, "Q", None, "txn-1")
-        assert not isinstance(raised.value, RecordSchemaNarrowError)
+        assert "1620" in str(raised.value.__cause__)
         assert client.aborted == ["txn-1"] and len(client.sent) == 1
         with pytest.raises(RecordSchemaNarrowError):
             client.record_guard.check_usable("txn-1")
@@ -261,7 +261,7 @@ class TestTheClientHook:
             return await real_is_wide()
 
         client.record_guard.is_wide = widened_first  # type: ignore[method-assign]
-        with pytest.raises(Exception, match="1620"):
+        with pytest.raises(RecordSchemaNarrowError):
             await _hooked(client)(client, "Q", None, "txn-1")
         assert client.aborted == ["txn-1"]
         with pytest.raises(RecordSchemaNarrowError):
