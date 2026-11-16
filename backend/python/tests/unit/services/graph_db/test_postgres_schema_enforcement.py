@@ -270,6 +270,7 @@ CLASSIFICATION: dict[str, str] = {
         "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
         "delete_record_entity_relations",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
+        "remove_user_access_to_connector",
         "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions", "sweep_deleted_connector_writes",
         "unlink_nodes_missed_by_full_sync", "update_sync_point_if", "upsert_sync_point",
     ], "none"),
@@ -339,7 +340,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("stage_state cas bad status", "stage_state_compare_and_set", ("s1", "NOT_STARTED", 7, {}), {}),
     ("stage_state cas bad field", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "IN_PROGRESS", {"attempt": "many"}), {}),
     ("reset_indexing_status bad status", "reset_indexing_status_for_connector", ("c1", "NOT_A_STATUS"), {}),
-    ("update_user_sync_state bad field", "update_user_sync_state", ("a@x.io", 12345, "Drive"), {}),
+    ("update_user_sync_state bad field", "update_user_sync_state", ("a@x.io", 12345, "Drive"), {"org_id": ORG}),
     ("soft_delete bad source", "soft_delete_records", (["r1"], "c1"), {"delete_source": "NOT_A_SOURCE", "batch_id": "b1"}),
     # edges, with the properties of each edge collection
     *[(f"{fn} {coll} {'flat' if flat else 'arango'}", fn, ([edge(coll, flat, **GOOD_PROPS[coll]), edge(coll, flat, **BAD_PROPS[coll])], coll), {})
@@ -394,7 +395,7 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("stage_state cas", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "IN_PROGRESS", {"attempt": 1}), {}),
     ("soft_delete", "soft_delete_records", (["r1"], "c1"), {"delete_source": "USER", "batch_id": "b1"}),
     ("reset_indexing_status", "reset_indexing_status_for_connector", ("c1", "QUEUED"), {"reason": "rebuild"}),
-    ("update_user_sync_state", "update_user_sync_state", ("a@x.io", "IN_PROGRESS", "Drive"), {}),
+    ("update_user_sync_state", "update_user_sync_state", ("a@x.io", "IN_PROGRESS", "Drive"), {"org_id": ORG}),
     ("update_drive_sync_state", "update_drive_sync_state", ("d1", "anything at all"), {}),
     *[(f"{fn} {coll} {'flat' if flat else 'arango'}", fn, ([edge(coll, flat, **GOOD_PROPS[coll])], coll), {})
       for fn in ("batch_create_edges", "create_edges_if_absent") for coll in GOOD_PROPS for flat in (False, True)],

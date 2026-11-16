@@ -48,6 +48,7 @@ def _capture(caplog: pytest.LogCaptureFixture) -> None:
 
 def _user_added_provider(existing_user: object = None) -> AsyncMock:
     gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
     gp.get_user_by_email = AsyncMock(return_value=existing_user)
     gp.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
     gp.get_nodes_by_filters = AsyncMock(return_value=[])
@@ -126,7 +127,7 @@ async def test_user_updated_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 
 async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
     gp = AsyncMock()
-    gp.get_entity_id_by_email = AsyncMock(return_value="graph-key-1")
+    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1"))
     svc = _service(gp)
     svc._remove_mcp_data = AsyncMock()
     svc._remove_personal_toolsets = AsyncMock()
@@ -143,7 +144,7 @@ async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCaptureFixture) -> None:
     """`userId` is optional on this event; logging it must not turn into a KeyError."""
     gp = AsyncMock()
-    gp.get_entity_id_by_email = AsyncMock(return_value="graph-key-1")
+    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1"))
     payload = {"orgId": "org-1", "email": PERSONAL["email"]}
 
     assert await _service(gp).process_event("userDeleted", payload) is True
@@ -155,7 +156,7 @@ async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCap
 
 async def test_user_deleted_with_no_graph_user_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
     gp = AsyncMock()
-    gp.get_entity_id_by_email = AsyncMock(return_value=None)
+    gp.get_user_by_email = AsyncMock(return_value=None)
 
     assert await _service(gp).process_event("userDeleted", dict(PAYLOAD)) is False
 

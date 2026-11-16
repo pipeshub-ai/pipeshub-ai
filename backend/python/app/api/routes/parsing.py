@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Mapping
 from typing import Annotated, Any
@@ -43,6 +44,7 @@ from app.services.parsing.interface import (
     ParseErrorCode,
     ParserProvider,
 )
+from app.services.parsing.load import parse_load, parsing_max_concurrent
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
@@ -101,6 +103,25 @@ SLOW_PARSE_WARN_SECONDS = 300.0
 # Per pool, one org holds at most this share while another org wants the pool (S-4).
 _ORG_SHARE = OrgShare(max_org_share())
 
+# Why parse requests were refused with a 429, cumulative since start, per tier. No caller is
+# recorded. Counted on the request path, read from the health endpoint's thread.
+_REJECTION_REASONS = ("gate_timeout", "over_share", "memory_excess", "lane_timeout")
+_rejected_lock = threading.Lock()
+_rejected: dict[str, dict[str, int]] = {
+    tier.value: dict.fromkeys(_REJECTION_REASONS, 0) for tier in ParseTier
+}
+
+
+def _count_rejection(tier: ParseTier, reason: str) -> None:
+    with _rejected_lock:
+        _rejected[tier.value][reason] += 1
+
+
+def parse_admission_stats() -> dict[str, Any]:
+    """Parse requests refused with a 429, by tier and reason, for the health endpoint."""
+    with _rejected_lock:
+        return {"rejected": {tier: dict(reasons) for tier, reasons in _rejected.items()}}
+
 
 def _config_service(request: Request) -> Any:  # noqa: ANN401
     container = getattr(request.app, "container", None)
@@ -118,6 +139,21 @@ def _get_registry(request: Request) -> ParserRegistry:
 # ---------------------------------------------------------------------------
 
 
+def _saturated_response(max_concurrent: int | None) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+        content={
+            "success": False,
+            "error": {
+                "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                "message": "Parsing service is at capacity; retry later.",
+                "details": {"reason": "max_concurrent", "limit": max_concurrent},
+            },
+        },
+    )
+
+
 @router.post("", summary="Parse a file into a BlocksContainer")
 async def parse_file(
     request: Request,
@@ -128,7 +164,37 @@ async def parse_file(
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
-    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
+    file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+) -> JSONResponse:
+    """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
+    load = parse_load()
+    max_concurrent = parsing_max_concurrent()
+    if not load.try_enter(max_concurrent):
+        return _saturated_response(max_concurrent)
+    try:
+        response = await _parse_file(
+            request, file, claims, record_name, mime_type, extension, org_id,
+            provider, skip_table_enrichment, file_path,
+        )
+    finally:
+        load.leave()
+    if response.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        # The gate's wait or the memory wait ran out: saturated all the same.
+        load.note_saturated()
+    return response
+
+
+async def _parse_file(
+    request: Request,
+    file: Annotated[UploadFile, File(description="File to parse")],
+    claims: Annotated[Mapping[str, Any], Depends(require_parse_token)],
+    record_name: Annotated[str, Form(description="Human-readable filename")] = "",
+    mime_type: Annotated[str, Form(description="MIME type of the file")] = "",
+    extension: Annotated[str, Form(description="File extension (without dot)")] = "",
+    org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
+    provider: Annotated[str | None, Form(description="Parser provider override")] = None,
+    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
@@ -206,11 +272,13 @@ async def parse_file(
     gate = governor.gate(gate_pool(tier))
     cap = parse_admission_cap(governor, gate_pool(tier))
     org_key = org_id or ""
+    reject_reason = "gate_timeout"
 
     _ORG_SHARE.arrive(pool, org_key)
     try:
         if _ORG_SHARE.over_share(pool, org_key, cost, gate.limit if cap is None else cap):
             admitted = False
+            reject_reason = "over_share"
         else:
             admitted = await acquire_gate_with_backpressure(
                 gate, cost, tier, message_id,
@@ -225,6 +293,7 @@ async def parse_file(
         raise
     if not admitted:
         _ORG_SHARE.leave(pool, org_key)
+        _count_rejection(tier, reject_reason)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -258,6 +327,7 @@ async def parse_file(
         if excess:
             if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
                 logger.warning("Parse deferred: record='%s' waited too long for memory", record_name)
+                _count_rejection(tier, "memory_excess")
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -336,6 +406,7 @@ async def parse_file(
         except LaneWaitTimeout:
             # A local conversion found no CPU lane in time: retryable, like a full gate.
             logger.warning("Parse deferred: record='%s' waited too long for a CPU lane", record_name)
+            _count_rejection(tier, "lane_timeout")
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},

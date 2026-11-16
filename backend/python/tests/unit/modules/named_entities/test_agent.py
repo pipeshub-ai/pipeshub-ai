@@ -455,3 +455,29 @@ async def test_a_rejected_last_submit_gets_a_turn_to_fix_it() -> None:
     result = await AgenticExtractionStrategy().extract(doc, [], _ctx(transport))
     assert (result.termination_reason, result.turns) == ("finish_ok", 2)
     assert [mention.surface for mention in result.mentions] == ["Acme"]
+
+
+async def test_agent_turns_are_sized_by_their_input_for_the_breaker(monkeypatch) -> None:
+    """The size class of a call is its input's: a big agent turn is not "small"."""
+    from app.services.llm_gateway import gateway as gateway_module
+    from app.services.llm_gateway.fleet_breaker import LARGE, SMALL, size_class
+
+    seen: list[int] = []
+
+    class Spy:
+        async def call(self, call, **kwargs):  # noqa: ANN202
+            seen.append(kwargs["est_tokens"])
+            return await call()
+
+    class Probe:
+        provider, model_name = "p", "m"
+
+        async def complete(self, messages, **kwargs):  # noqa: ANN202
+            return "ok"
+
+    monkeypatch.setattr("app.modules.named_entities.strategies.agent.transport.get_llm_gateway", lambda: Spy())
+    transport = SlottedTransport(Probe())
+    await transport.complete([UserMessage(content="hi")])
+    await transport.complete([UserMessage(content="x" * 40_000)], system="s" * 100)
+    assert [size_class(n) for n in seen] == [SMALL, LARGE]
+    assert gateway_module.estimate_tokens({"type": "object", "properties": {"a": {"type": "string"}} }) > 0

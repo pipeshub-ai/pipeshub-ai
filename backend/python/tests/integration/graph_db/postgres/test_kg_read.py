@@ -28,6 +28,7 @@ from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.runner import ConformanceRunner, targets
 from tests.permissions.scenario import load_all
+from tests.support import plan_gate
 
 from .test_conformance import CHUNK, PgLayer, _describe
 
@@ -78,7 +79,7 @@ def _switch(value: str | None):  # noqa: ANN202
 
 async def flip(db, org: str) -> tuple[int, int]:
     """Copy every connector of the org into kg, verify it and promote it to enforce. Returns (promoted, connectors). A world with a value the projection refuses (an access rule that is
-    not one of the three) stays on the walk, which is itself a case the check must answer equally."""
+    not one of the four) stays on the walk, which is itself a case the check must answer equally."""
     async def apps(tx) -> list[str]:
         return [r["id"] for r in await tx.fetch("SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' ORDER BY id", org)]
     with _bound(org):
@@ -464,27 +465,25 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
     found: list[str] = []
     used: set[str] = set()
 
-    def visit(node: dict[str, Any]) -> None:
-        if node.get("Schema", "kg") == "kg" and node.get("Relation Name") in ("records", "node_keys", "scope_classes", "links"):
-            index, cond, loops = node.get("Index Name"), node.get("Index Cond", ""), node.get("Actual Loops", 0)
-            pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
-            used.add(index)
-            if node["Node Type"] not in ("Index Scan", "Index Only Scan") or index not in indexes:
-                found.append(f"{node['Node Type']} {index or ''} on {node['Relation Name']}")
-            elif "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond):
-                found.append(f"{index}: the index condition {cond} does not bound {KEY_OF[index]}")
-            elif loops and (node["Actual Rows"] > 1 or pages > 8):
-                found.append(f"{index}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
-        for child in node.get("Plans", []):
-            visit(child)
-
-    visit(plan["Plan"])
+    for node in plan_gate.scans(plan, ("records", "node_keys", "scope_classes", "links")):
+        if node.get("Schema", "kg") != "kg" or node["Relation Name"] not in ("records", "node_keys", "scope_classes", "links"):
+            continue
+        loops = node.get("Actual Loops", 0)
+        pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
+        bounds = plan_gate.bounds(node)
+        used.update(index for index, _ in bounds)
+        if not bounds or any(index not in indexes for index, _ in bounds):
+            found.append(f"{node['Node Type']} {[index for index, _ in bounds]} on {node['Relation Name']}")
+        elif bad := [(index, cond) for index, cond in bounds if "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond)]:
+            found.append(f"the index condition does not bound the key: {bad}")
+        elif loops and (node["Actual Rows"] > 1 or pages > 8):
+            found.append(f"{bounds[0][0]}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
     return found + [f"{i} is not used" for i in sorted(indexes - used)]
 
 
 async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer, pg_provider, pg_db) -> None:
     """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), never analysed and then analysed, each is bounded by its
-    inputs: no sequential or bitmap heap scan, and the index conditions are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
+    inputs: no sequential scan, and the index conditions (a bitmap heap scan's are its bitmap index scans') are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
     key index, bounded by the key, at most one row and a few pages per probe. Run on every PostgreSQL version of the suite."""
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
@@ -507,7 +506,7 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
                 return text, (json.loads(ran) if isinstance(ran, str) else ran)[0]
             with _bound(c.org):
                 plan, ran = await pg_db.run(go, custom_plan=True)
-            if "Seq Scan" in plan or "Bitmap Heap Scan" in plan or any(t not in plan for t in must):
+            if "Seq Scan" in plan or any(t not in plan for t in must):
                 pytest.fail(f"{state} {name}: a scan the ids do not bound, or an index condition missing ({must})\n{plan}")
             if bad := _not_seeks(ran, indexes):
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{plan}")

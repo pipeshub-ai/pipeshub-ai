@@ -390,11 +390,14 @@ def index_members(values: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
     return by_level
 
 
-def custom_field_ids_from_members(members_by_level: dict[str, list[dict[str, Any]]]) -> list[str]:
+def custom_field_ids_from_members(
+    members_by_level: dict[str, list[dict[str, Any]]], kinds: tuple[str, ...] = _FIELD_HOLDERS,
+) -> list[str]:
+    """The custom fields the holders of ``kinds`` (user and group fields by default) read."""
     found: set[str] = set()
     for holders in members_by_level.values():
         for holder in holders:
-            if holder.get("type") not in _FIELD_HOLDERS:
+            if holder.get("type") not in kinds:
                 continue
             raw = holder.get("parameter") or holder.get("value")
             field_obj = holder.get("field")
@@ -448,18 +451,36 @@ def _email_of(user_by_id: dict[str, Any], identifier: str | None) -> str | None:
     return None
 
 
-def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool]:
-    """Return ``(email, skip_because_inactive)``."""
+def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool, str | None]:
+    """Return ``(email, skip_because_inactive, account)``: grant ``email``, or, when it is None, grant by ``account``.
+
+    A person the payload names by account resolves only through the synced directory (``user_by_id``), never by the
+    email the payload carries: an account outside it reads nothing in Jira (no product access, deactivated), and its
+    email may be another, synced account's too. A synced account the directory holds no email for is granted by its
+    account, so the grant reaches that linked user; an email would reach whoever else holds it, or a new external
+    person. An email with no account names someone only when exactly one synced account holds it. Cloud's
+    ``accountId`` "uniquely identifies the user across all Atlassian products" and its ``emailAddress`` "may be
+    returned as null" (User, https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json); Data Center's
+    ``key`` "will never change" (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/)."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
     if user.get("active") is False:
-        return None, True
+        return None, True, None
     account = user.get("accountId") or user.get("key") or user.get("name") or holder.get("parameter")
-    email = _email_of(user_by_id, str(account) if account else None)
-    if not email:
-        raw = user.get("emailAddress")
-        if isinstance(raw, str) and raw.strip():
-            email = raw
-    return email, False
+    raw = user.get("emailAddress")
+    raw = raw if isinstance(raw, str) and raw.strip() else None
+    if account:
+        synced = user_by_id.get(str(account))
+        if synced is not None:
+            email = _email_of(user_by_id, str(account))
+            # Its own source id: a Data Center username alias names the account by key there.
+            return email, False, None if email else str(getattr(synced, "source_user_id", None) or account)
+        # Outside the directory, like a deactivated account: no access, so the level's other holders are still written.
+        # Named without an email, it may be an account a user read cut short left out, so it stays unread and is retried.
+        return None, raw is not None, None
+    if raw is None:
+        return None, False, None
+    holders = {id(u) for u in user_by_id.values() if (getattr(u, "email", None) or "").lower() == raw.strip().lower()}
+    return (raw if len(holders) == 1 else None), False, None
 
 
 def _permissions_for_holder(
@@ -472,6 +493,8 @@ def _permissions_for_holder(
     reporter_email: str | None,
     assignee_email: str | None,
     seen: set[str],
+    reporter_account: str | None = None,
+    assignee_account: str | None = None,
 ) -> tuple[list[Permission], bool, str | None]:
     """Return ``(grants, field_unreadable, skipped_type)``.
 
@@ -483,14 +506,16 @@ def _permissions_for_holder(
     value = holder.get("value")
     grants: list[Permission] = []
 
-    def add_user(email: str | None) -> None:
-        if not email:
+    def add_user(email: str | None, account: str | None = None) -> None:
+        if not email and not account:
             return
-        key = f"user:{email.lower()}"
+        key = f"user:{email.lower()}" if email else f"account:{account}"
         if key in seen:
             return
         seen.add(key)
-        grants.append(Permission(entity_type=EntityType.USER, email=email, type=PermissionType.READ))
+        # By email, or by the account's source id when the directory holds no email for it (resolved by that id).
+        grants.append(Permission(entity_type=EntityType.USER, email=email or None,
+                                 external_id=None if email else account, type=PermissionType.READ))
 
     def add_group(external_id: str | None) -> None:
         if not external_id:
@@ -517,12 +542,12 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_USER:
-        email, inactive = _holder_user_email(holder, user_by_id)
+        email, inactive, account = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        add_user(email)
+        add_user(email, account)
         # A person who resolves to no e-mail is unread, not outside the level.
-        return grants, False, None if email else HOLDER_USER
+        return grants, False, None if email or account else HOLDER_USER
 
     if holder_type == HOLDER_PROJECT_ROLE:
         role = holder.get("projectRole") if isinstance(holder.get("projectRole"), dict) else {}
@@ -534,11 +559,11 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email)
+        add_user(reporter_email, reporter_account)
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email)
+        add_user(assignee_email, assignee_account)
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -583,10 +608,10 @@ def _permissions_for_holder(
             if holder_type == HOLDER_GROUP_FIELD:
                 add_group(entry.get("groupId") or entry.get("name") or entry.get("value"))
             else:
-                email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
+                email, inactive, account = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email)
-                    unresolved = unresolved or not email
+                    add_user(email, account)
+                    unresolved = unresolved or not (email or account)
         return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
@@ -605,6 +630,7 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
 def browse_holder_grants(
     holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
     reporter_email: str | None, assignee_email: str | None,
+    reporter_account: str | None = None, assignee_account: str | None = None,
 ) -> list[Permission]:
     """The people a project's Browse holders name on this issue. A holder whose field is not
     in the payload grants nobody; it does not stop the others."""
@@ -614,6 +640,7 @@ def browse_holder_grants(
         portion, _unreadable, _skipped = _permissions_for_holder(
             holder, project_key=project_key, fields=fields, user_by_id=user_by_id, app_roles_mapping=None,
             reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
+            reporter_account=reporter_account, assignee_account=assignee_account,
         )
         grants.extend(portion)
     return grants
@@ -628,6 +655,8 @@ def level_grants(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
     reporter_email: str | None,
     assignee_email: str | None,
+    reporter_account: str | None = None,
+    assignee_account: str | None = None,
 ) -> tuple[list[Permission], bool, list[str]]:
     grants: list[Permission] = []
     skipped: list[str] = []
@@ -644,6 +673,8 @@ def level_grants(
             reporter_email=reporter_email,
             assignee_email=assignee_email,
             seen=seen,
+            reporter_account=reporter_account,
+            assignee_account=assignee_account,
         )
         if unreadable:
             return [], True, skipped
@@ -688,6 +719,15 @@ def apply_issue_access_settled(
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
+    reporter_account = assignee_account = None
+    if isinstance(fields, dict):
+        # The reporter and assignee the payload names resolve like any other person in it, not by the payload's email.
+        if "reporter" in fields:
+            reporter_email, _, reporter_account = _holder_user_email({"user": fields["reporter"]}, users) \
+                if isinstance(fields["reporter"], dict) else (None, False, None)
+        if "assignee" in fields:
+            assignee_email, _, assignee_account = _holder_user_email({"user": fields["assignee"]}, users) \
+                if isinstance(fields["assignee"], dict) else (None, False, None)
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
 
@@ -719,6 +759,7 @@ def apply_issue_access_settled(
         grants = browse_holder_grants(
             context.browse_holders or [], project_key=project_key, fields=fields or {},
             user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
+            reporter_account=reporter_account, assignee_account=assignee_account,
         ) if top_level else []
         record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
@@ -756,6 +797,8 @@ def apply_issue_access_settled(
         app_roles_mapping=app_roles_mapping,
         reporter_email=reporter_email,
         assignee_email=assignee_email,
+        reporter_account=reporter_account,
+        assignee_account=assignee_account,
     )
     if unreadable:
         return close()

@@ -3552,16 +3552,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> Optional['User']:
         """
-        Get a user by email address. Several organisations can hold a user with
-        the same address; ``org_id`` restricts the answer to that organisation's.
+        Get the user of org ``org_id`` with this email address. The org is required:
+        several organisations can hold a user with the same address, so an unscoped
+        read could answer another org's user.
 
         None means there is no such user. A read that fails also answers None unless
         ``raise_on_error`` is set, which a caller needs when it would act on "no such
-        user" (replacing a record's permissions without them, say). With ``org_id``,
-        only that org's users are read: an address is not unique across orgs.
+        user" (replacing a record's permissions without them, say).
 
         Args:
             email (str): User email
@@ -4529,6 +4529,7 @@ class IGraphDBProvider(ABC):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """
         Get all apps for an organization.
@@ -4537,6 +4538,8 @@ class IGraphDBProvider(ABC):
             org_id (str): Organization ID
             active_only: When True (default), only apps with isActive true.
             app_type: Only apps of this type, filtered in the database.
+            app_ids: Only these apps, filtered in the database; an id that is
+                not one of the organization's apps is not returned.
             raise_on_error: Raise instead of answering [] when the listing fails,
                 for a caller that must tell "none" from "unknown".
 
@@ -5621,16 +5624,20 @@ class IGraphDBProvider(ABC):
     async def batch_upsert_app_users(
         self,
         users: list,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> None:
         """
         Batch upsert app users with org and app relations.
 
-        Creates users if they don't exist, creates org relation and user-app relation.
+        Creates users if they don't exist, creates org relation and user-app relation. The users are looked up and
+        created in ``org_id``, the connector's org: a user belongs to the org whose connector lists it.
 
         Args:
             users (List[AppUser]): List of AppUser objects
             transaction (Optional[Any]): Optional transaction context
+            org_id (str): The org of the connector the users come from
         """
         pass
 
@@ -5794,10 +5801,13 @@ class IGraphDBProvider(ABC):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
         """
-        Get entity ID (user or group) by email.
+        Get the ID of the user, group or person of org ``org_id`` with this email. The org is required: an address
+        is unique only within an org.
 
         Args:
             email (str): Email address
@@ -5812,10 +5822,12 @@ class IGraphDBProvider(ABC):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """
-        Bulk get entity IDs for multiple emails.
+        Bulk get entity IDs of org ``org_id`` for multiple emails (the org is required, as for get_entity_id_by_email).
 
         Args:
             emails (List[str]): List of email addresses
@@ -5932,7 +5944,7 @@ class IGraphDBProvider(ABC):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles,
         for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
         teams or the organization are left alone. Returns how many edges were deleted."""
         raise NotImplementedError
@@ -6414,7 +6426,9 @@ class IGraphDBProvider(ABC):
         self,
         user_email: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Get user's sync state for a specific service.
@@ -6435,7 +6449,9 @@ class IGraphDBProvider(ABC):
         user_email: str,
         state: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Update user's sync state for a specific service.
@@ -8920,7 +8936,10 @@ class IGraphDBProvider(ABC):
     ) -> "dict[tuple[str, str], PermittedEntityRows]":
         """One window of each entity's candidate records, filtered inside the
         query by connector or permission role. Not the access decision: the
-        role test reads neither ``accessRule`` nor the connector gate.
+        role test does not read the connector gate, and reads ``accessRule``
+        only so far that a record needing its own grant (RESTRICTED,
+        PARENT_AND_GRANT) takes its role from its own grants alone, never
+        from what it inherits.
 
         Candidates are exactly those of :meth:`get_entity_candidate_records`
         (same refs, scoping, scan cap and newest-first order), narrowed by
