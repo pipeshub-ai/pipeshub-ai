@@ -79,6 +79,8 @@ class NavigationView(BaseModel):
     # the node-access projection does not carry. Same field and rendering
     # as LookupMatch.context_block.
     context_block: str | None = None
+    # The node's source is still being prepared (its copy is not finished): nothing could be listed yet, which is not the same as no children.
+    preparing: bool = False
 
 
 class LookupMatch(BaseModel):

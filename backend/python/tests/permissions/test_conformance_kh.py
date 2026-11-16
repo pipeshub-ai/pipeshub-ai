@@ -37,6 +37,7 @@ from .kh_worlds import (
     CROSSREACH,
     DECLDEEP,
     DECLHIDE,
+    DECLPAG,
     DECLSTUB,
     DEEP_CHAIN,
     DEEPOPEN,
@@ -52,6 +53,9 @@ from .kh_worlds import (
     OPENGRANTTEAM,
     OPENGROUP,
     OPENSTUB,
+    PAGMEMBER,
+    PAGSEED,
+    PAGSTORY,
     REACHSTUB,
     SCOPEDSIDE,
     SCOPEDTWO,
@@ -570,3 +574,37 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(graph_laye
             await layer.release([UNPLACED])
 
     _assert_each_store(await on_every_store(graph_layers, run), "{store} unplaced", "{store}")
+
+
+async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_grant_and_nowhere_else(graph_layers) -> None:
+    """PAGSEED: dave reads the issue i1 only by his own grant, and the PARENT_AND_GRANT comment c1 (granted to his group), the file f1 in it and
+    the reply c5 granted to him, by the access check and by browsing i1; never without the record's own grant or under a parent he cannot read.
+    PAGSTORY: a RESTRICTED story under an epic read the same way stays closed. DECLPAG: under a member of a declared group it stays closed, as an
+    OPEN child there does. PAGMEMBER: under a member that is also read below a seed it is read, as an OPEN child there is."""
+    oracle = OracleLayer()
+    expected = {
+        (PAGSEED, "dave"): {"i1", "c1", "f1", "c5"},
+        (PAGSEED, "alice"): {"P", "i1", "i2", "c1", "f1", "c3", "s1"},
+        (PAGSEED, "bob"): {"P", "i1", "i2", "c2"},
+        (PAGSEED, "carol"): {"i2"},
+        (PAGSTORY, "dave"): {"epic"},
+        (DECLPAG, "u"): {"d", "k"},
+        (PAGMEMBER, "u"): {"S", "M", "C", "O"},
+    }
+    asked = {PAGSEED: ["P", "i1", "i2", "c1", "c2", "c3", "c4", "c5", "f1", "s1"], PAGSTORY: ["P", "epic", "story", "sub", "plain", "note"],
+             DECLPAG: ["d", "k", "c"], PAGMEMBER: ["S", "M", "C", "O"]}
+    for (world, who), want in expected.items():
+        assert await oracle.admitted(world, who, asked[world]) == want, who
+    worlds = [PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
+    for layer in graph_layers:
+        await layer.preload(worlds)
+        try:
+            for (world, who), want in expected.items():
+                assert await layer.admitted(world, who, asked[world]) == want, (layer.name, who)
+            assert await children_of(layer, PAGSEED, "dave", "i1", "record") == {"c1": True}, layer.name
+            assert await children_of(layer, PAGSEED, "dave", "c1", "record") == {"f1": False, "c5": False}, layer.name
+            assert await children_of(layer, PAGSTORY, "dave", "epic", "record") == {}, layer.name
+            bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"pag-{i}"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)

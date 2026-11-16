@@ -131,7 +131,7 @@ def _hop_failure(f: _Facts, c: StampNode, p: str) -> tuple[_Why, str] | None:
     rule, grant, inherits = _rule(c), c.id in f.granted, p in c.inherits
     if rule in ("OPEN", "STRICT"):
         return None if inherits or grant else ("restricted", c.id)
-    if rule == "RESTRICTED":
+    if rule in ("RESTRICTED", "PARENT_AND_GRANT"):
         return None if inherits and grant else ("restricted", c.id)
     return "unknown_rule", c.id
 
@@ -206,16 +206,18 @@ def _seed(f: _Facts, n: StampNode) -> bool:
 
 
 def _below_seed(f: _Facts, t: str) -> bool:
-    """`t` hangs, over OPEN live nodes that each inherit or are granted, under a seed that no other arm admits."""
+    """`t` hangs, over live nodes that each pass the hop below a seed (OPEN: inherits or is granted; PARENT_AND_GRANT: inherits and is
+    granted), under a seed that no other arm admits."""
     frontier = {t}
     for _ in range(MAX_DEPTH):
         nxt: set[str] = set()
         for cid in frontier:
             c = f.nodes[cid]
-            if c.deleted or _rule(c) != "OPEN":
+            if c.deleted or _rule(c) not in ("OPEN", "PARENT_AND_GRANT"):
                 continue
             for p in c.parents:
-                if p not in f.nodes or not (p in c.inherits or cid in f.granted):
+                inherits, grant = p in c.inherits, cid in f.granted
+                if p not in f.nodes or not ((inherits or grant) if _rule(c) == "OPEN" else (inherits and grant)):
                     continue
                 if _seed(f, f.nodes[p]) and not _from_app(f, p) and not _declared(f, f.nodes[p]):
                     return True

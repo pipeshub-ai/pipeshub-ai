@@ -29,12 +29,15 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.qna.chat_state import (
     _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
 )
 from app.modules.retrieval.selection_scope import SERVER_SET_FILTER_KEYS, has_selection
+from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.user_lookup import get_caller_user
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -228,7 +231,7 @@ async def admit_caller_project_collections(
     if not candidates or not caller_user_id:
         return []
     try:
-        caller = await graph_provider.get_user_by_user_id(caller_user_id)
+        caller = await get_caller_user(graph_provider, caller_user_id)
         caller_key = (caller or {}).get("_key") or (caller or {}).get("id")
         if not caller_key:
             return []
@@ -308,6 +311,50 @@ async def project_files_knowledge(
     ]
 
 
+def _is_collection(entry: dict[str, Any]) -> bool:
+    return str(entry.get("type") or "").strip().upper() == Connectors.KNOWLEDGE_BASE.value
+
+
+async def service_account_knowledge(
+    graph_provider: IGraphDBProvider,
+    agent_knowledge: Sequence[object],
+    user_id: str,
+    org_id: str,
+    logger: Logger,
+    *,
+    bound: bool,
+) -> list[dict[str, Any]]:
+    """The part of a service-account agent's knowledge it may search.
+
+    Anyone in the org runs such an agent on one identity, so it keeps only what
+    is shared with the whole org: the org's team connectors, never a personal
+    one. Collections have no org-wide grant, so one is kept only when the agent
+    runs as a bound service account, whose own grants then decide what of it is
+    read. A failed connector lookup keeps no connector, and a source whose app
+    could not be read is kept only if the lookup lists it as a team connector.
+    """
+    knowledge = [k for k in agent_knowledge or [] if isinstance(k, dict)]
+    team: set[str] = set()
+    if any(not _is_collection(k) for k in knowledge):
+        instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, logger)
+        # Typed from the lookup, not the entry: an entry the graph could not resolve is typed UNKNOWN.
+        team = {
+            str(i.get("_key") or i.get("id"))
+            for i in instances
+            if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value and not _is_collection(i)
+        }
+    kept = [
+        k for k in knowledge
+        if (bound if _is_collection(k) else str(k.get("connectorId") or "").strip() in team)
+    ]
+    if len(kept) < len(knowledge):
+        logger.info(
+            "Service-account agent: %d knowledge source(s) not shared with the org are not searched",
+            len(knowledge) - len(kept),
+        )
+    return kept
+
+
 __all__ = [
     "MAX_CALLER_COLLECTIONS",
     "MAX_COLLECTION_CANDIDATES",
@@ -319,4 +366,5 @@ __all__ = [
     "project_files_knowledge",
     "read_source_limit",
     "resolve_agent_filters",
+    "service_account_knowledge",
 ]
