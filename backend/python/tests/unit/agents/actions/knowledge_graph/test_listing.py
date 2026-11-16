@@ -131,7 +131,10 @@ class TestPageInsideBounds:
         """A selection search or a partial bound reads its rows a batch at a time and rebuilds the page: a source still being prepared
         answers an empty first page with no cursor, and the rebuilt page still says it is being prepared, not that nothing matched."""
         from app.agents.actions.knowledge_graph.ops.listing import _page_inside_bounds
-        from app.connectors.sources.localKB.api.knowledge_hub_models import KnowledgeHubNodesResponse, PaginationInfo
+        from app.connectors.sources.localKB.api.knowledge_hub_models import (
+            KnowledgeHubNodesResponse,
+            PaginationInfo,
+        )
 
         preparing = KnowledgeHubNodesResponse(success=True, items=[], preparing=True,
                                               pagination=PaginationInfo(limit=50, totalItems=0, hasNext=False, hasPrev=False))
