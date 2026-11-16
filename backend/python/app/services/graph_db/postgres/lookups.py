@@ -80,14 +80,16 @@ def _vis_code(v: RecordVisibility) -> int:
 # The collections come from ``k`` (OFFSET 0 keeps it a subquery) and not from literals: ``coll = 'stageStates'`` implies the predicate of every partial index on
 # that collection (nodes_stage_page, _revision, _status, and the records ones for 'records'), each leads with org_id, and on an organisation the statistics put at a
 # row or two a scan of such an index bounded by the org alone cost the same as the key probe. A collection known only at run time leaves the primary key.
+# The stage state's key is computed with the record (``n.sid``) and compared as a plain value: written as ``x.id = (n.doc->>...) || ...`` inside the lateral,
+# PostgreSQL 17.12 and 18.7 kept it as a filter on graph.nodes (row security; ``->>`` and ``||`` are not leakproof) and read every stage state of the org.
 STATS_KB = """/* pipeshub:graph.get_connector_stats */ WITH r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
         AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $2)
     SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
            s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
     FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
-    CROSS JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
-    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st
-        AND x.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities' LIMIT 1) s ON true
+    CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
+        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
+    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
     WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
       AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
     GROUP BY 1, 2, 3, 4"""
@@ -100,9 +102,9 @@ STATS_CONNECTOR = """/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(i
     SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
            s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
     FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
-    CROSS JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
-    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st
-        AND x.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities' LIMIT 1) s ON true
+    CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
+        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
+    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
     WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
       AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
     GROUP BY 1, 2, 3, 4"""
