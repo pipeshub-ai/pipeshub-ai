@@ -84,8 +84,8 @@ async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_se
 
 async def test_a_linked_user_account_still_gives_its_organisation_role(graph_layers) -> None:
     """A source account stored as a User (as before SourceAccount nodes) keeps what its organisation gives in the context role, as it did:
-    in REGR-09, u reads f as OWNER through acct's organisation, while the access check still admits f and refuses g."""
-    world = next(s for s in load_all() if s.id == "REGR-09").final_world()
+    in REGR-11, u reads f as OWNER through acct's organisation, while the access check still admits f and refuses g."""
+    world = next(s for s in load_all() if s.id == "REGR-11").final_world()
     for layer in graph_layers:
         await layer.preload([world])
         ns = await layer._ns(world)

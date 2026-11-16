@@ -197,8 +197,8 @@ async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_se
 
 
 async def test_a_linked_user_account_still_gives_its_organisation_role(layer: PgLayer, pg_provider) -> None:
-    """A source account stored as a User keeps what its organisation gives in the context role, as it did (REGR-09: u reads f as OWNER)."""
-    world = next(s for s in load_all() if s.id == "REGR-09").final_world()
+    """A source account stored as a User keeps what its organisation gives in the context role, as it did (REGR-11: u reads f as OWNER)."""
+    world = next(s for s in load_all() if s.id == "REGR-11").final_world()
     await layer.preload([world])
     ns = await layer._ns(world)
     with bind(OrgContext(_hex(ns.org), None, "job", "job:test", "t")):

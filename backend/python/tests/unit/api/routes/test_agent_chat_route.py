@@ -426,6 +426,65 @@ class TestChatStreamKnowledge:
         assert call["query_info"]["filters"]["strictScope"] is True
         assert {k["connectorId"] for k in call["query_info"]["knowledge"]} == {"conn-1", "kb-1"}
 
+    @staticmethod
+    def _databases(graph: InMemoryGraph, agent: str) -> None:
+        """alice's own database, the org's database, another org's, and a non-database source."""
+        for key, scope, org, created_by in (
+            ("pg-alice", "personal", "org-1", "u-alice"),
+            ("pg-team", "team", "org-1", "u-alice"),
+            ("pg-other-org", "team", "org-2", "u-mallory"),
+        ):
+            graph.add_node("apps", {
+                "_key": key, "type": "POSTGRESQL", "scope": scope, "orgId": org,
+                "createdBy": created_by, "isConfigured": True,
+            })
+        knowledge = {"pg-alice": "POSTGRESQL", "pg-team": "POSTGRESQL", "pg-other-org": "POSTGRESQL", "drive": "APP"}
+        for connector_id, kind in knowledge.items():
+            graph.add_node("agentKnowledge", {"_key": f"k-{connector_id}", "connectorId": connector_id, "type": kind})
+            graph.add_edge("agentHasKnowledge", {"_from": f"{AGENTS}/{agent}", "_to": f"agentKnowledge/k-{connector_id}"})
+
+    def test_a_service_account_agent_uses_only_the_databases_shared_with_the_org(self, graph, loop) -> None:
+        self._databases(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert call["user_info"]["userId"] == "u-alice"
+        assert {k["connectorId"] for k in call["query_info"]["knowledge"]} == {"pg-team", "drive"}
+        assert sorted(call["query_info"]["filters"]["apps"]) == ["drive", "pg-team"]
+
+    def test_a_service_account_agent_cannot_be_pointed_at_a_personal_database(self, graph, loop) -> None:
+        self._databases(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob", {"query": "hi", "filters": {"apps": ["pg-alice"]}})
+        (call,) = loop.calls
+        assert "pg-alice" not in call["query_info"]["filters"]["apps"]
+        assert "pg-alice" not in {k["connectorId"] for k in call["query_info"]["knowledge"]}
+
+    def test_a_service_account_agent_keeps_no_database_when_the_lookup_fails(self, graph, loop) -> None:
+        self._databases(graph, "sa")
+        graph.fail("get_user_connector_instances")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert {k["connectorId"] for k in call["query_info"]["knowledge"]} == {"drive"}
+
+    def test_a_service_account_agent_drops_a_source_whose_app_could_not_be_read(self, graph, loop) -> None:
+        self._databases(graph, "sa")
+        graph.nodes["agentKnowledge"]["k-pg-alice"]["type"] = "UNKNOWN"
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert "pg-alice" not in {k["connectorId"] for k in call["query_info"]["knowledge"]}
+        assert "pg-alice" not in call["query_info"]["filters"]["apps"]
+
+    def test_an_agent_run_by_its_owner_keeps_the_owners_databases(self, graph, loop) -> None:
+        self._databases(graph, "private")
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice")
+        (call,) = loop.calls
+        assert {"pg-alice", "pg-team", "drive"} <= {k["connectorId"] for k in call["query_info"]["knowledge"]}
+        assert not graph.calls_to("get_user_connector_instances")
+
     def test_loop_failure_becomes_a_plain_error_frame(self, graph, monkeypatch, caplog) -> None:
         def boom(*_a: object, **_k: object) -> NoReturn:
             raise RuntimeError("socket closed by 10.0.0.7")
