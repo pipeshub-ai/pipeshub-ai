@@ -1439,6 +1439,9 @@ class SlackConnector(BaseConnector):
                 f"read; they will only see the channels their own email is a member of"
             )
             return None
+        # shortcut: this grant is for the PipesHub user holding the token, not a Slack account (a bot token has
+        # none), so it names no Slack id; after the authenticator's address passes to another Slack account, the
+        # address check refuses it. Upgrade by exempting the authenticator's own grant from that check.
         return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ)
 
     def _with_authenticator(self, perms: list[Permission]) -> list[Permission]:
@@ -1499,6 +1502,7 @@ class SlackConnector(BaseConnector):
             if email:
                 return [Permission(
                     email=email,
+                    external_id=remote_uid,
                     entity_type=EntityType.USER,
                     type=PermissionType.READ,
                 )]
@@ -1526,6 +1530,7 @@ class SlackConnector(BaseConnector):
                 if email:
                     perms.append(Permission(
                         email=email,
+                        external_id=uid,
                         entity_type=EntityType.USER,
                         type=PermissionType.READ,
                     ))
@@ -1542,6 +1547,7 @@ class SlackConnector(BaseConnector):
             if email:
                 perms.append(Permission(
                     email=email,
+                    external_id=uid,
                     entity_type=EntityType.USER,
                     type=PermissionType.READ,
                 ))

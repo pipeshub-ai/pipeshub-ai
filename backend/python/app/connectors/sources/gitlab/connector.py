@@ -577,6 +577,8 @@ class GitLabConnector(BaseConnector):
         return Permission(
             entity_type=EntityType.USER,
             email=self.creator_email,
+            # The id the creator is listed with (their member stub): the GitLab account the token belongs to.
+            external_id=str(self._gitlab_user_id) if self._gitlab_user_id is not None else None,
             type=PermissionType.OWNER,
         )
 

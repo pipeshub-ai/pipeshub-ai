@@ -774,3 +774,21 @@ class TestLongestMatchingGroupPathPrefixMatch:
         """Child path with deep namespace returns longest matching prefix."""
         result = _longest_matching_group_path("eng/backend/api", ["eng", "eng/backend", "ops"])
         assert result == "eng/backend"
+
+
+class TestGrantsFollowTheAddressHolder:
+    async def test_after_a_handoff_the_new_holder_keeps_a_members_grant(self) -> None:
+        from app.models.permission import EntityType, PermissionType
+        from tests.support.address_handoff import handed_over
+
+        c = make_mock_connector()
+        user = MagicMock()
+        user.email = "dev@example.com"
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=user)
+        accounts = await handed_over(c.connector_id, "dev@example.com", "41", "42")
+
+        grant = await ProjectsSync(c)._create_permission_from_principal(
+            EntityType.USER.value, "42", PermissionType.OWNER.value,
+        )
+
+        assert accounts.holds(grant.email, grant.external_id)
