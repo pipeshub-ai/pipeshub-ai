@@ -77,6 +77,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import (
     knowledge_hub_router,
 )
 from app.containers.connector import initialize_container
+from app.edition import check_runtime_settings  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.edition_containers import ConnectorAppContainer
 from app.edition_services import (
     build_sync_dispatcher,
@@ -105,6 +106,9 @@ from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ConnectorAppContainer.init("connector_service")
 

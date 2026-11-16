@@ -34,6 +34,7 @@ from app.core.org_context import (
     spawn_detached,
     system,
 )
+from app.edition import check_runtime_settings
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.events.dedup import will_promote_queued_copies
@@ -147,6 +148,9 @@ class CoordinationRunner(Protocol):
 
 # signal.signal(signal.SIGTERM, handle_sigterm)
 # signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
