@@ -12,12 +12,16 @@ import os
 import socket
 import threading
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 BASE_PORT = int(os.environ.get("OPS_EXPORTER_ACCEPTOR_TEST_PORT", "19300"))
 HOST = "127.0.0.1"
@@ -345,7 +349,7 @@ def test_the_acceptor_never_waits_for_a_slot(tmp_path: Path, monkeypatch: pytest
     assert server is not None
     hold = threading.Event()
     try:
-        for i in range(ox.MAX_CONNECTIONS):  # sixteen slots, all mid-answer and never evictable
+        for _ in range(ox.MAX_CONNECTIONS):  # sixteen slots, all mid-answer and never evictable
             a, b = socket.socketpair()
             server._conns[a] = [time.monotonic(), True]
             t = threading.Thread(target=hold.wait, daemon=True)
