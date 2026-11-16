@@ -83,8 +83,8 @@ jobs:
     # The image build, the stack start and the bench run have step limits of their own, so a slow build is not paid
     # for out of the bench's budget and a hung step ends early. The job limit holds all of them plus the steps
     # without a limit, with at least 20 percent to spare for every suite (test_perf_costclass.py checks the sums).
-    # The tiers dispatch is the longest: its 30-minute build and 120-minute run need 168 minutes in the worst case.
-    timeout-minutes: 210
+    # The tiers dispatch is the longest: its 30-minute build and 120-minute run need 189 minutes in the worst case (pull 15, build 30, install 10).
+    timeout-minutes: 240
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     env:
@@ -121,6 +121,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
 
       - name: Pull pre-built base images
+        timeout-minutes: 15
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
             image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
@@ -150,6 +151,7 @@ jobs:
       # the harness needs the integration-test client.
       - name: Install dependencies
         working-directory: integration-tests
+        timeout-minutes: 10
         run: |
           uv venv
           uv pip install -e .
@@ -250,7 +252,7 @@ jobs:
       - name: Tiers
         if: env.SUITE == 'tiers'
         # Worst case per tier: 5 min waiting for a quiet host, 10 min for health, 20 min bench (--timeout 1200), 3 min
-        # for the rest, for at most 3 tiers (validated above): 114 minutes. With the build, the job needs 168 of its 210.
+        # for the rest, for at most 3 tiers (validated above): 114 minutes. With the build, the job needs 189 of its 240 (80 percent of which is 192).
         timeout-minutes: 120
         env:
           BENCH_TIERS: ${{ env.TIERS_INPUT }}
@@ -275,6 +277,14 @@ jobs:
         if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
         run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Dump docker logs
+        if: failure() && env.SUITE != 'tiers'
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/perf/docker-logs
+          docker compose --env-file bench.env -p cc -f docker-compose.integration.neo4j.yml -f docker-compose.bench.yml logs --no-color --timestamps pipeshub-ai fake-ai \
+            > ../../integration-tests/reports/perf/docker-logs/stack.log 2>&1 || true
+
       - name: Upload benchmark result
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -284,14 +294,6 @@ jobs:
             integration-tests/reports/perf/
             integration-tests/perf/reports/
           if-no-files-found: ignore
-
-      - name: Dump docker logs
-        if: failure() && env.SUITE != 'tiers'
-        working-directory: deployment/docker-compose
-        run: |
-          mkdir -p ../../integration-tests/reports/perf/docker-logs
-          docker compose --env-file bench.env -p cc -f docker-compose.integration.neo4j.yml -f docker-compose.bench.yml logs --no-color --timestamps pipeshub-ai fake-ai \
-            > ../../integration-tests/reports/perf/docker-logs/stack.log 2>&1 || true
 
       - name: Tear down services
         if: always() && env.SUITE != 'tiers'

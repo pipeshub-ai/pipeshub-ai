@@ -399,3 +399,60 @@ def test_a_failed_detail_read_is_retried_not_finalised_without_its_details(corpu
     assert result["verdict"]["status"] == "pass", result["verdict"]
     assert result["metrics"]["accepted"] == 4 and result["metrics"]["rejected"] == {}
     assert all(n >= 2 for n in kb.reads.values())
+
+
+class DetailFailsAfterAnInProgressRead(KB):
+    """The first record read says IN_PROGRESS; every later one raises. The listing says COMPLETED throughout."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: dict[str, int] = {}
+
+    def get_record(self, rid: str) -> dict:
+        self.reads[rid] = self.reads.get(rid, 0) + 1
+        if self.reads[rid] > 1:
+            raise RuntimeError("detail read down")
+        self.detail_status = "IN_PROGRESS"
+        try:
+            return super().get_record(rid)
+        finally:
+            self.detail_status = None
+
+
+def test_a_listing_never_stands_in_for_a_detail_read_that_failed(corpus: tuple) -> None:
+    result, _ = _go(corpus, DetailFailsAfterAnInProgressRead(), _plan(_tpl(corpus), 3), _args(timeout=1.5))
+    assert result["verdict"]["status"] == "failed", result["verdict"]
+    assert result["metrics"]["failures"]["timed_out"] == 3 and result["metrics"]["accepted"] == 0
+
+
+class LateUnitKB(KB):
+    """The first unit finishes (in the listing) only after ``late_after`` seconds from its upload."""
+
+    def __init__(self, late_after: float) -> None:
+        super().__init__(index_s=0.01)
+        self.late_after, self.uploads = late_after, []
+
+    def upload_file(self, kb_id: str, name: str, data: bytes, mimetype: str = "") -> dict:
+        self.uploads.append(name)
+        out = super().upload_file(kb_id, name, data, mimetype)
+        if len(self.uploads) == 1:
+            rec = self.records[out["records"][0]["recordId"]]
+            rec["done"] = time.time() * 1000 + self.late_after * 1000
+        return out
+
+
+def test_calibration_stops_when_a_unit_outlives_its_deadline(corpus: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bc, "docker", lambda *a, **k: None)
+    out, _manifest, _by, entries = corpus
+    name = _tpl(corpus)
+    arrivals = [bc.Arrival(i, "small-text", 0.0, "unit:embed", name) for i in range(3)]
+    plan = bc.Plan("calibrate", arrivals, "cost-smoke", notes={"sequential": True})
+    kb = LateUnitKB(late_after=1.2)
+    run, t0 = bc.Run(), time.time()
+    args = _args(timeout=0.5, app_container="")
+    log = bc._run_sequential(plan, kb, "kb", run, out, entries, "t", t0, args)
+    assert len(log) == 1 and len(kb.uploads) == 1  # the second unit was never uploaded
+    assert {s.seq: s.upload_error for s in run.samples.values() if s.upload_error} == {
+        1: "not started before the deadline", 2: "not started before the deadline"}
+    time.sleep(1.0)  # even when the open unit finishes later, nothing else ran alongside it
+    assert len(kb.uploads) == 1

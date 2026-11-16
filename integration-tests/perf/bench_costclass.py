@@ -109,6 +109,7 @@ NOT_MEASURABLE_FAMILIES = {
 WEIGHT_TOLERANCE = 0.30
 BUSY_MIN_CORES = 0.10  # an interval counts as the process being busy at or above this many cores
 PROC_SAMPLE_S = 0.25
+CALIBRATION_PID_REFRESH_S = 2.0  # a docker top per two seconds of one unit: light next to a 0.25 s /proc sample
 # Scopes the run cannot work without: a stack that refuses one stops the run at credentials.
 REQUIRED_SCOPES = frozenset({"kb:read", "kb:write", "kb:upload", "kb:delete", "config:read", "config:write"})
 SMOKE_P95_BUDGET_S = 600.0
@@ -880,12 +881,16 @@ BASELINE_MAX_CV = 0.10
 
 def _baseline_group_key(r: dict[str, Any]) -> tuple[Any, ...]:
     env, tier = r.get("environment", {}), r.get("environment", {}).get("tier") or {}
-    return (r.get("plan", {}).get("scenario"), tier.get("cpus"), tier.get("mem_gb"), env.get("embedding_mode"),
-            r.get("plan", {}).get("corpus_id"))
+    plan = r.get("plan", {})
+    notes = plan.get("notes") or {}
+    # the offered load is part of the identity: repeats at different rates are not repeats
+    return (plan.get("scenario"), tier.get("cpus"), tier.get("mem_gb"), env.get("embedding_mode"),
+            plan.get("corpus_id"), plan.get("arrivals"), notes.get("rate_per_s"), notes.get("duration_s"),
+            notes.get("burst_count"))
 
 
 def baseline_from_results(results: list[dict[str, Any]], *, max_cv: float = BASELINE_MAX_CV,
-                          min_repeats: int = MIN_BASELINE_REPEATS) -> dict[str, Any]:
+                          min_repeats: int = MIN_BASELINE_REPEATS, expected_repeats: int | None = None) -> dict[str, Any]:
     """Whether result files are a valid baseline: at least *min_repeats* passing repeats of one scenario and tier,
     and the p50 of every kind (and, for a saturation burst, the throughput) steady across them, CV at most *max_cv*.
 
@@ -902,12 +907,17 @@ def baseline_from_results(results: list[dict[str, Any]], *, max_cv: float = BASE
     for key in sorted(groups, key=lambda k: tuple("" if v is None else str(v) for v in k)):
         runs = groups[key]
         name = f"{key[0]} at {key[1]} CPU / {key[2]} GB ({key[3]} embedding)"
+        load = {k: v for k, v in zip(("arrivals", "rate", "duration", "burst"), key[5:], strict=True) if v is not None}
+        if load:
+            name += " " + ", ".join(f"{k} {v}" for k, v in load.items())
         problems: list[str] = []
         not_pass = sorted(r["verdict"]["status"] for r in runs if r["verdict"]["status"] != "pass")
         if not_pass:
             problems.append(f"{len(not_pass)} repeat(s) did not pass: {', '.join(not_pass)}")
         if len(runs) < min_repeats:
             problems.append(f"{len(runs)} repeat(s), at least {min_repeats} are needed")
+        if expected_repeats and len(runs) < expected_repeats:
+            problems.append(f"{expected_repeats - len(runs)} of the {expected_repeats} planned repeat(s) left no result")
         passing = [r for r in runs if r["verdict"]["status"] == "pass"]
         series: dict[str, list[float]] = {}
         for r in passing:
@@ -1648,12 +1658,14 @@ def account_unstarted(plan: Plan, run: Run, t0: float) -> list[Sample]:
     return added
 
 
-def _fetch_details(kb_client: Any, sample: Sample) -> bool:
+def _fetch_details(kb_client: Any, sample: Sample, listed_status: str | None = None) -> bool:
+    """Read the record. The sample's status is the *record's* confirmed status (the listing's only when the read
+    omits one); a failed read changes nothing, so a listing's COMPLETED never stands in for a read that failed."""
     try:
         fields = record_fields(kb_client.get_record(sample.record_id))
     except Exception:  # noqa: BLE001
         return False
-    sample.status = fields["status"] or sample.status
+    sample.status = fields["status"] or listed_status or sample.status
     sample.last_index_ms = fields["last_index_ms"]
     sample.created_ms = fields["created_ms"]
     sample.virtual_record_id = fields["virtual_record_id"]
@@ -1714,9 +1726,8 @@ def _wait_all(kb_client: Any, kb_id: str, run: Run, futures: list[Any], deadline
                 continue
             status = run.status_by_record.get(s.record_id or "")
             if status in FINAL_STATUSES:
-                s.status = status
                 # a failed or non-final detail read leaves the sample open: the next poll reads it again
-                if _fetch_details(kb_client, s):
+                if _fetch_details(kb_client, s, status):
                     s.record_count = max(s.record_count, len(run.names_seen.get(s.name, [])) or s.record_count)
                     detailed.add(s.seq)
                     run.final_event(s.seq).set()
@@ -1805,7 +1816,8 @@ def _run_sequential(plan: Plan, kb_client: Any, kb_id: str, run: Run, tmp: Path,
     for a in plan.arrivals:
         a.at_s = time.time() - t0
         family = a.role.split(":", 1)[1]
-        watch = ProcessCpuSampler(args.app_container or "", FAMILY_PROCESS[family])
+        # Docling's pool workers are spawned on a unit's first submit: look the pids up again while it runs.
+        watch = ProcessCpuSampler(args.app_container or "", FAMILY_PROCESS[family], refresh_s=CALIBRATION_PID_REFRESH_S)
         watch.start()
         start = time.time()
         _upload_one(a, kb_client, kb_id, run, tmp, entries, run_id, t0, control_bytes)
@@ -1814,6 +1826,11 @@ def _run_sequential(plan: Plan, kb_client: Any, kb_id: str, run: Run, tmp: Path,
         wall = time.time() - start
         log.append({"family": family, "kind": a.kind, "seq": a.seq, "wall_s": round(wall, 3),
                     "proc": watch.finish(), "pages": entries[a.template].pages})
+        if a.seq not in run.detailed:
+            # The unit is still open at its deadline: another upload would overlap it, and its CPU series is
+            # already closed. Calibration stops and fails (the open unit times out, the rest count as unstarted).
+            account_unstarted(plan, run, t0)
+            break
     return log
 
 
@@ -2005,6 +2022,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--label")
     ap.add_argument("--knee-from", nargs="+", type=Path, default=None, metavar="RESULT",
                     help="no run: compute CELL_CPUS and its confidence from the b06-knee result files of the tiers")
+    ap.add_argument("--expected-repeats", type=int, default=None,
+                    help="with --baseline-from: the repeats the runner planned; fewer result files make the baseline invalid")
     ap.add_argument("--baseline-from", nargs="+", type=Path, default=None, metavar="RESULT",
                     help="no run: check that the repeats of a scenario are a valid baseline (3 or more passing runs, "
                          "p50 CV at most 10 percent); exit 3 and no baseline when not")
@@ -2068,7 +2087,8 @@ def knee_main(args: argparse.Namespace) -> int:
 
 
 def baseline_main(args: argparse.Namespace) -> int:
-    out = baseline_from_results([json.loads(p.read_text(encoding="utf-8")) for p in args.baseline_from])
+    out = baseline_from_results([json.loads(p.read_text(encoding="utf-8")) for p in args.baseline_from],
+                                expected_repeats=args.expected_repeats)
     text = json.dumps(out, indent=2) + "\n"
     if args.output != _IT_DIR / "reports" / "perf" / "costclass.json":
         args.output.parent.mkdir(parents=True, exist_ok=True)

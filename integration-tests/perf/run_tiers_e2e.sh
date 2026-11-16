@@ -39,12 +39,17 @@ label=${BENCH_LABEL:-local}
 repeats=${BENCH_REPEATS:-1}
 [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { echo "BENCH_REPEATS must be a positive integer" >&2; exit 64; }
 out=${BENCH_OUT:-$repo/integration-tests/reports/perf}
-plan_args=(plan --tiers "$tiers" --scenario "$scenario")
-[ -n "${BENCH_ORDER:-}" ] && plan_args+=(--order "$BENCH_ORDER")
-[ -n "${BENCH_HOST_CPUS:-}" ] && plan_args+=(--host-cpus "$BENCH_HOST_CPUS")
-[ -n "${BENCH_HOST_MEM_GB:-}" ] && plan_args+=(--host-mem-gb "$BENCH_HOST_MEM_GB")
+# The plan for a tier list. Run again for one tier after its quiet check, so the cores it gets are the idlest
+# now and not those of the first plan (another session may have taken them since).
+plan_for() {
+  local args=(plan --tiers "$1" --scenario "$scenario")
+  [ -n "${BENCH_ORDER:-}" ] && args+=(--order "$BENCH_ORDER")
+  [ -n "${BENCH_HOST_CPUS:-}" ] && args+=(--host-cpus "$BENCH_HOST_CPUS")
+  [ -n "${BENCH_HOST_MEM_GB:-}" ] && args+=(--host-mem-gb "$BENCH_HOST_MEM_GB")
+  python3 "$here/tiers.py" "${args[@]}"
+}
 
-plan=$(python3 "$here/tiers.py" "${plan_args[@]}")
+plan=$(plan_for "$tiers")  # a malformed or duplicated tier list stops here, before any stack starts
 echo "$plan"
 [ "$dry" = 1 ] && exit 0
 
@@ -95,6 +100,12 @@ while IFS= read -r line <&3; do
     echo "SKIP $name: the host is not quiet" >&2
     skipped=$((skipped + 1)); rc=$(( rc > 2 ? rc : 2 )); continue
   fi
+  fresh=$(plan_for "$name:$cpus:${mem%g}" | grep '^RUN ' || true)
+  if [ -z "$fresh" ]; then
+    echo "SKIP $name: it no longer fits after the host check" >&2
+    skipped=$((skipped + 1)); rc=$(( rc > 2 ? rc : 2 )); continue
+  fi
+  line=$fresh
   export BENCH_PORT_HTTP=$port BENCH_APP_CPUS=$cpus BENCH_APP_MEM=$mem
   export BENCH_APP_CPUSET=$(get app) BENCH_FAKE_AI_CPUSET=$(get fake_ai) BENCH_AUX_CPUSET=$(get aux)
   export BENCH_NEO4J_CPUSET=$(get neo4j) BENCH_QDRANT_CPUSET=$(get qdrant)
@@ -164,6 +175,6 @@ if [ "$scenario" = b06-knee ] && [ "${#results[@]}" -gt 0 ]; then
 fi
 # Repeats: a baseline is valid only when every repeat passed and the p50 of every kind is steady (CV at most 10 percent).
 if [ "$repeats" -gt 1 ] && [ "${#results[@]}" -gt 0 ]; then
-  python3 "$here/bench_costclass.py" --baseline-from "${results[@]}" --output "$out/baseline-$label.json" || rc=$(( rc > 3 ? rc : 3 ))
+  python3 "$here/bench_costclass.py" --baseline-from "${results[@]}" --expected-repeats "$repeats" --output "$out/baseline-$label.json" || rc=$(( rc > 3 ? rc : 3 ))
 fi
 exit "$rc"

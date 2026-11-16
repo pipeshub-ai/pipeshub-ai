@@ -42,6 +42,9 @@ def parse_tiers(text: str) -> list[Tier]:
         tiers.append(Tier(parts[0], int(parts[1]), int(parts[2])))
     if not tiers:
         raise ValueError("no tiers given")
+    names = [t.name for t in tiers]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate tier name in {names}: each tier needs its own, it names its result files")
     return tiers
 
 

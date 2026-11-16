@@ -1149,12 +1149,14 @@ def test_chaos_kill_fires_once_and_is_cancelled_when_the_run_ends_first() -> Non
     fired = bc.ChaosKill("app", 0.05, kill=_kill_recorder(killed), top=lambda: "PID PPID ARGS\n")
     assert fired.timer.daemon  # never keeps the process alive
     fired.start()
-    time.sleep(0.4)
+    fired.timer.join(timeout=10)
+    assert not fired.timer.is_alive()
     assert killed == ["app"] and fired.fired
     late = bc.ChaosKill("app", 0.3, kill=_kill_recorder(killed), top=lambda: "PID PPID ARGS\n")
     late.start()
     late.cancel()
-    time.sleep(0.6)
+    late.timer.join(timeout=10)
+    assert not late.timer.is_alive()
     assert killed == ["app"] and not late.fired
 
 
@@ -1659,7 +1661,8 @@ def test_chaos_kills_the_indexing_process_and_recovery_is_a_new_one() -> None:
     killed: list[str] = []
     chaos = bc.ChaosKill("app", 0.01, kill=_kill_recorder(killed), top=lambda: next(tops))
     chaos.start()
-    time.sleep(0.2)
+    chaos.timer.join(timeout=10)
+    assert not chaos.timer.is_alive()
     assert chaos.fired and chaos.before == {20}
     assert bc.ChaosKill("app", 1)._kill is bc.kill_indexing_process  # the default kill is the in-container one
     assert chaos.recovered(wait_s=5.0, poll_s=0.01) is True  # gone for two reads, then pid 31
@@ -1753,7 +1756,8 @@ def test_the_job_budgets_the_build_and_stack_start_apart_from_the_bench_run() ->
     job = wf["jobs"]["costclass"]
     steps = {s.get("name", ""): s for s in job["steps"]}
     build, start, wait = steps["Build the stack image"], steps["Start the stack (smoke and weekly)"], steps["Wait for the stack"]
-    assert all("timeout-minutes" in s for s in (build, start, wait, steps["Smoke"], steps["Weekly run"], steps["Tiers"]))
+    assert all("timeout-minutes" in s for s in (build, start, wait, steps["Smoke"], steps["Weekly run"], steps["Tiers"],
+                                                 steps["Pull pre-built base images"], steps["Install dependencies"]))
     for suite, name in (("smoke", "Smoke"), ("weekly", "Weekly run"), ("tiers", "Tiers")):
         worst = _worst_case_job_minutes(job["steps"], suite, steps[name])
         assert worst <= job["timeout-minutes"] * _HEADROOM, (suite, worst, job["timeout-minutes"])
@@ -1927,3 +1931,59 @@ def tiers_quiet_wait_s() -> int:
     text = (_ROOT / "integration-tests/perf/run_tiers_e2e.sh").read_text()
     return int(re.search(r"BENCH_QUIET_RETRIES:-(\d+)", text).group(1)) * int(
         re.search(r"BENCH_QUIET_SLEEP:-(\d+)", text).group(1))
+
+
+def test_every_suite_fits_the_job_limit_with_headroom_and_no_long_step_is_unbounded() -> None:
+    job = _perf_workflow()["jobs"]["costclass"]
+    assert job["timeout-minutes"] == 240
+    for suite, name in (("smoke", "Smoke"), ("weekly", "Weekly run"), ("tiers", "Tiers")):
+        bench = next(s for s in job["steps"] if s.get("name") == name)
+        assert _worst_case_job_minutes(job["steps"], suite, bench) <= job["timeout-minutes"] * _HEADROOM, suite
+    # a step that talks to the network or installs packages has a limit of its own: the job limit is no bound for it
+    for st in job["steps"]:
+        if st.get("name") in ("Pull pre-built base images", "Install dependencies", "Install uv"):
+            assert "timeout-minutes" in st or st["name"] == "Install uv", st["name"]
+
+
+def test_the_docker_log_is_collected_before_the_artifact_is_uploaded() -> None:
+    names = [s.get("name") for s in _perf_workflow()["jobs"]["costclass"]["steps"]]
+    assert names.index("Dump docker logs") < names.index("Upload benchmark result")
+
+
+def test_a_tier_list_with_a_repeated_name_is_refused_before_any_stack_starts(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate tier name"):
+        tiers.parse_tiers("T4:4:16 T4:8:32")
+    tree, log, env = _stub_tree(tmp_path)
+    env["BENCH_TIERS"] = "T4:4:16 T4:8:32"
+    p = _runner(tree, env, "--scenario", "b05")
+    assert p.returncode != 0 and not log.exists()  # no docker, no bench
+
+
+def test_each_tier_is_planned_again_after_its_quiet_check(tmp_path: Path) -> None:
+    """The cores a tier gets are the idlest at its own start: the runner plans each tier again, once per tier."""
+    tree, log, env = _stub_tree(tmp_path)
+    counter = tmp_path / "plans"
+    perf = tree / "integration-tests/perf/tiers.py"
+    perf.write_text(perf.read_text().replace(
+        "def plan_lines(", f"def _count():\n    open({str(counter)!r}, 'a').write('x')\n\n\ndef plan_lines(", 1).replace(
+        '    lines = plan_lines(parse_tiers', '    _count()\n    lines = plan_lines(parse_tiers', 1))
+    env["BENCH_TIERS"] = "T8:8:32 T12:12:48"
+    p = _runner(tree, env, "--scenario", "b05")
+    assert p.returncode == 0, p.stderr[-300:]
+    assert counter.read_text() == "xxx"  # the list once, then each of the two tiers
+
+
+def test_a_baseline_from_fewer_repeats_than_planned_is_invalid() -> None:
+    def run(rate: float = 0.2) -> dict:
+        r = _result()
+        r["plan"] = {**r.get("plan", {}), "arrivals": 50, "notes": {"rate_per_s": rate, "duration_s": 600.0}}
+        r["environment"].setdefault("tier", {"cpus": 4, "mem_gb": 16})
+        return r
+
+    three = [run(), run(), run()]
+    assert bc.baseline_from_results(three)["baseline_valid"] is True
+    out = bc.baseline_from_results(three, expected_repeats=4)
+    assert out["baseline_valid"] is False and any("planned repeat" in r for r in out["reasons"])
+    assert bc.baseline_from_results(three, expected_repeats=3)["baseline_valid"] is True
+    mixed = bc.baseline_from_results([run(0.1), run(0.2), run(0.4)])
+    assert mixed["baseline_valid"] is False and len(mixed["groups"]) == 3  # different rates are not repeats
