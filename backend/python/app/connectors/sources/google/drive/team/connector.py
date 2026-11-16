@@ -2252,6 +2252,23 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._hidden_groups[drive_id] = set()
         self._group_digests[drive_id] = digests
 
+    async def _drop_grants_the_drive_keeps_out(self, record: Record, drive_id: str | None) -> None:
+        """An item whose sharing the reader cannot see keeps its stored grants, but its drive's limits still apply to
+        them: a person a members-only or domain-only drive keeps out loses their stored grant, whatever the item's
+        list says (see `_restriction_filter`)."""
+        if not drive_id or drive_id not in self._listed_shared_drive_ids:
+            return
+        if not any((await self._drive_restrictions_of(drive_id)).values()):
+            return
+        may_stay = (await self._restriction_filter(drive_id, is_drive=False))[1]
+        for holder in await self.data_entities_processor.get_users_with_permission_to_node(
+            record.id, CollectionNames.RECORDS.value, raise_on_error=True
+        ):
+            if holder.email and not may_stay(holder.email):
+                await self.data_entities_processor.delete_permission_from_record(
+                    record.id, holder.email, self.connector_id
+                )
+
     @staticmethod
     def _track_failed_items() -> set[str]:
         """Start collecting the ids of the items that fail in the listing this task reads next."""
@@ -4308,11 +4325,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if existing_record is not None:
                         if new_permissions:
                             await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
-                        elif user_email and not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email):
-                            # The drive's limits leave this reader out: their stored grant goes, everyone else's stays.
-                            await self.data_entities_processor.delete_permission_from_record(
-                                existing_record.id, user_email, self.connector_id
-                            )
+                        await self._drop_grants_the_drive_keeps_out(existing_record, item_drive_id)
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single
                         # grant is not the file's list. A reader reaching the file first removed everyone else.

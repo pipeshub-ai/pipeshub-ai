@@ -2923,6 +2923,28 @@ async def test_a_person_who_leaves_a_members_only_drive_loses_their_own_shares_o
     assert CAROL not in f1_people(ws)
 
 
+async def test_a_person_who_leaves_a_members_only_drive_loses_their_share_when_only_a_reader_reads_it_again(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    ws.records.active_users.append(User(id="u-carol", email=CAROL, is_active=True))
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    # Carol leaves, and so does Alice, the only synced organizer: Bob, a reader, reads it again and sees an empty
+    # list, so the item keeps its stored grants.
+    for person in (ALICE, CAROL):
+        del ws.world.drives["sd-1"]["members"][person]
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0
+    assert CAROL not in f1_people(ws), "the drive keeps out non-members, whatever the item's list"
+    assert BOB in f1_people(ws)
+
+
 async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_the_next_run(ws: Workspace) -> None:
     ws.world.add_user(CAROL)
     ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
