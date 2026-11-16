@@ -733,6 +733,7 @@ class TestSyncAndRewriteMembership:
         gp.delete_nodes = AsyncMock(side_effect=RuntimeError("arango down"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -1180,6 +1181,7 @@ class TestDeleteConfirmation:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0

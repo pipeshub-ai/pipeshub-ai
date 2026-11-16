@@ -3111,6 +3111,90 @@ class TestSweepOrphanedVirtualRecordMappings:
         assert m._orphan_sweep_cursor == {"org-1": 0}
 
 
+class TestOrphanSweepWhileAnotherOrgHoldsTheVrid:
+    """The real orphan path on the in-memory store, which answers the hold check the way
+    the scroll does on Qdrant, OpenSearch and Redis: the swept org's records and points
+    are gone, another org still has points on the same virtual record."""
+
+    @pytest.fixture
+    def world(self, monkeypatch) -> dict:
+        import app.indexing_main as m
+        from app.services.vector_db import membership
+        from app.services.vector_db.collection_locator import StaticCollectionLocator
+        from app.services.vector_db.models import VectorPoint
+        from tests.support.in_memory_vector_db import InMemoryVectorDBService
+
+        monkeypatch.setattr(membership, "EMPTY_CONFIRM_DELAY_SECONDS", 0)
+        monkeypatch.setattr(membership, "_shared_row_kept", set())
+        monkeypatch.setattr(m, "_orphan_sweep_cursor", {})
+        monkeypatch.setattr(m, "_orphan_kept_until", {}, raising=False)
+
+        vdb = InMemoryVectorDBService()
+        vdb.collections["records"] = {
+            "b-1": VectorPoint(
+                id="b-1", dense_vector=[1.0],
+                payload={"metadata": {"orgId": "org-b", "virtualRecordId": "vr-shared"}},
+            )
+        }
+        deletes: list[str] = []
+        delete_points = vdb.delete_points
+
+        async def _spy_delete(**kwargs) -> None:
+            deletes.append(kwargs["collection_name"])
+            await delete_points(**kwargs)
+
+        vdb.delete_points = _spy_delete
+
+        graph = _orphan_graph([{"_key": "vr-shared"}], records_by_vrid={})
+        graph.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        released: list[str] = []
+
+        async def _release(vrids) -> None:
+            released.extend(vrids)
+
+        async def _cleanup(vrid) -> str:
+            return await membership.rewrite_or_delete_virtual_record(
+                vdb, StaticCollectionLocator(["records"]), graph, vrid, MagicMock(),
+                release_mapping=_release,
+            )
+
+        pipeline = MagicMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=_cleanup)
+
+        async def sweep() -> int:
+            return await m._sweep_orphaned_virtual_record_mappings(
+                graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+                org_id="o1",
+            )
+
+        return {"vdb": vdb, "deletes": deletes, "released": released, "sweep": sweep}
+
+    @pytest.mark.asyncio
+    async def test_a_held_vrid_is_not_counted_and_not_redone_every_tick(self, world) -> None:
+        first = await world["sweep"]()
+        second = await world["sweep"]()
+
+        assert (first, second) == (0, 0), "a kept mapping is not a cleaned-up orphan"
+        assert world["deletes"] == ["records"], "the second tick repeated the delete"
+        assert world["released"] == []
+        assert "b-1" in world["vdb"].collections["records"]
+
+    @pytest.mark.asyncio
+    async def test_the_mapping_is_released_once_the_other_org_lets_go(self, world) -> None:
+        import app.indexing_main as m
+
+        assert await world["sweep"]() == 0
+        del world["vdb"].collections["records"]["b-1"]
+
+        assert await world["sweep"]() == 0, "inside the back-off the row is not rechecked"
+        assert world["released"] == []
+
+        m._orphan_kept_until["vr-shared"] = 0.0  # the back-off ran out
+        assert await world["sweep"]() == 1
+        assert world["released"] == ["vr-shared"]
+        assert m._orphan_kept_until == {}
+
+
 # ===================================================================
 # _republish_stranded_records
 # ===================================================================

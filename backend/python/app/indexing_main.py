@@ -951,6 +951,11 @@ ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 # Between pages, while the indexing loop is busy (see LoopShare).
 ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor: dict[str, int] = {}
+# A VRID whose mapping was kept because another org still holds points on it is
+# rechecked after this long, not every tick: until that org lets go, each pass
+# would repeat the same no-op delete. Per process, like the cursor.
+ORPHAN_KEPT_RECHECK_SECONDS = 3600.0
+_orphan_kept_until: dict[str, float] = {}
 
 
 
@@ -1198,6 +1203,9 @@ async def _sweep_orphaned_virtual_record_mappings(
     swept = 0
     offset = _orphan_sweep_cursor.get(org_id, 0)
     pages_scanned = 0
+    now = time.monotonic()
+    for vrid in [v for v, until in _orphan_kept_until.items() if until <= now]:
+        del _orphan_kept_until[vrid]
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
@@ -1254,6 +1262,8 @@ async def _sweep_orphaned_virtual_record_mappings(
                 continue
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
+            if vrid in _orphan_kept_until:
+                continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
                     outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -1267,6 +1277,8 @@ async def _sweep_orphaned_virtual_record_mappings(
             if outcome == "deleted":
                 swept += 1
                 swept_this_page += 1
+            elif outcome == "kept":
+                _orphan_kept_until[vrid] = time.monotonic() + ORPHAN_KEPT_RECHECK_SECONDS
         await pacer.pause()
 
         if len(page) < page_size:
