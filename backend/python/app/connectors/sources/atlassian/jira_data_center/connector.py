@@ -2334,16 +2334,12 @@ class JiraDataCenterConnector(BaseConnector):
                         )
 
                 elif holder_type == "user" and holder_param:
-                    # holder_param is the user key; resolve via AppUser map first, fall back to email
-                    user_data = holder.get("user", {})
-                    user_email = user_data.get("emailAddress")
-
-                    resolved_email = None
-                    if user_by_key and holder_param in user_by_key:
-                        resolved_email = user_by_key[holder_param].email
-                    elif user_email:
-                        resolved_email = user_email
-
+                    # Only an account in the synced directory is granted, never one an inline holder email names: that
+                    # may be an account withdrawn this sync. The holder's "user" bean is an expandable element
+                    # (https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/#api/2/permissionscheme-getPermissionSchemeGrants,
+                    # "expand":"user,group,projectRole,field,all"), and this read does not expand.
+                    listed = (user_by_key or {}).get(holder_param)
+                    resolved_email = listed.email if listed else None
                     if resolved_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
