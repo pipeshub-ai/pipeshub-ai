@@ -276,6 +276,17 @@ async def test_a_linked_source_account_holds_only_its_own_grants_and_not_those_o
     assert await w.allowed("u", "viaAccount", "viaNamesake") == {"viaAccount"}
 
 
+async def test_a_source_account_that_shares_a_users_id_gives_that_user_nothing_without_a_link(w: World) -> None:
+    """The user's own grants are read by bare id: a SourceAccount with the user's id is not the user, and grants only through a link."""
+    await w.nodes("sourceAccounts", {"_key": "u", "connectorId": APP, "sourceUserId": "s1", "state": "listed",
+                                      "createdAtTimestamp": 1, "updatedAtTimestamp": 1})
+    await w.nodes("records", rec("viaNamesake"))
+    await w.edge("permission", ("sourceAccounts", "u"), ("records", "viaNamesake"), type="USER", role="READER")
+    access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+    assert "viaNamesake" not in access["by_connector"].get(APP, [])
+    assert await w.allowed("u", "viaNamesake") == set()
+
+
 async def test_only_principals_can_be_grantees_of_the_gate(w: World) -> None:
     """An edge out of a node of another collection that shares a grantee's id is not the grantee's."""
     await w.nodes("apps", {"_key": "gated2", "type": "CONNECTOR"})
