@@ -544,7 +544,7 @@ export function McpInstanceConfigPanel({
           await manageAccessSave.current(instanceId);
         } catch (error) {
           if (ended()) return;
-          // The server is saved but not limited to the people chosen; stay open so a retry can apply it.
+          // The server is saved but the access chosen here is not; stay open so a retry can apply it.
           const detail = isProcessedError(error) ? error.message : undefined;
           toast.error(t('workspace.mcpServers.toasts.accessSaveError'), detail ? { description: detail } : undefined);
           return;

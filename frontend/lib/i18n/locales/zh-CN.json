@@ -3740,7 +3740,7 @@
         "disconnected": "已成功断开连接",
         "disconnectError": "断开连接失败",
         "credentialsSaveError": "服务器已保存，但凭证无法保存。您可以稍后在“管理”中添加。",
-        "accessSaveError": "服务器已保存，但可使用者设置未保存，因此它仍对组织内所有人开放。请再次保存以应用访问权限。",
+        "accessSaveError": "服务器已保存，但可使用者设置未保存。请再次保存以应用访问权限。",
         "logoSaveError": "服务器已保存，但其徽标未能保存。您可以在“管理”中重试。",
         "credentialsSaved": "凭据已保存",
         "credentialsReset": "MCP 服务器已更新。由于连接已更改，已保存的凭证已被删除；请重新连接后再使用。",
