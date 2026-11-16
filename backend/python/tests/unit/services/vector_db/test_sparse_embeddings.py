@@ -9,13 +9,16 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from typing import List
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.services.vector_db.models import SparseVector
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +113,72 @@ async def test_lazy_init_thread_safe():
     assert build_call_count == 1, (
         f"Expected model constructor called once, got {build_call_count}"
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_share_a_failed_load_and_can_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedder = SparseEmbedder()
+    load_started = asyncio.Event()
+    finish_load = asyncio.Event()
+    model = object()
+    build = MagicMock(side_effect=RuntimeError("Hub unavailable"))
+
+    async def load_in_thread(fn: Callable[[], object]) -> object:
+        load_started.set()
+        await finish_load.wait()
+        return fn()
+
+    monkeypatch.setattr(embedder, "_build_model", build)
+    monkeypatch.setattr(asyncio, "to_thread", load_in_thread)
+
+    callers = asyncio.gather(
+        *(embedder._ensure_initialized() for _ in range(4)),
+        return_exceptions=True,
+    )
+    await load_started.wait()
+    finish_load.set()
+
+    errors = await callers
+    assert all(isinstance(error, RuntimeError) for error in errors)
+    assert [str(error) for error in errors] == ["Hub unavailable"] * 4
+    build.assert_called_once_with()
+
+    build.side_effect = None
+    build.return_value = model
+    assert await embedder._ensure_initialized() is model
+    assert await embedder._ensure_initialized() is model
+    assert build.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelling_first_caller_does_not_restart_the_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedder = SparseEmbedder()
+    load_started = asyncio.Event()
+    finish_load = asyncio.Event()
+    model = object()
+
+    async def load_in_thread(_fn: Callable[[], object]) -> object:
+        load_started.set()
+        await finish_load.wait()
+        return model
+
+    load = AsyncMock(side_effect=load_in_thread)
+    monkeypatch.setattr(asyncio, "to_thread", load)
+
+    first = asyncio.create_task(embedder._ensure_initialized())
+    await load_started.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(embedder._ensure_initialized())
+    finish_load.set()
+    assert await second is model
+    load.assert_awaited_once()
 
 
 @pytest.mark.asyncio
