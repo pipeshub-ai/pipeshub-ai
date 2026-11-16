@@ -10,6 +10,7 @@ Code and SQL kinds, forced reindexes, vector-store rebuilds and named-stage re-r
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +21,11 @@ from app.events.dedup import DedupDecision
 from app.events.events import EventProcessor
 from app.modules.indexing import replay_set
 from app.modules.pipeline.fingerprint import content_revision
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 
 OLD = b"a,b\n1,2\n"
 NEW = b"a,b\n1,3\n"
@@ -66,7 +71,7 @@ class _World:
         self.state.update(fields)
         return True
 
-    async def _parse(self, *_args: Any, **_kwargs: Any):  # noqa: ANN401
+    async def _parse(self, *_args: Any, **_kwargs: Any) -> AsyncIterator[PipelineEvent]:  # noqa: ANN401
         self.parses += 1
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
         # What the sink's COMPLETED write leaves behind.

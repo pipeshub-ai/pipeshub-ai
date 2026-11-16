@@ -518,7 +518,7 @@ class TestSyncVectorMembershipEvent:
         assert len(events) == 2
         processor.sync_vector_membership.assert_awaited_once_with("vr-1")
         pipeline.bulk_delete_embeddings.assert_not_awaited()
-    
+
     @pytest.mark.asyncio
     async def test_sync_membership_skips_missing_vrid(self):
         handler = _make_handler()
