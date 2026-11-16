@@ -878,7 +878,9 @@ async def test_sharepoint_a_completed_run_keeps_items_marked_while_the_deleted_a
     deleted accounts, or the next run reads only deltas and the withheld grants never come back."""
     from unittest.mock import patch
 
-    from app.connectors.sources.microsoft.sharepoint_online.connector import PERMISSION_MODEL_VERSION
+    from app.connectors.sources.microsoft.sharepoint_online.connector import (
+        PERMISSION_MODEL_VERSION,
+    )
 
     c, _ = _sharepoint(["a"], [_app_user("a")])
     _sharepoint_sync_point(c, None)
