@@ -157,6 +157,7 @@ def zendesk_connector(mock_logger, mock_data_entities_processor,
     # The admin check and status lookup have their own tests; run_sync tests assume an
     # admin connection on an account without custom statuses.
     stub_source_accounts(connector)
+    connector.source_accounts.config_service = InMemoryConfigService()     # end users are saved by compare-and-set
     connector._ensure_admin_account = AsyncMock()
     connector._fetch_custom_status_labels = AsyncMock(return_value={})
     # Groups sync before tickets, so the cache is populated by then.
