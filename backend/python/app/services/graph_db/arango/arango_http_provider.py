@@ -8280,18 +8280,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> User | None:
         """
-        Get user by email; with ``org_id``, only a user of that organisation.
+        Get the user of org ``org_id`` with this email.
         """
-        scoped = org_id is not None
-        org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        bind_vars = {"email": email, **({"org_id": org_id} if scoped else {})}
+        bind_vars = {"email": email, "org_id": org_id}
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             FILTER LOWER(user.email) == LOWER(@email)
-            {org_filter}
+            FILTER user.orgId == @org_id
             LIMIT 1
             RETURN user
         """
@@ -11053,7 +11051,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             for user in users:
                 # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -11063,7 +11061,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.

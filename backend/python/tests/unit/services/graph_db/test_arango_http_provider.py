@@ -6049,23 +6049,21 @@ class TestGetUserByEmail:
         assert kwargs["bind_vars"] == {"email": "a@x.com", "org_id": "org-1"}
 
     @pytest.mark.asyncio
-    async def test_without_an_org_the_lookup_is_unchanged(self, connected_provider) -> None:
-        connected_provider.http_client.execute_aql.return_value = []
-        await connected_provider.get_user_by_email("a@x.com")
-        assert "orgId" not in connected_provider.http_client.execute_aql.await_args.args[0]
-        assert connected_provider.http_client.execute_aql.await_args.kwargs["bind_vars"] == {"email": "a@x.com"}
+    async def test_without_an_org_there_is_no_read(self, connected_provider) -> None:
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await connected_provider.get_user_by_email("a@x.com")  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_user_by_email("missing@example.com")
+        result = await connected_provider.get_user_by_email("missing@example.com", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_user_by_email("test@example.com")
+        result = await connected_provider.get_user_by_email("test@example.com", org_id="org-1")
         assert result is None
 
 
@@ -8736,13 +8734,13 @@ class TestGetUserByEmailProvider:
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.get_user_by_email("unknown@test.com")
+        result = await connected_provider.get_user_by_email("unknown@test.com", org_id="org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_user_by_email("test@test.com")
+        result = await connected_provider.get_user_by_email("test@test.com", org_id="org-1")
         assert result is None
 
 

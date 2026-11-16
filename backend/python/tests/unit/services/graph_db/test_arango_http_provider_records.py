@@ -720,18 +720,18 @@ class TestGetFileRecordById:
 class TestGetUserByEmail:
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = [_arango_user()]
-        result = await connected_provider.get_user_by_email("user@example.com")
+        result = await connected_provider.get_user_by_email("user@example.com", org_id="org-1")
         assert result is not None
         assert result.email == "user@example.com"
 
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_user_by_email("nobody@example.com")
+        result = await connected_provider.get_user_by_email("nobody@example.com", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_user_by_email("user@example.com")
+        result = await connected_provider.get_user_by_email("user@example.com", org_id="org-1")
         assert result is None
 
 
@@ -4309,7 +4309,8 @@ class TestPrincipalLookupsCanRaise:
             "get_person_by_email": ("a@b.com", "org-1"),
             "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
         }[method]
-        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+        scope = {"org_id": "org-1"} if method == "get_user_by_email" else {}
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error, **scope)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])

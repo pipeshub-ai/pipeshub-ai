@@ -2496,7 +2496,7 @@ class DataSourceEntitiesProcessor:
         there, so "could not be read" answered as None took a grant or a membership
         away without an error or a retry.
         """
-        user = await tx_store.get_user_by_email(email, raise_on_error=True)
+        user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
         if user:
             return (user.id, CollectionNames.USERS.value)
 
@@ -5553,14 +5553,14 @@ class DataSourceEntitiesProcessor:
             elif (authenticator.get("email") or "").lower() == email.lower():
                 link_changed = await tx_store.remove_authenticated_as(connector_id)
             else:
-                source_user = await tx_store.get_user_by_email(email)
+                source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     # Same inactive stub + userAppRelation the user sync would create for this email
                     await tx_store.batch_upsert_app_users([AppUser(
                         app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
                         email=email, full_name=email, org_id=self.org_id,
                     )])
-                    source_user = await tx_store.get_user_by_email(email)
+                    source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
 
@@ -5897,7 +5897,7 @@ class DataSourceEntitiesProcessor:
                         if member.email:
                             # Find the user's internal DB ID. A read that fails is raised:
                             # answered as "no such user", the rewrite below dropped the member.
-                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True)
+                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True, org_id=self.org_id)
 
                         if not user:
                             self.logger.warning(f"Could not find user with email {member.email} for AppRole permission.")
@@ -6020,7 +6020,7 @@ class DataSourceEntitiesProcessor:
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
         """``raise_on_error`` raises a failed read instead of answering None."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error)
+            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error, org_id=self.org_id)
 
     async def get_user_group_by_external_id(
         self, connector_id: str, external_id: str, *, raise_on_error: bool = False
@@ -6332,7 +6332,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # A user or group that could not be read is not one that is not there:
             # returning False on a failed read would leave the user in the group.
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 self.logger.warning(
                     f"Cannot remove member from group {external_group_id}: "
@@ -6390,7 +6390,7 @@ class DataSourceEntitiesProcessor:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
             async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
+                user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
                 if not user:
                     self.logger.warning(
                         f"Cannot add member to group {external_group_id}: "
@@ -6742,7 +6742,7 @@ class DataSourceEntitiesProcessor:
                 )
 
         # Get the user object
-        user = await tx_store.get_user_by_email(user_email)
+        user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
         if not user:
             self.logger.warning(
                 f"User {user_email} not found in users collection, "
@@ -7186,7 +7186,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # A user who could not be read is not a user who is not there: returning
             # here on a failed read would leave the permission in place unreported.
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return
@@ -7294,7 +7294,7 @@ class DataSourceEntitiesProcessor:
         """Take away everything the user was granted directly on this connector's content and groups, for a
         person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
         async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 return 0
             removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)

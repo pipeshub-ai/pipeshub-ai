@@ -1898,7 +1898,7 @@ class TestFailedPrincipalLookupsStopRewrites:
         with pytest.raises(RuntimeError, match="read failed"):
             await proc.on_new_app_roles([(role, [member])])
 
-        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": proc.org_id}
         tx_store.replace_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2623,7 +2623,7 @@ class TestDeletePermissionFromRecord:
         with pytest.raises(RuntimeError, match="read failed"):
             await proc.delete_permission_from_record("rec-1", "user@test.com")
 
-        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": proc.org_id}
         tx_store.batch_delete_edges.assert_not_awaited()
 
     @pytest.mark.asyncio

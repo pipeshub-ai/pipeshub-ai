@@ -54,9 +54,9 @@ async def test_a_user_is_found_by_user_id_and_by_email_whatever_the_case_active_
     p = w.p
     assert (await p.get_user_by_user_id("uid-1"))["_key"] == "k1"
     assert await p.get_user_by_user_id("nope") is None
-    got = await p.get_user_by_email("aNN@example.COM")
+    got = await p.get_user_by_email("aNN@example.COM", org_id=w.org)
     assert got is not None and got.id == "k1" and got.is_active is False        # an inactive user is still a user
-    assert await p.get_user_by_email("someone@else.com") is None
+    assert await p.get_user_by_email("someone@else.com", org_id=w.org) is None
 
 
 async def test_users_listed_for_an_org_are_its_members_by_edge_and_active_unless_asked(w: World) -> None:
@@ -340,7 +340,8 @@ CALLS = [
 
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str, args: tuple) -> None:
-    kwargs = {"is_external": False} if name == "ensure_app_membership" else {"chunk_size": 10} if name == "get_graph_user_keys_by_mongo_user_ids" else {}
+    kwargs = ({"is_external": False} if name == "ensure_app_membership" else {"chunk_size": 10} if name == "get_graph_user_keys_by_mongo_user_ids"
+              else {"org_id": "o"} if name == "get_user_by_email" else {})
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, name)(*args, **kwargs)
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
@@ -380,7 +381,7 @@ async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the
     await w.p.batch_upsert_app_users([app_user(a, "n1"), app_user(b, "n2")])
     nodes = await w.p.get_all_documents("users")
     assert (len(nodes) == 1) is bool(same)
-    assert (await w.p.get_user_by_email(b)).id == ("n1" if same else "n2")            # the lookup by address resolves as the batch did
+    assert (await w.p.get_user_by_email(b, org_id=w.org)).id == ("n1" if same else "n2")            # the lookup by address resolves as the batch did
     assert [r["id"] for r in await w.p.find_users(w.org, b)] == (["n1"] if same else ["n2"])
 
 

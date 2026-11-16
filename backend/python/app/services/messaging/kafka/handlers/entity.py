@@ -306,10 +306,11 @@ class EntityEventService(BaseEventService):
         """Handle user creation event"""
         try:
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
+            org_id = payload["orgId"]
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"], raise_on_error=True
+                payload["email"], raise_on_error=True, org_id=org_id
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
@@ -366,7 +367,6 @@ class EntityEventService(BaseEventService):
                 }
 
             # Get org details to check account type
-            org_id = payload["orgId"]
             org = await self.graph_provider.get_document(
                 org_id, CollectionNames.ORGS.value
             )

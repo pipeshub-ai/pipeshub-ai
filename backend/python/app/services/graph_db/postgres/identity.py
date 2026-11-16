@@ -215,7 +215,7 @@ class IdentityMixin(PgBase):
 
     @_soft(None, flag=True)
     async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False,
-                                org_id: str | None = None) -> User | None:
+                                org_id: str) -> User | None:
         if not self._mine(org_id):
             return None
         rows = await self._principals_by_email(["users"], [email], transaction)

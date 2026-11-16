@@ -6341,16 +6341,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> User | None:
-        """Get user by email; with ``org_id``, only a user of that organisation."""
+        """Get the user of org ``org_id`` with this email."""
         try:
-            scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
-            query = f"""
+            parameters = {"email": email, "org_id": org_id}
+            query = """
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email) {org_filter}
+            WHERE toLower(u.email) = toLower($email) AND u.orgId = $org_id
             RETURN u
             LIMIT 1
             """
@@ -10475,7 +10473,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             for user in users:
                 # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -10490,7 +10488,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.

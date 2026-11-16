@@ -3552,16 +3552,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> Optional['User']:
         """
-        Get a user by email address. Several organisations can hold a user with
-        the same address; ``org_id`` restricts the answer to that organisation's.
+        Get the user of org ``org_id`` with this email address. The org is required:
+        several organisations can hold a user with the same address, so an unscoped
+        read could answer another org's user.
 
         None means there is no such user. A read that fails also answers None unless
         ``raise_on_error`` is set, which a caller needs when it would act on "no such
-        user" (replacing a record's permissions without them, say). With ``org_id``,
-        only that org's users are read: an address is not unique across orgs.
+        user" (replacing a record's permissions without them, say).
 
         Args:
             email (str): User email
