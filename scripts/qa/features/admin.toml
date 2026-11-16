@@ -1,0 +1,1189 @@
+# Admin: workspace settings, AI models, SMTP and mail, health and metrics (flows admin-settings and notifications-mail).
+# Every /configurationManager user route needs an administrator and a config:read or config:write scope, except the
+# member routes listed in the behaviors below. Internal routes take a service token and are not user features.
+
+[[feature]]
+id = "admin.health"
+title = "Health and service status"
+flow = "admin-settings"
+what = "Anyone can read the health of the Node API and its data stores, and of the Python services, without signing in. The Services page shows both."
+routes = ["GET /api/v1/health", "GET /api/v1/health/services"]
+pages = ["frontend/app/(main)/workspace/services/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/tokens_manager/routes/health.routes.ts",
+  "frontend/app/(main)/workspace/services/**",
+  "frontend/lib/store/services-health-store.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.health.stores"
+  says = "GET /api/v1/health always answers 200. Its status is healthy only when the cache, message broker, document store (MongoDB or PostgreSQL), graph store and vector store answer. etcd is checked only when it is the key-value store. Each store is named with its deployment type. A graph or vector store whose type is not yet known shows pending and does not make the answer unhealthy."
+  priority = "P0"
+  tests = ["node:tests/modules/tokens_manager/routes/health.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.health.unhealthy"
+  says = "A store that throws or reports false is shown as unhealthy and makes the whole answer unhealthy."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/health.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.health.connector-refused"
+  says = "While the connector service refuses connections, the graph and vector stores are reported as unknown, not unhealthy, and the whole answer is unhealthy."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/health.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.health.local-storage-warning"
+  says = "Local blob storage on several app replicas adds a warning to the answer while the status stays healthy."
+  priority = "P2"
+  tests = ["node:tests/modules/tokens_manager/routes/health.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.health.services"
+  says = "GET /api/v1/health/services always answers 200 and lists query, connector, indexing, docling and embedding (plus parsing and extraction when enabled); the overall status is healthy only when query and connector are healthy."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/health.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.health.page"
+  says = "The Services page lists each service with its status. Check now refreshes and shows a toast saying all services are healthy or some are unhealthy."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/workspace/services.spec.ts"]
+
+[[feature]]
+id = "admin.vector-memory"
+title = "Vector database memory check"
+flow = "admin-settings"
+what = "An administrator sees whether the vector database has the memory to keep search fast. The answer is advisory and never changes a service status."
+routes = ["GET /api/v1/health/vector-db/memory"]
+code = [
+  "backend/nodejs/apps/src/modules/tokens_manager/routes/health.routes.ts",
+  "frontend/app/(main)/workspace/services/vector-db-memory.tsx",
+  "backend/python/app/services/vector_db/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.vector-memory.admin-only"
+  says = "GET /api/v1/health/vector-db/memory needs an administrator with the config:read scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/tokens_manager/routes/health.routes.test.ts",
+    "py:tests/unit/test_connectors_main.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.vector-memory.report"
+  says = "The answer has a status of ok, insufficient, unknown or unsupported, with the needed and available bytes when known. When the vector service fails or cannot be reached, the route answers 502 with status unknown."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/workspace/services/__tests__/api.test.ts",
+    "py:tests/unit/services/vector_db/test_memory_sizing.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.vector-memory.warning"
+  says = "The Services page shows a warning only when the report is insufficient, and shows nothing when the report cannot be fetched."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/services/__tests__/vector-db-memory.test.tsx"]
+
+[[feature]]
+id = "admin.smtp"
+title = "SMTP settings"
+flow = "notifications-mail"
+what = "An administrator saves, reads, turns off and deletes the SMTP settings used to send invites and reset links on the Mail page. The settings are checked against the mail server before they are saved."
+routes = ["* /api/v1/configurationManager/smtpConfig", "PUT /api/v1/configurationManager/smtpConfig/enabled", "GET /api/v1/configurationManager/smtpConfig/status"]
+pages = ["frontend/app/(main)/workspace/mail/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/maskConfigSecrets.ts",
+  "backend/nodejs/apps/src/modules/mail/utils/smtp-transport.ts",
+  "frontend/app/(main)/workspace/mail/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.smtp.admin-only"
+  says = "POST, GET and DELETE smtpConfig and PUT smtpConfig/enabled need an administrator with the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.smtp.verify"
+  says = "Saving settings that the mail server refuses (wrong login, nothing listening, any other refusal) answers 400 with a plain reason and stores nothing."
+  priority = "P0"
+  tests = ["node:tests/modules/mail/utils/smtp-transport.test.ts", "node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.smtp.validation"
+  says = "POST smtpConfig without host, port or fromEmail is rejected with 400."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/validators/validators.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.smtp.encrypted"
+  says = "The settings are stored encrypted, and the mail service is told to reload them after a save, a delete and a change of the enabled switch."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.smtp.mask"
+  says = "With HIDE_SECRET_CONFIG on, GET smtpConfig returns the host, username, from address and password as the placeholder unless the admin asks with reveal=true; a save that sends the placeholder back keeps the stored value."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/utils/maskConfigSecrets.test.ts", "node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.smtp.status"
+  says = "GET smtpConfig/status answers only {configured: boolean}, true when host, port and from address are set and sending is not turned off, and is open to any signed-in member so invite screens know whether mail will work."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.smtp.turn-off"
+  says = "PUT smtpConfig/enabled keeps the settings while turning sending off or on, answers 404 when nothing is configured, and a later save does not turn sending back on."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+[[feature]]
+id = "admin.mail-delivery"
+title = "Mail delivery"
+flow = "notifications-mail"
+what = "The mail service sends templated emails (invites, password resets, verification) from the SMTP settings, either on request from another service or from a queue with retries. An administrator is notified when delivery keeps failing."
+routes = ["POST /api/v1/mail/emails/sendEmail", "POST /api/v1/mail/updateSmtpConfig"]
+code = [
+  "backend/nodejs/apps/src/modules/mail/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.service-token"
+  says = "Both mail routes accept only a scoped service token (send-mail for sendEmail, fetch-config for updateSmtpConfig); a user session is refused."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.unconfigured"
+  says = "sendEmail answers 400 when SMTP host, port or from address is missing, and 503 when the stored settings cannot be read."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/mail/middlewares/checkSmtpConfig.test.ts",
+    "node:tests/modules/mail/controller/mail.controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.failure"
+  says = "A send the SMTP server refuses answers 502 with a plain reason for the admin, and an unexpected failure answers 500 without the library's text."
+  priority = "P1"
+  tests = ["node:tests/modules/mail/controller/mail.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.reload"
+  says = "updateSmtpConfig makes the running mail service use the newly saved settings without a restart."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/updateConfig.reloadResponses.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.templates"
+  says = "Each email template renders with the product brand and the data it is given."
+  priority = "P2"
+  tests = ["node:tests/modules/mail/utils/emailTemplates.test.ts", "node:tests/modules/mail/utils/emailTemplates.brand.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.attachments"
+  says = "An attachment can never make the mail library read a local file or fetch a URL."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mail/utils/smtp-transport.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.queue-retry"
+  says = "The queue consumer makes up to four attempts per job, with backoff and inside a time budget. A permanent failure, an indeterminate result or a paused SMTP server is not retried."
+  priority = "P1"
+  tests = ["node:tests/modules/mail/services/mail.consumer.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.mail-delivery.failure-notice"
+  says = "On a delivery failure, administrators get a notification right away. Further failures in the next five minutes are counted, and one summary with the count follows when the window closes."
+  priority = "P1"
+  tests = ["node:tests/modules/mail/services/mail.consumer.test.ts"]
+
+[[feature]]
+id = "admin.platform-settings"
+title = "Platform settings and Labs"
+flow = "admin-settings"
+what = "An administrator sets the per-file upload limit and turns feature flags on or off on the Labs page. Any signed-in user can read the effective flag values."
+routes = [
+  "* /api/v1/configurationManager/platform/settings",
+  "GET /api/v1/configurationManager/platform/feature-flags/**",
+]
+pages = ["frontend/app/(main)/workspace/labs/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/constants/constants.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/artifactRollout.ts",
+  "backend/python/app/services/featureflag/**",
+  "frontend/app/(main)/workspace/labs/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.admin-only"
+  says = "POST and GET platform/settings and GET feature-flags/available need an administrator with the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.save"
+  says = "A saved upload limit and flag map are returned by the next GET; the limit must be a positive integer of at most 1 GB and the flags must be booleans, otherwise 400."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+    "node:tests/modules/configuration_manager/validators/validators.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.available"
+  says = "feature-flags/available lists only flags that are not hidden, each with its label, description and default."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.effective"
+  says = "feature-flags/effective is readable by any signed-in user and returns only booleans, with defaults filled in for flags that were never saved."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.artifact-interlock"
+  says = "Turning artifact reads on, or shadow reads on from both off, is refused with 409 while an older indexing member runs or the membership check cannot be seen. Turning flags off is never refused. The generation stamp is set by the server, never from the body."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.artifact_rollout.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.fail-closed"
+  says = "The Python services read the saved flags live. The MCP gate reads them fail-closed: when the stored settings cannot be read, the flag is off instead of its default."
+  priority = "P1"
+  tests = ["py:tests/unit/services/featureflag/test_platform_settings_fail_closed.py"]
+
+  [[feature.behavior]]
+  id = "admin.platform-settings.labs-page"
+  says = "The Labs page shows the upload limit with its validation messages, saves or discards changes with a toast, and hides advanced flags in their own group."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/workspace/labs.spec.ts", "fe:app/(main)/workspace/labs/__tests__/page.test.tsx"]
+
+[[feature]]
+id = "admin.secret-reveal"
+title = "Secret reveal"
+flow = "admin-settings"
+what = "When HIDE_SECRET_CONFIG is on, settings pages show saved secrets as a placeholder by default. An administrator can ask to see them with reveal=true, but a token issued to an OAuth app cannot."
+routes = ["GET /api/v1/configurationManager/secretReveal"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/secretReveal.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/maskConfigSecrets.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.secret-reveal.status"
+  says = "GET secretReveal needs an administrator with config:read and answers only {available: boolean}, never a secret."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/utils/secretReveal.test.ts",
+    "node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.secret-reveal.oauth-refused"
+  says = "A request with reveal=true from an OAuth-app token gets the masked values, not the secrets."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/utils/secretReveal.test.ts", "node:tests/modules/configuration_manager/controller/cm_controller.authSecrets.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.secret-reveal.reload-no-secrets"
+  says = "The settings reload endpoints answer with a message only and never send the settings back."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/services/updateConfig.reloadResponses.test.ts"]
+
+[[feature]]
+id = "admin.system-prompt"
+title = "Custom system prompt"
+flow = "admin-settings"
+what = "An administrator sets a custom system prompt that is added to the assistant's instructions for the whole workspace."
+routes = ["* /api/v1/configurationManager/prompts/system"]
+code = ["backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.system-prompt.admin-only"
+  says = "GET and PUT prompts/system need an administrator with the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.system-prompt.save"
+  says = "A saved prompt is returned by the next GET, and a prompt that is not a string is refused with 400 (the internal search, web search and agent prompts are saved together)."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+[[feature]]
+id = "admin.metrics"
+title = "Metrics collection"
+flow = "admin-settings"
+what = "An administrator turns anonymous usage metrics on or off and sets the push interval and the receiving server."
+routes = ["* /api/v1/configurationManager/metricsCollection", "* /api/v1/configurationManager/metricsCollection/**"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/validator/validators.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.metrics.admin-only"
+  says = "GET metricsCollection, PUT toggle and PATCH pushInterval and serverUrl need an administrator with the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.metrics.toggle"
+  says = "PUT toggle turns collection off or on at once, flushes pending metrics when turned off, and the next GET shows the new value."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.metrics.interval-server"
+  says = "PATCH pushInterval and serverUrl store the new value, reject a body that fails validation with 400, and leave the stored value alone when it did not change."
+  priority = "P2"
+  tests = [
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+    "node:tests/modules/configuration_manager/validators/validators.test.ts",
+  ]
+
+[[feature]]
+id = "admin.slack-bot"
+title = "Slack bot configuration"
+flow = "admin-settings"
+what = "An administrator saves the bot token and signing secret of Slack bots, each linked to at most one agent. Responses show the credentials as a placeholder unless an administrator asks to reveal them."
+routes = ["* /api/v1/configurationManager/slack-bot", "* /api/v1/configurationManager/slack-bot/{configId}", "GET /api/v1/configurationManager/internal/slack-bot"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/maskConfigSecrets.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.slack-bot.admin-only"
+  says = "The user routes need an administrator; a member gets 403. The internal route takes only the Slack-verify service token."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts",
+    "node:tests/modules/configuration_manager/routes/cm_routes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.slack-bot.mask"
+  says = "The admin routes return the bot token and signing secret as the placeholder. An admin (not an OAuth-app token) can ask with reveal=true to see them. A save that sends the placeholder back keeps the stored credential, and a new value replaces it."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/utils/maskConfigSecrets.test.ts",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.slack-bot.one-agent"
+  says = "Linking an agent that another bot already uses is refused, and adding a bot keeps the existing bots."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.storedSettings.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.slack-bot.unreadable-store"
+  says = "When the stored bots cannot be read, a read answers with an error, and an add, update or delete is refused so the stored bots are not replaced."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.storedSettings.test.ts"]
+
+[[feature]]
+id = "admin.connector-credentials"
+title = "Connector app credentials"
+flow = "admin-settings"
+what = "An administrator saves the OAuth client or app credentials that connectors need (Atlassian, OneDrive, SharePoint, Google Workspace) before a connector is set up."
+routes = [
+  "* /api/v1/configurationManager/connectors/atlassian/config",
+  "* /api/v1/configurationManager/connectors/onedrive/config",
+  "* /api/v1/configurationManager/connectors/sharepoint/config",
+  "* /api/v1/configurationManager/connectors/googleWorkspaceOauthConfig",
+  "* /api/v1/configurationManager/connectors/googleWorkspaceCredentials",
+]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.connector-credentials.admin-only"
+  says = "The user routes need an administrator with the config scope; a member gets 403. The internal routes take only the fetch-config service token."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.connector-credentials.save-read"
+  says = "The settings are stored encrypted and returned in full by the next GET, with no masking. A body that fails its schema is refused with 400."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.connector-credentials.google-credentials"
+  says = "Uploading Google Workspace service-account credentials is validated against a schema and an invalid file is refused with 400 without replacing the stored one."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "admin.models-providers"
+title = "AI model providers"
+flow = "admin-settings"
+what = "An administrator adds, edits and deletes the models the workspace uses (LLM, embedding, speech, image and others) on the AI models page. Each add or edit is health-checked against the provider first and nothing is saved when the check fails."
+routes = [
+  "GET /api/v1/configurationManager/ai-models",
+  "GET /api/v1/configurationManager/ai-models/{modelType}",
+  "GET /api/v1/configurationManager/ai-models/available/{modelType}",
+  "POST /api/v1/configurationManager/ai-models/providers",
+  "PUT /api/v1/configurationManager/ai-models/providers/{modelType}/{modelKey}",
+  "DELETE /api/v1/configurationManager/ai-models/providers/{modelType}/{modelKey}",
+  "* /api/v1/configurationManager/aiModelsConfig",
+]
+pages = ["frontend/app/(main)/workspace/ai-models/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/services/aiModelsConfig.repository.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/types/ai-models.types.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/services/kafka_events.service.ts",
+  "frontend/app/(main)/workspace/ai-models/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-providers.admin-only"
+  says = "Adding, editing, deleting and listing providers need an administrator with the config scope; a member gets 403 (the one exception is the available/{modelType} name list, open to any signed-in user with config:read)."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderNonAdmin::test_non_admin_rejected",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestUpdateAIModelProviderNonAdmin::test_non_admin_put_rejected",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestDeleteAIModelProviderNonAdmin::test_non_admin_delete_rejected",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestGetAIModelsProvidersNonAdmin::test_non_admin_list_rejected",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestGetModelsByTypeNonAdmin::test_non_admin_get_by_type_rejected",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.add"
+  says = "POST providers with a model type, provider and configuration runs the health check, then saves the model under a new random modelKey and answers 200 with the key; the next GET lists it."
+  priority = "P0"
+  tests = [
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderLive::test_add_minimal_llm_provider",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderLive::test_add_llm_with_optional_flags",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestGetAIModelsProvidersLive::test_list_all_includes_created_llm_provider",
+    "e2e:tests/e2e/workspace/ai-models-add.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.add-validation"
+  says = "A missing or unknown model type, a missing provider or configuration, a malformed body or a missing token is refused (400 or 401) and nothing is saved."
+  priority = "P1"
+  tests = [
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderValidation::test_validation_rejects_invalid_body",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderValidation::test_malformed_json_body",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderValidation::test_missing_authorization",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.add-health-refused"
+  says = "A model whose health check fails (bad key, unreachable endpoint, missing Azure deployment name) is refused with the reason in error.message and is not saved."
+  priority = "P0"
+  tests = [
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderHealthCheckFailure::test_invalid_api_key_fails_health_check",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestAddAIModelProviderAzureFields::test_azure_missing_deployment_rejected_at_health_check",
+    "it:ai_agents/integration_test_ai_models_live.py::TestHealthCheck::test_a_bad_key_is_refused_with_a_clear_message",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.update"
+  says = "PUT providers/{type}/{key} health-checks the merged settings, then saves them; a key that does not exist answers 404, and a key that belongs to another type answers 400."
+  priority = "P0"
+  tests = [
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestUpdateAIModelProviderLive::test_create_update_delete_llm_provider",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestUpdateAIModelProviderLive::test_model_type_mismatch_returns_400",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestUpdateAIModelProviderValidation::test_unknown_model_key_put_returns_404",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestUpdateAIModelProviderLive::test_update_invalid_api_key_fails_health_check",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.update-deployment"
+  says = "Changing the model of an entry that has a deployment name, without a new deployment name, is refused with 400."
+  priority = "P2"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.delete"
+  says = "DELETE providers/{type}/{key} removes the model, hands the default flag to the next model of that type, clears any model role that pointed at it, and answers 404 for an unknown key and 400 for a key of another type."
+  priority = "P0"
+  tests = [
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestDeleteAIModelProviderLive::test_create_then_delete_llm_provider",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestDeleteAIModelProviderLive::test_model_type_mismatch_returns_400",
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestDeleteAIModelProviderValidation::test_unknown_model_key_delete_returns_404",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.delete-in-use"
+  says = "A model that an agent uses cannot be deleted: the answer is 409 naming the agents, and when the agent-usage check cannot be answered the delete is refused (fails closed)."
+  priority = "P0"
+  tests = [
+    "it:response-validation/ai-model-providers/integration_test_ai_model_providers.py::TestDeleteAIModelProviderConflict::test_delete_blocked_when_agent_uses_model",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.concurrent-writes"
+  says = "Two models added at the same moment are both kept; a write that keeps losing to concurrent writers fails with a 500 and a generic message instead of overwriting."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/aiModelsConfig.repository.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.event"
+  says = "After an add, edit, delete or default change, an embedding change publishes the embeddingModelConfigured event and every other type publishes llmConfigured, so the Python services refresh the right cache."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/configuration_manager/services/kafka_events.service.test.ts",
+    "py:tests/unit/services/messaging/test_kafka_handlers.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.available"
+  says = "GET available/{type} lists one entry per model name (a comma-separated model field is split), marks the default on its first name only, and never returns the configuration object."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts", "it:ai_agents/integration_test_ai_models_live.py::TestModelFriendlyName::test_the_friendly_name_is_offered_to_chat_users"]
+
+  [[feature.behavior]]
+  id = "admin.models-providers.page"
+  says = "The AI models page lets an admin pick a provider, fill its form, see the check result, and see the added model; a write refreshes the cached model list."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/workspace/ai-models-add.spec.ts",
+    "fe:app/(main)/workspace/ai-models/__tests__/ai-models-api-cache.test.ts",
+    "fe:app/(main)/workspace/ai-models/__tests__/model-config-dialog.test.tsx",
+    "fe:app/(main)/workspace/ai-models/__tests__/use-ai-models-manager.test.tsx",
+  ]
+
+[[feature]]
+id = "admin.models-secrets"
+title = "AI model key storage and masking"
+flow = "admin-settings"
+what = "Model credentials (API keys, AWS keys, service-account JSON) are stored encrypted. Responses to users carry only an allowlist of settings plus the names of the fields that are set, never the credentials."
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/maskConfigSecrets.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/services/aiModelsConfig.repository.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-secrets.allowlist"
+  says = "GET ai-models, GET ai-models/{type} and GET aiModelsConfig return, for each model, only the public settings (model, friendly name, dimensions, reasoning effort, identity forwarding settings) and configuredFields; apiKey, AWS keys and service-account JSON are absent."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/utils/maskConfigSecrets.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-secrets.keep-on-edit"
+  says = "An edit that leaves a credential out keeps the stored one and one sent with a value replaces it. An empty string clears an optional credential, but an empty required key is refused with 400 (missing credential)."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/utils/maskConfigSecrets.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-secrets.reveal"
+  says = "GET ai-models/{type}?reveal=true returns the full configuration to an administrator and not to an OAuth-app token; among user routes only this one can show a model credential."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/utils/secretReveal.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-secrets.header-templates"
+  says = "A save through the identity-forwarding route that sends the placeholder back keeps the stored header template value."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/utils/maskConfigSecrets.test.ts",
+    "node:tests/modules/configuration_manager/controller/ai_gateway_identity.controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-secrets.never-in-logs-or-errors"
+  says = "A failed health check returns a fixed admin-facing message and keeps the provider's raw text in the log only; the logger redacts apiKey and secret-named keys."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_health_provider_rejections.py",
+    "py:tests/unit/api/routes/test_health_endpoint_policy.py",
+  ]
+
+[[feature]]
+id = "admin.models-default"
+title = "Default model"
+flow = "admin-settings"
+what = "An administrator marks one model of each type as the default. The default is health-checked before the switch and exactly one default exists per type."
+routes = ["PUT /api/v1/configurationManager/ai-models/default/{modelType}/{modelKey}"]
+code = ["backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-default.switch"
+  says = "Setting a model as default moves the isDefault flag to it and clears it on every other model of the type; asking for the model that is already default answers 200 'unchanged'."
+  priority = "P0"
+  tests = [
+    "it:ai_agents/integration_test_ai_models_live.py::TestDefaultModelSwitch::test_the_switch_moves_the_default_flag",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-default.health-first"
+  says = "When the new default fails its health check, the answer carries the reason and the old default stays."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-default.used-by-chat"
+  says = "A chat that names no model uses the new default and the conversation records which default it used."
+  priority = "P1"
+  tests = [
+    "it:ai_agents/integration_test_ai_models_live.py::TestDefaultModelSwitch::test_a_chat_without_a_model_answers_after_the_switch",
+    "it:ai_agents/integration_test_ai_models_live.py::TestDefaultModelSwitch::test_the_conversation_records_the_default_model_it_used",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-default.errors"
+  says = "An unknown model key answers 404 and a key that belongs to another type answers 400."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+[[feature]]
+id = "admin.models-health-check"
+title = "AI model health check"
+flow = "admin-settings"
+what = "Before a model is saved or made default, the query service calls the provider with the entered settings and reports whether it works, with a plain reason when it does not. Only administrators can call these checks."
+code = [
+  "backend/python/app/api/routes/health.py",
+  "backend/python/app/api/middlewares/admin_gate.py",
+  "backend/nodejs/apps/src/libs/commands/ai_service/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.admin-gate"
+  says = "The health check routes refuse a caller who is not an administrator (a service token never counts as one)."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_health_admin_gate.py",
+    "py:tests/unit/api/test_route_auth_policy.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.endpoint-policy"
+  says = "A check refuses a metadata address always, and a private address when the deployment blocks them, before calling it."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_health_endpoint_policy.py",
+    "py:tests/unit/api/routes/test_health_endpoint_path.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.valid"
+  says = "A working configuration answers healthy, and a bad key is a 4xx with a clear message, not a 5xx."
+  priority = "P0"
+  tests = [
+    "it:ai_agents/integration_test_ai_models_live.py::TestHealthCheck::test_a_valid_config_passes",
+    "it:ai_agents/integration_test_ai_models_live.py::TestHealthCheck::test_a_bad_key_is_a_client_error_not_a_server_error",
+    "py:tests/unit/api/routes/test_health_provider_rejections.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.unreachable"
+  says = "An unreachable endpoint is refused with a message that says so."
+  priority = "P1"
+  tests = [
+    "it:ai_agents/integration_test_ai_models_live.py::TestHealthCheck::test_an_unreachable_endpoint_is_refused_with_a_clear_message",
+    "py:tests/unit/api/routes/test_health_provider_rejections.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.missing-credentials"
+  says = "A model saved with an empty API key is reported as a missing credential, not as a provider failure."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_health_missing_credentials.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.capabilities"
+  says = "A check probes vision when the admin ticked Multimodal and says the model cannot read images without calling it a bad key. It reports tool calling and streaming as notes on a healthy answer."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_health_capabilities.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-health-check.bulk"
+  says = "POST aiModelsConfig health-checks every LLM and embedding entry it is given and saves nothing when one fails."
+  priority = "P2"
+  tests = [
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+    "py:tests/unit/api/routes/test_health_endpoint_policy.py",
+  ]
+
+[[feature]]
+id = "admin.models-embedding"
+title = "Embedding model changes"
+flow = "admin-settings"
+what = "The embedding model decides the size of the vectors in the vector store. A change of the active embedding model is allowed only while the store holds no vectors from another model; an empty store is rebuilt at the new size. A local embedding model can be downloaded with live progress."
+routes = [
+  "POST /api/v1/configurationManager/ai-models/prepare-model",
+  "GET /api/v1/configurationManager/ai-models/download-progress",
+]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/python/app/api/routes/health.py",
+  "backend/python/app/services/messaging/kafka/handlers/ai_config.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.only-active-checked"
+  says = "Adding or editing an embedding model that is not the active one (not default, and another model is active) is checked for health only; it cannot change the vector store."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+    "node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts",
+    "py:tests/unit/api/routes/test_health_capabilities.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.refused-while-in-use"
+  says = "Changing the active embedding model to one with another name, provider or vector size is refused with 400 while the store holds vectors, and the message says to delete the embeddings in Labs and re-embed."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/api/routes/test_health_pgvector_fence.py",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+    "py:tests/unit/api/routes/test_health_survey_fail_closed.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.empty-store-rebuilt"
+  says = "When the store holds no vectors, the change is accepted and the managed collections are recreated at the new dimension; going back to the model and size the store already uses changes nothing."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_health_survey_fail_closed.py", "py:tests/unit/api/routes/test_health_pgvector_fence.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.fail-closed"
+  says = "When the vector store state cannot be read, the change is refused rather than allowed, so collections are never dropped on a guess."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_health_survey_fail_closed.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.delete-active"
+  says = "Deleting or demoting the active embedding model first asks whether the model that takes over (the next one, or the built-in model) may do so, and refuses with the reason when it may not; deleting the only embedding model is refused while vectors are stored."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.event"
+  says = "A saved embedding change publishes embeddingModelConfigured so the retrieval service drops its cached embedding model and the indexing service uses the new one."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/configuration_manager/services/kafka_events.service.test.ts",
+    "py:tests/unit/services/messaging/test_kafka_handlers.py",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.reindex-after-change"
+  says = "After an embedding model change and re-embedding, a new document is indexed with the new model and search finds it."
+  priority = "P1"
+  tests = []
+  manual = "needs a second real embedding model; the CI stack has one stand-in model"
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.prepare"
+  says = "POST prepare-model validates the model name (owner/name shape), starts the download on the embedding server without waiting and returns its status; a bad name answers 400."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-embedding.progress"
+  says = "GET download-progress streams server-sent progress events every few seconds until the model is ready or failed, reports 'Lost connection to embedding server' as failed, and needs a valid model query parameter."
+  priority = "P2"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+[[feature]]
+id = "admin.models-batch"
+title = "Discover models and add several at once"
+flow = "admin-settings"
+what = "An administrator enters one connection (provider, endpoint, key), lists the models the provider offers, ticks several and adds them in one step. Credentials of a connection can be rotated for all its models together."
+routes = [
+  "POST /api/v1/configurationManager/ai-models/discover",
+  "POST /api/v1/configurationManager/ai-models/providers/batch",
+  "PUT /api/v1/configurationManager/ai-models/connections/{connectionId}/credentials",
+]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/ai_models_batch.controller.ts",
+  "backend/python/app/services/ai_models/discovery/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-batch.discover"
+  says = "Discover lists the provider's models, uses a stored key when an existing model is named (without echoing it), and refuses a provider that does not match the saved model."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts", "py:tests/unit/services/ai_models/test_discovery.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-batch.partial-save"
+  says = "Batch add saves only the models whose health check passes, sets the default once, publishes one event, and reports each failed model; when every model fails nothing is saved and no event is published."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-batch.client-gone"
+  says = "When the client disconnects, models not yet saved are skipped and no event is published."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-batch.connection"
+  says = "A batch that sends a connectionId joins that connection when the provider matches and is refused when the id belongs to another provider; a model's own settings override the shared ones but its own credentials are ignored."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-batch.rotate"
+  says = "Rotating credentials health-checks first and writes nothing when the check fails; on success every model of the connection gets the new key and keeps its endpoint and model id, and an unknown connection answers 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-batch.rotate-embedding"
+  says = "Rotating credentials never resizes the embedding collection."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_models_batch.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-batch.route-order"
+  says = "The fixed GET routes (registry, roles, download-progress, identity-policy) are registered before GET ai-models/{modelType}."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.test.ts"]
+
+[[feature]]
+id = "admin.models-identity"
+title = "Identity forwarding for AI model connections"
+flow = "admin-settings"
+what = "An administrator decides whether requests to a model connection carry the identity of the person asking, sets the organization policy that bounds it, and previews what a connection would send for a person."
+routes = [
+  "PUT /api/v1/configurationManager/ai-models/connections/{connectionId}/identity-forwarding",
+  "* /api/v1/configurationManager/ai-models/identity-policy",
+  "POST /api/v1/configurationManager/ai-models/identity/preview",
+]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/ai_gateway_identity.controller.ts",
+  "frontend/app/(main)/workspace/ai-models/components/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-identity.policy"
+  says = "GET identity-policy answers the restrictive default when nothing is saved, a saved policy is read back, unknown keys and out-of-range values are rejected, and a concurrent save answers 409 instead of overwriting."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_gateway_identity.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-identity.forwarding"
+  says = "PUT identity-forwarding writes the setting to every entry of the connection and no other, keeps the stored service key when none is sent and clears it on an empty string, never touches credentials or the model, and answers 404 for an unknown connection."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_gateway_identity.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-identity.templates"
+  says = "A header template with an invalid header name, an oversize value, too many headers or an unknown field is rejected, and a template value that looks like a credential is not shown in a normal response (reveal=true by an admin shows it)."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_gateway_identity.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-identity.preview"
+  says = "Preview sends the stored connection settings (with redacted templates restored) to the query service and answers 404 for an unknown connection without calling anything."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_gateway_identity.controller.test.ts", "fe:app/(main)/workspace/ai-models/__tests__/identity-forwarding.test.tsx"]
+
+  [[feature.behavior]]
+  id = "admin.models-identity.reload"
+  says = "A forwarding change tells the running services to reload the changed models, and still saves when the event cannot be published."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/ai_gateway_identity.controller.test.ts"]
+
+[[feature]]
+id = "admin.models-roles"
+title = "Model roles"
+flow = "admin-settings"
+what = "An administrator assigns a configured model to a named role, such as the model used for indexing, apart from the default model."
+routes = ["* /api/v1/configurationManager/ai-models/roles"]
+code = ["backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-roles.admin-only"
+  says = "GET and PUT roles need an administrator with the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-roles.validate"
+  says = "PUT roles answers 400 and saves nothing when the body has no roles object, a role lacks modelType or modelKey, the type is unknown, or no model has that key in that type."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-roles.indexing"
+  says = "The indexing model is saved apart from the query default, and a document is indexed with it."
+  priority = "P1"
+  tests = [
+    "it:ai_agents/integration_test_ai_models_live.py::TestIndexingAndQueryModels::test_the_indexing_model_is_saved_apart_from_the_query_default",
+    "it:ai_agents/integration_test_ai_models_live.py::TestIndexingAndQueryModels::test_a_document_indexes_with_the_indexing_model",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.models-roles.page"
+  says = "The roles section of the AI models page shows the current assignments and refreshes after a save."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/ai-models/__tests__/model-roles-section.test.tsx"]
+
+[[feature]]
+id = "admin.models-registry"
+title = "AI model provider registry"
+flow = "admin-settings"
+what = "An administrator reads which providers the product supports, what each one needs in its form, and which capabilities a model can have."
+routes = [
+  "GET /api/v1/configurationManager/ai-models/registry",
+  "GET /api/v1/configurationManager/ai-models/registry/capabilities",
+  "GET /api/v1/configurationManager/ai-models/registry/{providerId}/schema",
+]
+code = [
+  "backend/python/app/config/ai_models/**",
+  "backend/python/app/api/routes/ai_models_registry.py",
+  "frontend/app/(main)/workspace/ai-models/capability-i18n.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-registry.admin-only"
+  says = "The registry routes need an administrator with the config:read scope; a member gets 403."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.models-registry.list"
+  says = "The registry lists every provider with its supported model types, and the schema route answers each provider's field list (with secret fields marked) or an error for an unknown provider."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_ai_models_registry_api.py", "py:tests/unit/config/ai_models/test_ai_model_registry.py", "py:tests/unit/config/ai_models/test_ai_model_providers.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-registry.factory"
+  says = "Each provider's registry fields are enough to build its client."
+  priority = "P2"
+  tests = ["py:tests/unit/utils/test_ai_model_factory_contract.py"]
+
+[[feature]]
+id = "admin.models-openai-catalog"
+title = "OpenAI-compatible model list"
+flow = "admin-settings"
+what = "A client that speaks the OpenAI API lists the configured models, or reads one, at /v1/models and /api/v1/models."
+routes = ["GET /api/v1/models", "GET /api/v1/models/{modelId}"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/routes/openai_models.routes.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/openai_models.controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/services/openaiModelList.ts",
+  "backend/python/app/services/ai_models/openai_catalog.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-openai-catalog.scope"
+  says = "Both routes need a signed-in caller with the config:read scope."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "admin.models-openai-catalog.list"
+  says = "The list has the OpenAI shape (object list, data with id, object model), with one entry per configured model name and no credential in it."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/openaiModelList.test.ts", "py:tests/unit/services/ai_models/test_openai_catalog.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-openai-catalog.retrieve"
+  says = "Retrieving a model whose id contains a percent sign or a slash works, and an unknown id answers 404 in the OpenAI error shape."
+  priority = "P2"
+  tests = ["node:tests/modules/configuration_manager/controller/openai_models.controller.test.ts", "py:tests/unit/services/ai_models/test_openai_catalog.py"]
+
+[ignore]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace-settings/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/ai-models/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/labs/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/mail/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/services/page.tsx",
+  "frontend/app/(main)/workspace/page.tsx",
+]
+
+[[feature]]
+id = "admin.config-migrations"
+title = "Startup migrations of the settings service"
+flow = "admin-settings"
+what = "At startup the Node API runs one-time data migrations (admin roles, sign-in policies, chat history, scheduled syncs and more). Each one is safe to run again, writes its done flag only when it finished without errors, and a failure never stops the API from starting."
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/services/migration.service.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/services/migrations/**",
+  "backend/nodejs/apps/src/modules/auth/utils/removedSignInMethods.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.admin-role"
+  says = "Members of the legacy admin group get role admin, users without a role become member, and the group is soft-deleted. A group is never soft-deleted when its organization would be left with no admin."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/admin_role.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.sign-in-policies"
+  says = "Sign-in methods that were removed are taken out of every stored policy, a policy that named one also gets password sign-in so nobody is locked out, and Azure AD settings are copied to Microsoft unless Microsoft settings already exist. If the copy fails the policies are left unchanged."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/services/migrations/sign_in_methods_removal.migration.test.ts",
+    "node:tests/modules/auth/utils/removedSignInMethods.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.chat-sessions"
+  says = "Legacy conversations and agent conversations are copied into chat sessions and their messages in order. The copy waits until the chat filter migration is done, refuses a document with duplicate or missing message ids, and counts a document as migrated only when the stored message count matches."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/chat_sessions.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.chat-kb-filters"
+  says = "Collection filters stored on old chat messages under the legacy knowledge base tag move to the apps list. The migration waits for the connector service migration it depends on (up to 10 tries with growing delay) and leaves its done flag unset if that never finishes."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/chat_kb_filters.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.document-org-id"
+  says = "Storage documents without an organization id get the id of the one organization. With no organization found, nothing is changed and the done flag is not written."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/document_orgid_backfill.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.group-name-index"
+  says = "A unique index on active user group names per organization is added when no active groups share a name. If some do, the migration lists them in the log, renames and deletes nothing, and tries again on the next start."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/user_group_name_index.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.service-accounts"
+  says = "The ids of live service accounts, and which of them are switched off, are staged for the connector service to mark in the graph. The migration never records itself as done, stages again when an account is added or switched off, and stages nothing when there are more than 10,000."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/service_account_kind_backfill.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.sync-schedules"
+  says = "Each active connector set to a scheduled sync gets its crawl job, connectors that already have one are skipped, and one failing connector does not block the others. A repair pass on a timer recreates a job that went missing, and a fresh install with no organization is marked done without calling the connector service."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/configuration_manager/services/migrations/scheduled_jobs_backfill.migration.test.ts",
+    "node:tests/modules/configuration_manager/services/migration.service.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.delegation-retention"
+  says = "At every start the expiry of the delegation log is set to the configured retention in place, a missing collection or index is left alone, and a database error is logged without stopping the service."
+  priority = "P2"
+  tests = ["node:tests/modules/configuration_manager/migrations/delegation_log_retention.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.failure-isolated"
+  says = "The service account staging runs first, then the sign-in policy rewrite, and then the others. A migration that throws or finishes with errors is logged and the rest still run."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/migration.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "admin.config-migrations.postgres-skip"
+  says = "On a PostgreSQL install the migrations that read legacy MongoDB data (admin role, sign-in policies, chat history, document organization ids, group name index, delegation retention) are skipped."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "admin.models-decision"
+title = "Decision models"
+flow = "admin-settings"
+what = "An admin adds a decision model (OpenAI, OpenAI Compatible, OpenRouter, Azure OpenAI, LiteLLM Proxy or TypeSafe) under AI models, for decisions. The product uses the default one to answer yes or no questions with probabilities."
+code = ["backend/python/app/services/ai_models/decision/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "admin.models-decision.providers"
+  says = "The registry lists every decision provider, the factory builds each one and refuses an unknown provider, and the gateway providers need an endpoint."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/services/ai_models/test_decision_model_wiring.py", "py:tests/unit/services/ai_models/test_decision_models.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-decision.wire-format"
+  says = "Each provider sends its own request format to its own endpoint (OpenRouter to its decisions endpoint, the OpenAI gateways to {endpoint}/decisions, Azure to the deployment path) and reads the answers back; a refusal or a missing answer is refused."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/services/ai_models/test_decision_models.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-decision.health-check"
+  says = "The health check asks one question and reports healthy; a bad key is reported as a settings error, and a model with no name or no answer fails."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/services/ai_models/test_decision_model_wiring.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-decision.endpoint-guard"
+  says = "A decision model endpoint that points at a cloud metadata address is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/services/ai_models/test_decision_models.py"]
+
+  [[feature.behavior]]
+  id = "admin.models-decision.retries"
+  says = "A rate-limited call is retried, a Retry-After longer than the limit is not waited for, and a single-attempt call never retries."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/services/ai_models/test_decision_models.py"]
