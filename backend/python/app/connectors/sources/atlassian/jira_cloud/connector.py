@@ -2860,7 +2860,7 @@ class JiraConnector(BaseConnector):
         if linked := self._linked_not_read():
             listed = listed | {u.email.lower() for u in linked if u.email}
             accounts |= {u.source_user_id for u in linked if u.source_user_id}
-        # A grant core named an account on (its email came from the payload) is kept when that account is listed.
+        # A grant by account (the directory holds no email for it) is kept when that account is listed.
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed
                 or (p.external_id and p.external_id in accounts)]
 
