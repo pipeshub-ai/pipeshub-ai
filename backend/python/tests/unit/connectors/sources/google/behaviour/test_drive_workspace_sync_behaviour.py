@@ -3001,6 +3001,23 @@ async def test_a_member_leaving_during_a_run_is_caught_by_the_next_run(ws: Works
     assert CAROL not in f1_people(ws), "the unchanged item is rewritten too"
 
 
+async def test_a_file_deleted_before_a_relist_drops_the_drive_token_is_still_removed(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    ws.world.add_item("f2", "old.txt", parent="sd-1")
+    await ws.sync()
+    assert "f2" in ws.records.records
+
+    # Deleted for good, then a member leaves: the relist drops the drive token that would have reported the delete.
+    ws.world.delete("f2")
+    del ws.world.drives["sd-1"]["members"][CAROL]
+    await ws.sync()
+
+    assert "f2" not in ws.records.records, "the relisted drive's unseen item is checked as removed"
+    assert "f1" in ws.records.records
+
+
 async def relisted(ws: Workspace) -> bool:
     before = len(ws.http.requests)
     await ws.sync()

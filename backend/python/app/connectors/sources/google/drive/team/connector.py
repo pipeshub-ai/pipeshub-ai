@@ -209,6 +209,9 @@ SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
 # Stored beside the member groups' digests: the drive's direct members, whom a members-only drive's grants depend on.
 DRIVE_DIRECT_MEMBERS_MARK = "drive-members"
+# On a user's shared drive sync point whose token a relist dropped: the changes that token would still have reported
+# are lost, so once that user's listing of the drive is complete, a stored item it did not see is checked as removed.
+DRIVE_RELISTED = "relisted_without_token"
 DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
 # Set once a full read has written the audience grants (discoverable domain and "anyone" shares).
 DISCOVERABLE_SHARES_SYNC_POINT_KEY = "discoverable_shares_read"
@@ -531,6 +534,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._group_digests: dict[str, dict[str, str]] = {}
         self._account_domains: set[str] | None = None
         self._refreshed_folders: set[str] = set()
+        # Shared drives whose unseen items were checked this run after a relist (`_check_unseen_after_relist`).
+        self._relist_checked: set[str] = set()
         self._group_members_cache: dict[str, set[str] | None] = {}
         self._deployment_emails: set[str] | None = None
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
@@ -792,6 +797,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._reach_candidates = {}
             self._run_started_at = get_epoch_timestamp_in_ms()
             self._refreshed_folders = set()
+            self._relist_checked = set()
             self._group_members_cache = {}
             self._deployment_emails = None
             self._external_emails = set()
@@ -2311,9 +2317,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         reaches them only that way, and no change feed reports it when the drive's limits change. Their token is
         kept, so removals their feed reports still apply."""
         for user in self.synced_users:
-            await self.drive_delta_sync_point.delete_sync_point(
-                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
-            )
+            key = generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
+            await self.drive_delta_sync_point.delete_sync_point(key)
+            await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RELISTED: True})
             if reseed:
                 # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare. Ids
                 # left to retry are dropped: only a whole listing answers for a change of the limits.
@@ -2321,6 +2327,31 @@ class GoogleDriveTeamConnector(BaseConnector):
                     generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id),
                     {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []},
                 )
+
+    async def _check_unseen_after_relist(
+        self, drive_id: str, user: AppUser, source: GoogleDriveDataSource
+    ) -> None:
+        """After a complete listing of a shared drive whose token a relist dropped, check each stored item of the drive
+        this run did not see as a removal (`_apply_shared_drive_removal`, which asks the drive's members, the record's
+        holders and its audience whether anyone still opens it): a file deleted after the dropped token was issued is
+        reported by no feed now. Once a drive a run. A failure raises, so the token is not saved and the next run
+        lists the drive and checks again."""
+        if drive_id in self._relist_checked:
+            return
+        after: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, drive_id, limit=FILTER_CLEANUP_PAGE_SIZE, after_key=after
+            )
+            for record in page:
+                if not record.is_placeholder and record.external_record_id not in self._sync_ledger.seen:
+                    await self._apply_shared_drive_removal(
+                        record.external_record_id, user, drive_id, source, ask_audience=True
+                    )
+            if len(page) < FILTER_CLEANUP_PAGE_SIZE:
+                break
+            after = page[-1].id
+        self._relist_checked.add(drive_id)
 
     async def _drive_direct_members(self, drive_id: str) -> tuple[set[str], set[str]]:
         """The emails of a shared drive's member users and of its member groups, as its permission list names them."""
@@ -5792,10 +5823,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 synced_drive_ids.add(drive_id)
                                 continue
 
+                            if (sync_point or {}).get(DRIVE_RELISTED):
+                                await self._check_unseen_after_relist(drive_id, user, user_drive_data_source)
                             await self.drive_delta_sync_point.update_sync_point(
                                 sync_point_key,
                                 {"pageToken": start_page_token, **released(sync_point),
-                                 FAILED_ITEMS: sorted(drive_failed)}
+                                 FAILED_ITEMS: sorted(drive_failed), DRIVE_RELISTED: False}
                             )
 
                             self.logger.info(
