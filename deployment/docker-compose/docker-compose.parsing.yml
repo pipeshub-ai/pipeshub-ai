@@ -1,4 +1,4 @@
-# Run parsing in its own container (laptop demo of the split used on Kubernetes).
+# Run parsing in its own container (the same split as on Kubernetes, on one machine).
 #
 #   docker compose -f docker-compose.yml -f docker-compose.parsing.yml up -d
 #

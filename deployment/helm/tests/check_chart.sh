@@ -53,7 +53,7 @@ LOCAL=(-f values-local.yaml)
 # variant can override one of them.
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
-  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists"
+  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
@@ -120,7 +120,7 @@ if [[ -f "$OUT/cloud.yaml" ]]; then
   expect local-neo4j-kafka 'ZOOKEEPER_SERVERS' absent
 fi
 # Parsing in its own pods: nothing renders by default; enabled, the Deployment,
-# Service and PDB use the names and labels add-on autoscalers target, and the
+# Service and PDB use the names and labels add-on scalers target, and the
 # app pods are pointed at the Service.
 if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-neo4j-kafka 'ci-pipeshub-ai-parsing' absent
@@ -136,6 +136,10 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-parsing 'kind: PodDisruptionBudget' present 'name: ci-pipeshub-ai-parsing'
   expect local-parsing 'HorizontalPodAutoscaler' absent 'name: ci-pipeshub-ai-parsing'
   expect local-parsing 'http://ci-pipeshub-ai-parsing:8092' present 'name: PARSING_SERVICE_URL'
+  expect local-parsing 'value: "2"' present 'name: PARSING_MAX_CONCURRENT'
+  expect local-parsing 'value: "8"' present 'name: PARSING_SERVICE_CONCURRENCY'
+  expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent
+  expect local-neo4j-kafka 'PARSING_SERVICE_CONCURRENCY' absent
 fi
 if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'ReadWriteMany' absent

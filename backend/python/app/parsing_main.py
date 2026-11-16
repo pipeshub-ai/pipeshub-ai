@@ -394,7 +394,7 @@ app.include_router(parsing_router)
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics() -> PlainTextResponse:
-    """In-flight and saturation counters in Prometheus text format, for an autoscaler to read."""
+    """In-flight and saturation counters in Prometheus text format, for an external scaler or dashboard to read."""
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     default_capacity = governor.ceilings.heavy if governor is not None else None
     return PlainTextResponse(

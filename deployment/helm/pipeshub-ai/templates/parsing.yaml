@@ -2,7 +2,7 @@
 {{- /*
 Parsing service in its own pods, from the application image with
 PIPESHUB_ROLE=parsing. The Deployment is named <fullname>-parsing and its pods
-carry the label pipeshub.ai/workload=parsing; add-on charts (autoscalers)
+carry the label pipeshub.ai/workload=parsing; add-on charts (for example a scaler)
 target those two and nothing else. There is deliberately no HPA here.
 */ -}}
 {{- $name := printf "%s-parsing" (include "pipeshub-ai.fullname" .) }}
@@ -62,6 +62,10 @@ spec:
               value: parsing
             - name: PARSING_SERVICE_PORT
               value: {{ .Values.parsing.port | quote }}
+            {{- if ne (toString .Values.parsing.maxConcurrent) "" }}
+            - name: PARSING_MAX_CONCURRENT
+              value: {{ .Values.parsing.maxConcurrent | quote }}
+            {{- end }}
             {{- with .Values.parsing.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

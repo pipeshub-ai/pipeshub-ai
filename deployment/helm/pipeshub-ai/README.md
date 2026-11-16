@@ -375,7 +375,7 @@ carry the label `pipeshub.ai/workload: parsing`.
 | Value | Default | Meaning |
 | --- | --- | --- |
 | `parsing.enabled` | `false` | render the parsing Deployment, Service and PDB and wire the app to it |
-| `parsing.replicas` | `1` | static replica count (no autoscaler in this chart) |
+| `parsing.replicas` | `1` | static replica count (this chart sets no HPA for it) |
 | `parsing.port` | `8092` | Service and container port |
 | `parsing.resources` | 1 CPU / 2Gi requested | keep the CPU request set; limits 4 CPU / 8Gi |
 | `parsing.nodeSelector`, `parsing.tolerations`, `parsing.affinity` | empty | place parse pods on a dedicated node pool |
