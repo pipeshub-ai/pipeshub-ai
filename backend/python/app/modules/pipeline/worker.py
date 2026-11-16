@@ -46,6 +46,7 @@ from app.modules.pipeline.stage import (
 )
 from app.services.llm_gateway.fleet_hold import RECONCILE_EVERY_TICKS
 from app.services.llm_gateway.gateway import JobTrace, llm_job
+from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -449,7 +450,7 @@ class StageJobHandler:
                 await self._redrive_capped(judgement.scope, judgement.redrive, judgement.episode)
             # Backs off like a retry (15 s, 1 min, 4 min, then every 5 min) so a long outage costs
             # little, and never returns before the dependency said it might be back.
-            delay = max(result.retry_after_s or 0.0, compute_retry_backoff_seconds(attempt))
+            delay = max(clamp_retry_after(result.retry_after_s) or 0.0, compute_retry_backoff_seconds(attempt))
             if judgement is not None and judgement.decision.verdict is Verdict.REDRIVE:
                 delay += judgement.jitter_s
             elif self._pause is not None:

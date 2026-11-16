@@ -98,6 +98,17 @@ def rate_limit_retry_after(exc: BaseException) -> float | None:
     return None
 
 
+def provider_rate_limit_wait(exc: BaseException) -> float | None:
+    """Seconds a model provider asked us to wait when ``exc`` (or a cause) is its rate limit past the call's allowance
+    (``RateLimited``, ``EmbeddingRateLimited``: marked ``rate_limited``); None otherwise. Never longer than the clamp the
+    error already applies."""
+    for cause in _causes(exc):
+        wait = getattr(cause, "retry_after", None)
+        if getattr(cause, "rate_limited", False) is True and isinstance(wait, (int, float)) and not isinstance(wait, bool):
+            return max(0.0, float(wait)) if math.isfinite(float(wait)) else None
+    return None
+
+
 def plan_deferral(
     record: Mapping[str, object],
     retry_after_seconds: float,

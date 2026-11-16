@@ -69,13 +69,37 @@ def sdk_retries(model: Any) -> int:  # noqa: ANN401
     if name in {"ChatCohere", "CohereEmbeddings"}:
         # The HTTP client retries 408, 429 and 5xx twice unless the request option says otherwise; the embeddings
         # wrapper adds a tenacity layer of its own that counts attempts.
-        request = model.client._client_wrapper.httpx_client.request
-        http = getattr(request, "sdk_retries", 2)
+        http = _cohere_http_retries(model)
         if name == "CohereEmbeddings":
-            return max(int(http), max(0, int(model.max_retries) - 1))
-        return int(http)
+            return max(http, max(0, int(model.max_retries) - 1))
+        return http
     if name == "VoyageEmbeddings":
         return max(0, int(model.max_retries) - 1)
     if name in {"ChatOllama", "OllamaEmbeddings", "JinaEmbeddings"}:
         return 0  # no retry layer in the client
     raise AssertionError(f"no reader for {name}: teach tests/support/sdk_retries.py")
+
+
+def _cohere_http_retries(model: Any) -> int:  # noqa: ANN401
+    """How many times the Cohere SDK repeats a request that gets a 500, measured on the client the factory built: its
+    underlying httpx client is given a transport that answers 500 and counts, a request goes through the SDK's own
+    ``HttpClient.request`` (the factory's wrapper included), and the SDK's backoff sleep is skipped."""
+    from unittest.mock import patch
+
+    import httpx
+
+    http = model.client._client_wrapper.httpx_client
+    requests: list[int] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(1)
+        return httpx.Response(500, json={})
+
+    original = http.httpx_client
+    http.httpx_client = httpx.Client(transport=httpx.MockTransport(answer))
+    try:
+        with patch("cohere.core.http_client.time.sleep"):
+            http.request("v2/chat", method="POST", json={})
+    finally:
+        http.httpx_client = original
+    return len(requests) - 1

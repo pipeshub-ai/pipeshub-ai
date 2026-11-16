@@ -249,3 +249,47 @@ async def test_a_success_pays_a_token_back(slept: list[float]) -> None:
     gateway = LLMGateway(2, retry_budget=budget)
     await gateway.invoke(_Wire(), "hi", provider="p")
     assert budget.tokens == 500 - 14 + 1
+
+
+# ---- the per-process breaker's half-open probe is one request ------------------------------------------------------------
+
+
+class _Down:
+    requests = 0
+
+    def __init__(self, status: int = 503, retry_after: float | None = None) -> None:
+        self.status, self.retry_after = status, retry_after
+
+    async def ainvoke(self, value: object, /, **kwargs: object) -> str:
+        wire._request_hook(httpx.Request("POST", "http://host/v1/chat"))
+        self.requests += 1
+        wire.note_response(self.status, self.retry_after)
+        raise RuntimeError(f"HTTP {self.status}")
+
+
+@pytest.mark.parametrize(("status", "retry_after"), [(503, None), (429, None), (429, 5.0)])
+async def test_the_process_breaker_probe_is_one_request_and_sleeps_nothing(
+    monkeypatch: pytest.MonkeyPatch, status: int, retry_after: float | None
+) -> None:
+    """With no fleet Redis bound, the first call after the cooldown is the half-open probe: one request decides the breaker,
+    so a failed probe is neither repeated nor waited on before the breaker refuses."""
+    real_sleep = asyncio.sleep
+    waits: list[float] = []
+
+    async def fast(seconds: float) -> None:
+        waits.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", fast)
+    gateway = LLMGateway(4, retry_budget=RetryBudget(), failure_threshold=3, cooldown_seconds=0.05)
+    model = _Down(503)
+    for _ in range(3):
+        with pytest.raises(ProviderUnavailableError):
+            await gateway.invoke(model, "x", provider="P:m@h")
+    opened_at, waited_before = model.requests, len(waits)
+    await real_sleep(0.1)  # past the cooldown: the next call is the probe
+    probe = _Down(status, retry_after)
+    with pytest.raises(ProviderUnavailableError):
+        await gateway.invoke(probe, "x", provider="P:m@h")
+    assert probe.requests == 1, f"the half-open probe sent {probe.requests} requests (the breaker opened after {opened_at})"
+    assert len(waits) == waited_before, "a failed probe must not sleep before the breaker refuses"

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from app.services.model_identity.transport.client_paths import iter_http_clients
+from app.services.spend_guard.retry_policy import clamp_retry_after
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -176,17 +177,20 @@ def note_response(status: int, retry_after: float | None = None) -> None:
 def parse_retry_after(headers: Any) -> float | None:  # noqa: ANN401 - any mapping of header names to values
     """Seconds a provider asks to wait (``retry-after-ms``, else ``retry-after`` in seconds), or None.
 
-    An HTTP-date or a malformed value is ignored: the gateway then waits by its own jitter.
+    The header is untrusted input: only a finite, non-negative number is accepted, and it is clamped to
+    ``MAX_RETRY_AFTER_S``. An HTTP-date, a NaN, an infinity or a malformed value is ignored (the gateway then waits by
+    its own jitter).
     """
-    try:
-        milliseconds = headers.get("retry-after-ms")
-        if milliseconds is not None:
-            return max(0.0, float(milliseconds) / 1000.0)
-        seconds = headers.get("retry-after")
-        if seconds is not None:
-            return max(0.0, float(seconds))
-    except (TypeError, ValueError, AttributeError):
-        return None
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        try:
+            raw = headers.get(name)
+            if raw is None:
+                continue
+            value = clamp_retry_after(float(raw) / scale)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if value is not None:
+            return value
     return None
 
 

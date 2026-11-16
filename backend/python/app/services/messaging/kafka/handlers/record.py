@@ -76,6 +76,7 @@ from app.modules.indexing.rate_limit_deferral import (
     deferral_updates,
     is_deferred,
     plan_deferral,
+    provider_rate_limit_wait,
     rate_limit_retry_after,
 )
 from app.modules.pipeline.parse_now import (
@@ -102,6 +103,7 @@ from app.services.messaging.config import (
     Topic,
     messaging_env,
 )
+from app.services.messaging.consumer_concurrency import ProviderRateLimitRequeue
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -1602,6 +1604,8 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         last_exception: Exception | None = None
         cancelled = False
+        # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
+        handed_back = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         record = None
@@ -2419,6 +2423,9 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
+            if (wait := provider_rate_limit_wait(ie)) is not None and not (resuming_enrichment or parse_now):
+                handed_back = True
+                raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
             # Not a failure: the consumer hands the message back, and nothing is written for it.
@@ -2428,6 +2435,10 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(e)
             last_exception = e
+            if (wait := provider_rate_limit_wait(e)) is not None and not (resuming_enrichment or parse_now):
+                # The provider said when it can serve again: come back then, with no attempt spent on the wait.
+                handed_back = True
+                raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
             # only once, when this turns out to be the final attempt.
@@ -2479,7 +2490,13 @@ class RecordEventHandler(BaseEventService):
                     )
                     is_final = True
                     
-                if cancelled:
+                if handed_back:
+                    # A provider's rate limit is not a verdict on the record either: the broker holds the message for the
+                    # provider's wait and the record stays as it is (stale recovery covers a process that never returns).
+                    self.logger.info(
+                        f"Record {record_id} waits for a rate-limited model provider; handed back, not failed"
+                    )
+                elif cancelled:
                     # Checked before is_final: a cancellation is not a verdict
                     # on the record. The broker entry was never acknowledged
                     # (Redis) or committed (Kafka), so it comes back regardless

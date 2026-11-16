@@ -31,6 +31,7 @@ from app.services.spend_guard.retry_policy import (
     RetryBudget,
     RetryDecision,
     RetryKind,
+    clamp_retry_after,
     decide_retry,
     process_retry_budget,
 )
@@ -50,9 +51,11 @@ _SERVER_ERROR = 500
 class EmbeddingRateLimited(EmbeddingError):
     """The provider asked for a longer wait than a call may spend. Nothing was slept; defer the work ``retry_after`` s."""
 
+    rate_limited = True  # see ``provider_rate_limit_wait``
+
     def __init__(self, message: str, *, retry_after: float) -> None:
         super().__init__(message)
-        self.retry_after = retry_after
+        self.retry_after = clamp_retry_after(retry_after) or 0.0
 
 
 def _status_of(exc: BaseException) -> int | None:
@@ -106,6 +109,7 @@ class EmbeddingGateway:
         self._retry_budget = retry_budget if retry_budget is not None else RetryBudget()
         self._max_attempts = max_attempts
         self._dimensions: dict[str, int] = {}
+        self._flights: dict[tuple[str, int], asyncio.Lock] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -158,15 +162,31 @@ class EmbeddingGateway:
         process (a record's build of the same model does not pay again). The probe repeats under the same retry policy
         as any other call. Raises what the provider raised once the policy gives up."""
         key = self._dimension_key(embeddings)
-        with self._lock:
-            known = self._dimensions.get(key) if key is not None else None
+        if key is None:
+            return len(await self.call(lambda: embeddings.aembed_query("test")))
+        known = self._known_dimension(key)
         if known is not None:
             return known
-        size = len(await self.call(lambda: embeddings.aembed_query("test")))
-        if key is not None:
+        # Single flight: callers of one provider key that arrive together wait for the first one's answer (a lock per key
+        # and event loop; a lock binds to the loop that uses it).
+        lock = self._flight_lock(key)
+        async with lock:
+            known = self._known_dimension(key)
+            if known is not None:
+                return known
+            size = len(await self.call(lambda: embeddings.aembed_query("test")))
             with self._lock:
                 self._dimensions[key] = size
-        return size
+            return size
+
+    def _known_dimension(self, key: str) -> int | None:
+        with self._lock:
+            return self._dimensions.get(key)
+
+    def _flight_lock(self, key: str) -> asyncio.Lock:
+        loop_id = id(asyncio.get_running_loop())
+        with self._lock:
+            return self._flights.setdefault((key, loop_id), asyncio.Lock())
 
     async def call(self, make_call: Callable[[], Awaitable[_R]]) -> _R:
         """Run ``make_call`` (one request to a remote embedding provider), repeating a failed one under the retry policy:

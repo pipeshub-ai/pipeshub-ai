@@ -2026,7 +2026,6 @@ def _limit_cohere_retries(model: _SdkModel, sdk_retries: int | None) -> _SdkMode
                 options.setdefault("max_retries", sdk_retries)
                 return _inner(*args, request_options=options, **kwargs)
 
-            limited.sdk_retries = sdk_retries  # type: ignore[attr-defined]  # read back by the call-site contract test
             setattr(http, method, limited)
     return model
 

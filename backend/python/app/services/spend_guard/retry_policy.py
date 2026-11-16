@@ -17,6 +17,7 @@ Everything here is pure or thread-safe state; nothing sleeps or sends.
 from __future__ import annotations
 
 import enum
+import math
 import random
 import threading
 from dataclasses import dataclass
@@ -25,10 +26,23 @@ MAX_ATTEMPTS = 3
 MAX_TOTAL_SLEEP_S = 60.0
 THROTTLE_BASE_S = 1.0
 TRANSIENT_BASE_S = 0.25
+# A provider's Retry-After is untrusted input: whatever it asks for, no sleep, hold or requeue is longer than this.
+MAX_RETRY_AFTER_S = 3600.0
 RETRY_BUDGET_CAPACITY = 500
 THROTTLE_COST = 5
 TRANSIENT_COST = 14
 SUCCESS_REFUND = 1
+
+
+def clamp_retry_after(value: object) -> float | None:
+    """``value`` as seconds to wait: finite and not negative, at most ``MAX_RETRY_AFTER_S``; None for anything else
+    (a NaN, an infinity, a negative number, a bool, a string), which is ignored as if it had not been sent."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    if math.isnan(seconds) or math.isinf(seconds) or seconds < 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_S)
 
 
 class RetryKind(enum.Enum):

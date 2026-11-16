@@ -8,6 +8,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.ai_models.decision import DecisionModel, get_decision_model
+from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.utils.aimodels import (
     STTAdapter,
     TTSAdapter,
@@ -68,7 +69,8 @@ class LLMUnavailableError(Exception):
         # included); the pause budget's "sends" are these. None: one if ``sent``, else none.
         self.requests = requests if requests is not None else (1 if sent else 0)
         # Seconds until the provider may serve again, when known (its open circuit's cooldown).
-        self.retry_after = retry_after
+        # Untrusted when it came from a provider: finite, and never longer than a requeue may park a job.
+        self.retry_after = clamp_retry_after(retry_after)
         # Whether a request reached the wire. A refusal by an open breaker is not a send, and an
         # error that does not say is read as one: a paused job must not get free sends.
         self.sent = sent

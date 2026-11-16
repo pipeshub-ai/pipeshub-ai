@@ -81,7 +81,13 @@ def test_models_are_instrumented_and_timeouts_are_floats() -> None:
 
 # Every module that makes paid calls while indexing a record: parsers, transformers (vectorstore included), extraction,
 # named entities, entity resolution, the table enrichment helper, the multimodal embedding providers and the pipeline.
-PAID_CALL_PATHS = [*INDEXING_PATHS, APP / "services" / "embeddings" / "multimodal"]
+PAID_CALL_PATHS = [
+    *INDEXING_PATHS,
+    APP / "services" / "embeddings" / "multimodal",
+    APP / "utils" / "indexing_helpers.py",
+    APP / "events" / "processor.py",
+    APP / "modules" / "pipeline",
+]
 _RAW_CALL = re.compile(r"^(ainvoke|invoke|astream|stream|agenerate|generate|a?embed_\w+)$")
 # A receiver that is a gateway: the call is the gateway's own.
 _GATEWAY_RECEIVER = re.compile(r"(get_llm_gateway\(\)|get_embedding_gateway\(\)|\bgateway\b|^self\._gateway)")
@@ -102,32 +108,39 @@ RAW_CALL_ALLOWANCES = {
 
 
 def _raw_calls(path: Path) -> list[tuple[int, str, str]]:
-    """(line, attribute, enclosing function) of every call to a model or embedder method that is not a gateway's."""
+    """(line, attribute, enclosing function) of every call to a model or embedder method that is not a gateway's, whether it
+    is called (``model.ainvoke(x)``) or handed over to be called (``asyncio.to_thread(embeddings.embed_documents, x)``)."""
     tree = ast.parse(path.read_bytes())
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     found = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            candidates = [node.func]
+        elif isinstance(node, ast.Call):
+            candidates = []
+        else:
             continue
-        if not _RAW_CALL.match(node.func.attr):
-            continue
-        if _GATEWAY_RECEIVER.search(ast.unparse(node.func.value)):
-            continue
-        # Inside the arguments of a gateway call (``get_embedding_gateway().call(lambda: client.embed(...))``): its own.
-        ancestor = parents.get(node)
-        inside_gateway = False
-        while ancestor is not None:
-            if isinstance(ancestor, ast.Call) and isinstance(ancestor.func, ast.Attribute) \
-                    and _GATEWAY_RECEIVER.search(ast.unparse(ancestor.func.value)):
-                inside_gateway = True
-                break
-            ancestor = parents.get(ancestor)
-        if inside_gateway:
-            continue
-        scope: ast.AST | None = node
-        while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            scope = parents.get(scope)
-        found.append((node.lineno, node.func.attr, scope.name if scope is not None else "<module>"))  # type: ignore[union-attr]
+        # A method passed by reference: an argument that is itself ``receiver.method``.
+        candidates += [a for a in [*node.args, *(k.value for k in node.keywords)] if isinstance(a, ast.Attribute)]
+        for target in candidates:
+            if not _RAW_CALL.match(target.attr) or _GATEWAY_RECEIVER.search(ast.unparse(target.value)):
+                continue
+            # Inside the arguments of a gateway call (``get_embedding_gateway().call(lambda: client.embed(...))``): its own.
+            ancestor = parents.get(node)
+            inside_gateway = (
+                isinstance(node.func, ast.Attribute) and bool(_GATEWAY_RECEIVER.search(ast.unparse(node.func.value)))
+            )
+            while ancestor is not None and not inside_gateway:
+                if isinstance(ancestor, ast.Call) and isinstance(ancestor.func, ast.Attribute) \
+                        and _GATEWAY_RECEIVER.search(ast.unparse(ancestor.func.value)):
+                    inside_gateway = True
+                ancestor = parents.get(ancestor)
+            if inside_gateway:
+                continue
+            scope: ast.AST | None = node
+            while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scope = parents.get(scope)
+            found.append((target.lineno, target.attr, scope.name if scope is not None else "<module>"))  # type: ignore[union-attr]
     return found
 
 
@@ -182,3 +195,33 @@ def test_no_retrying_sdk_on_an_indexing_factory_path() -> None:
         assert calls, f"{relative}: no get_embedding_model call found"
         for call in calls:
             assert any(k.arg == "sdk_retries" for k in call.keywords), f"{relative}:{call.lineno}: pass sdk_retries"
+
+
+def _scan(tmp_path: Path, source: str) -> list[tuple[int, str, str]]:
+    path = tmp_path / "module.py"
+    path.write_text(source)
+    return _raw_calls(path)
+
+
+def test_the_scan_sees_a_raw_call_passed_by_reference(tmp_path: Path) -> None:
+    """``asyncio.to_thread(embeddings.embed_documents, texts)`` is a raw paid call that no ``.embed_documents(`` call node shows."""
+    found = _scan(tmp_path, "import asyncio\nasync def embed(self, texts):\n    return await asyncio.to_thread(self.e.embed_documents, texts)\n")
+    assert [(attr, function) for _line, attr, function in found] == [("embed_documents", "embed")]
+    found = _scan(tmp_path, "async def f(loop, m):\n    return await loop.run_in_executor(None, m.invoke, 'x')\n")
+    assert [attr for _line, attr, _function in found] == ["invoke"]
+
+
+def test_the_scan_lets_a_gateway_call_wrap_the_same_references(tmp_path: Path) -> None:
+    source = (
+        "import asyncio\n"
+        "async def embed(self, texts):\n"
+        "    return await get_embedding_gateway().call(lambda: asyncio.to_thread(self.e.embed_documents, texts))\n"
+        "async def chat(llm, m):\n"
+        "    return await get_llm_gateway().invoke(llm, m)\n"
+    )
+    assert _scan(tmp_path, source) == []
+
+
+def test_the_scan_covers_the_other_paid_modules() -> None:
+    covered = {path.relative_to(APP).as_posix() for path in PAID_CALL_PATHS}
+    assert {"utils/indexing_helpers.py", "events/processor.py", "modules/pipeline"} <= covered

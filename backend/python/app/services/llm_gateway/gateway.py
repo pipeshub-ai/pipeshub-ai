@@ -124,6 +124,9 @@ class RateLimited(ProviderUnavailableError):
     """The provider asked for a longer wait than this call may spend (its Retry-After beyond what is left of the
     call's sleep allowance). Nothing was slept; the caller defers the work for ``retry_after`` seconds."""
 
+    # Read by ``provider_rate_limit_wait`` (a duck-typed marker, so the deferral code needs no import of the gateways).
+    rate_limited = True
+
 
 class Invocable(Protocol):
     async def ainvoke(self, value: Any, /, **kwargs: Any) -> Any: ...  # noqa: ANN401 - LangChain runnables take and return Any
@@ -556,7 +559,8 @@ class LLMGateway:
         breaker = self.breaker(provider)
         # Per-process breaker, only where no fleet Redis is bound. The one caller allowed through after a cooldown
         # makes the real call as the probe: a health endpoint cannot tell whether the provider serves completions.
-        if fleet is None and not breaker.should_attempt_probe() and breaker.is_open:
+        process_probe = fleet is None and breaker.should_attempt_probe()
+        if fleet is None and not process_probe and breaker.is_open:
             LLM_CALLS.inc(site, "circuit_open")
             raise ProviderUnavailableError(
                 f"{provider} is failing; not calling it until its cooldown ends",
@@ -579,7 +583,8 @@ class LLMGateway:
                             fleet, provider, pk, cls, job, site, sent_any=sent_any, requests=requests_total,
                             charged=charged_total,
                         )
-                    trial = admission is not None and admission.trial
+                    # The per-process breaker's half-open probe is a trial too: one request decides it, none is repeated.
+                    trial = (admission is not None and admission.trial) or (process_probe and attempt == 0)
                     lease = self._start_lease(fleet, pk, cls, admission) if trial and fleet and admission else None
                     with wire.wire_scope() as seen:
                         try:
@@ -829,6 +834,10 @@ class LLMGateway:
         back unchanged, a hang (it ran to its ceiling already), the caller's own budget, a half-open trial (one request
         decides the breaker), or the request's own fault."""
         if policy is not None and not policy.retryable:
+            return None
+        if trial:
+            # One request decides a half-open breaker: waiting and sending another is not the trial's to do (a throttled
+            # trial would otherwise sleep before the breaker refuses its retry).
             return None
         if _is_rate_limited(exc, policy) or seen.status == _TOO_MANY_REQUESTS:
             return RetryKind.THROTTLE

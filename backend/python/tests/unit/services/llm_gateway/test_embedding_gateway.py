@@ -206,3 +206,23 @@ async def test_the_probe_repeats_a_failed_request_under_the_policy(slept: list[f
     with pytest.raises(openai.InternalServerError):
         await gateway.probe_dimension(failing)  # type: ignore[arg-type]
     assert failing.requests == MAX_ATTEMPTS, "one logical probe is at most three requests"
+
+
+async def test_concurrent_probes_of_one_key_pay_once() -> None:
+    """Five callers that arrive together for one provider key wait for the first answer: one paid request."""
+    import asyncio
+
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    release = asyncio.Event()
+
+    class Slow(_Embedder):
+        async def aembed_query(self, text: str) -> list[float]:
+            await release.wait()
+            return await super().aembed_query(text)
+
+    embedders = [Slow(model="m", dimension=6, api_key="k") for _ in range(5)]
+    tasks = [asyncio.create_task(gateway.probe_dimension(e)) for e in embedders]  # type: ignore[arg-type]
+    await asyncio.sleep(0.05)
+    release.set()
+    assert await asyncio.gather(*tasks) == [6] * 5
+    assert sum(e.requests for e in embedders) == 1
