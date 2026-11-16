@@ -72,10 +72,11 @@ def test_a_hostile_svg_is_refused_through_the_renderer(name: str) -> None:
     # A warm renderer first, so the timed window is the refusal, not a cold
     # start (each test process starts its own renderers).
     ImageParser.svg_base64_to_png_base64(_b64(GOOD_SVG))
-    start = time.monotonic()  # wall-clock: the refusal happens in the child
-    with pytest.raises(DocumentProcessingError):
+    with pytest.raises(DocumentProcessingError) as err:
         ImageParser.svg_base64_to_png_base64(_b64(HOSTILE[name]))
-    assert time.monotonic() - start < 2.0
+    # Refused by the renderer's budget check, not stopped at the deadline: told apart by the outcome, not by the wall
+    # time (which a busy runner stretches past a small bound).
+    assert "timed out" not in str(err.value), err.value
 
 
 def test_an_oversized_svg_is_refused_before_it_is_parsed() -> None:
