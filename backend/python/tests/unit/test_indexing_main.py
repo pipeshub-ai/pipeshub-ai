@@ -4197,7 +4197,7 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
         graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
         previous = graph.get_document.side_effect
 
-        async def get_document(key, collection, **kwargs):
+        async def get_document(key, collection, **kwargs) -> dict | None:
             if collection == CollectionNames.RECORDS.value:
                 if kwargs.get("raise_on_error"):
                     raise ConnectionError("graph unavailable")

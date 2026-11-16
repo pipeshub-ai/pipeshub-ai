@@ -165,7 +165,7 @@ async def test_a_record_whose_wait_cannot_be_stored_is_not_handed_back_unbounded
         return await real(doc_id, collection, fields) if real else True
 
     harness.graph.update_node = AsyncMock(side_effect=update)
-    with pytest.raises(Exception) as raised:  # noqa: B017
+    with pytest.raises(Exception) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert not isinstance(raised.value, RequeueWithoutAttempt)
 
@@ -191,6 +191,6 @@ async def test_a_store_that_answers_false_does_not_count_as_a_stored_wait() -> N
         return await real(doc_id, collection, fields) if real else True
 
     harness.graph.update_node = AsyncMock(side_effect=update)
-    with pytest.raises(Exception) as raised:  # noqa: B017
+    with pytest.raises(Exception) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert not isinstance(raised.value, RequeueWithoutAttempt)
