@@ -4298,6 +4298,37 @@ async def test_a_new_record_shared_with_a_group_the_directory_wont_list_is_writt
     assert [p.external_id for p in written[0][1]] == ["sales@example.com"], "without Alice"
 
 
+async def test_a_new_record_a_named_reader_finds_in_the_trash_is_not_written_for_an_unlisted_group(ws: Workspace) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    ws.world.add_item("t", "t.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    await ws.sync()
+    ws.world.trash("t")
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(email=BOB, type=PermissionType.OWNER, entity_type=EntityType.USER),
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("t", "root-bob"), grants, unsettled="t")
+
+    assert written == [], "Bob's read finds it in the trash: the unlisted group is not taken as still opening it"
+
+
+async def test_a_new_record_shared_with_an_audience_a_person_of_it_still_opens_is_written(ws: Workspace) -> None:
+    ws.world.add_item("a", "a.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("a", "root-bob"), grants, unsettled="a")
+
+    assert [r.external_record_id for r, _ in written] == ["a"], "a person of the domain still opens it: written"
+    assert [p.external_id for p in written[0][1]] == ["domain-members:example.com"], "without Alice"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (

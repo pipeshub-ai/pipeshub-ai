@@ -19,7 +19,7 @@ async def test_a_change_in_one_service_invalidates_the_cache_of_another(
     monkeypatch, runtime, uid
 ) -> None:
     a, b = make(monkeypatch, runtime), make(monkeypatch, runtime)
-    key = f"/test/{uid}/setting"
+    key = f"/services/connectors/test{uid}/setting"
     try:
         await asyncio.sleep(1.0)  # both watch threads have their LISTEN in place
         assert await a.set_config(key, {"v": 1})
@@ -37,7 +37,7 @@ async def test_a_change_in_one_service_invalidates_the_cache_of_another(
 
 async def test_values_are_encrypted_in_the_table(monkeypatch, runtime, uid) -> None:
     svc = make(monkeypatch, runtime)
-    key = f"/test/{uid}/secret"
+    key = f"/services/connectors/test{uid}/secret"
     try:
         assert await svc.set_config(key, {"password": "hunter2"})
         db = await runtime.db()
