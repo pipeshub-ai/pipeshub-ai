@@ -78,6 +78,6 @@ def office_facts(content: bytes) -> OfficeFacts:
                     m = pattern.search(head)
                     if m and int(m.group(1)) > 0:
                         return OfficeFacts(pages=int(m.group(1)))
-    except Exception:  # noqa: BLE001 - best effort by design; zlib.error, BadZipFile, OSError and the rest all mean no facts
+    except Exception:  # best effort by design: zlib.error, BadZipFile, OSError and the rest all mean no facts
         return OfficeFacts()
     return OfficeFacts()
