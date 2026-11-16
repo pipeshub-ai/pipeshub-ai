@@ -366,6 +366,50 @@ The tier does not influence the lane a message lands in (a lane belongs to a con
 
 ## 4. Low-level design
 
+### 2.6 Record processing diagnostics
+
+A stored record may carry four optional facts about how its processing went. They are for diagnosis only: they are in `INTERNAL_RECORD_FIELDS`, so the record endpoint never returns them and `pipeshub-openapi.yaml` does not describe them. They are declared in the records schema (ArangoDB; Neo4j and PostgreSQL read the same registry) before anything writes them, so a process on the previous schema never meets a key it rejects. Each field is either a number of the stated kind or unknown; absent and JSON null both mean "unknown". The schema refuses any other value on every store (a string, a fraction where an integer is stated, a negative attempt count, a page count below 1), so a reader meets only a valid number, absent, or null.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `firstQueuedAt` | number (epoch ms) | When the record first went in line for its current processing run. |
+| `failedAt` | number (epoch ms) | When its most recent run ended in FAILED. |
+| `indexingAttempts` | integer >= 0 | How many times processing was attempted. Informational; the retry limits are unchanged. |
+| `pageCount` | integer >= 1 | Page count of the PDF that was parsed; null when unknown or not a PDF. |
+
+The record endpoint, the record update response, the search response and the Node API's saved searches (when saved and when returned) leave out `INTERNAL_RECORD_FIELDS` (`api_record` / `api_records` in Python, `apiRecord` / `apiStoredRecords` in `enterprise_search/utils/internal-record-fields.ts`; a test compares the two name lists).
+
+In this version nothing writes them (`tests/unit/schema/test_record_diagnostics_schema.py` fails if application code starts to).
+
+## 3. Light and heavy documents
+
+Every record is classified once, from the event payload's `extension` and `mimeType`, by `app/services/resource_governor/tiers.py::classify`:
+
+| Tier | Formats | Why it is separate |
+| --- | --- | --- |
+| **HEAVY** | pdf, doc/docx, ppt/pptx, xls/xlsx, png/jpg/jpeg/webp/svg, and **anything unrecognised** | Docling layout analysis, OCR, LibreOffice, VLM image description: CPU-bound for minutes, ~1.5 GiB RSS per parse. |
+| **LIGHT** | txt, md, html, csv/tsv, json/yaml, source code, `application/blocks` (Jira/Confluence/Slack-shaped payloads), `text/gmail_content` | Milliseconds of CPU on a few KB; wall time is I/O (embedding, graph, vector writes). The exception is a large text, code or CSV file, which is seconds of CPU: from 256 KiB up those parse steps run in a parse worker process when the process has a pool (section 4.7); JSON, YAML and HTML stay on threads at any size. |
+
+Jira issues and Confluence pages are published as `application/blocks` (Jira) or blocks/HTML (Confluence), so they are LIGHT. Their **attachments** are published with the attachment's real media type: PDFs, screenshots, Office files. Those are HEAVY. A Jira/Confluence sync is therefore a mixed stream: mostly light records with a heavy minority interleaved. That mix is the precondition for the bug in section 5.
+
+The tier decides four things, all in `consumer_concurrency.py` and `resource_governor/`:
+
+1. **Which index pool** the record holds for its whole lifetime: `Pool.INDEX_HEAVY` or `Pool.INDEX_LIGHT` (`acquire_index_slot`). This permit is taken before the handler runs and released on `INDEXING_COMPLETE`, so it covers download, the wait for a parse slot, parsing and embedding. Classification is outside it, on the `classify` stage's own permits (§2.3).
+2. **Which parse pool** the record waits on at `START_PARSING`: `HEAVY_PARSE` or `LIGHT_PARSE`, cost 2 permits for a heavy file over 25 MiB.
+3. **Which cluster-wide Redis lease** it takes: `parsing` vs `parsing:light` always; `indexing` vs `indexing:light` only once `INDEXING_SPLIT_LEASE_POOLS=true`.
+4. **The ceilings and floors** the governor sizes each pool with (section 4.3).
+
+The tier also decides two things at the dispatch layer (added by the fix in section 5.8):
+
+5. **Which read-ahead bucket** a spawned task counts in: `GateWaiters` keeps one count per tier, and `DispatchBudget` gives heavy its own ceiling (2× the current `INDEX_HEAVY` limit, at least 8) under the shared total.
+6. **Which leaf of the fairness tree** the message is buffered in: the fairness key is `(orgId, connectorId, tier)`, so a connector's heavy and light records are sibling queues and DRR can pass over a blocked heavy head.
+
+The tier does not influence the lane a message lands in (a lane belongs to a connector, section 4.9) or the read-phase read-ahead, which is bounded by buffer room.
+
+---
+
+## 4. Low-level design
+
 ### 4.1 Consumer loop
 
 `IndexingRedisStreamsConsumer._consume_loop` (Kafka: `IndexingKafkaConsumer`) with fair scheduling on (the default):
