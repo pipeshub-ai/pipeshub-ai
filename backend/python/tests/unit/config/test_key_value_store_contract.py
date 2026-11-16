@@ -298,6 +298,30 @@ async def test_the_encrypted_stores_raise_on_a_value_they_cannot_decrypt(cls) ->
 
 
 @pytest.mark.asyncio
+async def test_redis_writers_that_both_read_before_either_writes_have_one_winner() -> None:
+    """The fake server answers each call before the next starts, so the race is forced: both reads, then both swaps."""
+    store = _redis()
+    await store.create_key("/k", {"n": 1})
+    client = store._get_client()
+    read, both_read = client.get, asyncio.Barrier(2)
+
+    async def read_then_wait(name):
+        raw = await read(name)
+        await both_read.wait()
+        return raw
+
+    client.get = read_then_wait
+    results = await asyncio.gather(
+        store.compare_and_set("/k", {"n": 1}, {"n": "a"}),
+        store.compare_and_set("/k", {"n": 1}, {"n": "b"}),
+    )
+    client.get = read
+
+    assert sorted(results) == [False, True]
+    assert await store.get_key("/k") == {"n": "a" if results[0] else "b"}
+
+
+@pytest.mark.asyncio
 async def test_redis_raises_when_the_server_fails() -> None:
     store = _redis()
     client = AsyncMock()
