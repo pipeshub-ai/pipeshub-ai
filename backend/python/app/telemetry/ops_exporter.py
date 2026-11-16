@@ -636,6 +636,12 @@ class SignalCollector:
                 snapshot["_stale"] = not fresh
                 live.append(snapshot)
                 continue
+            try:  # the process may have written once more between our read and its exit: fold the last one
+                latest = json.loads(path.read_text())
+                if isinstance(latest, dict) and latest.get("pid") == snapshot.get("pid") and latest.get("nonce") == snapshot.get("nonce"):
+                    snapshot = latest
+            except (OSError, ValueError):
+                pass
             try:
                 self._fold_locked(snapshot)
             except OSError:

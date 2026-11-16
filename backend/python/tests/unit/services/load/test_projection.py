@@ -345,3 +345,14 @@ def test_each_identity_scalar_is_checked_against_its_own_schema_type() -> None:
     assert (ok["pid"], ok["seq"], ok["draining"], ok["loopLagMs"], ok["pod"]) == (7, 3, True, 1.5, "p")
     SCHEMA_VALIDATOR = jsonschema.validators.validator_for(SCHEMA)(SCHEMA)
     SCHEMA_VALIDATOR.validate(ok)
+
+
+def test_a_pool_in_cooldown_reports_the_brake_the_governor_tracked_through_it() -> None:
+    row = {"rule": "cooldown", "cooldownCause": "memory", "limit": 2, "ceiling": 4, "inUse": 1, "waiting": 0}
+    pools = {"heavy_parse": row}
+    old = explain.project({"admission": {"pools": pools}})
+    assert old["pools"]["heavy_parse"]["reason"] == "ramping"  # no tracked reason: the cause alone cannot say which
+    tracked = explain.project({"admission": {"pools": {"heavy_parse": {**row, "brakeReason": "memory_soft"}}}})
+    assert tracked["pools"]["heavy_parse"]["reason"] == "memory_soft"
+    junk = explain.project({"admission": {"pools": {"heavy_parse": {**row, "brakeReason": "org-6f1c2a"}}}})
+    assert junk["pools"]["heavy_parse"]["reason"] == "ramping"  # an unknown value is ignored

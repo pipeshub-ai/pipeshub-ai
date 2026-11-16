@@ -254,3 +254,18 @@ def test_stop_does_not_call_the_source_while_a_round_is_still_in_it(tmp_path: Pa
         assert peak[0] == 1, "the source was called concurrently"
     finally:
         release.set()
+
+
+def test_a_write_between_the_scan_read_and_the_exit_check_is_folded(tmp_path: Path) -> None:
+    """The process replaces its snapshot (7 to 8) after the scan read it and exits before the exit check:
+    the 8 is folded, not deleted with the file."""
+    path = _snapshot(tmp_path, 1, brakes=7)
+
+    def dies_after_one_more_write(_pid: int, _start: str | None) -> bool:
+        _snapshot(tmp_path, 1, brakes=8)  # same pid and nonce: its last write
+        return False
+
+    collector = ox.SignalCollector(tmp_path, clock=lambda: 1000.0, cache_ttl=0, is_alive=dies_after_one_more_write, domain=lambda: "cg-1")
+    assert _served(collector)[BRAKES] == 8.0
+    assert not path.exists()
+    assert _served(collector)[BRAKES] == 8.0

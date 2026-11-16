@@ -19,7 +19,11 @@ from app.services.resource_governor.download_ahead import (
     HEAVY_DOWNLOAD_AHEAD,
     DownloadAhead,
 )
-from app.services.resource_governor.explain import PRESSURE_REASONS, brake_reason
+from app.services.resource_governor.explain import (
+    PRESSURE_REASONS,
+    BrakeReason,
+    brake_reason,
+)
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
     FeedbackWindow,
@@ -238,6 +242,7 @@ class ResourceGovernor:
         # Monotonic count of brake entries per pool and pressure reason, counted at the decision that
         # enters the brake (under _state_lock), read with the rest of the admission block.
         self._brake_entries: dict[str, dict[str, int]] = {}
+        self._brake_reasons: dict[str, str] = {}  # the reason each pool is held for as of the last decision
         # Threads waiting on the shared heavy-parse slots (slot_wait()).
         self._slot_waiting = 0
         self._slot_wait_lock = threading.Lock()
@@ -638,17 +643,21 @@ class ResourceGovernor:
         Called under ``_state_lock``, so every decision is seen exactly once whatever the readers do.
         """
         entered: list[tuple[str, str]] = []
+        reasons: dict[str, str] = {}
         for pool in Pool:
-            before, after = old.get(pool), new.get(pool)
-            then = brake_reason(before.rule.value, before.active_cooldown_cause(now))
-            reason = brake_reason(after.rule.value, after.active_cooldown_cause(now))
-            if reason in PRESSURE_REASONS and reason != then:
+            state = new.get(pool)
+            last = BrakeReason(self._brake_reasons.get(pool.value, BrakeReason.NONE.value))
+            reason = brake_reason(state.rule.value, state.active_cooldown_cause(now))
+            if state.rule is LimitRule.COOLDOWN and last not in (BrakeReason.NONE, BrakeReason.RAMPING):
+                reason = last  # a cooldown goes on holding for the pressure that started it (soft, hard or target)
+            reasons[pool.value] = reason.value
+            if reason in PRESSURE_REASONS and reason != last:
                 entered.append((pool.value, reason.value))
-        if entered:
-            with self._stats_lock:
-                for pool_name, reason_name in entered:
-                    row = self._brake_entries.setdefault(pool_name, {})
-                    row[reason_name] = row.get(reason_name, 0) + 1
+        with self._stats_lock:
+            self._brake_reasons.update(reasons)
+            for pool_name, reason_name in entered:
+                row = self._brake_entries.setdefault(pool_name, {})
+                row[reason_name] = row.get(reason_name, 0) + 1
 
     def _drain_all_demand(self) -> dict[Pool, PoolDemand]:
         with self._gates_lock:
@@ -716,6 +725,7 @@ class ResourceGovernor:
             sampled_at = self._last_sample_at
             totals = {kind: dict(counts) for kind, counts in self._feedback_totals.items()}
             brake_entries = {pool: dict(row) for pool, row in self._brake_entries.items()}
+            brake_reasons = dict(self._brake_reasons)
         with self._gates_lock:
             gates = dict(self._gates)
         pools: dict[str, Any] = {}
@@ -733,6 +743,7 @@ class ResourceGovernor:
                 "waiting": gate.waiting if gate is not None else 0,
                 "headBlock": gate.head_block if gate is not None else "none",
                 "rule": pool_state.rule.value,
+                "brakeReason": brake_reasons.get(pool.value),
                 "ruleAgeSec": None if pool_state.rule_since is None else max(0.0, now - pool_state.rule_since),
                 "cooldownRemainingSec": max(0.0, pool_state.cooldown_until - now),
                 "window": {

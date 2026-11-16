@@ -55,6 +55,9 @@ _CAUSE_REASON = {"mem_hard": BrakeReason.MEMORY_HARD, "mem_soft": BrakeReason.ME
                  "downstream": BrakeReason.DOWNSTREAM, "mem_incident": BrakeReason.MEMORY_HARD}
 
 
+_BRAKE_REASON_VALUES = frozenset(r.value for r in BrakeReason)
+
+
 def brake_reason(rule: object, cooldown_cause: object = None) -> BrakeReason:
     """The reason for a governor rule. A cooldown keeps the pressure that started it; an unknown rule
     name is "ramping" (the pool is below its ceiling for no pressure reason)."""
@@ -189,7 +192,8 @@ def _pool_rows(admission: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         row = _dict(admission.get("pools")).get(pool)
         if not isinstance(row, dict):
             continue
-        reason = brake_reason(row.get("rule"), row.get("cooldownCause"))
+        held = row.get("brakeReason")  # what the governor tracked across the cooldown, when it says
+        reason = BrakeReason(held) if held in _BRAKE_REASON_VALUES else brake_reason(row.get("rule"), row.get("cooldownCause"))
         limit, in_use = _num(row.get("limit")), _num(row.get("inUse"))
         out[pool] = {
             "ceiling": _num(row.get("ceiling")),

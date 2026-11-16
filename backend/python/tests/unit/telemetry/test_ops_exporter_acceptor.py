@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
-from tests.support.free_port import free_port
+from tests.support.free_port import bind_on_free_port
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,10 +26,8 @@ if TYPE_CHECKING:
 HOST = "127.0.0.1"
 
 
-def _exporter(tmp_path: Path, port: int, **kw) -> ox.OpsExporter:
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST, **kw)
-    assert exporter.try_bind()
-    return exporter
+def _exporter(tmp_path: Path, **kw) -> ox.OpsExporter:
+    return bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST, **kw))
 
 
 def _close(exporter: ox.OpsExporter) -> None:
@@ -67,8 +65,8 @@ def _get(port: int, timeout: float = 15.0) -> int:
 
 
 def test_a_non_holders_bind_retry_fails_quietly_three_times(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    port = free_port()
-    holder = _exporter(tmp_path, port)
+    holder = _exporter(tmp_path)
+    port = holder._port
     other = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST)
     try:
         with caplog.at_level(logging.DEBUG, logger="app.telemetry.ops_exporter"):
@@ -81,8 +79,8 @@ def test_a_non_holders_bind_retry_fails_quietly_three_times(tmp_path: Path, capl
 
 
 def test_the_loop_of_a_non_holder_logs_nothing_above_debug(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    port = free_port()
-    holder = _exporter(tmp_path, port)
+    holder = _exporter(tmp_path)
+    port = holder._port
     other = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST,
                            interval=0.02, rebind_interval=0.02)
     tries = []
@@ -158,8 +156,8 @@ def test_a_failed_render_fails_its_followers_and_does_not_poison_the_next() -> N
 
 
 def test_sixteen_scrapes_over_the_port_make_one_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
+    port = exporter._port
     server = exporter._server
     assert server is not None
     gate = threading.Event()
@@ -262,8 +260,8 @@ def test_live_handler_threads_never_exceed_the_cap_while_handlers_linger_after_t
 
     monkeypatch.setattr(ox.BoundedServer, "shutdown_request", lingering)
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.3)
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
+    port = exporter._port
     socks = [socket.create_connection((HOST, port)) for _ in range(64)]
     try:
         peak = 0
@@ -282,8 +280,8 @@ def test_a_trickling_client_is_cut_at_the_request_deadline_not_at_the_read_timeo
     """The shipped deadline, with free slots (nothing to evict): only the reaper can cut a client whose every
     byte restarts the per-read timer."""
     assert ox.REQUEST_DEADLINE_S + 0.5 < ox._Handler.timeout
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
+    port = exporter._port
     try:
         with socket.create_connection((HOST, port)) as s:
             started = time.monotonic()
@@ -313,8 +311,8 @@ def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_de
     """Eviction, not the reaper: with the deadline far away, only cutting the oldest incomplete request
     frees a slot inside the admit wait."""
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
+    port = exporter._port
     server = exporter._server
     assert server is not None
     idle = [socket.create_connection((HOST, port)) for _ in range(ox.MAX_CONNECTIONS)]
@@ -335,8 +333,7 @@ def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_de
 def test_the_acceptor_never_waits_for_a_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With every slot answering, process_request returns at once; the newcomer is queued, then gets a 503."""
     monkeypatch.setattr(ox, "ADMIT_WAIT_S", 0.5)
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
     server = exporter._server
     assert server is not None
     hold = threading.Event()
@@ -363,8 +360,7 @@ def test_the_acceptor_never_waits_for_a_slot(tmp_path: Path, monkeypatch: pytest
 
 
 def test_a_full_admission_queue_refuses_at_once(tmp_path: Path) -> None:
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
     server = exporter._server
     assert server is not None
     hold = threading.Event()
@@ -398,8 +394,8 @@ def test_a_full_admission_queue_refuses_at_once(tmp_path: Path) -> None:
 def test_a_flood_of_well_formed_scrapers_under_gil_load_is_answered_or_cleanly_refused(tmp_path: Path) -> None:
     """32 scrapers, 4 threads burning the GIL: every reply is a 200 or a 503, no connect is refused or reset,
     and live handler threads stay within the cap at every sample."""
-    port = free_port()
-    exporter = _exporter(tmp_path, port)
+    exporter = _exporter(tmp_path)
+    port = exporter._port
     stop = threading.Event()
     results: list[int | str] = []
     peak = [0]
