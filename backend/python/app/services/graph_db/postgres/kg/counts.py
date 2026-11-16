@@ -99,6 +99,7 @@ async def seed(db: KernelDB, org: str, app_sk: int) -> bool:
         ids = next(r["ids"] for r in rows if r["facet"] is None)
         sums = {(app_sk, r["facet"], r["class_id"], r["kind"], r["folder"], r["record_type"], r["origin"]): r["n"] for r in rows if r["facet"] is not None}
         await _replace(tx, list(ids), {(app_sk, 0, None, None, None, None, None): 0, **sums})
+        await KgWriter(tx).analyze_request(app_sk)        # a connector counted whole is a first load or a restore: its rows are new to the statistics
         return True
     return await db.run(go, write=True)
 

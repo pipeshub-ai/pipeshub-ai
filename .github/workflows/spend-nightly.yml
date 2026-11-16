@@ -1,0 +1,85 @@
+name: spend-nightly
+
+# Nightly: the spend-safety suites at full size, on a real Redis, with a rotating seed, and the live start-up / storm / recovery
+# smoke (wall-clock time: Redis cooldowns of 30 s and 60 s). The per-PR job (unit-test.yml python-spend-redis) runs the
+# same suites with the three fixed seeds up to 200 jobs and one seed at 1000.
+
+on:
+  schedule:
+    - cron: '45 19 * * *'
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Comma-separated simulation seeds (default: rotating by day of year)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  spend-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      redis:
+        image: redis:7.4-bookworm
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
+          uv pip install --system -e ".[dev]"
+
+      - name: Pick the seeds
+        id: seeds
+        env:
+          INPUT_SEEDS: ${{ inputs.seeds }}
+        run: |
+          if [ -n "$INPUT_SEEDS" ]; then
+            echo "seeds=$INPUT_SEEDS" >> "$GITHUB_OUTPUT"
+          else
+            day=$(date +%j | sed 's/^0*//')
+            echo "seeds=$((day * 3 + 50000)),$((day * 3 + 50001)),$((day * 3 + 50002))" >> "$GITHUB_OUTPUT"
+          fi
+          echo "seeds: $(tail -1 "$GITHUB_OUTPUT")"
+
+      - name: Full-size simulations, wire contract and the live smoke
+        working-directory: backend/python
+        env:
+          SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
+          SPEND_IT_REQUIRE_REDIS: "1"
+          SPEND_SIM_FULL: '1'
+          SPEND_SIM_SEEDS: ${{ steps.seeds.outputs.seeds }}
+        run: |
+          pytest tests/integration/spend tests/unit/modules/pipeline/test_pause_budget_simulation.py \
+            -n 4 -v --timeout=1800 --junitxml="$RUNNER_TEMP/spend-full.xml"
+
+      - name: Fail on skipped tests
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/spend-full.xml" --min-tests 400

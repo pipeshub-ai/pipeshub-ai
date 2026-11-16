@@ -2860,13 +2860,16 @@ class TestReusedAddressOutsideAUserSync:
         self.shared_with_old_bo(tenant)
         tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner")])
         await (await ready_connector(db, checkpoints)).run_sync()          # an earlier process synced the file
-        tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner"), user_grant("u-bo-old", "bo@acme.com")])
+        tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner"), user_grant("u-bo-old", "bo@acme.com"),
+                            user_grant("u-bo-new", "bo@acme.com", "write")])
         cloud.on("GET", f"/v1.0/drives/{DRIVE}/items/f1", drive_item("f1", "one.pdf", etag="v2", shared=True))
         connector = await self.fresh_connector(db, checkpoints)
 
         await connector.reindex_records([db.records["f1"]])
 
-        assert {p.email for p in db.record_permissions["f1"]} == {"ana@acme.com"}
+        # u-bo-new's grant is new since the first sync: the reindex rewrote the grants, without u-bo-old's.
+        assert {(p.external_id, p.email) for p in db.record_permissions["f1"]} == {
+            ("u-ana", "ana@acme.com"), ("u-bo-new", "bo@acme.com")}
 
     async def test_a_state_that_cannot_be_read_writes_nothing(self, cloud, tenant, db, checkpoints) -> None:
         self.shared_with_old_bo(tenant)

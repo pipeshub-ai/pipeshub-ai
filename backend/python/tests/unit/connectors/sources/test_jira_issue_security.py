@@ -254,7 +254,9 @@ class TestIssueAccess:
                     {"type": "user", "user": {"accountId": "gone", "active": False, "emailAddress": "old@ex.com"}},
                 ],
             }),
-            user_by_account_id={"acc-1": type("U", (), {"email": "mia@ex.com"})()},
+            user_by_account_id={"acc-1": type("U", (), {"email": "mia@ex.com"})(),
+                                "acc-rep": type("U", (), {"email": "rep@ex.com"})(),
+                                "acc-asg": type("U", (), {"email": "asg@ex.com"})()},
             app_roles_mapping={"jira-software": [{"groupId": "sw-users"}]},
             reporter_email="rep@ex.com",
             assignee_email="asg@ex.com",
@@ -832,10 +834,37 @@ class TestUnresolvedUserHolders:
         grants, skipped, _ = self._grants({"type": "user", "parameter": "someone", "user": {"name": "someone"}})
         assert grants == [] and skipped == ["user"]
 
-    def test_a_user_with_an_email_on_the_holder_is_granted(self) -> None:
+    def test_an_account_outside_the_directory_is_not_granted_by_the_email_on_the_holder(self) -> None:
+        """The email may be a synced account's too: "k" would be granted that account's access."""
         grants, skipped, _ = self._grants(
-            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}})
-        assert [g.email for g in grants] == ["k@example.com"] and skipped == []
+            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}},
+            {"other": type("U", (), {"email": "k@example.com"})()})
+        assert grants == [] and skipped == []  # no access, like a deactivated account: the other holders are written
+
+    def test_a_synced_account_without_an_email_in_the_directory_is_granted_by_its_account(self) -> None:
+        """By its source id, which reaches that linked user: the payload's email would reach whoever holds it in
+        PipesHub, or a new external person, since the linked user has none."""
+        grants, skipped, _ = self._grants(
+            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}},
+            {"k": type("U", (), {"email": None, "source_user_id": "k"})()})
+        assert [(g.email, g.external_id) for g in grants] == [(None, "k")] and skipped == []
+
+    def test_an_email_with_no_account_names_the_one_synced_account_holding_it(self) -> None:
+        one = {"a": type("U", (), {"email": "k@example.com"})()}
+        two = {**one, "b": type("U", (), {"email": "K@example.com"})()}
+        holder = {"type": "user", "user": {"emailAddress": "k@example.com"}}
+        assert [g.email for g in self._grants(holder, one)[0]] == ["k@example.com"]
+        assert self._grants(holder, two)[0] == []
+
+    def test_a_reporter_outside_the_directory_is_not_granted_by_an_email_another_account_holds(self) -> None:
+        record = _record()
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}])
+        grants, _, _ = apply_issue_access_settled(
+            record, {"security": None, "reporter": {"accountId": "x", "emailAddress": "mia@ex.com"}}, is_subtask=False,
+            project_key="P", context=context, user_by_account_id={"acc-9": type("U", (), {"email": "mia@ex.com"})()},
+            reporter_email="mia@ex.com",  # what a connector reads off the payload
+        )
+        assert grants == []
 
     def test_a_deactivated_user_is_not_a_skipped_holder(self) -> None:
         _, skipped, _ = self._grants({"type": "user", "parameter": "k", "user": {"key": "k", "active": False}})
@@ -920,6 +949,15 @@ class TestPagingWithTotalOnly:
         assert values is None
 
 
+def _listed(email: str) -> object:
+    return type("U", (), {"email": email})()
+
+
+# The synced directory: the reporter and assignee resolve through it like any other person the payload names.
+_DIRECTORY = {"acc-r": _listed("rep@ex.com"), "acc-a": _listed("asg@ex.com"), "acc-f": _listed("fld@ex.com"),
+              "JIRAUSER10100": _listed("rep@ex.com"), "JIRAUSER10200": _listed("asg@ex.com"), "rep": _listed("rep@ex.com")}
+
+
 class TestPerIssueHoldersNameTheAccount:
     """A grant to a re-used address is written only when it names the account that holds it now, so the reporter,
     assignee and user-field holders carry the id the connectors list users with: accountId on Cloud, the user key
@@ -930,7 +968,7 @@ class TestPerIssueHoldersNameTheAccount:
         grants, _ = apply_issue_access(
             _record(), {"security": {"id": "20"}, **fields}, is_subtask=False, project_key="PROJ",
             context=_present(members={"20": holders}), reporter_email="rep@ex.com", assignee_email="asg@ex.com",
-            user_by_account_id={"acc-f": type("U", (), {"email": "fld@ex.com"})()},
+            user_by_account_id=_DIRECTORY,
         )
         return {(p.email, p.external_id) for p in grants}
 
@@ -953,7 +991,7 @@ class TestPerIssueHoldersNameTheAccount:
         context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}])
         grants, _ = apply_issue_access(
             _record(), {"security": None, "reporter": {"accountId": "acc-r"}}, is_subtask=False, project_key="PROJ",
-            context=context, reporter_email="rep@ex.com",
+            context=context, reporter_email="rep@ex.com", user_by_account_id=_DIRECTORY,
         )
         assert {(p.email, p.external_id) for p in grants} == {("rep@ex.com", "acc-r")}
 
@@ -972,7 +1010,8 @@ class TestOneGrantPerPerson:
         holders = [{"type": "reporter"},
                    {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "emailAddress": "ana@x.com"}}]
         grants, unreadable, _ = level_grants(
-            holders, project_key="P", fields={"reporter": {"displayName": "Ana"}}, user_by_id={},
+            holders, project_key="P", fields={"reporter": {"displayName": "Ana"}},
+            user_by_id={"acc-1": type("U", (), {"email": "ana@x.com"})()},
             app_roles_mapping=None, reporter_email="ana@x.com", assignee_email=None,
         )
         assert not unreadable

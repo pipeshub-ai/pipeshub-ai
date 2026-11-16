@@ -74,6 +74,7 @@ def _make_mock_deps():
     mock_tx_store.get_record_by_issue_key = AsyncMock(return_value=None)
     mock_tx_store.get_records_by_parent = AsyncMock(return_value=[])
     mock_tx_store.delete_records_and_relations = AsyncMock()
+    mock_tx_store.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
 
     class FakeTxContext:
         async def __aenter__(self):
@@ -214,7 +215,9 @@ class TestJiraFetchUsers:
         ]
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(data=page1))
+        empty = _make_mock_response()
+        empty.json = MagicMock(return_value=[])  # only an empty page ends the list
+        mock_ds.get_all_users = AsyncMock(side_effect=[_make_mock_response(data=page1), empty])
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await connector._fetch_users()

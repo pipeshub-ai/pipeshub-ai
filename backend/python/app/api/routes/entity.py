@@ -1,15 +1,21 @@
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from app.api.middlewares.auth import require_scopes, require_service_token
+from app.api.middlewares.auth import (
+    require_scopes,
+    require_service_token,
+    service_token_org,
+)
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.core.org_context import (
@@ -24,7 +30,7 @@ from app.services.cache.invalidation_hooks import (
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import caller_node_ensurer, get_user_or_503
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
@@ -956,6 +962,25 @@ async def get_team_users(
     except Exception as e:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
+
+
+@router.post("/internal/user-node")
+async def ensure_user_node_internal(
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.USER_NODE_ENSURE)),
+) -> JSONResponse:
+    """Write a brand-new caller's graph user for the query service, before its userAdded event arrives here.
+
+    Only for the user and org the service token names (the query service sends its request's verified caller); the
+    data is Node's live records of exactly that user and org, so a deleted, disabled or other-org account writes
+    nothing.
+    """
+    org_id, user_id = service_token_org(claims), claims.get("userId")
+    if not user_id:
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="This route needs a user-bound token")
+    ensure = caller_node_ensurer()
+    if ensure is None:
+        raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Not ready yet")
+    return JSONResponse(status_code=200, content={"written": await ensure(org_id, str(user_id))})
 
 
 @router.patch(

@@ -205,9 +205,9 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_user_by_email(
-        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+        self, email: str, *, raise_on_error: bool = False, org_id: str,
     ) -> Optional[User]:
-        """With ``org_id``, only a user of that organisation answers."""
+        """The user of org ``org_id`` with this address; the org is required, an address is unique only within an org."""
         pass
 
     @abstractmethod
@@ -342,7 +342,7 @@ class BaseDataStore(ABC):
         pass
 
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
-        """Delete the user's own PERMISSION edges to this connector's records, record groups and user groups.
+        """Delete the user's own PERMISSION edges to this connector's records, record groups, user groups and roles.
         Returns how many were deleted."""
         raise NotImplementedError
 
@@ -371,7 +371,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: list[Permission], connector_id: str) -> None:
+    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: list[Permission], connector_id: str, org_id: str) -> None:
         pass
 
     @abstractmethod
@@ -379,7 +379,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser], org_id: str) -> None:
         pass
 
     @abstractmethod

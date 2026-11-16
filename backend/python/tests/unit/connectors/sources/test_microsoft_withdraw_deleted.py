@@ -874,7 +874,9 @@ async def test_sharepoint_every_item_is_read_again_next_run_while_the_deleted_ac
 
     async def sync_users() -> None:
         await real_sync_users()
-        c.source_accounts.deleted_pending = True       # the deleted-accounts read failed this run
+        # the deleted-accounts read failed this run, which the saved state records (read again before the run decides)
+        c.source_accounts.config_service.get_config = AsyncMock(return_value={"seeded": True, "deletedChecked": False})
+        c.source_accounts.deleted_pending = True
 
     async def sites() -> list:
         order.append("sites")
@@ -917,6 +919,7 @@ async def test_sharepoint_a_completed_run_keeps_items_marked_while_the_deleted_a
 
     async def sync_users() -> None:
         await real_sync_users()
+        c.source_accounts.config_service.get_config = AsyncMock(return_value={"seeded": True, "deletedChecked": not pending})
         c.source_accounts.deleted_pending = pending
 
     c._sync_users = sync_users

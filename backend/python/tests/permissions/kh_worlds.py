@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from .scenario import world_from_data
+from .scenario import load_all, world_from_data
 
 if TYPE_CHECKING:
     from .model import World
@@ -862,8 +862,45 @@ grants: [[u, r1], [u, r2], [u, r3], [u, open]]
 gates: [[u, A]]
 """))
 
+# PAGSEED: regression REGR-09 before its change. dave reads the issue i1 only by his own grant (a seed); the PARENT_AND_GRANT comment c1 holds a grant
+# for his group, so he reads it, the OPEN file f1 in it and the PARENT_AND_GRANT reply c5 granted to him. c2 (not his grant), c3 (under carol's i2),
+# c4 (does not inherit) and the STRICT s1 stay closed to him.
+PAGSEED = next(s for s in load_all() if s.id == "REGR-09").before_world()
+
+# PAGSTORY: regression REGR-10. RESTRICTED keeps its meaning below a seed: dave reads the epic by his own grant, not the leveled story under it nor
+# anything below the story, though his level group is granted on each.
+PAGSTORY = next(s for s in load_all() if s.id == "REGR-10").before_world()
+
+# DECLPAG: a PARENT_AND_GRANT record c under k, a member of the declared group d that u reads. k is admitted by the declaration, so it is no seed even
+# though u is granted on it, and what hangs under it is not read through it: c is denied, as an OPEN child of k would be.
+DECLPAG = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: JIRA}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d], belongs: [d]}
+  - {id: c, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, d], [u, k], [u, c]]
+gates: [[u, A]]
+"""))
+
+# PAGMEMBER: as DECLPAG, but the member M also inherits from S, an OPEN record u is granted on (a seed). M is read below that seed, not only through
+# the declaration, so what hangs under it is read below the seed too: the PARENT_AND_GRANT record C (granted) and the OPEN record O (inheriting).
+PAGMEMBER = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: JIRA}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, belongs: [A]}
+  - {id: M, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S], belongs: [d]}
+  - {id: C, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [M], inherits: [M], belongs: [A]}
+  - {id: O, kind: record, connector: A, rule: OPEN, parents: [M], inherits: [M], belongs: [A]}
+grants: [[u, d], [u, S], [u, C]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
              STUBSEED, NESTSTUB, CAPSTUB, WIDE, HIDESEED, FLATSIDE, REACHSTUB,
-             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED, STUBTOP]
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED, STUBTOP, PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
