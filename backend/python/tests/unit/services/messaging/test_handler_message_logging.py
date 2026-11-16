@@ -85,6 +85,7 @@ class TestEntityEvents:
 
     async def test_a_user_event_failure_names_the_user_it_was_about(self, caplog) -> None:
         graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
         graph.get_user_by_email = AsyncMock(side_effect=ConnectionError("graph unavailable"))
         payload = {"orgId": "org_a", "userId": "u-1", "email": "ada@example.com"}
         with pytest.raises(ConnectionError):

@@ -5,7 +5,10 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 
 import { userAdminCheck } from '../middlewares/userAdminCheck';
-import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import {
+  AuthenticatedServiceRequest,
+  AuthenticatedUserRequest,
+} from '../../../libs/middlewares/types';
 import { OrgController } from '../controller/org.controller';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { attachContainerMiddleware } from '../../auth/middlewares/attachContainer.middleware';
@@ -14,6 +17,9 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { emailCheck } from '../../../libs/utils/zod-formats';
+import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { getOrgRepository } from '../../../libs/repositories/org';
+import { NotFoundError } from '../../../libs/errors/http.errors';
 
 export const OrgCreationBody = z
   .object({
@@ -283,6 +289,40 @@ export function createOrgRouter(container: Container) {
       try {
         const orgController = container.get<OrgController>('OrgController');
         await orgController.updateOnboardingStatus(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /**
+   * GET /org/internal
+   * Internal service-to-service read of the organisation a USER_LOOKUP scoped
+   * token names (the connectors service writes a brand-new org's graph node
+   * from it). The org id comes only from the token.
+   */
+  router.get(
+    '/internal',
+    authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const orgId = req.tokenPayload?.orgId as string | undefined;
+        const org =
+          orgId === undefined || orgId === ''
+            ? null
+            : await getOrgRepository().getLive(orgId);
+        if (!org) {
+          throw new NotFoundError('Organization not found');
+        }
+        res.json({
+          _id: org._id,
+          accountType: org.accountType,
+          registeredName: org.registeredName,
+        });
       } catch (error) {
         next(error);
       }

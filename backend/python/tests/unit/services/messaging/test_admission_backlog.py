@@ -6,11 +6,13 @@ shows the check rejecting it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import json
 import logging
 import random
 import re
+import sys
 import threading
 import uuid
 from types import SimpleNamespace
@@ -499,6 +501,19 @@ class _Interleaver:
         self._fire("left")
 
 
+_AUDIT_RECORDING: contextvars.ContextVar[bool] = contextvars.ContextVar("audit_recording", default=False)
+_AUDITED_DURING_ROUND: set[str] = set()
+_IO_AUDIT_PREFIXES = ("open", "os.", "socket.", "subprocess.", "time.sleep", "shutil.", "glob.", "urllib.", "http.")
+
+
+def _record_io_audit_event(event: str, _args: tuple[object, ...]) -> None:
+    if _AUDIT_RECORDING.get() and event.startswith(_IO_AUDIT_PREFIXES):
+        _AUDITED_DURING_ROUND.add(event)
+
+
+sys.addaudithook(_record_io_audit_event)
+
+
 class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
     """The worker's gate entry and admit, and the done callback's release (which a cancel runs on the
     cancelling thread), each change the counters exactly once, whatever the order."""
@@ -564,22 +579,76 @@ class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
         assert host.gate_waiters.snapshot() == {H: 0, L: 0}
 
     def test_the_counter_operations_stay_within_the_hot_path_budget(self) -> None:
-        import time
+        # Counted, not timed: one round (a construction and three calls) takes 2 us, 11 us under the CI unit job's
+        # branch coverage and about 30 us with its workers on every core, so a microsecond bound measured the
+        # runner. The calls and bytecode instructions a round runs are the same everywhere, coverage or not.
+        import sys
+        from types import FrameType
 
-        host = self._host()
-        rounds = 20000
-        best = float("inf")
-        for _ in range(5):
-            started = time.perf_counter()
-            for _ in range(rounds):
+        def work_per_round(live: int) -> tuple[int, int]:
+            host = self._host()
+            held = [GateWaiterToken(host, H) for _ in range(live)]
+            for token in held:
+                token.enter_gate()
+            work = {"call": 0, "opcode": 0}
+
+            def count(frame: FrameType, event: str, _arg: object) -> object:
+                if event in work:
+                    work[event] += 1
+                if event == "call":
+                    frame.f_trace_opcodes = True  # a loop that makes no call still runs its instructions
+                return count
+
+            previous = sys.gettrace()
+            sys.settrace(count)
+            try:
                 token = GateWaiterToken(host, H)
                 token.enter_gate()
                 token.admit()
                 token.release()
-            best = min(best, (time.perf_counter() - started) / rounds)
-        # four calls and one construction per round; each operation well under the 1 microsecond budget
-        # on a quiet host, so the bound here only has to catch an order-of-magnitude regression
-        assert best / 5 < 5e-6, best
+            finally:
+                sys.settrace(previous)  # coverage's tracer, under --cov
+            return work["call"], work["opcode"]
+
+        # Python 3.12 starts reporting a code object's instructions from the round after it was first traced.
+        work_per_round(0)
+        python_calls, instructions = work_per_round(0)
+        # No more Python work with 10,000 records at the gate: the hot path does not grow with the records waiting.
+        assert work_per_round(10_000) == (python_calls, instructions)
+        # 13 calls and 296 instructions today; the bounds leave room for a small change and catch the
+        # order-of-magnitude regression the old timing bound was for (a log line, a lookup through other objects).
+        assert python_calls <= 20 and instructions <= 600, (python_calls, instructions)
+
+    def test_the_hot_path_calls_only_the_c_functions_it_needs(self) -> None:
+        # A blocking call into C (a read, a sleep, a socket send) is one call and a handful of instructions, so it
+        # passes the work bounds above; it is caught here by name. These are the C functions a round calls today.
+        # A C type's constructor (io.FileIO opening a FIFO) raises no c_call event, so the I/O-capable operations
+        # the interpreter audits (open, socket, subprocess, sleep, ...) are watched as well.
+        import sys
+
+        host = self._host()
+        called: set[str] = set()
+        audited = _AUDITED_DURING_ROUND
+        audited.clear()
+
+        def record(_frame: object, event: str, arg: object) -> None:
+            if event == "c_call":
+                called.add(getattr(arg, "__qualname__", repr(arg)))
+
+        previous = sys.getprofile()
+        _AUDIT_RECORDING.set(True)
+        sys.setprofile(record)
+        try:
+            token = GateWaiterToken(host, H)
+            token.enter_gate()
+            token.admit()
+            token.release()
+        finally:
+            sys.setprofile(previous)
+            _AUDIT_RECORDING.set(False)
+        allowed = {"allocate_lock", "getattr", "isinstance", "lock.__enter__", "lock.__exit__", "setprofile"}
+        assert called <= allowed, sorted(called - allowed)
+        assert not audited, sorted(audited)
 
 
 class TestBufferedIsNotCountedTwiceForTheLane:

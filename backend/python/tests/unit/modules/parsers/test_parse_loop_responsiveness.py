@@ -33,32 +33,6 @@ from tests.support.pdf_samples import blank_pdf
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-MAX_GAP_SECONDS = 0.2
-
-
-async def _worst_loop_gap(coro_factory: Callable[[], Awaitable[object]]) -> tuple[float, object]:
-    worst = 0.0
-    stop = False
-
-    async def heartbeat() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        while not stop:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
-
-    task = asyncio.create_task(heartbeat())  # test-local task, awaited below
-    await asyncio.sleep(0.05)
-    try:
-        result = await coro_factory()
-    finally:
-        stop = True
-        await task
-    return worst, result
-
-
 def _strategy() -> VLMOCRStrategy:
     strategy = VLMOCRStrategy(logging.getLogger("test-loop"), MagicMock())
     strategy._get_multimodal_llm = AsyncMock(return_value=MagicMock())
@@ -66,22 +40,35 @@ def _strategy() -> VLMOCRStrategy:
     return strategy
 
 
-@pytest.fixture
-def slow_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_open = pdfplumber.open
-
-    def slow(*args: object, **kwargs: object) -> object:
-        time.sleep(0.5)  # a scanned or damaged file makes the open this slow
-        return real_open(*args, **kwargs)
-
-    monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
-
-
 class TestVlmLoadDocument:
-    async def test_opening_the_pdf_does_not_block_the_loop(self, slow_open: None) -> None:
-        strategy = _strategy()
-        worst, _ = await _worst_loop_gap(lambda: strategy.load_document(blank_pdf(pages=2)))
-        assert worst < MAX_GAP_SECONDS, worst
+    async def test_opening_the_pdf_does_not_block_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Counted, not timed: the open (slow for a scanned or damaged file) does not finish until the loop has
+        # run ten turns after it started, which it can do only while the open is off the loop. A bound on the
+        # loop's longest gap also measured every other thread on the host (2.17 s on a busy CI runner).
+        entered, release = threading.Event(), threading.Event()
+        released_while_open: list[bool] = []
+        real_open = pdfplumber.open
+
+        def held_open(*args: object, **kwargs: object) -> object:
+            entered.set()
+            released_while_open.append(release.wait(10))  # bounds a hang only: on the loop, nobody releases it
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", held_open)
+        turns = 0
+
+        async def heartbeat() -> None:
+            nonlocal turns
+            assert await asyncio.to_thread(entered.wait, 30)
+            while turns < 10:
+                await asyncio.sleep(0.001)
+                turns += 1
+            release.set()
+
+        beat = asyncio.create_task(heartbeat())  # test-local task, awaited below
+        await _strategy().load_document(blank_pdf(pages=2))
+        await beat
+        assert released_while_open == [True]
 
     async def test_the_temp_file_is_removed_and_state_cleared(self) -> None:
         strategy = _strategy()

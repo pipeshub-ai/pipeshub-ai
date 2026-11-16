@@ -16,6 +16,7 @@ from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
+from tests.support.pg_plan import INDEX_SCANS, keyed_read
 
 from .pg_support import new_org
 from .test_kh_listing_flat import (
@@ -787,8 +788,10 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
     def unkeyed(node: dict) -> list[str]:
         found = []
         rel, index, cond = node.get("Relation Name") or "", node.get("Index Name") or "", node.get("Index Cond") or ""
-        if rel.startswith("nodes") or index.startswith("nodes"):
-            if node["Node Type"] != "Index Scan" or not re.fullmatch(r"nodes\w*_pkey", index) or not re.search(r"\bid = ", cond):
+        if node["Node Type"].startswith("Bitmap") and not rel and index.startswith("nodes"):      # the input of a bitmap heap scan on nodes, judged with it
+            pass
+        elif rel.startswith("nodes") or index.startswith("nodes"):
+            if not keyed_read(node, ("id",)) or (node["Node Type"] in INDEX_SCANS and not re.fullmatch(r"nodes\w*_pkey", index)):
                 found.append(f"{node['Node Type']} {index} on {rel}: {cond}")
             elif node["Actual Rows"] > 1:
                 found.append(f"{index}: {node['Actual Rows']} rows per probe")

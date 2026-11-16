@@ -38,6 +38,7 @@ from app.services.messaging.kafka.config.kafka_config import (
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.vector_db.rebuild_state import redis_from_config_service
+from app.utils.user_lookup import register_caller_node_ensurer
 
 
 def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 - a message field of unknown type
@@ -162,6 +163,7 @@ class KafkaUtils:
             graph_provider=graph_provider,
             app_container=app_container
         )
+        register_caller_node_ensurer(entity_event_service.ensure_user)
 
         async def handle_entity_message(message: StreamMessage) -> bool:
             if not message.eventType:

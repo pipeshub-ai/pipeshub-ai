@@ -1,0 +1,9 @@
+{
+  "_comment": "The weekly runs, one job each, in this order: the control with the embedding model faked runs first, so a slow later leg can never skip it. duration is the seconds of small-class probes, timeout the bench's hard wall limit. test_perf_costclass.py checks that every leg fits its step limit with at least 20 percent headroom.",
+  "legs": [
+    {"leg": "b05-fakeemb", "scenario": "b05", "duration": 600, "timeout": 1500, "fake_embeddings": true},
+    {"leg": "b05", "scenario": "b05", "duration": 600, "timeout": 1500, "fake_embeddings": false},
+    {"leg": "b03", "scenario": "b03", "duration": 600, "timeout": 1500, "fake_embeddings": false},
+    {"leg": "b01", "scenario": "b01", "duration": 600, "timeout": 1500, "fake_embeddings": false}
+  ]
+}
