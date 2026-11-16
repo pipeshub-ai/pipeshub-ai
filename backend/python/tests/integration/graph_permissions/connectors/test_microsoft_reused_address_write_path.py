@@ -12,6 +12,7 @@ import pytest
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppUser
 
+from ..write_path_support import ORG
 from . import test_onedrive_inheritance_write_path as onedrive
 from .test_onedrive_inheritance_write_path import Drive
 
@@ -64,3 +65,22 @@ async def test_an_address_taken_after_the_old_account_was_withdrawn_reads_nothin
     await drive.processor.on_new_app_users(_listing(drive, "u-ben-new"))  # a later run: the new account appears
 
     assert await _everyone(drive) == {name: readers - {"ben"} for name, readers in before.items()}
+
+
+async def test_the_old_accounts_role_memberships_go_with_its_grants(drive: Drive) -> None:
+    """A role membership written for the old account is its access too (remove_user_access_to_connector on each store)."""
+    from app.config.constants.arangodb import CollectionNames
+    from app.models.entities import AppRole
+
+    await drive.write()
+    role = AppRole(app_name=Connectors.ONEDRIVE, connector_id=drive.connector_id, source_role_id="r-1", name="Reviewers", org_id=ORG)
+    await drive.processor.on_new_app_roles([(role, [_listing(drive, "u-ben")[1]])])
+
+    async def ben_roles() -> set[str]:
+        edges = await drive.backend.provider.get_edges_from_node(
+            f"{CollectionNames.USERS.value}/{drive.users['ben']}", CollectionNames.PERMISSION.value)
+        return {e.get("_to") or e.get("to_id") for e in edges if CollectionNames.ROLES.value in str(e.get("_to") or e.get("to_collection"))}
+
+    assert await ben_roles()
+    await drive.processor.on_new_app_users(_listing(drive, "u-ben-new"))
+    assert await ben_roles() == set()

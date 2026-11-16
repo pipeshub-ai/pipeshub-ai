@@ -292,11 +292,11 @@ class PermissionsMixin(PgBase):
             await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
 
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str, transaction: str | None = None) -> int:
-        """The user's own grants on the connector's records and record groups, and their memberships of its user groups, go; grants held by a
-        group, a team or the organization stay. Returns how many edges went."""
+        """The user's own grants on the connector's records and record groups, and their memberships of its user groups and roles, go; grants
+        held by a group, a team or the organization stay. Returns how many edges went."""
         return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH d AS (DELETE FROM graph.edges e
             USING graph.nodes n WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
-              AND e.to_coll IN ('records', 'recordGroups', 'groups') AND n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id
+              AND e.to_coll IN ('records', 'recordGroups', 'groups', 'roles') AND n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id
               AND n.doc->>'connectorId' = $3 RETURNING 1) SELECT count(*) FROM d""", current_org_id(), user_id, connector_id), transaction, write=True) or 0)
 
     # ---- teams ---------------------------------------------------------------------------------------------------

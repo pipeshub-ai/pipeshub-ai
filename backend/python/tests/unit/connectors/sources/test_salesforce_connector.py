@@ -1350,6 +1350,18 @@ class TestSyncUsers:
         assert len(call_args) == 2
 
     @pytest.mark.asyncio
+    async def test_a_frozen_user_is_not_linked(self) -> None:
+        """Salesforce emails are not unique: a frozen duplicate must not take an active user's address."""
+        connector = _make_connector()
+        users = [
+            {"Id": "u1", "FirstName": "Maya", "LastName": "A", "Email": "maya@example.com"},
+            {"Id": "u2", "FirstName": "Maya", "LastName": "Old", "Email": "maya@example.com"},
+        ]
+        await connector._sync_users(_async_iter_pages(users), frozen={"u2"})
+        linked = connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in linked] == ["u1"]
+
+    @pytest.mark.asyncio
     async def test_sync_users_skips_empty_list(self):
         connector = _make_connector()
         await connector._sync_users(_async_iter_pages())

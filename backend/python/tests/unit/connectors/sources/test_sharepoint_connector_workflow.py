@@ -2516,3 +2516,22 @@ class TestReusedAddress:
         connector._get_directory_role_member_users = AsyncMock(return_value=members)
         role = await connector._tenant_claim_permissions("c:0t.c|tenant|11111111-2222-3333-4444-555555555555", PermissionType.READ)
         assert [(p.external_id, p.email) for p in role] == [("new-oid", "ana@x.com"), ("bo-oid", "bo@x.com")]
+
+    @pytest.mark.asyncio
+    async def test_entra_group_members_written_by_address_are_the_accounts_that_hold_it(self) -> None:
+        """Outside-diff: a group member naming the deleted account at ana@ is not written as a member (the membership
+        is resolved by address); the new account and other members are."""
+        connector, *_ = _make_connector()
+        connector._disabled_set_unknown = False
+        connector.source_accounts.reused = {"ana@x.com": "new-oid"}
+
+        def member(oid: str, email: str) -> MagicMock:
+            return MagicMock(odata_type="#microsoft.graph.user", id=oid, mail=email, user_principal_name=email, display_name=email)
+
+        page = MagicMock(value=[member("old-oid", "ana@x.com"), member("new-oid", "ana@x.com"), member("bo-oid", "bo@x.com")],
+                         odata_next_link=None)
+        connector.client = MagicMock()
+        connector.client.groups.by_group_id.return_value.transitive_members.get = AsyncMock(return_value=page)
+        connector.client.directory_roles.by_directory_role_id.return_value.members.get = AsyncMock(return_value=page)
+        assert [u["id"] for u in await connector._fetch_graph_group_members("g-1")] == ["new-oid", "bo-oid"]
+        assert [u["id"] for u in await connector._get_directory_role_member_users("role-1")] == ["new-oid", "bo-oid"]

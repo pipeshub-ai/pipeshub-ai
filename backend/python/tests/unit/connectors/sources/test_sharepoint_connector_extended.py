@@ -56,6 +56,9 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # ===========================================================================
 # Helpers
@@ -91,7 +94,7 @@ def _make_connector():
     cs = MagicMock()
     cs.get_config = AsyncMock()
 
-    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-ext", "team", "test-user-id")
+    c = stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-ext", "team", "test-user-id"))
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     return c
