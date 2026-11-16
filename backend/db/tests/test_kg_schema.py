@@ -31,9 +31,12 @@ def test_the_graph_services_read_the_tables_and_nothing_can_write_them(rdb):
 def test_other_services_hold_nothing_on_kg(rdb, role):
     cluster, name = rdb
     with connect(cluster, name) as c:
-        assert not c.execute("SELECT has_schema_privilege(%s, 'kg', 'USAGE')", (role,)).fetchone()[0]
+        # the jobs role reads and deletes the analyze requests (kg_0016, the maintenance worker) and nothing else of kg
+        assert c.execute("SELECT has_schema_privilege(%s, 'kg', 'USAGE')", (role,)).fetchone()[0] == (role == "pipeshub_jobs")
         for t in TABLES:
             assert not c.execute("SELECT has_table_privilege(%s, %s, 'SELECT, INSERT, UPDATE, DELETE')", (role, f"kg.{t}")).fetchone()[0], t
+        held = [p for p in ("SELECT", "INSERT", "UPDATE", "DELETE") if c.execute("SELECT has_table_privilege(%s, 'kg.analyze_requests', %s)", (role, p)).fetchone()[0]]
+        assert held == (["SELECT", "DELETE"] if role == "pipeshub_jobs" else [])
 
 
 def test_every_table_has_a_row_policy_for_its_organisation(rdb):

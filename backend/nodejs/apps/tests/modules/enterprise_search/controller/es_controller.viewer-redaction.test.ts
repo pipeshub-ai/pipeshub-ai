@@ -869,6 +869,41 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(JSON.stringify(oldest)).to.not.contain(SECRET)
   })
 
+  describe('an answer naming no record, when the access check cannot answer', () => {
+    const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
+    const rows = () => [
+      { messageType: 'user_query', content: QUESTION },
+      answer(),
+      { messageType: 'user_query', content: 'And in plain words?' },
+      { messageType: 'bot_response', content: SECRET, citations: [] },
+    ]
+
+    it('is withheld from a shared viewer', async () => {
+      stubAccess(null)
+      const out: any[] = await redactMessagesFor(appConfig, viewerOf(VIEWER, ORG), rows() as any, () => OWNER)
+      expect(out[1].answerHidden).to.deep.equal(unconfirmed)
+      expect(out[3].answerHidden).to.deep.equal(unconfirmed)
+      expect(out[2].content, 'the question stays').to.equal('And in plain words?')
+      expect(JSON.stringify(out)).to.not.contain(SECRET)
+    })
+
+    it('stays for the owner', async () => {
+      stubAccess(null)
+      const out: any[] = await redactMessagesFor(appConfig, viewerOf(OWNER, ORG), rows() as any, () => OWNER)
+      expect(out[1].answerHidden).to.deep.equal(unconfirmed)
+      expect(out[3].answerHidden).to.equal(undefined)
+      expect(out[3].content).to.equal(SECRET)
+    })
+
+    it('stays for a shared viewer when the check answers', async () => {
+      stubAccess(['rec-ok', 'rec-no', 'att-ok', 'att-no'])
+      const out: any[] = await redactMessagesFor(appConfig, viewerOf(VIEWER, ORG), rows() as any, () => OWNER)
+      expect(out[1].answerHidden).to.equal(undefined)
+      expect(out[3].answerHidden).to.equal(undefined)
+      expect(out[3].content).to.equal(SECRET)
+    })
+  })
+
   it('a record already known to be denied hides a fresh answer even when a new record could not be checked', async () => {
     stubAccess(null)
     const memo = newReadable()

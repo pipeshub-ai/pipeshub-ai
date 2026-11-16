@@ -262,6 +262,11 @@ async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(
     assert await counts.run(pg_db, dst)                                          # every restored connector is counted whole again
     truth, held, unfolded = await state(p, dst)
     assert truth and held == truth and unfolded == 0
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:                                                                         # and its rows, new to the statistics, ask the worker to analyze kg
+        assert await con.fetchval("SELECT count(*) FROM kg.analyze_requests WHERE org_id = $1", dst) == 1
+    finally:
+        await con.close()
 
 
 async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_its_counters_equal_to_count_star(pg_db) -> None:
