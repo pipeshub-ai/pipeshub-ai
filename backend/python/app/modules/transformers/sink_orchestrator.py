@@ -67,6 +67,7 @@ from app.modules.transformers.transformer import (
     Transformer,
 )
 from app.modules.transformers.vectorstore import VectorStore
+from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.featureflag.platform_settings import (
     artifact_settings,
@@ -85,6 +86,7 @@ from app.telemetry.modules.record_storage_metrics import (
 )
 from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
 from app.utils.indexing_timing import stage
+from app.utils.llm import LLMUnavailableError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -159,7 +161,7 @@ class SinkOrchestrator(Transformer):
         row_blocks = [b for b in original_blocks if b.type == BlockType.TABLE_ROW]
 
         if len(row_blocks) <= limit:
-            return block_containers 
+            return block_containers
         limited_blocks =  row_blocks[:limit]
 
         kept_indices = {b.index for b in limited_blocks}
@@ -1067,6 +1069,21 @@ class SinkOrchestrator(Transformer):
             )
             strategy = extraction.strategy
             return extraction
+        except (LLMUnavailableError, ServiceUnavailableError) as exc:
+            # The model provider behind the Extraction service could not serve the request, or the service itself was
+            # unreachable or lost the reply (the client has charged what it may have spent): the stage pauses on it
+            # (every window unavailable), as classify does and as an in-process extraction does. The error rides on the
+            # result, so the pause keeps the provider's retry-after and counts a send only when one may have been made.
+            from app.modules.named_entities.domain.models import ExtractionStats
+
+            cause = exc
+            if isinstance(exc, ServiceUnavailableError):
+                # An open circuit or a refused connection sent nothing; any other failure may have reached the service.
+                cause = LLMUnavailableError(str(exc), sent=bool(getattr(exc, "delivered", True)))
+            return NamedEntityExtraction(
+                status="FAILED", termination_reason="llm_error", strategy="deterministic",
+                stats=ExtractionStats(windows_failed=1, windows_unavailable=1), pause_cause=cause,
+            )
         except Exception as exc:
             # Tracebacks from the model or extraction client can echo document text.
             self.logger.warning(
