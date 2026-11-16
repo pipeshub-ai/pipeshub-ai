@@ -1031,6 +1031,9 @@ class _KbGraph:
     async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
         return {"_key": key, "accountType": "enterprise"}
 
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *_a: object, **_k: object) -> bool:
+        return True  # the default claimed: this fake keeps no marker, so every writer reads none
+
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         pass
 

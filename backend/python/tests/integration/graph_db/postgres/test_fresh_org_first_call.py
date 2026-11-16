@@ -9,8 +9,10 @@ from __future__ import annotations
 import pytest
 
 from tests.integration.graph_db.fresh_org_support import (
+    a_first_request_after_add_and_delete_writes_nothing,
     a_new_users_writers_race,
     a_readded_user_keeps_one_node,
+    a_removed_default_is_not_made_again_under_its_key,
     first_calls_after_signup,
 )
 from tests.integration.graph_db.postgres.pg_support import new_org
@@ -34,3 +36,13 @@ async def test_a_user_readded_under_a_new_address_keeps_their_one_node(
 ) -> None:
     monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")
     await a_readded_user_keeps_one_node(pg_provider, new_org(), older_random_key=older_random_key)
+
+
+async def test_a_first_request_after_add_and_delete_writes_nothing(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")
+    await a_first_request_after_add_and_delete_writes_nothing(pg_provider, new_org())
+
+
+async def test_a_removed_default_is_not_made_again_under_its_key(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")
+    await a_removed_default_is_not_made_again_under_its_key(pg_provider, new_org())

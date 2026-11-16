@@ -18,7 +18,6 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.services.messaging.kafka.handlers.entity import (
     EntityEventService,
-    _default_kb_key,
     _login_user_key,
 )
 
@@ -56,9 +55,11 @@ class TestEnsureCallerUser:
         with _node() as fetch:
             assert await svc.ensure_user(ORG, USER) is True
         graph.get_document.assert_awaited_once_with(ORG, CollectionNames.ORGS.value, raise_on_error=True)
-        org_created.assert_awaited_once_with({"orgId": ORG, "accountType": "business", "registeredName": "Acme"})
+        org_created.assert_awaited_once_with(
+            {"orgId": ORG, "accountType": "business", "registeredName": "Acme"}, bootstrap=True
+        )
         user_added.assert_awaited_once_with(
-            {"orgId": ORG, "userId": USER, "email": "Admin@Example.com", "fullName": "Admin"}
+            {"orgId": ORG, "userId": USER, "email": "Admin@Example.com", "fullName": "Admin"}, bootstrap=True
         )
         assert [c.args[3] for c in fetch.await_args_list] == [f"/api/v1/users/internal/{USER}", "/api/v1/org/internal"]
 
@@ -80,7 +81,7 @@ class TestEnsureCallerUser:
         org_created, _ = _handlers(svc)
         with _node(org={"_id": ORG, "accountType": "individual", "registeredName": None}):
             assert await svc.ensure_user(ORG, USER) is True
-        org_created.assert_awaited_once_with({"orgId": ORG, "accountType": "individual"})
+        org_created.assert_awaited_once_with({"orgId": ORG, "accountType": "individual"}, bootstrap=True)
 
     @pytest.mark.parametrize(
         "record",
@@ -150,6 +151,12 @@ class _Graph:
                 self.users[n["id"]] = {**self.users.get(n["id"], {}), **n}
         return True
 
+    async def create_node_if_absent(self, key: str, collection: str, node: dict, transaction: str | None = None) -> bool:
+        if collection != CollectionNames.USERS.value or key in self.users:
+            return False
+        self.users[key] = {**node, "id": key}
+        return True
+
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         return True
 
@@ -170,32 +177,64 @@ async def test_any_number_of_writers_of_one_new_user_write_one_node() -> None:
             workers[0].process_event("userAdded", event), workers[1].process_event("userAdded", dict(event)),
         )
 
-    assert results == [True, True, True, True]
+    assert results[2:] == [True, True]  # the events; a first request that finds the user there writes nothing
     assert len(graph.users) == 1, graph.users
     (user,) = graph.users.values()
     assert (user["userId"], user["orgId"]) == (USER, ORG)
 
 
-def test_the_key_of_a_new_user_and_of_their_default_knowledge_base_depend_only_on_org_and_user() -> None:
+def test_the_key_of_a_new_user_depends_only_on_org_and_user() -> None:
     assert _login_user_key(ORG, USER) == _login_user_key(ORG, USER) != _login_user_key("org-2", USER)
-    assert _default_kb_key(ORG, USER) == _default_kb_key(ORG, USER) != _login_user_key(ORG, USER)
 
 
-def _kb_service(existing: list[dict]) -> EntityEventService:
+def _kb_service(existing: list[dict], marker: str | None = None) -> tuple[EntityEventService, dict]:
+    """A user's knowledge bases and the default their node names; the claim is a compare-and-set, as on the stores."""
+    state: dict[str, Any] = {"marker": marker, "apps": list(existing)}
     svc = _service()
-    svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=existing)
-    svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-    svc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
-    svc.graph_provider.batch_create_edges = AsyncMock(return_value=True)
-    svc.graph_provider.commit_transaction = AsyncMock()
+    graph = svc.graph_provider
+
+    async def apps(**_kwargs: Any) -> list[dict]:  # noqa: ANN401
+        return list(state["apps"])
+
+    async def document(key: str, collection: str, **_kwargs: Any) -> dict:  # noqa: ANN401
+        return {"id": key, **({"defaultKnowledgeBaseId": state["marker"]} if state["marker"] else {})}
+
+    async def claim(key: str, collection: str, updates: dict, expected: dict, *_a: Any, **_k: Any) -> bool:  # noqa: ANN401
+        await asyncio.sleep(0.01)  # a second writer reads meanwhile
+        if state["marker"] != expected["defaultKnowledgeBaseId"]:
+            return False
+        state["marker"] = updates["defaultKnowledgeBaseId"]
+        return True
+
+    async def upsert(nodes: list[dict], collection: str, *_a: Any, **_k: Any) -> bool:  # noqa: ANN401
+        if collection == CollectionNames.APPS.value:
+            state["apps"] = [a for a in state["apps"] if a["id"] != nodes[0]["id"]] + [dict(nodes[0])]
+        return True
+
+    graph.get_nodes_by_filters = AsyncMock(side_effect=apps)
+    graph.get_document = AsyncMock(side_effect=document)
+    graph.update_node_fields_if_match = AsyncMock(side_effect=claim)
+    graph.batch_upsert_nodes = AsyncMock(side_effect=upsert)
+    graph.begin_transaction = AsyncMock(return_value="txn1")
+    graph.batch_create_edges = AsyncMock(return_value=True)
+    graph.commit_transaction = AsyncMock()
     svc.app_container.data_store = AsyncMock(return_value=AsyncMock())
     svc.app_container.connector_notification_service.return_value = MagicMock()
-    return svc
+    return svc, state
+
+
+def _no_connector() -> Any:  # noqa: ANN401
+    return patch(
+        "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync", AsyncMock(return_value=None)
+    )
+
+
+NEW_USER = _login_user_key(ORG, USER)
 
 
 class TestDefaultKnowledgeBase:
     async def test_two_writers_of_one_users_default_create_the_same_one_and_build_one_connector(self) -> None:
-        svc = _kb_service([])
+        svc, state = _kb_service([])
 
         async def start(**kwargs: Any) -> MagicMock:  # noqa: ANN401
             await asyncio.sleep(0.01)  # the second writer reaches the map check meanwhile
@@ -206,40 +245,59 @@ class TestDefaultKnowledgeBase:
             AsyncMock(side_effect=start),
         ) as create:
             first, second = await asyncio.gather(
-                svc._get_or_create_knowledge_base(_login_user_key(ORG, USER), USER, ORG, name="Admin's Private"),
-                svc._get_or_create_knowledge_base(_login_user_key(ORG, USER), USER, ORG, name="Admin's Private"),
+                svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private"),
+                svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private"),
             )
-        assert first["kb_id"] == second["kb_id"] == _default_kb_key(ORG, USER)
-        written = {c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list}
-        assert written == {_default_kb_key(ORG, USER)}
+        kb_id = first.get("kb_id") or first.get("id")
+        assert kb_id == (second.get("kb_id") or second.get("id"))
+        assert [a["id"] for a in state["apps"]] == [kb_id]
+        assert state["marker"] == kb_id
         create.assert_awaited_once()
-        assert list(svc.app_container.connectors_map) == [_default_kb_key(ORG, USER)]
+        assert list(svc.app_container.connectors_map) == [kb_id]
 
-    async def test_a_deleted_default_stays_deleted_and_a_new_one_gets_its_own_key(self) -> None:
-        svc = _kb_service([{"id": _default_kb_key(ORG, USER), "isDeleted": True}])
-        with patch(
-            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
-            AsyncMock(return_value=None),
-        ):
-            result = await svc._get_or_create_knowledge_base(_login_user_key(ORG, USER), USER, ORG)
-        assert result["kb_id"] != _default_kb_key(ORG, USER)
-        (call,) = svc.graph_provider.batch_upsert_nodes.await_args_list
-        assert call.args[0][0]["id"] == result["kb_id"]
+    @pytest.mark.parametrize("left", [[{"id": "gone", "isDeleted": True}], []], ids=["deleted", "removed"])
+    async def test_a_deleted_default_is_never_written_again_under_its_key(self, left: list[dict]) -> None:
+        # Cleanup queued for the deleted one is keyed by its id; a new default under that id would be cleaned up too.
+        svc, state = _kb_service(left, marker="gone")
+        with _no_connector():
+            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
+        assert result["kb_id"] != "gone"
+        assert [c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list] == [result["kb_id"]]
+        assert state["marker"] == result["kb_id"]
+
+    async def test_a_default_removed_and_made_again_gets_a_new_key(self) -> None:
+        svc, state = _kb_service([])
+        with _no_connector():
+            first = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
+            state["apps"] = []  # deleted, its row removed; cleanup keyed by its id may still be queued
+            second = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
+        assert second["kb_id"] != first["kb_id"]
 
     async def test_a_new_user_who_already_made_a_knowledge_base_still_gets_the_default(self) -> None:
         # Their first create can land between their user and their default being written.
-        svc = _kb_service([{"id": "own-kb", "name": "First", "createdBy": USER}])
-        with patch(
-            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
-            AsyncMock(return_value=None),
-        ):
-            result = await svc._get_or_create_knowledge_base(_login_user_key(ORG, USER), USER, ORG, name="Admin's Private")
-        assert result["kb_id"] == _default_kb_key(ORG, USER)
+        svc, state = _kb_service([{"id": "own-kb", "name": "First", "createdBy": USER}])
+        with _no_connector():
+            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private")
+        assert result["kb_id"] != "own-kb"
+        assert state["marker"] == result["kb_id"]
         (call,) = svc.graph_provider.batch_upsert_nodes.await_args_list
         assert call.args[0][0]["name"] == "Admin's Private"
 
+    async def test_a_default_another_writer_claimed_is_finished_under_its_key(self) -> None:
+        svc, state = _kb_service([], marker="pending:claimed-kb")
+        with _no_connector():
+            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
+        assert result["kb_id"] == "claimed-kb"
+        assert state["marker"] == "claimed-kb"
+
+    async def test_the_default_the_user_names_is_found(self) -> None:
+        svc, _ = _kb_service([{"id": "own-kb", "createdBy": USER}, {"id": "the-default", "createdBy": USER}], marker="the-default")
+        result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
+        assert result["id"] == "the-default"
+        svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
     async def test_a_user_under_an_older_key_keeps_the_knowledge_base_they_have(self) -> None:
-        svc = _kb_service([{"id": "their-default", "name": "Admin's Private", "createdBy": USER}])
+        svc, _ = _kb_service([{"id": "their-default", "name": "Admin's Private", "createdBy": USER}])
         result = await svc._get_or_create_knowledge_base("older-random-key", USER, ORG)
         assert result["id"] == "their-default"
         svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
@@ -261,3 +319,56 @@ async def test_a_user_readded_under_a_new_address_keeps_their_one_node(key: str)
     assert list(graph.users) == [key]
     assert (graph.users[key]["email"], graph.users[key]["isActive"]) == ("new@example.com", True)
     svc._get_or_create_knowledge_base.assert_awaited_once_with(key, USER, ORG, name="Admin's Private")
+
+
+
+@pytest.mark.parametrize(
+    "between",
+    ["added and deleted", "added"],
+    ids=["added-and-deleted-meanwhile", "added-meanwhile"],
+)
+async def test_a_first_request_never_rewrites_a_user_the_events_wrote_meanwhile(between: str) -> None:
+    """Node answered for the caller; before the write, their userAdded (and maybe userDeleted) was consumed. A
+    deleted user stays deleted, and nothing the event wrote is overwritten."""
+    graph = _Graph()
+    svc = _service(graph)
+    svc._get_or_create_knowledge_base = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_all_team_and_add_user = AsyncMock()  # type: ignore[method-assign]
+    real_fetch = AsyncMock(side_effect=lambda _c, _o, _u, path: LIVE_ORG if path == "/api/v1/org/internal" else LIVE_USER)
+
+    async def fetch_then_events(*args: Any) -> dict | None:  # noqa: ANN401
+        answer = await real_fetch(*args)
+        key = _login_user_key(ORG, USER)
+        graph.users[key] = {"id": key, "userId": USER, "orgId": ORG, "email": "admin@example.com",
+                            "isActive": between == "added", "fullName": "From the event"}
+        return answer
+
+    with patch("app.services.messaging.kafka.handlers.entity.fetch_own_identity", AsyncMock(side_effect=fetch_then_events)), \
+            patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        assert await svc.ensure_user(ORG, USER) is False
+    (user,) = graph.users.values()
+    assert (user["isActive"], user["fullName"]) == (between == "added", "From the event")
+
+
+async def test_a_first_request_lost_to_the_event_by_a_hair_overwrites_nothing() -> None:
+    graph = _Graph()
+    svc = _service(graph)
+    key = _login_user_key(ORG, USER)
+
+    async def created_meanwhile(k: str, collection: str, node: dict, transaction: str | None = None) -> bool:
+        graph.users[k] = {"id": k, "userId": USER, "orgId": ORG, "email": "admin@example.com", "isActive": False}
+        return False
+
+    graph.create_node_if_absent = created_meanwhile  # type: ignore[method-assign]
+    with _node(), patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        assert await svc.ensure_user(ORG, USER) is False
+    assert graph.users[key]["isActive"] is False
+
+
+async def test_a_first_request_writes_no_user_into_an_org_deleted_meanwhile() -> None:
+    graph = _Graph()
+    graph.get_document = AsyncMock(return_value={"_key": ORG, "isActive": False})  # type: ignore[method-assign]
+    svc = _service(graph)
+    with _node(), patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        assert await svc.ensure_user(ORG, USER) is False
+    assert graph.users == {}

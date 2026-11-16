@@ -77,9 +77,10 @@ PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEna
 _DISABLE_WRITE_ATTEMPTS = 5
 
 
-# A new login user's graph node and default knowledge base are keyed by (org, userId), not by a random id, so every
-# writer of one user (the userAdded event, a redelivery of it, the user's own first requests, any number of workers)
-# upserts the same node and the same knowledge base: the store's unique key on the id makes them converge.
+# A new login user's graph node is keyed by (org, userId), not by a random id, so every writer of one user (the
+# userAdded event, a redelivery of it, the user's own first requests, any number of workers) upserts the same node:
+# the store's unique key on the id makes them converge. (A default knowledge base is not keyed this way: its key
+# would come back after a delete, and cleanup queued for the deleted one would reach the new one.)
 _LOGIN_USER_NAMESPACE = UUID("6f1c1d2e-5a0b-4f7e-9c3d-2b8e4a6f0c11")
 
 
@@ -87,8 +88,9 @@ def _login_user_key(org_id: str, user_id: str) -> str:
     return str(uuid5(_LOGIN_USER_NAMESPACE, f"{org_id}:{user_id}"))
 
 
-def _default_kb_key(org_id: str, user_id: str) -> str:
-    return str(uuid5(_LOGIN_USER_NAMESPACE, f"{org_id}:{user_id}:default-knowledge-base"))
+_PENDING_DEFAULT_KB = "pending:"
+# Rounds of reading a user's default and claiming one, lost each time to another writer of the same user.
+_DEFAULT_KB_CLAIM_ATTEMPTS = 5
 
 
 def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
@@ -187,8 +189,12 @@ class EntityEventService(BaseEventService):
             return False
 
     # ORG EVENTS
-    async def _handle_org_created(self, payload: dict) -> bool:
-        """Handle organization creation event"""
+    async def _handle_org_created(self, payload: dict, *, bootstrap: bool = False) -> bool:
+        """Handle organization creation event.
+
+        ``bootstrap``: written for a caller's first request (ensure_user), not by the event. It only creates the org
+        where there is none, so an org deleted after Node answered is not brought back.
+        """
 
         accountType = (
             AccountType.ENTERPRISE.value
@@ -209,10 +215,16 @@ class EntityEventService(BaseEventService):
             # Convert _key to id for provider
             org_data["id"] = org_data.pop("_key")
 
-            # Batch upsert org
-            await self.graph_provider.batch_upsert_nodes(
-                [org_data], CollectionNames.ORGS.value
-            )
+            if bootstrap:
+                created = await self.graph_provider.create_node_if_absent(
+                    org_id, CollectionNames.ORGS.value, {k: v for k, v in org_data.items() if k != "id"}
+                )
+                if not created:
+                    return True  # it is there: the event, or what made it, did the rest
+            else:
+                await self.graph_provider.batch_upsert_nodes(
+                    [org_data], CollectionNames.ORGS.value
+                )
 
             # raise_on_error: a failed read would otherwise create the org with no
             # department links and acknowledge the event.
@@ -347,19 +359,27 @@ class EntityEventService(BaseEventService):
                 org_payload = {"orgId": org_id, "accountType": org.get("accountType")}
                 if org.get("registeredName"):
                     org_payload["registeredName"] = org["registeredName"]
-                await self.process_event("orgCreated", org_payload)
+                await self._handle_org_created(org_payload, bootstrap=True)
             user_payload = {"orgId": org_id, "userId": user_id, "email": user["email"], "fullName": user.get("fullName") or ""}
             if user.get("kind"):
                 user_payload["kind"] = user["kind"]
-            written = bool(await self.process_event("userAdded", user_payload))
+            try:
+                written = bool(await self._handle_user_added(user_payload, bootstrap=True))
+            finally:
+                await notify_principals_changed(org_id)  # as process_event does for a userAdded
             self.logger.info("Wrote the graph user of %s ahead of its userAdded event (written=%s)", user_id, written)
             return written
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="ensure_user")
             return False
 
-    async def _handle_user_added(self, payload: dict) -> bool:
-        """Handle user creation event"""
+    async def _handle_user_added(self, payload: dict, *, bootstrap: bool = False) -> bool:
+        """Handle user creation event.
+
+        ``bootstrap``: written for the user's own first request (ensure_user), not by the event. It only creates a
+        user where there is none, never touching one that exists: Node's answer is older than the write, and a user
+        added and deleted meanwhile must stay deleted. Anything else is left to the events.
+        """
         try:
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
             # The login user first, whatever its key (an address that changed must not leave it beside a new one);
@@ -374,6 +394,8 @@ class EntityEventService(BaseEventService):
                 user_key = existing_user.id if existing_user else None
 
             current_timestamp = get_epoch_timestamp_in_ms()
+            if bootstrap and user_key:
+                return False
 
             if user_key:
                 user_data = {
@@ -434,10 +456,15 @@ class EntityEventService(BaseEventService):
                 self.logger.error(f"Organization not found: {org_id}")
                 return False
 
-            # Batch upsert user
-            await self.graph_provider.batch_upsert_nodes(
-                [user_data], CollectionNames.USERS.value
-            )
+            if bootstrap:
+                if org.get("isActive") is False or not await self.graph_provider.create_node_if_absent(
+                    user_key, CollectionNames.USERS.value, {k: v for k, v in user_data.items() if k != "id"}
+                ):
+                    return False
+            else:
+                await self.graph_provider.batch_upsert_nodes(
+                    [user_data], CollectionNames.USERS.value
+                )
 
             # Create edge between org and user if it doesn't exist
             edge_data = {
@@ -1155,45 +1182,65 @@ class EntityEventService(BaseEventService):
             self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
             return {}
 
-        # raise_on_error: the providers answer [] to a failed lookup too, and "no
-        # knowledge base" here would mint a second App under a new id.
-        all_kbs = await self.graph_provider.get_nodes_by_filters(
-            collection=CollectionNames.APPS.value,
-            filters={
-                "createdBy": userId,
-                "orgId": orgId,
-                "type": Connectors.KNOWLEDGE_BASE.value,
-            },
-            raise_on_error=True,
-        )
-        default_key = _default_kb_key(orgId, userId)
-        default = next((kb for kb in all_kbs if (kb.get("id") or kb.get("_key")) == default_key), None)
-        if user_key == _login_user_key(orgId, userId) and not (default or {}).get("isDeleted", False):
-            # A user written under the (org, userId) key has the default under its key too. Any other knowledge base
-            # of theirs is one they made themselves, possibly in the moment between their user and this default
-            # being written, and must not stand in for it.
-            existing_kbs = [default] if default else []
-        else:
-            existing_kbs = [kb for kb in all_kbs if not kb.get("isDeleted", False)]
+        # The user names their default on their own node, in three states: absent (none yet), "pending:<key>"
+        # (claimed, maybe not written yet) and "<key>" (written). A knowledge base they made themselves, possibly in
+        # the moment between their user and their default being written, therefore never stands in for it, and two
+        # writers of one user's default agree on one key. Each default gets a fresh key: a deleted one stays deleted,
+        # and cleanup queued for it, keyed by its id, cannot reach a new one.
+        for _ in range(_DEFAULT_KB_CLAIM_ATTEMPTS):
+            # raise_on_error: the providers answer [] to a failed lookup too, and "no
+            # knowledge base" here would mint a second App under a new id.
+            all_kbs = await self.graph_provider.get_nodes_by_filters(
+                collection=CollectionNames.APPS.value,
+                filters={
+                    "createdBy": userId,
+                    "orgId": orgId,
+                    "type": Connectors.KNOWLEDGE_BASE.value,
+                },
+                raise_on_error=True,
+            )
+            user_doc = await self.graph_provider.get_document(user_key, CollectionNames.USERS.value, raise_on_error=True)
+            marker = (user_doc or {}).get("defaultKnowledgeBaseId")
+            marker = marker if isinstance(marker, str) and marker else None
+            pending = marker[len(_PENDING_DEFAULT_KB):] if marker and marker.startswith(_PENDING_DEFAULT_KB) else None
+            default = None if pending or not marker else next(
+                (kb for kb in all_kbs if (kb.get("id") or kb.get("_key")) == marker), None
+            )
+            if default and not default.get("isDeleted", False):
+                existing_kbs = [default]
+            elif pending or (marker is None and user_key == _login_user_key(orgId, userId)):
+                existing_kbs = []
+            else:  # a user under an older key, or whose default was deleted: any knowledge base of theirs will do
+                existing_kbs = [kb for kb in all_kbs if not kb.get("isDeleted", False)]
 
-        if existing_kbs:
-            self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-            # A create that failed partway on Neo4j before creates ran in a real
-            # transaction (or with NEO4J_CREATE_TRANSACTIONS=false) left the App
-            # without some of its edges; finish it rather than hand it out unusable
-            # again. Create-only, so a complete one is untouched.
-            # Every match, not the first: the lookup is unordered.
-            for existing in existing_kbs:
-                existing_key = existing.get("id") or existing.get("_key")
-                if existing_key:
-                    await self.graph_data_store.execute_idempotent_in_transaction(
-                        self._ensure_kb_edges, user_key, orgId, existing_key, explicit=True
-                    )
-            return existing_kbs[0]
+            if existing_kbs:
+                self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
+                # A create that failed partway on Neo4j before creates ran in a real
+                # transaction (or with NEO4J_CREATE_TRANSACTIONS=false) left the App
+                # without some of its edges; finish it rather than hand it out unusable
+                # again. Create-only, so a complete one is untouched.
+                # Every match, not the first: the lookup is unordered.
+                for existing in existing_kbs:
+                    existing_key = existing.get("id") or existing.get("_key")
+                    if existing_key:
+                        await self.graph_data_store.execute_idempotent_in_transaction(
+                            self._ensure_kb_edges, user_key, orgId, existing_key, explicit=True
+                        )
+                return existing_kbs[0]
+
+            if pending:  # another writer claimed it: finish that one
+                kb_key = pending
+                break
+            kb_key = str(uuid4())
+            if await self.graph_provider.update_node_fields_if_match(
+                user_key, CollectionNames.USERS.value,
+                {"defaultKnowledgeBaseId": _PENDING_DEFAULT_KB + kb_key}, {"defaultKnowledgeBaseId": marker},
+            ):
+                break
+        else:
+            raise RuntimeError(f"could not claim a default knowledge base for user {user_key}")
 
         current_timestamp = get_epoch_timestamp_in_ms()
-        # A deleted default stays deleted; a new one gets a key of its own.
-        kb_key = default_key if default is None else str(uuid4())
 
         kb_data = {
             "id": kb_key,
@@ -1225,6 +1272,10 @@ class EntityEventService(BaseEventService):
         # (the org node is shared by every onboarding message) completes the
         # same App rather than starting a second one.
         await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
+        await self.graph_provider.update_node_fields_if_match(
+            user_key, CollectionNames.USERS.value,
+            {"defaultKnowledgeBaseId": kb_key}, {"defaultKnowledgeBaseId": _PENDING_DEFAULT_KB + kb_key},
+        )
 
         # Register per-KB connector instance at runtime
         try:

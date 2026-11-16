@@ -147,3 +147,80 @@ async def a_readded_user_keeps_one_node(graph: Any, org_id: str, *, older_random
         )
         assert [a["name"] for a in apps] == ["Readd's Private"], apps
         assert await graph.get_user_kb_permission(apps[0].get("id") or apps[0].get("_key"), key) == "OWNER"
+
+
+def _worker(graph: Any) -> EntityEventService:  # noqa: ANN401
+    container = MagicMock()
+    container.connectors_map = {}
+    container.data_store = AsyncMock()
+    return EntityEventService(logger, graph, container)
+
+
+async def a_first_request_after_add_and_delete_writes_nothing(graph: Any, org_id: str) -> None:  # noqa: ANN401
+    """Node answered that the caller is live; before the first request wrote anything, their userAdded and userDeleted
+    were consumed. The first request must not bring the deleted user back."""
+    run = uuid.uuid4().hex[:10]
+    user_id, email = f"uid-gone-{run}", f"gone-{run}@example.com"
+    live = {
+        "/api/v1/org/internal": {"_id": org_id, "accountType": "business", "registeredName": "Gone"},
+        f"/api/v1/users/internal/{user_id}": {"_id": user_id, "orgId": org_id, "email": email, "fullName": "Gone"},
+    }
+    events = _worker(graph)
+
+    async def node_then_events(_config: object, asked_org: str, asked_user: str, path: str) -> dict | None:
+        answer = live.get(path)
+        if path.startswith("/api/v1/users/internal/"):  # what is consumed while the request is in flight
+            assert await events.process_event(
+                "userAdded", {"orgId": org_id, "userId": user_id, "email": email, "fullName": "Gone", "syncAction": "none"},
+            )
+            (user,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+            await graph.batch_upsert_nodes(
+                [{"id": user.get("id") or user.get("_key"), "isActive": False, "updatedAtTimestamp": 2}],
+                CollectionNames.USERS.value,
+            )
+        return answer
+
+    with (
+        patch("app.services.messaging.kafka.handlers.entity.fetch_own_identity", AsyncMock(side_effect=node_then_events)),
+        patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()),
+        bind(OrgContext(org_id, None, "job", "job:test", "t")),
+    ):
+        assert await events.process_event("orgCreated", {"orgId": org_id, "accountType": "business", "registeredName": "Gone"})
+        assert await events.ensure_user(org_id, user_id) is False
+        users = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        assert [u.get("isActive") for u in users] == [False], users
+
+
+async def a_removed_default_is_not_made_again_under_its_key(graph: Any, org_id: str) -> None:  # noqa: ANN401
+    """A default knowledge base deleted with its row gone; cleanup queued for it is keyed by its id. A later userAdded
+    makes a new default under a key of its own, which that cleanup cannot reach."""
+    run = uuid.uuid4().hex[:10]
+    user_id = f"uid-kb-{run}"
+    events = _worker(graph)
+    event = {"orgId": org_id, "userId": user_id, "email": f"kb-{run}@example.com", "fullName": "Kb", "syncAction": "none"}
+
+    async def defaults() -> list[dict]:
+        return await graph.get_nodes_by_filters(
+            CollectionNames.APPS.value,
+            {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            raise_on_error=True,
+        )
+
+    with (
+        patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()),
+        bind(OrgContext(org_id, None, "job", "job:test", "t")),
+    ):
+        assert await events.process_event("orgCreated", {"orgId": org_id, "accountType": "business", "registeredName": "Kb"})
+        assert await events.process_event("userAdded", dict(event))
+        (first,) = await defaults()
+        first_key = first.get("id") or first.get("_key")
+        await graph.delete_nodes_and_edges([first_key], CollectionNames.APPS.value)
+        assert await defaults() == []
+
+        assert await events.process_event("userAdded", dict(event))
+        (second,) = await defaults()
+        second_key = second.get("id") or second.get("_key")
+        assert second_key != first_key
+        (user,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        assert user.get("defaultKnowledgeBaseId") == second_key
+        assert await graph.get_user_kb_permission(second_key, user.get("id") or user.get("_key")) == "OWNER"

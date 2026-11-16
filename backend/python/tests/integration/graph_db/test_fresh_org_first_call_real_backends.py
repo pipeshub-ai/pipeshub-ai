@@ -20,8 +20,10 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from tests.integration.graph_db.fresh_org_support import (
+    a_first_request_after_add_and_delete_writes_nothing,
     a_new_users_writers_race,
     a_readded_user_keeps_one_node,
+    a_removed_default_is_not_made_again_under_its_key,
     first_calls_after_signup,
     logger,
 )
@@ -79,3 +81,11 @@ async def test_any_number_of_writers_of_a_new_user_write_one_user_and_one_defaul
 @pytest.mark.parametrize("older_random_key", [True, False], ids=["older-random-key", "derived-key"])
 async def test_a_user_readded_under_a_new_address_keeps_their_one_node(graph: tuple[Any, str], older_random_key: bool) -> None:
     await a_readded_user_keeps_one_node(*graph, older_random_key=older_random_key)
+
+
+async def test_a_first_request_after_add_and_delete_writes_nothing(graph: tuple[Any, str]) -> None:
+    await a_first_request_after_add_and_delete_writes_nothing(*graph)
+
+
+async def test_a_removed_default_is_not_made_again_under_its_key(graph: tuple[Any, str]) -> None:
+    await a_removed_default_is_not_made_again_under_its_key(*graph)
