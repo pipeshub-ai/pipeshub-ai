@@ -1,7 +1,7 @@
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 
 /** Written by the indexing service while it waits for the embedding server's weight precision to match the index. */
-export const PRECISION_VERDICT_KEY = '/services/indexing/precision_verdict';
+export const PRECISION_VERDICT_KEY = '/services/vectordb/precision_verdict';
 
 interface PrecisionVerdict {
   mismatch?: boolean;

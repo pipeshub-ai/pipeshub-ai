@@ -24,7 +24,8 @@ if TYPE_CHECKING:
 
     from app.services.messaging.config import StreamMessage
 
-VERDICT_KEY = "/services/indexing/precision_verdict"
+# Under the vector-db prefix, which the indexing role writes and every role that shows the warning reads.
+VERDICT_KEY = "/services/vectordb/precision_verdict"
 POLL_SECONDS = 10.0
 VERDICT_TTL_SECONDS = 30
 FIRST_HAND_BACK_SECONDS = 60.0

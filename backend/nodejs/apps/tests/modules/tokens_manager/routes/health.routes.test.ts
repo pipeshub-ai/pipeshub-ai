@@ -226,7 +226,7 @@ describe('tokens_manager/routes/health.routes', () => {
     })
 
     describe('weight-precision warning', () => {
-      const PRECISION_KEY = '/services/indexing/precision_verdict'
+      const PRECISION_KEY = '/services/vectordb/precision_verdict'
       let savedReplicas: string | undefined
       beforeEach(() => {
         savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS
