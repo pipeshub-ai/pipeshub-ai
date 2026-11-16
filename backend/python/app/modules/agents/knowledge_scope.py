@@ -329,16 +329,18 @@ async def service_account_knowledge(
     is shared with the whole org: the org's team connectors, never a personal
     one. Collections have no org-wide grant, so one is kept only when the agent
     runs as a bound service account, whose own grants then decide what of it is
-    read. A failed connector lookup keeps no connector.
+    read. A failed connector lookup keeps no connector, and a source whose app
+    could not be read is kept only if the lookup lists it as a team connector.
     """
     knowledge = [k for k in agent_knowledge or [] if isinstance(k, dict)]
     team: set[str] = set()
     if any(not _is_collection(k) for k in knowledge):
         instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, logger)
+        # Typed from the lookup, not the entry: an entry the graph could not resolve is typed UNKNOWN.
         team = {
             str(i.get("_key") or i.get("id"))
             for i in instances
-            if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value
+            if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value and not _is_collection(i)
         }
     kept = [
         k for k in knowledge

@@ -485,6 +485,12 @@ class TestServiceAccountKnowledge:
         graph = self._graph(RuntimeError("down"))
         assert await self._kept(graph, bound=True) == ["kb-1"]
 
+    @pytest.mark.parametrize("bound", [False, True])
+    async def test_a_source_whose_app_could_not_be_read_is_kept_only_as_a_team_connector(self, bound: bool) -> None:
+        graph = self._graph([*self.INSTANCES, {"_key": "kb-2", "scope": "team", "type": "KB"}])
+        knowledge = [{"connectorId": i, "type": "UNKNOWN"} for i in ("drive-team", "drive-mine", "kb-2", "gone")]
+        assert await self._kept(graph, bound=bound, knowledge=knowledge) == ["drive-team"]
+
     async def test_collections_alone_need_no_lookup(self) -> None:
         graph = self._graph(self.INSTANCES)
         assert await self._kept(graph, bound=True, knowledge=[{"connectorId": "kb-1", "type": "KB"}]) == ["kb-1"]

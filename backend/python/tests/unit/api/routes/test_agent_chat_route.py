@@ -485,6 +485,21 @@ class TestChatStreamKnowledge:
         (call,) = loop.calls
         assert self._knowledge(call) == set()
 
+    @pytest.mark.parametrize("bound", [False, True])
+    def test_a_service_account_agent_drops_a_source_whose_app_could_not_be_read(self, graph, loop, bound) -> None:
+        # The graph types an entry UNKNOWN when it cannot read the app, so it may be anything.
+        graph.add_node("users", {"_key": "k-svc", "userId": "u-svc", "orgId": "org-1", "email": "svc@acme.test",
+                                 "kind": "service", "isActive": True})
+        graph.add_agent("sa-x", "alice", share_with_org=True, isServiceAccount=True,
+                        **({"serviceAccountUserId": "u-svc"} if bound else {}))
+        self._sources(graph, "sa-x")
+        for key in ("pg-alice", "kb-1"):
+            graph.nodes["agentKnowledge"][f"k-{key}"]["type"] = "UNKNOWN"
+        c, _ = make_client(graph)
+        _stream(c, "sa-x", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call).isdisjoint({"pg-alice", "kb-1"})
+
     def test_an_agent_run_by_its_owner_keeps_the_owners_sources(self, graph, loop) -> None:
         self._sources(graph, "private")
         c, _ = make_client(graph)
