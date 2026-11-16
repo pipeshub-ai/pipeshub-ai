@@ -552,7 +552,8 @@ class ZendeskConnector(BaseConnector):
         users, user_email_map, users_complete = await self._fetch_users()
         # A deleted user ("false if the user has been deleted") and a suspended one ("these users cannot sign in")
         # are not linked (https://developer.zendesk.com/api-reference/ticketing/users/users/): linked, one sharing an
-        # active user's address would read as that address changing hands. Restored, it is linked on the next read.
+        # active user's address would read as that address changing hands. One linked before is withdrawn when the
+        # export is complete. Restored, it is linked on the next read.
         linkable = [
             u for u in users
             if (data := self._user_id_to_data.get(u.source_user_id, {})).get("active") is not False
@@ -560,6 +561,14 @@ class ZendeskConnector(BaseConnector):
         ]
         if linkable:
             await self.data_entities_processor.on_new_app_users(linkable)
+        unusable = {u.source_user_id for u in users} - {u.source_user_id for u in linkable}
+        if users_complete and unusable:
+            gone = [
+                u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                if u.source_user_id in unusable
+            ]
+            if gone:
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
         self.logger.info(f"Zendesk: synced {len(users)} users")
 
         self._role_ticket_access, self._roles_complete = (

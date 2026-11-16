@@ -45,6 +45,11 @@ class _Config:
         self.saved[key] = value
         return True
 
+    async def compare_and_set_config(self, key: str, expected: object, new: object) -> bool:
+        if self.saved.get(key) != expected:
+            return False
+        return await self.set_config(key, new)
+
 
 class _Directory:
     """PipesHub's side: one user per address, and the account each user is linked to (``userAppRelation``)."""
@@ -463,7 +468,8 @@ async def test_an_address_an_earlier_version_already_linked_to_its_new_account_i
 
     assert directory.calls[0] == ("remove", "ana@x.com")
     assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
-    assert config.saved[source_accounts_key(CONNECTOR)] == {"seeded": True, "deletedChecked": True, "version": 1}
+    marker = config.saved[source_accounts_key(CONNECTOR)]
+    assert marker["seeded"] is True and marker["deletedChecked"] is True and marker["version"]
     assert not accounts.may_grant("ana@x.com", "old-oid") and not accounts.may_grant("ana@x.com", None)
     assert accounts.may_grant("ana@x.com", "new-oid")
     directory.calls.clear()
@@ -639,3 +645,127 @@ async def test_the_link_write_runs_after_the_check_under_the_same_lock_and_not_a
     directory.processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
     assert await accounts.before_link([_user("ana@x.com", "a")], then=link) is False
     assert held == [True], "nobody is linked when the stored links could not be read"
+
+
+
+
+@pytest.mark.asyncio
+async def test_two_processes_saving_one_bucket_keep_both_addresses(world) -> None:
+    """Two processes (no shared lock) link addresses in one bucket at once: the later save finds the bucket changed,
+    reads it again and keeps the other process's entry."""
+    directory, accounts, config = world
+    other = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another replica
+    first = "a0@x.com"
+    second = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(first))
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(first))
+    real_cas = config.compare_and_set_config
+    saving, second_done = asyncio.Event(), asyncio.Event()
+
+    async def slow_cas(key: str, expected: object, new: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()       # the first replica read the bucket and is about to save it
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(second_done.wait(), 0.2)
+        return await real_cas(key, expected, new)
+
+    async def second_replica() -> None:
+        await saving.wait()
+        await other.before_link([_user(second, "acc-2")])
+        second_done.set()
+
+    config.compare_and_set_config = slow_cas
+    await asyncio.gather(accounts.before_link([_user(first, "acc-1")]), second_replica())
+
+    assert _saved(config)["linked"] == {first: "acc-1", second: "acc-2"}
+
+
+async def _withdraw_noted(directory: _Directory, accounts: SourceAccounts, sid: str) -> None:
+    """``withdraw_app_user_access``: the account each withdrawn link names is noted first, then the link goes."""
+    gone = [link for link in await directory.processor.get_app_user_links(CONNECTOR) if link.source_user_id == sid]
+    await accounts.note_withdrawn(gone)
+    _withdraw(directory, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawal_before_any_listing_still_notes_the_account(world) -> None:
+    """A run that withdraws before it lists anyone (an incremental user_delete, a listing with no active member):
+    the account is noted at withdrawal, so a new account on the address later is still a change of hands."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "old-oid")])         # linked by an earlier version, nothing noted yet
+    await _withdraw_noted(directory, accounts, "old-oid")
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
+
+
+@pytest.mark.asyncio
+async def test_an_address_with_unreconciled_deleted_evidence_takes_only_its_linked_account(world) -> None:
+    """Deleted accounts were read, but no listing has shown ana@ yet: a grant naming no account (a SharePoint
+    principal) or the deleted account waits; one naming the account ana@ is linked to goes through."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ not in this listing
+
+    worker = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another process
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", None) and not worker.may_grant("ana@x.com", "old-oid")
+    assert worker.may_grant("ana@x.com", "new-oid") and worker.may_grant("bo@x.com", None)
+
+
+@pytest.mark.asyncio
+async def test_recheck_does_not_refuse_a_site_principal_id_at_an_address_nobody_else_held(world) -> None:
+    """A SharePoint principal's grant carries its site user id, not the Entra object id: recheck refuses it only where
+    the address passed to another account, not because the ids differ in kind."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid"), _user("bo@x.com", "old-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid"), _user("bo@x.com", "new-oid")])
+    site = [Permission(external_id="17", email="ana@x.com", type=PermissionType.READ, entity_type=EntityType.USER),
+            Permission(external_id="18", email="bo@x.com", type=PermissionType.READ, entity_type=EntityType.USER)]
+    assert [p.external_id for p in await accounts.recheck(site)] == ["17"]
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_whose_link_failed_is_reconciled_when_the_first_account_is_listed_again(world) -> None:
+    """B was compared in (ana@ saved as re-used, held by B) but its link write failed; A is listed again: the saved
+    holder follows the account listed now."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "a-oid")])
+    assert await accounts.before_link([_user("ana@x.com", "b-oid")])      # the link write then fails
+    await _admit(directory, accounts, [_user("ana@x.com", "a-oid")])
+    await accounts.ensure_loaded()
+    assert accounts.may_grant("ana@x.com", "a-oid") and not accounts.may_grant("ana@x.com", "b-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_replica_with_nothing_to_change_never_writes_an_older_marker_version_back(world) -> None:
+    """Replica B reads the marker; replica A then saves a change of hands and a new version; B reads the links and the
+    bucket after A, so it has nothing to change, but it notes its first deleted-account read. It must keep A's version
+    (other processes reload on it) and still record the flag."""
+    directory, _, config = world
+    accounts = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))   # replica A: no deleted read
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    replica_a_done = asyncio.Event()
+
+    async def links_after_a(connector_id: str) -> list[SimpleNamespace]:
+        await replica_a_done.wait()
+        return await directory._links(connector_id)
+
+    processor_b = MagicMock(get_app_user_links=AsyncMock(side_effect=links_after_a),
+                            remove_user_access_to_connector=directory.processor.remove_user_access_to_connector)
+    replica_b = SourceAccounts(processor_b, CONNECTOR, config, logging.getLogger("t"),
+                               deleted_users=AsyncMock(return_value={}))
+
+    async def replica_a() -> None:
+        await asyncio.sleep(0)       # replica B has read the marker by now
+        await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+        replica_a_done.set()
+
+    await asyncio.gather(replica_b.before_link([_user("ana@x.com", "new-oid")]), replica_a())
+
+    marker = config.saved[source_accounts_key(CONNECTOR)]
+    assert marker["version"] == accounts._version, "replica A's version stands"
+    assert marker["deletedChecked"] is True

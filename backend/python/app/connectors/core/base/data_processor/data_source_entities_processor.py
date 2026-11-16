@@ -5625,6 +5625,8 @@ class DataSourceEntitiesProcessor:
     async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
         the user's node). Without it no grant of the connector reaches the user."""
+        if users and getattr(users[0], "app_name", None) not in NOT_SOURCE_ACCOUNTS:
+            await self.source_accounts(connector_id).note_withdrawn(users)
         graph = await self._account_graph(connector_id)
         # the SourceAccount writer reads and writes the connector's accounts under the lock the user listing holds
         lock = self.source_accounts(connector_id).lock if graph else contextlib.nullcontext()
