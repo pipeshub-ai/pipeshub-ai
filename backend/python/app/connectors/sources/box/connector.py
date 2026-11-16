@@ -890,21 +890,22 @@ class BoxConnector(BaseConnector):
             self._mark_read_incomplete(e)
 
     async def _withdraw_inactive_users(self, users: list[AppUser]) -> None:
-        """A stored user the complete list shows inactive (USABLE_USER_STATUSES) loses the connector, as it is not
-        linked either; a cut list withdraws nobody. Made active again, it is linked on the next read."""
-        inactive = {u.source_user_id for u in users if not u.is_active}
-        if not inactive or not self._user_list_complete:
+        """A stored user the complete list shows inactive (USABLE_USER_STATUSES), or no longer lists, loses the
+        connector, as it is not linked either; a cut or empty list withdraws nobody. Made active again, it is linked
+        on the next read. ``creator_`` links are the connector creator's stand-in, not a Box account."""
+        if not users or not self._user_list_complete:
             return
+        active = {u.source_user_id for u in users if u.is_active}
         # A failed withdrawal must not stop the group sync after it, which already leaves these users out.
         try:
             gone = [
                 u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
-                if u.source_user_id in inactive
+                if u.source_user_id and u.source_user_id not in active and not u.source_user_id.startswith("creator_")
             ]
             if gone:
                 await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
         except Exception as e:
-            self.logger.error(f"Withdrawing inactive users failed; tried again next sync: {e}", exc_info=True)
+            self.logger.error(f"Withdrawing inactive or unlisted users failed; tried again next sync: {e}", exc_info=True)
 
     async def _sync_user_groups(self) -> None:
         """

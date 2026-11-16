@@ -245,15 +245,15 @@ class SourceAccounts:
         await asyncio.gather(*(one(b) for b in set(buckets)))
         return deleted
 
-    def _take_marker(self, marker: dict, *, own: bool = False) -> None:
-        """``own``: the version this process just wrote over the one it had, which leaves what it loaded current."""
-        if marker.get("version") != self._version and not own:
-            # Any loaded bucket may predate the change: each is read again before a grant to it is judged, also when
-            # the change is seen by a call that reads other buckets, or by one whose reload fails.
-            self._read.clear()
-            self.loaded = False
+    def _take_marker(self, marker: dict, fresh: Iterable[int] = ()) -> None:
+        # ``saving``: a save that may have stopped between its buckets and its marker, so no loaded copy is current.
+        version = object() if marker.get("saving") else marker.get("version")
+        if version != self._version:
+            # Some bucket changed: only those read after this marker (``fresh``) are current; the rest are read again.
+            self._read &= set(fresh)
+            self.loaded = len(self._read) == BUCKETS
             self._epoch += 1
-        self._version = marker.get("version")
+        self._version = version
         self.deleted_pending = marker.get("deletedChecked") is False
         self._legacy = {} if marker.get("seeded") else _lower(_legacy_reused(marker))
         self.loaded_at = time.monotonic()
@@ -312,22 +312,30 @@ class SourceAccounts:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
 
-    async def _update_marker(self, *, changed: bool, deleted_checked: bool | None) -> None:
+    async def _update_marker(
+        self, *, changed: bool, deleted_checked: bool | None, fresh: Iterable[int], saving: bool = False,
+    ) -> None:
         """Merge this run into the marker by compare-and-set against what is stored now, not what the run read at its
         start: another replica may have written a newer version meanwhile, and writing an older one back would stop
         other processes from reloading. A change writes a new version; otherwise the stored one stands. The flags
-        only ever turn on."""
+        only ever turn on. ``saving`` flags the marker before a run saves its buckets: if the save after them fails,
+        the next run still writes a new version, though the buckets then already hold what it would save."""
         key = source_accounts_key(self.connector_id)
         for _ in range(_SAVE_ATTEMPTS):
             raw = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
             stored = _mapping(raw or {}, self.connector_id)
             # A token, not a counter: two processes bumping one counter would write one number for different changes.
-            noted = {"seeded": True, "version": uuid.uuid4().hex if changed else stored.get("version")}
-            if deleted_checked is not None or "deletedChecked" in stored:
-                noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
+            if saving:
+                noted = {**stored, "version": uuid.uuid4().hex, "saving": True}
+            else:
+                # shortcut: another run's final save clears a flag set by a run still saving; that run's own final save
+                # then publishes, so only both failing at once is missed. Key the flag by run if that shows up.
+                noted = {"seeded": True,
+                         "version": uuid.uuid4().hex if changed or stored.get("saving") else stored.get("version")}
+                if deleted_checked is not None or "deletedChecked" in stored:
+                    noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
             if noted == stored or await self.config_service.compare_and_set_config(key, raw or None, noted):
-                self._take_marker(stored)             # another process's change since this one's: reload
-                self._take_marker(noted, own=True)
+                self._take_marker(noted, fresh)
                 return
         raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
@@ -345,18 +353,21 @@ class SourceAccounts:
         if not noted:
             return
         async with self._lock:
+            buckets = {_bucket(e) for e in noted}
             for _ in range(_SAVE_ATTEMPTS):
-                deleted = await self._load({_bucket(e) for e in noted})
+                deleted = await self._load(buckets)
                 changed = set()
                 for email, sid in noted.items():
                     if self._linked.setdefault(_bucket(email), {}).setdefault(email, sid) == sid:
                         changed.add(_bucket(email))
+                if changed:
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets, saving=True)
                 try:
                     await self._save(changed, deleted)
                 except _Conflict:
                     continue
                 if changed:
-                    await self._update_marker(changed=True, deleted_checked=None)
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets)
                 return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
@@ -453,10 +464,13 @@ class SourceAccounts:
             if linked.get(email) != account:
                 linked[email] = account
                 changed.add(bucket)
+        if changed:
+            await self._update_marker(changed=True, deleted_checked=None, fresh=touched, saving=True)
         await self._save(changed, deleted)
         await self._update_marker(
             changed=bool(changed),
             deleted_checked=None if self.deleted_users is None else read_deleted is not None,
+            fresh=touched,
         )
         return True
 

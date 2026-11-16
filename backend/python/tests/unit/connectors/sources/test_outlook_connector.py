@@ -2015,6 +2015,32 @@ class TestSyncUserGroupsDeepFlow:
         connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_member_is_written_with_the_account_id_it_was_checked_as(self) -> None:
+        """A reindex may refresh the user cache while the members are read; if the address now names another
+        account there, the member is not written under that other account's id."""
+        connector = _make_connector()
+        connector.external_users_client = MagicMock()
+        connector._user_cache = {"alice@test.com": "acc-old"}
+        group = MagicMock(id="g1", display_name="Team", description="", additional_data={}, mail=None,
+                          mail_nickname=None)
+        member = MagicMock(mail="alice@test.com", display_name="Alice", id="acc-old",
+                           user_principal_name="alice@test.com")
+
+        async def members(_group_id: str) -> list:
+            connector._user_cache = {"alice@test.com": "acc-new"}       # refreshed meanwhile
+            return [member]
+
+        connector._get_all_microsoft_365_groups = AsyncMock(return_value=[group])
+        connector._get_group_members = members
+        _stub_sync_points(connector)
+
+        await connector._sync_user_groups()
+
+        written = [u.source_user_id for call in connector.data_entities_processor.on_new_user_groups.await_args_list
+                   for _, users in call.args[0] for u in users]
+        assert "acc-new" not in written
+
+    @pytest.mark.asyncio
     async def test_no_groups_returns_empty(self):
         connector = _make_connector()
         connector.external_users_client = MagicMock()

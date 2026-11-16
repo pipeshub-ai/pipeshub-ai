@@ -486,9 +486,9 @@ def _permissions_for_holder(
     def add_user(email: str | None, account_id: str | None = None) -> None:
         if not email:
             return
-        # Keyed by account too: a grant naming the account must not be dropped for an address-only one seen first
-        # (``_prefer_named``), which the processor refuses for a re-used address.
-        key = f"user:{email.lower()}:{account_id or ''}"
+        # By account: two accounts sharing an address (Data Center allows it) each keep their grant. An address-only
+        # grant to an address a grant also names by account is dropped (``_prefer_named``).
+        key = f"user:{account_id or email.lower()}"
         if key in seen:
             return
         seen.add(key)
@@ -523,8 +523,7 @@ def _permissions_for_holder(
         email, inactive = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        named = holder.get("user") if isinstance(holder.get("user"), dict) else {}
-        add_user(email, named.get("accountId") or named.get("key") or parameter)
+        add_user(email, _account_of(holder.get("user")) or parameter)
         # A person who resolves to no e-mail is unread, not outside the level.
         return grants, False, None if email else HOLDER_USER
 

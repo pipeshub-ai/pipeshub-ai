@@ -2734,20 +2734,7 @@ class SalesforceConnector(BaseConnector):
 
                 # Step 1: Incremental sync for users
                 self.logger.info("Syncing users (incremental)...")
-                user_sync_point = await self.user_sync_point.read_sync_point(USERS_SYNC_POINT_KEY)
-                last_sync_ts_ms = user_sync_point.get("lastSyncTimestamp")
-                base_soql = (
-                    "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, CreatedDate, "
-                    "LastModifiedDate, UserRoleId FROM User"
-                )
-                if last_sync_ts_ms:
-                    soql_datetime = to_soql_datetime(last_sync_ts_ms)
-                    soql_query = f"{base_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.debug("Incremental user sync: fetching users modified since %s", soql_datetime)
-                else:
-                    soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.debug("Full user sync: no previous sync point, fetching all users")
-                await self._sync_users_step(api_version, soql_query, checkpoint_for(run_started_ms))
+                await self._sync_user_list(api_version, run_started_ms)
 
                 # Step 2: Incremental sync for roles
                 self.logger.info("Syncing roles and role permissions (incremental)...")
@@ -3324,6 +3311,37 @@ class SalesforceConnector(BaseConnector):
             source_updated_at=_parse_salesforce_timestamp(role.SystemModstamp),
         )
 
+    async def _sync_user_list(self, api_version: str, run_started_ms: int) -> None:
+        """The users changed since the last run, linked unless they cannot sign in, then the ineligible withdrawn."""
+        user_sync_point = await self.user_sync_point.read_sync_point(USERS_SYNC_POINT_KEY)
+        last_sync_ts_ms = user_sync_point.get("lastSyncTimestamp")
+        base_soql = (
+            "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, CreatedDate, "
+            "LastModifiedDate, UserRoleId FROM User"
+        )
+        if last_sync_ts_ms:
+            soql_datetime = to_soql_datetime(last_sync_ts_ms)
+            soql_query = f"{base_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
+            self.logger.debug("Incremental user sync: fetching users modified since %s", soql_datetime)
+        else:
+            soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
+            self.logger.debug("Full user sync: no previous sync point, fetching all users")
+        # One snapshot for the linking, the withdrawal and the checkpoint: read twice, a user unfrozen in between
+        # would be skipped here and missing from the checkpoint, so never linked again.
+        frozen = await self._eligibility(api_version).frozen_user_ids()
+        if frozen is None:
+            # Unknown is not empty: a frozen user would be linked, so nobody is, and these users are read again.
+            await self._withdraw_ineligible_users(api_version, set(), None)
+            return
+        inactive_user_ids = await self._sync_users(
+            self._soql_query_paginated(api_version=api_version, q=soql_query), frozen=frozen,
+        )
+        await self._withdraw_ineligible_users(api_version, inactive_user_ids, frozen)
+        await self.user_sync_point.update_sync_point(
+            USERS_SYNC_POINT_KEY,
+            {"lastSyncTimestamp": checkpoint_for(run_started_ms)},
+        )
+
     async def _sync_users(
         self, user_records_pages: SalesforceRawPageStream, frozen: set[str] | None = None,
     ) -> set[str]:
@@ -3419,35 +3437,20 @@ class SalesforceConnector(BaseConnector):
             return None
         return emails
 
-    async def _sync_users_step(self, api_version: str, soql_query: str, checkpoint: int) -> None:
-        """Link the users the query lists and withdraw the ones who cannot sign in, judged by one read of the frozen
-        users. Unreadable, nobody is linked and the checkpoint stays: a frozen duplicate linked would read as its
-        address changing hands and take the active user's access, and a skipped user must be listed again."""
-        frozen = await self._eligibility(api_version).frozen_user_ids()
-        if frozen is None:
-            self.logger.warning("Salesforce frozen users unreadable; users are synced next run")
-            return
-        inactive_user_ids = await self._sync_users(
-            self._soql_query_paginated(api_version=api_version, q=soql_query), frozen=frozen,
-        )
-        await self._withdraw_ineligible_users(api_version, inactive_user_ids, frozen)
-        await self.user_sync_point.update_sync_point(USERS_SYNC_POINT_KEY, {"lastSyncTimestamp": checkpoint})
-
     async def _withdraw_ineligible_users(
-        self, api_version: str, inactive_user_ids: set[str], frozen: set[str],
+        self, api_version: str, inactive_user_ids: set[str], frozen: Optional[set[str]],
     ) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and
-        frozen ones (both read in full every sync; freezing does not change the User row).
-        ``frozen`` is the read the user list was judged by, so a user skipped as frozen is in
-        the saved list and is linked when a later sync sees it unfrozen. A list that cannot be
-        read withdraws nobody on its account."""
+        frozen ones (``frozen``, None when unreadable; both read in full every sync, as
+        freezing does not change the User row). A user unfrozen since the last sync is
+        linked again. A list that cannot be read withdraws nobody on its account."""
         eligibility = self._eligibility(api_version)
         # Read in full every sync: an install upgraded from a version that linked inactive
         # users never sees them again in the incremental user list.
         inactive = await eligibility.inactive_user_ids()
         point = await self.user_sync_point.read_sync_point(FROZEN_USERS_SYNC_POINT_KEY) or {}
         previously_frozen = set(point.get("userIds") or [])
-        ineligible = set(inactive_user_ids) | (inactive or set()) | frozen
+        ineligible = set(inactive_user_ids) | (inactive or set()) | (frozen or set())
         if ineligible:
             # Salesforce emails are not unique: a PipesHub user keeps the connector while any
             # Salesforce user with their email can still sign in.
@@ -3458,6 +3461,8 @@ class SalesforceConnector(BaseConnector):
                         if u.source_user_id in ineligible and (u.email or "").lower() not in eligible]
                 if gone:
                     await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        if frozen is None:
+            return
         thawed = sorted(previously_frozen - frozen)
         if thawed:
             safe = _sanitize_soql_ids_batch(thawed, self.logger, "unfrozen users")

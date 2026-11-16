@@ -1362,36 +1362,40 @@ class TestSyncUsers:
         assert [u.source_user_id for u in linked] == ["u1"]
 
     @staticmethod
-    def _step_connector(*frozen_reads: set[str] | None) -> SalesforceConnector:
+    def _user_step(frozen_answers: list) -> SalesforceConnector:
+        """A connector whose user list has U (active), and whose frozen-user list gives ``frozen_answers`` in turn."""
         connector = _make_connector()
-        eligibility = MagicMock(frozen_user_ids=AsyncMock(side_effect=list(frozen_reads)),
-                                inactive_user_ids=AsyncMock(return_value=set()))
-        connector._eligibility = MagicMock(return_value=eligibility)
-        connector._soql_query_paginated = MagicMock(side_effect=lambda **_: _async_iter_pages(
-            [{"Id": "u2", "FirstName": "Maya", "LastName": "Old", "Email": "maya@example.com", "IsActive": True}]))
         connector.user_sync_point = MagicMock(read_sync_point=AsyncMock(return_value={}),
                                               update_sync_point=AsyncMock())
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+
+        async def pages(api_version: str, q: str, **_: object) -> AsyncIterator[list[dict]]:
+            if "UserLogin" in q:
+                answer = frozen_answers.pop(0)
+                if isinstance(answer, Exception):
+                    raise answer
+                yield [{"UserId": uid} for uid in answer]
+            elif q.startswith("SELECT Id, FirstName"):
+                yield [{"Id": "U", "FirstName": "Una", "LastName": "F", "Email": "una@example.com", "IsActive": True}]
+
+        connector._soql_query_paginated = pages
         return connector
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_frozen_list_links_nobody_and_keeps_the_users_checkpoint(self) -> None:
-        """Unknown is not empty: a frozen duplicate linked would take the active account's access."""
-        connector = self._step_connector(None)
-        await connector._sync_users_step("v59.0", "SELECT Id FROM User", 123)
+    async def test_a_user_unfrozen_during_the_run_stays_in_the_frozen_checkpoint(self) -> None:
+        """Skipped as frozen, U must be in the checkpoint, or its unfreezing is never seen and it is never linked."""
+        connector = self._user_step([{"U"}, set()])
+        await connector._sync_user_list("59.0", 1_000)
         connector.data_entities_processor.on_new_app_users.assert_not_awaited()
-        connector.user_sync_point.update_sync_point.assert_not_awaited()
+        connector.user_sync_point.update_sync_point.assert_any_await("frozen_users", {"userIds": ["U"]})
 
     @pytest.mark.asyncio
-    async def test_the_user_list_and_the_saved_frozen_list_come_from_one_read(self) -> None:
-        """Skipped as frozen, then unfrozen before a second read: the saved list still names the user, so the next
-        sync sees the thaw and links it (freezing does not change the User row a later delta would list)."""
-        connector = self._step_connector({"u2"}, set())
-        await connector._sync_users_step("v59.0", "SELECT Id FROM User", 123)
+    async def test_an_unreadable_frozen_list_links_nobody_and_keeps_the_checkpoint(self) -> None:
+        connector = self._user_step([RuntimeError("HTTP 403"), RuntimeError("HTTP 403")])
+        await connector._sync_user_list("59.0", 1_000)
         connector.data_entities_processor.on_new_app_users.assert_not_awaited()
-        saved = dict(c.args for c in connector.user_sync_point.update_sync_point.await_args_list)
-        assert saved["frozen_users"] == {"userIds": ["u2"]}
-        assert saved["users"] == {"lastSyncTimestamp": 123}
+        assert not any(c.args[0] == "users" for c in connector.user_sync_point.update_sync_point.await_args_list)
 
     @pytest.mark.asyncio
     async def test_sync_users_skips_empty_list(self):

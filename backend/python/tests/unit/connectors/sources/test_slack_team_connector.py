@@ -2760,7 +2760,26 @@ class TestSyncUsersAndCaches:
             await c._sync_users()
         c._build_user_id_caches.assert_awaited_once()
         assert any("tried again next sync" in str(call) for call in c.logger.error.call_args_list)
-        assert [m["id"] for m in [{"id": u.source_user_id} for u in c._non_guest_app_users]] == ["UOK"]
+        assert [u.source_user_id for u in c._non_guest_app_users] == ["UOK"]
+
+    @pytest.mark.asyncio
+    async def test_a_member_listed_deactivated_gets_no_email_back_from_its_stored_row(self) -> None:
+        """A short list keeps the member linked; its stored row must not put its email back for the grants."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            MagicMock(source_user_id="UOLD", id="n-UOLD", email="old@x.com", is_active=True, full_name="Old"),
+        ])
+        page = MagicMock(success=True, data={
+            "members": [{"id": "UOLD", "deleted": True, "profile": {"real_name": "Old"}}],
+            "response_metadata": {"next_cursor": "next"},
+        })
+        ds = MagicMock()
+        ds.users_list = AsyncMock(side_effect=[page, MagicMock(success=False, error="ratelimited")])
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_users()
+        assert "UOLD" not in c.user_id_to_email_cache
 
     @pytest.mark.asyncio
     async def test_sync_users_list_failure_breaks_loop(self):

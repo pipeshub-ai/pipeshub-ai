@@ -401,7 +401,8 @@ async def test_a_large_directory_never_writes_a_large_value_and_one_change_rewri
     config.set_config = counting
     people[123] = _user("person123@x.com", "acc-123-new")
     await _admit(directory, accounts, people)
-    assert writes == [source_accounts_key(CONNECTOR, _bucket("person123@x.com")), source_accounts_key(CONNECTOR)]
+    marker = source_accounts_key(CONNECTOR)
+    assert writes == [marker, source_accounts_key(CONNECTOR, _bucket("person123@x.com")), marker]
     assert len(json.dumps(config.saved[source_accounts_key(CONNECTOR)])) < 100     # the marker: a version bump
     assert accounts.reused == {"person123@x.com": "acc-123-new"}
 
@@ -859,3 +860,101 @@ async def test_a_grant_write_waits_for_a_change_of_hands_under_way() -> None:
 
     await asyncio.gather(admission(), write())
     assert order == ["admitted", "write"]
+
+
+
+
+def _stale_worker(directory: _Directory, config: _Config, monkeypatch) -> tuple[SourceAccounts, list[float]]:
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    return SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t")), now
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_keeps_the_changed_state_unread(world, monkeypatch) -> None:
+    """The marker moved and the bucket read that follows it fails: the old copy must not pass a later check."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    real_get = config.get_config
+
+    async def bucket_down(key: str, *a: object, **kw: object) -> object:
+        if key != source_accounts_key(CONNECTOR):
+            raise RuntimeError("kv down")
+        return await real_get(key, *a, **kw)
+
+    config.get_config = bucket_down
+    with pytest.raises(RuntimeError):
+        await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid")
+    config.get_config = real_get
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")
+
+
+@pytest.mark.asyncio
+async def test_reading_one_bucket_under_a_newer_marker_does_not_vouch_for_the_others(world, monkeypatch) -> None:
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+    bo = Permission(external_id="bo-oid", email="bo@x.com", type=PermissionType.READ, entity_type=EntityType.USER)
+    assert await worker.recheck([bo]) == [bo]             # reads bo@'s bucket only
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_linking_one_address_under_a_newer_marker_does_not_vouch_for_the_others(world, monkeypatch) -> None:
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    await worker.before_link([_user("bo@x.com", "bo-oid")])       # reads bo@'s bucket only
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_marker_save_that_failed_after_the_bucket_save_is_published_by_the_retry(world, monkeypatch) -> None:
+    """The bucket holds the new account but the marker save failed; the retry finds nothing left to change in the
+    bucket and must still tell other instances to read it again."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    _withdraw(directory, "old-oid")
+    worker, now = _stale_worker(directory, config, monkeypatch)
+    await worker.ensure_loaded()
+    real_set = config.set_config
+
+    async def marker_down(key: str, value: object, **kw: object) -> bool:
+        if key == source_accounts_key(CONNECTOR) and not value.get("saving"):
+            return False
+        return await real_set(key, value, **kw)
+
+    config.set_config = marker_down
+    with pytest.raises(RuntimeError):
+        await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    config.set_config = real_set
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    assert not config.saved[source_accounts_key(CONNECTOR)].get("saving")
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")
