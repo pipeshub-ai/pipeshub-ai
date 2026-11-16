@@ -1,0 +1,2023 @@
+# Connectors: the platform (flow connector-setup) and one feature per connector (flow sync-indexing).
+
+[[feature]]
+id = "connectors.registry"
+title = "Connector registry and connection check"
+flow = "connector-setup"
+what = "A caller lists the connector types and reads the form schema of one, and checks credentials before saving. A failed check is a normal answer with a message, not an error."
+routes = [
+  "GET /api/v1/connectors/registry",
+  "GET /api/v1/connectors/registry/{connectorType}/schema",
+  "POST /api/v1/connectors/registry/{connectorType}/test-connection",
+  "GET /api/v1/connectors/network/egress-ips",
+]
+code = [
+  "backend/python/app/connectors/core/registry/**",
+  "backend/nodejs/apps/src/modules/tokens_manager/routes/connectors.routes.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.registry.list"
+  says = "GET /api/v1/connectors/registry lists the registered connector types with their scopes and auth types, and needs the connector:read scope."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_connector_registry.py", "py:tests/unit/connectors/core/registry/test_connector_definitions.py", "py:tests/unit/connectors/test_connector_contract.py"]
+
+  [[feature.behavior]]
+  id = "connectors.registry.schema"
+  says = "GET /api/v1/connectors/registry/{type}/schema returns the form schema of one type and says whether the type has a connection check."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_router_test_connection.py"]
+
+  [[feature.behavior]]
+  id = "connectors.registry.test-connection"
+  says = "POST .../test-connection answers 200 with the failure message when the check fails, reports a crashing check as a failure, answers 404 for an unknown type and refuses a type that has no check."
+  priority = "P0"
+  tests = ["py:tests/unit/connectors/api/test_router_test_connection.py"]
+
+  [[feature.behavior]]
+  id = "connectors.registry.test-connection-secret"
+  says = "Checking an existing instance keeps a saved secret that the form sends back as the mask, uses a new secret when one is typed, and refuses an instance of another type."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_router_test_connection.py"]
+
+  [[feature.behavior]]
+  id = "connectors.registry.egress-ips"
+  says = "GET /api/v1/connectors/network/egress-ips returns the addresses connectors connect from, so an admin can allow-list them at the source."
+  priority = "P2"
+  tests = ["py:tests/unit/connectors/api/test_router_test_connection.py"]
+
+[[feature]]
+id = "connectors.network-policy"
+title = "Address policy for personal connectors"
+flow = "connector-setup"
+what = "A personal connector reaches public addresses only. A team connector follows the deployment setting PIPESHUB_BLOCK_PRIVATE_ADDRESSES."
+code = ["backend/python/app/connectors/core/address_policy.py"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.network-policy.member-check"
+  says = "A member's connection check on a private, loopback, link-local or metadata address is refused before anything is dialled, while an admin's check follows the deployment setting."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/test_personal_connector_address_policy.py"]
+
+  [[feature.behavior]]
+  id = "connectors.network-policy.saved-instance"
+  says = "A saved personal connector that points at an inward address fails at init and at sync, while a team connector to a private host connects."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/test_personal_connector_address_policy.py"]
+
+[[feature]]
+id = "connectors.instances"
+title = "Connector instances"
+flow = "connector-setup"
+what = "A user creates a personal connector instance, an admin creates team ones, and each caller lists, reads, renames and deletes the instances they may reach."
+routes = [
+  "GET /api/v1/connectors",
+  "POST /api/v1/connectors",
+  "GET /api/v1/connectors/active",
+  "GET /api/v1/connectors/inactive",
+  "GET /api/v1/connectors/configured",
+  "GET /api/v1/connectors/agents/active",
+  "GET /api/v1/connectors/{connectorId}",
+  "DELETE /api/v1/connectors/{connectorId}",
+  "GET /api/v1/connectors/{connectorId}/stats",
+  "PUT /api/v1/connectors/{connectorId}/name",
+]
+code = [
+  "backend/python/app/connectors/api/router.py",
+  "backend/python/app/connectors/core/registry/connector_registry.py",
+  "backend/nodejs/apps/src/modules/tokens_manager/controllers/connector.controllers.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.instances.create"
+  says = "POST /api/v1/connectors needs a type and a name, answers 404 for a type that is not registered and 400 for a scope or auth type the connector does not support."
+  priority = "P0"
+  tests = ["py:tests/unit/connectors/api/test_router_create_instance.py"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.create-team-admin"
+  says = "Only an administrator can create a team connector; any user can create a personal one, and personal is the default scope."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_router_create_instance.py"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.access-scoping"
+  says = "A personal instance is reachable by its creator only (not by an admin), a team instance by an admin or its creator, and an instance of another organization by nobody."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/registry/test_connector_access_scoping.py"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.list-scope"
+  says = "The instance lists are scoped to the caller's organization, and each user lists only their own personal connectors."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/services/graph_db/test_connector_listing_org_scope.py", "py:tests/integration/graph_db/test_connector_list_personal_visibility_real_backends.py", "py:tests/integration/graph_permissions/test_connector_instances.py"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.list-filters"
+  says = "The list filters reject a scope other than team or personal, an isActive value that is not true or false, a page below 1 and a limit above 200."
+  priority = "P2"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.test.ts", "node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.delete"
+  says = "Only the creator or an administrator can delete an instance. A delete answers 202 and runs in the background, answers 409 while one is already running or while an agent uses the connector, and removes the sync schedule."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/registry/test_connector_access_scoping.py", "node:tests/modules/crawling_manager/routes/cm_connector_delete.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.delete-shared-content"
+  says = "Deleting a connector hands its copies of shared content over to a surviving connector before its storage is removed, and publishes the vector cleanup for the records it removes."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_shared_content_handover.py", "py:tests/unit/connectors/core/test_connector_delete_vector_cleanup.py", "py:tests/integration/test_connector_delete_vector_cleanup_e2e.py"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.path-ids"
+  says = "A connector id that is not a plain key, such as a path that climbs out of its URL segment, is refused with 400 before any connector service call."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.path-params.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.stats"
+  says = "GET /api/v1/connectors/{id}/stats asks the connector service for that connector only and passes on its own 404 wording."
+  priority = "P2"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.instances.rename"
+  says = "PUT /api/v1/connectors/{id}/name renames an instance for the users who may change it."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "connectors.config"
+title = "Connector configuration and credentials"
+flow = "connector-setup"
+what = "An admin or creator reads and saves a connector's auth, filters and sync settings. Stored secrets and OAuth tokens never leave the server in clear."
+routes = [
+  "GET /api/v1/connectors/{connectorId}/config",
+  "PUT /api/v1/connectors/{connectorId}/config",
+  "PUT /api/v1/connectors/{connectorId}/config/auth",
+  "PUT /api/v1/connectors/{connectorId}/config/filters-sync",
+]
+pages = ["frontend/app/(main)/workspace/connectors/**"]
+code = [
+  "backend/python/app/connectors/api/router.py",
+  "backend/python/app/connectors/core/registry/auth_utils.py",
+  "frontend/app/(main)/workspace/connectors/components/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.config.mask-secrets"
+  says = "The config routes answer with stored secrets masked, and a save that sends the mask back keeps the stored secret while a save with a new secret replaces it."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_router_config_response_masks_secrets.py"]
+
+  [[feature.behavior]]
+  id = "connectors.config.hide-tokens"
+  says = "No config route returns the owner's stored OAuth access and refresh tokens or flow state, and a save keeps them stored."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_router_config_response_hides_tokens.py"]
+
+  [[feature.behavior]]
+  id = "connectors.config.auth-rules"
+  says = "A connector can set its own auth rules (OneDrive needs a client certificate for a new instance); a refused save is a 400 with the reason, and the admin's action items are stored and cleared."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_router_auth_save_rules.py", "py:tests/unit/connectors/api/test_router_update_auth.py"]
+
+  [[feature.behavior]]
+  id = "connectors.config.update"
+  says = "PUT config and config/filters-sync save the settings, and sync custom fields outside the connector's schema are refused."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_router_update_config.py", "py:tests/unit/connectors/core/registry/test_sync_field_validation.py"]
+
+  [[feature.behavior]]
+  id = "connectors.config.oauth-app-link"
+  says = "A full-config save that names an OAuth app links it to the instance, and the OAuth app's source fields are the only ones a save may store."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_router_full_config_save_links_oauth_app.py", "py:tests/unit/connectors/api/test_router_oauth_source_fields.py"]
+
+  [[feature.behavior]]
+  id = "connectors.config.secret-field-ui"
+  says = "The setup form masks a password field, never prints the secret as page text or to the console, and reveals it only on request."
+  priority = "P1"
+  kind = "security"
+  tests = ["fe:app/(main)/workspace/connectors/components/__tests__/schema-form-field.test.tsx", "fe:app/(main)/workspace/connectors/components/authenticate-tab/__tests__/authenticate-tab.test.tsx"]
+
+[[feature]]
+id = "connectors.oauth-signin"
+title = "Connector OAuth sign-in and token refresh"
+flow = "connector-setup"
+what = "An admin or creator signs a connector in with OAuth: the server builds the authorization URL, handles the callback and keeps the tokens fresh in the background."
+routes = [
+  "GET /api/v1/connectors/{connectorId}/oauth/authorize",
+  "GET /api/v1/connectors/oauth/callback",
+  "POST /api/v1/connectors/getTokenFromCode",
+]
+pages = ["frontend/app/(public)/connectors/oauth/callback/page.tsx", "frontend/app/(main)/connectors/page.tsx"]
+code = [
+  "backend/python/app/connectors/core/base/token_service/**",
+  "backend/nodejs/apps/src/modules/tokens_manager/controllers/connector.controllers.ts",
+  "frontend/app/(main)/connectors/oauth/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.oauth-signin.callback"
+  says = "GET /api/v1/connectors/oauth/callback needs both code and state, marks a successful sign-in, and passes a failed sign-in's details back for the page to show."
+  priority = "P0"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts", "fe:app/(main)/connectors/oauth/__tests__/connector-oauth-window-messages.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-signin.authorize"
+  says = "GET .../oauth/authorize returns the provider's authorization URL for the instance, and the Authorize tab starts the flow from it."
+  priority = "P0"
+  tests = ["fe:app/(main)/workspace/connectors/components/__tests__/authorize-tab-oauth.test.tsx", "py:tests/unit/connectors/api/test_router_part2.py"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-signin.token-code-admin"
+  says = "POST /api/v1/connectors/getTokenFromCode (Google Workspace) needs an administrator and the connector:write scope."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.legacy-google.test.ts", "node:tests/modules/tokens_manager/routes/connectors.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-signin.token-refresh"
+  says = "The background refresh renews expiring connector tokens org by org, logs one line per refresh without secrets, and one failing connector does not stop the others."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/test_token_refresh_org_scan.py", "py:tests/unit/connectors/core/test_token_refresh_logging.py", "py:tests/unit/connectors/test_token_refresh_service.py"]
+
+[[feature]]
+id = "connectors.oauth-apps"
+title = "Shared OAuth apps for connectors and toolsets"
+flow = "connector-setup"
+what = "An admin saves the OAuth app (client id and secret) once for a connector or toolset type, and instances link to it. Members see only basic details."
+routes = [
+  "GET /api/v1/oauth/registry",
+  "GET /api/v1/oauth/registry/{connectorType}",
+  "GET /api/v1/oauth",
+  "GET /api/v1/oauth/{connectorType}",
+  "POST /api/v1/oauth/{connectorType}",
+  "GET /api/v1/oauth/{connectorType}/{configId}",
+  "PUT /api/v1/oauth/{connectorType}/{configId}",
+  "DELETE /api/v1/oauth/{connectorType}/{configId}",
+  "GET /api/v1/toolsets/oauth-configs/{toolsetType}",
+  "PUT /api/v1/toolsets/oauth-configs/{toolsetType}/{oauthConfigId}",
+  "DELETE /api/v1/toolsets/oauth-configs/{toolsetType}/{oauthConfigId}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/tokens_manager/routes/oauth.routes.ts",
+  "backend/python/app/connectors/core/registry/oauth_config_registry.py",
+  "backend/python/app/api/routes/toolsets.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.oauth-apps.admin-write"
+  says = "Only an administrator can create, update or delete an OAuth app; a non-admin gets 403, a duplicate name 409, and a missing name 400."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_router_part2.py", "node:tests/modules/tokens_manager/controllers/oauth.controllers.test.ts", "node:tests/modules/tokens_manager/routes/oauth.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-apps.secrets"
+  says = "An OAuth app's client secret is masked in every read unless the caller is an admin who asks to reveal it, and it is never written to the logs."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/test_oauth_config_log_hygiene.py", "fe:app/(main)/workspace/connectors/components/authenticate-tab/__tests__/oauth-app-selector-reveal.test.tsx"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-apps.connector-vs-toolset"
+  says = "A connector and a toolset can register an OAuth app under the same name and each keeps its own callback URL and scopes."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_oauth_registry_connector_vs_toolset.py", "py:tests/unit/connectors/core/test_oauth_config_registry.py"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-apps.toolset-scopes"
+  says = "The toolset OAuth config routes need the connector:read, connector:write and connector:delete scopes for list, update and delete, and delete is refused with 409 while an agent uses the app."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.oauth-apps.basic-auth"
+  says = "Providers that take OAuth client credentials in a Basic auth header (Airtable and Zoom) get them there."
+  priority = "P2"
+  tests = ["py:tests/unit/connectors/test_oauth_basic_auth_providers.py"]
+
+[[feature]]
+id = "connectors.filters"
+title = "Connector filters"
+flow = "connector-setup"
+what = "A connector exposes sync and indexing filters. The caller reads their options, including pages of dynamic options, and saves selections."
+routes = [
+  "GET /api/v1/connectors/{connectorId}/filters",
+  "POST /api/v1/connectors/{connectorId}/filters",
+  "GET /api/v1/connectors/{connectorId}/filters/{filterKey}/options",
+]
+code = [
+  "backend/python/app/connectors/core/registry/filters.py",
+  "backend/python/app/connectors/core/registry/folder_scope.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.filters.options-paging"
+  says = "The dynamic options route forwards the context path as one repeated parameter, refuses a page size above 100 with a clear message, and the gateway rejects a page size above 200."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.filters.key-path"
+  says = "A filter key that would climb out of the options path is rejected."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.path-params.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.filters.validation"
+  says = "A filter value is checked against its type and operator, and folder filter values are checked wherever sync filters are validated."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_filters.py", "py:tests/unit/connectors/api/test_router_folder_paths.py"]
+
+[[feature]]
+id = "connectors.sync-control"
+title = "Turn sync on or off, resync, reindex and stop"
+flow = "connector-setup"
+what = "A user turns a connector's sync or agent on or off, starts a resync or reindex, and stops a running sync. A busy connector refuses a second request."
+routes = [
+  "POST /api/v1/connectors/{connectorId}/toggle",
+  "POST /api/v1/connectors/{connectorId}/resync",
+  "POST /api/v1/connectors/{connectorId}/reindex",
+  "POST /api/v1/connectors/{connectorId}/sync/stop",
+]
+code = [
+  "backend/python/app/connectors/api/router.py",
+  "backend/nodejs/apps/src/modules/tokens_manager/controllers/connector.controllers.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.toggle-access"
+  says = "Only an administrator can toggle a team connector, and only the creator can toggle a personal one."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_router_part2.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.toggle-ready"
+  says = "A connector cannot be turned on before it is configured or, for OAuth, before sign-in completes, and one with required sync filters (for example exactly one repository) cannot be enabled without them."
+  priority = "P0"
+  tests = ["py:tests/unit/connectors/api/test_router_sync_filter_guard.py", "py:tests/unit/connectors/api/test_router_init_oauth_app_missing.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.toggle-order"
+  says = "Each sync toggle numbers itself and sends the number with its event, so an off handled after a later on cannot turn the connector off again."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_router_toggle_sequence.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.resync-busy"
+  says = "A resync is refused while a sync is running, a full sync is running, one is queued, the connector is being deleted or locked, and someone else's personal connector is refused."
+  priority = "P0"
+  tests = ["node:tests/modules/tokens_manager/controllers/connector.controllers.stop.test.ts", "node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.resync-queue"
+  says = "POST .../resync publishes the event for the caller (ignoring any org or user in the body), answers 503 when it cannot be queued, and needs the connector name."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.stop"
+  says = "POST .../sync/stop stops a local or remote running sync, returns a queued connector to idle, keeps a full sync owed by a filter change, and never claims IDLE when the repair did not land."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_stop_endpoint.py", "node:tests/modules/tokens_manager/controllers/connector.controllers.stop.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-control.reindex"
+  says = "POST .../reindex forwards status filters when given, sends an empty body for everything, and rejects filters that are not a list of strings."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts", "node:tests/modules/tokens_manager/routes/connectors.routes.test.ts"]
+
+[[feature]]
+id = "connectors.crawling"
+title = "Sync schedules (crawling manager)"
+flow = "connector-setup"
+what = "A user schedules a connector's recurring sync (interval, cron or one time), then pauses, resumes, changes or removes it. Admins list and clear every schedule of the org."
+routes = ["* /api/v1/crawlingManager/**"]
+code = ["backend/nodejs/apps/src/modules/crawling_manager/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.crawling.access"
+  says = "A schedule needs a sign-in and the crawl:write scope; a member cannot schedule a team connector or touch another member's personal one, and another org's admin cannot reach it by id."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/crawling_manager/routes/cm_routes.http.test.ts", "node:tests/modules/crawling_manager/routes/cm_routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.crawling.org-scope"
+  says = "The org and user come from the sign-in, not the body; list, remove-all and stats cover the caller's own org only, and remove-all and list-all need an administrator."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/crawling_manager/routes/cm_routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.crawling.lifecycle"
+  says = "Creating a schedule queues one repeating job, changing it replaces the old one, pause leaves nothing to fire, resume restores the same schedule, and remove leaves nothing queued."
+  priority = "P0"
+  tests = ["node:tests/modules/crawling_manager/routes/cm_routes.http.test.ts", "node:tests/modules/crawling_manager/services/crawling_service.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.crawling.validation"
+  says = "A schedule is refused, keeping the old one, for a cron expression without five fields, an hour of 24, an interval outside 1 minute to one year, a one-time run in the past, or a path id that is not a plain segment."
+  priority = "P1"
+  tests = ["node:tests/modules/crawling_manager/routes/cm_routes.http.test.ts", "node:tests/modules/crawling_manager/validator/validator.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.crawling.repair"
+  says = "A sweep recreates a missing schedule for an active scheduled connector, replaces one whose interval changed, removes orphans, and changes nothing when the connector list cannot be fetched."
+  priority = "P1"
+  tests = ["node:tests/modules/crawling_manager/services/connector_schedule_sweep.test.ts", "node:tests/modules/crawling_manager/services/connector_schedule_orchestrator.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.crawling.failures"
+  says = "A removal or pause that could not reach the queue is reported, not claimed as done, and what the connector service said when it failed is not shown to the caller."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/crawling_manager/routes/cm_routes.http.test.ts"]
+
+[[feature]]
+id = "connectors.vector-store"
+title = "Vector store rebuild"
+flow = "connector-setup"
+what = "An admin drops and recreates the vector store, or re-embeds every connector, when the deployment offers it."
+routes = [
+  "POST /api/v1/connectors/vector-store/cleanup",
+  "POST /api/v1/connectors/vector-store/reindex",
+]
+code = ["backend/nodejs/apps/src/modules/tokens_manager/routes/connectors.routes.ts", "backend/python/app/connectors/services/vector_store_rebuild.py"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.vector-store.admin-only"
+  says = "A member is refused before the request reaches the connector service, and an admin's call is forwarded with the admin's own credentials."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts", "node:tests/modules/tokens_manager/routes/connectors.routes.path-params.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.vector-store.scope"
+  says = "An admin's OAuth app token without the connector:sync scope is refused with 403, one with it passes, and a request with no token is rejected."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.vector-store.availability"
+  says = "Both routes answer 403 when the deployment does not offer a rebuild."
+  priority = "P1"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.test.ts", "py:tests/unit/connectors/services/test_vector_store_rebuild.py"]
+
+  [[feature.behavior]]
+  id = "connectors.vector-store.confirm"
+  says = "The UI does not call the API until the admin types the confirmation token for that operation, and keeps the dialog open when the API rejects."
+  priority = "P1"
+  tests = ["fe:app/(main)/workspace/connectors/components/__tests__/vector-store-actions.test.tsx"]
+
+[[feature]]
+id = "connectors.records"
+title = "Connector record content and lookup"
+flow = "connector-setup"
+what = "A caller reads a record's parsed content, resolves a URL, issue key or external id to a record, and browses the knowledge graph from a node."
+routes = [
+  "GET /api/v1/connectors/record/{recordId}/content",
+  "GET /api/v1/connectors/record/lookup",
+  "GET /api/v1/connectors/navigate",
+]
+code = ["backend/python/app/connectors/api/router.py", "backend/nodejs/apps/src/modules/tokens_manager/controllers/connector.controllers.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.records.content"
+  says = "GET .../record/{id}/content returns the parsed content, refuses a record id with a slash, answers 404 when the service has no body, and never returns another org's record."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts", "py:tests/unit/connectors/api/test_stream_record_org_check.py", "py:tests/unit/connectors/api/test_resolve_record_content_placeholder.py"]
+
+  [[feature.behavior]]
+  id = "connectors.records.navigate"
+  says = "GET .../navigate forwards one node type given as a plain string."
+  priority = "P2"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts", "py:tests/unit/connectors/api/test_router_knowledge_graph.py"]
+
+  [[feature.behavior]]
+  id = "connectors.records.lookup"
+  says = "GET .../record/lookup resolves the forms a pasted web address can take to the record that holds it."
+  priority = "P2"
+  tests = ["py:tests/unit/connectors/core/test_record_links.py"]
+
+[[feature]]
+id = "connectors.permission-inspection"
+title = "Permission explanation and freshness"
+flow = "connector-setup"
+what = "An admin asks why a person can or cannot read a record, and how fresh a connector's permissions are."
+routes = [
+  "GET /api/v1/connectors/{connectorId}/permissions/explain",
+  "GET /api/v1/connectors/{connectorId}/permissions/status",
+]
+code = ["backend/python/app/connectors/api/router.py", "frontend/app/(main)/workspace/connectors/components/instance-panel/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.permission-inspection.admin-only"
+  says = "A non-admin gets the 404 of a route that is not there, the service is never asked, and another organization's connector is also a 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/api/test_permission_explain_router.py", "py:tests/unit/connectors/api/test_permission_status_route.py", "node:tests/modules/tokens_manager/routes/connectors.routes.explain.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.permission-inspection.verdict"
+  says = "An admin gets the verdict, the reason and the path with restricted areas unnamed, and a graph that cannot answer is a 503, never a verdict."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_permission_explain_router.py"]
+
+  [[feature.behavior]]
+  id = "connectors.permission-inspection.status"
+  says = "The status shows the connector's schedule and the freshness of its permissions; an app limited to part of a connector gets 404."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/api/test_permission_status_route.py", "fe:app/(main)/workspace/connectors/components/instance-panel/__tests__/permission-freshness.test.tsx"]
+
+[[feature]]
+id = "connectors.service-config"
+title = "Connector service configuration reload"
+flow = "connector-setup"
+what = "An internal call tells the connector service to reload its configuration. Only a service token may make it."
+routes = ["POST /api/v1/connectors/updateAppConfig"]
+code = ["backend/nodejs/apps/src/modules/tokens_manager/routes/connectors.routes.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.service-config.service-token"
+  says = "POST /api/v1/connectors/updateAppConfig sits behind the fetch-config service token, not a user sign-in, and answers 200 after the reload."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.test.ts"]
+
+[[feature]]
+id = "connectors.ui"
+title = "Connectors pages"
+flow = "connector-setup"
+what = "Admins browse the catalog and set up team connectors, members set up personal ones, and each instance has a panel for settings, status and the last sync."
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/connectors/**",
+  "frontend/app/(main)/workspace/connectors/**",
+]
+code = ["frontend/app/(main)/workspace/connectors/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.ui.team-access"
+  says = "A member who opens the team connectors page is sent to their personal connectors, and a non-admin who picks a team setup is pointed at the personal connector."
+  priority = "P0"
+  kind = "security"
+  tests = ["fe:app/(main)/workspace/connectors/team/__tests__/connectors-team-page.test.tsx"]
+
+  [[feature.behavior]]
+  id = "connectors.ui.personal"
+  says = "A member lists, filters and sets up their personal connectors, turns sync on for an instance, and sees the real state when a toggle fails."
+  priority = "P1"
+  tests = ["fe:app/(main)/workspace/connectors/personal/__tests__/connectors-personal-page.test.tsx"]
+
+  [[feature.behavior]]
+  id = "connectors.ui.catalog"
+  says = "The catalog still lists connectors when only the configured list fails, and reports a failure when neither list loads."
+  priority = "P1"
+  tests = ["fe:app/(main)/workspace/connectors/components/__tests__/connector-catalog-layout.test.tsx"]
+
+  [[feature.behavior]]
+  id = "connectors.ui.disable-first"
+  says = "Actions that need the connector off disable it first and keep the dialog open if disabling fails."
+  priority = "P1"
+  tests = ["fe:app/(main)/workspace/connectors/components/__tests__/disable-first-dialog.test.tsx"]
+
+  [[feature.behavior]]
+  id = "connectors.ui.web-setup"
+  says = "A user connects the Web connector from the catalog through to a first sync."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/workspace/connectors-web.spec.ts"]
+
+[[feature]]
+id = "connectors.sync-engine"
+title = "Sync engine"
+flow = "sync-indexing"
+what = "The connector service runs each sync as a leased task, writes records through one processor and keeps the run's state, so a cut-off sync is resumed and nothing is lost on a crash."
+code = [
+  "backend/python/app/connectors/core/sync/**",
+  "backend/python/app/connectors/core/base/data_processor/**",
+  "backend/python/app/connectors/core/base/connector/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.interrupted-full-sync"
+  says = "A full sync that is cut short leaves another full sync owed, and a MANUAL connector resumes it at boot."
+  priority = "P0"
+  tests = ["py:tests/unit/connectors/core/sync/test_interrupted_full_sync.py", "py:tests/unit/connectors/core/sync/test_interrupted_manual_full_sync.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.unlink-after-finish"
+  says = "A full sync unlinks what it did not see only after it finished, so a cut-off sync never leaves unreached records readable by nobody."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/sync/test_full_sync_unlink.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.concurrency"
+  says = "Syncs over the concurrency limit are parked and released once, one lease holds a connector's sync, and capacity gating moves work to idle executors."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/sync/test_drain_queued.py", "py:tests/unit/connectors/core/sync/test_capacity_gate.py", "py:tests/unit/connectors/core/sync/test_sync_runner_lease.py", "py:tests/unit/connectors/core/test_instance_lock.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.stale-state"
+  says = "The boot sweep clears sync state a crash left behind, but refuses to act when it cannot tell whether a peer's sync is live."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/sync/test_reset_stale_sync_state.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.run-record"
+  says = "Each run records when it started, ended and how, stamps every record event with the run id, and logs its tally on sync_run.end."
+  priority = "P2"
+  tests = ["py:tests/unit/connectors/core/sync/test_sync_run_outcome.py", "py:tests/unit/connectors/core/sync/test_run_sync_id.py", "py:tests/unit/connectors/core/sync/test_sync_run_stats.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.scoped-writes"
+  says = "A connector write reaches only its own org's and its own connector's records."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/test_scoped_writes.py", "py:tests/unit/connectors/core/test_entities_processor_org.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.link-shares-off"
+  says = "Domain, anyone and anyone-with-the-link shares grant nothing, and nothing writes them."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/test_link_shares_stay_off.py", "py:tests/integration/test_link_and_domain_shares_e2e.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.soft-delete"
+  says = "A record the source deleted is soft-deleted or removed by the processor's delete paths, with the vector cleanup published after the commit, and a restore brings it back."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_soft_delete_write_path.py", "py:tests/unit/connectors/core/test_restore_write_path.py"]
+
+  [[feature.behavior]]
+  id = "connectors.sync-engine.connector-off"
+  says = "Records queued for a connector that is turned off are settled as they arrive, and turning it back on re-queues them."
+  priority = "P1"
+  tests = ["py:tests/integration/messaging/test_connector_off_it.py", "py:tests/unit/modules/indexing/test_connector_off_events.py", "py:tests/integration/test_connector_resume_requeue_e2e.py"]
+
+[[feature]]
+id = "connectors.atlassian"
+title = "Confluence and Jira sync"
+flow = "sync-indexing"
+what = "Syncs spaces, pages, attachments, projects and issues from Confluence and Jira into PipesHub as records and sends them to indexing. Covered by the Confluence and Jira simulators (integration-tests/connectors/atlassian_sim.env)."
+connectors = ["atlassian"]
+code = ["backend/python/app/connectors/sources/atlassian/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.atlassian.full-sync"
+  says = "A full sync writes Confluence spaces, pages and attachments and Jira projects and issues as records under their spaces and projects, and sends them to indexing."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/atlassian/behaviour/test_confluence_cloud_sync_behaviour.py", "py:tests/unit/connectors/sources/atlassian/behaviour/test_confluence_dc_personal_sync_behaviour.py", "py:tests/unit/connectors/sources/atlassian/behaviour/test_confluence_dc_team_sync_behaviour.py", "py:tests/unit/connectors/sources/atlassian/behaviour/test_jira_cloud_sync_behaviour.py", "py:tests/unit/connectors/sources/atlassian/behaviour/test_jira_dc_sync_behaviour.py", "it:connectors/confluence/confluence_integration_test.py::TestConfluenceConnector::test_tc_sync_001_full_sync_graph_validation", "it:connectors/jira/jira_integration_test.py::TestJiraConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.atlassian.incremental-sync"
+  says = "An incremental sync run is the same run_sync (the platform has no separate incremental entry point for Confluence or Jira); pages and issues changed since the last sync are re-indexed."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/confluence/confluence_mutation_integration_test.py::TestConfluenceConnectorMutation::test_tc_incr_001_incremental_sync_new_pages", "it:connectors/jira/jira_integration_test.py::TestJiraConnector::test_tc_incr_001_incremental_sync_new_issue", "it:connectors/jira/jira_regression_test.py::TestJiraLaterChanges::test_tc_jira_reg_013_comment_changes_reach_the_next_incremental_sync", "it:connectors/jira/jira_regression_test.py::TestJiraRemovals::test_tc_jira_reg_004_a_deleted_issue_is_removed_by_an_incremental_sync"]
+
+  [[feature.behavior]]
+  id = "connectors.atlassian.deletions"
+  says = "A page, attachment or issue removed or trashed at the source is removed from PipesHub, and a failed listing removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/confluence/confluence_sim_changes_test.py::test_attachment_deleted_without_page_edit_stays_until_full_sync", "it:connectors/confluence/confluence_sim_changes_test.py::test_attachment_removed_when_its_page_is_edited", "it:connectors/confluence/confluence_sim_changes_test.py::test_folder_trashed", "it:connectors/confluence/confluence_sim_changes_test.py::test_page_trashed_then_restored", "it:connectors/confluence/confluence_sim_faults_test.py::test_failed_space_list_notifies_creator_and_admins_and_removes_nothing", "it:connectors/jira/jira_regression_test.py::TestJiraRemovals::test_tc_jira_reg_004_a_deleted_issue_is_removed_by_an_incremental_sync", "py:tests/unit/connectors/sources/atlassian/behaviour/test_jira_cloud_personal_sync_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.atlassian.permissions"
+  says = "Space and project permissions, page restrictions and group membership become record permissions, and the personal Confluence and Jira variants use the app-level permission model."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/confluence/confluence_integration_test.py::TestConfluenceKnowledgeHubAccess::test_tc_cf_006_space_permission_via_knowledge_hub", "it:connectors/confluence/confluence_integration_test.py::TestConfluenceValidation::test_tc_cf_002_group_properties", "it:connectors/confluence/confluence_integration_test.py::TestConfluenceValidation::test_tc_cf_003_space_record_group", "it:connectors/confluence/confluence_sim_changes_test.py::test_group_restriction_synced_then_group_deleted", "it:connectors/jira/jira_integration_test.py::TestJiraValidation::test_tc_jira_002_group_properties", "it:connectors/jira/jira_integration_test.py::TestJiraValidation::test_tc_jira_003_project_record_group"]
+
+[[feature]]
+id = "connectors.azure-blob"
+title = "Azure Blob Storage sync"
+flow = "sync-indexing"
+what = "Syncs blobs in containers from Azure Blob Storage into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["azure_blob"]
+code = ["backend/python/app/connectors/sources/azure_blob/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.azure-blob.full-sync"
+  says = "A full sync lists the chosen containers (or all of them) and writes each blob as a file record under its container and virtual folders."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/object_store/behaviour/test_azure_blob_sync_behaviour.py", "py:tests/unit/connectors/sources/test_deep_sync_azure_blob.py", "it:connectors/azure_blob/azure_blob_integration_test.py::TestAzureBlobConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.azure-blob.incremental-sync"
+  says = "Every sync is incremental per prefix: each prefix keeps its own last sync time, so a later run lists changed blobs only."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/azure_blob/azure_blob_integration_test.py::TestAzureBlobConnector::test_tc_incr_001_incremental_sync_new_files"]
+
+  [[feature.behavior]]
+  id = "connectors.azure-blob.deletions"
+  says = "A blob deleted at the source, or a container removed from the filter, is removed from PipesHub on the next sync, and a failed listing removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/azure_blob/azure_blob_edge_cases_integration_test.py::TestAzureBlobEdgeCases::test_tc_container_delete_removes_its_records", "py:tests/unit/connectors/sources/object_store/behaviour/test_object_store_deletes_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.azure-blob.permissions"
+  says = "The app-level permission model applies: Azure role assignments, SAS scope and access policies are not mirrored, so access follows the connector."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Azure Blob Storage account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.azure-files"
+title = "Azure Files sync"
+flow = "sync-indexing"
+what = "Syncs files and folders in shares from Azure Files into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["azure_files"]
+code = ["backend/python/app/connectors/sources/azure_files/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.azure-files.full-sync"
+  says = "A full sync walks the chosen shares and writes folders and files as records with their parent folders."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/azure_files/azure_files_integration_test.py::TestAzureFilesConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.azure-files.incremental-sync"
+  says = "Azure Files has no change feed, so an incremental sync is a full walk of the shares."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/azure_files/azure_files_integration_test.py::TestAzureFilesConnector::test_tc_incr_001_incremental_sync_new_files"]
+
+  [[feature.behavior]]
+  id = "connectors.azure-files.deletions"
+  says = "A file, folder or share gone from the source is removed from PipesHub, and a share that cannot be read removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/azure_files/azure_files_checklist_test.py::TestAzureFilesChecklist::test_tc_folder_delete", "it:connectors/azure_files/azure_files_checklist_test.py::TestAzureFilesChecklist::test_tc_share_gone_group", "it:connectors/azure_files/azure_files_pp341_test.py::TestAzureFilesPP341::test_tc_share_gone"]
+
+  [[feature.behavior]]
+  id = "connectors.azure-files.permissions"
+  says = "The app-level permission model applies: share ACLs are not mirrored."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "connectors.bookstack"
+title = "BookStack sync"
+flow = "sync-indexing"
+what = "Syncs shelves, books, chapters and pages from BookStack into PipesHub as records and sends them to indexing. Covered by the BookStack simulator (integration-tests/connectors/bookstack_sim.env)."
+connectors = ["bookstack"]
+code = ["backend/python/app/connectors/sources/bookstack/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.bookstack.full-sync"
+  says = "A full sync writes shelves, books, chapters and pages as a record hierarchy and indexes the page content, paging through every listing."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/bookstack/test_bookstack_full_sync_paging.py", "py:tests/unit/connectors/sources/test_deep_sync_bookstack.py", "it:connectors/bookstack/bookstack_integration_test.py::TestBookStackConnector::test_tc_sync_001_full_sync_graph_validation", "it:connectors/bookstack/bookstack_sim_sync_test.py::TestBookStackSimSync::test_tc_bssim_sync_001_first_sync"]
+
+  [[feature.behavior]]
+  id = "connectors.bookstack.incremental-sync"
+  says = "An incremental sync applies the audit-log events after the last saved cursor, so new and changed pages are picked up; a failed run keeps the cursor."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/bookstack/test_bookstack_run_cursor.py", "it:connectors/bookstack/bookstack_integration_test.py::TestBookStackConnector::test_tc_incr_001_new_page_is_picked_up", "it:connectors/bookstack/bookstack_sim_sync_test.py::TestBookStackSimSync::test_tc_bssim_sync_002_incremental_changes"]
+
+  [[feature.behavior]]
+  id = "connectors.bookstack.deletions"
+  says = "A page, chapter, book or role deleted in BookStack is removed from PipesHub, and a failed listing removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/bookstack/behaviour/test_bookstack_delete_and_filter_behaviour.py", "py:tests/unit/connectors/sources/bookstack/test_bookstack_group_delete.py", "it:connectors/bookstack/bookstack_sim_deletion_test.py::TestBookStackSimDeletion::test_tc_bssim_del_001_deletes"]
+
+  [[feature.behavior]]
+  id = "connectors.bookstack.permissions"
+  says = "BookStack roles and per-page permissions become record permissions: a book view right does not open a page, an explicit deny wins over a role permission, and a pure permission change takes effect without a content change."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/bookstack/behaviour/test_bookstack_people_read_behaviour.py", "py:tests/unit/connectors/sources/bookstack/test_bookstack_access.py", "it:connectors/bookstack/bookstack_sim_access_test.py::TestBookStackSimAccess::test_tc_bssim_acl_001_book_view_is_not_page_view", "it:connectors/bookstack/bookstack_sim_access_test.py::TestBookStackSimAccess::test_tc_bssim_acl_002_explicit_deny_beats_role_permission", "it:connectors/bookstack/bookstack_sim_access_test.py::TestBookStackSimAccess::test_tc_bssim_acl_003_joining_a_denied_role", "it:connectors/bookstack/bookstack_sim_access_test.py::TestBookStackSimAccess::test_tc_bssim_acl_004_role_loses_page_view", "it:connectors/bookstack/bookstack_sim_access_test.py::TestBookStackSimAccess::test_tc_bssim_acl_005_deleted_user", "it:connectors/bookstack/bookstack_sim_access_test.py::TestBookStackSimAccess::test_tc_bssim_acl_006_pure_permission_change"]
+
+[[feature]]
+id = "connectors.box"
+title = "Box sync"
+flow = "sync-indexing"
+what = "Syncs files and folders from Box into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["box"]
+code = ["backend/python/app/connectors/sources/box/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.box.full-sync"
+  says = "A full sync walks the Box account's folders and writes files and folders as records, then anchors the event stream cursor."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/box/behaviour/test_box_full_sync_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.box.incremental-sync"
+  says = "An incremental sync reads the Box account-wide event stream from the saved cursor; when the last sync is older than the two weeks Box keeps events, it runs a full sync instead."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/box/behaviour/test_box_incremental_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.box.permissions"
+  says = "Box collaborations and the Box account become record permissions (the account reads as an organization-wide grant)."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "connectors.cifs"
+title = "CIFS network share sync"
+flow = "sync-indexing"
+what = "Syncs files and folders on a CIFS share from CIFS network share into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["cifs"]
+code = ["backend/python/app/connectors/sources/cifs/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.cifs.full-sync"
+  says = "A full sync lists the share and writes folders and files as records under their parents."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/cifs/cifs_integration_test.py::TestCifsConnector::test_sync_fixture_tree"]
+
+  [[feature.behavior]]
+  id = "connectors.cifs.incremental-sync"
+  says = "There is no change journal on a CIFS share, so an incremental sync is the same complete listing."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+  [[feature.behavior]]
+  id = "connectors.cifs.deletions"
+  says = "A file or folder gone from the share is removed after a complete listing (prune), and a rename is recorded as a move, not a delete and create."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/cifs/cifs_integration_test.py::TestCifsConnector::test_rename_uses_move_not_delete_create"]
+
+  [[feature.behavior]]
+  id = "connectors.cifs.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "connectors.demo"
+title = "Demo data sync"
+flow = "sync-indexing"
+what = "Syncs sample records from a bundled demo pack from Demo data into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["demo"]
+code = ["backend/python/app/connectors/sources/demo/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.demo.full-sync"
+  says = "A manual sync writes a fictional company's pull requests, tickets, chat threads, documents and support cases as records so a new workspace has content to search; nothing external is contacted."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_demo_fixture.py", "py:tests/unit/connectors/sources/test_demo_pack_fixture.py"]
+
+  [[feature.behavior]]
+  id = "connectors.demo.permissions"
+  says = "Demo records use the record-level permission model: the two demo people see different records."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/test_demo_harness.py"]
+
+[[feature]]
+id = "connectors.dropbox"
+title = "Dropbox (team) sync"
+flow = "sync-indexing"
+what = "Syncs files and folders, including shared folders from Dropbox (team) into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["dropbox"]
+code = ["backend/python/app/connectors/sources/dropbox/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.dropbox.full-sync"
+  says = "A full sync writes the team members, groups, files and folders (including shared folders) as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_dropbox_sync_fixes.py"]
+
+  [[feature.behavior]]
+  id = "connectors.dropbox.incremental-sync"
+  says = "Every run is incremental already: each folder is listed from its saved cursor, and a reset cursor triggers a re-list."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_dropbox_sync_fixes.py"]
+
+  [[feature.behavior]]
+  id = "connectors.dropbox.deletions"
+  says = "A file or folder deleted in Dropbox is removed from PipesHub on the next sync."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_dropbox_deletes.py"]
+
+  [[feature.behavior]]
+  id = "connectors.dropbox.permissions"
+  says = "Team membership, group events and shared-folder membership become record permissions, and a sharing event re-reads the changed item."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/test_dropbox_sharing_events.py", "py:tests/unit/connectors/sources/test_dropbox_shared_folders.py"]
+
+[[feature]]
+id = "connectors.dropbox-individual"
+title = "Dropbox (personal) sync"
+flow = "sync-indexing"
+what = "Syncs files and folders in one account from Dropbox (personal) into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["dropbox_individual"]
+code = ["backend/python/app/connectors/sources/dropbox_individual/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.dropbox-individual.full-sync"
+  says = "A full sync writes the account's files and folders as records with their parent folders."
+  priority = "P0"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Dropbox (personal) account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.dropbox-individual.incremental-sync"
+  says = "Every run is incremental already: the account is listed from its saved cursor."
+  priority = "P1"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Dropbox (personal) account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.dropbox-individual.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Dropbox (personal) account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.drupal-wiki"
+title = "Drupal Wiki sync"
+flow = "sync-indexing"
+what = "Syncs spaces and pages from Drupal Wiki into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["drupal_wiki"]
+code = ["backend/python/app/connectors/sources/drupal_wiki/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.drupal-wiki.full-sync"
+  says = "A sync writes users, groups, spaces and pages as records."
+  priority = "P0"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Drupal Wiki account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.drupal-wiki.incremental-sync"
+  says = "The platform only calls run_sync; the incremental state lives inside it."
+  priority = "P1"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Drupal Wiki account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.drupal-wiki.permissions"
+  says = "Pages get organization-wide read, plus read for the users the page names."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Drupal Wiki account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.github"
+title = "GitHub (personal) sync"
+flow = "sync-indexing"
+what = "Syncs repositories, issues, pull requests and code from GitHub (personal) into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["github"]
+code = ["backend/python/app/connectors/sources/github/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.github.full-sync"
+  says = "A full sync writes the owner's repositories, issues, pull requests and code files as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/github_personal/github_integration_test.py::TestGitHubPersonalConnector::test_tc_ghp_sync_001_full_sync_baseline"]
+
+  [[feature.behavior]]
+  id = "connectors.github.incremental-sync"
+  says = "An incremental sync runs run_sync, which reads from the saved checkpoints."
+  priority = "P1"
+  kind = "function"
+  tests = []
+  manual = "Needs a real GitHub (personal) account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.github.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them. It reuses the GitHub Teams connector."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/github_personal/github_integration_test.py::TestGitHubPersonalConnector::test_tc_ghp_perm_001_connector_group_grant", "it:connectors/github_personal/github_integration_test.py::TestGitHubPersonalConnector::test_tc_ghp_perm_002_public_repo_no_org_grant"]
+
+[[feature]]
+id = "connectors.github-teams"
+title = "GitHub Teams sync"
+flow = "sync-indexing"
+what = "Syncs repositories, issues, pull requests and code from GitHub Teams into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["github_teams"]
+code = ["backend/python/app/connectors/sources/github_teams/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.github-teams.full-sync"
+  says = "A full sync writes repositories, issues, pull requests, comments, projects and code files as records under their repository."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.github-teams.incremental-sync"
+  says = "An incremental sync delegates to the same run_sync; deltas are handled through checkpoints, so only changed code, issues and pull requests are re-read."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsIncremental::test_tc_incr_code_001_all_deltas", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsIncremental::test_tc_incr_issue_001_new_issue_and_update", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsIncremental::test_tc_incr_pr_001_update_only"]
+
+  [[feature.behavior]]
+  id = "connectors.github-teams.deletions"
+  says = "An issue deleted at GitHub, and a repository that leaves the sync scope, are removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_github_teams/test_removal.py", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsRemovals::test_tc_del_issue_001_deleted_issue_is_removed", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsRemovals::test_tc_del_scope_001_switching_repository_removes_the_old_one"]
+
+  [[feature.behavior]]
+  id = "connectors.github-teams.permissions"
+  says = "A private repository's ACL, the repository record group hierarchy and the connector user groups become record permissions."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsConnector::test_tc_gh_rg_001_record_group_hierarchy", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsPermissions::test_tc_gh_perm_001_private_repo_acl", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsPermissions::test_tc_gh_perm_002_public_repo_org_grant", "it:connectors/github_teams/github_teams_integration_test.py::TestGitHubTeamsPermissions::test_tc_gh_perm_003_colleague_without_github_account"]
+
+[[feature]]
+id = "connectors.gitlab"
+title = "GitLab sync"
+flow = "sync-indexing"
+what = "Syncs projects, issues, merge requests and code from GitLab into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["gitlab"]
+code = ["backend/python/app/connectors/sources/gitlab/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.gitlab.full-sync"
+  says = "A full sync writes projects, issues, merge requests, comments and code files as records under their project."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/gitlab_behaviour/test_gitlab_issue_sync_behaviour.py", "py:tests/unit/connectors/sources/test_gitlab/test_repos_full_sync.py", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabSyncAndStructure::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.gitlab.incremental-sync"
+  says = "An incremental sync delegates to run_sync; GitLab deltas are handled through checkpoints."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_gitlab/test_repos_incremental_sync.py", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabIncremental::test_tc_incr_code_001_five_deltas", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabIncremental::test_tc_incr_issue_001_create_then_update", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabIncremental::test_tc_incr_mr_001_update_only"]
+
+  [[feature.behavior]]
+  id = "connectors.gitlab.deletions"
+  says = "A deleted work item and a project that leaves the sync scope or is removed are removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_gitlab/test_deleted_work_items.py", "py:tests/unit/connectors/sources/test_gitlab/test_removed_projects.py"]
+
+  [[feature.behavior]]
+  id = "connectors.gitlab.permissions"
+  says = "Project membership is split four ways into ACLs, namespaces and projects become record groups, and a group filter does not widen the repository scope."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/gitlab_behaviour/test_gitlab_permission_behaviour.py", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabFilters::test_tc_filter_001_group_does_not_widen_repository_scope", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabIdentity::test_tc_gl_user_002_pseudo_groups", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabPermissions::test_tc_gl_perm_001_four_way_acl_split", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabPermissions::test_tc_gl_perm_002_permission_type_and_resolution", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabSyncAndStructure::test_tc_gl_rg_001_project_record_groups", "it:connectors/gitlab/gitlab_integration_test.py::TestGitLabSyncAndStructure::test_tc_gl_rg_002_namespace_groups_are_flat"]
+
+[[feature]]
+id = "connectors.gitlab-personal"
+title = "GitLab (personal) sync"
+flow = "sync-indexing"
+what = "Syncs the owner's projects, issues and merge requests from GitLab (personal) into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["gitlab_personal"]
+code = ["backend/python/app/connectors/sources/gitlab_personal/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.gitlab-personal.full-sync"
+  says = "A full sync writes the owner's own projects, issues and merge requests as records."
+  priority = "P0"
+  kind = "function"
+  tests = []
+  manual = "Needs a real GitLab (personal) account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.gitlab-personal.incremental-sync"
+  says = "It inherits the GitLab connector's sync and checkpoints."
+  priority = "P1"
+  kind = "function"
+  tests = []
+  manual = "Needs a real GitLab (personal) account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.gitlab-personal.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real GitLab (personal) account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.google"
+title = "Google Drive and Gmail sync"
+flow = "sync-indexing"
+what = "Syncs Drive files and folders and Gmail threads and attachments from Google Drive and Gmail into PipesHub as records and sends them to indexing. Covered by the Gmail simulator (integration-tests/connectors/gmail_sim.env); Drive needs a real Google account."
+connectors = ["google"]
+code = ["backend/python/app/connectors/sources/google/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.google.full-sync"
+  says = "A full sync writes Drive files, folders and shared drives (workspace and individual) and Gmail messages (workspace and individual) as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/google/behaviour/test_drive_individual_sync_behaviour.py", "py:tests/unit/connectors/sources/google/behaviour/test_drive_workspace_sync_behaviour.py", "py:tests/unit/connectors/sources/google/behaviour/test_gmail_individual_sync_behaviour.py", "py:tests/unit/connectors/sources/google/behaviour/test_gmail_team_sync_behaviour.py", "py:tests/unit/connectors/sources/google/common/test_gmail_mailbox_sync.py", "py:tests/unit/connectors/sources/test_deep_sync_google_drive_individual.py"]
+
+  [[feature.behavior]]
+  id = "connectors.google.incremental-sync"
+  says = "A Gmail sync after the first reads only mailbox history changes. The Drive connectors have no run_incremental_sync (the platform only calls run_sync), so a Drive resync re-reads through run_sync."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/google/common/test_gmail_history_changes.py", "it:connectors/gmail_individual/gmail_individual_integration_test.py::TestGmailPersonal::test_tc_gmail_ind_002_incremental", "it:connectors/gmail_workspace/gmail_workspace_integration_test.py::TestGmailWorkspace::test_tc_gmail_ws_004_incremental", "it:connectors/google_drive_individual/google_drive_individual_integration_test.py::TestDriveIndividualEntitySync::test_tc_drive_ind_sync_002_delta_add_update", "it:connectors/google_drive_workspace/google_drive_workspace_integration_test.py::TestDriveWorkspaceEntitySync::test_tc_drive_sync_002_delta_add_update"]
+
+  [[feature.behavior]]
+  id = "connectors.google.deletions"
+  says = "A Drive file trashed or deleted, a folder that leaves the filter, and a Gmail message trashed or deleted are removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/gmail_workspace/gmail_workspace_integration_test.py::TestGmailWorkspace::test_tc_gmail_ws_006_trash_and_untrash", "it:connectors/gmail_workspace/gmail_workspace_integration_test.py::TestGmailWorkspace::test_tc_gmail_ws_007_delete_and_spam", "it:connectors/gmail_workspace/gmail_workspace_integration_test.py::TestGmailWorkspace::test_tc_gmail_ws_012_delegation_removed", "it:connectors/google_drive_individual/google_drive_individual_integration_test.py::TestDriveIndividualFolderFilter::test_tc_ff_004_file_exits_scope_deleted", "it:connectors/google_drive_individual/google_drive_individual_integration_test.py::TestDriveIndividualFolderFilter::test_tc_ff_006_folder_exits_scope_cascade_deletes", "it:connectors/google_drive_individual/google_drive_individual_lifecycle_integration_test.py::TestDriveIndividualLifecycle::test_tc_drv_ind_lc_001_trash_removes_record_and_embeddings", "it:connectors/google_drive_individual/google_drive_individual_lifecycle_integration_test.py::TestDriveIndividualLifecycle::test_tc_drv_ind_lc_003_permanent_folder_delete_removes_descendants", "it:connectors/google_drive_individual/google_drive_individual_shared_drive_integration_test.py::TestDriveIndividualSharedDrives::test_tc_drv_ind_sd_003_removed_from_shared_drive_drops_items", "py:tests/unit/connectors/sources/google/test_drive_full_sync_reconciler.py"]
+
+  [[feature.behavior]]
+  id = "connectors.google.permissions"
+  says = "Drive sharing, shared-drive membership and Gmail mailbox ownership become record permissions: a user sees only what they can see in Google, and revoked access is removed."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/google/behaviour/test_gmail_team_kept_groups.py", "py:tests/unit/connectors/sources/test_google_drive_group_stream_candidates.py", "it:connectors/gmail_individual/gmail_individual_integration_test.py::TestGmailPersonal::test_tc_gmail_ind_001_first_sync_and_access", "it:connectors/gmail_individual/gmail_individual_integration_test.py::TestGmailPersonal::test_tc_gmail_ind_003_access_revoked", "it:connectors/gmail_workspace/gmail_workspace_integration_test.py::TestGmailWorkspace::test_tc_gmail_ws_002_mailbox_groups", "it:connectors/gmail_workspace/gmail_workspace_integration_test.py::TestGmailWorkspace::test_tc_gmail_ws_003_access_isolation", "it:connectors/google_drive_individual/google_drive_individual_integration_test.py::TestDriveIndividualEntitySync::test_tc_drive_ind_003_personal_record_group"]
+
+[[feature]]
+id = "connectors.google-cloud-storage"
+title = "Google Cloud Storage sync"
+flow = "sync-indexing"
+what = "Syncs objects in buckets from Google Cloud Storage into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["google_cloud_storage"]
+code = ["backend/python/app/connectors/sources/google_cloud_storage/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.google-cloud-storage.full-sync"
+  says = "A full sync lists the chosen buckets and writes each object as a file record under its bucket and prefixes."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/gcs/gcs_integration_test.py::TestGCSConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.google-cloud-storage.incremental-sync"
+  says = "An incremental sync lists buckets again from the last sync time and picks up new and changed objects."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/gcs/gcs_integration_test.py::TestGCSConnector::test_tc_incr_001_incremental_sync_new_files"]
+
+  [[feature.behavior]]
+  id = "connectors.google-cloud-storage.deletions"
+  says = "An object deleted at the source is removed from PipesHub, and a failed listing removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/object_store/behaviour/test_object_store_deletes_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.google-cloud-storage.permissions"
+  says = "The app-level permission model applies: bucket IAM is not mirrored."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Google Cloud Storage account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.linear"
+title = "Linear sync"
+flow = "sync-indexing"
+what = "Syncs teams, projects, issues and comments from Linear into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["linear"]
+code = ["backend/python/app/connectors/sources/linear/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.linear.full-sync"
+  says = "A full sync writes teams, projects, issues, comments and attachments as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/linear/linear_integration_test.py::TestLinearConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.linear.incremental-sync"
+  says = "An incremental sync runs run_sync from a listing checkpoint, so a later comment on an old issue reaches the index."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/linear/test_listing_checkpoint.py", "it:connectors/linear/linear_integration_test.py::TestLinearConnector::test_tc_incr_001_incremental_sync_new_issue", "it:connectors/linear/linear_integration_test.py::TestLinearConnector::test_tc_incr_002_comment_added_later_reaches_the_index"]
+
+  [[feature.behavior]]
+  id = "connectors.linear.deletions"
+  says = "A removed issue, comment or team is removed from PipesHub, and a failed read removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/linear/test_linear_record_removal.py"]
+
+  [[feature.behavior]]
+  id = "connectors.linear.permissions"
+  says = "A team's privacy setting decides who can read its issues: the team is both a user group and a record group."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/linear/test_linear_team_access.py", "it:connectors/linear/linear_integration_test.py::TestLinearPermissions::test_tc_linear_perm_001_team_privacy_permissions", "it:connectors/linear/linear_integration_test.py::TestLinearPermissions::test_tc_linear_perm_002_colleague_without_a_linear_account", "it:connectors/linear/linear_integration_test.py::TestLinearValidation::test_tc_linear_002_team_as_user_group", "it:connectors/linear/linear_integration_test.py::TestLinearValidation::test_tc_linear_003_team_as_record_group"]
+
+[[feature]]
+id = "connectors.localkb"
+title = "Local knowledge base connector sync"
+flow = "sync-indexing"
+what = "Syncs knowledge base records from Local knowledge base connector into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["localKB"]
+code = ["backend/python/app/connectors/sources/localKB/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.localkb.full-sync"
+  says = "Knowledge base records live in PipesHub storage, so a sync only reads what uploads and pushes already wrote."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_deep_sync_localkb.py"]
+
+  [[feature.behavior]]
+  id = "connectors.localkb.incremental-sync"
+  says = "The incremental sync is a no-op: knowledge bases are local storage (localKB/connector.py)."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+  [[feature.behavior]]
+  id = "connectors.localkb.deletions"
+  says = "Deleting a knowledge base or its records is lease-guarded, removes the stored files and drops the vector index entries; deleted items go to the trash first."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/localKB/test_delete_lease.py", "py:tests/unit/connectors/sources/localKB/test_kb_delete_stored_files.py", "py:tests/unit/connectors/sources/localKB/test_kb_deleting.py", "py:tests/unit/connectors/sources/localKB/test_kb_trash_list.py"]
+
+  [[feature.behavior]]
+  id = "connectors.localkb.permissions"
+  says = "Access to a knowledge base follows its grants and the app-level permission model; a push reference needs access to its target."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/localKB/push/test_ref_access.py"]
+
+[[feature]]
+id = "connectors.local-fs"
+title = "Local folders sync"
+flow = "sync-indexing"
+what = "Syncs files and folders in a watched folder from Local folders into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account. It uses the desktop agent (local_fs_sim marker)."
+connectors = ["local_fs"]
+code = ["backend/python/app/connectors/sources/local_fs/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.local-fs.full-sync"
+  says = "A full sync writes the files and folders under the watched folder as records owned by the user who added it."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/local_fs/local_fs_integration_test.py::TestLocalFsFolderSync::test_tc_lfs_sync_001_full_sync", "it:connectors/local_fs/local_fs_sim_sync_test.py::TestLocalFsSimSync::test_first_sync_matches_the_folder"]
+
+  [[feature.behavior]]
+  id = "connectors.local-fs.incremental-sync"
+  says = "The desktop watcher sends changes, and the sync also catches changes made while the app was closed."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/local_fs/local_fs_integration_test.py::TestLocalFsFolderSync::test_tc_lfs_incr_001_new_file_appears_under_its_folder"]
+
+  [[feature.behavior]]
+  id = "connectors.local-fs.deletions"
+  says = "A deleted file or folder, or a folder moved away, is removed; an unreadable file or folder survives a full sync."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/local_fs/local_fs_integration_test.py::TestLocalFsDesktopUploads::test_tc_lfs_up_004_deleted_file_is_removed", "it:connectors/local_fs/local_fs_integration_test.py::TestLocalFsFolderSync::test_tc_lfs_del_001_deleted_file_is_removed", "it:connectors/local_fs/local_fs_sim_deletion_test.py::TestLocalFsSimDeletion::test_folder_delete", "it:connectors/local_fs/local_fs_sim_sync_test.py::TestLocalFsSimSync::test_add_edit_delete", "it:connectors/local_fs/local_fs_sim_sync_test.py::TestLocalFsSimSync::test_lost_snapshot_removes_deletions", "it:connectors/local_fs/local_fs_sim_deletion_test.py::TestLocalFsSimDeletion::test_unreadable_file_survives_full_sync", "it:connectors/local_fs/local_fs_sim_deletion_test.py::TestLocalFsSimDeletion::test_unreadable_folder_survives_full_sync"]
+
+  [[feature.behavior]]
+  id = "connectors.local-fs.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them. The owner is the user who set up the folder."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/local_fs/local_fs_integration_test.py::TestLocalFsVisibility::test_tc_lfs_perm_001_another_member_cannot_find_the_files"]
+
+[[feature]]
+id = "connectors.mariadb"
+title = "MariaDB sync"
+flow = "sync-indexing"
+what = "Syncs tables as records from MariaDB into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["mariadb"]
+code = ["backend/python/app/connectors/sources/mariadb/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.mariadb.full-sync"
+  says = "A sync reads the catalog, writes tables as records, and saves the state it compared."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/mariadb/mariadb_integration_test.py::TestMariaDBConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.mariadb.incremental-sync"
+  says = "Every sync compares the catalog with the saved state; a new, renamed or moved table is picked up and an unchanged one is skipped."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/mariadb/mariadb_integration_test.py::TestMariaDBConnector::test_tc_incr_001_new_table_is_picked_up"]
+
+  [[feature.behavior]]
+  id = "connectors.mariadb.deletions"
+  says = "A dropped table, or one the filter now excludes, is removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/mariadb/mariadb_integration_test.py::TestMariaDBConnector::test_tc_del_001_dropped_table_is_removed"]
+
+  [[feature.behavior]]
+  id = "connectors.mariadb.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "connectors.microsoft"
+title = "Microsoft 365 (OneDrive, SharePoint, Outlook) sync"
+flow = "sync-indexing"
+what = "Syncs OneDrive files, SharePoint sites and pages, and Outlook mail from Microsoft 365 (OneDrive, SharePoint, Outlook) into PipesHub as records and sends them to indexing. Covered by the SharePoint simulator (integration-tests/connectors/sharepoint_sim.env); OneDrive and Outlook need a Microsoft 365 organization."
+connectors = ["microsoft"]
+code = ["backend/python/app/connectors/sources/microsoft/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.microsoft.full-sync"
+  says = "A full sync writes OneDrive drives, SharePoint sites, libraries and pages, and Outlook folders and mail as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/microsoft/behaviour/test_onedrive_sync_behaviour.py", "py:tests/unit/connectors/sources/microsoft/behaviour/test_outlook_sync_behaviour.py", "py:tests/unit/connectors/sources/microsoft/behaviour/test_sharepoint_online_sync_behaviour.py", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_sync_001_baseline_full_sync", "it:connectors/outlook/outlook_integration_test.py::TestFullResync::test_tc_ol_sync_002_forced_full_sync_is_idempotent", "it:connectors/sharepoint/sharepoint_sim_sync_test.py::TestSharePointSimSync::test_tc_spsim_sync_001_first_sync_matches_source", "it:connectors/sharepoint/sharepoint_sim_sync_test.py::TestSharePointSimSync::test_tc_spsim_sync_004_full_sync_converges"]
+
+  [[feature.behavior]]
+  id = "connectors.microsoft.incremental-sync"
+  says = "Every run reads the changes since the last one through delta tokens (OneDrive, SharePoint, Outlook), so run_sync is the incremental path."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_001_mail_edited", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_002_mail_hard_deleted", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_003_mail_soft_deleted", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_004_mail_moved", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_005_attachment_removed_and_added", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_006_folder_renamed", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_007_folder_deleted", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_008_folder_moved"]
+
+  [[feature.behavior]]
+  id = "connectors.microsoft.deletions"
+  says = "Items deleted at the source, mail moved or deleted, and records that were not listed any more are withdrawn; a full sync with failures removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_microsoft_withdraw_deleted.py", "py:tests/unit/connectors/sources/test_onedrive_withdraw_unlisted.py", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_fold_004_deleted_items_not_synced", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_002_mail_hard_deleted", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_003_mail_soft_deleted", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_005_attachment_removed_and_added", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_007_folder_deleted"]
+
+  [[feature.behavior]]
+  id = "connectors.microsoft.permissions"
+  says = "SharePoint site permissions, OneDrive sharing, Microsoft 365 group membership and mailbox ownership become record permissions; a removed member loses access."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/microsoft/behaviour/test_outlook_kept_groups.py", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_gmail_001_group_post", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_gmbx_001_group_mailbox", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_group_001_group_properties_and_members", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_perm_001_access_matrix", "it:connectors/outlook/outlook_integration_test.py::TestB0Baseline::test_tc_ol_perm_002_record_endpoint_as_owner", "it:connectors/outlook/outlook_integration_test.py::TestB1Incremental::test_tc_ol_incr_010_member_added_gains_access"]
+
+[[feature]]
+id = "connectors.minio"
+title = "MinIO sync"
+flow = "sync-indexing"
+what = "Syncs objects in buckets from MinIO into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["minio"]
+code = ["backend/python/app/connectors/sources/minio/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.minio.full-sync"
+  says = "A full sync lists the chosen buckets and writes each object as a file record (it shares the S3-compatible base connector)."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/minio/minio_integration_test.py::TestMinioConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.minio.incremental-sync"
+  says = "An incremental sync lists changed objects since the last run."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/minio/minio_integration_test.py::TestMinioConnector::test_tc_incr_001_incremental_sync_new_files"]
+
+  [[feature.behavior]]
+  id = "connectors.minio.deletions"
+  says = "An object deleted at the source is removed from PipesHub, and a failed listing removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/object_store/behaviour/test_object_store_deletes_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.minio.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them. A bucket removed from the filter leaves the index."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/object_store/behaviour/test_object_store_personal_scope_behaviour.py"]
+
+[[feature]]
+id = "connectors.network-share"
+title = "Network share library sync"
+flow = "sync-indexing"
+what = "Syncs SMB and CIFS entries from Network share library into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["network_share"]
+code = ["backend/python/app/connectors/sources/network_share/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.network-share.full-sync"
+  says = "The shared library behind the SMB and CIFS connectors walks a share, maps entries to records and carries their permissions."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_network_share_walker.py", "py:tests/unit/connectors/sources/test_network_share_mapper.py"]
+
+  [[feature.behavior]]
+  id = "connectors.network-share.permissions"
+  says = "Records get app-level permissions (a team share goes to the team) and inherit permissions from their parent; mapping share ACLs is not built."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/test_network_share_mapper.py"]
+
+[[feature]]
+id = "connectors.nextcloud"
+title = "Nextcloud sync"
+flow = "sync-indexing"
+what = "Syncs files and folders from Nextcloud into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["nextcloud"]
+code = ["backend/python/app/connectors/sources/nextcloud/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.nextcloud.full-sync"
+  says = "A full sync walks the user's files over WebDAV and writes files and folders as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/nextcloud/behaviour/test_nextcloud_sync_behaviour.py", "py:tests/unit/connectors/sources/test_deep_sync_nextcloud.py", "it:connectors/nextcloud/nextcloud_integration_test.py::TestNextcloudConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.nextcloud.incremental-sync"
+  says = "Incremental sync reads the Nextcloud activity feed since the last sync, so files uploaded together all appear and a backlog is caught up in one sync."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_nextcloud_incremental_changes.py", "it:connectors/nextcloud/nextcloud_integration_test.py::TestNextcloudConnector::test_tc_incr_001_files_uploaded_together_all_appear"]
+
+  [[feature.behavior]]
+  id = "connectors.nextcloud.deletions"
+  says = "A deleted or unshared file is removed from PipesHub, and a bad password or an outage removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/nextcloud/nextcloud_checklist_test.py::TestNextcloudChecklist::test_tc_no_fs_access_removes_nothing", "it:connectors/nextcloud/nextcloud_integration_test.py::TestNextcloudConnector::test_tc_del_001_deleted_file_is_removed", "it:connectors/nextcloud/nextcloud_review_cases_test.py::TestNextcloudReviewCases::test_tc_fullsync_outage_unlinks_nothing", "it:connectors/nextcloud/nextcloud_review_cases_test.py::TestNextcloudReviewCases::test_tc_unshare_removes_what_was_shared"]
+
+  [[feature.behavior]]
+  id = "connectors.nextcloud.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/nextcloud/nextcloud_review_cases_test.py::TestNextcloudReviewCases::test_tc_email_isolation_profile_email_gets_no_access"]
+
+[[feature]]
+id = "connectors.notion"
+title = "Notion sync"
+flow = "sync-indexing"
+what = "Syncs pages, databases, data sources, comments and attachments from Notion into PipesHub as records and sends them to indexing. Covered by the Notion simulator (integration-tests/connectors/notion_sim.env)."
+connectors = ["notion"]
+code = ["backend/python/app/connectors/sources/notion/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.notion.full-sync"
+  says = "A full sync writes workspace pages, databases, data sources, comments and attachments as records and matches the seeded fixture."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/notion/notion_integration_test.py::TestNotionFullSync::test_tc_sync_001_full_sync_matches_seed"]
+
+  [[feature.behavior]]
+  id = "connectors.notion.incremental-sync"
+  says = "Later syncs only process records newer than the saved checkpoint, and the checkpoint advances after a sync."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/notion/notion_integration_test.py::TestNotionDeltaSync::test_tc_delta_001_only_newer_records_processed", "it:connectors/notion/notion_integration_test.py::TestNotionDeltaSync::test_tc_delta_002_checkpoint_advances", "it:connectors/notion/notion_integration_test.py::TestNotionDeltaSync::test_tc_delta_003_first_sync_checkpoints_initialized", "it:connectors/notion/notion_integration_test.py::TestNotionIncremental::test_tc_incr_att_001_and_002_attachment_added_and_removed", "it:connectors/notion/notion_integration_test.py::TestNotionIncremental::test_tc_incr_cmt_001_comments_added", "it:connectors/notion/notion_integration_test.py::TestNotionIncremental::test_tc_incr_cmt_002_comment_with_attachment", "it:connectors/notion/notion_integration_test.py::TestNotionIncremental::test_tc_incr_ds_001_data_source_added", "it:connectors/notion/notion_integration_test.py::TestNotionIncremental::test_tc_incr_ds_002_and_003_properties_and_schema"]
+
+  [[feature.behavior]]
+  id = "connectors.notion.deletions"
+  says = "An attachment removed from a page, and a page that is no longer shared, leave the index; it returns when shared again."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/notion/notion_integration_test.py::TestNotionIncremental::test_tc_incr_att_001_and_002_attachment_added_and_removed"]
+
+  [[feature.behavior]]
+  id = "connectors.notion.permissions"
+  says = "The workspace is a record group with its permissions, and a page the integration can no longer see leaves the scope."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/notion/notion_integration_test.py::TestNotionAccessRevoke::test_tc_access_001_unshared_page_leaves_scope_and_returns_when_reshared", "it:connectors/notion/notion_integration_test.py::TestNotionFullSync::test_tc_ws_001_workspace_record_group", "it:connectors/notion/notion_integration_test.py::TestNotionFullSync::test_tc_ws_002_workspace_permissions"]
+
+[[feature]]
+id = "connectors.notion-personal"
+title = "Notion (personal) sync"
+flow = "sync-indexing"
+what = "Syncs the user's pages and databases from Notion (personal) into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["notion_personal"]
+code = ["backend/python/app/connectors/sources/notion_personal/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.notion-personal.full-sync"
+  says = "A sync writes the pages and databases the user shared with the integration as records."
+  priority = "P0"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Notion (personal) account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.notion-personal.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Notion (personal) account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.postgres"
+title = "PostgreSQL sync"
+flow = "sync-indexing"
+what = "Syncs tables as records from PostgreSQL into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["postgres"]
+code = ["backend/python/app/connectors/sources/postgres/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.postgres.full-sync"
+  says = "A sync reads the catalog, writes tables as records, and saves the state it compared."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/postgres/postgres_integration_test.py::TestPostgresConnector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.postgres.incremental-sync"
+  says = "Every sync compares the catalog with the saved state (catalog diff), so a new table is picked up and an unchanged one is skipped."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/postgres/postgres_integration_test.py::TestPostgresConnector::test_tc_incr_001_new_table_is_picked_up"]
+
+  [[feature.behavior]]
+  id = "connectors.postgres.deletions"
+  says = "A dropped table is removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+  [[feature.behavior]]
+  id = "connectors.postgres.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "connectors.rss"
+title = "RSS and Atom feeds sync"
+flow = "sync-indexing"
+what = "Syncs feed entries from RSS and Atom feeds into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["rss"]
+code = ["backend/python/app/connectors/sources/rss/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.rss.full-sync"
+  says = "A full sync fetches each feed and writes its entries as records; items that left a feed, and feeds that fail, are kept."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_rss_sync_behaviour.py", "it:connectors/rss/rss_integration_test.py::TestRSSConnector::test_tc_sync_001_both_feeds_up_to_the_article_limit"]
+
+  [[feature.behavior]]
+  id = "connectors.rss.incremental-sync"
+  says = "A later sync adds new entries and updates changed ones."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+  [[feature.behavior]]
+  id = "connectors.rss.deletions"
+  says = "A feed removed in the connector settings is removed with its entries; a failing feed removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/rss/rss_feed_lifecycle_integration_test.py::TestRSSFeedLifecycle::test_tc_feed_002_and_id_001_settings_change_removes_a_feed_and_keeps_guids_apart"]
+
+  [[feature.behavior]]
+  id = "connectors.rss.permissions"
+  says = "Feed content is public: entries get organization-level read permission."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "connectors.s3"
+title = "Amazon S3 sync"
+flow = "sync-indexing"
+what = "Syncs objects in buckets from Amazon S3 into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["s3"]
+code = ["backend/python/app/connectors/sources/s3/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.s3.full-sync"
+  says = "A full sync lists the readable buckets and writes each object as a file record under its bucket."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/s3/s3_assume_role_test.py::test_s3_iam_role_full_sync", "it:connectors/s3/s3_integration_test.py::TestS3Connector::test_tc_sync_001_full_sync_graph_validation"]
+
+  [[feature.behavior]]
+  id = "connectors.s3.incremental-sync"
+  says = "An incremental sync lists changed objects since the last run."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/s3/s3_integration_test.py::TestS3Connector::test_tc_incr_001_incremental_sync_new_files"]
+
+  [[feature.behavior]]
+  id = "connectors.s3.deletions"
+  says = "An object deleted at S3 leaves the index, and a bucket removed from the filter leaves the index."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/s3/s3_integration_test.py::TestS3Connector::test_tc_delete_001_deleted_object_leaves_the_index", "py:tests/unit/connectors/sources/object_store/behaviour/test_object_store_deletes_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.s3.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them. A personal connector gives the app to its creator alone, and a shared account syncs only the buckets it can read and names the skipped ones."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/object_store/behaviour/test_object_store_personal_scope_behaviour.py"]
+
+[[feature]]
+id = "connectors.salesforce"
+title = "Salesforce sync"
+flow = "sync-indexing"
+what = "Syncs accounts, deals, cases, notes and files from Salesforce into PipesHub as records and sends them to indexing. Covered by the Salesforce simulator (integration-tests/connectors/salesforce_sim.env)."
+connectors = ["salesforce"]
+code = ["backend/python/app/connectors/sources/salesforce/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.salesforce.full-sync"
+  says = "A full sync writes Salesforce objects and their files as records; a second full sync keeps files readable."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_salesforce_sync_modules.py", "it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_014_second_full_sync_keeps_files_readable"]
+
+  [[feature.behavior]]
+  id = "connectors.salesforce.incremental-sync"
+  says = "An incremental sync picks up changed records and sends a deal again when its Chatter feed changes."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_004_incremental_sync_picks_up_changes"]
+
+  [[feature.behavior]]
+  id = "connectors.salesforce.deletions"
+  says = "Records Salesforce reports as deleted (getDeleted) are removed and restored records return; a failed read removes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_010_file_unlinked_and_new_version", "it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_011_deleted_deal_and_restore", "it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_012_deletions_of_every_kind", "it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_015_failed_read_removes_nothing"]
+
+  [[feature.behavior]]
+  id = "connectors.salesforce.permissions"
+  says = "Record access follows Salesforce ownership and sharing, and an owner change moves access."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_002_access_equals_salesforce", "it:connectors/salesforce/salesforce_integration_test.py::TestSalesforceConnector::test_tc_sf_007_owner_change_moves_access"]
+
+[[feature]]
+id = "connectors.servicenow"
+title = "ServiceNow sync"
+flow = "sync-indexing"
+what = "Syncs knowledge bases, categories, articles and attachments from ServiceNow into PipesHub as records and sends them to indexing. Covered by the ServiceNow simulator (integration-tests/connectors/servicenow_sim.env)."
+connectors = ["servicenow"]
+code = ["backend/python/app/connectors/sources/servicenow/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.servicenow.full-sync"
+  says = "A first sync writes knowledge bases, categories, articles and their attachments as records; a second full sync changes nothing."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/servicenow/servicenow_integration_test.py::test_tc_sync_01_article_fields", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_sync_02_counts_match_the_instance_by_kb", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_sync_06_second_full_sync_changes_nothing", "it:connectors/servicenow/servicenow_sim_sync_test.py::TestServiceNowSimSync::test_tc_snsim_sync_001_first_sync", "it:connectors/servicenow/servicenow_sim_sync_test.py::TestServiceNowSimSync::test_tc_snsim_sync_004_full_sync_after_changes"]
+
+  [[feature.behavior]]
+  id = "connectors.servicenow.incremental-sync"
+  says = "A change at ServiceNow reaches PipesHub on the next incremental sync, paged with checkpoints."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/servicenow/servicenow_permissions_test.py::test_tc_perm_20_to_30_32_a_change_at_servicenow_reaches_pipeshub_on_incremental_sync", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_sync_03_new_article_appears", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_sync_04_tc_ver_01_02_body_edit_is_a_new_version_of_the_same_record", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_sync_05_title_edit_renames_without_reindexing"]
+
+  [[feature.behavior]]
+  id = "connectors.servicenow.deletions"
+  says = "An article search no longer shows is removed, a deleted category leaves its articles under the knowledge base, and a revoked sign-in deletes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/servicenow/servicenow_integration_test.py::test_tc_del_01_to_05_07_article_that_search_no_longer_shows_is_removed", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_hier_05_deleted_category_leaves_its_article_under_the_kb", "it:connectors/servicenow/servicenow_regression_test.py::test_tc_res_06_tc_notif_03_06_08_revoked_sign_in_deletes_nothing_and_is_one_notice"]
+
+  [[feature.behavior]]
+  id = "connectors.servicenow.permissions"
+  says = "User criteria, roles, groups and ownership become record permissions; an attachment has its article's access, and a permission-only change does not re-index."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/servicenow/test_permissions.py", "it:connectors/servicenow/servicenow_integration_test.py::test_tc_hier_04_move_to_another_kb_takes_its_permissions", "it:connectors/servicenow/servicenow_permissions_test.py::test_tc_perm_01_10_11_12_13_kb_without_criteria_is_open_only_to_owner_managers_and_admins", "it:connectors/servicenow/servicenow_permissions_test.py::test_tc_perm_04_to_09_can_read_by_one_kind_of_criterion", "it:connectors/servicenow/servicenow_permissions_test.py::test_tc_perm_11_ownership_group_member_reads_its_article", "it:connectors/servicenow/servicenow_permissions_test.py::test_tc_perm_14_contained_role_and_15_child_group", "it:connectors/servicenow/servicenow_permissions_test.py::test_tc_perm_17_scripted_criterion_fails_closed"]
+
+[[feature]]
+id = "connectors.slack"
+title = "Slack sync"
+flow = "sync-indexing"
+what = "Syncs channels, messages, threads and files from Slack into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["slack"]
+code = ["backend/python/app/connectors/sources/slack/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.slack.full-sync"
+  says = "A full sync writes channels, messages, threads and files as records (workspace and personal variants)."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/slack/behaviour/test_slack_message_sync_behaviour.py", "py:tests/unit/connectors/sources/slack/behaviour/test_slack_personal_sync_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.slack.incremental-sync"
+  says = "Later syncs read messages since the last sync (the first sync looks back 30 days), including threads that grew new replies."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/slack/behaviour/test_slack_files_and_changes_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.slack.deletions"
+  says = "A message or file deleted in Slack is reported as not found when it is reindexed or opened, and a Slack outage is not read as a deletion."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/slack/behaviour/test_slack_files_and_changes_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.slack.permissions"
+  says = "Channel membership decides who can read a channel's messages; private channels are visible only to members."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/slack/behaviour/test_slack_access_behaviour.py", "py:tests/unit/connectors/sources/slack/behaviour/test_slack_shadow_access_behaviour.py"]
+
+[[feature]]
+id = "connectors.smb"
+title = "SMB network share sync"
+flow = "sync-indexing"
+what = "Syncs files and folders on an SMB share from SMB network share into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account."
+connectors = ["smb"]
+code = ["backend/python/app/connectors/sources/smb/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.smb.full-sync"
+  says = "A full sync lists the share and writes folders and files as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/smb/smb_failures_test.py::TestSmbFailures::test_tc_smb_it_001_first_sync_matches_the_share", "it:connectors/smb/smb_integration_test.py::TestSmbConnector::test_sync_fixture_tree"]
+
+  [[feature.behavior]]
+  id = "connectors.smb.incremental-sync"
+  says = "There is no change journal on an SMB share, so every run is a complete listing."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+  [[feature.behavior]]
+  id = "connectors.smb.deletions"
+  says = "A file or folder gone from the share is removed after a complete listing; a share that disappears mid-sync keeps the records and access."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/smb/smb_failures_test.py::TestSmbFailures::test_tc_smb_it_002_share_gone_during_a_full_sync_keeps_records_and_access", "it:connectors/smb/smb_failures_test.py::TestSmbFailures::test_tc_smb_it_006_deletions_leave", "it:connectors/smb/smb_integration_test.py::TestSmbConnector::test_rename_uses_move_not_delete_create"]
+
+  [[feature.behavior]]
+  id = "connectors.smb.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/smb/smb_failures_test.py::TestSmbFailures::test_tc_smb_it_002_share_gone_during_a_full_sync_keeps_records_and_access"]
+
+[[feature]]
+id = "connectors.snowflake"
+title = "Snowflake sync"
+flow = "sync-indexing"
+what = "Syncs tables as records from Snowflake into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["snowflake"]
+code = ["backend/python/app/connectors/sources/snowflake/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.snowflake.full-sync"
+  says = "A sync reads the catalog, writes tables as records, and saves the state it compared."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/snowflake/snowflake_integration_test.py::TestSnowflakeConnector::test_tc_full_001_full_sync_keeps_everything", "it:connectors/snowflake/snowflake_integration_test.py::TestSnowflakeConnector::test_tc_sync_001_first_sync"]
+
+  [[feature.behavior]]
+  id = "connectors.snowflake.incremental-sync"
+  says = "A later sync picks up a new table and skips an unchanged one."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/test_snowflake_incremental_sync.py", "it:connectors/snowflake/snowflake_integration_test.py::TestSnowflakeConnector::test_tc_incr_001_new_table_is_picked_up"]
+
+  [[feature.behavior]]
+  id = "connectors.snowflake.deletions"
+  says = "A dropped table, and a schema the role loses access to, are removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/snowflake/snowflake_integration_test.py::TestSnowflakeConnector::test_tc_del_001_dropped_table_is_removed", "it:connectors/snowflake/snowflake_integration_test.py::TestSnowflakeConnector::test_tc_revoke_001_a_schema_the_role_loses_is_removed"]
+
+  [[feature.behavior]]
+  id = "connectors.snowflake.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Snowflake account and the repo has no simulator for it"
+
+[[feature]]
+id = "connectors.web"
+title = "Web crawler sync"
+flow = "sync-indexing"
+what = "Syncs web pages found from a start URL and its sitemaps from Web crawler into PipesHub as records and sends them to indexing. Runs in the integration stack without a vendor account. It uses a fake-website fixture (web_fixtures)."
+connectors = ["web"]
+code = ["backend/python/app/connectors/sources/web/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.web.full-sync"
+  says = "A crawl stores the pages inside its domain, depth, page cap and URL filters, follows sitemaps, honors robots.txt, and never requests a private or metadata address."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/web/web_integration_test.py::TestWebConnector::test_tc_sync_001_crawl_indexes_exactly_the_pages_in_scope", "py:tests/unit/connectors/sources/web/behaviour/test_web_crawl_scope_behaviour.py", "py:tests/unit/connectors/sources/web/behaviour/test_web_sitemap_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.web.incremental-sync"
+  says = "A later sync re-indexes a changed page, stores a newly linked page and leaves an unchanged page alone; a failed read never counts as a page that is gone."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/web/behaviour/test_web_incremental_behaviour.py", "it:connectors/web/web_integration_test.py::TestWebConnector::test_tc_incr_001_newly_linked_page_is_indexed", "py:tests/unit/connectors/sources/web/behaviour/test_web_recrawl_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.web.deletions"
+  says = "Narrowing the file-type filter removes what it now leaves out; a page that could not be fetched is left as it is."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/web/behaviour/test_web_filter_change_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "connectors.web.permissions"
+  says = "Records carry no per-item access of their own: the connector's access rule (app-level permission model) decides who can read them."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/web/web_integration_test.py::TestWebConnectorVisibility::test_tc_perm_001_a_member_finds_a_crawled_page"]
+
+[[feature]]
+id = "connectors.zammad"
+title = "Zammad sync"
+flow = "sync-indexing"
+what = "Syncs tickets, articles and knowledge base answers from Zammad into PipesHub as records and sends them to indexing. Covered by the Zammad simulator (integration-tests/connectors/zammad_sim.env)."
+connectors = ["zammad"]
+code = ["backend/python/app/connectors/sources/zammad/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.zammad.full-sync"
+  says = "A full sync writes tickets, their articles, attachments and knowledge base answers as records."
+  priority = "P0"
+  kind = "function"
+  tests = ["it:connectors/zammad/zammad_integration_test.py::TestZammadConnector::test_tc_sync_001_full_sync_graph_validation", "it:connectors/zammad/zammad_sim_access_test.py::TestZammadSimAccess::test_tc_zmsim_acl_001_first_sync_access_matrix", "it:connectors/zammad/zammad_sim_kb_test.py::TestZammadSimKnowledgeBase::test_tc_zmsim_kb_001_first_sync_answer_states", "it:connectors/zammad/zammad_sim_sync_test.py::TestZammadSimSync::test_tc_zmsim_sync_001_first_and_unchanged_sync"]
+
+  [[feature.behavior]]
+  id = "connectors.zammad.incremental-sync"
+  says = "A later sync picks up new and changed tickets and knowledge base answers."
+  priority = "P1"
+  kind = "function"
+  tests = ["it:connectors/zammad/zammad_integration_test.py::TestZammadConnector::test_tc_incr_001_new_ticket_is_picked_up", "it:connectors/zammad/zammad_sim_sync_test.py::TestZammadSimSync::test_tc_zmsim_sync_002_incremental_changes"]
+
+  [[feature.behavior]]
+  id = "connectors.zammad.deletions"
+  says = "A removed ticket or deleted knowledge base answer is removed from PipesHub."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/zammad/behaviour/test_zammad_removal_behaviour.py", "it:connectors/zammad/zammad_sim_kb_test.py::TestZammadSimKnowledgeBase::test_tc_zmsim_kb_005_deleted_answer"]
+
+  [[feature.behavior]]
+  id = "connectors.zammad.permissions"
+  says = "Ticket group permissions reach the record group; access levels, role group access and deactivated agents or groups change who can read."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/zammad/behaviour/test_zammad_group_readers_behaviour.py", "py:tests/unit/connectors/sources/zammad/behaviour/test_zammad_kb_category_permissions_behaviour.py", "py:tests/unit/connectors/sources/zammad/test_zammad_access.py", "py:tests/unit/connectors/sources/zammad/test_zammad_kb_access.py", "it:connectors/zammad/zammad_integration_test.py::TestZammadConnector::test_tc_perm_001_group_permission_reaches_the_record_group", "it:connectors/zammad/zammad_sim_access_test.py::TestZammadSimAccess::test_tc_zmsim_acl_001_first_sync_access_matrix", "it:connectors/zammad/zammad_sim_access_test.py::TestZammadSimAccess::test_tc_zmsim_acl_002_access_level_change", "it:connectors/zammad/zammad_sim_access_test.py::TestZammadSimAccess::test_tc_zmsim_acl_003_deactivated_agent"]
+
+[[feature]]
+id = "connectors.zendesk"
+title = "Zendesk sync"
+flow = "sync-indexing"
+what = "Syncs tickets, comments and help center articles from Zendesk into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["zendesk"]
+code = ["backend/python/app/connectors/sources/zendesk/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.zendesk.full-sync"
+  says = "A sync writes tickets, their comments and attachments, and help center articles, as records."
+  priority = "P0"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Zendesk account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.zendesk.permissions"
+  says = "A ticket belongs to its Zendesk group, which holds a read grant."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:connectors/zendesk/zendesk_integration_test.py::TestZendeskLive::test_09_ticket_group_matches_live_name", "it:connectors/zendesk/zendesk_integration_test.py::TestZendeskLive::test_10_ticket_belongs_to_its_group", "it:connectors/zendesk/zendesk_integration_test.py::TestZendeskLive::test_11_ticket_group_has_read_grant"]
+
+[[feature]]
+id = "connectors.zoom"
+title = "Zoom sync"
+flow = "sync-indexing"
+what = "Syncs meetings, transcripts and recordings from Zoom into PipesHub as records and sends them to indexing. No simulator: its integration tests need a real account."
+connectors = ["zoom"]
+code = ["backend/python/app/connectors/sources/zoom/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.zoom.full-sync"
+  says = "A sync reads meetings per user up to today and writes them as records, driven by a checkpoint."
+  priority = "P0"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Zoom account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.zoom.incremental-sync"
+  says = "A checkpoint-driven run reads only meetings since the last run."
+  priority = "P1"
+  kind = "function"
+  tests = []
+  manual = "Needs a real Zoom account and the repo has no simulator for it"
+
+  [[feature.behavior]]
+  id = "connectors.zoom.permissions"
+  says = "A meeting record is owned by its host (an owner grant to the user)."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "Needs a real Zoom account and the repo has no simulator for it"
+
+[ignore]
+routes = []
+
