@@ -229,26 +229,32 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     orgId: string,
     dynamicClientOrgId: string,
   ): Promise<number> {
-    const ids = await OAuthApp.distinct('_id', {
+    const apps = await OAuthApp.find({
       orgId: oid(orgId),
       ownerFormat: null,
       $or: [{ isDynamic: true }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }],
-    });
-    if (ids.length === 0) return 0;
-    await OAuthApp.updateMany(
-      { _id: { $in: ids } },
-      {
-        $set: { createdBy: oid(NO_APP_CREATOR), ownerFormat: APP_OWNER_FORMAT },
-      },
-    );
-    if (dynamicClientOrgId !== orgId) {
+    })
+      .select('_id isDynamic')
+      .lean<{ _id: Types.ObjectId; isDynamic?: boolean }[]>();
+    const disowned = {
+      createdBy: oid(NO_APP_CREATOR),
+      ownerFormat: APP_OWNER_FORMAT,
+    };
+    // The marker goes in the same write as every change it certifies: a write that fails leaves the
+    // app unmarked, so the next run repairs it.
+    const dynamic = apps.filter((a) => a.isDynamic === true).map((a) => a._id);
+    const device = apps.filter((a) => a.isDynamic !== true).map((a) => a._id);
+    if (dynamic.length > 0) {
       await OAuthApp.updateMany(
-        { _id: { $in: ids }, isDynamic: true },
-        { $set: { orgId: oid(dynamicClientOrgId) } },
+        { _id: { $in: dynamic } },
+        { $set: { ...disowned, orgId: oid(dynamicClientOrgId) } },
       );
     }
+    if (device.length > 0) {
+      await OAuthApp.updateMany({ _id: { $in: device } }, { $set: disowned });
+    }
     // Each app once, as PostgreSQL's one UPDATE counts.
-    return ids.length;
+    return apps.length;
   }
 
   async setDynamicGrant(
