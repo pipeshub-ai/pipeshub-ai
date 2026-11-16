@@ -258,10 +258,10 @@ async def test_a_failed_graph_read_on_a_delete_without_an_org_is_retried_not_fen
 
     _seed(store)
     handler = _handler()
-    async def get_document(*_a: object, raise_on_error: bool = False, **_k: object) -> None:
+    async def get_document(*_a: object, raise_on_error: bool = False, **_k: object) -> dict[str, None]:
         if raise_on_error:
             raise ConnectionError("graph unavailable")
-        return                                               # what a non-raising read answers on a blip
+        return {"orgId": None}                                # a non-raising read answers with no org on a blip
 
     handler.event_processor.graph_provider.get_document = get_document
 
