@@ -39,14 +39,15 @@ POINTS = [
 ]
 
 
-@pytest.fixture
-def stores(redis_service, qdrant_service) -> dict:
-    return {"redis": redis_service, "qdrant": qdrant_service}
-
-
 @pytest.fixture(params=["redis", "qdrant"])
-async def seeded(request, stores) -> AsyncIterator[tuple]:
-    svc = stores[request.param]
+def store(request):
+    """The param's own store only: each backend job starts one store and selects its params with -k, so the other is never requested."""
+    return request.param, request.getfixturevalue(f"{request.param}_service")
+
+
+@pytest.fixture
+async def seeded(store) -> AsyncIterator[tuple]:
+    kind, svc = store
     name = make_collection("blank")
     await svc.create_collection(name, make_collection_config())
     for field, schema in PAYLOAD_KEYWORD_INDEXES:

@@ -225,10 +225,23 @@ class TestBackfill:
             FieldCondition(key="metadata.blockId", values=["b1"]),
         ])
 
+    @pytest.fixture(autouse=True)
+    def _fast_wait(self, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0.05")
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._BACKFILL_POLL_SECONDS", 0.01)
+
+    @staticmethod
+    def _old_field_filter() -> FilterExpression:
+        return FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=ORG),
+            FieldCondition(key="metadata.virtualRecordId", value="vr1"),
+        ])
+
     @pytest.mark.parametrize(("indexing", "percent"), [(1, "0.4"), (1, "1"), (0, "0.9")])
-    async def test_a_delete_is_refused_while_the_index_is_still_reading_documents(self, indexing, percent) -> None:
+    async def test_a_delete_by_the_field_being_filled_raises_after_the_bound(self, indexing, percent) -> None:
         names = ("metadata_orgId", "metadata_blockId")
-        svc, execute = _service(_info(*names), _info(*names, indexing=indexing, percent=percent))
+        busy = _info(*names, indexing=indexing, percent=percent)
+        svc, execute = _service(_info(*names), *[busy] * 500)
         with pytest.raises(IndexBackfilling) as raised:
             await svc.delete_points("col", self._filter())
         assert raised.value.index == "col_idx"
@@ -236,12 +249,44 @@ class TestBackfill:
         assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")
         svc.client.delete.assert_not_awaited()
 
-    async def test_a_payload_write_is_refused_too(self) -> None:
+    async def test_a_delete_by_the_field_being_filled_waits_for_the_scan_then_runs(self, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "30")
         names = ("metadata_orgId", "metadata_blockId")
-        svc, execute = _service(_info(*names), _info(*names, indexing=1, percent="0.2"))
+        busy = _info(*names, indexing=1, percent="0.3")
+        svc, execute = _service(_info(*names), busy, busy, busy, _info(*names), [0])
+        await svc.delete_points("col", self._filter())
+        assert len(_calls(execute, "FT.INFO")) == 5  # one schema check, three polls that saw the scan, one that saw it done
+        assert len(_calls(execute, "FT.SEARCH")) == 1
+
+    async def test_a_delete_by_fields_already_complete_runs_during_the_scan(self) -> None:
+        names = ("metadata_orgId", "metadata_virtualRecordId", "metadata_blockId")
+        busy = _info(*names, indexing=1, percent="0.3")
+        svc, execute = _service(_info(*names), busy, [0])
+        await svc.delete_points("col", self._old_field_filter())
+        assert len(_calls(execute, "FT.INFO")) == 2
+        assert len(_calls(execute, "FT.SEARCH")) == 1
+
+    async def test_a_field_this_process_added_is_waited_for_even_when_the_index_was_created_with_it(self) -> None:
+        names = ("metadata_orgId", "metadata_virtualRecordId")
+        busy = _info(*names, indexing=1, percent="0.3")
+        svc, _ = _service(None, _info(*names), *[busy] * 500)
+        await svc.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
+        with pytest.raises(IndexBackfilling):
+            await svc.delete_points("col", self._old_field_filter())
+
+    async def test_a_payload_write_by_the_field_being_filled_waits_then_is_refused(self) -> None:
+        names = ("metadata_orgId", "metadata_blockId")
+        svc, execute = _service(_info(*names), *[_info(*names, indexing=1, percent="0.2")] * 500)
         with pytest.raises(IndexBackfilling):
             await svc.set_payload("col", {"metadata.x": "1"}, self._filter())
         assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")
+
+    @pytest.mark.parametrize("raw", ["bad", "-5"])
+    async def test_an_unusable_bound_falls_back_to_the_default_or_zero(self, raw, monkeypatch) -> None:
+        from app.services.vector_db.redis.redis_vector import _DEFAULT_BACKFILL_WAIT_SECONDS, _backfill_wait_seconds
+
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", raw)
+        assert _backfill_wait_seconds() == (_DEFAULT_BACKFILL_WAIT_SECONDS if raw == "bad" else 0.0)
 
     async def test_a_delete_goes_ahead_once_the_index_has_caught_up(self) -> None:
         names = ("metadata_orgId", "metadata_blockId")

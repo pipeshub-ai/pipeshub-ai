@@ -54,22 +54,23 @@ POINTS = [
 ]
 
 
-@pytest.fixture
-def stores(qdrant_service, opensearch_service) -> dict:
-    return {"qdrant": qdrant_service, "opensearch": opensearch_service}
-
-
 @pytest.fixture(params=["qdrant", "opensearch"])
-async def seeded(request, stores) -> AsyncIterator[tuple]:
+def store(request):
+    """The param's own store only: each backend job starts one store and selects its params with -k, so the other is never requested."""
+    return request.param, request.getfixturevalue(f"{request.param}_service")
+
+
+@pytest.fixture
+async def seeded(store) -> AsyncIterator[tuple]:
     """A collection whose only payload indexes are the two the delete paths always have: blockId is NOT indexed or mapped."""
-    svc = stores[request.param]
+    kind, svc = store
     name = make_collection("unidx")
     await svc.create_collection(name, make_collection_config())
     for field in ("metadata.orgId", "metadata.virtualRecordId"):
         await svc.create_index(name, field, {"type": "keyword"})
     await svc.upsert_points(name, POINTS)
     for _ in range(100):
-        if request.param == "opensearch":
+        if kind == "opensearch":
             await svc.client.indices.refresh(index=name)
         if (await svc.get_collection_info(name)).points_count == len(POINTS):
             break

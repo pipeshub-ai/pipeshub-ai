@@ -325,9 +325,10 @@ class TestBackfill:
             ])
         await _settle(svc, collection, BACKFILL_DOCS)
 
-    async def test_a_delete_is_refused_until_the_field_is_indexed_then_removes_exactly_the_block(self, redis_service, collection) -> None:
+    async def test_a_delete_by_the_new_field_with_no_wait_is_refused_and_removes_nothing(self, redis_service, collection, monkeypatch) -> None:
         from app.services.vector_db.redis.errors import IndexBackfilling
 
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0")
         await self._big_collection(redis_service, collection)
         await redis_service.create_index(collection, "metadata.blockId", {"type": "keyword"})
         flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": TARGET, "blockId": [f"blk{BACKFILL_DOCS - 1}", "blk2"]})
@@ -336,16 +337,37 @@ class TestBackfill:
         with pytest.raises(IndexBackfilling):
             await redis_service.delete_points(collection, flt)
         assert await redis_service.count_points(collection, await redis_service.filter_collection(must={"orgId": ORG})) == BACKFILL_DOCS
-
         await _alter_settled(redis_service, collection)
-        await redis_service.delete_points(collection, flt)  # blk2 is the one of TARGET that exists
+
+    async def test_a_delete_by_the_new_field_waits_out_the_scan_then_removes_exactly_the_block(self, redis_service, collection, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "120")
+        await self._big_collection(redis_service, collection)
+        await redis_service.create_index(collection, "metadata.blockId", {"type": "keyword"})
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": TARGET, "blockId": [f"blk{BACKFILL_DOCS - 1}", "blk2"]})
+
+        await redis_service.delete_points(collection, flt)  # returns only after the scan; blk2 is the one of TARGET that exists
         assert await _count(redis_service, collection, virtualRecordId=TARGET) == 2
         assert await _count(redis_service, collection, blockId=["blk2"]) == 0
         assert await _count(redis_service, collection) == BACKFILL_DOCS - 1
 
-    async def test_a_payload_write_is_refused_during_the_backfill_too(self, redis_service, collection) -> None:
+    async def test_a_delete_by_fields_already_complete_runs_during_the_scan(self, redis_service, collection, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0")
+        await self._big_collection(redis_service, collection)
+        await redis_service.create_index(collection, "metadata.blockId", {"type": "keyword"})
+        idx = redis_service._index_name(collection)
+        from app.services.vector_db.redis.redis_vector import _parse_ft_info
+
+        assert int(_parse_ft_info(await redis_service.client.execute_command("FT.INFO", idx)).get("indexing", 0)) == 1, "the scan must still run"
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": TARGET})
+        await redis_service.delete_points(collection, flt)
+        await _alter_settled(redis_service, collection)
+        assert await _count(redis_service, collection, virtualRecordId=TARGET) == 0
+        assert await _count(redis_service, collection) == BACKFILL_DOCS - 3
+
+    async def test_a_payload_write_by_the_new_field_with_no_wait_is_refused(self, redis_service, collection, monkeypatch) -> None:
         from app.services.vector_db.redis.errors import IndexBackfilling
 
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0")
         await self._big_collection(redis_service, collection)
         await redis_service.create_index(collection, "metadata.blockId", {"type": "keyword"})
         flt = await redis_service.filter_collection(must={"orgId": ORG, "blockId": ["blk1"]})

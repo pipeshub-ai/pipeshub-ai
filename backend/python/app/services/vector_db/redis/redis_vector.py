@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 import time
 from dataclasses import replace
@@ -158,6 +159,18 @@ _NO_TIMEOUT = ("TIMEOUT", "0")
 # against the schema too (`_require_indexed`), so every path raises the same typed error.
 _DIALECT = ("DIALECT", "2")
 # How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
+# Fields that FT.CREATE gives every index (create_collection). Every other field arrives through FT.ALTER, which returns at
+# once and indexes the stored documents in the background: until the scan ends such a field matches only the documents reached.
+_CREATE_TIME_FIELDS = frozenset({
+    "page_content", "dense_embedding", "metadata_orgId", "metadata_virtualRecordId",
+    "connectorIds", "recordGroupIds", "rootRecordGroupIds",
+})
+# How long a delete or payload write that names a field still being back-filled waits for the scan (seconds). A back-fill took
+# about 2.5 minutes per 300k documents, so the default covers roughly a million. The wait is inside the call: the
+# message is not redelivered, so it does not use up delivery attempts.
+_BACKFILL_WAIT_ENV = "REDIS_VECTOR_BACKFILL_WAIT_SECONDS"
+_DEFAULT_BACKFILL_WAIT_SECONDS = 600.0
+_BACKFILL_POLL_SECONDS = 1.0
 _SETTLE_ATTEMPTS = 5
 _SETTLE_DELAY_SECONDS = 0.05
 
@@ -196,6 +209,14 @@ def _is_unknown_index_error(exc: Exception) -> bool:
         # Redis 8.8 and later, which the floating redis:8 tag now serves.
         or "search_index_not_found" in message
     )
+
+
+def _backfill_wait_seconds() -> float:
+    """The bound on waiting for a field's back-fill: ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS``, or the default when unset or not a number."""
+    try:
+        return max(0.0, float(os.environ[_BACKFILL_WAIT_ENV]))
+    except (KeyError, ValueError):
+        return _DEFAULT_BACKFILL_WAIT_SECONDS
 
 
 class RedisVectorService(IVectorDBService):
@@ -584,6 +605,7 @@ class RedisVectorService(IVectorDBService):
                     "SCHEMA", "ADD",
                     redis_alias, field_type, *case,
                 )
+                self._altered_fields.setdefault(idx, set()).add(redis_alias)
             finally:
                 self._schema_fields.pop(idx, None)
         except Exception as e:
@@ -714,7 +736,7 @@ class RedisVectorService(IVectorDBService):
         query = filter_expression_to_redis_query(base_filter)
         # Before the first page is read: a clause on a field the index lacks must stop the delete, not shrink it.
         await self._require_indexed(idx, query)
-        await self._require_settled(idx)
+        await self._require_settled(idx, query)
         # Redis hash fields cannot contain dots, so a canonical key like
         # "metadata.x" is stored and echoed back as "metadata_x". Normalise once:
         # looking the value up under the canonical name misses, and a miss reads
@@ -1469,7 +1491,7 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
         await self._require_indexed(idx, query)
-        await self._require_settled(idx)
+        await self._require_settled(idx, query)
 
         found: dict[bytes, None] = {}
         total = 0
@@ -1571,16 +1593,31 @@ class RedisVectorService(IVectorDBService):
         read = await self._read_index(idx)
         return None if read is None else read[0]
 
-    async def _require_settled(self, idx: str) -> None:
-        """Refuse (:class:`IndexBackfilling`) while the index has not yet read every document that was already stored.
+    @property
+    def _altered_fields(self) -> dict[str, set[str]]:
+        """index name → the fields this process added with FT.ALTER (their scan may still be running)."""
+        return self.__dict__.setdefault("_altered_cache", {})
 
-        For what acts on "every match": a delete or a payload write. An ``FT.ALTER`` that adds a field returns at once and indexes the
-        existing documents in the background (minutes on a large collection); until then the field matches only the documents reached so far.
-        Read on every call, not kept: the state changes by itself.
+    async def _require_settled(self, idx: str, query: str) -> None:
+        """Hold a delete or payload write until the fields its filter names are fully indexed (:class:`IndexBackfilling` after the bound).
+
+        An ``FT.ALTER`` that adds a field returns at once and indexes the existing documents in the background (minutes on a large
+        collection); until then that field matches only the documents reached so far, so a write built on it would leave some behind.
+        Fields the index was created with are complete from the start, so a write that names only those runs during the scan. A write
+        that names a field still being filled waits inside this call, polling ``FT.INFO``, for at most
+        ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed delivery), then raises. Read on every call: the state changes by itself.
         """
-        read = await self._read_index(idx)
-        if read is not None and read[2]:
-            raise IndexBackfilling(idx, read[1])
+        named = query_fields(query)
+        deadline = time.monotonic() + _backfill_wait_seconds()
+        while True:
+            read = await self._read_index(idx)
+            if read is None or not read[2]:
+                return
+            if not ((named - _CREATE_TIME_FIELDS) | (named & self._altered_fields.get(idx, set()))):
+                return
+            if time.monotonic() >= deadline:
+                raise IndexBackfilling(idx, read[1])
+            await asyncio.sleep(_BACKFILL_POLL_SECONDS)
 
     async def _require_indexed(self, idx: str, *queries: str) -> None:
         """Refuse a query that names a field the index does not hold (:class:`FilterFieldNotIndexed`)."""
