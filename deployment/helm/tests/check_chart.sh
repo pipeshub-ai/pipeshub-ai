@@ -367,6 +367,8 @@ REFUSED=(
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
   "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
+  "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
+  "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
 )
 for entry in "${REFUSED[@]}"; do

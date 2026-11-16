@@ -136,7 +136,11 @@ Name of the parsing Deployment, Service and PDB, and the host in PARSING_SERVICE
 "-parsing" appended, kept within the 63-character DNS label limit by shortening the full name, not the suffix.
 */}}
 {{- define "pipeshub-ai.parsingName" -}}
-{{- printf "%s-parsing" (include "pipeshub-ai.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- $name := printf "%s-parsing" (include "pipeshub-ai.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- if eq $name (include "pipeshub-ai.fullname" .) -}}
+{{- fail (printf "the parsing workload name %q equals the main application's name; change nameOverride or fullnameOverride" $name) -}}
+{{- end -}}
+{{- $name -}}
 {{- end }}
 
 {{- define "pipeshub-ai.parsingSelectorLabels" -}}
