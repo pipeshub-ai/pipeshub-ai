@@ -169,3 +169,57 @@ def test_the_explain_reads_the_state_and_the_tracked_reasons_of_one_decision() -
         assert (row["rule"], row["brakeReason"]) in {("cpu", "cpu"), ("grow_band", "ramping")}, row
     finally:
         governor.close()
+
+
+def test_a_cooldown_follows_the_cause_that_holds_it_not_the_last_brake() -> None:
+    """mem_hard, then a CPU brake, then a cooldown whose longest window is the memory one: the pool is held for
+    memory again, and that is an entry (the CPU brake had ended the memory hold as far as anyone could see)."""
+    governor = make_test_governor()
+    try:
+        def cooldown(causes: tuple[tuple[str, float], ...]) -> ControllerState:
+            state = ControllerState.initial()
+            return state.with_update(Pool.HEAVY_PARSE, replace(state.get(Pool.HEAVY_PARSE), rule=LimitRule.COOLDOWN,
+                                                                  cooldown_until=NOW + 300.0, cooldown_causes=causes))
+
+        steps = [_state(LimitRule.MEM_HARD), _state(LimitRule.CPU), cooldown((("cpu", NOW + 60.0), ("memory", NOW + 300.0)))]
+        previous = ControllerState.initial()
+        for state in steps:
+            governor._count_brake_entries(previous, state, NOW)
+            previous = state
+        assert governor.admission_explain()["pools"]["heavy_parse"]["brakeReason"] == "memory_hard"
+        assert _entries(governor)["heavy_parse"] == {"memory_hard": 2, "cpu": 1}
+        governor._count_brake_entries(previous, cooldown((("cpu", NOW + 400.0), ("memory", NOW + 300.0))), NOW)
+        assert governor.admission_explain()["pools"]["heavy_parse"]["brakeReason"] == "cpu"  # the cpu window is the longer now
+        assert _entries(governor)["heavy_parse"] == {"memory_hard": 2, "cpu": 2}
+    finally:
+        governor.close()
+
+
+def test_the_sampling_decision_itself_counts_the_entry() -> None:
+    """Through the real ``_sample_once``, not ``_count_brake_entries`` called by hand: a sample at 97 % of the
+    memory limit brakes the pools, and the governor's count shows it (fails when the count leaves ``_sample_once``)."""
+    import asyncio
+    import logging
+
+    from app.services.resource_governor import ResourceGovernor
+    from app.services.resource_governor.models import ResourceSnapshot
+
+    level = [0.1]
+
+    class _Probe:
+        def snapshot(self) -> ResourceSnapshot:
+            limit = 8 * 1024**3
+            return ResourceSnapshot(cpu_quota=4.0, cpu_utilisation=0.1, cpu_throttled_ratio=0.0, cpu_pressure=0.0,
+                                    mem_limit_bytes=limit, mem_working_set_bytes=int(limit * level[0]), source="test")
+
+    governor = ResourceGovernor(logger=logging.getLogger("test.brake"), env_index=24, worker_count=1, probe=_Probe())
+    try:
+        asyncio.run(governor._sample_once())
+        assert _entries(governor) == {}
+        level[0] = 0.97
+        asyncio.run(governor._sample_once())
+        entries = _entries(governor)
+        assert entries, "a sample at 97 % memory counted no brake entry"
+        assert all(reason in ("memory_soft", "memory_hard") for row in entries.values() for reason in row), entries
+    finally:
+        governor.close()

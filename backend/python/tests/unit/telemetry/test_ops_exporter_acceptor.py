@@ -434,3 +434,56 @@ def test_a_flood_of_well_formed_scrapers_under_gil_load_is_answered_or_cleanly_r
     finally:
         stop.set()
         _close(exporter)
+
+
+# -- the accept queue is as deep as the cap, and a client that left takes nothing ---
+
+
+def test_the_listen_backlog_follows_the_handler_cap(tmp_path: Path) -> None:
+    assert ox.BoundedServer.request_queue_size == ox.MAX_CONNECTIONS
+    server = ox.BoundedServer((HOST, 0), ox._Handler, max_connections=5)
+    try:
+        assert server.request_queue_size == 5
+    finally:
+        server.server_close()
+
+
+def test_a_connection_whose_client_already_left_takes_no_slot_and_no_queue_place(tmp_path: Path) -> None:
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    try:
+        c, d = socket.socketpair()
+        d.close()  # the client gave up before it was accepted
+        server.process_request(c, ("x", 0))
+        assert c.fileno() == -1  # closed at once
+        assert not server._queue and not server._conns and not server._live
+    finally:
+        _close(exporter)
+
+
+def test_a_queued_connection_whose_client_left_while_it_waited_never_takes_the_freed_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ox, "ADMIT_WAIT_S", 30.0)
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    hold = threading.Event()
+    try:
+        held = []
+        for _ in range(ox.MAX_CONNECTIONS):
+            t = threading.Thread(target=hold.wait, daemon=True)
+            t.start()
+            server._live.add(t)
+            held.append(t)
+        c, d = socket.socketpair()
+        server.process_request(c, ("x", 0))
+        assert len(server._queue) == 1
+        d.close()  # it gives up while queued
+        hold.set()  # every slot frees
+        assert _wait_until(lambda: not server._queue, 5)
+        assert c.fileno() == -1 and not server._conns, "a connection that had left was given a slot"
+    finally:
+        hold.set()
+        _close(exporter)

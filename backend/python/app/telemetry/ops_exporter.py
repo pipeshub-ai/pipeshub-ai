@@ -878,7 +878,7 @@ class BoundedServer(HTTPServer):
     """
 
     daemon_threads = True
-    request_queue_size = 128
+    request_queue_size = MAX_CONNECTIONS  # the kernel's accept queue is as deep as the handler cap: a deeper one only holds stale connections
 
     def __init__(
         self,
@@ -890,6 +890,7 @@ class BoundedServer(HTTPServer):
         # Everything server_close() touches exists before the base class binds: a failed bind (the port is
         # held by another process) calls server_close() from inside __init__.
         self._max = max_connections
+        self.request_queue_size = max_connections  # the listen backlog follows this server's cap
         self._deadline = REQUEST_DEADLINE_S if request_deadline is None else request_deadline
         self._conns: dict[socket.socket, list[Any]] = {}  # socket -> [accepted at, being answered]
         self._lock = threading.Lock()
@@ -937,6 +938,16 @@ class BoundedServer(HTTPServer):
             sock.send(_REFUSAL)
         self.shutdown_request(sock)
 
+    @staticmethod
+    def _peer_gone(sock: socket.socket) -> bool:
+        """True when the client has already closed (or reset) the connection: it needs no slot and no answer."""
+        try:
+            return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+        except (BlockingIOError, InterruptedError):
+            return False  # open, nothing sent yet
+        except OSError:
+            return True
+
     def _free_slots_locked(self) -> int:
         self._live = {t for t in self._live if t.is_alive()}  # a slot is held until its thread has exited
         return self._max - len(self._live)
@@ -968,6 +979,9 @@ class BoundedServer(HTTPServer):
     def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         """Runs on the acceptor thread: it never waits."""
         sock: socket.socket = request  # type: ignore[assignment]
+        if self._peer_gone(sock):
+            self.shutdown_request(sock)  # it left before it was taken: no slot, no queue place, no thread
+            return
         with self._lock:
             if not self._queue and self._free_slots_locked() > 0:
                 refuse = not self._take_slot_locked(sock, client_address)
@@ -984,6 +998,7 @@ class BoundedServer(HTTPServer):
     def _admit_loop(self) -> None:
         while not self._closing.is_set():
             refused: list[socket.socket] = []
+            gone: list[socket.socket] = []
             with self._wake:
                 if not self._queue:
                     self._wake.wait(0.5)
@@ -994,6 +1009,9 @@ class BoundedServer(HTTPServer):
                 free = self._free_slots_locked()
                 while self._queue and free > 0:
                     sock, client_address, _ = self._queue.popleft()
+                    if self._peer_gone(sock):
+                        gone.append(sock)  # it gave up while it waited: the slot goes to the next one
+                        continue
                     free -= 1
                     if not self._take_slot_locked(sock, client_address):
                         refused.append(sock)
@@ -1002,6 +1020,8 @@ class BoundedServer(HTTPServer):
                     self._wake.wait(0.005)  # an evicted handler is leaving: look again once its thread has exited
             for sock in refused:
                 self._refuse(sock)
+            for sock in gone:
+                self.shutdown_request(sock)
 
     def _serve(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         try:

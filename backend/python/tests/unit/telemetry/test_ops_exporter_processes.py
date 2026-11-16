@@ -251,12 +251,12 @@ def _flood_lag_problem(busy: list[float], idle: list[float]) -> str | None:
     """Why the loop-lag samples (sorted, seconds) of a flood are not acceptable, else None.
 
     The p99 stays within twice the idle p99 (a 25 ms floor keeps a 1 ms idle p99 from making it a noise test);
-    at most one sample is over 250 ms (a single host hiccup, which a shared runner can make 1.8 s long); and
-    none is over 4 s (a frozen loop).
+    at most one sample is over 250 ms (a single host hiccup); and none is over 1 s. Measured over 4 runs of
+    11 s the worst sample was 0.21 s, so 1 s leaves a margin of 5 and still fails a stalled loop.
     """
     p99, idle_p99 = _p99_ms(busy), _p99_ms(idle)
     stalled = sum(1 for lag_s in busy if lag_s > 0.25)
-    if p99 > max(2 * idle_p99, 25.0) or stalled > 1 or busy[-1] > 4.0:
+    if p99 > max(2 * idle_p99, 25.0) or stalled > 1 or busy[-1] > 1.0:
         return (f"event loop lag under a scrape flood: p99 {p99:.1f} ms (idle {idle_p99:.1f}), "
                 f"{stalled} samples over 250 ms, max {busy[-1] * 1000:.1f} ms")
     return None
@@ -265,9 +265,10 @@ def _flood_lag_problem(busy: list[float], idle: list[float]) -> str | None:
 def test_the_flood_lag_verdict_allows_one_hiccup_and_nothing_more() -> None:
     quiet = sorted([0.001] * 400)
     assert _flood_lag_problem(quiet, quiet) is None
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.8]), quiet) is None  # the one host hiccup seen in CI
+    assert _flood_lag_problem(sorted([0.001] * 400 + [0.8]), quiet) is None  # one hiccup, four times the measured worst
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.8]), quiet) is not None  # a stall of the loop
     assert _flood_lag_problem(sorted([0.001] * 400 + [1.5, 1.5]), quiet) is not None  # two freezes
-    assert _flood_lag_problem(sorted([0.001] * 400 + [4.5]), quiet) is not None  # one frozen loop
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.2]), quiet) is not None  # one frozen loop
     assert _flood_lag_problem(sorted([0.06] * 400), quiet) is not None  # a slow loop
 
 

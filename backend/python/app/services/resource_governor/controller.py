@@ -243,6 +243,7 @@ class ResourceGovernor:
         # enters the brake (under _state_lock), read with the rest of the admission block.
         self._brake_entries: dict[str, dict[str, int]] = {}
         self._brake_reasons: dict[str, str] = {}  # the reason each pool is held for as of the last decision
+        self._memory_reasons: dict[str, BrakeReason] = {}  # the kind of memory brake a pool was last in
         # Threads waiting on the shared heavy-parse slots (slot_wait()).
         self._slot_waiting = 0
         self._slot_wait_lock = threading.Lock()
@@ -644,15 +645,23 @@ class ResourceGovernor:
         """
         entered: list[tuple[str, str]] = []
         reasons: dict[str, str] = {}
+        memory_reasons = (BrakeReason.MEMORY_SOFT, BrakeReason.MEMORY_HARD, BrakeReason.MEMORY_TARGET)
         for pool in Pool:
             state = new.get(pool)
             last = BrakeReason(self._brake_reasons.get(pool.value, BrakeReason.NONE.value))
-            reason = brake_reason(state.rule.value, state.active_cooldown_cause(now))
-            holding = state.rule is LimitRule.COOLDOWN or (state.rule is LimitRule.PRESSURE_UNKNOWN and state.cooldown_until > now)
-            if holding and last not in (BrakeReason.NONE, BrakeReason.RAMPING, BrakeReason.FROZEN):
-                # A cooldown goes on holding for the pressure that started it (soft, hard or target), and a
-                # sample without a pressure reading does not end it: its window is still open.
-                reason = last
+            cause = state.active_cooldown_cause(now)
+            reason = brake_reason(state.rule.value, cause)
+            holding = last not in (BrakeReason.NONE, BrakeReason.RAMPING, BrakeReason.FROZEN)
+            if state.rule is LimitRule.COOLDOWN and cause == "memory":
+                # The policy names one cause for every kind of memory pressure; the kind is the one this pool
+                # was last braked for by a memory rule (soft when it never was).
+                reason = self._memory_reasons.get(pool.value, BrakeReason.MEMORY_SOFT)
+            elif state.rule is LimitRule.COOLDOWN and cause is None and holding:
+                reason = last  # the window has run out but no decision has ended the cooldown yet
+            elif state.rule is LimitRule.PRESSURE_UNKNOWN and state.cooldown_until > now and holding:
+                reason = last  # a sample without a pressure reading does not end an open cooldown
+            elif reason in memory_reasons:
+                self._memory_reasons[pool.value] = reason
             reasons[pool.value] = reason.value
             if reason in PRESSURE_REASONS and reason != last:
                 entered.append((pool.value, reason.value))
