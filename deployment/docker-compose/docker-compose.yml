@@ -713,6 +713,8 @@ services:
     environment:
       - PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:${PG_MIGRATE_PASSWORD:-}@postgres:5432/pipeshub
       - PG_MIGRATE_LOCK_TIMEOUT_S=${PG_MIGRATE_LOCK_TIMEOUT_S:-600}
+      # key-value access by prefix per service role: shadow (logs what enforce would refuse) or enforce; empty keeps the stored mode
+      - PG_KV_ACCESS=${PG_KV_ACCESS:-}
     depends_on:
       postgres:
         condition: service_healthy
