@@ -68,10 +68,19 @@ type D = { n?: number; tag?: string }
       const rt = ensurePgRuntime()
       const real = rt.withUow.bind(rt)
       let trimmed = 0
-      let bothTrimmed = () => {}
-      const both = new Promise<void>((r) => { bothTrimmed = r })
-      // each finishing transaction stays open after its trim until the other has trimmed too, or 1 s when the other waits on it
-      // (under the node role's 2 s lock_timeout)
+      // Each finishing transaction stays open after its trim until the other one has trimmed too (both trims then ran before either
+      // commit) or is blocked on the trim lock (it can only trim after this commit). Nothing else releases it: the deadline fails the test.
+      const holdOpen = async (query: Tx['query']) => {
+        const deadline = Date.now() + 15000
+        while (trimmed < 2) {
+          const waiting = await query<{ n: number }>(
+            "/* pipeshub:test.trimwaiter */ SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = 7402 AND NOT granted",
+          )                                                                     // 7402: the scheduler's trim lock class
+          if ((waiting.rows[0]?.n ?? 0) > 0) return
+          if (Date.now() > deadline) throw new Error('the other finishing transaction neither trimmed nor waited on the trim lock')
+          await sleep(20)
+        }
+      }
       sinon.stub(rt, 'withUow').callsFake(((opts: never, fn: (tx: Tx) => Promise<unknown>) => real(opts, async (tx: Tx) => {
         let finishes = false
         const query = tx.query.bind(tx)
@@ -81,8 +90,8 @@ type D = { n?: number; tag?: string }
         }) as typeof tx.query
         const out = await fn(tx)
         if (finishes) {
-          if (++trimmed === 2) bothTrimmed()
-          await Promise.race([both, sleep(1000)])
+          trimmed++
+          await holdOpen(query)
         }
         return out
       })) as never)
