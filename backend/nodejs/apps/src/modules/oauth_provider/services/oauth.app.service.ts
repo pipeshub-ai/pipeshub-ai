@@ -571,6 +571,18 @@ export class OAuthAppService {
         data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
         !app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS);
 
+      // An instance app is no person's and acts as nobody: whoever edits it
+      // and whatever it is bound to, it never gets client_credentials. The
+      // owned lookup already leaves instance apps out; this keeps the rule here.
+      if (
+        data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
+        isInstanceApp(app)
+      ) {
+        throw new BadRequestError(
+          'A dynamically registered client or the device login app cannot use client_credentials.',
+        );
+      }
+
       // Gaining the grant is the same decision as making it at creation, and
       // this route has no admin check of its own, so without this the gate on
       // creation is bypassed by making an authorization_code app and editing
@@ -920,7 +932,12 @@ export class OAuthAppService {
    * Check if grant type is allowed for app
    */
   isGrantTypeAllowed(app: OAuthAppDto, grantType: string): boolean {
-    return app.allowedGrantTypes.includes(grantType as OAuthGrantType);
+    // An instance app that holds client_credentials from before is still refused it.
+    const grant = grantType as OAuthGrantType;
+    if (grant === OAuthGrantType.CLIENT_CREDENTIALS && isInstanceApp(app)) {
+      return false;
+    }
+    return app.allowedGrantTypes.includes(grant);
   }
 
   private generateClientSecret(): string {

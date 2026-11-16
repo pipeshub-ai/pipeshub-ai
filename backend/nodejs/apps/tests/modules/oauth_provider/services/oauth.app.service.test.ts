@@ -919,6 +919,28 @@ describe('OAuthAppService', () => {
         expect(app.save.called).to.equal(false)
       })
 
+      it('refuses an instance app, even for an admin with a usable bound account', async () => {
+        for (const extra of [{ isDynamic: true, clientId: 'dcr-client' }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }]) {
+          const app: any = {
+            ...appAllowing([OAuthGrantType.AUTHORIZATION_CODE], new Types.ObjectId().toString()),
+            ...extra,
+          }
+          const users = sinon.stub(Users, 'findOne').returns({
+            select: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves({ isDisabled: false }) }),
+            }),
+          } as any)
+
+          const message = await failureFrom(true, app)
+
+          expect(message, extra.clientId).to.contain('cannot use client_credentials')
+          expect(users.called, extra.clientId).to.equal(false)
+          expect(app.save.called, extra.clientId).to.equal(false)
+          users.restore()
+          ;(OAuthApp.findOne as sinon.SinonStub).restore()
+        }
+      })
+
       it('refuses when the bound account has since been disabled', async () => {
         const app = appAllowing(
           [OAuthGrantType.AUTHORIZATION_CODE],
@@ -1329,6 +1351,18 @@ describe('OAuthAppService', () => {
     it('should return false when grant type is not allowed', () => {
       const app = { allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE] } as any
       expect(service.isGrantTypeAllowed(app, 'client_credentials')).to.be.false
+    })
+
+    it('refuses client_credentials to an instance app that holds it from before', () => {
+      const grants = [OAuthGrantType.CLIENT_CREDENTIALS, OAuthGrantType.AUTHORIZATION_CODE]
+      for (const app of [
+        { allowedGrantTypes: grants, isDynamic: true, clientId: 'dcr-client' },
+        { allowedGrantTypes: grants, clientId: FIRST_PARTY_DEVICE_CLIENT_ID },
+      ] as any[]) {
+        expect(service.isGrantTypeAllowed(app, 'client_credentials'), app.clientId).to.be.false
+        expect(service.isGrantTypeAllowed(app, 'authorization_code'), app.clientId).to.be.true
+      }
+      expect(service.isGrantTypeAllowed({ allowedGrantTypes: grants, clientId: 'own' } as any, 'client_credentials')).to.be.true
     })
   })
 })
