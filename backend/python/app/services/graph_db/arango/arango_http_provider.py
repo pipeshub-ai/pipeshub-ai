@@ -26198,7 +26198,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             LET orgGrants = (
-                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                // the viewer's organisation only: a linked source account adds its own and its groups' grants
+                FOR org IN 1..1 OUTBOUND userDoc._id {CollectionNames.BELONGS_TO.value}
                     FOR granted, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER orgPerm.type IN @org_share_types
                         {granted_here}

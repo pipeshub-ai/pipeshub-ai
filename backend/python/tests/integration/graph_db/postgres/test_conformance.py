@@ -16,7 +16,12 @@ from app.core.org_context import OrgContext, bind
 from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGETS
 from tests.permissions import gen
 from tests.permissions.graph import VARIANTS, Graph, Namespace, compile_world
-from tests.permissions.linked_readers import findings, linked_viewers, linked_worlds, snapshot
+from tests.permissions.linked_readers import (
+    findings,
+    linked_viewers,
+    linked_worlds,
+    snapshot,
+)
 from tests.permissions.runner import ConformanceRunner, Report
 from tests.permissions.scenario import Scenario, load_all
 
