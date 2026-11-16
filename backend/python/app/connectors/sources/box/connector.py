@@ -889,6 +889,19 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
             self._mark_read_incomplete(e)
 
+    async def _withdraw_inactive_users(self, users: List[AppUser]) -> None:
+        """A stored user the complete list shows inactive (USABLE_USER_STATUSES) loses the connector, as it is not
+        linked either; a cut list withdraws nobody. Made active again, it is linked on the next read."""
+        inactive = {u.source_user_id for u in users if not u.is_active}
+        if not inactive or not self._user_list_complete:
+            return
+        gone = [
+            u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+            if u.source_user_id in inactive
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _sync_user_groups(self) -> None:
         """
         Sync Box groups and their memberships.
@@ -1392,6 +1405,7 @@ class BoxConnector(BaseConnector):
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
             await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active])
+            await self._withdraw_inactive_users(users)
 
             self.logger.info("📦 [Full Sync] Creating virtual groups...")
             await self._ensure_virtual_groups()
@@ -1520,6 +1534,7 @@ class BoxConnector(BaseConnector):
 
             # Update the in-memory or DB map of users so we can link files to them later
             await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active])
+            await self._withdraw_inactive_users(users)
             users_complete = self._read_complete
 
             # Box user IDs that belong to our org (for distinguishing external vs internal shares)
