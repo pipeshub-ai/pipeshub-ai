@@ -32,6 +32,7 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
 )
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor.kinds import ParseKind
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
@@ -264,7 +265,9 @@ class PDFPlumberOpenCVProcessor:
         if table_regions:
             with track_indexing_enrichment(self.logger, label="pdfplumber"):
                 try:
-                    llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                    llm, _ = await get_llm_for_role(
+                    self.config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+                )
                 except Exception as e:
                     # Without an LLM the tables still index as plain rows; failing the
                     # parse would send the whole document to OCR, which needs one too.
@@ -403,7 +406,9 @@ class PDFPlumberOpenCVProcessor:
                 # regions; a miss means they drifted apart. Enrich inline so
                 # correctness never depends on the two walks staying in sync.
                 self.logger.warning("Table missed pre-enrichment; enriching inline")
-                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                llm, _ = await get_llm_for_role(
+                    self.config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+                )
                 # Outside the pre-pass's row budget: summary and headers only.
                 enrichment = await enrich_table_grid(
                     llm, grid, logger=self.logger, describe_rows=False

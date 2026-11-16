@@ -18,6 +18,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.utils.image_utils import get_mime_type_from_base64
 
 _CONCURRENCY_LIMIT = 5
@@ -41,7 +42,9 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
         model_name: str | None,
         normalize_fn: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
+        sdk_retries: int | None = None,
     ) -> None:
+        self.sdk_retries = sdk_retries
         self.api_key = api_key
         self.model_name = self._normalize_model_name(model_name)
         # Consumed by IMultimodalEmbeddingProvider.normalize().
@@ -66,7 +69,13 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.api_key)
+        # google-genai counts attempts (the first request included) and repeats a request after a dropped connection by
+        # itself unless retry options are given: with them, the gateway is the one retry layer.
+        http_options = (
+            types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=self.sdk_retries + 1))
+            if self.sdk_retries is not None else None
+        )
+        client = genai.Client(api_key=self.api_key, http_options=http_options)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
@@ -77,9 +86,11 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
                 try:
                     raw_bytes = base64.b64decode(normalized)
                     mime_type = get_mime_type_from_base64(normalized) or _DEFAULT_MIME_TYPE
-                    response = await client.aio.models.embed_content(
-                        model=self.model_name,
-                        contents=[types.Part.from_bytes(data=raw_bytes, mime_type=mime_type)],
+                    response = await get_embedding_gateway().call(
+                        lambda: client.aio.models.embed_content(
+                            model=self.model_name,
+                            contents=[types.Part.from_bytes(data=raw_bytes, mime_type=mime_type)],
+                        )
                     )
                     return ImageEmbeddingResult(
                         index=i, embedding=list(response.embeddings[0].values)

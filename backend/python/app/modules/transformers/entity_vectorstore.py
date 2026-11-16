@@ -63,6 +63,7 @@ from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
 from app.core import org_context
 from app.exceptions.indexing_exceptions import VectorStoreError
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -85,6 +86,7 @@ from app.services.vector_db.sparse_embeddings import (
 )
 from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import (
+    INDEXING_SDK_RETRIES,
     embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
@@ -692,10 +694,12 @@ class EntityVectorStore:
                     self._sparse_embedder = embedder
 
     async def _build_dense_embeddings(self, config: dict[str, Any]) -> Any:  # noqa: ANN401
-        return get_embedding_model(config["provider"], config)
+        return get_embedding_model(config["provider"], config, sdk_retries=INDEXING_SDK_RETRIES)
 
     async def _embedding_dimension(self) -> int:
-        sample = await asyncio.to_thread(self._dense_embeddings.embed_query, "test")
+        embeddings = self._dense_embeddings
+        # Paid like any embedding request: one retry layer, and the size is kept per provider key.
+        sample = await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_query, "test"))
         return len(sample)
 
     async def _init_collection(
@@ -969,7 +973,8 @@ class EntityVectorStore:
     # asyncio.to_thread rather than run_in_executor: it carries contextvars
     # (tracing) into the worker thread.
     async def _embed(self, texts: list[str]) -> list[list[float]]:
-        return await asyncio.to_thread(self._dense_embeddings.embed_documents, texts)
+        embeddings = self._dense_embeddings
+        return await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_documents, texts))
 
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
         if not self._sparse_embedder:

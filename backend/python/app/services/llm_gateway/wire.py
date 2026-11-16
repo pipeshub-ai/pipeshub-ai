@@ -54,6 +54,8 @@ class WireOutcome:
     statuses: list[int] = field(default_factory=list)
     # A request of this call was refused before it left: its job had no failed sends left (``SendMeter``).
     allowance_refused: bool = False
+    # The provider's Retry-After (seconds) on the last 429 or 503 it answered, when it sent one.
+    retry_after: float | None = None
 
     def judge(self, *, raised: BaseException | None, caller_budget_expired: bool = False) -> str:
         """``ok`` / ``ok_unrated`` (the request's fault) / ``fail`` / ``neutral`` / ``unsent`` (no wire evidence)."""
@@ -162,12 +164,30 @@ def note_request_sent() -> None:
         outcome.status = None
 
 
-def note_response(status: int) -> None:
+def note_response(status: int, retry_after: float | None = None) -> None:
     outcome = _current.get()
     if outcome is not None:
         outcome.status = status
         outcome.responses += 1
         outcome.statuses.append(status)
+        outcome.retry_after = retry_after
+
+
+def parse_retry_after(headers: Any) -> float | None:  # noqa: ANN401 - any mapping of header names to values
+    """Seconds a provider asks to wait (``retry-after-ms``, else ``retry-after`` in seconds), or None.
+
+    An HTTP-date or a malformed value is ignored: the gateway then waits by its own jitter.
+    """
+    try:
+        milliseconds = headers.get("retry-after-ms")
+        if milliseconds is not None:
+            return max(0.0, float(milliseconds) / 1000.0)
+        seconds = headers.get("retry-after")
+        if seconds is not None:
+            return max(0.0, float(seconds))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return None
 
 
 def note_error(name: str) -> None:
@@ -195,7 +215,7 @@ def _request_hook(request: httpx.Request) -> None:
 
 def _response_hook(response: httpx.Response) -> None:
     with contextlib.suppress(Exception):
-        note_response(response.status_code)
+        note_response(response.status_code, parse_retry_after(response.headers))
 
 
 async def _async_request_hook(request: httpx.Request) -> None:
@@ -359,7 +379,7 @@ def install_boto_hooks(client: Any) -> bool:  # noqa: ANN401 - botocore client
         with contextlib.suppress(Exception):
             status = getattr(http_response, "status_code", None)
             if isinstance(status, int):
-                note_response(status)
+                note_response(status, parse_retry_after(getattr(http_response, "headers", None) or {}))
 
     def needs_retry(caught_exception: BaseException | None = None, **_: object) -> None:
         with contextlib.suppress(Exception):

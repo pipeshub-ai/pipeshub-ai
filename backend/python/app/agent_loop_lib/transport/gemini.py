@@ -153,7 +153,10 @@ class GeminiTransport(LLMTransport):
         max_output_tokens: int | None = None,
         timeout: float | None = None,
         model_key: str | None = None,
+        single_attempt: bool = False,
     ) -> None:
+        """``single_attempt``: the SDK sends each request once. google-genai otherwise repeats a request after a
+        dropped connection by itself; a caller that owns its retries (the indexing gateway) turns that off."""
         super().__init__()
         try:
             from google import genai
@@ -187,8 +190,11 @@ class GeminiTransport(LLMTransport):
         # http_options carries the timeout in milliseconds; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn must fail at the same point.
         http_options = (
-            genai_types.HttpOptions(timeout=int(timeout * 1000))
-            if isinstance(timeout, (int, float)) else None
+            genai_types.HttpOptions(
+                timeout=int(timeout * 1000) if isinstance(timeout, (int, float)) else None,
+                retry_options=genai_types.HttpRetryOptions(attempts=1) if single_attempt else None,
+            )
+            if single_attempt or isinstance(timeout, (int, float)) else None
         )
         self._client = genai.Client(api_key=api_key, http_options=http_options)
         self.total_input_tokens: int = 0
@@ -247,8 +253,11 @@ class GeminiTransport(LLMTransport):
             )
 
         timeout = getattr(llm, "timeout", None)
+        # LangChain's ``max_retries`` counts attempts here: 1 (or less) is the model built to retry nothing.
+        configured_attempts = getattr(llm, "max_retries", None)
         return cls(
             api_key=api_key,
+            single_attempt=isinstance(configured_attempts, int) and configured_attempts <= 1,
             model=model_name or getattr(llm, "model", "") or cls.DEFAULT_MODEL,
             temperature=getattr(llm, "temperature", None),
             thinking_level=getattr(llm, "thinking_level", None),

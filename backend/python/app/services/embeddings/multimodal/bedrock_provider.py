@@ -16,6 +16,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 
 _CONCURRENCY_LIMIT = 10
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
@@ -35,7 +36,9 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         embedding_size: int | None = None,
         normalize_fn: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
+        sdk_retries: int | None = None,
     ) -> None:
+        self.sdk_retries = sdk_retries
         self.model_name = model_name
         self.region_name = region_name
         self.aws_access_key_id = aws_access_key_id
@@ -80,6 +83,11 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                     "region_name": self.region_name,
                 }
             )
+        if self.sdk_retries is not None:
+            from botocore.config import Config
+
+            # botocore repeats a throttled or failed request by default; the gateway is the one retry layer.
+            client_kwargs["config"] = Config(retries={"mode": "standard", "total_max_attempts": self.sdk_retries + 1})
         try:
             bedrock = boto3.client(**client_kwargs)
         except NoCredentialsError as e:
@@ -94,19 +102,21 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
             async with semaphore:
                 try:
                     loop = asyncio.get_running_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: bedrock.invoke_model(
-                            modelId=self.model_name,
-                            body=json.dumps({
-                                "inputImage": normalized,
-                                "embeddingConfig": {
-                                    "outputEmbeddingLength": self.output_embedding_length
-                                },
-                            }),
-                            contentType="application/json",
-                            accept="application/json",
-                        ),
+                    response = await get_embedding_gateway().call(
+                        lambda: loop.run_in_executor(
+                            None,
+                            lambda: bedrock.invoke_model(
+                                modelId=self.model_name,
+                                body=json.dumps({
+                                    "inputImage": normalized,
+                                    "embeddingConfig": {
+                                        "outputEmbeddingLength": self.output_embedding_length
+                                    },
+                                }),
+                                contentType="application/json",
+                                accept="application/json",
+                            ),
+                        )
                     )
                     body = json.loads(response["body"].read())
                     # Titan reports per-image generation failures in `message`

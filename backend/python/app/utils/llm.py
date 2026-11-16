@@ -169,6 +169,7 @@ async def _instantiate_llm_from_configs(
     llm_configs: list | None,
     *,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> Tuple[BaseChatModel, dict[str, Any]]:
     """Pick and instantiate an LLM from a config list (default first, then any)."""
     if not llm_configs:
@@ -177,14 +178,14 @@ async def _instantiate_llm_from_configs(
     for config in llm_configs:
         if config.get("isDefault", False):
             llm = await asyncio.to_thread(
-                get_generator_model, config["provider"], config, None, reasoning_effort,
+                get_generator_model, config["provider"], config, None, reasoning_effort, sdk_retries,
             )
             if llm:
                 return llm, config
 
     for config in llm_configs:
         llm = await asyncio.to_thread(
-            get_generator_model, config["provider"], config, None, reasoning_effort,
+            get_generator_model, config["provider"], config, None, reasoning_effort, sdk_retries,
         )
         if llm:
             return llm, config
@@ -197,6 +198,7 @@ async def _try_resolve_role_llm(
     role: str,
     *,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> Tuple[BaseChatModel, dict[str, Any]] | None:
     """Resolve modelRoles assignment to an instantiated LLM, or None."""
     model_roles: dict = (ai_models or {}).get("modelRoles") or {}
@@ -214,7 +216,7 @@ async def _try_resolve_role_llm(
         return None
 
     llm = await asyncio.to_thread(
-        get_generator_model, matched["provider"], matched, None, reasoning_effort,
+        get_generator_model, matched["provider"], matched, None, reasoning_effort, sdk_retries,
     )
     if llm:
         return llm, matched
@@ -226,11 +228,14 @@ async def get_llm(
     llm_configs: Any = None,
     *,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> Tuple[BaseChatModel, dict[str, Any]]:
     if not llm_configs:
         ai_models = await load_ai_models(config_service)
         llm_configs = ai_models.get("llm")
-    return await _instantiate_llm_from_configs(llm_configs, reasoning_effort=reasoning_effort)
+    return await _instantiate_llm_from_configs(
+        llm_configs, reasoning_effort=reasoning_effort, sdk_retries=sdk_retries,
+    )
 
 
 async def get_llm_for_role(
@@ -238,8 +243,12 @@ async def get_llm_for_role(
     role: str,
     *,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> Tuple[BaseChatModel, dict[str, Any]]:
     """Return the LLM assigned to *role*, falling back to the default LLM.
+
+    ``sdk_retries`` is how many times the model's SDK client repeats a failed request on its own (``None``: the SDK's
+    default). Indexing call sites pass ``INDEXING_SDK_RETRIES``: their paid calls are repeated by the gateway alone.
 
     Reads ``modelRoles`` from the AI models config blob. If the role is
     assigned to a specific model (identified by ``modelKey`` within a
@@ -255,14 +264,14 @@ async def get_llm_for_role(
     try:
         ai_models = await load_ai_models(config_service)
         resolved = await _try_resolve_role_llm(
-            ai_models, role, reasoning_effort=reasoning_effort
+            ai_models, role, reasoning_effort=reasoning_effort, sdk_retries=sdk_retries
         )
         if resolved:
             return resolved
     except Exception:
         pass
 
-    return await get_llm(config_service, reasoning_effort=reasoning_effort or "low")
+    return await get_llm(config_service, reasoning_effort=reasoning_effort or "low", sdk_retries=sdk_retries)
 
 
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict | None:

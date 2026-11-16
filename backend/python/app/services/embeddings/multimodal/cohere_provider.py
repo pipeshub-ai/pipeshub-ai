@@ -22,6 +22,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 
 _CONCURRENCY_LIMIT = 10
 
@@ -47,8 +48,12 @@ def cohere_image_input_type(model_name: str | None) -> str:
 
 
 class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
-    def __init__(self, api_key: str | None, model_name: str | None, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self, api_key: str | None, model_name: str | None, logger: logging.Logger | None = None,
+        sdk_retries: int | None = None,
+    ) -> None:
         self.api_key = api_key
+        self.sdk_retries = sdk_retries
         self.model_name = model_name
         self.logger = logger
         self.input_type = cohere_image_input_type(model_name)
@@ -76,14 +81,19 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
             async with semaphore:
                 try:
                     loop = asyncio.get_running_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: co.embed(
-                            model=self.model_name,
-                            input_type=self.input_type,
-                            embedding_types=["float"],
-                            inputs=[image_input],
-                        ),
+                    # One retry layer: the SDK repeats nothing when told so, and the gateway repeats a failed request.
+                    options = {"max_retries": self.sdk_retries} if self.sdk_retries is not None else None
+                    response = await get_embedding_gateway().call(
+                        lambda: loop.run_in_executor(
+                            None,
+                            lambda: co.embed(
+                                model=self.model_name,
+                                input_type=self.input_type,
+                                embedding_types=["float"],
+                                inputs=[image_input],
+                                request_options=options,
+                            ),
+                        )
                     )
                     return ImageEmbeddingResult(
                         index=i, embedding=list(response.embeddings.float[0])

@@ -57,7 +57,7 @@ from app.modules.parsers.excel.workbook_model import (
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.services.resource_governor.kinds import ParseKind
-from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.env_config import env_int, env_positive_int
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
@@ -526,7 +526,9 @@ class ExcelParser:
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
             document_parser = self.new_document_parser()
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await get_llm_for_role(
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
             await asyncio.to_thread(document_parser.load_workbook_from_binary, content)

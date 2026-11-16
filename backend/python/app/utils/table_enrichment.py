@@ -31,6 +31,7 @@ from app.modules.parsers.excel.prompt_template import (
 # module-level `from ... import name` here would bind its own reference and silently
 # bypass those patches.
 from app.utils import indexing_helpers
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
@@ -116,7 +117,9 @@ async def indexing_llm_or_none(config_service: Any, logger: Logger) -> Optional[
     A model that is set up but cannot be built still raises, so the record retries.
     """
     try:
-        llm, _ = await get_llm_for_role(config_service, "indexing", reasoning_effort="low")
+        llm, _ = await get_llm_for_role(
+            config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
     except LLMNotConfiguredError:
         logger.info("No AI model is set up: tables are indexed with plain row text")
         return None

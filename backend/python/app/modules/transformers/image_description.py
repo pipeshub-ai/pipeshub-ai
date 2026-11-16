@@ -281,11 +281,12 @@ class ImageDescriber:
         (`document_extraction.py`, `vectorstore.py`), so a deployment
         configures one model for indexing and everything follows it.
         """
+        from app.utils.aimodels import INDEXING_SDK_RETRIES
         from app.utils.llm import get_llm_for_role
 
         try:
             llm, config = await get_llm_for_role(
-                self.config_service, "indexing", reasoning_effort="low",
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
             )
         except Exception:
             self.logger.warning("Could not resolve the indexing model", exc_info=True)

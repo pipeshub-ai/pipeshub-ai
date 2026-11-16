@@ -37,6 +37,7 @@ from app.services.parsing.interface import ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.llm import get_llm_for_role
 from app.utils.logger import create_logger
 from app.utils.opik import get_llm_invoke_config
@@ -125,7 +126,9 @@ class CSVParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await get_llm_for_role(
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
 
             if parse_pool.should_offload(len(content)):
                 tables = await self.read_tables_in_worker(content, record_name)

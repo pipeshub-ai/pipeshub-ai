@@ -16,6 +16,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 
 _CONCURRENCY_LIMIT = 5
 _DEFAULT_BATCH_SIZE = 7
@@ -39,7 +40,9 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
         async def process_batch(batch_start: int, batch_imgs: list[str]) -> list[ImageEmbeddingResult]:
             async with semaphore:
                 try:
-                    embeddings = await self.dense_embeddings.aembed_documents(batch_imgs)
+                    embeddings = await get_embedding_gateway().call(
+                        lambda: self.dense_embeddings.aembed_documents(batch_imgs)
+                    )
                     # A short response must not silently drop its tail --
                     # every input index owes the caller a result.
                     results = [
