@@ -1728,7 +1728,7 @@ def _assert_no_personal_toolsets(
 
 
 async def _assert_service_account_knowledge(
-    connector_ids: Iterable[str], graph_provider: IGraphDBProvider, *, bound: bool,
+    connector_ids: Iterable[str], graph_provider: IGraphDBProvider, user_id: str, *, bound: bool,
 ) -> None:
     """A service-account agent is run by anyone in the organisation on one identity, so it may
     only be given sources shared with the whole organisation: no personal connector, and a
@@ -1746,15 +1746,20 @@ async def _assert_service_account_knowledge(
             status_code=503,
         ) from e
     kb = Connectors.KNOWLEDGE_BASE.value
+
+    def label(app: dict[str, Any]) -> str:
+        # The lookup is by the ids sent, in any organisation: only the editor's own source is named.
+        key = str(app.get("_key") or app.get("id"))
+        return app.get("name") or key if app.get("createdBy") == user_id else key
+
     personal = [
-        a.get("name") or a.get("_key") or a.get("id") for a in apps
-        if a.get("type") != kb and a.get("scope") == ConnectorScope.PERSONAL.value
+        label(a) for a in apps if a.get("type") != kb and a.get("scope") == ConnectorScope.PERSONAL.value
     ]
     if personal:
         raise InvalidRequestError(
             f"Personal sources ({', '.join(personal)}) can't be attached to an agent that runs as a service account."
         )
-    collections = [] if bound else [a.get("name") or a.get("_key") or a.get("id") for a in apps if a.get("type") == kb]
+    collections = [] if bound else [label(a) for a in apps if a.get("type") == kb]
     if collections:
         raise InvalidRequestError(
             f"Collections ({', '.join(collections)}) can be attached to a service-account agent only when it is "
@@ -2845,7 +2850,8 @@ async def create_agent(request: Request) -> JSONResponse:
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
         if is_service_account:
             await _assert_service_account_knowledge(
-                knowledge_sources, services["graph_provider"], bound=bool(service_account_binding),
+                knowledge_sources, services["graph_provider"], user_context["userId"],
+                bound=bool(service_account_binding),
             )
         api_toolset_tools = await _checked_api_toolset_tools(
             body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
@@ -3592,6 +3598,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
                 else [k.get("connectorId") for k in agent.get("knowledge") or [] if k.get("connectorId")],
                 services["graph_provider"],
+                user_context["userId"],
                 bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
             )
         if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):

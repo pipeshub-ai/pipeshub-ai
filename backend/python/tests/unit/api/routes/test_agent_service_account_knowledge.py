@@ -18,14 +18,15 @@ if TYPE_CHECKING:
 @pytest.fixture
 def graph() -> InMemoryGraph:
     g = InMemoryGraph()
-    for key, kind, scope in (
-        ("drive-alice", "DRIVE", "personal"),
-        ("pg-alice", "POSTGRESQL", "personal"),
-        ("drive-team", "DRIVE", "team"),
-        ("kb-1", "KB", "team"),
+    for key, kind, scope, owner in (
+        ("drive-alice", "DRIVE", "personal", "u-alice"),
+        ("pg-alice", "POSTGRESQL", "personal", "u-alice"),
+        ("drive-bob", "DRIVE", "personal", "u-bob"),
+        ("drive-team", "DRIVE", "team", "u-alice"),
+        ("kb-1", "KB", "team", "u-alice"),
     ):
         g.add_node("apps", {"_key": key, "name": f"{key} name", "type": kind, "scope": scope, "orgId": "org-1",
-                            "createdBy": "u-alice"})
+                            "createdBy": owner})
     g.add_agent("private", "alice")
     g.add_agent("sa", "alice", share_with_org=True, isServiceAccount=True)
     g.add_agent("sa-bound", "alice", share_with_org=True, isServiceAccount=True, serviceAccountUserId="u-svc")
@@ -57,6 +58,14 @@ class TestCreate:
         assert response.status_code == 400
         assert f"Personal sources ({source} name)" in response.json()["detail"]
         assert not graph.calls_to("begin_transaction")
+
+    def test_someone_elses_source_is_named_by_its_id_only(self, client) -> None:
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helpdesk", "isServiceAccount": True, "knowledge": _knowledge("drive-bob"),
+        })
+        assert response.status_code == 400
+        assert "Personal sources (drive-bob)" in response.json()["detail"]
+        assert "drive-bob name" not in response.json()["detail"]
 
     def test_a_collection_is_refused_without_a_binding(self, client) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

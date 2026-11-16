@@ -65,7 +65,7 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                     "_key": app_org, "name": app_org, "accountType": "enterprise", "isActive": True, "createdAtTimestamp": 1,
                 }], ORGS)
                 await graph.batch_upsert_nodes([{
-                    "_key": app_key, "orgId": app_org, "name": app_key, "type": app_type, "appGroup": app_type,
+                    "_key": app_key, "orgId": app_org, "name": f"Name {app_key}", "type": app_type, "appGroup": app_type,
                     "scope": scope, "createdBy": created_by, "isActive": True, "isConfigured": True,
                     "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
                 }], APPS)
@@ -79,11 +79,14 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
             unbound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=False)
             bound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=True)
             # Saving: a personal source is refused, a collection too unless bound, the org's connectors pass.
-            with pytest.raises(InvalidRequestError, match="Personal sources"):
-                await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, bound=True)
+            with pytest.raises(InvalidRequestError, match=f"Personal sources \\(Name {key['drive_mine']}\\)"):
+                await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, creator, bound=True)
+            # Someone else's source is named by the id that was sent, never by its stored name.
+            with pytest.raises(InvalidRequestError, match=f"Personal sources \\({key['drive_colleague']}\\)"):
+                await _assert_service_account_knowledge([key["drive_colleague"]], graph, creator, bound=True)
             with pytest.raises(InvalidRequestError, match="Collections"):
-                await _assert_service_account_knowledge([key["collection"]], graph, bound=False)
-            await _assert_service_account_knowledge([key["pg_team"], key["drive_team"], key["collection"]], graph, bound=True)
+                await _assert_service_account_knowledge([key["collection"]], graph, creator, bound=False)
+            await _assert_service_account_knowledge([key["pg_team"], key["drive_team"], key["collection"]], graph, creator, bound=True)
         # The creator reads their own sources when they run an agent themselves...
         assert {key["pg_mine"], key["drive_mine"]} <= {d.get("_key") or d.get("id") for d in own}
         # ...but an agent the whole org runs on their identity does not.
