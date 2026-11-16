@@ -90,7 +90,7 @@ async def test_the_trash_list_reads_the_user_who_deleted_each_batch_by_its_key(w
     async def call() -> None:
         out.update(await w.p.list_trashed_records("c1", w.org))
     plans = await _plans(pg_db, _admin_url(), monkeypatch, "pipeshub:graph.list_trashed_records */", call)
-    assert [i.get("deletedByUserName") or i.get("user_name") or i for i in out["items"]] and out["total"] == 1
+    assert [(i["deletedByName"], i["deletedByEmail"]) for i in out["items"]] == [("user 7", "u7@example.com")] and out["total"] == 1
     _assert_keyed(plans, "u")
 
 
