@@ -410,7 +410,8 @@ def _admission_canon(topic: str, group_id: str, message_id: int, message: dict[s
         "admit1", topic, group_id, str(message_id), c["eventId"], c["orgId"], event_type if isinstance(event_type, str) else "",
         hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest(), str(admission_ms),
     ]
-    return "\x00".join(parts).encode("utf-8", "surrogatepass")
+    # Each field carries its length, so no two different field lists can encode to the same bytes.
+    return "".join(f"{len(part)}:{part}" for part in parts).encode("utf-8", "surrogatepass")
 
 
 def admission_mac(key: bytes, topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int) -> str | None:

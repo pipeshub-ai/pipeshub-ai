@@ -84,15 +84,18 @@ async def test_the_cleanup_releases_the_pins_of_what_it_dropped_and_refreshes_th
         return await pins.release_orphans(exists)
 
     vector_store = SimpleNamespace(get_embedding_model_instance=AsyncMock(), embedding_size=4)
+    sweep_dead_epochs = AsyncMock()
     handler = object.__new__(RecordEventHandler)
     handler.config_service = config
     handler.logger = log
     handler.event_processor = SimpleNamespace(
         sink_orchestrator=SimpleNamespace(vector_store=vector_store),
-        processor=SimpleNamespace(indexing_pipeline=SimpleNamespace(collection_registry=SimpleNamespace(recreate_records_collections=rebuild, release_orphan_pins=release_orphan_pins, sweep_dead_epochs=AsyncMock()))),
+        graph_provider=SimpleNamespace(get_all_orgs=AsyncMock(return_value=[{"_key": ORG}])),
+        processor=SimpleNamespace(indexing_pipeline=SimpleNamespace(collection_registry=SimpleNamespace(recreate_records_collections=rebuild, release_orphan_pins=release_orphan_pins, sweep_dead_epochs=sweep_dead_epochs))),
     )
     events = [e async for e in handler._delete_vector_collection()]
     assert events
+    sweep_dead_epochs.assert_awaited_once_with([ORG])  # the tail sweeps the organisation it found, not none
 
     assert phases == [(PHASE_READY, False, False)]  # the verdict, and the key the job reads, agreed before READY
     assert await pins.keys() == []  # the index's pin and the orphan are both gone

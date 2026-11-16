@@ -379,6 +379,24 @@ async def test_an_admitted_message_still_has_to_verify_in_every_other_way(clock,
         await envelope.open_stream_message(TOPIC, message, StreamMessage, admitted=True)
 
 
+def test_an_admission_does_not_hold_for_the_same_event_with_another_payload(clock) -> None:
+    """The signature already refuses an edited payload; the admission must not be the weaker of the two."""
+    message = json.loads(_signed(clock[0]))
+    ms = int(clock[0] * 1000)
+    mac = envelope.admission_mac(KEY, TOPIC, "g", 7, message, ms)
+    assert envelope.admission_valid([KEY], TOPIC, "g", 7, message, ms, mac, now=clock[0])
+    edited = {**message, "payload": message["payload"] + " "}
+    assert not envelope.admission_valid([KEY], TOPIC, "g", 7, edited, ms, mac, now=clock[0])
+
+
+def test_admission_fields_cannot_shift_into_each_other() -> None:
+    """A field boundary moved between two fields gives other bytes, so another row's admission never matches."""
+    message = {"ctx": {"eventId": "e1", "orgId": "o1"}, "payload": "{}", "eventType": "t"}
+    one = envelope._admission_canon("a\x00b", "c", 7, message, 1)  # a separator inside a field, then the boundary moved
+    two = envelope._admission_canon("a", "b\x00c", 7, message, 1)
+    assert one is not None and two is not None and one != two
+
+
 def test_the_admission_cap_is_configurable_and_validated(monkeypatch) -> None:
     monkeypatch.delenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", raising=False)
     assert envelope.admitted_max_age_seconds() == 86400

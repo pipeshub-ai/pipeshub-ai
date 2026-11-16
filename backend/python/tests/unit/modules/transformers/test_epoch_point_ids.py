@@ -145,6 +145,42 @@ async def test_the_ids_a_record_wants_are_the_ids_its_batches_write_even_when_a_
         assert [p["id"] for p in db.points] == [deterministic_point_id(documents[0].metadata, "text of b1", fence)]
 
 
+@pytest.mark.asyncio
+async def test_a_record_hands_the_epoch_it_captured_to_its_batches_even_when_a_reset_lands_after_the_capture() -> None:
+    """``_embed_resumably`` derives the record's ids from one capture; its batches must write under that same one."""
+    from langchain_core.documents import Document
+
+    from app.modules.indexing.embed_resume import EmbedAttempt
+
+    db = _FakeDb()
+    store = _store(db, INT8)
+    record_fences: list[Fence] = []
+    real_capture = store._guard.capture
+
+    async def capture_then_reset(collection):  # noqa: ANN202
+        fence = await real_capture(collection)
+        record_fences.append(fence)
+        await _reset_the_collection(store, db)  # a cleanup lands right after the record's capture
+        return fence
+
+    received: list[Fence | None] = []
+
+    async def batches(_docs, _record_id, _collection, fence=None):  # noqa: ANN202
+        received.append(fence)
+
+    store._guard.capture = capture_then_reset
+    store._process_document_chunks = batches
+    store.require_matching_precision_before_delete = AsyncMock()
+    store._write_embed_marker = AsyncMock()
+    store.delete_embeddings = AsyncMock()
+    store._check_for_leaks = AsyncMock()
+    documents = [Document(page_content="text of b1", metadata={"virtualRecordId": VRID, "blockId": "b1", "orgId": ORG})]
+
+    await store._embed_resumably(EmbedAttempt(delivery_id="d-1", rev="1", vrid=VRID), documents, "rec-1", VRID, RECORDS, ORG)
+
+    assert len(record_fences) == 1 and received == [record_fences[0]]  # not a fresh capture after the reset, and not none
+
+
 # -- entities -----------------------------------------------------------------------------------------------------
 
 def _entity_logical_id(world_) -> str:
