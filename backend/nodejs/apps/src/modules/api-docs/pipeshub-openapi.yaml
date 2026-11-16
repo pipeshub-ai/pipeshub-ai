@@ -6369,8 +6369,11 @@ components:
                 OPEN: an accessible parent, or a direct grant, is enough.
                 STRICT: every ancestor up to the connector must be accessible too.
                 RESTRICTED: strict, and a grant on the record itself is required.
-                PARENT_AND_GRANT: an accessible parent and a grant on the record
-                itself are both required; nothing above the parent is consulted.
+                PARENT_AND_GRANT: the record must inherit from its parent, the
+                parent must be accessible (by its own rule, which for example
+                STRICT may consult its ancestors), and the record must carry its
+                own grant. The rule adds no requirement of its own on the
+                ancestors above the parent.
                 Absent on records written before the field existed; read as OPEN.
             uploadedBy:
               type: string
