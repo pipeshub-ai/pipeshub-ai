@@ -99,6 +99,29 @@ class TestMCPRegistry:
         assert "gitlab" in type_ids
         assert "posthog" in type_ids
         assert "egnyte" in type_ids
+        assert "lucid" in type_ids
+
+    def test_lucid_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        lucid = registry.get_template("lucid")
+
+        assert lucid is not None
+        assert lucid.display_name == "Lucid"
+        assert lucid.transport == MCPTransport.STREAMABLE_HTTP
+        assert lucid.default_url == "https://mcp.lucid.app/mcp"
+        assert lucid.default_auth_mode == MCPAuthMode.OAUTH
+        assert lucid.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert lucid.supports_dcr is True
+        assert lucid.require_oauth_client is False
+        assert lucid.url_editable is False
+        assert lucid.authorization_url == "https://mcp.lucid.app/oauth/authorize"
+        assert lucid.token_url == "https://mcp.lucid.app/oauth/token"
+        assert lucid.default_scopes == []
+        assert lucid.icon == "/icons/connectors/lucid.svg"
+        assert lucid.documentation_url == (
+            "https://help.lucid.co/hc/en-us/articles/42578801807508"
+        )
 
     def test_monday_catalog_entry(self) -> None:
         registry = MCPRegistry()

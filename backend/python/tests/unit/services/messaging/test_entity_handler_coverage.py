@@ -123,8 +123,7 @@ class TestHandleUserDeletedExtended:
     @pytest.mark.asyncio
     async def test_user_deleted_exception(self):
         svc = _make_service()
-        svc.graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB error")
+        svc.graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB error")
         )
         with pytest.raises(Exception, match="DB error"):
             await svc.process_event(

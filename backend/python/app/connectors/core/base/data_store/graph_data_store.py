@@ -422,6 +422,13 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
+    async def name_default_knowledge_base(self, user_key: str, kb_key: str, expected: str | None) -> bool:
+        """Name ``kb_key`` the user's default knowledge base, only while the name is still ``expected`` (None: none)."""
+        return await self.graph_provider.update_node_fields_if_match(
+            user_key, CollectionNames.USERS.value, {"defaultKnowledgeBaseId": kb_key},
+            {"defaultKnowledgeBaseId": expected}, transaction=self.txn,
+        )
+
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
@@ -535,7 +542,7 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
     async def get_user_by_email(
-        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+        self, email: str, *, raise_on_error: bool = False, org_id: str,
     ) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
@@ -543,9 +550,8 @@ class GraphTransactionStore(TransactionStore):
         key = ("user_email", email, org_id)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
-        scope = {"org_id": org_id} if org_id is not None else {}
         value = await self.graph_provider.get_user_by_email(
-            email, transaction=self.txn, raise_on_error=raise_on_error, **scope
+            email, transaction=self.txn, raise_on_error=raise_on_error, org_id=org_id
         )
         self._memo_put(key, value)
         return value
@@ -1142,13 +1148,13 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_app_roles(app_roles, transaction=self.txn)
 
-    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser], org_id: str) -> None:
         """
         Batch upsert app users.
 
         Delegates to graph_provider for implementation.
         """
-        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn)
+        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn, org_id=org_id)
 
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         """
@@ -1314,7 +1320,7 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def batch_upsert_record_group_permissions(
-        self, record_group_id: str, permissions: list[Permission], connector_id: str
+        self, record_group_id: str, permissions: list[Permission], connector_id: str, org_id: str
     ) -> None:
         """
         Batch upsert permissions for a record group.
@@ -1327,6 +1333,7 @@ class GraphTransactionStore(TransactionStore):
             record_group_id: Internal ID (_key) of the record group
             permissions: List of Permission objects
             connector_id: Connector ID for scoped group lookups
+            org_id: The org whose users the permissions' addresses name
         """
         if not permissions:
             return
@@ -1343,7 +1350,7 @@ class GraphTransactionStore(TransactionStore):
                 # Lookup user by email
                 user = None
                 if permission.email:
-                    user = await self.get_user_by_email(permission.email)
+                    user = await self.get_user_by_email(permission.email, org_id=org_id)
 
                 if user:
                     from_id = user.id
@@ -2019,6 +2026,8 @@ _HARMLESS_WRITERS = frozenset({
     "delete_record_entity_relations",
     # the same, replaced together with the links that follow
     "replace_record_entity_relations",
+    # which knowledge base a user calls their default: a field of the user node, never an edge or an access rule
+    "name_default_knowledge_base",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 
