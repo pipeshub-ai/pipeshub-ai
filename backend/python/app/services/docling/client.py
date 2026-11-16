@@ -28,6 +28,8 @@ from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count
 from app.utils.request_context import inject_request_headers
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
+# Milliseconds a small conversion may wait for its turn at the Docling service (PARSE_ADMISSION=classes).
+PARSE_DEADLINE_HEADER = "X-Parse-Deadline-Ms"
 
 
 class DoclingUnavailableError(IndexingError):
@@ -101,6 +103,11 @@ class DoclingClient(BaseServiceClient):
         retry_delay: float = 1.0,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
     ) -> None:
+        from app.modules.parse_engine import wiring as parse_wiring
+
+        # PARSE_ADMISSION=classes: a Docling 429 slows Docling calls only. It never reaches the coordinator (which
+        # pauses the consumers' reads) or the governor's downstream feedback; the client's own limiter takes it.
+        isolated = parse_wiring.classes_enabled()
         # 2400s (Docling's own internal PDF_PROCESSING_TIMEOUT_SECONDS) plus a
         # margin for the resource governor's admission-gate wait on the
         # Docling side (see docling_service.py's DOCLING_GATE_TIMEOUT_SECONDS)
@@ -114,9 +121,17 @@ class DoclingClient(BaseServiceClient):
             write_timeout=60.0,  # PDF uploads
             max_retries=max_retries,
             retry_delay=retry_delay,
-            backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
+            backpressure_coordinator=(
+                None if isolated else backpressure_coordinator or get_default_backpressure_coordinator()
+            ),
         )
         self.timeout = timeout
+        self._limiter = None
+        if isolated:
+            from app.modules.parse_engine.engines import shared_docling_engine
+
+            self._limiter = shared_docling_engine()
+            self.on_backpressure = self._limiter.on_throttled
 
     def _validate_pdf_binary(self, pdf_binary: bytes) -> bool:
         if not isinstance(pdf_binary, bytes):
@@ -205,6 +220,42 @@ class DoclingClient(BaseServiceClient):
         self.logger.error(f"❌ {description} failed after {self.max_retries} attempts")
         return None
 
+    def _class_headers(self) -> dict[str, str]:
+        """``X-Parse-Class`` and, for a small file, ``X-Parse-Deadline-Ms`` (the service reserves the conversion
+        under the class and gives up a small one that has not started by its deadline)."""
+        from app.capacity.classes import CostClass
+        from app.config.constants.ai_models import PARSE_CLASS_HEADER
+        from app.modules.parse_engine.engines import docling_deadline_s
+        from app.modules.parse_engine.pools import current_class
+
+        cls = current_class()
+        if cls is None:
+            return {}
+        headers = {PARSE_CLASS_HEADER: cls.value}
+        if cls is CostClass.SMALL:
+            headers[PARSE_DEADLINE_HEADER] = str(int(docling_deadline_s(0.0) * 1000))
+        return headers
+
+    async def _call_parse_pdf(self, record_name: str, pdf_binary: bytes, form_data: dict) -> httpx.Response:
+        """One ``/parse-pdf`` call; under classes it holds a slot of the Docling limiter for its duration."""
+        if self._limiter is None:
+            return await self._post_multipart(
+                "/parse-pdf",
+                files={"file": (record_name, pdf_binary, "application/pdf")},
+                data=form_data,
+                operation=f"parse_pdf({record_name})",
+            )
+        async with self._limiter.slot():
+            response = await self._post_multipart(
+                "/parse-pdf",
+                files={"file": (record_name, pdf_binary, "application/pdf")},
+                data=form_data,
+                operation=f"parse_pdf({record_name})",
+                extra_headers=self._class_headers(),
+            )
+        self._limiter.on_success()
+        return response
+
     async def parse_pdf(
         self,
         record_name: str,
@@ -231,12 +282,7 @@ class DoclingClient(BaseServiceClient):
             form_data["end_page"] = str(page_range[1])
 
         try:
-            response = await self._post_multipart(
-                "/parse-pdf",
-                files={"file": (record_name, pdf_binary, "application/pdf")},
-                data=form_data,
-                operation=f"parse_pdf({record_name})",
-            )
+            response = await self._call_parse_pdf(record_name, pdf_binary, form_data)
         except ServiceCallError as exc:
             if _docling_unavailable(exc):
                 raise DoclingUnavailableError(f"Docling could not parse {record_name}: {exc}") from exc

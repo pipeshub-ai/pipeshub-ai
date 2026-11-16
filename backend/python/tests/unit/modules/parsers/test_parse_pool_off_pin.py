@@ -50,6 +50,10 @@ PARSE_POOL_ALLOWED = {
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
     "run_blocking", "_run_blocking", "_lane_demand", "assign:_LANE_WAIT_S",  # PIPESHUB_CAPACITY_PROFILE=auto only: an optional permit, adopted or reserved; without the flag nothing is held and the old body runs (test_member_permits)
     "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
+    "import:from app.modules.parse_engine import pools as class_pools",  # PARSE_ADMISSION=classes: the pool routing and the lane permit
+    "import:from app.modules.parse_engine import wiring",
+    "_ParsePool.__init__", "_ParsePool._make_lane",  # one lane factory hook; the default factory builds the same _Lane (test_class_pools::test_default_lane_factory_is_the_legacy_lane)
+    "set_resource_governor",  # refuses PARSE_LANES=on with PARSE_ADMISSION=classes; a no-op with the flag off
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
 }
 TABLE_DETECTOR_ALLOWED = {

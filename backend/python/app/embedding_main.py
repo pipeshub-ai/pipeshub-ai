@@ -34,6 +34,8 @@ from pydantic import BaseModel
 
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.validation_errors import input_free_422
+from app.capacity.admission import parse_class, reserve_or_adopt
+from app.capacity.budget_policy import EMBED_WEIGHT, QUERY_EMBED_WEIGHT, Demand, Family
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -420,6 +422,27 @@ class EncodeAbandoned(Exception):
     """The caller left before its vectors were wanted; nobody will read the result."""
 
 
+# The longest an encode waits for its member tokens; a wait is always bounded.
+EMBED_PERMIT_WAIT_S = 600.0
+
+
+def embed_class(priority: EncodePriority, header: str | None) -> str | None:
+    """The cost class an encode runs under: a search query is small work, an indexing batch carries its record's
+    class in ``X-Parse-Class`` (no header: small, as light-format records send none), and a value that is not a class
+    is unclassified (big work), never trusted."""
+    if priority is EncodePriority.QUERY:
+        return "small"
+    if header is None:
+        return "small"
+    return parse_class(header)
+
+
+def embed_demand(priority: EncodePriority, cls: str | None) -> Demand:
+    if priority is EncodePriority.QUERY:
+        return Demand(Family.QUERY_EMBED, QUERY_EMBED_WEIGHT, 0, "small")
+    return Demand(Family.EMBED, EMBED_WEIGHT, 0, cls)
+
+
 class EncodeGate:
     """Encode slots shared by search queries and bulk indexing batches.
 
@@ -464,6 +487,8 @@ class EncodeGate:
             EncodePriority.BULK: deque(),
         }
         self._clock = clock
+        # Class rank of each waiting bulk request (0 = small): under PARSE_ADMISSION=classes small waits ahead of large and huge.
+        self._rank: dict[asyncio.Future[int], int] = {}
         self._next_token = 0
         # token -> (priority, time taken); a token tells a release which slot it frees.
         self._held: dict[int, tuple[EncodePriority, float]] = {}
@@ -561,15 +586,27 @@ class EncodeGate:
             },
         }
 
-    async def acquire(self, priority: EncodePriority) -> int:
-        """Take a slot; the returned token goes back to ``release`` to say which one."""
+    async def acquire(self, priority: EncodePriority, *, rank: int = 0) -> int:
+        """Take a slot; the returned token goes back to ``release`` to say which one.
+
+        *rank* orders the waiting bulk requests: a lower rank is served first, first come first served inside a
+        rank. Left at 0 for every request, the queue is the plain arrival order it always was."""
         started = self._clock()
         if not self.waiting(priority) and self._has_room(priority):
             token = self._take(priority)
             self._waits[priority].append(0.0)
             return token
         waiter: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-        self._waiting[priority].append(waiter)
+        queue = self._waiting[priority]
+        if rank:
+            self._rank[waiter] = rank
+            queue.append(waiter)
+        elif not self._rank:
+            queue.append(waiter)  # nobody waits with a rank: the plain arrival order
+        else:
+            # Behind every waiter of rank 0, ahead of the first of a higher rank.
+            at = next((i for i, w in enumerate(queue) if self._rank.get(w, 0) > 0 and not w.done()), len(queue))
+            queue.insert(at, waiter)
         # Settles the queue at once if there is room after all (its head
         # was only waiters that have since given up).
         self._wake()
@@ -580,6 +617,8 @@ class EncodeGate:
                 # Granted, then cancelled before it could run: hand it back.
                 self.release(priority, waiter.result())
             raise
+        finally:
+            self._rank.pop(waiter, None)
         self._waits[priority].append(self._clock() - started)
         return token
 
@@ -1101,6 +1140,7 @@ class ModelManager:
         trust_remote_code: bool = False,
         priority: EncodePriority = EncodePriority.BULK,
         should_stop: Callable[[], Awaitable[bool]] | None = None,
+        parse_class: str | None = None,
     ) -> list[list[float]]:
         """Embed ``texts``.
 
@@ -1138,12 +1178,22 @@ class ModelManager:
                 )
                 return embeddings.tolist()
 
-            token = await self._encode_gate.acquire(priority)
+            cls = embed_class(priority, parse_class)
+            token = await self._encode_gate.acquire(priority, rank=0 if cls == "small" else 1)
+            try:
+                # PIPESHUB_CAPACITY_PROFILE=auto: the encode holds its member tokens (embed, or query_embed for a search),
+                # with the class of its record; no component upstream reserves them (reserved once, here).
+                permit = await reserve_or_adopt(None, embed_demand(priority, cls), deadline_s=EMBED_PERMIT_WAIT_S)
+            except BaseException:
+                self._encode_gate.release(priority, token)
+                raise
             try:
                 if await _abandoned("before start"):
                     raise EncodeAbandoned
                 work = spawn_detached(asyncio.to_thread(_encode), name="embedding-encode")
             except BaseException:
+                if permit is not None:
+                    permit.release()
                 self._encode_gate.release(priority, token)
                 raise
             # The thread outlives a cancelled request, so it keeps the model leased
@@ -1153,6 +1203,8 @@ class ModelManager:
 
             def _release(done: asyncio.Future[list[list[float]]]) -> None:
                 self._drop_lease(lease_key)
+                if permit is not None:
+                    permit.release()
                 self._encode_gate.release(priority, token)
                 if not done.cancelled():
                     done.exception()  # mark retrieved when nobody is waiting any more
@@ -1427,6 +1479,7 @@ async def create_embeddings(
     request: EmbeddingRequest,
     http_request: Request,
     x_embedding_priority: Annotated[str | None, Header()] = None,
+    x_parse_class: Annotated[str | None, Header()] = None,
 ) -> EmbeddingResponse:
     # --- server-side policy checks (fail fast, before any I/O) ---
     if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
@@ -1453,6 +1506,7 @@ async def create_embeddings(
             trust_remote_code=request.trust_remote_code,
             priority=EncodePriority.from_header(x_embedding_priority),
             should_stop=http_request.is_disconnected,
+            **({"parse_class": x_parse_class} if x_parse_class is not None else {}),
         )
     except EncodeAbandoned:
         # Nobody is reading this; 499 is the conventional "client closed request".
