@@ -340,11 +340,11 @@ class _Watcher:
                 cur = self._budget._changes()
             except OSError:
                 continue
-            wakes = self._pick(entries, False, cur[0] - last[0], fallback=False) + self._pick(entries, True, cur[1] - last[1], fallback=False)
+            wakes = self._pick(entries, llm=False, n=cur[0] - last[0], fallback=False) + self._pick(entries, llm=True, n=cur[1] - last[1], fallback=False)
             now = time.monotonic()
             if now >= next_fallback:
                 next_fallback = now + FALLBACK_S * (1 + random.random())
-                wakes += self._pick(entries, False, 1, fallback=True) + self._pick(entries, True, 1, fallback=True)
+                wakes += self._pick(entries, llm=False, n=1, fallback=True) + self._pick(entries, llm=True, n=1, fallback=True)
             with self._lock:
                 self._last = cur
             for wake in wakes:

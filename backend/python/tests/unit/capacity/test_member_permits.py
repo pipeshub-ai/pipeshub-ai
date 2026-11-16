@@ -86,7 +86,10 @@ async def test_a_caller_without_a_permit_gets_one_from_the_lane(monkeypatch: pyt
 async def test_a_lane_wait_is_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None) -> None:
     b = install_budget(monkeypatch, tmp_path / "l", c=2)
     assert b.try_reserve(Demand(Family.PARSE, 2, 0, "small")) is not None
-    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout, RequeueWithoutAttempt
+    from app.services.messaging.consumer_concurrency import (
+        ParseAdmissionTimeout,
+        RequeueWithoutAttempt,
+    )
 
     with pytest.raises(ParseAdmissionTimeout) as err:
         await parse_pool.submit(lambda: 1, timeout=0.2)
