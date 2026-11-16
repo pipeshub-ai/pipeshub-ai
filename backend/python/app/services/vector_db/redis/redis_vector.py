@@ -95,7 +95,10 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
-from app.services.vector_db.redis.errors import classify_redis_search_error
+from app.services.vector_db.redis.errors import (
+    FilterFieldNotIndexed,
+    classify_redis_search_error,
+)
 from app.services.vector_db.redis.utils import (
     coerce_payload_hash_value,
     decode_hash_doc,
@@ -105,6 +108,7 @@ from app.services.vector_db.redis.utils import (
     parse_ft_hybrid_reply,
     parse_ft_search_reply,
     parse_search_rows,
+    query_fields,
     redisearch_any_term_query,
     refuse_unsafe_ids,
     scope_query,
@@ -146,6 +150,11 @@ _MAX_SEARCH_RESULTS = 10000
 # servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
 # want a hard guarantee can also set ``search-on-timeout FAIL``.
 _NO_TIMEOUT = ("TIMEOUT", "0")
+# RediSearch's default dialect is 1, which drops a clause on a field that is not in the schema (the query then matches every document);
+# dialect 2 answers "Unknown field". Every FT.SEARCH / FT.AGGREGATE names it rather than depend on the server's DEFAULT_DIALECT.
+# FT.HYBRID refuses a DIALECT option (it answers "Unknown field" on its own, as dialect 2 does); its queries are only checked
+# against the schema too (`_require_indexed`), so every path raises the same typed error.
+_DIALECT = ("DIALECT", "2")
 # How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
 _SETTLE_ATTEMPTS = 5
 _SETTLE_DELAY_SECONDS = 0.05
@@ -487,7 +496,11 @@ class RedisVectorService(IVectorDBService):
             "recordGroupIds", "TAG",
             "rootRecordGroupIds", "TAG",
         ]
-        await self.client.execute_command(*cmd)  # type: ignore
+        self._schema_fields.pop(idx, None)
+        try:
+            await self.client.execute_command(*cmd)  # type: ignore
+        finally:
+            self._schema_fields.pop(idx, None)
         logger.info(
             f"Created Redis collection/index '{idx}' "
             f"(dim={config.embedding_size}, dtype={self._dense_dtype})"
@@ -538,6 +551,7 @@ class RedisVectorService(IVectorDBService):
         with contextlib.suppress(Exception):
             await self.client.execute_command("FT.DROPINDEX", idx, "DD")  # type: ignore
         self._collection_configs.pop(collection_name, None)
+        self._schema_fields.pop(idx, None)
         logger.info(f"Deleted Redis collection '{collection_name}'")
 
     async def create_index(
@@ -562,11 +576,14 @@ class RedisVectorService(IVectorDBService):
             # The scope fields are new in this release line: tags that tell `X` from `x`, so an exclusion can be carried by the query. (The membership
             # tags created with the index in older releases cannot be changed and keep matching without case.)
             case = ["CASESENSITIVE"] if field_type == "TAG" and field_name in {name for name, _ in SCOPE_KEYWORD_INDEXES} else []
-            await self.client.execute_command(  # type: ignore
-                "FT.ALTER", idx,
-                "SCHEMA", "ADD",
-                redis_alias, field_type, *case,
-            )
+            try:
+                await self.client.execute_command(  # type: ignore
+                    "FT.ALTER", idx,
+                    "SCHEMA", "ADD",
+                    redis_alias, field_type, *case,
+                )
+            finally:
+                self._schema_fields.pop(idx, None)
         except Exception as e:
             err = str(e).lower()
             # Silently skip fields that are already part of the schema.
@@ -693,6 +710,8 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         base_filter, raw_count_limits = split_values_count_conditions(filter)
         query = filter_expression_to_redis_query(base_filter)
+        # Before the first page is read: a clause on a field the index lacks must stop the delete, not shrink it.
+        await self._require_indexed(idx, query)
         # Redis hash fields cannot contain dots, so a canonical key like
         # "metadata.x" is stored and echoed back as "metadata_x". Normalise once:
         # looking the value up under the canonical name misses, and a miss reads
@@ -724,12 +743,14 @@ class RedisVectorService(IVectorDBService):
         total_deleted = 0
         while True:
             try:
-                raw = await self.client.execute_command(  # type: ignore
+                raw = await self._ft_query(
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", "0", str(_DELETE_PAGE_SIZE),
                     *_NO_TIMEOUT,
                 )
+            except FilterFieldNotIndexed:
+                raise
             except Exception as e:
                 # Do not swallow: callers treat a returned delete as complete and
                 # go on to drop the VRID->doc mapping, which would leave the
@@ -767,13 +788,15 @@ class RedisVectorService(IVectorDBService):
         """
         load = ["@__key"] + [f"@{key}" for key, _ in count_limits]
         try:
-            raw = await self.client.execute_command(  # type: ignore
+            raw = await self._ft_query(
                 "FT.AGGREGATE", idx, query,
                 "LOAD", str(len(load)), *load,
                 *_NO_TIMEOUT,
                 "WITHCURSOR", "COUNT", str(_DELETE_PAGE_SIZE),
                 "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
             )
+        except FilterFieldNotIndexed:
+            raise
         except Exception as e:
             logger.warning(
                 f"FT.AGGREGATE cursor unavailable on '{collection_name}' ({e}); "
@@ -845,12 +868,14 @@ class RedisVectorService(IVectorDBService):
                     f"deleted so far. Narrow the filter or raise MAXSEARCHRESULTS."
                 )
             try:
-                raw = await self.client.execute_command(  # type: ignore
+                raw = await self._ft_query(
                     "FT.SEARCH", idx, query,
                     "RETURN", str(len(return_fields)), *return_fields,
                     "LIMIT", str(offset), str(_DELETE_PAGE_SIZE),
                     *_NO_TIMEOUT,
                 )
+            except FilterFieldNotIndexed:
+                raise
             except Exception as e:
                 raise RuntimeError(
                     f"Paged delete on '{collection_name}' aborted after "
@@ -1023,7 +1048,7 @@ class RedisVectorService(IVectorDBService):
 
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         self._assert_connected()
-        counted = await self.client.execute_command(  # type: ignore
+        counted = await self._ft_query(
             "FT.SEARCH", self._index_name(collection_name), filter_expression_to_redis_query(count_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
         )
         if not isinstance(counted, (list, tuple)) or not counted:
@@ -1077,14 +1102,14 @@ class RedisVectorService(IVectorDBService):
             [key.replace(".", "_") for key in with_payload] if with_payload else []
         )
         if return_fields:
-            raw = await self.client.execute_command(  # type: ignore
+            raw = await self._ft_query(
                 "FT.SEARCH", idx, query,
                 "RETURN", str(len(return_fields)), *return_fields,
                 "LIMIT", str(int_offset), str(limit),
                 *_NO_TIMEOUT,
             )
         else:
-            raw = await self.client.execute_command(  # type: ignore
+            raw = await self._ft_query(
                 "FT.SEARCH", idx, query,
                 "LIMIT", str(int_offset), str(limit),
                 *_NO_TIMEOUT,
@@ -1255,6 +1280,8 @@ class RedisVectorService(IVectorDBService):
 
         text_query = redisearch_any_term_query(req.text_query or "")
         search_query = _combine_text_and_filter(text_query, filter_query)
+        # Same typed refusal as the FT.SEARCH paths (the server would also error here, but with a message only).
+        await self._require_indexed(idx, search_query, filter_query)
 
         if req.dense_query is None:
             # Dense vector required for FT.HYBRID; use text-only FT.SEARCH
@@ -1395,7 +1422,7 @@ class RedisVectorService(IVectorDBService):
         default. ``parse_ft_search_reply`` handles the flat field list and
         ignores the binary ``dense_embedding`` blob via ``decode_hash_doc``.
         """
-        raw = await self.client.execute_command(  # type: ignore
+        raw = await self._ft_query(
             "FT.SEARCH", idx, query or "*",
             "LIMIT", "0", str(limit),
         )
@@ -1434,18 +1461,19 @@ class RedisVectorService(IVectorDBService):
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
+        await self._require_indexed(idx, query)
 
         found: dict[bytes, None] = {}
         total = 0
         cursor = 0
         try:
-            counted = await self.client.execute_command(  # type: ignore
+            counted = await self._ft_query(
                 "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
             )
             if not isinstance(counted, (list, tuple)) or not counted:
                 raise RuntimeError(f"unexpected count reply {counted!r}")
             total = int(counted[0])
-            reply = await self.client.execute_command(  # type: ignore
+            reply = await self._ft_query(
                 "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key",
                 "WITHCURSOR", "COUNT", "1000", *_NO_TIMEOUT,
             )
@@ -1470,6 +1498,8 @@ class RedisVectorService(IVectorDBService):
                 with contextlib.suppress(Exception):
                     await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
             raise
+        except FilterFieldNotIndexed:
+            raise
         except Exception as e:
             if cursor:
                 with contextlib.suppress(Exception):  # best effort; the cursor expires on its own
@@ -1481,6 +1511,62 @@ class RedisVectorService(IVectorDBService):
             ) from e
 
         return list(found), total
+
+    # ------------------------------------------------------------------
+    # Query guards
+    # ------------------------------------------------------------------
+
+    @property
+    def _schema_fields(self) -> dict[str, frozenset[str]]:
+        """index name → the fields of its schema (FT.INFO), dropped when this process creates, alters or drops the index."""
+        return self.__dict__.setdefault("_schema_cache", {})
+
+    async def _indexed_fields(self, idx: str, *, refresh: bool = False) -> frozenset[str] | None:
+        """The fields of the index's schema, or None when the index does not exist.
+
+        Kept until this process creates, alters or drops the index. Another process can alter it too, so a
+        field missing from the kept copy is looked up again before it is refused (`_require_indexed`).
+        A reply that names no field is an error, never "no fields": the caller would refuse everything, or
+        trust nothing it can see.
+        """
+        known = None if refresh else self._schema_fields.get(idx)
+        if known is not None:
+            return known
+        try:
+            raw = await self.client.execute_command("FT.INFO", idx)  # type: ignore
+        except Exception as e:
+            if _is_unknown_index_error(e):
+                return None
+            raise
+        names: set[str] = set()
+        for attribute in _parse_ft_info(raw).get("attributes") or []:
+            tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
+            for key in ("attribute", "identifier"):
+                if key in tokens[:-1]:
+                    names.add(tokens[tokens.index(key) + 1])
+        if not names:
+            raise RuntimeError(f"Redis index '{idx}': FT.INFO reply carries no schema attributes")
+        self._schema_fields[idx] = frozenset(names)
+        return self._schema_fields[idx]
+
+    async def _require_indexed(self, idx: str, *queries: str) -> None:
+        """Refuse a query that names a field the index does not hold (:class:`FilterFieldNotIndexed`)."""
+        wanted = frozenset().union(*(query_fields(q) for q in queries))
+        if not wanted:
+            return
+        known = await self._indexed_fields(idx)
+        if known is None:  # no such index: the command itself reports it
+            return
+        if wanted <= known:
+            return
+        known = await self._indexed_fields(idx, refresh=True) or frozenset()
+        if not wanted <= known:
+            raise FilterFieldNotIndexed(idx, wanted - known)
+
+    async def _ft_query(self, command: str, idx: str, query: str, *args: Any) -> Any:  # noqa: ANN401
+        """``FT.SEARCH`` / ``FT.AGGREGATE`` with the query checked against the schema and the dialect pinned."""
+        await self._require_indexed(idx, query)
+        return await self.client.execute_command(command, idx, query, *_DIALECT, *args)  # type: ignore
 
     # ------------------------------------------------------------------
     # Internal guards
