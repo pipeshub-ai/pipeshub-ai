@@ -103,6 +103,7 @@ from app.utils.attachment_utils import (
     keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.execute_query import shared_sql_knowledge
 from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -4723,6 +4724,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
+                if is_service_account:
+                    agent_knowledge = await shared_sql_knowledge(
+                        graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
+                    )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 try:
                     filters = await _resolve_turn_filters(

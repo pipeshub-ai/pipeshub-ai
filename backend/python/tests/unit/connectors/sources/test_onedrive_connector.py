@@ -755,6 +755,7 @@ class TestRunSyncDeep:
                     new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
             connector._sync_user_groups = AsyncMock()
             connector._process_users_in_batches = AsyncMock()
+            connector._remove_deleted_drives = AsyncMock()
 
             await connector.run_sync()
 
@@ -3565,6 +3566,7 @@ class TestRunSyncCoverage:
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._sync_user_groups = AsyncMock()
         connector._process_users_in_batches = AsyncMock()
+        connector._remove_deleted_drives = AsyncMock()
 
         with patch("app.connectors.sources.microsoft.onedrive.connector.load_connector_filters",
                     new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
@@ -3589,6 +3591,7 @@ class TestRunIncrementalSync:
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._process_users_in_batches = AsyncMock()
+        connector._remove_deleted_drives = AsyncMock()
 
         await connector.run_incremental_sync()
         connector._process_users_in_batches.assert_awaited_once()
