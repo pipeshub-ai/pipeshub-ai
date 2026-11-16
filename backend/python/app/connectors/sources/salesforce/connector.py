@@ -890,6 +890,7 @@ class SalesforceConnector(BaseConnector):
 
         self.connector_name = Connectors.SALESFORCE
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         # Sync point for incremental user sync (time-based)
         self.user_sync_point = SyncPoint(
@@ -6532,6 +6533,14 @@ class SalesforceConnector(BaseConnector):
         }
         # Only Salesforce users with a PipesHub account get edges, so only they are read.
         sf_users = [u for u in sf_users if u["Email"].lower() in email_to_user_id]
+        # A user's access follows the account that holds the address: these edges are written straight to the store,
+        # so the check the processor makes on other grants runs here. An address now held by another User Id than the
+        # one it was linked to loses the earlier account's access first, and only the holder's access is read and
+        # written (two active Users sharing an address keep only the last-linked one's, as for a listed account).
+        if not await self.source_accounts.before_grants([(u["Email"], u["Id"]) for u in sf_users]):
+            raise RuntimeError("The stored users could not be read; Salesforce access is not rewritten this run")
+        await self.source_accounts.ensure_loaded([u["Email"] for u in sf_users])
+        sf_users = [u for u in sf_users if self.source_accounts.holds(u["Email"], u["Id"])]
 
         await self._sync_product_readers(eligibility, sf_users)
 

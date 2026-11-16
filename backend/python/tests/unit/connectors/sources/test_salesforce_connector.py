@@ -58,6 +58,8 @@ from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 from tests.support.data_store import runs_in_its_transaction
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+from tests.support.in_memory_config import InMemoryConfigService
 
 # ===========================================================================
 # Helpers
@@ -114,6 +116,10 @@ def _make_connector() -> SalesforceConnector:
         connector_id="conn-sf-1",
     )
     connector.salesforce_instance_url = "https://myinstance.salesforce.com"
+    # The account check has its own tests; TestPermissionsFollowTheAddressHolder uses the real one.
+    connector.source_accounts = MagicMock(
+        before_grants=AsyncMock(return_value=True), ensure_loaded=AsyncMock(), holds=MagicMock(return_value=True),
+    )
     return connector
 
 
@@ -3733,6 +3739,60 @@ class TestSyncPermissionsEdges:
         )
         await connector._sync_permissions_edges(api_version="59.0")
         mock_tx.batch_create_edges.assert_awaited()
+
+
+class TestPermissionsFollowTheAddressHolder:
+    """A Salesforce user's access follows the account that holds the address."""
+
+    @staticmethod
+    def _connector(users: list[dict]) -> SalesforceConnector:
+        connector = _make_connector()
+        dep = connector.data_entities_processor
+        dep.get_app_user_links = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
+        dep.remove_user_access_to_connector = AsyncMock(return_value=3)
+        connector.source_accounts = SourceAccounts(dep, "conn-sf-1", InMemoryConfigService(), logging.getLogger("t"))
+        connector._soql_query_paginated = _mock_pages(users)
+        mock_tx = dep.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=lambda **_: [])
+        connector._sync_permissions_for_user = AsyncMock(return_value=[])
+        return connector
+
+    @staticmethod
+    def _stored(connector: SalesforceConnector) -> None:
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}], [],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
+        ])
+
+    @pytest.mark.asyncio
+    async def test_an_address_handed_to_a_new_user_loses_the_earlier_users_access_first(self) -> None:
+        connector = self._connector([{"Id": "005000000000001AAA", "Email": "alice@example.com"}])
+        self._stored(connector)
+        await connector._sync_permissions_edges(api_version="59.0")
+        connector.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+
+        connector._soql_query_paginated = _mock_pages([{"Id": "005000000000002AAA", "Email": "alice@example.com"}])
+        self._stored(connector)
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        connector.data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(
+            "conn-sf-1", "alice@example.com"
+        )
+        read_for = connector._sync_permissions_for_user.await_args.kwargs["user"]["Id"]
+        assert read_for == "005000000000002AAA"
+
+    @pytest.mark.asyncio
+    async def test_two_active_users_on_one_address_read_only_the_holders_access(self) -> None:
+        connector = self._connector([{"Id": "005000000000001AAA", "Email": "alice@example.com"},
+                                     {"Id": "005000000000002AAA", "Email": "alice@example.com"}])
+        self._stored(connector)
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        read_for = [c.kwargs["user"]["Id"] for c in connector._sync_permissions_for_user.await_args_list]
+        assert read_for == ["005000000000002AAA"]
 
 
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:
