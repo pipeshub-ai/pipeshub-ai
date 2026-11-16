@@ -1,0 +1,1314 @@
+# Feature map: external MCP servers PipesHub calls (catalog, instances, credentials,
+# OAuth, tool rules, attachment to agents, the chat runtime). The /mcp endpoint that
+# PipesHub itself serves is in api-access.toml.
+
+# ---------------------------------------------------------------------------
+# Catalog
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.catalog"
+title = "MCP server catalog"
+flow = "agents-toolsets-mcp"
+what = "A signed-in user lists and searches the built-in catalog of known MCP servers, or reads one entry. The catalog says each server's transport, sign-in methods and launch settings."
+routes = [
+  "GET /api/v1/mcp-servers/catalog",
+  "GET /api/v1/mcp-servers/catalog/{typeId}",
+]
+code = [
+  "backend/python/app/agents/mcp/catalog.py",
+  "backend/python/app/agents/mcp/registry.py",
+  "backend/python/app/agents/mcp/servers/**",
+  "backend/python/app/api/routes/mcp_servers.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.catalog.list"
+  says = "GET /catalog returns templates with total, page and limit. It pages (limit 1 to 200, default 50), filters by search, and reports customStdioAllowed."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_registry.py", "py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.catalog.unknown-type"
+  says = "GET /catalog/{typeId} for a type that is not in the catalog returns 404 'Unknown MCP server type'."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.catalog.replaced"
+  says = "A catalog entry marked as replaced is not offered for new servers: creating one is refused with 400 that names the replacement, and servers already made from it keep working."
+  priority = "P1"
+  kind = "function"
+  tests = [
+    "py:tests/unit/api/routes/test_mcp_servers_replaced_catalog.py",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/catalog-replacement.test.tsx",
+  ]
+
+# ---------------------------------------------------------------------------
+# Instances
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.instances"
+title = "MCP server instances"
+flow = "agents-toolsets-mcp"
+what = "An administrator creates, edits and deletes organization MCP servers. Any user can create personal servers of their own. Members see an org server without its connection details."
+routes = [
+  "GET /api/v1/mcp-servers/instances",
+  "POST /api/v1/mcp-servers/instances",
+  "GET /api/v1/mcp-servers/instances/{instanceId}",
+  "PUT /api/v1/mcp-servers/instances/{instanceId}",
+  "DELETE /api/v1/mcp-servers/instances/{instanceId}",
+]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "backend/python/app/agents/mcp/service.py",
+  "backend/python/app/agents/mcp/models.py",
+  "backend/nodejs/apps/src/modules/mcp_servers/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.instances.admin-creates-org"
+  says = "An administrator's POST /instances creates an org server (201); a non-administrator's creates a personal server even when it asks for org. Asking for scope 'personal' needs no role; an unknown scope is 400."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.unconfirmed-role"
+  says = "When the caller's role cannot be confirmed, creating an org-scope server fails with 503 and creates nothing, instead of making a personal one."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.admin-list-only"
+  says = "GET /instances is for administrators only: a member gets 403, and the list holds org servers only, never users' personal ones."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:permissions/test_admin_routes.py::TestMembersAreRefused::test_a_member_is_refused",
+    "py:tests/unit/api/routes/test_mcp_servers_personal.py",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.instances.manage-access"
+  says = "Only an administrator may view, update or delete an org server, and only the owner may do so for a personal one. Another user, or an administrator, gets 403 on someone's personal server."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.member-view"
+  says = "A member listing servers gets no url, command, args, authorizationUrl, tokenUrl or scopes of an org server, because they can carry a credential. An administrator and the owner of a personal server get the full record."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.personal-limits"
+  says = "A personal server cannot use STDIO or a shared admin credential (400), its URL must be public, and a user may have at most 25 (MCP_MAX_PERSONAL_INSTANCES), after which creating returns 409."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.validation"
+  says = "A catalog server must keep its template's transport and command, and may only use sign-in methods the template supports. A custom SSE or streamable HTTP server needs a url (400)."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py", "py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.scope-fixed"
+  says = "A server's scope (org or personal) is fixed at creation: updating it never moves it between the org and a user."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.edit-resets-credentials"
+  says = "Changing a server's url, token url, command or sign-in method removes every stored credential for it (response credentialsReset), before the new target is saved. A rename keeps them."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_mcp_servers_correctness.py",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/edit-safety.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.instances.delete-in-use"
+  says = "Deleting a server that an agent uses returns 409 and names the agents. If the check cannot run, the delete fails and nothing is removed."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.delete-removes-data"
+  says = "Deleting a server removes its record first, then its credentials, OAuth app, logo and cached tools. A record that cannot be deleted is reported as 500, not hidden."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.org-isolation"
+  says = "A server of another organization is 404 on get, update, delete, authenticate, OAuth config and refresh, and never appears in any listing."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_org_scoping.py"]
+
+  [[feature.behavior]]
+  id = "mcp.instances.not-found"
+  says = "Get, update or delete of an unknown instance id returns 404 'MCP server instance not found'."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+# ---------------------------------------------------------------------------
+# Feature flag and scopes (cross-cutting)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.access-control"
+title = "MCP routes: feature flag and token scopes"
+flow = "agents-toolsets-mcp"
+what = "Every MCP server route needs a signed-in caller and the matching scope (mcp:read, mcp:write, mcp:delete; agent:read and agent:write for the agent routes). The whole feature is off when the MCP platform flag is off."
+code = [
+  "backend/nodejs/apps/src/modules/mcp_servers/routes/mcp_servers.routes.ts",
+  "backend/nodejs/apps/src/modules/mcp_servers/controller/mcp_servers.controller.ts",
+  "backend/nodejs/apps/src/modules/mcp_servers/container/mcp_servers.container.ts",
+  "backend/python/app/api/routes/mcp_servers.py",
+  "backend/python/app/agents/mcp/service.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.access-control.scopes"
+  says = "A token without the route's scope gets 403 from the Node route, and Python asks for the same scope on its own hop. Reads need mcp:read, writes mcp:write, deleting a server or a credential mcp:delete."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/mcp_servers/routes/mcp_servers.routes.test.ts",
+    "py:tests/unit/api/test_mcp_route_scopes.py",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.access-control.unauthenticated"
+  says = "A request with no signed-in user is refused with 401 and is never forwarded to the connector service."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp_servers/controller/mcp_servers.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-control.flag-off"
+  says = "When MCP is disabled for the organization, every /api/v1/mcp-servers route returns 403 'MCP servers are disabled for this organization', and the pages send the user to Workspace general."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+  [[feature.behavior]]
+  id = "mcp.access-control.proxy-headers"
+  says = "The Node proxy forwards only Authorization and the tracing and language headers, so a client cannot inject an admin flag or other x- headers. Path parameters are URL-encoded and unsafe ones are refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp_servers/controller/mcp_servers.controller.test.ts", "node:tests/modules/mcp_servers/routes/mcp_servers.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-control.proxy-retries"
+  says = "Reads are retried on a transient failure, but writes and OAuth start and callback calls are sent once, so a retry cannot create a second server or start a second authorization."
+  priority = "P1"
+  kind = "function"
+  tests = ["node:tests/modules/mcp_servers/controller/mcp_servers.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-control.spec"
+  says = "Every MCP server route the Node router serves is in pipeshub-openapi.yaml with the same method and path."
+  priority = "P2"
+  kind = "function"
+  tests = ["node:tests/modules/mcp_servers/mcp-servers-match-the-spec.test.ts"]
+
+# ---------------------------------------------------------------------------
+# My servers and tool discovery
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.my-servers"
+title = "My MCP servers and tool discovery"
+flow = "agents-toolsets-mcp"
+what = "A user lists the org and personal servers they can use, with their own connection status and tools, and refreshes one server's tool list. A server that is down gives a coded reason the UI can act on."
+routes = [
+  "GET /api/v1/mcp-servers/my-mcp-servers",
+  "GET /api/v1/mcp-servers/instances/{instanceId}/tools",
+]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "backend/python/app/agents/mcp/discovery.py",
+  "backend/python/app/agents/mcp/failure.py",
+  "backend/python/app/agents/mcp/client.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.listing"
+  says = "GET /my-mcp-servers lists the org servers plus the caller's own personal servers, never another user's, with the caller's connection state. includeTools=false skips connecting."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py", "py:tests/unit/api/routes/test_mcp_servers_org_scoping.py"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.tool-names-unique"
+  says = "Tools in the listing carry a namespace that names exactly one instance, so two servers with the same name or type never share a tool name."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_namespaces_per_viewer.py", "py:tests/unit/agents/mcp/test_naming.py"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.expired-token"
+  says = "A listing that finds an expired OAuth token refreshes it once and lists the tools. A refused refresh is reported as a reconnect, a provider outage as 'sign-in couldn't be renewed'."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py", "py:tests/unit/api/routes/test_mcp_servers_error_detail.py"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.tools-not-signed-in"
+  says = "GET /instances/{id}/tools for a server the caller has not connected to returns 409 'Not authenticated for this MCP server instance'."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.failure-codes"
+  says = "A sign-in problem returns 409 with a reason code, other connection failures 502 with a short message. A server's STDIO stderr is shown to administrators only."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_error_detail.py", "py:tests/unit/agents/mcp/test_failure.py"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.slow-server"
+  says = "One slow server cannot hold up the listing: each server is cut off after its own time budget and shown as slow, not broken."
+  priority = "P1"
+  kind = "performance"
+  tests = ["py:tests/unit/agents/mcp/test_timeouts_and_reuse.py", "fe:app/(main)/workspace/mcp-servers/__tests__/connection-state.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.cached-tools"
+  says = "GET /instances/{id}/tools?cached=true returns the stored list with syncedAt without connecting. Refresh connects live and replaces the stored list."
+  priority = "P2"
+  kind = "performance"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_tool_cache.py"]
+
+  [[feature.behavior]]
+  id = "mcp.my-servers.live-server"
+  says = "Against a real MCP server, discovery lists the server's tools and the SDK client can call them."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_client_e2e.py", "it:unit/test_mcp_fixture_server.py"]
+
+# ---------------------------------------------------------------------------
+# Logos
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.logos"
+title = "Custom MCP server logos"
+flow = "agents-toolsets-mcp"
+what = "The owner of a custom MCP server uploads or removes its logo. Catalog servers always show the vendor's logo. Users see the logos of the servers they can see."
+routes = [
+  "GET /api/v1/mcp-servers/logos",
+  "PUT /api/v1/mcp-servers/instances/{instanceId}/logo",
+  "DELETE /api/v1/mcp-servers/instances/{instanceId}/logo",
+]
+code = [
+  "backend/python/app/agents/mcp/logo.py",
+  "backend/python/app/api/routes/mcp_servers.py",
+  "frontend/app/(main)/workspace/mcp-servers/logo-*.ts",
+  "frontend/app/(main)/workspace/mcp-servers/components/mcp-logo-image.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.logos.who"
+  says = "An administrator sets the logo of an org custom server and a member of their own. A member cannot change an org server's logo, and someone else's personal server is 404 even for an administrator."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_logo.py"]
+
+  [[feature.behavior]]
+  id = "mcp.logos.custom-only"
+  says = "A catalog server takes no logo (400) and shows its vendor's, even if one is stored."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_logo.py"]
+
+  [[feature.behavior]]
+  id = "mcp.logos.normalize"
+  says = "Only whole PNG, JPEG, WebP or GIF files are kept, decided by the bytes. They are shrunk to a small PNG; SVG, oversized files and oversized canvases are refused with the reason."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_logo.py", "py:tests/unit/api/routes/test_mcp_servers_logo.py"]
+
+  [[feature.behavior]]
+  id = "mcp.logos.listing"
+  says = "GET /logos returns the logos of the custom servers the caller can see, by instance id, and leaves out servers without one."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_logo.py"]
+
+  [[feature.behavior]]
+  id = "mcp.logos.ui"
+  says = "The UI resizes a chosen image before upload and shows a server's logo, or a default icon when it has none."
+  priority = "P2"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/__tests__/logo-file.test.ts",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/logo-store.test.tsx",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/mcp-server-icon.test.tsx",
+  ]
+
+# ---------------------------------------------------------------------------
+# Credentials (token, headers, shared admin credential)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.credentials"
+title = "MCP server credentials (API token, headers, shared)"
+flow = "agents-toolsets-mcp"
+what = "A user saves, replaces or removes their own token or header value for an MCP server, or uses the shared administrator credential when the server has one. Only administrators manage a shared credential."
+routes = [
+  "POST /api/v1/mcp-servers/instances/{instanceId}/authenticate",
+  "PUT /api/v1/mcp-servers/instances/{instanceId}/credentials",
+  "DELETE /api/v1/mcp-servers/instances/{instanceId}/credentials",
+  "POST /api/v1/mcp-servers/instances/{instanceId}/auto-authenticate",
+  "POST /api/v1/mcp-servers/instances/{instanceId}/reauthenticate",
+]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "backend/python/app/agents/mcp/service.py",
+  "frontend/app/(main)/workspace/mcp-servers/components/mcp-auth-dialog.tsx",
+  "frontend/app/(main)/workspace/mcp-servers/components/mcp-disconnect-dialog.tsx",
+  "frontend/app/(main)/workspace/mcp-servers/connection-state.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.credentials.save"
+  says = "POST /authenticate stores the caller's apiToken (API token mode) or headerValue (headers mode) under the caller's own id and returns isAuthenticated. A missing token or header value is 400."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py", "py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.mode-checks"
+  says = "Saving a token for an OAuth server is 400 ('use /oauth/authorize'), and for a No authentication server is 400. PUT /credentials applies the same checks as POST."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.stdio-env"
+  says = "For a STDIO server only the server's declared required and optional env names are kept from the payload, and a missing required one is 400."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.shared-admin-only"
+  says = "On a server with a shared admin credential, saving, replacing, removing or clearing that credential is 403 for a non-administrator. Everyone else reads the credential an administrator saved."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py", "py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.shared-only-token-or-headers"
+  says = "A shared credential applies only to API token or header servers. OAuth sign-in is always per person, even with the shared option set, and personal servers cannot use it."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py", "py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.auto-authenticate"
+  says = "POST /auto-authenticate succeeds when the administrator's shared credential exists, is 400 when the server does not use one, and 409 when the administrator has not set it yet."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.disconnect"
+  says = "DELETE /credentials and POST /reauthenticate remove only the caller's own credential, including OAuth tokens, and cancel its refresh task. The shared OAuth client other users rely on stays."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.credentials.never-returned"
+  says = "No response of these routes contains the stored token, header value or env values; they return success and isAuthenticated only."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "mcp.credentials.ui-state"
+  says = "The UI shows connect, connected, slow or blocked per server, asks a member to connect only when they never have, and lets only an administrator add a missing shared credential."
+  priority = "P2"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/__tests__/connection-state.test.tsx",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/personal-mcp-servers.test.tsx",
+  ]
+
+# ---------------------------------------------------------------------------
+# OAuth sign-in
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.oauth"
+title = "MCP server OAuth sign-in"
+flow = "agents-toolsets-mcp"
+what = "A user connects to an OAuth MCP server in a popup: PipesHub discovers the server's OAuth endpoints, registers or uses a client, sends the user to the provider, and stores the tokens when the callback returns. Tokens refresh on demand and in the background."
+routes = [
+  "GET /api/v1/mcp-servers/instances/{instanceId}/oauth/authorize",
+  "POST /api/v1/mcp-servers/instances/{instanceId}/oauth/refresh",
+  "POST /api/v1/mcp-servers/oauth/discover",
+  "GET /api/v1/mcp-servers/oauth/callback",
+]
+pages = ["frontend/app/(public)/mcp-servers/oauth/callback/page.tsx"]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "backend/python/app/agents/mcp/dcr.py",
+  "backend/python/app/agents/mcp/oauth_client.py",
+  "backend/python/app/agents/mcp/token_refresh.py",
+  "backend/python/app/agents/mcp/cimd.py",
+  "backend/python/app/agents/mcp/www_authenticate.py",
+  "frontend/app/(public)/mcp-servers/oauth/callback/**",
+  "frontend/app/(main)/workspace/mcp-servers/hooks/use-mcp-oauth-popup.ts",
+  "frontend/app/(main)/workspace/mcp-servers/oauth/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.oauth.authorize-url"
+  says = "GET /oauth/authorize returns an authorizationUrl with a PKCE challenge, a random state and the redirect URI. It is 400 for a server that does not use OAuth. The stored state expires after 10 minutes."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_dcr.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.web-urls-only"
+  says = "An authorization address that is not a web address is refused, so the popup is never sent to a script or other scheme."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py", "fe:app/(main)/workspace/mcp-servers/__tests__/oauth-popup-safety.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.callback-bound-to-caller"
+  says = "The callback succeeds only for the session that started the sign-in and in the same organization; any other caller gets caller_mismatch and the state is not consumed."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.state-single-use"
+  says = "A state value works once: a second callback with it is refused as invalid_state, and an expired state is refused as expired_state, both before any token exchange."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_org_scoping.py", "py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.callback-errors"
+  says = "The callback answers 200 with success false and an error code for a provider error, missing code or state, unknown state, or a failed token exchange, and never echoes the raw provider response."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.callback-stores-tokens"
+  says = "A good callback stores the tokens under the initiator's own credential (or the agent's, for an agent sign-in), schedules a background refresh and clears remembered extra scopes."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_org_scoping.py", "py:tests/unit/api/routes/test_mcp_servers_personal.py", "py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.ssrf-callback"
+  says = "Endpoints from a server's OAuth metadata that point to loopback, link-local or cloud-metadata addresses are refused at discovery, at save and at the callback's token exchange."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_url_guard.py", "py:tests/unit/agents/mcp/test_dcr.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.discover"
+  says = "POST /oauth/discover probes a server URL and returns metadataFound, supportsDcr and its endpoints. When nothing is found it says metadataFound false, not 'no DCR'. A blocked address is 400."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py", "fe:app/(main)/workspace/mcp-servers/__tests__/oauth-dcr-requirement.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.discover-policy"
+  says = "A non-administrator's discovery runs under the public-only policy of a personal server; only an administrator may probe private-network hosts."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py", "py:tests/unit/agents/mcp/test_url_guard.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.refresh-now"
+  says = "POST /oauth/refresh renews the caller's token. With no credential, refresh token or token url it is 400. A refresh token the provider rejects signs the credential out and returns 409 'reconnect'; a provider outage is 502."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_token_refresh.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.refresh-safety"
+  says = "A refresh does not write back over a credential removed or re-signed-in meanwhile, retries a failed save once, and is taken by only one process at a time so a rotating refresh token is not used twice."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_token_refresh.py", "py:tests/unit/agents/mcp/test_token_refresh_cluster_lock.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.popup-ui"
+  says = "The sign-in popup opens before the server answers, reports a blocked or closed popup, ignores messages from other windows, and the callback page tells the opener MCP_OAUTH_SUCCESS or MCP_OAUTH_ERROR and closes."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/__tests__/oauth-popup-safety.test.ts",
+    "fe:app/(public)/__tests__/oauth-callback-session.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.oauth.real-provider"
+  says = "A full sign-in against a real provider (consent screen, callback, token exchange) works end to end."
+  priority = "P1"
+  kind = "function"
+  tests = []
+  manual = "Needs a vendor account with a consent screen; the repo has no OAuth MCP server stand-in."
+
+# ---------------------------------------------------------------------------
+# OAuth app (client id and secret)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.oauth-app"
+title = "MCP server OAuth app"
+flow = "agents-toolsets-mcp"
+what = "The person who manages a server sets the OAuth client id and secret to use when the server does not support automatic registration, and reads them back masked."
+routes = [
+  "GET /api/v1/mcp-servers/instances/{instanceId}/oauth-config",
+  "PUT /api/v1/mcp-servers/instances/{instanceId}/oauth-config",
+]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "frontend/app/(main)/workspace/mcp-servers/team/components/mcp-instance-config-panel*.tsx",
+  "frontend/app/(main)/workspace/mcp-servers/team/components/mcp-client-secret-prefix-hint.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.oauth-app.manage-access"
+  says = "Only an administrator (org server) or the owner (personal server) can read or set the OAuth app; others get 403. Another org's server is 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py", "py:tests/unit/api/routes/test_mcp_servers_org_scoping.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth-app.masked"
+  says = "GET /oauth-config returns configured true with the client id and secret masked (first and last four characters), unless the caller is allowed to reveal secrets and owns the config."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py", "py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth-app.not-configured"
+  says = "With no stored app, GET /oauth-config returns configured false and the redirect URI to register at the provider."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py"]
+
+  [[feature.behavior]]
+  id = "mcp.oauth-app.reveal-ui"
+  says = "The config panel does not re-save a client it only revealed, saves it when the admin changes it, and warns on a client secret with the wrong prefix."
+  priority = "P2"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/team/components/__tests__/mcp-instance-config-panel.reveal.test.tsx",
+    "fe:app/(main)/workspace/mcp-servers/team/components/__tests__/mcp-client-secret-prefix-hint.test.tsx",
+  ]
+
+# ---------------------------------------------------------------------------
+# Client metadata document (no OpenAPI route)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.client-metadata"
+title = "OAuth client metadata document"
+flow = "agents-toolsets-mcp"
+what = "PipesHub serves a public OAuth Client ID Metadata Document at /mcp-servers/oauth/client-metadata.json, so authorization servers that support it can accept PipesHub as a client without registering one."
+code = [
+  "backend/nodejs/apps/src/modules/mcp_servers/routes/mcp_client_metadata.ts",
+  "backend/python/app/agents/mcp/cimd.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.client-metadata.document"
+  says = "The document names client_id as its own URL, the callback redirect URI built from the configured public address, token_endpoint_auth_method none, and the authorization_code and refresh_token grants."
+  priority = "P1"
+  kind = "function"
+  tests = ["node:tests/modules/mcp_servers/routes/mcp_client_metadata.test.ts", "py:tests/unit/agents/mcp/test_cimd.py"]
+
+  [[feature.behavior]]
+  id = "mcp.client-metadata.unconfigured"
+  says = "Without a configured public address the document is 404 'Not Found', and it needs no sign-in."
+  priority = "P1"
+  kind = "function"
+  tests = ["node:tests/modules/mcp_servers/routes/mcp_client_metadata.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.client-metadata.fallback"
+  says = "When a provider refuses the metadata-document client, the next sign-in at that server registers a client instead."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py"]
+
+# ---------------------------------------------------------------------------
+# Tool approval rules
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.tool-rules"
+title = "My tool approval rules for MCP servers"
+flow = "agents-toolsets-mcp"
+what = "A user sets allow, ask or block for each tool of an MCP server they can see. The rules apply in all their assistant chats."
+routes = [
+  "GET /api/v1/mcp-servers/instances/{instanceId}/my-tool-rules",
+  "PUT /api/v1/mcp-servers/instances/{instanceId}/my-tool-rules",
+]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "backend/python/app/agents/agent_loop/tool_approvals.py",
+  "backend/python/app/agents/mcp/tool_kind.py",
+  "frontend/app/(main)/workspace/mcp-servers/tool-rules.ts",
+  "frontend/app/(main)/workspace/mcp-servers/components/mcp-tool-rules-*.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.tool-rules.own-rules"
+  says = "PUT /my-tool-rules saves the caller's own rules and GET returns them. Nobody else's rules are readable, and a server the caller cannot see is 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_tool_rules.py"]
+
+  [[feature.behavior]]
+  id = "mcp.tool-rules.validation"
+  says = "A rule must be allow, ask or block; at most 500 tools may have a rule, and a tool name is 1 to 200 characters. Anything else is refused."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_tool_rules.py"]
+
+  [[feature.behavior]]
+  id = "mcp.tool-rules.enforced"
+  says = "In a chat, a tool set to block is not called, and one set to ask stops for the user's approval before it runs."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/agent_loop/test_tool_approvals.py", "py:tests/unit/agents/agent_loop/test_tool_approvals_wiring.py"]
+
+  [[feature.behavior]]
+  id = "mcp.tool-rules.ui"
+  says = "The dialog shows each tool at its saved rule, groups tools by what they do to data (deleting ones first), saves only what changed, and keeps the dialog open when saving fails."
+  priority = "P2"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/__tests__/mcp-tool-rules-dialog.test.tsx",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/tool-rules.test.ts",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/tool-rules-api.test.ts",
+  ]
+
+# ---------------------------------------------------------------------------
+# Service-account agent credentials
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.agent-credentials"
+title = "MCP credentials for service-account agents"
+flow = "agents-toolsets-mcp"
+what = "A person who can edit a service-account agent connects that agent to MCP servers with the agent's own credentials, by token, headers or OAuth, instead of the caller's."
+routes = [
+  "GET /api/v1/mcp-servers/agents/{agentKey}",
+  "POST /api/v1/mcp-servers/agents/{agentKey}/instances/{instanceId}/authenticate",
+  "PUT /api/v1/mcp-servers/agents/{agentKey}/instances/{instanceId}/credentials",
+  "DELETE /api/v1/mcp-servers/agents/{agentKey}/instances/{instanceId}/credentials",
+  "POST /api/v1/mcp-servers/agents/{agentKey}/instances/{instanceId}/reauthenticate",
+  "GET /api/v1/mcp-servers/agents/{agentKey}/instances/{instanceId}/oauth/authorize",
+]
+code = [
+  "backend/python/app/api/routes/mcp_servers.py",
+  "frontend/app/(main)/agents/agent-builder/components/agent-mcp-credentials-dialog.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.agent-credentials.edit-access"
+  says = "Writing an agent's MCP credentials needs edit access to the agent and an agent that is a service account. Python re-checks this even when the token has agent:write."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_handlers.py", "py:tests/unit/api/routes/test_mcp_servers_extended.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-credentials.viewer-no-tools"
+  says = "A viewer of the agent gets each server's connection status but no tools, because listing tools would connect with the agent's credentials. An editor gets the tools."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-credentials.org-servers-only"
+  says = "The agent listing holds org servers only, never a member's personal server and never another org's."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_personal.py", "py:tests/unit/api/routes/test_mcp_servers_org_scoping.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-credentials.no-shared-copy"
+  says = "An agent cannot store its own copy of a shared admin credential; the shared one is used."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_correctness.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-credentials.oauth-owner"
+  says = "An OAuth sign-in started for an agent stores its tokens under the agent, not the person who clicked, and only the person who started it can complete it."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-credentials.ui"
+  says = "The agent builder's credentials dialog lets an editor reconnect an agent to a server."
+  priority = "P2"
+  kind = "function"
+  tests = ["fe:app/(main)/agents/agent-builder/components/__tests__/agent-mcp-credentials-dialog.test.tsx"]
+
+# ---------------------------------------------------------------------------
+# Attach servers to agents (no route of its own: part of agent create and update)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.agent-attachment"
+title = "MCP servers attached to agents"
+flow = "agents-toolsets-mcp"
+what = "An agent owner attaches MCP servers and chooses which of their tools the agent gets, either all tools or a list. The saved attachment takes its name and type from the server itself."
+code = [
+  "backend/python/app/api/routes/agent.py",
+  "backend/python/app/api/routes/mcp_resolvers.py",
+  "frontend/app/(main)/agents/agent-builder/mcp-live-servers.ts",
+  "frontend/app/(main)/agents/agent-builder/sidebar-mcp-utils.ts",
+  "frontend/app/(main)/agents/agent-builder/components/sidebar-mcp-section.tsx",
+  "frontend/app/(main)/agents/agent-builder/components/mcp-flow-node.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.agent-attachment.limits"
+  says = "An agent has at most 50 servers and 500 tools per server. Tool names, descriptions and display names are length-limited, and a name with control characters is refused."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_mcp_attachment_trust.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-attachment.server-owns-name"
+  says = "A saved attachment carries the server's own name and type, not what the request says. Two servers of the same catalog type on one agent are refused."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_mcp_attachment_trust.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-attachment.tool-selection"
+  says = "A server is attached with allTools true or a non-empty tool list. A listed server keeps only its list; an all-tools server also gets tools added later. A server left with no tools is dropped."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_agent_mcp_tool_selection.py", "fe:app/(main)/agents/agent-builder/__tests__/mcp-tool-selection.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-attachment.atomic-save"
+  says = "Saving an agent's servers runs in one transaction: a failed save keeps the servers the agent had."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_agent_mcp_tool_selection.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-attachment.personal-servers"
+  says = "A user may attach their own personal server only to an agent that is not shared and not a service account. Sharing such an agent, or making it a service account, is refused; another user's personal server is not found."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_personal_mcp_servers.py"]
+
+  [[feature.behavior]]
+  id = "mcp.agent-attachment.builder-ui"
+  says = "The agent builder shows each attached server with its live tools and drops servers and tools that no longer exist."
+  priority = "P2"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/agents/agent-builder/__tests__/mcp-live-servers.test.ts",
+    "fe:app/(main)/agents/agent-builder/components/__tests__/agent-core-node-mcp.test.tsx",
+  ]
+
+# ---------------------------------------------------------------------------
+# Runtime: calling the tools in a chat
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.runtime"
+title = "Calling MCP tools in chat and agents"
+flow = "agents-toolsets-mcp"
+what = "In an assistant or agent chat, PipesHub connects to the attached MCP servers with the right person's credential, offers their tools to the model and calls them. A failing server does not stop the chat."
+code = [
+  "backend/python/app/agents/agent_loop/mcp_*.py",
+  "backend/python/app/agents/mcp/client.py",
+  "backend/python/app/agents/mcp/wire.py",
+  "backend/python/app/agents/mcp/naming.py",
+  "backend/python/app/agents/mcp/errors.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.runtime.tool-call"
+  says = "An agent with an attached MCP tool calls it for a question that needs it, and the MCP server's own call log shows the request."
+  priority = "P0"
+  kind = "function"
+  tests = [
+    "it:ai_agents/integration_test_agent_tools_live.py::TestToolQuestion::test_it_calls_the_mcp_tool",
+    "it:ai_agents/integration_test_agent_tools_live.py::TestToolQuestion::test_the_mcp_server_received_the_call",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.attached-only"
+  says = "An agent gets only the attached servers and, for a listed server, only the selected tools. The assistant gets the org servers and the caller's own authenticated servers."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/agents/adapter/test_mcp_access.py",
+    "py:tests/unit/agents/adapter/test_mcp_tool_loader.py",
+    "py:tests/unit/api/routes/test_mcp_servers_personal.py",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.credential-owner"
+  says = "A server's tools run with the credential of the chatting user, the shared admin credential when the server has one, or the agent's own for a service-account agent."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/adapter/test_mcp_access.py", "py:tests/unit/agents/mcp/test_service.py"]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.failure-isolated"
+  says = "A server that fails to connect registers no tools and the failure is recorded, while other servers load. A name clash skips the clashing tool only."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/adapter/test_mcp_tool_loader.py"]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.401-refresh"
+  says = "A 401 from an OAuth server refreshes the token once and retries; a non-OAuth 401 is not refreshed, and a failed refresh is recorded without a retry loop."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/adapter/test_mcp_tool_loader.py", "py:tests/unit/agents/adapter/test_mcp_session.py"]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.session-reuse"
+  says = "One chat turn opens one connection per server and shares it between discovery and the tool calls."
+  priority = "P2"
+  kind = "performance"
+  tests = ["py:tests/unit/agents/adapter/test_mcp_session.py", "py:tests/unit/agents/mcp/test_timeouts_and_reuse.py"]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.results"
+  says = "A tool result is turned into model-readable output, including structured content, errors and large results."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/adapter/test_mcp_result.py", "it:unit/test_mcp_tool_result.py"]
+
+  [[feature.behavior]]
+  id = "mcp.runtime.no-secret-in-errors"
+  says = "A tool or connection error shown to the user or model does not contain the credential or the provider's raw response body."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_error_detail.py", "py:tests/unit/api/routes/test_mcp_servers_handlers.py"]
+
+# ---------------------------------------------------------------------------
+# Sign in again from chat (step-up scopes)
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.chat-sign-in"
+title = "Sign in again from the chat"
+flow = "agents-toolsets-mcp"
+what = "When an MCP server refuses a tool call for a missing scope, the next sign-in asks for it, and the web chat shows a card to sign in again or connect a server right there."
+code = [
+  "backend/python/app/agents/mcp/step_up.py",
+  "backend/python/app/agents/agent_loop/mcp_sign_in.py",
+  "frontend/app/(main)/chat/components/message-area/mcp-sign-in-card.tsx",
+  "frontend/app/(main)/chat/components/message-area/mcp-connect-required-card.tsx",
+  "frontend/app/(main)/chat/components/chat-panel/expansion-panels/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.chat-sign-in.step-up"
+  says = "A 403 insufficient_scope names the scopes the server needs. They are remembered for the owner (capped, each once) and asked for on the next sign-in, then cleared after it."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_step_up.py", "py:tests/unit/agents/mcp/test_failure.py"]
+
+  [[feature.behavior]]
+  id = "mcp.chat-sign-in.card"
+  says = "The web chat's reply lists each refused server once with its scopes merged. Other clients get no card, and only a refusal that signing in again fixes shows one."
+  priority = "P1"
+  kind = "function"
+  tests = [
+    "py:tests/unit/agents/agent_loop/test_mcp_sign_in.py",
+    "fe:app/(main)/chat/__tests__/mcp-sign-in.test.ts",
+    "fe:app/(main)/chat/components/message-area/__tests__/mcp-sign-in-card.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.chat-sign-in.connect-required"
+  says = "A run that stops because an attached server is not connected shows a connect card for those servers, and the chat panel lists the servers to connect."
+  priority = "P1"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/chat/components/message-area/__tests__/mcp-connect-required-card.test.tsx",
+    "fe:app/(main)/chat/components/chat-panel/expansion-panels/__tests__/mcp-connect-rows.test.tsx",
+  ]
+
+# ---------------------------------------------------------------------------
+# Background token refresh
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.token-refresh-service"
+title = "Background OAuth token refresh for MCP servers"
+flow = "agents-toolsets-mcp"
+what = "A background service in the connectors process renews MCP OAuth tokens before they expire, so chats keep working without the user signing in again. It also clears sign-in states that were never completed."
+code = [
+  "backend/python/app/connectors/core/base/token_service/mcp_token_refresh_service.py",
+  "backend/python/app/connectors/core/base/token_service/startup_service.py",
+  "backend/python/app/agents/mcp/token_refresh.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.token-refresh-service.schedule"
+  says = "After a sign-in, a refresh is scheduled for each stored OAuth credential, using the token url saved on the credential, so custom servers refresh too. Disconnecting cancels the task."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/test_mcp_token_refresh_service.py", "py:tests/unit/agents/mcp/test_token_refresh.py"]
+
+  [[feature.behavior]]
+  id = "mcp.token-refresh-service.rejected"
+  says = "When the provider permanently rejects a refresh token, the credential is marked signed out so the user is asked to reconnect, instead of retrying forever."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/test_mcp_token_refresh_service.py", "py:tests/unit/agents/mcp/test_token_refresh.py"]
+
+  [[feature.behavior]]
+  id = "mcp.token-refresh-service.orphans"
+  says = "A credential whose server is gone is removed, not refreshed."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_lifecycle.py", "py:tests/unit/connectors/test_mcp_token_refresh_service.py"]
+
+  [[feature.behavior]]
+  id = "mcp.token-refresh-service.logging"
+  says = "Each refresh logs the server, owner and outcome without the token or the provider's response."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_token_refresh_logging.py", "py:tests/unit/connectors/test_mcp_token_refresh_service_logging.py"]
+
+# ---------------------------------------------------------------------------
+# Network guard
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.url-guard"
+title = "Network guard for MCP connections"
+flow = "agents-toolsets-mcp"
+what = "Every request PipesHub makes to an MCP server or its OAuth endpoints goes through a guard that refuses internal addresses. Only an administrator's server may use the private network, and that can be turned off for the deployment."
+code = [
+  "backend/python/app/agents/mcp/url_guard.py",
+  "backend/python/app/agents/mcp/wire.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.url-guard.blocked"
+  says = "Loopback, link-local and cloud-metadata addresses (including mapped IPv6 forms) are refused for every server, with a message that does not name the resolved address."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_url_guard.py", "py:tests/unit/agents/mcp/test_url_guard_httpx2.py"]
+
+  [[feature.behavior]]
+  id = "mcp.url-guard.save-time"
+  says = "Creating or updating a server with a loopback server url or a metadata token url is 400, and an update leaves the stored record unchanged."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_url_guard.py"]
+
+  [[feature.behavior]]
+  id = "mcp.url-guard.private-network"
+  says = "A private-network host is allowed only on an administrator's server and only for the host the server names. A personal server is always public-only, and MCP_ALLOW_PRIVATE_NETWORK_URLS=false turns it off for all."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_url_guard.py", "py:tests/unit/api/routes/test_mcp_servers_url_guard.py"]
+
+  [[feature.behavior]]
+  id = "mcp.url-guard.rebinding"
+  says = "A request goes to the address that was checked (pinned), and a redirect to another origin never reaches the network, so DNS rebinding and redirects cannot reach an internal host."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_url_guard.py", "py:tests/unit/agents/mcp/test_url_guard_httpx2.py"]
+
+# ---------------------------------------------------------------------------
+# STDIO launch policy
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.stdio-policy"
+title = "STDIO server launch policy"
+flow = "agents-toolsets-mcp"
+what = "Catalog servers always run their catalog command. A custom STDIO server (a local program PipesHub starts) is off by default and, when an administrator turns it on, may only run allowed launchers."
+code = [
+  "backend/python/app/agents/mcp/stdio_policy.py",
+  "backend/python/app/api/routes/mcp_servers.py",
+  "frontend/app/(main)/workspace/mcp-servers/components/mcp-stdio-policy.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.stdio-policy.off-by-default"
+  says = "Custom STDIO is off unless MCP_ALLOW_CUSTOM_STDIO is exactly true. Creating one when off is 403 and says how to enable it; the catalog's customStdioAllowed says which."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_stdio_policy.py", "py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py"]
+
+  [[feature.behavior]]
+  id = "mcp.stdio-policy.command"
+  says = "A custom command must be an allowed launcher or listed exactly. Shells, inline-code flags and NUL bytes are refused (400), also for paths and combined short flags."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_stdio_policy.py", "py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py"]
+
+  [[feature.behavior]]
+  id = "mcp.stdio-policy.env-names"
+  says = "Env names that load code (such as interpreter search paths) and invalid names are refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_stdio_policy.py", "py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py"]
+
+  [[feature.behavior]]
+  id = "mcp.stdio-policy.launch-time"
+  says = "A stored record is checked again when launched: a tampered catalog record runs the template command, and a custom shell command or code-loading env name cannot be launched."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py"]
+
+  [[feature.behavior]]
+  id = "mcp.stdio-policy.template-wins"
+  says = "A catalog server's command, args, transport and url cannot be overridden by the request; a different transport is 400."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_mcp_servers_stdio_policy.py"]
+
+  [[feature.behavior]]
+  id = "mcp.stdio-policy.ui"
+  says = "The server form starts a new custom server on STDIO with a warning when the setting is on, and keeps a STDIO form unsavable when the setting turns off."
+  priority = "P2"
+  kind = "function"
+  tests = ["fe:app/(main)/workspace/mcp-servers/team/components/__tests__/mcp-instance-config-panel.stdio-policy.test.tsx"]
+
+# ---------------------------------------------------------------------------
+# Tool list cache
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.tool-cache"
+title = "MCP tool list cache"
+flow = "agents-toolsets-mcp"
+what = "PipesHub keeps each sign-in's list of a server's tools between chats, so a turn does not connect to every server just to learn what it offers."
+code = ["backend/python/app/agents/mcp/tool_cache.py"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.tool-cache.per-sign-in"
+  says = "A sign-in reads only its own cached list; a shared administrator credential is one sign-in for everyone, and a list shared by all is used only when the server says so and an administrator set it up."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_tool_cache.py"]
+
+  [[feature.behavior]]
+  id = "mcp.tool-cache.invalidation"
+  says = "A new credential, a changed server target, an expired entry or a blob that fails its hash check is a miss. An empty list is never kept."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_tool_cache.py"]
+
+  [[feature.behavior]]
+  id = "mcp.tool-cache.server-hints"
+  says = "The cache lasts a day by default, honors a shorter server hint, drops what a server says not to cache, and has a kill switch that reads and writes nothing."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_tool_cache.py"]
+
+# ---------------------------------------------------------------------------
+# Cleanup when a user goes away
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.cleanup"
+title = "MCP data cleanup"
+flow = "agents-toolsets-mcp"
+what = "When a user or an agent is deleted, the MCP servers, credentials and tokens that belonged to them are removed. A failed delete does not stop the rest."
+code = [
+  "backend/python/app/agents/mcp/lifecycle.py",
+  "backend/python/app/services/messaging/kafka/handlers/entity.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.cleanup.user-deleted"
+  says = "A user-deleted event removes that user's personal servers, credentials, tokens and rules, and nothing of other users."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/mcp/test_lifecycle.py"]
+
+  [[feature.behavior]]
+  id = "mcp.cleanup.agent-deleted"
+  says = "A deleted agent loses only its own MCP credentials."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_lifecycle.py"]
+
+  [[feature.behavior]]
+  id = "mcp.cleanup.best-effort"
+  says = "One failing delete does not stop the others, and a cleanup failure does not fail the event."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/agents/mcp/test_lifecycle.py"]
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "mcp.team-page"
+title = "Workspace MCP servers (administrator page)"
+flow = "agents-toolsets-mcp"
+what = "An administrator adds, configures, connects and deletes the organization's MCP servers from the catalog or as custom servers, and sees each server's tools and who created it."
+pages = [
+  "frontend/app/(main)/workspace/mcp-servers/team/page.tsx",
+]
+code = [
+  "frontend/app/(main)/workspace/mcp-servers/team/**",
+  "frontend/app/(main)/workspace/mcp-servers/api.ts",
+  "frontend/app/(main)/workspace/mcp-servers/edit-impact.ts",
+  "frontend/app/(main)/workspace/mcp-servers/types.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.team-page.admin-only"
+  says = "A non-administrator who opens the page is sent to their personal MCP servers page; when MCP is off the user is sent to Workspace general."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "mcp.team-page.catalog"
+  says = "The page lists the catalog and the org servers with their status, leaves out the administrator's own personal servers, and does not offer replaced entries for setup."
+  priority = "P1"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/team/components/__tests__/mcp-catalog-layout.test.tsx",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/team-instances.test.ts",
+    "fe:app/(main)/workspace/mcp-servers/__tests__/catalog-replacement.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.team-page.edit-confirm"
+  says = "An edit that removes everyone's credentials (new address, program or sign-in method) waits for confirmation. Cancel keeps everything, a rename saves at once."
+  priority = "P0"
+  kind = "function"
+  tests = ["fe:app/(main)/workspace/mcp-servers/__tests__/edit-safety.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.team-page.load-order"
+  says = "When loads overlap (a refresh during a delete), the newest answer wins, not the one that arrives last."
+  priority = "P2"
+  kind = "function"
+  tests = ["fe:app/(main)/workspace/mcp-servers/__tests__/mcp-pages-load-order.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.team-page.tools-tab"
+  says = "A server's tools tab says when a sign-in is needed, offers Edit server only to someone who may change it, and shows a later failure with Try again."
+  priority = "P2"
+  kind = "function"
+  tests = ["fe:app/(main)/workspace/mcp-servers/team/components/__tests__/mcp-tools-approvals-tab.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.team-page.end-to-end"
+  says = "An administrator adds a server in the browser, connects it, and sees its tools."
+  priority = "P1"
+  kind = "function"
+  tests = []
+
+[[feature]]
+id = "mcp.personal-page"
+title = "My MCP servers page"
+flow = "agents-toolsets-mcp"
+what = "Any user sees the organization's and their own MCP servers as cards, connects or disconnects them, adds a personal server, and sets their own tool approvals."
+pages = [
+  "frontend/app/(main)/workspace/mcp-servers/personal/page.tsx",
+]
+code = [
+  "frontend/app/(main)/workspace/mcp-servers/personal/**",
+  "frontend/app/(main)/workspace/mcp-servers/components/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.personal-page.cards"
+  says = "The page shows every server and catalog entry nobody has set up as cards, filters by tab with counts, searches both, and says what to do when there is nothing."
+  priority = "P1"
+  kind = "function"
+  tests = [
+    "fe:app/(main)/workspace/mcp-servers/__tests__/personal-mcp-servers.test.tsx",
+    "fe:app/(main)/workspace/mcp-servers/personal/components/__tests__/mcp-personal-server-card.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "mcp.personal-page.disconnect"
+  says = "Disconnect says what stops, what is kept and what is deleted before it runs, and warns that a shared credential stops the server for everyone."
+  priority = "P1"
+  kind = "function"
+  tests = ["fe:app/(main)/workspace/mcp-servers/__tests__/personal-mcp-servers.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.personal-page.own-servers"
+  says = "A user can edit and delete their own server, but not an org server."
+  priority = "P0"
+  kind = "security"
+  tests = ["fe:app/(main)/workspace/mcp-servers/__tests__/personal-mcp-servers.test.tsx"]
+
+  [[feature.behavior]]
+  id = "mcp.personal-page.flag-off"
+  says = "When MCP is off for the organization, the page sends the user to Workspace general instead of showing servers."
+  priority = "P2"
+  kind = "function"
+  tests = []
+
+[ignore]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/mcp-servers/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/mcp-servers/personal/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/mcp-servers/team/page.tsx",
+]
