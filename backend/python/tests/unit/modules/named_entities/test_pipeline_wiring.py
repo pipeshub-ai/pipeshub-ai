@@ -19,6 +19,8 @@ from app.modules.named_entities.domain.models import (
     NamedEntityExtraction,
 )
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.services.base_client import ServiceUnavailableError
+from app.utils.llm import LLMUnavailableError
 
 _SECRET_NAME = "Zebulon Quartermaine"
 
@@ -213,6 +215,30 @@ async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_un
         result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
     assert result.status == "FAILED"
     assert _provider_down(result)
+
+
+@pytest.mark.parametrize(
+    ("raised", "sent", "retry_after"),
+    [
+        (LLMUnavailableError("down", retry_after=120.0), True, 120.0),
+        (ServiceUnavailableError("circuit open", delivered=False), False, None),
+        (ServiceUnavailableError("503", delivered=True), True, None),
+    ],
+    ids=["provider-down", "service-unreachable", "service-5xx"],
+)
+async def test_the_extraction_carries_what_the_stage_needs_to_pause(raised, sent, retry_after) -> None:
+    """A service that was never reached has sent nothing (the pause is not a send against the budget); the provider's
+    retry-after survives to the stage's pause."""
+    from app.modules.pipeline.models import StageResult
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=raised)):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    paused = StageResult.paused_for(result.pause_cause, "down")
+    assert (paused.sent, paused.retry_after_s) == (sent, retry_after)
 
 
 @pytest.mark.parametrize("config", [{"budgets": {"max_turns": "lots"}}, {"tz": 7}])

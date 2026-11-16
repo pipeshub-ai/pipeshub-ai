@@ -575,7 +575,9 @@ class LLMGateway:
                                 sent_any = sent_any or seen.sent
                                 requests_total += seen.requests
                                 _note_failed_sends(seen.requests)
-                                await self._end_refused_attempt(fleet, breaker, pk, cls, admission, seen)
+                                charged_total += await self._end_refused_attempt(
+                                    fleet, breaker, pk, cls, admission, seen, trace, provider
+                                )
                                 LLM_CALLS.inc(site, "sends_used")
                                 raise self._sends_used(
                                     provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
@@ -686,15 +688,22 @@ class LLMGateway:
 
     async def _end_refused_attempt(
         self, fleet: FleetBreaker | None, breaker: CircuitBreaker, pk: str, cls: str, admission: Admission | None,
-        seen: wire.WireOutcome,
-    ) -> None:
-        """An attempt whose next request the send meter refused: the requests it did send were retried, so they failed;
-        a trial that never got its answer is handed back."""
+        seen: wire.WireOutcome, trace: JobTrace | None, provider: str,
+    ) -> int:
+        """An attempt whose next request the send meter refused: the requests it did send were retried, so they all failed,
+        each settled and charged on its own like any failed attempt; a trial that never got its answer is handed back.
+        Returns how many of them were chargeable."""
         if admission is not None and admission.trial and fleet is not None:
             await self._release_trial(fleet, pk, cls, admission.token)
-            return
-        if seen.sent:
-            await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.FAIL)
+            return 0
+        if not seen.sent:
+            return 0
+        charged = await self._settle_retried(fleet, breaker, pk, cls, admission, seen, trace, provider)
+        settlement = await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.FAIL)
+        chargeable = bool(settlement and settlement.chargeable)
+        if trace is not None:
+            trace.note_attempt(pk, cls, provider, chargeable=chargeable, trial=False)
+        return charged + (1 if chargeable else 0)
 
     # ---- the fleet breaker ---------------------------------------------------------------------
 

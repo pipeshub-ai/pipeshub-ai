@@ -122,7 +122,7 @@ class EntitiesStage:
         if extraction.status == "FAILED":
             # The model failed; the record keeps its last good entities meanwhile.
             if _provider_down(extraction):
-                return StageResult.paused_for(None, _PROVIDER_DOWN, traced=current_pause_fields())
+                return StageResult.paused_for(extraction.pause_cause, _PROVIDER_DOWN, traced=current_pause_fields())
             return StageResult(
                 outcome=StageOutcome.RETRY,
                 reason=f"Named-entity extraction failed ({extraction.termination_reason})",
@@ -144,7 +144,7 @@ class EntitiesStage:
             # the fingerprint, and the record would never get the names the model missed.
             if _provider_down(extraction):
                 return StageResult.paused_for(
-                    None, f"{_PROVIDER_DOWN}; saved what was found", traced=current_pause_fields()
+                    extraction.pause_cause, f"{_PROVIDER_DOWN}; saved what was found", traced=current_pause_fields()
                 )
             return StageResult(
                 outcome=StageOutcome.RETRY,

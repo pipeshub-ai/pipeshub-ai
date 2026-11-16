@@ -323,3 +323,52 @@ async def test_a_notice_cut_off_mid_send_is_not_taken_for_delivered(fleet: Fleet
     await HoldKeeper(fleet, breaker, sender=take, clock_ms=sim_clock).tick()
     assert sent == [], "the hold notice was never delivered, so its release is not sent"
     assert entry.episode
+
+
+@pytest.mark.asyncio
+async def test_a_scan_that_fails_or_stalls_is_a_store_outage_and_stops_neither_pass(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scans that re-index holds and owed redrives raise the store's own error type, bounded in time, and a failing scan
+    stops neither the hold tick nor the redrive pass that follows it."""
+    from app.modules.pipeline.pause_store import PauseStoreUnavailable
+    from app.services.llm_gateway import fleet_hold
+
+    client = fleet.client()
+
+    def broken_scan(*args, **kwargs):  # noqa: ANN202
+        async def gen():  # noqa: ANN202
+            raise ConnectionError("node down")
+            yield  # pragma: no cover
+
+        return gen()
+
+    monkeypatch.setattr(client, "scan_iter", broken_scan)
+    with pytest.raises(PauseStoreUnavailable):
+        await PauseStore().reconcile_owed()
+    keeper = HoldKeeper(fleet, FleetBreaker(fleet))
+    assert await keeper.tick() == 0, "the tick ran although its reconcile scan failed"
+
+    async def stalled_scan(*args, **kwargs):  # noqa: ANN202
+        await asyncio.sleep(3600)
+        yield "never"
+
+    monkeypatch.setattr(client, "scan_iter", stalled_scan)
+    monkeypatch.setattr(fleet_hold, "REDIS_OP_TIMEOUT_S", 0.05)
+    with pytest.raises(PauseStoreUnavailable):
+        await PauseStore().reconcile_owed()
+
+
+async def test_a_restored_hold_credits_no_time_from_before_it_began(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """A hold's index entry was never written (its ledger start failed) and the reconcile scan restores it later. The ledger's
+    last advance was ten hours before the hold began, and nothing advanced it since: the first tick credits the time the key
+    was held, not those ten hours, which would otherwise extend every pause budget on the key."""
+    breaker = FleetBreaker(fleet)
+    keeper = HoldKeeper(fleet, breaker, clock_ms=sim_clock)
+    scope = f"{PK}:{CLS}"
+    await breaker.advance_ledger(scope, held=False)  # the ledger's last advance, at hour 0
+    sim_clock.advance(10 * HOUR_MS)
+    for i in range(3):
+        capped = await breaker.register_capped(PK, CLS, f"job-{i}", label="ChatX:m@host", reason="charged_cap")
+    assert capped.newly_held and await keeper.entries() == [], "the hold exists in Redis only"
+    sim_clock.advance(10 * 60_000)
+    assert await keeper.tick() == 1  # the reconcile restores the entry, then the pass advances the ledger
+    assert await breaker.ledger(scope) == 10 * 60_000, "ten minutes of hold, not ten hours and ten minutes"

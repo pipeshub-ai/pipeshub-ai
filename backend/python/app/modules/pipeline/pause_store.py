@@ -108,6 +108,19 @@ if written > tonumber(ARGV[1]) then return 0 end
 return redis.call('DEL', KEYS[1])
 """
 
+# KEYS: budget, runs  ARGV: attempt. A forced redrive's fresh start: deletes the budget and the reservations of the runs
+# up to ``attempt`` (the state's attempt when it was claimed; a claim needs no live run, so those runs are over). A run
+# claimed after it, with a higher attempt, keeps its reservation and keeps counting against the cap.
+_RESET = """
+local limit = tonumber(ARGV[1])
+local entries = redis.call('HKEYS', KEYS[2])
+for _, field in ipairs(entries) do
+  local run = tonumber(field)
+  if run == nil or run <= limit then redis.call('HDEL', KEYS[2], field) end
+end
+return redis.call('DEL', KEYS[1])
+"""
+
 # KEYS: index  ARGV: member, the score read. Removes the member only while its score is still the one read.
 _REMOVE_IF_SCORE = """
 local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
@@ -254,8 +267,9 @@ class PauseStore:
 
         await self._do(write())
 
-    async def delete(self, state_key: str) -> None:
-        await self._do(self._handle().client().delete(self._key(state_key)))
+    async def reset(self, state_key: str, *, attempt: int) -> None:
+        """A forced redrive's fresh start (``_RESET``): the budget and the reservations of the runs up to ``attempt``."""
+        await self._eval(_RESET, [self._key(state_key), self._runs_key(state_key)], attempt)
 
     async def clear(self, state_key: str, *, attempt: int) -> bool:
         """Delete the budget of a run that settled as ``attempt``, unless a later attempt has written it since."""
@@ -328,14 +342,18 @@ class PauseStore:
 
     async def reconcile_owed(self) -> int:
         """Index every scope whose owed set Redis has (a SCAN of the namespace). Returns how many scopes it found."""
+        from app.services.llm_gateway.fleet_breaker import FleetBreakerUnavailable
         from app.services.llm_gateway.fleet_hold import _scope_of, scan_keys
 
         found = 0
-        async for key in scan_keys(self._handle(), "sg:{p:", "}:owed"):
-            scope = _scope_of(key, "sg:{p:", "}:owed")
-            if scope is not None and await self._do(self._handle().client().hlen(key)):
-                await self.note_owed_scope(scope)
-                found += 1
+        try:
+            async for key in scan_keys(self._handle(), "sg:{p:", "}:owed"):
+                scope = _scope_of(key, "sg:{p:", "}:owed")
+                if scope is not None and await self._do(self._handle().client().hlen(key)):
+                    await self.note_owed_scope(scope)
+                    found += 1
+        except FleetBreakerUnavailable as exc:
+            raise PauseStoreUnavailable(str(exc)) from exc
         return found
 
     async def redrive_done(self, scope: str, state_key: str) -> None:

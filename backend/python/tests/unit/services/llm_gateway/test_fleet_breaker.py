@@ -122,6 +122,30 @@ async def test_a_waiting_entry_that_never_wakes_does_not_strand_the_trial(fleet:
     assert (await br.admit(PK, S, "live")).code == TRIAL
 
 
+async def test_a_recovery_ends_the_trial_fairness_of_the_outage(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """A job that waited out one outage and then got through after the breaker closed must not hold a later outage's
+    fairness minimum down: the job waiting now would be refused for 300 s although it is the only one waiting."""
+    br = _breaker(fleet)
+    await _open(br)
+    await br.admit(PK, S, "done-later")  # waits through the outage, then sends once the breaker is closed
+    sim_clock.advance(BASE_COOLDOWN_MS + 1000)
+    first = await br.admit(PK, S, "carrier")
+    assert first.code == TRIAL
+    await br.settle(PK, S, "fail", token=first.token, was_closed=False)
+    sim_clock.advance(2 * BASE_COOLDOWN_MS + 1000)
+    assert (await br.admit(PK, S, "carrier")).code == REFUSE  # fairness: "done-later" has carried none
+    sim_clock.advance(301_000)
+    second = await br.admit(PK, S, "carrier")
+    assert second.code == TRIAL
+    assert (await br.settle(PK, S, "ok", token=second.token, was_closed=False)).state == "closed"
+    assert (await br.admit(PK, S, "done-later")).code == ALLOW
+
+    await _open(br)  # a later outage
+    assert (await br.admit(PK, S, "carrier")).code == REFUSE
+    sim_clock.advance(BASE_COOLDOWN_MS + 1000)
+    assert (await br.admit(PK, S, "carrier")).code == TRIAL, "the only job waiting is granted the first trial due"
+
+
 async def test_the_cooldown_doubles_to_sixty_minutes_and_no_further(fleet: FleetRedis, sim_clock: SimClock) -> None:
     br = _breaker(fleet)
     await _open(br)

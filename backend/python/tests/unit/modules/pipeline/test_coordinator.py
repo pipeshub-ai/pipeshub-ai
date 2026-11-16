@@ -546,3 +546,39 @@ async def test_a_forced_claim_that_does_not_win_keeps_the_budget(fleet) -> None:
     await store.put(key, PauseState(since_ms=h.clock(), charged=3, sends=4))
     assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) is None  # still running
     assert await store.get(key) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_redrive_does_not_inherit_a_superseded_runs_reservation(fleet) -> None:
+    """A run that crashed after reserving leaves its reservation behind. A forced redrive starts a fresh allowance: the
+    reservation of that earlier run (a lower attempt) is dropped with the budget, not charged to the new one."""
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    store = PauseStore()
+    coordinator = Coordinator(
+        registry, h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    view = _view()
+    key = stage_state_key(VRID, REV, "classify")
+    job = StageJob.for_view(view, stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False)
+    failed = StageState.from_job(job, ProgressStatus.FAILED, h.clock()).model_copy(update={"attempt": 3})
+    h.states.put(failed)
+    await store.put(key, PauseState(since_ms=h.clock(), sends=5))
+    assert await store.reserve(key, attempt=3, absolute=20, now_ms=h.clock(), stale_ms=10**9) == 15  # then it crashed
+
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) == f"{key}@1"
+
+    # the next run (attempt 4), live or long after, is granted the full allowance
+    assert await store.reserve(key, attempt=4, absolute=20, now_ms=h.clock() + 10**6, stale_ms=1) == 20
+    assert await store.get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_redrive_keeps_a_live_twins_reservation(fleet) -> None:
+    store = PauseStore()
+    key = "vr:rev:classify"
+    now = 1_000_000
+    assert await store.reserve(key, attempt=5, absolute=20, now_ms=now, stale_ms=10**9) == 20  # a run newer than the claim
+    await store.reset(key, attempt=3)
+    assert await store.reserve(key, attempt=6, absolute=20, now_ms=now, stale_ms=10**9) == 0

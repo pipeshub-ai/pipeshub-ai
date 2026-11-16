@@ -255,3 +255,19 @@ def test_the_input_estimate_counts_tool_call_arguments() -> None:
     turn = SimpleNamespace(content="", tool_calls=[{"name": "search", "args": {"q": "x" * 12_000}}])
     assert estimate_tokens([turn]) >= 3_000
     assert estimate_tokens([{"type": "text", "text": "", "tool_calls": [{"args": "y" * 12_000}]}]) >= 3_000
+
+
+@pytest.mark.parametrize(("allowance", "charged"), [(1, 1), (2, 2)])
+async def test_a_request_refused_by_the_allowance_leaves_the_charges_of_those_it_followed(
+    fleet: FleetRedis, allowance: int, charged: int
+) -> None:
+    """20 served calls and an SDK that retries a 503: the allowance refuses the request after the last one it has left. The
+    requests that did go out failed and are chargeable (the key was serving others), so the error and the run's trace say so
+    instead of reporting sends with no charge."""
+    await _serving(fleet, 20)
+    with llm_job("job-1", allowance=allowance) as trace, pytest.raises(ProviderUnavailableError) as raised:
+        await LLMGateway(2).invoke(_Wire(503, 503, 503, 503), "hi", provider=PROVIDER)
+    assert trace.requests == allowance
+    assert raised.value.charged == charged and raised.value.chargeable is True
+    assert trace.charged == charged
+    assert trace.pause_fields()["charged"] == charged

@@ -76,13 +76,13 @@ redis.call('EXPIRE', br, OPEN_TTL)
 return {2, 0, ARGV[7]}
 """
 
-# KEYS: br, rate, hold
+# KEYS: br, rate, hold, waiting, trials
 # ARGV: now, outcome (ok | ok_unrated | fail | neutral), token ('' unless a trial), was_closed (0/1),
 #       base_cooldown_ms, trial_max_ms, min_outcomes, threshold_pct, lease_ms, consecutive_trip, window_trip_min
 # -> {state, chargeable, trial_result, released_episode, released_since, released_label, released_cls}
 # trial_result: '' (not a trial), closed, reopened, dropped, released
 SETTLE = _PRELUDE + """
-local br, rate, hold = KEYS[1], KEYS[2], KEYS[3]
+local br, rate, hold, waiting, trials = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
 local now = now_ms(ARGV[1])
 local outcome, token = ARGV[2], ARGV[3]
 local was_closed = ARGV[4] == '1'
@@ -135,6 +135,8 @@ if token ~= '' then
       'trial_holder', '', 'trial_until', 0)
     state = 'closed'
     result = 'closed'
+    -- the outage is over: the jobs that waited through it, and the trials they carried, are not a later outage's fairness
+    redis.call('DEL', waiting, trials)
     if redis.call('EXISTS', hold) == 1 then
       rel_episode = redis.call('HGET', hold, 'episode') or ''
       rel_since = redis.call('HGET', hold, 'since_ms') or ''
@@ -238,11 +240,15 @@ end
 return out
 """
 
-# KEYS: ledger, last. ARGV: now, held (0/1) -> the ledger in ms
+# KEYS: ledger, last. ARGV: now, held (0/1), since_ms (when the hold began; '' or 0 when unknown) -> the ledger in ms
+# The credited interval starts at the later of the last advance and the hold's start, so time before the hold began
+# (the last advance of an earlier hold) is never credited, however late the hold was first ticked.
 ADVANCE_LEDGER = _PRELUDE + """
 local ledger, last = KEYS[1], KEYS[2]
 local now = now_ms(ARGV[1])
 local previous = tonumber(redis.call('GET', last) or tostring(now))
+local since = tonumber(ARGV[3] or '') or 0
+if since > previous then previous = since end
 if ARGV[2] == '1' and now > previous then redis.call('INCRBY', ledger, now - previous) end
 redis.call('SET', last, now)
 return tonumber(redis.call('GET', ledger) or '0')

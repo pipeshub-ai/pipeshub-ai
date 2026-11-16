@@ -527,7 +527,10 @@ class StageJobHandler:
             return 0
         if self._redrive_passes % RECONCILE_EVERY_TICKS == 0:
             # The scope index is a fast path; the owed sets themselves are the record (``PauseStore.reconcile_owed``).
-            await self._pause.reconcile_owed()
+            try:
+                await self._pause.reconcile_owed()
+            except PauseStoreUnavailable:
+                self._logger.warning("could not reconcile the owed redrive index; using the index as it is", exc_info=True)
         self._redrive_passes += 1
         done = 0
         for scope, owed in (await self._pause.pending_redrives()).items():

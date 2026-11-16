@@ -285,7 +285,10 @@ class FleetBreaker:
         or ``neutral`` (a caller's own budget ran out)."""
         reply = await self._run(
             lua.SETTLE,
-            [self._key(pk, cls, "br"), self._key(pk, cls, "rate"), self.hold_key(pk, cls)],
+            [
+                self._key(pk, cls, "br"), self._key(pk, cls, "rate"), self.hold_key(pk, cls),
+                self._key(pk, cls, "waiting"), self._key(pk, cls, "trials"),
+            ],
             self._now(), outcome, token, "1" if was_closed else "0", BASE_COOLDOWN_MS, TRIAL_MAX_MS,
             RATE_MIN_OUTCOMES, RATE_THRESHOLD_PCT, TRIAL_LEASE_MS, CONSECUTIVE_TRIP, WINDOW_TRIP_MIN,
         )
@@ -326,11 +329,11 @@ class FleetBreaker:
         held, _ = await self._run(lua.HOLD_KEEP, [self._key(pk, cls, "br"), self.hold_key(pk, cls)])
         return int(held)
 
-    async def advance_ledger(self, scope: str, *, held: bool) -> int:
+    async def advance_ledger(self, scope: str, *, held: bool, since_ms: int = 0) -> int:
         reply = await self._run(
             lua.ADVANCE_LEDGER,
             [self.ledger_key(scope), self._fleet.key(f"sg:hold:ledger:last:{{{scope}}}")],
-            self._now(), "1" if held else "0",
+            self._now(), "1" if held else "0", since_ms,
         )
         return int(reply)
 

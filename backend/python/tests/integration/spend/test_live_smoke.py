@@ -176,6 +176,7 @@ async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
         registry, states, headlines, coordinator, StubIO, logger=log, clock_ms=clock, pause_judge=PauseJudge(store, limits=PauseLimits())
     )
     results: dict[str, str] = {}
+    pending: list[asyncio.Task[None]] = []
 
     async def run_job(doc: str) -> None:
         job = _job(doc)
@@ -201,7 +202,7 @@ async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
         # the storm: the provider answers 503 to everything for 40 s, then recovers
         storm["on"] = True
         before = server.total
-        pending = [asyncio.create_task(run_job(f"storm-{i}")) for i in range(12)]
+        pending.extend(asyncio.create_task(run_job(f"storm-{i}")) for i in range(12))
         await asyncio.sleep(40)
         storm["on"] = False
         during = server.total - before
@@ -218,6 +219,10 @@ async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
         assert await breaker.hold(pk, "s") is None
         assert [n for n in notices if n["type"].startswith("INDEXING_PROVIDER")] == [], "no hold: the documents are not poison"
     finally:
+        # Jobs a failed assertion left running are cancelled and joined before the server and the fleet state they use go.
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         leader.cancel()
         await get_trial_renewer().stop()
         await server.stop()

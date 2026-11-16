@@ -1179,3 +1179,50 @@ async def test_a_wake_that_raced_the_reset_judges_the_budget_as_stored_now(fleet
     stale = await h.pause_state(job)
     await h.store.release_charged(job.state_key, "ep-1")  # the leader, between the wake's read and its reset
     assert await h.judge.spent(job, stale) is None
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_reached_the_charged_cap_without_pausing_counts_toward_the_hold(fleet: FleetRedis) -> None:
+    """A run that does not pause (an SDK retry's failed request, then a clean answer or a crash) commits charged sends. When
+    they reach the cap, the next delivery counts the job as capped on its key like a PAUSED outcome does: the third distinct
+    job holds the key and is redriven with a fresh count, not failed."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    breaker = FleetBreaker(fleet)
+    for i in range(2):
+        await breaker.register_capped(_PK, _CLS, f"o-{i}", label="ChatX:m@host", reason="charged_cap")
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+
+    assert await h.judge.spent(job, await h.pause_state(job)) is None
+    state = await h.pause_state(job)
+    assert state is not None and state.charged == 0 and state.sends == 6
+    assert await breaker.hold(_PK, _CLS) is not None, "the key is held"
+
+
+@pytest.mark.asyncio
+async def test_a_lone_job_at_the_charged_cap_without_pausing_still_fails(fleet: FleetRedis) -> None:
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    refusal = await h.judge.spent(job, await h.pause_state(job))
+    assert refusal is not None and refusal[0] is Verdict.FAIL_CHARGED
+    assert await FleetBreaker(fleet).hold(_PK, _CLS) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reconcile_scan_does_not_stop_the_owed_redrives(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scope index is a fast path. A reconcile scan that cannot run (a node down) is logged and the pass goes on with
+    the index it has; the pass counter still advances, so the next tick does not retry only the scan."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    h.seed(job, ProgressStatus.FAILED)
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await h.store.add_redrives(scope, [job.state_key], episode="ep-1")
+
+    async def down(self):  # noqa: ANN202
+        raise PauseStoreUnavailable("scan failed")
+
+    monkeypatch.setattr(PauseStore, "reconcile_owed", down)
+    before = h.handler._redrive_passes
+    assert await h.handler.retry_hold_redrives() == 1
+    assert h.handler._redrive_passes == before + 1

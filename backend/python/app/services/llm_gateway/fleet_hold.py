@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.services.llm_gateway.fleet_breaker import FleetBreaker, FleetBreakerUnavailable
+from app.services.llm_gateway.fleet_breaker import REDIS_OP_TIMEOUT_S, FleetBreaker, FleetBreakerUnavailable
 from app.services.notification.types import (
     NotificationOrigin,
     NotificationRecipientRole,
@@ -155,7 +155,11 @@ class HoldKeeper:
     async def tick(self) -> int:
         """One leader pass over the keys on hold. Returns how many are still held."""
         if self._ticks % RECONCILE_EVERY_TICKS == 0:
-            await self.reconcile()
+            try:
+                await self.reconcile()
+            except FleetBreakerUnavailable:
+                # The index is a fast path: a scan that cannot run must not stop the holds it lists from being kept.
+                self._logger.warning("could not scan for provider holds the index lost; using the index as it is", exc_info=True)
         self._ticks += 1
         held = 0
         client = self._fleet.client()
@@ -163,7 +167,7 @@ class HoldKeeper:
             # Also refreshes an open breaker's TTL, and releases a hold whose breaker is no longer open.
             if await self._breaker.keep_hold(entry.pk, entry.cls) == 1:
                 held += 1
-                await self._breaker.advance_ledger(entry.scope, held=True)
+                await self._breaker.advance_ledger(entry.scope, held=True, since_ms=entry.since_ms)
                 await self._notify(entry, "enter")
                 continue
             await self._breaker.advance_ledger(entry.scope, held=False)
@@ -210,10 +214,23 @@ def _glob_escape(text: str) -> str:
 
 async def scan_keys(fleet: FleetRedis, prefix: str, suffix: str) -> AsyncIterator[str]:
     """Every key of the namespace named ``<prefix>…<suffix>`` (a SCAN, so it never blocks Redis; on a cluster the client
-    walks every primary)."""
+    walks every primary). Each step is bounded by ``REDIS_OP_TIMEOUT_S`` and a Redis error ends the scan with
+    ``FleetBreakerUnavailable``, like every other read here."""
     pattern = _glob_escape(fleet.key(prefix)) + "*" + _glob_escape(suffix)
-    async for key in fleet.client().scan_iter(match=pattern, count=SCAN_COUNT):
-        yield _s(key)
+    pages = fleet.client().scan_iter(match=pattern, count=SCAN_COUNT).__aiter__()
+    try:
+        while True:
+            try:
+                key = await asyncio.wait_for(pages.__anext__(), REDIS_OP_TIMEOUT_S)
+            except StopAsyncIteration:
+                return
+            except Exception as exc:
+                raise FleetBreakerUnavailable(f"{type(exc).__name__}: {exc}") from exc
+            yield _s(key)
+    finally:
+        closer = getattr(pages, "aclose", None)
+        if closer is not None:
+            await closer()
 
 
 def _scope_of(key: str, prefix: str, suffix: str) -> str | None:

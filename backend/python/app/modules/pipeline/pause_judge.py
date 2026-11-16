@@ -16,7 +16,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.modules.pipeline.pause_budget import (
     PauseDecision,
@@ -158,6 +158,19 @@ class PauseJudge:
                 # now: what it holds is the new run's own.
                 prior = await self._store.get(job.state_key) or replace(prior, charged=0)
             verdict = counters_spent(prior, limits)
+        if verdict is Verdict.FAIL_CHARGED and episode is None and prior.scope:
+            # The charged cap was reached by runs that did not pause (a failed request inside an attempt, then no pause):
+            # the job is counted toward the key's hold like a PAUSED outcome at the cap, so it is not failed while the
+            # key is the problem. The other jobs it redrives are owed durably (the recovery leader sends them).
+            pk, _, size_class = prior.scope.rpartition(":")
+            now = await self._now()
+            decision, _, _, _ = await self._ask_hold(
+                job, prior, pk, size_class, None, now,
+                {"now_ms": now, "ledger_now": await self._ledger(prior.scope), "limits": limits},
+            )
+            if decision.verdict is Verdict.REDRIVE:
+                prior = (await self._store.get(job.state_key)) or replace(prior, charged=0)
+                verdict = counters_spent(prior, limits)
         if verdict is None:
             ledger = await self._ledger(prior.scope)
             verdict = budget_spent(prior, await self._now(), ledger, limits)
@@ -211,26 +224,32 @@ class PauseJudge:
         newly_held = False
         capped_episode = ""
         if decision.verdict is Verdict.CAPPED:
-            breaker = self._breaker()
-            if breaker is None or not result.provider_pk or not result.size_class:
-                decision = decide(state, capped_distinct=0, **decide_kwargs)
-            else:
-                label = result.provider_label or "model provider"
-                capped = await breaker.register_capped(
-                    result.provider_pk, result.size_class, job.state_key, label=label, reason="charged_cap", org=job.org_id
-                )
-                decision = decide(state, capped_distinct=0 if capped.already else capped.distinct, **decide_kwargs)
-                if decision.verdict is Verdict.REDRIVE:
-                    # The breaker's script has already made every capped job of the window owed a redrive, this one
-                    # included, atomically with the hold; what follows can fail without losing any of them.
-                    redrive = capped.others
-                    capped_episode = capped.episode
-                    await self._settle_own_redrive(job, scope, capped.episode)
-                    jitter = self._rng.uniform(0, HOLD_COOLDOWN_MS / 1000.0)
-                    newly_held = capped.newly_held
-                    if capped.newly_held:
-                        await self._note_hold(breaker, job, result, capped.episode, label, len(redrive) + 1, now)
+            held = await self._ask_hold(job, state, result.provider_pk, result.size_class, result.provider_label, now, decide_kwargs)
+            decision, redrive, newly_held, capped_episode = held
+            if decision.verdict is Verdict.REDRIVE:
+                jitter = self._rng.uniform(0, HOLD_COOLDOWN_MS / 1000.0)
         return Judgement(decision, redrive, jitter, newly_held, scope, episode=capped_episode)
+
+    async def _ask_hold(
+        self, job: StageJob, state: PauseState, pk: str | None, size_class: str | None, label: str | None, now: int,
+        decide_kwargs: dict[str, Any],
+    ) -> tuple[PauseDecision, tuple[str, ...], bool, str]:
+        """The decision for a job at the charged cap: count it as capped on its key, and when it is the third distinct job the
+        key is held and the job is redriven with a fresh count. Returns the decision, the other jobs the hold redrives, whether
+        this call opened the hold, and the hold's episode. The breaker's script has already made every capped job of the window
+        owed a redrive, this one included, atomically with the hold; what follows can fail without losing any of them."""
+        breaker = self._breaker()
+        if breaker is None or not pk or not size_class:
+            return decide(state, capped_distinct=0, **decide_kwargs), (), False, ""
+        label = label or "model provider"
+        capped = await breaker.register_capped(pk, size_class, job.state_key, label=label, reason="charged_cap", org=job.org_id)
+        decision = decide(state, capped_distinct=0 if capped.already else capped.distinct, **decide_kwargs)
+        if decision.verdict is not Verdict.REDRIVE:
+            return decision, (), False, ""
+        await self._settle_own_redrive(job, f"{pk}:{size_class}", capped.episode)
+        if capped.newly_held:
+            await self._note_hold(breaker, job, pk, size_class, capped.episode, label, len(capped.others) + 1, now)
+        return decision, capped.others, capped.newly_held, capped.episode
 
     async def _settle_own_redrive(self, job: StageJob, scope: str, episode: str) -> None:
         """This job is owed a fresh charge count: give it now, or leave it owed for its next wake (``spent``) or the
@@ -243,13 +262,11 @@ class PauseJudge:
             self._logger.warning("the charge count of %s is reset later (%s): it stays owed", job.state_key, exc)
 
     async def _note_hold(
-        self, breaker: FleetBreaker, job: StageJob, result: StageResult, episode: str, label: str, redriven: int, now: int
+        self, breaker: FleetBreaker, job: StageJob, pk: str, size_class: str, episode: str, label: str, redriven: int, now: int
     ) -> None:
-        if result.provider_pk is None or result.size_class is None:
-            return
         try:
             await HoldKeeper(breaker.fleet, breaker).note_hold(
-                HoldEntry(result.provider_pk, result.size_class, episode, label, now, job.org_id, redriven)
+                HoldEntry(pk, size_class, episode, label, now, job.org_id, redriven)
             )
         except Exception:
             self._logger.warning("could not index the provider hold %s; the next tick will not see it", episode, exc_info=True)

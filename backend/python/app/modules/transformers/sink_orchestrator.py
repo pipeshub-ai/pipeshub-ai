@@ -1069,15 +1069,20 @@ class SinkOrchestrator(Transformer):
             )
             strategy = extraction.strategy
             return extraction
-        except (LLMUnavailableError, ServiceUnavailableError):
+        except (LLMUnavailableError, ServiceUnavailableError) as exc:
             # The model provider behind the Extraction service could not serve the request, or the service itself was
             # unreachable or lost the reply (the client has charged what it may have spent): the stage pauses on it
-            # (every window unavailable), as classify does and as an in-process extraction does.
+            # (every window unavailable), as classify does and as an in-process extraction does. The error rides on the
+            # result, so the pause keeps the provider's retry-after and counts a send only when one may have been made.
             from app.modules.named_entities.domain.models import ExtractionStats
 
+            cause = exc
+            if isinstance(exc, ServiceUnavailableError):
+                # An open circuit or a refused connection sent nothing; any other failure may have reached the service.
+                cause = LLMUnavailableError(str(exc), sent=bool(getattr(exc, "delivered", True)))
             return NamedEntityExtraction(
                 status="FAILED", termination_reason="llm_error", strategy="deterministic",
-                stats=ExtractionStats(windows_failed=1, windows_unavailable=1),
+                stats=ExtractionStats(windows_failed=1, windows_unavailable=1), pause_cause=cause,
             )
         except Exception as exc:
             # Tracebacks from the model or extraction client can echo document text.
