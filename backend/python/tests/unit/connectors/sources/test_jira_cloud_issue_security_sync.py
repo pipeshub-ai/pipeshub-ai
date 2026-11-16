@@ -617,6 +617,8 @@ class TestReindexAppliesTheLevel:
     @pytest.mark.parametrize("holder", [
         None,  # the level has no member row
         {"type": "user", "parameter": "acc-x", "user": {"accountId": "acc-x", "active": False}},
+        # outside the directory, with an email a synced account may share: no access, not a holder left unread
+        {"type": "user", "parameter": "acc-x", "user": {"accountId": "acc-x", "emailAddress": "mia@x.com"}},
         {"type": "projectRole", "parameter": "1", "projectRole": {"name": "atlassian-addons-project-access"}},
     ])
     async def test_a_level_read_in_full_that_grants_nobody_is_written(self, holder: dict | None) -> None:
