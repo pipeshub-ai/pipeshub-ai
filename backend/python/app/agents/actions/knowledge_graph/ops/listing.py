@@ -226,7 +226,8 @@ async def _page_inside_bounds(
         )
     else:
         hint = None
-    return KnowledgeHubNodesResponse(success=True, items=items), hint
+    # A source still being prepared answers an empty first page with no cursor: say so, not that nothing matched.
+    return KnowledgeHubNodesResponse(success=True, items=items, preparing=read.first.preparing if not items else None), hint
 
 
 def _asks_for_contents(node_types: list[str] | None, record_types: list[str] | None) -> bool:
