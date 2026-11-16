@@ -3635,6 +3635,7 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "accessSaveError": "El servidor se guardó, pero no quién puede usarlo, así que sigue abierto para todos en tu organización. Guarda de nuevo para aplicar el acceso.",
         "logoSaveError": "Servidor guardado, pero no se pudo guardar su logotipo. Puedes volver a intentarlo desde Gestionar.",
         "credentialsSaved": "Credenciales guardadas",
         "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",

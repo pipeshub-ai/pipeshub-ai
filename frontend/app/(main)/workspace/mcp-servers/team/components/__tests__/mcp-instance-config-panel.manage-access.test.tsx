@@ -6,16 +6,18 @@ import type { McpManageAccessProps } from '../mcp-manage-access';
 
 const mocks = vi.hoisted(() => ({
   createInstance: vi.fn(),
+  updateInstance: vi.fn(),
   saveAccess: vi.fn(),
   section: vi.fn(),
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
-vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+vi.mock('@/lib/store/toast-store', () => ({ toast: mocks.toast }));
 vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false }));
-// Stands in for the edition's section: it registers a save, as an edition that saves access does.
+// Stands in for a section that saves who may use the server: it registers its save.
 vi.mock('@/config', () => ({
   isMcpInstanceReadOnly: () => false,
   McpInheritedCallout: () => null,
@@ -26,7 +28,12 @@ vi.mock('@/config', () => ({
   },
 }));
 vi.mock('../../../api', () => ({
-  McpServersApi: { createInstance: mocks.createInstance, discoverOAuthMetadata: vi.fn(), getOAuthConfig: vi.fn() },
+  McpServersApi: {
+    createInstance: mocks.createInstance,
+    updateInstance: mocks.updateInstance,
+    discoverOAuthMetadata: vi.fn(),
+    getOAuthConfig: vi.fn(),
+  },
 }));
 vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
@@ -54,7 +61,7 @@ vi.mock('../../../../components', () => ({
 
 import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';
 
-function panel(scope: 'org' | 'personal', onSaved = vi.fn()) {
+function panel(scope: 'org' | 'personal', onSaved = vi.fn(), onOpenChange = vi.fn()) {
   return (
     <Theme>
       <McpInstanceConfigPanel
@@ -62,7 +69,7 @@ function panel(scope: 'org' | 'personal', onSaved = vi.fn()) {
         templates={[]}
         instances={[]}
         customStdioAllowed={false}
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         onSaved={onSaved}
         onRequestDelete={vi.fn()}
         busyInstanceId={null}
@@ -98,6 +105,63 @@ describe('McpInstanceConfigPanel Manage Access', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(mocks.saveAccess).toHaveBeenCalledWith('new-1');
     expect(mocks.createInstance.mock.invocationCallOrder[0]).toBeLessThan(mocks.saveAccess.mock.invocationCallOrder[0] as number);
+  });
+
+  const fillAndSave = () => {
+    typeInto('workspace.mcpServers.form.name', 'Internal tools');
+    typeInto('workspace.mcpServers.form.url', 'https://mcp.example.com');
+    fireEvent.click(screen.getByText('save'));
+  };
+
+  it('reports success and closes only after access is saved', async () => {
+    mocks.createInstance.mockResolvedValue({ _id: 'new-1' });
+    mocks.saveAccess.mockResolvedValue(undefined);
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    render(panel('org', onSaved, onOpenChange));
+    fillAndSave();
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(mocks.toast.success).toHaveBeenCalledWith('workspace.mcpServers.toasts.created');
+    expect(mocks.saveAccess.mock.invocationCallOrder[0]).toBeLessThan(mocks.toast.success.mock.invocationCallOrder[0] as number);
+    expect(mocks.saveAccess.mock.invocationCallOrder[0]).toBeLessThan(onSaved.mock.invocationCallOrder[0] as number);
+    expect(mocks.toast.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the panel open with an access error when saving access fails', async () => {
+    mocks.createInstance.mockResolvedValue({ _id: 'new-1' });
+    mocks.saveAccess.mockRejectedValue(new Error('access store down'));
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    render(panel('org', onSaved, onOpenChange));
+    fillAndSave();
+
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
+    expect(mocks.toast.error.mock.calls[0]?.[0]).toBe('workspace.mcpServers.toasts.accessSaveError');
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId('manage-access')).toBeTruthy();
+  });
+
+  it('a retry after a failed access save updates the server it created instead of creating another', async () => {
+    mocks.createInstance.mockResolvedValue({ _id: 'new-1' });
+    mocks.updateInstance.mockResolvedValue({ _id: 'new-1' });
+    mocks.saveAccess.mockRejectedValueOnce(new Error('access store down')).mockResolvedValueOnce(undefined);
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    render(panel('org', onSaved, onOpenChange));
+    fillAndSave();
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('save'));
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(mocks.createInstance).toHaveBeenCalledTimes(1);
+    expect(mocks.updateInstance).toHaveBeenCalledTimes(1);
+    expect(mocks.updateInstance.mock.calls[0]?.[0]).toBe('new-1');
+    expect(mocks.saveAccess.mock.calls).toEqual([['new-1'], ['new-1']]);
+    expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
   it('has no Manage Access on a personal server', () => {

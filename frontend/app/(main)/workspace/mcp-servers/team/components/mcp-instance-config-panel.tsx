@@ -147,6 +147,8 @@ export function McpInstanceConfigPanel({
   const isReadOnly = isMcpInstanceReadOnly(editingInstance);
   // Set by a Manage Access section that saves who may use an organization server.
   const manageAccessSave = useRef<((serverId: string) => Promise<void>) | null>(null);
+  // The server a save in this panel created: a retry after a later step failed updates it instead of creating another.
+  const createdInstanceId = useRef<string | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -190,6 +192,7 @@ export function McpInstanceConfigPanel({
 
   useEffect(() => {
     if (!open) return;
+    createdInstanceId.current = null;
     setActiveTab('configuration');
     toolsRequest.current += 1;
     setToolsLoad({ status: 'idle' });
@@ -510,24 +513,35 @@ export function McpInstanceConfigPanel({
     try {
       const payload = buildPayload();
       let instanceId: string;
+      let reportSaved: () => void;
       if (mode === 'edit' && editingInstance) {
         const updated = await McpServersApi.updateInstance(editingInstance._id, payload);
         instanceId = updated._id;
-        if (updated.credentialsReset) {
-          toast.warning(t('workspace.mcpServers.toasts.credentialsReset'));
-        } else {
-          toast.success(t('workspace.mcpServers.toasts.updated'));
-        }
+        reportSaved = updated.credentialsReset
+          ? () => toast.warning(t('workspace.mcpServers.toasts.credentialsReset'))
+          : () => toast.success(t('workspace.mcpServers.toasts.updated'));
       } else {
-        const created = await McpServersApi.createInstance(payload);
-        instanceId = created._id;
-        toast.success(t('workspace.mcpServers.toasts.created'));
+        instanceId = createdInstanceId.current
+          ? (await McpServersApi.updateInstance(createdInstanceId.current, payload))._id
+          : (await McpServersApi.createInstance(payload))._id;
+        createdInstanceId.current = instanceId;
+        reportSaved = () => toast.success(t('workspace.mcpServers.toasts.created'));
       }
 
       await saveCredentialsIfProvided(instanceId);
-      if (!isPersonal) await manageAccessSave.current?.(instanceId);
+      if (!isPersonal && manageAccessSave.current) {
+        try {
+          await manageAccessSave.current(instanceId);
+        } catch (error) {
+          // The server is saved but not limited to the people chosen; stay open so a retry can apply it.
+          const detail = isProcessedError(error) ? error.message : undefined;
+          toast.error(t('workspace.mcpServers.toasts.accessSaveError'), detail ? { description: detail } : undefined);
+          return;
+        }
+      }
       await saveLogoIfChanged(instanceId);
 
+      reportSaved();
       onSaved();
       requestOpenChange(false);
     } catch (error) {
