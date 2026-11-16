@@ -24,7 +24,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.models import FilterValue, ScrollWindowExceededError, VectorChunkPayload
+from app.services.vector_db.models import (
+    FilterValue,
+    ScrollWindowExceededError,
+    VectorChunkPayload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

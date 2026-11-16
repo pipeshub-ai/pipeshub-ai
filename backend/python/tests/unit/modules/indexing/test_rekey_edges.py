@@ -98,7 +98,7 @@ async def test_moved_points_take_the_block_index_of_the_new_revision(db) -> None
     store = make_store(db)
     shifted = ["A new first paragraph that changes every position after it.", *paras]
     await run(store, blob, _text_container(shifted))
-    assert [t for t in store._embed_documents_with_retry.await_args_list[0].args[0]] == [shifted[0]], "only the new block is embedded"
+    assert list(store._embed_documents_with_retry.await_args_list[0].args[0]) == [shifted[0]], "only the new block is embedded"
     by_text = {p.payload["page_content"]: p.payload["metadata"]["blockIndex"] for p in db.collections[COLL].values()}
     assert by_text == {text: i for i, text in enumerate(shifted)}
 
