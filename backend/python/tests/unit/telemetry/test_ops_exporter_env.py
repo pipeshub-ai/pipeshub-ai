@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from app.telemetry import ops_exporter as ox
-from tests.support.free_port import free_port
+from tests.support.free_port import bind_on_free_port, free_port
 
 PY = Path(__file__).resolve().parents[3]
 
@@ -137,9 +137,8 @@ def test_the_bind_address_is_configurable_and_validated(monkeypatch: pytest.Monk
 
 
 def test_it_listens_only_on_the_configured_address(tmp_path: Path) -> None:
-    port = free_port()
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1"))
+    port = exporter._port
     try:
         assert exporter._server.server_address == ("127.0.0.1", port)
         assert urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3).status == 200
@@ -214,9 +213,8 @@ def _wait_until(predicate, timeout_s: float) -> bool:
 
 def test_idle_connections_do_not_grow_threads_without_bound_and_time_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.5)  # the shipped value is pinned in the bounds test
-    port = free_port()
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1"))
+    port = exporter._port
     socks: list[socket.socket] = []
     try:
         base = threading.active_count()
@@ -244,9 +242,8 @@ def test_live_handler_threads_never_exceed_the_cap_under_trickling_clients_and_c
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.4)
-    port = free_port()
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1"))
+    port = exporter._port
     stop = threading.Event()
     socks: list[socket.socket] = []
 
@@ -315,9 +312,8 @@ def test_the_shipped_bounds_are_small_literals() -> None:
 
 def test_a_client_that_sends_nothing_is_dropped_after_the_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ox._Handler, "timeout", 0.5)
-    port = free_port()
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1"))
+    port = exporter._port
     try:
         with socket.create_connection(("127.0.0.1", port)) as s:
             s.settimeout(5)

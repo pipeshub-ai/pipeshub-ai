@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.free_port import free_port
+from tests.support.free_port import bind_on_free_port, free_port
 
 PY = Path(__file__).resolve().parents[3]
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
@@ -154,8 +154,7 @@ def test_scrape_latency_with_64_snapshot_files(tmp_path: Path) -> None:
             },
         }))
     assert start is not None or True
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=free_port(), source=lambda: ({}, {}))
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {})))
     try:
         _scrape(exporter._port)
         times = []

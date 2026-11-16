@@ -17,7 +17,7 @@ import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
-from tests.support.free_port import free_port
+from tests.support.free_port import bind_on_free_port, free_port
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -142,9 +142,8 @@ def _ipv6_loopback() -> bool:
 
 @pytest.mark.skipif(not _ipv6_loopback(), reason="this host has no IPv6 loopback")
 def test_an_ipv6_bind_address_is_served(tmp_path: Path) -> None:
-    port = free_port()
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="::1")
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="::1"))
+    port = exporter._port
     try:
         with socket.create_connection(("::1", port), timeout=5) as c:
             c.sendall(b"GET /metrics HTTP/1.0\r\n\r\n")
@@ -157,9 +156,8 @@ def test_an_ipv6_bind_address_is_served(tmp_path: Path) -> None:
 
 
 def test_closing_the_server_ends_a_client_that_trickles(tmp_path: Path) -> None:
-    port = free_port()
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST)
-    assert exporter.try_bind()
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST))
+    port = exporter._port
     server = exporter._server
     assert server is not None
     c = socket.create_connection((HOST, port))
