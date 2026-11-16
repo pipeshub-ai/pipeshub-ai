@@ -4057,7 +4057,11 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         async def give_back(record: Record) -> bool:
             """Give back the direct grants the descendant's list names. False when its read failed: it waits in
-            the retry list, and the descendants after it are still read."""
+            the retry list, and the descendants after it are still read.
+
+            shortcut: with no Manager to list it, nothing is given back, so a member's own share below the folder
+            (a writer's too) is lost; asking each member as themselves cannot tell their own share from a group's or
+            the folder's, and a user grant written from that would outlast those. An active Manager avoids it."""
             try:
                 # Raises when someone who can read sharing got no list: nothing is decided from it.
                 managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, None, read_as)
@@ -5114,8 +5118,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                         # edits it while the drive makes them less than a writer holds a share of their own (or a
                         # group's) that gives more than the drive: their stored grant stays.
                         # shortcut: a member cut out by a limited folder whose own grant on this item is no more than
-                        # their drive role loses it here, since only a Manager can list it; an active Manager on the
-                        # drive avoids that.
+                        # their drive role loses it here, and a folder turning limited takes every member's own grant
+                        # below it whatever its role (`_clear_cut_out_grants_below`), since only a Manager can list
+                        # them; an active Manager on the drive avoids both.
                         new_permissions, member_reads_through_drive = [], True
                         keeps_own_grant = bool((metadata.get("capabilities") or {}).get("canEdit")) and (
                             PERMISSION_HIERARCHY.get(await self._drive_role_of(item_drive_id, user_email) or "", 0)
