@@ -2864,43 +2864,30 @@ class JiraDataCenterConnector(BaseConnector):
         user_by_account_id: dict[str, AppUser],
         name_to_source_id: dict[str, str] | None = None,
     ) -> AppUser | None:
-        """Resolve a DC project-role user actor to a synced ``AppUser``.
+        """Resolve a DC project-role user actor to a synced ``AppUser``: by a key it carries, or by its username
+        through ``name_to_source_id``. A username is never looked up as a key.
 
-        DC often omits nested ``actorUser`` and exposes only top-level ``name``
-        (username). ``_fetch_users`` stores ``source_user_id`` as the immutable
-        ``key``, so fall back through ``name_to_source_id`` when needed.
+        A role actor names its user by username and carries no email ("actors": id, displayName, type, name,
+        avatarUrl; https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/#api/2/project/{projectIdOrKey}/role-getProjectRole),
+        and an email may be shared with another account. A key can equal another account's username: existing users
+        were given "a key that is equal to the lowercase of the username" and usernames can change
+        (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/). Every synced account's
+        username is in ``name_to_source_id`` (``_fetch_users`` records it from each row it resolves), so a username
+        missing from it names no synced account, and resolves to none.
         """
         actor_user = actor.get("actorUser") or {}
         if not isinstance(actor_user, dict):
             actor_user = {}
 
-        for identifier in (
-            actor_user.get("accountId"),
-            actor_user.get("key"),
-            actor_user.get("name"),
-        ):
+        for identifier in (actor_user.get("accountId"), actor_user.get("key"), actor.get("key")):
             if identifier:
                 user = user_by_account_id.get(identifier)
                 if user:
                     return user
 
-        # A role actor names its user by username and carries no email ("actors": id, displayName, type, name,
-        # avatarUrl; https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/#api/2/project/{projectIdOrKey}/role-getProjectRole),
-        # and an email may be shared with another account. A username the user list knows resolves to its own
-        # account or to none: a key can equal another account's username, since existing users were given "a key
-        # that is equal to the lowercase of the username" and usernames can change
-        # (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/).
-        actor_name = actor.get("name")
-        if actor_name and name_to_source_id and actor_name.lower() in name_to_source_id:
-            return user_by_account_id.get(name_to_source_id[actor_name.lower()])
-
-        for identifier in (actor.get("key"), actor_name):
-            if identifier:
-                user = user_by_account_id.get(identifier)
-                if user:
-                    return user
-
-        return None
+        actor_name = actor_user.get("name") or actor.get("name")
+        source_id = (name_to_source_id or {}).get(actor_name.lower()) if actor_name else None
+        return user_by_account_id.get(source_id) if source_id else None
 
     async def _sync_project_roles(
         self,

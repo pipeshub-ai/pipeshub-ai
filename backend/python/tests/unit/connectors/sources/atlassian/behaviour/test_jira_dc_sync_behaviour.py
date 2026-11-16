@@ -1472,6 +1472,26 @@ class TestRoleActors:
 
         assert db.app_roles["ENG_10002"] == []
 
+    @pytest.mark.parametrize("actor", [
+        {"type": "atlassian-user-role-actor", "name": "alice"},
+        {"type": "atlassian-user-role-actor", "actorUser": {"name": "alice"}},
+    ], ids=["name", "actorUser-name"])
+    async def test_a_username_the_user_list_did_not_show_is_never_taken_for_a_key(
+        self, jira, db, store, search, actor: dict,
+    ) -> None:
+        """A user list cut short (the search fallback stops at 100 on Jira 10+) did not show "alice": the synced account
+        whose key is "alice" (a renamed account keeps its first username as its key) is not that person."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [actor]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"alice.smith": "alice"}
+        renamed = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice",
+                          org_id="org-1", email="alice.smith@example.com", full_name="Alice Smith")
+
+        await connector._sync_project_roles(["ENG"], [renamed], {})
+
+        assert db.app_roles["ENG_10002"] == []
+
     async def test_unreadable_role_list_is_reported_not_fatal(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         jira.on("GET", f"{API}/project/ENG/role", httpx.Response(200, content=b"not json"))
