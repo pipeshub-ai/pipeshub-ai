@@ -3882,7 +3882,21 @@ class TestProductReadersFollowTheAddressHolder:
         await connector._sync_product_readers(eligibility, [{"Id": new, "Email": "alice@example.com"}])
 
         [(_, permissions)] = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
-        assert [accounts.holds(p.email, p.external_id) for p in permissions] == [True]
+        assert [accounts.admits(p.email, p.external_id) for p in permissions] == [True]
+
+
+class TestSyncPermissionsEdgesFrozenUnreadable:
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_frozen_list_writes_no_record_permission(self) -> None:
+        """Unknown is not empty: an active but frozen user would be read for and granted. Nothing is written."""
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        connector._eligibility = MagicMock(return_value=MagicMock(frozen_user_ids=AsyncMock(return_value=None)))
+        connector._sync_permissions_for_user = AsyncMock(return_value=[])
+        await connector._sync_permissions_edges(api_version="59.0")
+        connector._sync_permissions_for_user.assert_not_awaited()
+        connector.data_entities_processor.data_store_provider.transaction.assert_not_called()
 
 
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:

@@ -900,6 +900,17 @@ class TestSyncUsers:
         fields = mock_datasource.get_now_table_tableName.call_args.kwargs["sysparm_fields"]
         assert "locked_out" in fields
 
+    async def test_a_user_this_run_listed_as_unusable_gets_no_group_or_grant_from_its_stored_link(
+        self, servicenow_connector,
+    ) -> None:
+        """A failed withdrawal leaves the locked user's stored link: the user list groups and grants read must not
+        include it."""
+        servicenow_connector._app_users = None
+        servicenow_connector._unusable_user_ids = {"u2"}
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(
+            return_value=[MagicMock(source_user_id="u1"), MagicMock(source_user_id="u2")])
+        assert [u.source_user_id for u in await servicenow_connector._all_app_users()] == ["u1"]
+
     async def test_a_user_whose_lock_status_is_not_returned_is_neither_linked_nor_withdrawn(
         self, servicenow_connector,
     ) -> None:

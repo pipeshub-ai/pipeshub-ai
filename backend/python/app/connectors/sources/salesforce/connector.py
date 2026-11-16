@@ -6482,8 +6482,11 @@ class SalesforceConnector(BaseConnector):
                     sf_users.append(u)
         eligibility = self._eligibility(api_version)
         frozen = await eligibility.frozen_user_ids()
-        if frozen:
-            sf_users = [u for u in sf_users if u.get("Id") not in frozen]
+        if frozen is None:
+            # Unknown is not empty: a frozen user would be granted. Stored edges stay until a run reads the list.
+            self.logger.warning("Salesforce frozen users unreadable; record permissions are synced next run")
+            return
+        sf_users = [u for u in sf_users if u.get("Id") not in frozen]
 
         # 2. Fetch records, record groups, and matching DB users in one transaction
         org_id = self.data_entities_processor.org_id

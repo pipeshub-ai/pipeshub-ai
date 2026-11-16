@@ -3937,7 +3937,8 @@ class SharePointConnector(BaseConnector):
                 except Exception as site_error:
                     self._health.skipped(f"site {site_record_group.name}", site_error)
 
-            if self._health.complete and self._rewrite_all_items:
+            # While the deleted accounts are unread, some grants were withheld: the items stay marked for reading again.
+            if self._health.complete and self._rewrite_all_items and not self.source_accounts.deleted_pending:
                 await self.drive_delta_sync_point.update_sync_point(
                     PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": PERMISSION_MODEL_VERSION}
                 )
