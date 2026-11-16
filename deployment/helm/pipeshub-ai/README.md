@@ -364,6 +364,27 @@ Docker proxy, or later). On an older `image.tag` the sidecar crash-loops and
 `run_code` fails. Upgrade `image.tag`, or set `sandbox.proxy.image` to a newer
 image.
 
+## Parsing in its own pods
+
+Off by default (the chart renders as without it). `parsing.enabled=true` adds a
+Deployment and ClusterIP Service named `<release>-parsing` (port 8092) and a
+PodDisruptionBudget, from the same image with `PIPESHUB_ROLE=parsing`, and sets
+`USE_PARSING_SERVICE=true` and `PARSING_SERVICE_URL` on the app pods. The pods
+carry the label `pipeshub.ai/workload: parsing`.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `parsing.enabled` | `false` | render the parsing Deployment, Service and PDB and wire the app to it |
+| `parsing.replicas` | `1` | static replica count (this chart sets no HPA for it) |
+| `parsing.port` | `8092` | Service and container port |
+| `parsing.resources` | 1 CPU / 2Gi requested | keep the CPU request set; limits 4 CPU / 8Gi |
+| `parsing.nodeSelector`, `parsing.tolerations`, `parsing.affinity` | empty | place parse pods on a dedicated node pool |
+| `parsing.spreadAcrossNodes` | `true` | prefer one parse pod per node (ignored with `affinity`) |
+| `parsing.podDisruptionBudget.*` | enabled, `maxUnavailable: 1` | disruption budget |
+| `parsing.healthCheck.*` | see `values.yaml` | probes on `/health` |
+| `parsing.terminationGracePeriodSeconds` | `120` | time for an in-flight parse to finish |
+| `parsing.extraEnv`, `parsing.podAnnotations`, `parsing.podLabels` | empty | extras |
+
 ## High-Value Features
 
 - Secret validation with fail-fast messages

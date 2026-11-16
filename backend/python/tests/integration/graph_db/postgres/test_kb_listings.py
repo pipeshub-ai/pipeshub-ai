@@ -7,7 +7,6 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-import json
 import os
 
 import asyncpg
@@ -17,7 +16,7 @@ from app.core import org_context
 from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
-from tests.support.pg_plan import assert_keyed_access
+from tests.support import plan_gate
 
 from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
@@ -261,8 +260,10 @@ async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(
 
     for i, (sql, args) in enumerate(sent):
         ran = await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args))
-        plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
-        assert_keyed_access(plan, at=i)      # a node read by its id and an edge by a to_id or from_id: an index scan, or a bitmap scan on that index, never a scan of the organisation
+        plan = plan_gate.root(ran)
+        assert not (bad := plan_gate.unkeyed(plan, "nodes", r"\bid = ")), (i, bad)
+        # every edge read is bounded by a node of the collection: its id, a folder or a record
+        assert not (bad := plan_gate.unkeyed(plan, "edges", r"\b(to_id|from_id) = ")), (i, bad)
         if i == 1:      # one folder's page reads that folder, not the collection
             assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 600, plan.get("Shared Hit Blocks")
 

@@ -118,9 +118,9 @@ class InMemoryGraph:
         ]
 
     async def get_user_by_email(self, email: str, transaction: str | None = None, *,
-                                raise_on_error: bool = False) -> SimpleNamespace | None:
+                                raise_on_error: bool = False, org_id: str | None = None) -> SimpleNamespace | None:
         for node in self.nodes.get(CollectionNames.USERS.value, {}).values():
-            if node.get("email") == email:
+            if node.get("email") == email and (org_id is None or node.get("orgId") == org_id):
                 return SimpleNamespace(id=node["id"])
         return None
 

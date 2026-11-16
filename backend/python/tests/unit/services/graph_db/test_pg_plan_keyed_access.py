@@ -1,4 +1,4 @@
-"""The plan check of the PostgreSQL graph tests (``tests/support/pg_plan.py``), on EXPLAIN JSON written out by hand, with no database.
+"""The plan check of the PostgreSQL graph tests (``tests/support/plan_gate.py``), on EXPLAIN JSON written out by hand, with no database.
 
 The shapes are what PostgreSQL 17 and 18 print. The last case is the plan of the statement before #5848 (b8a3e10d5) for a collection's flat listing: its folders and
 children were joined to ``graph.nodes`` on ``org_id``, ``coll`` and ``id`` left to the planner, which read the organisation's records by a bitmap or sequential scan
@@ -8,7 +8,18 @@ from __future__ import annotations
 
 import pytest
 
-from tests.support.pg_plan import assert_keyed_access, keyed_access_violations
+from tests.support import plan_gate
+
+KEY = r"\bid = "
+
+
+def keyed_access_violations(plan: dict) -> list[str]:
+    return plan_gate.violations(plan)
+
+
+def assert_keyed_access(plan: dict) -> None:
+    found = plan_gate.violations(plan)
+    assert not found, f"read other than by its key: {found}"
 
 NODE_KEY = "((org_id = $1) AND (coll = 'records'::text) AND (id = (b.from_id)::text))"
 EDGE_KEY = "((org_id = $1) AND (coll = 'belongsTo'::text) AND (to_coll = 'apps'::text) AND (to_id = $2))"
@@ -80,3 +91,39 @@ def test_the_plan_before_5848_reading_every_record_of_the_organisation_per_folde
 
 def test_other_relations_are_not_judged() -> None:
     assert not keyed_access_violations({"Node Type": "Seq Scan", "Relation Name": "other"})
+
+
+# ---- the helper's own primitives (bounds, keyed, unkeyed) ---------------------------------------------------------------------------
+
+def _scan(kind: str, *children: dict, index: str = "", cond: str = "") -> dict:
+    node = {"Node Type": kind, "Relation Name": "nodes_h00", "Plans": list(children)}
+    return {**node, "Index Name": index, "Index Cond": cond} if index else node
+
+
+def _bitmap(index: str, cond: str) -> dict:
+    return {"Node Type": "Bitmap Index Scan", "Index Name": index, "Index Cond": cond}
+
+
+def test_an_index_scan_is_keyed_by_its_own_condition_and_index() -> None:
+    assert plan_gate.keyed(_scan("Index Scan", index="nodes_h00_pkey", cond="((org_id = $1) AND (coll = 'users') AND (id = r.deleted_by))"), KEY)
+    assert not plan_gate.keyed(_scan("Index Scan", index="nodes_h00_pkey", cond="((org_id = $1) AND (coll = 'users'))"), KEY)
+    assert not plan_gate.keyed(_scan("Index Scan", index="nodes_h00_other", cond="(id = $2)"), KEY, r"nodes\w*_pkey")
+
+
+def test_a_bitmap_heap_scan_is_keyed_by_every_bitmap_index_scan_under_it() -> None:
+    keyed = _scan("Bitmap Heap Scan", _bitmap("nodes_h00_pkey", "((org_id = $1) AND (coll = 'records') AND (id = 'r1'))"))
+    org_only = _scan("Bitmap Heap Scan", _bitmap("nodes_h00_pkey", "((org_id = $1) AND (coll = 'stageStates'))"))
+    mixed = _scan("Bitmap Heap Scan", {"Node Type": "BitmapOr", "Plans": [_bitmap("nodes_h00_pkey", "(id = 'a')"), _bitmap("nodes_h00_x", "(org_id = $1)")]})
+    assert plan_gate.keyed(keyed, KEY) and plan_gate.bounds(keyed) == [("nodes_h00_pkey", "((org_id = $1) AND (coll = 'records') AND (id = 'r1'))")]
+    assert not plan_gate.keyed(org_only, KEY)
+    assert not plan_gate.keyed(mixed, KEY)
+    assert not plan_gate.keyed(_scan("Bitmap Heap Scan", _bitmap("nodes_h00_record_connector_id", "((org_id = $1) AND (id = 'r1'))")), KEY, r"nodes\w*_pkey")
+
+
+def test_a_read_that_is_not_an_index_scan_is_bounded_by_nothing_and_a_write_target_is_not_a_read() -> None:
+    plan = {"Plan": {"Node Type": "Nested Loop", "Plans": [_scan("Seq Scan"), _scan("Index Scan", index="nodes_h00_pkey", cond="(id = x.id)"),
+                                                          _scan("Tid Scan")]}}
+    assert plan_gate.bounds(_scan("Seq Scan")) == []
+    assert plan_gate.unkeyed(plan, "nodes", KEY) == ["Seq Scan on nodes_h00: no index condition", "Tid Scan on nodes_h00: no index condition"]
+    assert plan_gate.unkeyed({"Node Type": "ModifyTable", "Relation Name": "nodes_h00", "Plans": [_scan("Index Scan", index="p", cond="(id = $1)")]}, "nodes", KEY) == []
+    assert plan_gate.unkeyed('[{"Plan": {"Node Type": "Index Scan", "Relation Name": "edges_h01", "Index Cond": "(to_id = $2)", "Index Name": "e"}}]', "edges", r"\bto_id = ") == []

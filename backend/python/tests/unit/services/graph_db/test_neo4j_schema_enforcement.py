@@ -758,14 +758,14 @@ async def test_connector_status_batch_does_not_write_a_non_boolean() -> None:
 async def test_user_sync_state_accepts_the_declared_states() -> None:
     for state in ("NOT_STARTED", "IN_PROGRESS", "PAUSED", "COMPLETED", "FAILED"):
         p = _provider()
-        await p.update_user_sync_state("u@example.com", state, "DRIVE")
+        await p.update_user_sync_state("u@example.com", state, "DRIVE", org_id="org-1")
         assert len(_writes(p)) == 1, state
 
 
 async def test_user_sync_state_does_not_write_a_bogus_state() -> None:
     p = _provider()
     with contextlib.suppress(SchemaValidationError):  # this writer swallows other failures; raising is acceptable
-        await p.update_user_sync_state("u@example.com", BOGUS, "DRIVE")
+        await p.update_user_sync_state("u@example.com", BOGUS, "DRIVE", org_id="org-1")
     assert _writes(p) == []
 
 
