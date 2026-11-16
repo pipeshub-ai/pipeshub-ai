@@ -158,3 +158,24 @@ async def test_a_record_that_needs_its_own_grant_takes_no_role_from_what_it_inhe
     batch = await w.p._q(lambda tx: w.p._roles_on(tx, w.org, "u", "records", ids, _CTX_RANK), None)
     assert batch == await w.p._q(lambda tx: _per_record(w, tx, "u", ids, _CTX_RANK), None)
     assert {k for k, v in batch.items() if v} == {"open", "pag-own", "res-own"}
+
+
+async def test_a_record_that_needs_its_own_grant_takes_its_role_from_its_own_grants_alone(w: World) -> None:
+    """READER on the record and OWNER on the record group it inherits from (the user's own grant and a group's): a RESTRICTED or PARENT_AND_GRANT
+    record reads READER, by the batched and by the per-record read alike; an OPEN one reads OWNER, inherited."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("groups", {"_key": "g"})
+    await w.nodes("apps", {"_key": "a1", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "rg", "connectorId": "a1"})
+    rules = {"open": None, "pag": "PARENT_AND_GRANT", "res": "RESTRICTED"}
+    await w.nodes("records", *({"_key": k, "connectorId": "a1", "recordName": k, **({"accessRule": r} if r else {})} for k, r in rules.items()))
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": k, "to_collection": "recordGroups", "to_id": "rg"} for k in rules], "inheritPermissions")
+    grant = [{"from_collection": "users", "from_id": "u", "to_collection": "records", "to_id": k, "type": "USER", "role": "READER"} for k in rules]
+    grant += [{"from_collection": "users", "from_id": "u", "to_collection": "groups", "to_id": "g", "type": "USER", "role": "READER"},
+              {"from_collection": "groups", "from_id": "g", "to_collection": "recordGroups", "to_id": "rg", "type": "GROUP", "role": "OWNER"},
+              {"from_collection": "users", "from_id": "u", "to_collection": "recordGroups", "to_id": "rg", "type": "USER", "role": "OWNER"}]
+    await w.p.batch_create_edges(grant, "permission")
+    ids = list(rules)
+    batch = await w.p._q(lambda tx: w.p._roles_on(tx, w.org, "u", "records", ids, _CTX_RANK), None)
+    assert batch == await w.p._q(lambda tx: _per_record(w, tx, "u", ids, _CTX_RANK), None)
+    assert {k: v[0] for k, v in batch.items()} == {"open": "OWNER", "pag": "READER", "res": "READER"}

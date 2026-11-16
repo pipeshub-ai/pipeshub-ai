@@ -24985,30 +24985,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET parent_rgs_all = APPEND(parent_rgs, belongs_kb_apps, true)
 
 
-            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes a role only when a principal holds a grant on the node itself:
-            // a role on what it inherits from alone is not access to it.
-            LET kh_members = (
-                FOR m IN permission
-                    FILTER m._from IN principal_ids AND m.type == "USER"
-                    AND (STARTS_WITH(m._to, "groups/") OR STARTS_WITH(m._to, "roles/") OR STARTS_WITH(m._to, "teams/"))
-                    RETURN m._to
-            )
-            LET kh_orgs = (
-                FOR b IN belongsTo
-                    FILTER b._from IN principal_ids AND b.entityType == "ORGANIZATION"
-                    RETURN b._to
-            )
-            LET kh_own_grant = LENGTH(
-                FOR p IN permission
-                    FILTER p._to == {node_var}._id
-                    AND (p._from IN principal_ids OR p._from IN kh_members OR (p._from IN kh_orgs AND p.type IN ["ORG", "ORGANIZATION"]))
-                    LIMIT 1
-                    RETURN 1
-            ) > 0
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
             LET kh_needs_own = NOT_NULL({node_var}.accessRule, "OPEN") IN ["RESTRICTED", "PARENT_AND_GRANT"]
 
             // Build permission targets: [record] + ancestor RGs/Apps
-            LET permission_targets = (kh_needs_own AND NOT kh_own_grant) ? [] : APPEND([{node_var}._id], parent_rgs_all, true)
+            LET permission_targets = kh_needs_own ? [{node_var}._id] : APPEND([{node_var}._id], parent_rgs_all, true)
 
             // Step 2: Check all 10 permission paths across all targets
             // Note: All 10 paths are covered by checking paths 1,3,5,7,9 on all targets:
@@ -25179,28 +25161,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Build permission targets: [this RG] + ancestor RGs
 
-            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes a role only when a principal holds a grant on the node itself:
-            // a role on what it inherits from alone is not access to it.
-            LET kh_members = (
-                FOR m IN permission
-                    FILTER m._from IN principal_ids AND m.type == "USER"
-                    AND (STARTS_WITH(m._to, "groups/") OR STARTS_WITH(m._to, "roles/") OR STARTS_WITH(m._to, "teams/"))
-                    RETURN m._to
-            )
-            LET kh_orgs = (
-                FOR b IN belongsTo
-                    FILTER b._from IN principal_ids AND b.entityType == "ORGANIZATION"
-                    RETURN b._to
-            )
-            LET kh_own_grant = LENGTH(
-                FOR p IN permission
-                    FILTER p._to == {node_var}._id
-                    AND (p._from IN principal_ids OR p._from IN kh_members OR (p._from IN kh_orgs AND p.type IN ["ORG", "ORGANIZATION"]))
-                    LIMIT 1
-                    RETURN 1
-            ) > 0
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
             LET kh_needs_own = NOT_NULL({node_var}.accessRule, "OPEN") IN ["RESTRICTED", "PARENT_AND_GRANT"]
-            LET permission_targets = (kh_needs_own AND NOT kh_own_grant) ? [] : APPEND([{node_var}._id], parent_rgs, true)
+            LET permission_targets = kh_needs_own ? [{node_var}._id] : APPEND([{node_var}._id], parent_rgs, true)
 
             // Step 2: Check all permission paths across all targets
             // Direct paths (1, 2, 3, 4, 5):

@@ -691,3 +691,29 @@ async def test_a_record_that_needs_its_own_grant_takes_no_role_from_the_group_it
     await _grant_user(provider, org_id, inherited)
     rows = await _permitted(provider, org_id, limit_per_entity=20, window=200, timeout_seconds=30)
     assert inherited in {row["_key"] for row in rows}
+
+
+async def _grant_owner_on_group(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    keys = _keys(org_id)
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (u:User {id: $user}), (rg:RecordGroup {id: $rg}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'OWNER'}]->(rg)",
+            parameters={"user": keys["user"], "rg": keys["rg"]})
+    else:
+        await _insert(provider, CollectionNames.PERMISSION.value, [{
+            "_from": f"{CollectionNames.USERS.value}/{keys['user']}", "_to": f"{CollectionNames.RECORD_GROUPS.value}/{keys['rg']}",
+            "type": "USER", "role": "OWNER"}])
+
+
+@pytest.mark.parametrize("rule", ["PARENT_AND_GRANT", "RESTRICTED", "OPEN"])
+async def test_a_record_that_needs_its_own_grant_takes_its_role_from_its_own_grants_alone(backend, rule: str) -> None:
+    """The user holds READER on the record and OWNER on the record group it inherits from. A record that needs its own grant reads
+    READER (the group's grant never raises it); an OPEN one reads OWNER, inherited."""
+    provider, org_id = backend
+    keys = _keys(org_id)
+    inherited = keys["records"]["inherited"]
+    await _set_rule(provider, inherited, rule)
+    await _grant_user(provider, org_id, inherited)
+    await _grant_owner_on_group(provider, org_id)
+    perms = await provider.get_knowledge_hub_context_permissions(keys["user"], org_id, inherited, parent_type="record")
+    assert perms["role"] == ("OWNER" if rule == "OPEN" else "READER")
