@@ -110,7 +110,7 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       const page = await a.listObjects(`${ROOT}/`, { limit: 3 })
       expect(page.objects).to.have.length(3)
       expect(page.next).to.equal(page.objects[2]!.key)
-      expect(stat.callCount).to.be.at.most(4)
+      expect(stat.callCount).to.be.at.most(5)                    // the page, one more, and a folder entry (not all 12 files)
     })
 
     it('listObjects of an exact page boundary reports no next page', async () => {
