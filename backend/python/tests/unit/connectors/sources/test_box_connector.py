@@ -1366,7 +1366,7 @@ class TestBoxRunIncrementalSync:
         await box_connector.run_incremental_sync()
         box_connector._sync_users.assert_awaited_once()
 
-    async def test_an_inactive_user_is_not_linked(self, box_connector):
+    async def test_an_inactive_user_is_not_linked(self, box_connector) -> None:
         """An inactive user (or a status Box does not list) sharing an active user's login must not take it."""
         box_connector.data_source.users_get_users = AsyncMock(return_value=MagicMock(success=True, data={"entries": [
             {"id": f"u-{status}", "login": "maya@test.com", "name": "Maya", "status": status}

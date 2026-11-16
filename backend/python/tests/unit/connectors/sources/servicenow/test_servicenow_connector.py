@@ -869,7 +869,7 @@ class TestSyncUsers:
             await servicenow_connector._sync_users()
             servicenow_connector.data_entities_processor.on_new_app_users.assert_called_once()
 
-    async def test_a_locked_out_user_is_not_linked_and_is_withdrawn(self, servicenow_connector):
+    async def test_a_locked_out_user_is_not_linked_and_is_withdrawn(self, servicenow_connector) -> None:
         """Emails are not unique: a locked-out duplicate must not take an active user's address."""
         servicenow_connector.user_sync_point = AsyncMock()
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)

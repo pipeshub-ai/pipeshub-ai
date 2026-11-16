@@ -2684,7 +2684,7 @@ class TestSyncUsersAndCaches:
         c.data_entities_processor.on_new_app_users.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_deactivated_and_invited_members_are_not_linked(self):
+    async def test_deactivated_and_invited_members_are_not_linked(self) -> None:
         """Neither can use Slack; linked, one sharing an active member's address would take that address."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
