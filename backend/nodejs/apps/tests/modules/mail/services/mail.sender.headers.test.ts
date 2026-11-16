@@ -8,7 +8,11 @@ import {
 } from '../../../../src/modules/mail/services/mail.sender.service';
 
 describe('MailSenderService custom headers', () => {
-  const smtp = { host: 'mailpit', port: 1025, fromEmail: 'no-reply@example.com' } as any;
+  const smtp = {
+    host: 'mailpit',
+    port: 1025,
+    fromEmail: 'no-reply@example.com',
+  } as any;
   const body = {
     emailTemplateType: 'appuserInvite',
     subject: 'Invite',
@@ -20,9 +24,16 @@ describe('MailSenderService custom headers', () => {
   let sender: MailSenderService;
 
   beforeEach(() => {
-    const logger: any = { debug: sinon.stub(), info: sinon.stub(), error: sinon.stub(), warn: sinon.stub() };
+    const logger: any = {
+      debug: sinon.stub(),
+      info: sinon.stub(),
+      error: sinon.stub(),
+      warn: sinon.stub(),
+    };
     sendMail = sinon.stub().resolves({ messageId: 'm1' });
-    sinon.stub(nodemailer, 'createTransport').returns({ sendMail, close: sinon.stub() } as any);
+    sinon
+      .stub(nodemailer, 'createTransport')
+      .returns({ sendMail, close: sinon.stub() } as any);
     sender = new MailSenderService(() => ({ smtp }) as any, logger);
     (sender as any).recordAudit = () => undefined;
   });
@@ -67,14 +78,18 @@ describe('MailSenderService custom headers', () => {
   it('still refuses null and an empty value', async () => {
     for (const value of [null, '']) {
       sendMail.resetHistory();
-      const result = await sender.send(body, smtp, undefined, { 'List-Unsubscribe': value } as any);
+      const result = await sender.send(body, smtp, undefined, {
+        'List-Unsubscribe': value,
+      } as any);
       expect(result.status).to.equal('permanent');
       expect(sendMail.called).to.equal(false);
     }
   });
 
   it('refuses a header that is not on the list, and sends nothing', async () => {
-    const result = await sender.send(body, smtp, undefined, { Bcc: 'x@example.com' } as any);
+    const result = await sender.send(body, smtp, undefined, {
+      Bcc: 'x@example.com',
+    } as any);
     expect(result.status).to.equal('permanent');
     expect(sendMail.called).to.equal(false);
   });

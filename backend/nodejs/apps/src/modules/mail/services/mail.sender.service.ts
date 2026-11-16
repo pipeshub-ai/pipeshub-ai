@@ -77,8 +77,7 @@ const MESSAGE_ID_PATTERN = /^<[A-Za-z0-9._%+=-]{1,200}@[A-Za-z0-9.-]{1,253}>$/;
 export function buildMailHeaders(
   extra?: MailSendHeaders,
 ):
-  | { messageId?: string; headers?: Record<string, string> }
-  | { error: string } {
+  { messageId?: string; headers?: Record<string, string> } | { error: string } {
   if (!extra) {
     return {};
   }
@@ -200,8 +199,7 @@ export class MailSenderService {
   private closeQuietly(transporter: Transporter): void {
     try {
       transporter.close();
-    } catch {
-    }
+    } catch {}
   }
 
   private onSendSettled(pool: PooledTransport): void {
