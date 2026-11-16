@@ -548,10 +548,12 @@ class SourceAccounts:
     def _evidence_allows(self, email: str, source_id: str | None) -> bool:
         """An address a deleted account still holds in the source's deleted accounts, and that no listing has shown
         since, takes only a grant naming the account it is linked to: not the deleted one, not one naming nobody."""
-        if email not in self._deleted.get(_bucket(email), {}) or email in self._reused.get(_bucket(email), {}):
+        deleted = self._deleted.get(_bucket(email), {})
+        if email not in deleted or email in self._reused.get(_bucket(email), {}):
             return True
         linked = self._linked.get(_bucket(email), {}).get(email)
-        return source_id is not None and source_id == linked
+        # The linked account may be the deleted one itself (not listed again yet): refused until a listing shows it.
+        return source_id is not None and source_id == linked and source_id != deleted[email]
 
     def holder(self, email: str) -> str | None:
         """For a loaded bucket: the listed id of the account that took over ``email``, or None for an address no
