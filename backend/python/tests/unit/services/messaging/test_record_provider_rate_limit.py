@@ -42,3 +42,16 @@ async def test_an_ordinary_failure_is_still_an_ordinary_retry() -> None:
     with pytest.raises(Exception) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert not isinstance(raised.value, RequeueWithoutAttempt)
+
+
+@pytest.mark.parametrize("final", [False, True])
+async def test_the_handed_back_record_is_queued_so_stale_recovery_does_not_republish_it(final: bool) -> None:
+    """A record whose attempt ran longer than the lease must not stay IN_PROGRESS with its old start time: the stale scan
+    would call the rate-limited provider again within a minute. It goes back in line like a transient failure."""
+    harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
+    with pytest.raises(ProviderRateLimitRequeue):
+        await harness.run(_payload(parseNow=False, is_final_failure=final))
+    queued = [w for w in harness.writes() if w.get("indexingStatus") == "QUEUED"]
+    assert queued and queued[-1]["processingStartedAt"] is None
+    assert all(w.get("indexingStatus") != "FAILED" for w in harness.writes())

@@ -2489,14 +2489,14 @@ class RecordEventHandler(BaseEventService):
                         f"defaulting to True (safe fail-fast). This may indicate a bug in the consumer."
                     )
                     is_final = True
-                    
+
                 if handed_back:
-                    # A provider's rate limit is not a verdict on the record either: the broker holds the message for the
-                    # provider's wait and the record stays as it is (stale recovery covers a process that never returns).
-                    self.logger.info(
-                        f"Record {record_id} waits for a rate-limited model provider; handed back, not failed"
-                    )
-                elif cancelled:
+                    # A provider's rate limit is not a verdict on the record, even on its last attempt: it goes back in line
+                    # like a transient failure (QUEUED, no processing start), so the broker's delay is the only wake-up and
+                    # the stale-record scan does not mistake the wait for a crash and call the provider again.
+                    is_final = False
+
+                if cancelled:
                     # Checked before is_final: a cancellation is not a verdict
                     # on the record. The broker entry was never acknowledged
                     # (Redis) or committed (Kafka), so it comes back regardless
