@@ -2917,6 +2917,31 @@ async def test_fetch_users_paginates_two_pages():
 
 
 @pytest.mark.asyncio
+async def test_fetch_users_keeps_every_account_that_shares_an_email() -> None:
+    """Only one of two accounts sharing an email may have product access, so neither may replace the other."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    batch = [
+        {"key": "licensed", "emailAddress": "same@example.com", "active": True},
+        {"key": "unlicensed", "emailAddress": "Same@example.com", "active": True},
+    ]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+    empty = MagicMock()
+    empty.status = HttpStatusCode.OK.value
+    empty.json = MagicMock(return_value=[])
+    ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok, empty])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    assert {(u.source_user_id, u.email) for u in users} == {
+        ("licensed", "same@example.com"), ("unlicensed", "same@example.com"),
+    }
+
+
+@pytest.mark.asyncio
 async def test_fetch_users_db_cache_resolves_hidden_email_user():
     """Phase 3B: cached AppUser from prior sync resolves user without visible email."""
     conn = _make_connector()
