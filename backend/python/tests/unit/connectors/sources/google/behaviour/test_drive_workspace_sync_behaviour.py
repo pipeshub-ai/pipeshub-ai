@@ -2936,6 +2936,71 @@ async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_
     assert CAROL in f1_people(ws)
 
 
+def _forget_the_member_list(ws: Workspace, drive_id: str) -> None:
+    """A members-only drive synced before its member list was remembered: the restrictions stored, no list."""
+    from app.connectors.sources.google.drive.team.connector import (
+        DRIVE_DIRECT_MEMBERS_MARK,
+        DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX,
+    )
+
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"))
+    stored = ws.sync_points.sync_points[key]
+    stored["group_hashes"] = [h for h in stored.get("group_hashes") or [] if not h.startswith(f"{DRIVE_DIRECT_MEMBERS_MARK}|")]
+
+
+async def test_a_members_only_drive_synced_before_its_member_list_was_kept_is_read_again_once(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    _forget_the_member_list(ws, "sd-1")
+    del ws.world.drives["sd-1"]["members"][CAROL]
+
+    await ws.sync()
+
+    assert CAROL not in f1_people(ws)
+
+
+async def test_a_member_group_leaving_a_members_only_drive_takes_its_peoples_own_shares_on_the_next_run(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    del ws.world.drives["sd-1"]["members"]["eng@example.com"]  # the group's people are unchanged
+    await ws.sync()
+
+    assert CAROL not in f1_people(ws), "a member only through the group no longer opens it"
+
+
+async def test_a_member_leaving_during_a_run_is_caught_by_the_next_run(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    ws.world.add_item("f2", "notes.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    ws.world.rename("f2", "notes-v2.txt")  # read again this run, after the member list was checked
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern.endswith("/changes$"))
+    left: list[bool] = []
+
+    def changes(req: ApiRequest) -> object:
+        if req.query.get("driveId") == "sd-1" and not left:
+            left.append(True)
+            del ws.world.drives["sd-1"]["members"][CAROL]
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/changes", changes)
+    await ws.sync()
+    assert left
+    await ws.sync()
+
+    assert CAROL not in f1_people(ws), "the unchanged item is rewritten too"
+
+
 async def relisted(ws: Workspace) -> bool:
     before = len(ws.http.requests)
     await ws.sync()

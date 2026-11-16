@@ -2161,7 +2161,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         the member groups. A member group the directory cannot list adds nobody, with a warning."""
         if drive_id not in self._drive_principals:
             users, groups = await self._drive_direct_members(drive_id)
-            await self._note_group_people(drive_id, DRIVE_DIRECT_MEMBERS_MARK, users)
             for group in sorted(groups):
                 members = await self._group_member_emails(group)
                 if members is None:
@@ -2210,31 +2209,42 @@ class GoogleDriveTeamConnector(BaseConnector):
         # The limits changed or a hidden group can be read: a file shared out of the drive with someone who is not a
         # member reaches them only through their own shared-with-me listing, which no change feed reports again.
         reseed = relist
+        # Who is a member at all: a person who leaves a members-only drive keeps no access through a share of their
+        # own ("Whether access to items inside this shared drive is restricted to its members",
+        # https://developers.google.com/workspace/drive/api/reference/rest/v3/drives), and the drive's change log
+        # records only "removal of a member", not its items
+        # (https://developers.google.com/workspace/drive/api/guides/about-changes). The member list read here, users
+        # and member groups, is the one remembered, so a change after it is caught by the next run; a drive without a
+        # remembered list (written before it was kept) is read again once.
+        membership = None
+        if now.get("driveMembersOnly"):
+            users, groups = await self._drive_direct_members(drive_id)
+            membership = self._people_digest(users | {f"group:{g}" for g in groups})
+            relist = relist or seen.get(DRIVE_DIRECT_MEMBERS_MARK) != membership
         for group, digest in seen.items():
             if relist:
                 break
-            # The grants written for the drive depend on who is in these groups, and on who is a member at all: a
-            # person who leaves a members-only drive keeps no access through a share of their own ("Whether access to
-            # items inside this shared drive is restricted to its members",
-            # https://developers.google.com/workspace/drive/api/reference/rest/v3/drives), and the drive's change log
-            # records only "removal of a member", not its items
-            # (https://developers.google.com/workspace/drive/api/guides/about-changes). One that cannot be read now has
-            # changed too: the relist hides it, and it is then remembered as hidden, so this happens once.
             if group == DRIVE_DIRECT_MEMBERS_MARK:
-                people = (await self._drive_direct_members(drive_id))[0]
-            else:
-                people = await self._group_member_emails(group)
+                continue
+            # The grants written for the drive depend on who is in these groups. One that cannot be read now has
+            # changed too: the relist hides it, and it is then remembered as hidden, so this happens once.
+            people = await self._group_member_emails(group)
             relist = people is None or self._people_digest(people) != digest
         if not relist:
             self._hidden_groups[drive_id] = set(hidden)
             self._group_digests[drive_id] = seen
             return
         await self._read_drive_again(drive_id, reseed=reseed)
+        digests = {DRIVE_DIRECT_MEMBERS_MARK: membership} if membership else {}
         await self.drive_delta_sync_point.update_sync_point(
-            key, {**now, "hidden_groups": [], "group_hashes": [], DRIVE_RESTRICTIONS_ASSUMED: False}
+            key,
+            {
+                **now, "hidden_groups": [], "group_hashes": [f"{g}|{d}" for g, d in digests.items()],
+                DRIVE_RESTRICTIONS_ASSUMED: False,
+            },
         )
         self._hidden_groups[drive_id] = set()
-        self._group_digests[drive_id] = {}
+        self._group_digests[drive_id] = digests
 
     @staticmethod
     def _track_failed_items() -> set[str]:
