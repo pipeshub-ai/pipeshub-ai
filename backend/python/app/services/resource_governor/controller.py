@@ -648,8 +648,11 @@ class ResourceGovernor:
             state = new.get(pool)
             last = BrakeReason(self._brake_reasons.get(pool.value, BrakeReason.NONE.value))
             reason = brake_reason(state.rule.value, state.active_cooldown_cause(now))
-            if state.rule is LimitRule.COOLDOWN and last not in (BrakeReason.NONE, BrakeReason.RAMPING):
-                reason = last  # a cooldown goes on holding for the pressure that started it (soft, hard or target)
+            holding = state.rule is LimitRule.COOLDOWN or (state.rule is LimitRule.PRESSURE_UNKNOWN and state.cooldown_until > now)
+            if holding and last not in (BrakeReason.NONE, BrakeReason.RAMPING, BrakeReason.FROZEN):
+                # A cooldown goes on holding for the pressure that started it (soft, hard or target), and a
+                # sample without a pressure reading does not end it: its window is still open.
+                reason = last
             reasons[pool.value] = reason.value
             if reason in PRESSURE_REASONS and reason != last:
                 entered.append((pool.value, reason.value))
@@ -715,17 +718,20 @@ class ResourceGovernor:
         file I/O); ``stats()["lanes"]`` carries them.
         """
         now = self._clock()
-        limits = self._registry.snapshot()
-        state = self._state
-        with self._stats_lock:
-            snapshot = self._last_snapshot
-            demand = dict(self._last_demand)
-            feedback = self._last_feedback
-            seq = self._sample_seq
-            sampled_at = self._last_sample_at
-            totals = {kind: dict(counts) for kind, counts in self._feedback_totals.items()}
-            brake_entries = {pool: dict(row) for pool, row in self._brake_entries.items()}
-            brake_reasons = dict(self._brake_reasons)
+        # One decision at a time: the limits, the state and the brake reasons all come from the same one
+        # (_state_lock, then _stats_lock, as everywhere else).
+        with self._state_lock:
+            limits = self._registry.snapshot()
+            state = self._state
+            with self._stats_lock:
+                snapshot = self._last_snapshot
+                demand = dict(self._last_demand)
+                feedback = self._last_feedback
+                seq = self._sample_seq
+                sampled_at = self._last_sample_at
+                totals = {kind: dict(counts) for kind, counts in self._feedback_totals.items()}
+                brake_entries = {pool: dict(row) for pool, row in self._brake_entries.items()}
+                brake_reasons = dict(self._brake_reasons)
         with self._gates_lock:
             gates = dict(self._gates)
         pools: dict[str, Any] = {}

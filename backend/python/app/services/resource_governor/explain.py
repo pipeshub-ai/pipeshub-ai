@@ -193,7 +193,7 @@ def _pool_rows(admission: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(row, dict):
             continue
         held = row.get("brakeReason")  # what the governor tracked across the cooldown, when it says
-        reason = BrakeReason(held) if held in _BRAKE_REASON_VALUES else brake_reason(row.get("rule"), row.get("cooldownCause"))
+        reason = BrakeReason(held) if isinstance(held, str) and held in _BRAKE_REASON_VALUES else brake_reason(row.get("rule"), row.get("cooldownCause"))
         limit, in_use = _num(row.get("limit")), _num(row.get("inUse"))
         out[pool] = {
             "ceiling": _num(row.get("ceiling")),

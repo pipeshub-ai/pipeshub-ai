@@ -356,3 +356,6 @@ def test_a_pool_in_cooldown_reports_the_brake_the_governor_tracked_through_it() 
     assert tracked["pools"]["heavy_parse"]["reason"] == "memory_soft"
     junk = explain.project({"admission": {"pools": {"heavy_parse": {**row, "brakeReason": "org-6f1c2a"}}}})
     assert junk["pools"]["heavy_parse"]["reason"] == "ramping"  # an unknown value is ignored
+    for malformed in ([], {}, ["memory_soft"], 5, None):  # a wrong type loses its own field, never the signal
+        body = explain.project({"admission": {"pools": {"heavy_parse": {**row, "brakeReason": malformed}}}})
+        assert body["pools"]["heavy_parse"]["reason"] == "ramping", malformed
