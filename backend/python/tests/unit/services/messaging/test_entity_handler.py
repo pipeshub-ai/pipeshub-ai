@@ -360,6 +360,7 @@ class TestUserAdded:
         existing_user.id = "existing-key"
 
         graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
         graph_provider.get_user_by_email = AsyncMock(return_value=existing_user)
         graph_provider.get_document = AsyncMock(
             return_value={"_key": "org-1", "accountType": "enterprise"}
@@ -1012,6 +1013,13 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+        if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return None
+        return next((u for u in self.users.values() if u.get("userId") == user_id), None)
+
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
@@ -1022,6 +1030,9 @@ class _KbGraph:
 
     async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
         return {"_key": key, "accountType": "enterprise"}
+
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *_a: object, **_k: object) -> bool:
+        return True  # the default claimed: this fake keeps no marker, so every writer reads none
 
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         pass

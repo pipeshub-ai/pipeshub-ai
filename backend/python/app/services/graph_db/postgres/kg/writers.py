@@ -23,7 +23,7 @@ RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "r
 # The per-item checks of w_records_upsert (kg manifest) on the values a node's document supplies: one row that fails a check refuses the whole call. The id is not here: a key
 # the node-key writer took (``w_nodes_upsert``, the same bound) is one this writer takes.
 RECORD_LENGTHS = {"vrid": (0, 256), "record_type": (0, 64), "external_id": (0, 2000)}
-RECORD_ENUMS = {"rule": ("OPEN", "STRICT", "RESTRICTED"), "model": ("APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"), "origin": ("CONNECTOR", "UPLOAD")}
+RECORD_ENUMS = {"rule": ("OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT"), "model": ("APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"), "origin": ("CONNECTOR", "UPLOAD")}
 # The per-item check of w_grants_set that a permission edge's document can fail: its type is part of the key of kg.scope_members, so it keeps a bound.
 GRANT_TYPE_LENGTH = (1, 64)
 

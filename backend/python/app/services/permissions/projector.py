@@ -63,9 +63,9 @@ def _restricted(n: StampNode) -> bool:
 
 def _hides_below(n: StampNode) -> bool:
     """A container (the top of a record's group chain) hides what is below it when it is deleted or its rule is unknown (the
-    walk through it fails closed), or it does not inherit from its parent; a RESTRICTED rule only asks for the grant the
-    container's own readers hold, which is what "the record equals its group" already says."""
-    return n.kind != "app" and (n.deleted or n.rule not in (None, "OPEN", "STRICT", "RESTRICTED") or _breaks(n))
+    walk through it fails closed), or it does not inherit from its parent; a RESTRICTED (or PARENT_AND_GRANT) rule only asks for
+    the grant the container's own readers hold, which is what "the record equals its group" already says."""
+    return n.kind != "app" and (n.deleted or n.rule not in (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT") or _breaks(n))
 
 
 def _is_scope(n: StampNode) -> bool:
