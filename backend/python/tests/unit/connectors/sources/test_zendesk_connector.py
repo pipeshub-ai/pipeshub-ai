@@ -1512,6 +1512,35 @@ class TestAllTicketsAccess:
         )
         assert [m.source_user_id for m in support] == ["1"]
 
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_a_suspended_or_deleted_user_is_not_linked(
+        self, _f, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """Neither can sign in; linked, one sharing an active agent's address would take that address."""
+        _ready(zendesk_connector)
+        users = {k: _app_user(k, "maya@acme.com") for k in ("1", "2", "3")}
+
+        async def _users():
+            zendesk_connector._user_id_to_data = {
+                "1": {"id": 1, "role": "agent", "active": True},
+                "2": {"id": 2, "role": "agent", "active": True, "suspended": True},
+                "3": {"id": 3, "role": "agent", "active": False},
+            }
+            zendesk_connector._user_id_to_app_user = dict(users)
+            return list(users.values()), users, True
+
+        zendesk_connector._fetch_users = AsyncMock(side_effect=_users)
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        linked = mock_data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in linked] == ["1"]
+
     async def test_record_groups_grant_all_tickets_group(self, zendesk_connector) -> None:
         datasource = _ready(zendesk_connector)
         datasource.list_groups = AsyncMock(return_value=_make_response(

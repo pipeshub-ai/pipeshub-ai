@@ -3718,7 +3718,15 @@ class SharePointConnector(BaseConnector):
                 recipient_user_ids=[self.created_by],
             )
             raise
-        await self.data_entities_processor.on_new_app_users(users)
+        # A disabled account is not linked, as in OneDrive: Entra keeps the UPN and the proxy addresses each unique
+        # ("These two attributes are required to be unique across all User, Group, or Contact objects",
+        # https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-syncservice-duplicate-attribute-resiliency)
+        # but says nothing of one account's mail against another's UPN, and the address here is either. Linked, a
+        # disabled account sharing an enabled one's address reads as that address changing hands. Enabled again, it
+        # is linked on the next listing; one linked before stays, with its access held back (_inactive_emails).
+        enabled = [u for u in users if u.is_active is not False]
+        if enabled:
+            await self.data_entities_processor.on_new_app_users(enabled)
         self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
         trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)

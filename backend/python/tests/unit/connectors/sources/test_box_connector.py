@@ -1366,6 +1366,26 @@ class TestBoxRunIncrementalSync:
         await box_connector.run_incremental_sync()
         box_connector._sync_users.assert_awaited_once()
 
+    async def test_an_inactive_user_is_not_linked(self, box_connector) -> None:
+        """An inactive user (or a status Box does not list) sharing an active user's login must not take it."""
+        box_connector.data_source.users_get_users = AsyncMock(return_value=MagicMock(success=True, data={"entries": [
+            {"id": f"u-{status}", "login": "maya@test.com", "name": "Maya", "status": status}
+            for status in ("active", "inactive", "cannot_delete_edit", "cannot_delete_edit_upload", None)
+        ]}))
+        box_connector._ensure_virtual_groups = AsyncMock()
+        box_connector._sync_user_groups = AsyncMock()
+        box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={"cursor": "pos-123"})
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [], "next_stream_position": "pos-124"})
+        )
+
+        await box_connector.run_incremental_sync()
+
+        linked = box_connector.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in linked] == [
+            "u-active", "u-cannot_delete_edit", "u-cannot_delete_edit_upload",
+        ]
+
     async def test_incremental_sync_with_events(self, box_connector):
         box_connector._sync_users = AsyncMock(return_value=[
             MagicMock(source_user_id="u1")
