@@ -730,7 +730,8 @@ class TestPublish(unittest.TestCase):
         lines = self.tmp / "shadow.jsonl"
         lines.write_text(json.dumps({"ts": ts(TODAY), "head": "h", "caught": ["py:x.py"], "missed": [], "unmapped": []}) + "\n",
                          encoding="utf-8")
-        code, _, err = self._main(["--out", str(d), "history", "publish", "--shadow", str(lines)], self.env)
+        with mock.patch("qa.shadow._today", return_value=TODAY):  # the shadow line is dated TODAY; keep it inside the window
+            code, _, err = self._main(["--out", str(d), "history", "publish", "--shadow", str(lines)], self.env)
         self.assertEqual(code, 0, err)
         self.assertNotIn("runs.jsonl", git(self.root, "ls-tree", "--name-only", "qa-history").split())
         self.assertEqual(len(git(self.root, "show", "qa-history:shadow.jsonl").splitlines()), 1)

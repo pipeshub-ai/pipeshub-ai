@@ -168,7 +168,7 @@ jobs:
       - name: Plan
         env:
           ANTHROPIC_API_KEY: ${{ inputs.use_model && secrets.ANTHROPIC_API_KEY || '' }}
-          # A Claude subscription login (claude setup-token), used by Claude Code in place of an API key.
+          # A Claude account login token (claude setup-token), used by Claude Code in place of an API key.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.use_model && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           OPENAI_API_KEY: ${{ inputs.use_model && secrets.OPENAI_API_KEY || '' }}
           AZURE_API_KEY: ${{ inputs.use_model && secrets.AZURE_API_KEY || '' }}
@@ -649,7 +649,7 @@ jobs:
           AGENT: ${{ inputs.agent }}
           COMBINE: ${{ inputs.combine }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          # Only this step, and only for the QA agent: Claude Code's credential. A Claude subscription
+          # Only this step, and only for the QA agent: Claude Code's credential. A Claude account
           # login (claude setup-token) or an API key.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.agent && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           ANTHROPIC_API_KEY: ${{ inputs.agent && secrets.ANTHROPIC_API_KEY || '' }}
