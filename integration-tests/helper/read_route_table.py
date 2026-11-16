@@ -36,6 +36,7 @@ _CM = "/api/v1/configurationManager/internal"
 UNDOCUMENTED_READS: dict[str, str] = {
     "GET /api/v1/docs/*": "static assets of the docs page",
     "GET /api/v1/document/internal/artifacts/{}/files/*": _INTERNAL,
+    "GET /api/v1/org/internal": _INTERNAL,
     "GET /api/v1/userAccount/internal/password/check": _INTERNAL,
     "GET /api/v1/users/internal/admin-users": _INTERNAL,
     "GET /api/v1/users/internal/{}": _INTERNAL,
