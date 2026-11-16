@@ -327,6 +327,19 @@ class TestRelease:
         await _verify(guard, FP32, collection="c")  # a new index may take the other precision
 
     @pytest.mark.asyncio
+    async def test_releasing_a_collection_leaves_each_released_space_not_quiet(self) -> None:
+        _, pins, _ = _guard()
+        await pins._claim_unfenced("c", INT8)
+        await pins._claim_unfenced("c", INT8, "o1")
+        await pins._claim_unfenced("other", INT8, "o1")
+        assert await pins.epochs.quiet("c", None) and await pins.epochs.quiet("c", "o1")
+        await pins.release_collection("c")
+        assert not await pins.epochs.quiet("c", None)  # a writer that finds no pin counts the points, it does not trust an empty index
+        assert not await pins.epochs.quiet("c", "o1")
+        assert await pins.epochs.quiet("c", "o2")  # a space that had no pin is unaffected
+        assert await pins.epochs.quiet("other", "o1")  # so is another collection
+
+    @pytest.mark.asyncio
     async def test_a_delete_the_store_cannot_confirm_is_raised(self) -> None:
         _, pins, config = _guard()
         await pins._claim_unfenced("c", INT8)

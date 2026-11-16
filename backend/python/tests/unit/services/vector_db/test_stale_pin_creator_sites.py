@@ -19,6 +19,7 @@ from app.services.vector_db.collection_manifest import (
 )
 from app.services.vector_db.collection_pin import FP32, INT8, CollectionPinStore, Pin
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.errors import SpaceMismatch
 from app.services.vector_db.models import CollectionConfig, VectorCollectionInfo
 from app.services.vector_db.pgvector.pgvector import PgVectorService
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
@@ -262,10 +263,11 @@ async def test_a_stale_org_pin_is_replaced_only_by_the_replace_empty_space_event
     # An empty space on its own (reading it, asking for its info) never re-pins.
     await svc._catalog.org_spaces(ORG)
     assert (await pins.get(name, ORG, fresh=True)).precision == INT8
-    try:
+    if replaced:
         await svc._space_for_write(ORG, 4, {MODEL})
-    except Exception:
-        assert not replaced
+    else:
+        with pytest.raises(SpaceMismatch):  # the space was not replaced: the write is refused, and the pin stays
+            await svc._space_for_write(ORG, 4, {MODEL})
     stands = await pins.get(name, ORG, fresh=True)
     assert (stands is None) if replaced else (stands.precision == INT8)
 

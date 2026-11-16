@@ -94,6 +94,8 @@ def read_header(path: Path) -> tuple[dict, int]:
         raise Int8FileError(f"unreadable header: {exc}") from exc
     if not isinstance(header, dict):
         raise Int8FileError("header is not an object")
+    if "__metadata__" in header and not isinstance(header["__metadata__"], dict):
+        raise Int8FileError("header metadata is not an object")
     start = 8 + length
     end = 0
     for name, entry in header.items():

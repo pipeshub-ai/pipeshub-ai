@@ -319,6 +319,24 @@ class TestReuseAndRebuild:
         with pytest.raises(Int8FileError):
             verify(path, file_identity(snap / "model.safetensors", "org/model", "rev1"))
 
+    @pytest.mark.parametrize("metadata", [["damaged"], "damaged", 7, True, None])
+    def test_metadata_that_is_not_an_object_is_rebuilt(self, model, tmp_path, metadata) -> None:
+        snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
+        identity = file_identity(snap / "model.safetensors", "org/model", "rev1")
+        path = _ensure(snap, model, cache)
+        raw = path.read_bytes()
+        length = int.from_bytes(raw[:8], "little")
+        header = json.loads(raw[8:8 + length])
+        header["__metadata__"] = metadata
+        damaged = json.dumps(header).encode()
+        path.write_bytes(len(damaged).to_bytes(8, "little") + damaged + raw[8 + length:])
+        with pytest.raises(Int8FileError):
+            verify(path, identity)
+        calls: list[int] = []
+        rebuilt = _ensure(snap, model, cache, build_fn=lambda *a: (calls.append(1), build(*a))[1])
+        assert calls == [1]
+        verify(rebuilt, identity)
+
     def test_bytes_appended_to_the_file_are_rebuilt(self, model, tmp_path) -> None:
         snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
         path = _ensure(snap, model, cache)

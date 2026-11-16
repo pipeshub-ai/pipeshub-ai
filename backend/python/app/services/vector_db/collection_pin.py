@@ -103,10 +103,16 @@ class CollectionPinStore:
         return list(await self._config.list_keys_in_directory(PIN_DIRECTORY) or [])
 
     async def release_collection(self, collection: str) -> None:
-        """Remove the pin of a collection and, where the provider keeps one space per org, each org's pin under it."""
+        """Remove the pin of a collection and, where the provider keeps one space per org, each org's pin under it.
+
+        Each release is recorded before its pin goes, as :meth:`release` does: a space whose pin was removed is not quiet,
+        so a writer that finds the pin missing counts the points instead of trusting an empty index.
+        """
         prefix = self.key(collection)
         for key in await self.keys():
             if key == prefix or key.startswith(prefix + "/"):
+                scope = key[len(prefix) + 1:] or None
+                await self.epochs.pin_released(collection, scope)
                 await delete_config_confirmed(self._config, key)
 
     async def release_orphans(self, exists: Callable[[str], Awaitable[bool]]) -> list[str]:
