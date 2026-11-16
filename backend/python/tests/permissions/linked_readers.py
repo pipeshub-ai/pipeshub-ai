@@ -2,8 +2,8 @@
 access rule in worlds that link a user to a source account.
 
 A linked account adds its own and its groups' grants inside its connector, and nothing else: no organisation. So every reader must answer the
-same when the linked accounts' organisation memberships are removed (`graph.without_link_source_orgs`), and none may give a role on a node the
-access check refuses or a search hit on a record it refuses.
+same when the linked accounts' organisation memberships are removed (`graph.without_link_source_orgs`), and none may give an ability on a node
+the access check refuses. (The search scope is a prefilter: retrieval keeps only the hits ``check_access`` admits, so it may be wider.)
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ def linked_worlds(generated: int) -> list[tuple[str, World]]:
     return [*((s.id, s.final_world()) for s in load_all() if s.final_world().links), *gen.linked(generated)]
 
 
+def linked_viewers(world: World) -> list[str]:
+    """The viewers a link can change anything for: those linked to a source account."""
+    return sorted({link.user for link in world.links})
+
+
 async def snapshot(provider: Any, world: World, viewer: str, ns: Namespace, org: str) -> dict[Any, Any]:  # noqa: ANN401
     """What the readers answer the viewer, with the store's ids mapped back to the world's."""
     out: dict[Any, Any] = {}
@@ -39,16 +44,15 @@ async def snapshot(provider: Any, world: World, viewer: str, ns: Namespace, org:
             out[("details", n.id)] = None if not details else sorted(
                 (p.get("relationship"), p.get("accessType")) for p in details.get("permissions") or [])
     found = await provider.get_accessible_virtual_record_ids(ns.id(viewer), org)
-    out["search"] = sorted(ns.local(r) for r in (found or {}).values())
+    out["search"] = sorted(ns.local(v) for v in found or {})      # the virtual record ids: which record stands for a shared one may differ
     return out
 
 
 def findings(name: str, viewer: str, plain: dict, without: dict, admitted: set[str]) -> list[str]:
-    """What differs between the two snapshots, and every ability or hit on a node the access check refuses."""
+    """What differs between the two snapshots, and every ability on a node the access check refuses."""
     out = [f"{name} {viewer} {key}: {plain[key]} with the account's organisation, {without.get(key)} without"
            for key in plain if plain[key] != without.get(key)]
     for key, value in plain.items():
         if isinstance(key, tuple) and key[0] == "context" and key[1] not in admitted and any(value.get(a) for a in ABILITIES):
             out.append(f"{name} {viewer} {key[1]}: abilities {value} on a node the access check refuses")
-    out += [f"{name} {viewer} search: {r}, which the access check refuses" for r in plain["search"] if r not in admitted]
     return out

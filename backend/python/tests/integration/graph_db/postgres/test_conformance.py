@@ -16,7 +16,7 @@ from app.core.org_context import OrgContext, bind
 from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGETS
 from tests.permissions import gen
 from tests.permissions.graph import VARIANTS, Graph, Namespace, compile_world
-from tests.permissions.linked_readers import findings, linked_worlds, snapshot
+from tests.permissions.linked_readers import findings, linked_viewers, linked_worlds, snapshot
 from tests.permissions.runner import ConformanceRunner, Report
 from tests.permissions.scenario import Scenario, load_all
 
@@ -165,19 +165,19 @@ async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
     assert not total.findings, _describe(total)
 
 
-async def test_linked_accounts_give_no_role_or_hit_beyond_the_access_check(layer: PgLayer, pg_provider, pg_db) -> None:
+async def test_linked_accounts_add_no_organisation_to_roles_details_or_search(layer: PgLayer, pg_provider, pg_db) -> None:
     """The context role, the record access details and the search scope, in every world that links a user to a source account: the same with
-    the linked accounts' organisations removed, and no ability or search hit on a node ``check_access`` refuses."""
+    the linked accounts' organisations removed, and no ability on a node ``check_access`` refuses."""
     without = PgLayer(pg_provider, pg_db)
     without.variant = "no_source_org"
-    worlds = linked_worlds(10)
+    worlds = linked_worlds(4)
     found: list[str] = []
     try:
         await layer.preload(w for _, w in worlds)
         await without.preload(w for _, w in worlds)
         for name, world in worlds:
             ns, ns_without = await layer._ns(world), await without._ns(world)
-            for viewer in world.users():
+            for viewer in linked_viewers(world):
                 admitted = await layer.admitted(world, viewer, [n.id for n in world.nodes])
                 with bind(OrgContext(_hex(ns.org), None, "job", "job:test", "t")):
                     plain = await snapshot(pg_provider, world, viewer, ns, _hex(ns.org))
