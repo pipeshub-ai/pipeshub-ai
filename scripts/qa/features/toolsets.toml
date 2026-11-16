@@ -1,0 +1,843 @@
+# Feature map: the toolset platform (registry, instances, credentials, OAuth, approvals, API toolsets).
+# The individual toolsets (Jira, Slack, ...) are mapped in toolset-actions.toml.
+
+# Registry
+
+[[feature]]
+id = "toolsets.registry"
+title = "Toolset registry"
+flow = "agents-toolsets-mcp"
+what = "A signed-in user lists the toolset types the product ships (name, auth types, tools) and reads the setup schema of one type. The registry is read-only and held in memory."
+routes = [
+  "GET /api/v1/toolsets/registry",
+  "GET /api/v1/toolsets/registry/{toolsetType}/schema",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/routes/toolsets_routes.ts",
+  "backend/python/app/agents/registry/toolset_registry.py",
+  "backend/python/app/api/routes/toolsets.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.registry.list"
+  says = "GET /api/v1/toolsets/registry returns a paginated list of toolset types; page, limit (1 to 200), search and include_tools are honoured and a limit above 200 is refused."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.registry.schema"
+  says = "GET /api/v1/toolsets/registry/{toolsetType}/schema returns the auth fields of that type; an unknown type is an error, not an empty schema."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.registry.scope"
+  says = "Both registry routes need the toolset:read scope on a token; a token without it gets 403 and a session user is let through."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
+
+[[feature]]
+id = "toolsets.registry-tools"
+title = "Registry tool listings"
+flow = "agents-toolsets-mcp"
+what = "The connectors service lists the tools of the toolset registry as a flat list, or for one toolset. GET /api/v1/toolsets/tools and GET /api/v1/toolsets/registry/{toolsetName}/tools are served by the Python service only; the Node API does not forward them and no page calls them."
+code = [
+  "backend/python/app/api/routes/toolsets.py",
+  "backend/python/app/agents/registry/toolset_registry.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.registry-tools.flat-list"
+  says = "GET /api/v1/toolsets/tools returns every tool of every non-internal toolset as one list sorted by toolset and tool name, each with app_name, tool_name, full_name, description, parameters, returns, examples and tags. app_name (exact, case-insensitive), tag and search (in name or description) narrow it."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.registry-tools.one-toolset"
+  says = "GET /api/v1/toolsets/registry/{toolsetName}/tools returns the tools of one toolset with a totalCount. An unknown or internal toolset is the same not-found error, and a blank name is a 400."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.registry-tools.scope"
+  says = "Both routes need the connector read scope on a token; a token without it is refused."
+  priority = "P1"
+  kind = "security"
+  tests = []
+
+# Org and personal instances
+
+[[feature]]
+id = "toolsets.instances"
+title = "Toolset instances"
+flow = "agents-toolsets-mcp"
+what = "An administrator creates, edits and deletes the organization's toolset instances (a configured copy of a toolset type, with its auth type and sign-in app). The workspace Actions pages list and manage them."
+routes = [
+  "GET /api/v1/toolsets/instances",
+  "POST /api/v1/toolsets/instances",
+  "GET /api/v1/toolsets/instances/{instanceId}",
+  "PUT /api/v1/toolsets/instances/{instanceId}",
+  "DELETE /api/v1/toolsets/instances/{instanceId}",
+]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/actions/page.tsx",
+  "frontend/app/(main)/workspace/actions/page.tsx",
+  "frontend/app/(main)/@sidebar/workspace/actions/team/page.tsx",
+  "frontend/app/(main)/workspace/actions/team/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+  "backend/python/app/api/routes/toolsets.py",
+  "backend/python/app/agents/toolset_store.py",
+  "frontend/app/(main)/workspace/actions/**",
+  "frontend/app/(main)/toolsets/api/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.instances.create"
+  says = "An administrator creates an instance with POST /api/v1/toolsets/instances (instanceName, toolsetType, authType required). An auth type the toolset does not support is a 400, and a second instance with the same name for the same type is a 409."
+  priority = "P0"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.instances.admin-only-edit"
+  says = "Only an administrator can update or delete an org instance (an owner manages their own personal one): a member gets 403 from PUT and DELETE /api/v1/toolsets/instances/{instanceId}."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.instances.safe-delete"
+  says = "Deleting an instance that an agent uses is refused (the agents are named); if the usage check itself fails nothing is deleted. A delete that goes through also removes every user's sign-in and the tool rules for that instance."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_toolset_store_write_failure.py", "py:tests/unit/api/routes/test_toolset_tool_rules.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.instances.store-failure"
+  says = "When the config store cannot be read or written, create, update and delete answer 500 and overwrite nothing: a failed save is never reported as saved and an unreadable list is not treated as empty."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_toolset_store_write_failure.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.instances.update-signs-out"
+  says = "Changing an instance's sign-in app signs its users out (they must authenticate again); an update whose store write fails signs nobody out."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolset_store_write_failure.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.instances.scopes"
+  says = "The instance routes need toolset:read for reads, toolset:write for create and update, and toolset:delete for delete; a read-only token opens no write route."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
+
+  [[feature.behavior]]
+  id = "toolsets.instances.ui-list"
+  says = "The workspace Actions page lists the toolset types with their instances, and an instance row shows who enabled it."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/actions/__tests__/toolset-row-creator.test.tsx", "fe:app/(main)/workspace/actions/__tests__/use-toolset-type-instance-list.test.ts"]
+
+[[feature]]
+id = "toolsets.personal"
+title = "Personal actions"
+flow = "agents-toolsets-mcp"
+what = "A member adds a toolset instance for themselves without an administrator (scope personal). Only the owner sees, signs in to and uses it, and only the setup fields the toolset declares are stored."
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/actions/personal/page.tsx",
+  "frontend/app/(main)/workspace/actions/personal/page.tsx",
+]
+code = [
+  "backend/python/app/agents/toolset_store.py",
+  "backend/python/app/api/routes/toolsets.py",
+  "frontend/app/(main)/workspace/actions/personal/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.personal.owner-only"
+  says = "A personal instance is kept under its owner's key and never appears in the org list; nobody else, an administrator included, can read, edit, sign in to or delete it (404)."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.personal.settings-whitelist"
+  says = "Only the setup fields the toolset declares are accepted; any other key is a 400. An OAuth personal instance must carry its own client ID and secret."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.personal.public-addresses"
+  says = "A server address in a personal instance must be public: a private or non-http(s) address is refused on create and on edit, and a toolset that connects by host name is left to administrators."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py", "py:tests/unit/sources/client/test_personal_toolset_clients.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.personal.limit-and-names"
+  says = "A person can hold at most TOOLSET_MAX_PERSONAL_INSTANCES (default 25) personal instances, and names are unique among their own (409)."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.personal.role-unconfirmed"
+  says = "If the caller's role cannot be confirmed, creating an instance answers 503 and creates nothing, so an administrator's org instance is never saved as personal."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.personal.delete"
+  says = "The owner deletes their instance and its sign-ins and rules go with it; an instance an agent uses is not deleted."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.personal.ui"
+  says = "The personal Actions page lets a user add an action of a type they may add."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/actions/__tests__/personal-actions.test.tsx"]
+
+# What a user sees and their own sign-in
+
+[[feature]]
+id = "toolsets.my-toolsets"
+title = "My toolsets and status"
+flow = "agents-toolsets-mcp"
+what = "A user lists the org instances plus their own personal ones, each with their own sign-in state, and checks the status of one instance."
+routes = [
+  "GET /api/v1/toolsets/my-toolsets",
+  "GET /api/v1/toolsets/configured",
+  "GET /api/v1/toolsets/instances/{instanceId}/status",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+  "backend/python/app/api/routes/toolsets.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.my-toolsets.list"
+  says = "GET /api/v1/toolsets/my-toolsets returns a spec-valid envelope with page, limit, search, toolsetType (case-insensitive), authStatus and includeRegistry filters applied, and GET /configured returns the same list."
+  priority = "P0"
+  tests = [
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsSuccess::test_defaults",
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsSuccess::test_auth_status_filter",
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsSuccess::test_toolset_type_filter",
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsSuccess::test_explicit_pagination",
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsSuccess::test_include_registry",
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsSuccess::test_search_no_match_is_empty",
+    "py:tests/unit/api/routes/test_toolsets_configured_route.py",
+  ]
+
+  [[feature.behavior]]
+  id = "toolsets.my-toolsets.validation"
+  says = "A page below 1, a limit outside 1 to 200 or an unknown authStatus is a 400 with the documented error envelope, and a request without a token is a 401."
+  priority = "P1"
+  tests = [
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsErrors::test_invalid_query_params",
+    "it:response-validation/toolsets/integration_test_get_my_toolsets.py::TestGetMyToolsetsErrors::test_unauthenticated",
+  ]
+
+  [[feature.behavior]]
+  id = "toolsets.my-toolsets.own-and-org-only"
+  says = "The list holds the org's instances and the caller's own personal ones, never someone else's; scope=org leaves the caller's personal instances out."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.my-toolsets.status"
+  says = "GET /api/v1/toolsets/instances/{instanceId}/status reports isAuthenticated for the caller only, and is 404 for an instance the caller cannot see."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+[[feature]]
+id = "toolsets.credentials"
+title = "Toolset credentials"
+flow = "agents-toolsets-mcp"
+what = "A user connects an instance with an API token or username and password, replaces it, removes it, or clears it to sign in again. Credentials are stored per user and per instance."
+routes = [
+  "POST /api/v1/toolsets/instances/{instanceId}/authenticate",
+  "PUT /api/v1/toolsets/instances/{instanceId}/credentials",
+  "DELETE /api/v1/toolsets/instances/{instanceId}/credentials",
+  "POST /api/v1/toolsets/instances/{instanceId}/reauthenticate",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+  "backend/python/app/api/routes/toolsets.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.credentials.authenticate"
+  says = "POST .../authenticate stores the caller's credentials for a non-OAuth instance and answers isAuthenticated true; an empty auth object is a 400, API_TOKEN needs apiToken and BASIC_AUTH needs username and password."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_toolset_credential_fields.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.credentials.declared-fields-only"
+  says = "Credentials may only carry fields the toolset declares for its auth type; an undeclared field is refused by name and nothing is saved. Other stored keys are kept on update."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolset_credential_fields.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.credentials.oauth-refused"
+  says = "authenticate and credentials update on an OAUTH instance are refused with a pointer to the OAuth sign-in; credentials update with no stored sign-in is a 404."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolset_credential_fields.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.credentials.write-failure"
+  says = "A failed or unreadable store write answers 500 and the instance is not reported as authenticated."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_toolset_store_write_failure.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.credentials.remove-and-reauth"
+  says = "DELETE .../credentials removes only the caller's credentials and stops their token refresh task; reauthenticate clears them so the status goes back to not authenticated."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.credentials.write-scope"
+  says = "Credentials routes need toolset:write (toolset:delete for DELETE); a chat-only token cannot write credentials."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
+
+[[feature]]
+id = "toolsets.secret-masking"
+title = "Credential storage and masking"
+flow = "agents-toolsets-mcp"
+what = "Instance responses never carry credentials to members. Administrators get stored secrets masked, and the settings page can ask to reveal them. A masked value sent back keeps the stored secret."
+code = [
+  "backend/python/app/api/routes/toolsets.py",
+  "backend/python/app/config/redaction.py",
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.secret-masking.member-gets-no-auth"
+  says = "A member's response for an instance, in a list or by id, carries no inline auth object at all."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolset_instance_secrets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.secret-masking.admin-masked"
+  says = "An administrator sees inline auth with declared secret fields and OAuth client secrets masked (and always masked when they hold nested objects such as stored tokens), unless the settings page asks to reveal with reveal=true."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolset_instance_secrets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.secret-masking.echo-keeps-secret"
+  says = "Saving an instance or sign-in app with the masked placeholder in a secret field keeps the stored secret; a placeholder with no stored value is dropped, never saved as the secret."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolset_instance_secrets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.secret-masking.reveal-session-only"
+  says = "reveal=true is honoured only for an administrator's own session, not for a token issued to an OAuth app."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/config/test_redaction.py"]
+
+# Sign-in with OAuth
+
+[[feature]]
+id = "toolsets.oauth"
+title = "Toolset OAuth sign-in"
+flow = "agents-toolsets-mcp"
+what = "A user signs in to an OAuth instance in a popup. The API returns the provider's authorization URL, the callback page sends the code back to the API, and the tokens are stored for that user and refreshed in the background."
+routes = [
+  "GET /api/v1/toolsets/instances/{instanceId}/oauth/authorize",
+  "GET /api/v1/toolsets/oauth/callback",
+]
+pages = [
+  "frontend/app/(public)/toolsets/oauth/callback/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+  "backend/python/app/api/routes/toolsets.py",
+  "backend/python/app/api/routes/toolset_resolvers.py",
+  "backend/python/app/connectors/core/registry/oauth_config_registry.py",
+  "frontend/app/(public)/toolsets/oauth/callback/**",
+  "frontend/app/(main)/toolsets/oauth/**",
+  "frontend/app/(main)/agents/agent-builder/__tests__/toolset-oauth-popup-flow.test.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.authorize"
+  says = "GET .../oauth/authorize returns authorizationUrl built from the instance's sign-in app, with the instance and user wrapped into state. A non-OAuth instance, or one with no sign-in app linked, is an error."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_toolsets_full_coverage.py", "py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.callback-user-bound"
+  says = "The callback accepts a code only from the user who started the sign-in: a state that names another user is refused (the body says success false, error auth_failed), and a missing code or state is answered success false with missing_parameters without storing anything."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_full_coverage.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.provider-error"
+  says = "A provider error on the callback (error query) is returned as success false with the error code and nothing is stored."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.callback-persist"
+  says = "A good callback exchanges the code, stores the tokens under the caller and instance, and answers success. If the store write fails or the record is unreadable it is not reported as success."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_toolset_store_write_failure.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.popup"
+  says = "The sign-in popup opens before the authorization address arrives and is then sent there; a blocked popup is reported, a failed address fetch closes the popup, and an address that is not a web page is never opened."
+  priority = "P1"
+  tests = ["fe:app/(main)/agents/agent-builder/__tests__/toolset-oauth-popup-flow.test.ts"]
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.callback-page"
+  says = "The callback page tells the opener oauth-success or oauth-error and closes; a provider error, a missing code or a missing state shows a message instead of exchanging."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.desktop-handoff"
+  says = "A sign-in started from the desktop app is handed back to the app with code and state instead of being completed in the browser."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.oauth.vendor-sign-in"
+  says = "Signing in to a real provider (consent screen, token exchange) works end to end."
+  priority = "P1"
+  tests = []
+  manual = "needs a real vendor OAuth app; the repo has no simulator for a toolset provider"
+
+[[feature]]
+id = "toolsets.token-refresh"
+title = "Toolset token refresh"
+flow = "agents-toolsets-mcp"
+what = "A background service refreshes the OAuth tokens of signed-in toolset users before they expire, and signs a user out when the provider refuses the refresh token."
+code = [
+  "backend/python/app/connectors/core/base/token_service/toolset_token_refresh_service.py",
+  "backend/python/app/connectors/core/base/token_service/startup_service.py",
+  "backend/python/app/utils/credential_refresh_log.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.token-refresh.schedule"
+  says = "Each signed-in OAuth toolset sign-in gets one refresh task; keys already scheduled are skipped, a failure on one key does not stop the others, and the task is cancelled when credentials are removed."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_toolset_token_refresh.py", "py:tests/unit/connectors/test_toolset_token_refresh_service.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.token-refresh.invalid-token"
+  says = "When the provider keeps rejecting the refresh token (three strikes) the sign-in is marked not authenticated, so the user is asked to sign in again instead of tools failing silently."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/test_toolset_token_refresh_service.py", "py:tests/unit/connectors/core/test_toolset_token_refresh_logging.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.token-refresh.logging"
+  says = "One refresh of one sign-in can be followed in the logs alone: scheduled, refreshed, skipped or failed, each with the toolset and instance and never the token."
+  priority = "P2"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/core/test_toolset_token_refresh_logging.py"]
+
+# Tool approvals
+
+[[feature]]
+id = "toolsets.tool-rules"
+title = "Toolset tool approval rules"
+flow = "agents-toolsets-mcp"
+what = "Each tool of an instance has a rule: allow, ask or block. The owner of a personal instance sets its rules; an org instance's rules are shown to everyone."
+routes = [
+  "GET /api/v1/toolsets/instances/{instanceId}/tool-rules",
+  "PUT /api/v1/toolsets/instances/{instanceId}/tool-rules",
+]
+code = [
+  "backend/python/app/agents/agent_loop/tool_approvals.py",
+  "backend/python/app/api/routes/toolsets.py",
+  "frontend/app/(main)/workspace/actions/components/toolset-tool-rules-dialog.tsx",
+  "frontend/app/(main)/workspace/actions/components/toolset-tool-rules-notice.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.tool-rules.validation"
+  says = "PUT accepts only allow, ask or block per tool and refuses a tool name the toolset does not have (400 naming it); a save replaces the previous rules."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolset_tool_rules.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.tool-rules.owner-edit"
+  says = "The owner of a personal instance reads and edits its rules (canEdit true); nobody else sees or changes them."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_personal.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.tool-rules.org-instance-unavailable"
+  says = "Rules of an org instance answer 404 on GET and PUT here and nothing is saved; each person answers the approval card in chat instead."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolset_tool_rules.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.tool-rules.ui"
+  says = "The rules dialog lists each tool with what it does to data and the notice explains who sets the rules."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/actions/__tests__/toolset-tool-rules.test.tsx", "fe:app/(main)/workspace/actions/__tests__/toolset-tool-rules-notice.test.tsx"]
+
+  [[feature.behavior]]
+  id = "toolsets.tool-rules.enforced-in-chat"
+  says = "A tool whose rule is ask stops the agent for the user's approval and a tool whose rule is block is not run."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/agent_loop/test_toolset_tool_approvals.py", "py:tests/unit/agents/agent_loop/test_toolset_rules_isolation.py", "py:tests/unit/agents/agent_loop/test_personal_toolset_approvals.py"]
+
+# Agent-scoped credentials
+
+[[feature]]
+id = "toolsets.agent-credentials"
+title = "Agent toolset credentials"
+flow = "agents-toolsets-mcp"
+what = "A user with edit access to a service account agent gives that agent its own credentials or sign-in for an org toolset instance, so it does not use anyone's personal ones."
+routes = [
+  "GET /api/v1/toolsets/agents/{agentKey}",
+  "POST /api/v1/toolsets/agents/{agentKey}/instances/{instanceId}/authenticate",
+  "PUT /api/v1/toolsets/agents/{agentKey}/instances/{instanceId}/credentials",
+  "DELETE /api/v1/toolsets/agents/{agentKey}/instances/{instanceId}/credentials",
+  "POST /api/v1/toolsets/agents/{agentKey}/instances/{instanceId}/reauthenticate",
+  "GET /api/v1/toolsets/agents/{agentKey}/instances/{instanceId}/oauth/authorize",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+  "backend/python/app/api/routes/toolsets.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.agent-credentials.edit-access"
+  says = "Writing an agent's credentials or starting its sign-in needs edit access to the agent (403 otherwise) and the agent must be a service account (400 otherwise)."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.agent-credentials.declared-fields"
+  says = "An agent's credentials carry only the fields the toolset declares; an undeclared field is refused and nothing is saved, and API_TOKEN and BASIC_AUTH need their required values."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolset_credential_fields.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.agent-credentials.write-failure"
+  says = "A failed store write on authenticate or credentials update is a 500, not a success."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_toolset_store_write_failure.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.agent-credentials.oauth-flow"
+  says = "An agent's OAuth callback stores tokens under the agent, and a callback by a user without edit access to the agent (403 or 404 from the check) is answered success false with agent_permission_denied."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_toolsets_full_coverage.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.agent-credentials.scopes"
+  says = "The agent routes need the agent:read and agent:write scopes on a token; a chat-only token cannot write agent toolset credentials."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
+
+# Older per-toolset routes
+
+[[feature]]
+id = "toolsets.legacy-config"
+title = "Per-toolset configuration routes"
+flow = "agents-toolsets-mcp"
+what = "The first-generation routes that create and configure one toolset by name (configuration, status, reauthenticate, authorize). They are still in the public spec and gated by toolset scopes. The workspace UI uses the instance routes instead."
+routes = [
+  "POST /api/v1/toolsets",
+  "GET /api/v1/toolsets/{toolsetId}/status",
+  "GET /api/v1/toolsets/{toolsetId}/config",
+  "POST /api/v1/toolsets/{toolsetId}/config",
+  "PUT /api/v1/toolsets/{toolsetId}/config",
+  "DELETE /api/v1/toolsets/{toolsetId}/config",
+  "POST /api/v1/toolsets/{toolsetId}/reauthenticate",
+  "GET /api/v1/toolsets/{toolsetId}/oauth/authorize",
+]
+code = [
+  "backend/nodejs/apps/src/modules/toolsets/routes/toolsets_routes.ts",
+  "backend/nodejs/apps/src/modules/toolsets/controller/toolsets_controller.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.legacy-config.scopes"
+  says = "Each of these routes needs its toolset scope (read for GET, write for POST and PUT, delete for DELETE) and rejects a request with no token."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
+
+  [[feature.behavior]]
+  id = "toolsets.legacy-config.validation"
+  says = "POST /api/v1/toolsets needs a name and an auth type; the config routes need a toolsetId and an auth type in the body, and a malformed body is a 400."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.legacy-config.served"
+  says = "Each of these routes does what its OpenAPI entry says, or is removed from the spec. The Node API forwards them to connectors-service paths that the service does not define, so a call is expected to fail upstream."
+  priority = "P1"
+  tests = []
+
+# API toolsets
+
+[[feature]]
+id = "toolsets.api-toolsets"
+title = "API toolsets"
+flow = "agents-toolsets-mcp"
+what = "An administrator adds an internal REST API as a toolset from its OpenAPI spec, picking which operations agents may call, previews a spec first, edits it, tests it and deletes it. Members list and read them. The feature is off until an administrator turns it on in Labs."
+routes = [
+  "POST /api/v1/api-toolsets/validate",
+  "GET /api/v1/api-toolsets/instances",
+  "POST /api/v1/api-toolsets/instances",
+  "GET /api/v1/api-toolsets/instances/{instanceId}",
+  "PUT /api/v1/api-toolsets/instances/{instanceId}",
+  "DELETE /api/v1/api-toolsets/instances/{instanceId}",
+  "GET /api/v1/api-toolsets/instances/{instanceId}/config",
+  "POST /api/v1/api-toolsets/instances/{instanceId}/test",
+]
+pages = [
+  "frontend/app/(main)/@sidebar/workspace/api-toolsets/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/api_toolsets/**",
+  "backend/python/app/api/routes/api_toolsets.py",
+  "backend/python/app/agents/openapi/**",
+  "frontend/app/(main)/workspace/api-toolsets/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.flag-off"
+  says = "While the API Toolsets Labs flag is off, every api-toolsets route answers 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.admin-only"
+  says = "Only an administrator can preview a spec, add, change or delete an API toolset or read its settings (403 for a member, before anything is looked up)."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.validate"
+  says = "POST /validate compiles an uploaded spec without saving it and returns the operations, auth schemes and servers; a bad spec is a 400 with the reason."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.create-selected-ops"
+  says = "Creating a toolset stores only the operations the admin selected; members get the list without connection details, and only the admin settings route shows them."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.credentials-dropped"
+  says = "Changing the auth scheme or moving the API to another host drops the old credentials."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.safe-delete"
+  says = "Deleting a toolset an agent uses is a 409 naming the agents; when usage cannot be read it is a 503 and nothing is deleted. A delete removes the record and every credential."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.test-call"
+  says = "POST .../test runs one read operation with the caller's credentials and returns ok, status and a truncated body; it needs credentials first, runs only read operations, and an unreachable API is a 502."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.agent-calls"
+  says = "An agent with an API toolset attached calls its operations through the chat, using the shared key, and an operation outside the attached set is refused."
+  priority = "P0"
+  tests = [
+    "it:ai_agents/integration_test_agent_api_toolsets_live.py::TestTicketQuestion::test_it_calls_the_api_tool",
+    "it:ai_agents/integration_test_agent_api_toolsets_live.py::TestTicketQuestion::test_the_api_received_the_call_with_the_shared_key",
+    "it:ai_agents/integration_test_agent_api_toolsets_live.py::TestTheToolset::test_an_unknown_operation_is_refused",
+    "py:tests/unit/agents/adapter/test_openapi_tool_loader.py",
+  ]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.gateway-spec"
+  says = "Every route the Node gateway serves for API toolsets is in the OpenAPI spec and the spec lists nothing the gateway does not serve; each route needs a connector scope."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/api_toolsets/api-toolsets-match-the-spec.test.ts"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets.ui"
+  says = "The API toolsets page lets an administrator paste or upload a spec, pick operations and save the toolset."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/api-toolsets/__tests__/api-toolset-components.test.tsx", "fe:app/(main)/workspace/api-toolsets/__tests__/toolset-form.test.ts", "fe:app/(main)/workspace/api-toolsets/__tests__/api.test.ts"]
+
+[[feature]]
+id = "toolsets.api-toolsets-credentials"
+title = "API toolset credentials"
+flow = "agents-toolsets-mcp"
+what = "A toolset uses either one shared credential an administrator sets, or a credential each member connects. Members connect and disconnect their own; administrators manage the shared one."
+routes = [
+  "PUT /api/v1/api-toolsets/instances/{instanceId}/credentials",
+  "DELETE /api/v1/api-toolsets/instances/{instanceId}/credentials",
+  "PUT /api/v1/api-toolsets/instances/{instanceId}/shared-credentials",
+  "DELETE /api/v1/api-toolsets/instances/{instanceId}/shared-credentials",
+]
+code = [
+  "backend/python/app/api/routes/api_toolsets.py",
+  "backend/python/app/agents/openapi/auth.py",
+  "backend/python/app/agents/openapi/store.py",
+  "frontend/app/(main)/workspace/api-toolsets/components/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-credentials.per-member"
+  says = "Each member connects their own credential, a missing field is named in the 400, and disconnecting removes only theirs. A toolset with no auth is always connected."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-credentials.shared-admin"
+  says = "Only an administrator can set or remove the shared credential, and the shared routes refuse a toolset that uses per-member credentials. A member cannot set a credential on a shared-credential toolset."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-credentials.shared-for-members"
+  says = "Members see a shared-credential toolset as connected and their agents call the API with the shared key."
+  priority = "P1"
+  tests = ["it:ai_agents/integration_test_agent_api_toolsets_live.py::TestTheToolset::test_members_see_it_connected_through_the_shared_key"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-credentials.secret-not-shown"
+  says = "The admin view never shows a stored credential or an OAuth app secret."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+[[feature]]
+id = "toolsets.api-toolsets-oauth"
+title = "API toolset OAuth sign-in"
+flow = "agents-toolsets-mcp"
+what = "For an API toolset with an OAuth scheme, a member (or an administrator, for the shared credential) signs in through the API's own provider. A callback page finishes the sign-in."
+routes = [
+  "GET /api/v1/api-toolsets/instances/{instanceId}/oauth/authorize",
+  "GET /api/v1/api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize",
+  "GET /api/v1/api-toolsets/oauth/callback",
+]
+pages = [
+  "frontend/app/(public)/api-toolsets/oauth/callback/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/api_toolsets/controller/api_toolsets.controller.ts",
+  "backend/python/app/api/routes/api_toolsets.py",
+  "backend/python/app/agents/openapi/service.py",
+  "frontend/app/(public)/api-toolsets/oauth/callback/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-oauth.round-trip"
+  says = "authorize returns an authorizationUrl, and the callback with that state and a code stores the sign-in and answers success with the instance id and name; a client ID is required to start."
+  priority = "P0"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-oauth.shared-admin"
+  says = "The shared sign-in route is for administrators only; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-oauth.sent-once"
+  says = "The gateway sends authorize and callback requests once (no retries), because each one stores or uses sign-in state."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-oauth.callback-page"
+  says = "The callback page exchanges code and state through the API, tells the opener and closes, and shows the error when the provider or the API refuses."
+  priority = "P1"
+  tests = ["fe:app/(public)/api-toolsets/oauth/callback/__tests__/page.test.tsx"]
+
+  [[feature.behavior]]
+  id = "toolsets.api-toolsets-oauth.desktop"
+  says = "A sign-in started from the desktop app is marked as such and completes."
+  priority = "P2"
+  tests = ["py:tests/unit/api/routes/test_api_toolsets.py", "node:tests/modules/api_toolsets/api-toolsets-controller.test.ts"]
+
+# Using toolsets in agents
+
+[[feature]]
+id = "toolsets.agent-tool-loading"
+title = "Toolsets as agent tools"
+flow = "agents-toolsets-mcp"
+what = "When an agent runs, the instances it has attached (and that the user can see and has signed in to) are loaded as tools, limited to the tools picked for each toolset. An agent can attach only instances its editor can see."
+code = [
+  "backend/python/app/agents/registry/toolset_registry.py",
+  "backend/python/app/connectors/core/registry/tool_builder.py",
+  "backend/python/app/api/routes/agent.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolsets.agent-tool-loading.selected-tools-only"
+  says = "An agent can use only the tools picked for each of its toolsets."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/adapter/test_tool_loader_tool_selection.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.agent-tool-loading.attach-visible-only"
+  says = "An agent may attach only instances its editor can see: the org's and their own personal ones, never someone else's, and a personal one stays on its owner's agent."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_agent_personal_toolsets.py", "py:tests/unit/api/routes/test_agent_api_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.agent-tool-loading.registry-modules"
+  says = "Every toolset module the agents load at startup imports and registers a toolset, and every tool says what it does to data (read, write, delete)."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolsets.agent-tool-loading.actions-gate"
+  says = "Agents load toolset tools only while the Actions switch is on in Labs; with it off no toolset tool is offered."
+  priority = "P1"
+  tests = []
+
+[ignore]
+routes = []
