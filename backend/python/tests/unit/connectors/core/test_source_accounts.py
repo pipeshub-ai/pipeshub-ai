@@ -761,6 +761,22 @@ async def test_a_withdrawal_before_any_listing_still_notes_the_account(world) ->
 
 
 @pytest.mark.asyncio
+async def test_a_withdrawal_before_the_first_listing_keeps_the_reused_addresses_an_earlier_version_saved(world) -> None:
+    directory, accounts, config = world
+    config.saved[source_accounts_key(CONNECTOR)] = {"reused": {"ana@x.com": "new-oid"}}    # one value, not seeded
+    directory.link([_user("bo@x.com", "bo-oid")])
+    await _withdraw_noted(directory, accounts, "bo-oid")
+
+    worker = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another process
+    await worker.ensure_loaded()
+    assert not worker.admits("ana@x.com", None) and worker.admits("ana@x.com", "new-oid")
+
+    await _admit(directory, accounts, [_user("cy@x.com", "cy-oid")])                  # the first listing migrates it
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
+    assert _saved(config)["linked"]["bo@x.com"] == "bo-oid"
+
+
+@pytest.mark.asyncio
 async def test_an_address_with_unreconciled_deleted_evidence_takes_only_its_linked_account(world) -> None:
     """Deleted accounts were read, but no listing has shown ana@ yet: a grant naming no account (a SharePoint
     principal) or the deleted account waits; one naming the account ana@ is linked to goes through."""
@@ -968,6 +984,29 @@ async def test_a_grant_write_waits_for_a_change_of_hands_under_way() -> None:
 
     await asyncio.gather(admission(), write())
     assert order == ["admitted", "write"]
+
+
+@pytest.mark.asyncio
+async def test_a_change_of_hands_waits_for_a_record_grant_added_on_its_own() -> None:
+    """``add_permission_to_record`` (a single record's grants, outside a sync batch) judges and writes in one
+    transaction: an admission must not remove the old account's grants between the two."""
+    processor, _ = _processor(_Config())
+    judged, order = asyncio.Event(), []
+
+    async def handle(*_: object) -> None:
+        judged.set()
+        await asyncio.sleep(0.05)
+        order.append("write")
+
+    processor._handle_record_permissions = handle
+
+    async def admission() -> None:
+        await judged.wait()
+        async with grant_fence().exclusive():
+            order.append("admitted")
+
+    await asyncio.gather(processor.add_permission_to_record(MagicMock(), [_grant("ana@x.com", None)]), admission())
+    assert order == ["write", "admitted"]
 
 
 

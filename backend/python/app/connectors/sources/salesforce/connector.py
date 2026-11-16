@@ -6689,12 +6689,14 @@ class SalesforceConnector(BaseConnector):
                 return record_edges, rg_edges
 
             async with grant_fence().shared():      # judged and written with no change of hands in between
-                # Judged again now, not only before the crawl: another process may have given an address to a new
-                # account meanwhile, and these edges are written by email. A tuple of an account that no longer holds
-                # its address is dropped. shortcut: across processes the window is the transaction below.
-                await accounts.ensure_loaded(list({email for email, *_ in all_permission_tuples}))
-                kept = [t for t, sid in zip(all_permission_tuples, account_of) if accounts.admits(t[0], sid)]
-                all_permission_tuples[:] = kept
+                # Judged again on the state read now (recheck), not only before the crawl: another process may have
+                # given an address to a new account meanwhile, and these edges are written by email. A tuple of an
+                # account that no longer holds its address is dropped. shortcut: across processes the window is the
+                # transaction below.
+                asked = [Permission(email=t[0], external_id=sid, type=PermissionType.READ, entity_type=EntityType.USER)
+                         for t, sid in zip(all_permission_tuples, account_of)]
+                admitted = {id(p) for p in await accounts.recheck(asked)}
+                all_permission_tuples[:] = [t for t, p in zip(all_permission_tuples, asked) if id(p) in admitted]
                 record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
         finally:
             # Even when the write raised: on Neo4j without explicit transactions each

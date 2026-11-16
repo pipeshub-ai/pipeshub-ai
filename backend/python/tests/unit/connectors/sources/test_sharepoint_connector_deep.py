@@ -26,6 +26,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    PERMISSION_MODEL_SYNC_POINT_KEY,
     PERMISSION_MODEL_VERSION,
     CountryToRegionMapper,
     SharePointConnector,
@@ -707,6 +708,28 @@ class TestRunIncrementalSync:
         ), pytest.raises(SharePointSyncIncomplete, match="site S1: fail"):
             await c.run_incremental_sync()
         assert c._sync_site_content.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_that_withheld_grants_stays_pending_when_deleted_users_are_read_meanwhile(self) -> None:
+        c, *_ = _make_connector()
+        _stub_run_sync_parts(c)
+        c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={"version": 0})
+        c._reinitialize_credential_if_needed = AsyncMock()
+        c.source_accounts.deleted_pending = True
+        c._get_all_sites = AsyncMock(return_value=[_make_sync_site("site-1", "Site 1", "site1")])
+
+        async def another_replica_reads_deleted_users(_group) -> None:
+            c.source_accounts.deleted_pending = False     # a later ensure_loaded took the newer marker
+
+        c._sync_site_content = AsyncMock(side_effect=another_replica_reads_deleted_users)
+        with patch(
+            "app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()),
+        ):
+            await c.run_incremental_sync()
+        versions = [call.kwargs["sync_point_data"] for call in c.drive_delta_sync_point.update_sync_point.await_args_list
+                    if call.args == (PERMISSION_MODEL_SYNC_POINT_KEY,)]
+        assert versions == [{"version": 0}]
 
     @pytest.mark.asyncio
     async def test_critical_error_raises(self):

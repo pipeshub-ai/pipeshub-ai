@@ -7305,7 +7305,7 @@ class DataSourceEntitiesProcessor:
     async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
-        async with self.data_store_provider.transaction() as tx_store:
+        async with grant_fence().shared(), self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
 
     @retry_on_deadlock()

@@ -3821,8 +3821,9 @@ class TestSyncPermissionsEdgesReusedAddress:
 class TestSyncPermissionsEdgesHolderChangesDuringTheCrawl:
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("max_age", [0, 60])     # 60: the copy loaded before the crawl still counts as fresh
     async def test_an_address_admitted_to_another_account_during_the_crawl_gets_none_of_the_earlier_ones_records(
-        self,
+        self, max_age: int,
     ) -> None:
         """Another process gives alice@ to a new account while the earlier one's record access is being read: the edges,
         written by email, must not put the earlier account's records on alice's PipesHub user."""
@@ -3852,7 +3853,7 @@ class TestSyncPermissionsEdgesHolderChangesDuringTheCrawl:
         connector._sync_permissions_for_user = AsyncMock(side_effect=crawl)
         connector._sync_product_readers = AsyncMock()
 
-        with patch("app.connectors.core.base.data_processor.source_accounts.STATE_MAX_AGE_SECONDS", 0):
+        with patch("app.connectors.core.base.data_processor.source_accounts.STATE_MAX_AGE_SECONDS", max_age):
             await connector._sync_permissions_edges(api_version="59.0")
 
         connector._sync_permissions_for_user.assert_awaited_once()

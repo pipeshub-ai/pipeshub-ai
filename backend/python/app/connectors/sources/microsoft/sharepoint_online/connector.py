@@ -3891,7 +3891,9 @@ class SharePointConnector(BaseConnector):
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
             # While the deleted accounts are unread, a SharePoint principal (no Entra id) is withheld too (may_grant).
-            if self._disabled_set_unknown or self.source_accounts.deleted_pending:
+            # Taken once: a later ensure_loaded may clear deleted_pending after earlier items already withheld grants.
+            withheld = self._disabled_set_unknown or self.source_accounts.deleted_pending
+            if withheld:
                 # A grant may be withheld this run (_user_may_be_granted), and an item's grants and the drives' delta
                 # tokens are saved as the run goes. Mark every item for reading again before any of that, so a run
                 # that stops anywhere after this point still leaves the next run to write what was withheld. If this
@@ -3942,7 +3944,7 @@ class SharePointConnector(BaseConnector):
                     self._health.skipped(f"site {site_record_group.name}", site_error)
 
             # While the deleted accounts are unread, some grants were withheld: the items stay marked for reading again.
-            if self._health.complete and self._rewrite_all_items and not self.source_accounts.deleted_pending:
+            if self._health.complete and self._rewrite_all_items and not withheld:
                 await self.drive_delta_sync_point.update_sync_point(
                     PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": PERMISSION_MODEL_VERSION}
                 )

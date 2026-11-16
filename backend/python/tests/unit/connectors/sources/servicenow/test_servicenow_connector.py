@@ -938,7 +938,8 @@ class TestSyncUsers:
         self, servicenow_connector,
     ) -> None:
         """A row without locked_out (a field ACL can hide it) is unknown, not unlocked: a locked duplicate of an active
-        user's address must not be linked. Its stored link stays, the checkpoint stays, and the admin is told."""
+        user's address must not be linked. Its stored link stays but gets no group or grant this run, the checkpoint
+        stays, and the admin is told."""
         servicenow_connector.user_sync_point = AsyncMock()
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
@@ -964,6 +965,8 @@ class TestSyncUsers:
         keys = [c.args[0] for c in servicenow_connector.user_sync_point.update_sync_point.await_args_list]
         assert "users" not in keys
         assert any("locked out" in str(c) for c in servicenow_connector._note_problem.call_args_list)
+        servicenow_connector._app_users = None
+        assert await servicenow_connector._all_app_users() == []
 
     async def test_a_user_locked_out_without_a_row_change_is_withdrawn_by_the_reconcile(
         self, servicenow_connector
