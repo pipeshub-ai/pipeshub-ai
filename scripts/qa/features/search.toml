@@ -1,5 +1,4 @@
 # Feature map: search (flow `search`). Semantic search, exact search, web search providers, code graph, graph pages.
-# @S, @N, @IT expand to catalog id prefixes (see the sed step that wrote this file).
 
 [[feature]]
 id = "search.semantic"
@@ -42,7 +41,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "search.semantic.kb-filter"
-  says = "POST /api/v1/search with a knowledge base filter returns a response that matches the OpenAPI spec and is stored in the search history."
+  says = "POST /api/v1/search with a knowledge base filter returns hits with content and records, and the response matches the OpenAPI spec."
   priority = "P1"
   tests = ["it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_post_search_with_kb_filter_response_matches_spec"]
 
@@ -57,7 +56,7 @@ status = "draft"
   says = "An OAuth token needs semantic:read or semantic:write for POST /api/v1/search and semantic:write for POST /api/v1/retrieve; a token with neither gets 403, and a missing token gets 401."
   priority = "P0"
   kind = "security"
-  tests = []
+  tests = ["node:tests/modules/enterprise_search/routes/es.routes.test.ts"]
 
   [[feature.behavior]]
   id = "search.semantic.degraded-flag"
@@ -70,6 +69,18 @@ status = "draft"
   says = "POST /api/v1/search/updateAppConfig accepts only a scoped service token with the fetch-config scope; a user token is refused."
   priority = "P0"
   kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "search.semantic.history-saved"
+  says = "A search is saved in the caller's history and returned with a searchId, unless the request sets saveHistory to false; then nothing is stored and no searchId comes back."
+  priority = "P1"
+  tests = ["it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_get_search_by_id_response_matches_spec"]
+
+  [[feature.behavior]]
+  id = "search.semantic.query-format"
+  says = "A query holding format specifiers is refused with 400 by search and by retrieve before the AI service is called."
+  priority = "P2"
   tests = []
 
 [[feature]]
@@ -135,6 +146,13 @@ status = "draft"
     "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_patch_search_unshare_response_matches_spec",
   ]
 
+  [[feature.behavior]]
+  id = "search.history.shared-redaction"
+  says = "A search shared with a viewer hides every hit and record that viewer cannot read themselves; the owner sees all of it."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.viewer-redaction.test.ts"]
+
 [[feature]]
 id = "search.exact"
 title = "Exact text and entity search"
@@ -184,6 +202,13 @@ status = "draft"
   priority = "P0"
   kind = "security"
   tests = ["it:named_entities/integration_test_named_entities.py::TestWhatIsStored::test_nothing_secret_reaches_the_graph"]
+
+  [[feature.behavior]]
+  id = "search.exact.scopes"
+  says = "POST grep, entities and entities/neighbors need semantic:read or semantic:write; a token with neither gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/routes/es.routes.test.ts"]
 
 [[feature]]
 id = "search.web"
@@ -236,6 +261,19 @@ status = "draft"
   says = "The Web search page in workspace settings lets an admin manage providers and settings in the browser."
   priority = "P1"
   tests = ["e2e:tests/e2e/workspace/web-search.spec.ts"]
+
+  [[feature.behavior]]
+  id = "search.web.keys-encrypted"
+  says = "Provider API keys are stored encrypted in the settings store, not in clear."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "search.web.always-duckduckgo"
+  says = "DuckDuckGo is always listed and is the default until an admin picks another provider."
+  priority = "P1"
+  tests = []
 
 [[feature]]
 id = "search.code-graph"
@@ -314,7 +352,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "search.graph-view.relay"
-  says = "A request is relayed with the same body and the caller's own token, unknown fields are dropped, what the query service would refuse is refused first, and a large answer is gzipped for a client that accepts it."
+  says = "A request is relayed with the same body and the caller's own token, unknown fields are dropped, and a large answer is gzipped for a client that accepts it."
   priority = "P1"
   tests = ["node:tests/modules/enterprise_search/routes/graph-view.relay.test.ts", "node:tests/modules/enterprise_search/routes/graph-view.routes.test.ts"]
 
@@ -329,3 +367,9 @@ status = "draft"
   says = "The graph page renders nodes, edges and the table twin, keeps its URL state and revalidates visible nodes."
   priority = "P2"
   tests = ["fe:app/(main)/graph/__tests__/controller.test.ts", "fe:app/(main)/graph/__tests__/revalidate.test.ts", "fe:app/(main)/graph/__tests__/components.test.tsx"]
+
+  [[feature.behavior]]
+  id = "search.graph-view.limits"
+  says = "Expand takes 1 to 20 node ids and a limit of at most 100, revalidate takes 1 to 5000 node ids, resolve needs a record id or a repo with a file path, and anything else gets 400 before the query service is called."
+  priority = "P1"
+  tests = []

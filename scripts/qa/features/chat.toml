@@ -23,7 +23,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "chat.conversations.ownership"
-  says = "Another user in the same org, a read-only recipient and a user from another org get 404 on a conversation that is not theirs, and nothing is written or sent to the AI service."
+  says = "Another user in the same org gets 404 on every conversation route (read, add message, rename, archive, pin, share, delete, fork, cancel, regenerate), a read-only recipient gets 404 on every route that changes or extends it, and a user from another org gets 404 on read; nothing is written or sent to the AI service."
   priority = "P0"
   kind = "security"
   tests = ["node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
@@ -222,11 +222,17 @@ status = "draft"
   says = "Sharing a conversation grants read on its attachments to the recipients and unsharing revokes it; a user who was not given access cannot read the attachment."
   priority = "P0"
   kind = "security"
-  tests = []
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts"]
 
   [[feature.behavior]]
   id = "chat.attachments.delete"
   says = "DELETE /api/v1/conversations/attachments/{recordId} relays to the AI service with the caller's token and answers 204 when the attachment is removed."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "chat.attachments.limits"
+  says = "An upload takes at most 10 files of 5 MB each in PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV or TSV; a generic content type falls back to the file extension and an upload with no file gets 400."
   priority = "P1"
   tests = []
 
@@ -270,6 +276,18 @@ status = "draft"
   priority = "P0"
   kind = "security"
   tests = ["node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.sharing.notify"
+  says = "Each newly added recipient gets one unread notification that a chat was shared with them that opens the chat; sharing again with someone who already has access does not notify them again, and a failed notification does not fail the share."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.share-notify-archive.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.sharing.archived-hidden"
+  says = "When the owner archives a shared chat, recipients get 404 and it leaves their shared list; unarchiving gives it back."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.share-notify-archive.test.ts"]
 
 [[feature]]
 id = "chat.archive"
@@ -384,7 +402,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "chat.compare.flag"
-  says = "With the Labs flag off, the branch and choose routes answer 403 with the message that Compare models is turned off; with an unreadable settings store it stays off."
+  says = "With the Labs flag off, the branch, list and choose routes all answer 403 with the message that Compare models is turned off; with an unreadable settings store it stays off."
   priority = "P0"
   kind = "security"
   tests = ["node:tests/modules/enterprise_search/utils/chat-compare.test.ts"]
