@@ -77,6 +77,7 @@ import {
   isPaidResultManifestPath,
   isPaidResultObjectPath,
   paidResultsRecordRoot,
+  requireStringParam,
 } from '../utils/paid-results';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
@@ -1268,8 +1269,8 @@ export class StorageController {
         );
       }
       const adapter = await this.localArtifactAdapter(req);
-      const filePath = String(req.params[0]);
-      const storageKey = `${paidResultsRecordRoot(orgId, String(req.params.recordId))}/${filePath}`;
+      const filePath = requireStringParam(req.params[0], 'path');
+      const storageKey = `${paidResultsRecordRoot(orgId, requireStringParam(req.params.recordId, 'recordId'))}/${filePath}`;
       let written = true;
       const replace = req.query.replace === '1';
       const refresh = req.query.refresh === '1';
@@ -1313,9 +1314,9 @@ export class StorageController {
     try {
       const orgId = extractOrgId(req);
       const adapter = await this.localArtifactAdapter(req);
-      const filePath = String(req.params[0]);
+      const filePath = requireStringParam(req.params[0], 'path');
       const opened = await adapter.openObject(
-        `${paidResultsRecordRoot(orgId, String(req.params.recordId))}/${filePath}`,
+        `${paidResultsRecordRoot(orgId, requireStringParam(req.params.recordId, 'recordId'))}/${filePath}`,
       );
       if (opened === null) {
         // A miss is the cache's normal path: answered here, not thrown, so it is not logged as a failed request.
