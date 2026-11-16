@@ -92,14 +92,21 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                 "from_id": agent_key, "from_collection": AGENTS, "to_id": f"k-{name}-{run}", "to_collection": KNOWLEDGE,
                 "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
             } for name in linked], collection=CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+            # Shared with the org, so the agent list reads it too.
+            await graph.batch_create_edges([{
+                "from_id": org, "from_collection": ORGS, "to_id": agent_key, "to_collection": AGENTS,
+                "type": "ORG", "role": "READER", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+            }], collection=CollectionNames.PERMISSION.value)
             agent = await graph.get_agent(agent_key, org)
-            assert agent is not None
-            projected = {k["connectorId"]: (k["type"], k["name"]) for k in agent["knowledge"]}
-            assert projected == {
-                key["pg_team"]: (pg, f"Name {key['pg_team']}"),
-                # Another org's app is unresolved: neither its type nor its name crosses over.
-                key["other_org"]: ("UNKNOWN", key["other_org"]),
-            }
+            listed = [a for a in await graph.get_all_agents(f"user-{run}", org) if a.get("_key") == agent_key]
+            assert agent is not None and len(listed) == 1
+            for read in (agent, listed[0]):
+                projected = {k["connectorId"]: (k["type"], k["name"]) for k in read["knowledge"]}
+                assert projected == {
+                    key["pg_team"]: (pg, f"Name {key['pg_team']}"),
+                    # Another org's app is unresolved: neither its type nor its name crosses over.
+                    key["other_org"]: ("UNKNOWN", key["other_org"]),
+                }
             # The id filter reads only the org's apps among the ids asked.
             by_id = await graph.get_org_apps(
                 org, active_only=False, app_ids=[key["pg_team"], key["other_org"], f"missing-{run}"],
