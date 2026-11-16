@@ -900,6 +900,29 @@ class TestSyncUsers:
         fields = mock_datasource.get_now_table_tableName.call_args.kwargs["sysparm_fields"]
         assert "locked_out" in fields
 
+    async def test_a_user_the_reconcile_finds_gone_gets_no_group_or_grant_when_its_withdrawal_fails(
+        self, servicenow_connector,
+    ) -> None:
+        """Deleted, or changed without a delta seeing it: the reconcile finds it gone, the withdrawal raises, and the
+        stored link stays. The user list groups and grants read this run must still leave it out."""
+        servicenow_connector.user_sync_point = AsyncMock()
+        servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
+        servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value={"u3"})
+        stored = [MagicMock(source_user_id="u1"), MagicMock(source_user_id="u3")]
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=stored)
+        servicenow_connector.data_entities_processor.withdraw_app_user_access = AsyncMock(side_effect=RuntimeError("down"))
+        rows = [_sys_user_row(sys_id="u1", user_name="u1", email="maya@example.com", first_name="Maya", last_name="A",
+                              active="true", title=None, sys_created_on=None, sys_updated_on="2024-01-01")]
+        mock_datasource = AsyncMock()
+        mock_datasource.get_now_table_tableName = AsyncMock(side_effect=_listing(rows))
+        servicenow_connector._app_users = None
+        with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
+                          return_value=mock_datasource):
+            await servicenow_connector._sync_users()
+
+        assert [u.source_user_id for u in await servicenow_connector._all_app_users()] == ["u1"]
+
     async def test_a_user_this_run_listed_as_unusable_gets_no_group_or_grant_from_its_stored_link(
         self, servicenow_connector,
     ) -> None:
