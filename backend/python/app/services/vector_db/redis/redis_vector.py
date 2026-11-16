@@ -97,7 +97,6 @@ from app.services.vector_db.models import (
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.errors import classify_redis_search_error
 from app.services.vector_db.redis.utils import (
-    _parse_fields_list,
     bytes_to_vector,
     coerce_payload_hash_value,
     decode_hash_doc,

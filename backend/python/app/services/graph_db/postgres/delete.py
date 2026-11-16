@@ -128,9 +128,9 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
             WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.to_coll = ANY($3::text[])
           UNION SELECT n.id FROM graph.nodes n JOIN graph.nodes r ON r.org_id = n.org_id AND r.coll = 'records' AND r.id = n.id AND r.doc->>'connectorId' = $2
             WHERE n.org_id = $1 AND n.coll = ANY($3::text[])) t""", org, connector_id, _TYPE_COLLS) if ids["records"] else 0
-    blocks = await tx.fetchval("""/* pipeshub:graph.connector_delete_block_count */ SELECT count(*) FROM graph.nodes b
-        JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.doc->>'recordId' AND r.doc->>'connectorId' = $2
-        WHERE b.org_id = $1 AND b.coll = 'blocks'""", org, connector_id) if ids["records"] else 0
+    blocks = await tx.fetchval("""/* pipeshub:graph.connector_delete_block_count */ SELECT count(*)
+        FROM (SELECT b.org_id, b.doc->>'recordId' AS rid FROM graph.nodes b WHERE b.org_id = $1 AND b.coll = 'blocks' OFFSET 0) b
+        JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.rid AND r.doc->>'connectorId' = $2""", org, connector_id) if ids["records"] else 0
     removed_records = 0
     for pass_ in range(3):      # a record written while this ran is taken in the same unit, then the unit is checked
         if pass_ == 0:
