@@ -842,3 +842,49 @@ async def test_a_record_deleted_during_parsing_ends_as_an_expected_outcome(
     assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
     sink_orchestrator.index.assert_not_awaited()
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def _pdf_bytes(pages: int) -> bytes:
+    import io
+
+    import pypdfium2
+
+    doc = pypdfium2.PdfDocument.new()
+    for _ in range(pages):
+        doc.new_page(200, 200)
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+async def _first_events(monkeypatch: pytest.MonkeyPatch, admission: str, count: int) -> list[Any]:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSE_ADMISSION", admission)
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    ep = _make_event_processor(
+        parsing_client=MagicMock(circuit_open=False, parse=AsyncMock(return_value=_make_parse_result())),
+        extraction_client=MagicMock(classify=AsyncMock(return_value=None)),
+        sink_orchestrator=MagicMock(index=AsyncMock()),
+    )
+    event_data = _make_event_data()
+    event_data["payload"]["extension"] = "pdf"
+    event_data["payload"]["mimeType"] = "application/pdf"
+    event_data["payload"]["buffer"] = _pdf_bytes(9)
+    gen = ep.on_event(event_data)
+    return [await gen.__anext__() for _ in range(count)]
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_is_inspected_before_it_asks_for_its_parse_slot_under_classes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """START_INSPECT first, then START_PARSING carrying the page count and the scan flag the class is decided from."""
+    inspect_event, parsing_event = await _first_events(monkeypatch, "classes", 2)
+    assert inspect_event.event == IndexingEvent.START_INSPECT
+    assert parsing_event.event == IndexingEvent.START_PARSING
+    assert (parsing_event.data.pages, parsing_event.data.scanned) == (9, True)
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_is_not_inspected_without_classes(monkeypatch: pytest.MonkeyPatch) -> None:
+    (first,) = await _first_events(monkeypatch, "legacy", 1)
+    assert first.event == IndexingEvent.START_PARSING
+    assert (first.data.pages, first.data.scanned) == (None, None)

@@ -99,15 +99,17 @@ class MemoryBudget:
         # The caller's own held bytes are part of *nbytes*, not in addition to it.
         return self._reserved + self._held - held + nbytes <= self.limit
 
-    def _enqueue(self, waiter: _Waiter, held: int) -> None:
+    def _enqueue(self, waiter: _Waiter, held: int, ahead: bool = False) -> None:  # noqa: FBT001, FBT002
         position = len(self._waiters)
-        if held:
+        # A record holding its content goes ahead of those holding none; so does a small record's reservation
+        # under PARSE_ADMISSION=classes (*ahead*), which is served before the big ones queued without content.
+        if held or ahead:
             position = next((i for i, w in enumerate(self._waiters) if not self._held_by[w]), position)
         self._waiters.insert(position, waiter)
         self._held_by[waiter] = held
         self._held += held
 
-    async def reserve(self, nbytes: int, timeout: float | None = None, *, held: int = 0) -> bool:
+    async def reserve(self, nbytes: int, timeout: float | None = None, *, held: int = 0, ahead: bool = False) -> bool:
         """Reserve *nbytes*; False if *timeout* passed first.
 
         *held* is what the caller already holds and is part of *nbytes*: a
@@ -125,7 +127,7 @@ class MemoryBudget:
             return True
         deadline = None if timeout is None else loop.time() + timeout
         waiter = _Waiter(loop)
-        self._enqueue(waiter, held)
+        self._enqueue(waiter, held, ahead)
         try:
             while True:
                 if self._waiters[0] is waiter and self._fits(nbytes, held):

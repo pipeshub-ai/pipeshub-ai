@@ -176,7 +176,7 @@ class AdmissionGate:
             self._permit_seconds += self._in_use * elapsed
         self._last_change = now
 
-    def _try_admit(self, cost: int, cap: int | None = None) -> bool:
+    def _try_admit(self, cost: int, cap: int | None = None, *, spaced: bool = True) -> bool:
         limit = self._registry.get(self._pool) if cap is None else cap
         # Deadlock guard: an oversized request (cost > limit, or limit fully
         # shrunk to 0) is still admitted alone rather than waiting forever.
@@ -184,7 +184,7 @@ class AdmissionGate:
         if not has_room:
             self._head_block = "room" if cap is None else "cap"
             return False
-        if self._rate_limiter is not None and not self._rate_limiter.try_consume():
+        if spaced and self._rate_limiter is not None and not self._rate_limiter.try_consume():
             self._head_block = "rate"
             # Distinct from "no room": capacity was free, this acquire was
             # denied purely by the start-rate limiter. Tracked separately so
@@ -202,7 +202,8 @@ class AdmissionGate:
     # -- public API ----------------------------------------------------
 
     async def acquire(
-        self, cost: int = 1, timeout: float | None = None, *, cap: int | None = None, priority: bool = False
+        self, cost: int = 1, timeout: float | None = None, *, cap: int | None = None, priority: bool = False,
+        spaced: bool = True,
     ) -> bool:
         """Acquire *cost* permits, against the pool's current limit or, when given, *cap*.
 
@@ -214,6 +215,9 @@ class AdmissionGate:
         memory brake (``memory_domain.parse_admission_cap``): the pool's ceiling still
         bounds it, the brake does not apply twice.
 
+        *spaced* False skips the start-rate limiter (and takes none of its tokens): the work is light, so
+        spacing its start only adds latency (small CPU parses under ``PARSE_ADMISSION=classes``).
+
         Returns ``False`` on timeout rather than raising, so callers can
         respond with backpressure instead of an exception (plan section
         1.4 — a timeout here must never be treated as a service failure).
@@ -223,7 +227,7 @@ class AdmissionGate:
         # the fast path while the queue is empty. A priority acquire goes ahead of the
         # normal ones, so it may take free room even while they are queued, but not
         # ahead of an earlier priority waiter.
-        if (not self._waiters or (priority and not self._priority_waiting)) and self._try_admit(cost, cap):
+        if (not self._waiters or (priority and not self._priority_waiting)) and self._try_admit(cost, cap, spaced=spaced):
             return True
 
         wait_start = self._clock()
@@ -248,7 +252,7 @@ class AdmissionGate:
                     else min(_SAFETY_NET_INTERVAL_SECONDS, remaining)
                 )
                 await waiter.wait(poll)
-                if self._waiters[0] is waiter and self._try_admit(cost, cap):
+                if self._waiters[0] is waiter and self._try_admit(cost, cap, spaced=spaced):
                     return True
         finally:
             self._total_wait_seconds += self._clock() - wait_start

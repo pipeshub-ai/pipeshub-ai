@@ -56,6 +56,9 @@ class IndexingEvent(str, Enum):
     # Handler is about to download a record of known size; its memory is
     # reserved first, so a record waiting for memory holds no content.
     START_DOWNLOAD = "start_download"
+    # PARSE_ADMISSION=classes: a heavy-format record is inspected (page count, text layer) on the inspect
+    # pool before it asks for its parse slot; the START_PARSING that follows carries what was found.
+    START_INSPECT = "start_inspect"
     # Handler has written IN_PROGRESS and needs the nested parse slot.
     START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
@@ -95,6 +98,9 @@ class PipelineEventData(BaseModel):
     # the payload.
     tier: ParseTier | None = None
     size_bytes: int | None = None
+    # Inspected facts (PARSE_ADMISSION=classes), carried by START_PARSING; None when nothing was inspected.
+    pages: int | None = None
+    scanned: bool | None = None
 
 
 class PipelineEvent(BaseModel):
@@ -591,7 +597,12 @@ class MessagingEnvConfig:
     def fair_scheduling_parallel_partitions(self) -> bool:
         """Let one Kafka partition have several records in flight at once.
 
-        Off by default. The consumer holds a partition for a record's whole
+        Off by default, except with ``PARSE_ADMISSION=classes``: there it resolves to on when the per-record
+        lease (``DISTRIBUTED_INDEXING_CONCURRENCY``) and fair scheduling are on, and an explicit
+        ``FAIR_SCHEDULING_PARALLEL_PARTITIONS`` of either value always wins. Ordering within a partition is not
+        needed for correctness: the record lease and the replay guards order the work of one record.
+
+        The consumer holds a partition for a record's whole
         lifetime today, so with a single-partition ``record-events`` it
         indexes exactly one record at a time no matter how high
         ``MAX_CONCURRENT_INDEXING`` is set. Turning this on moves the
@@ -603,10 +614,11 @@ class MessagingEnvConfig:
         completing offsets out of order within a partition would commit past
         work that has not finished.
         """
-        return (
-            os.getenv("FAIR_SCHEDULING_PARALLEL_PARTITIONS", "false").lower()
-            == "true"
-        )
+        explicit = os.getenv("FAIR_SCHEDULING_PARALLEL_PARTITIONS")
+        if explicit is not None and explicit.strip():
+            return explicit.strip().lower() == "true"
+        classes = os.getenv("PARSE_ADMISSION", "legacy").strip().lower() == "classes"
+        return classes and self.distributed_concurrency_enabled and self.fair_scheduling_enabled
 
     @property
     def fair_scheduling_lane_count(self) -> int:

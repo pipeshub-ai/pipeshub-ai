@@ -61,6 +61,11 @@ from app.modules.indexing.parse_now_marker import (
     store_only_active,
 )
 from app.modules.indexing.record_progress import carried_counters, current_progress
+from app.modules.parse_engine.inspection import (
+    InspectedFacts,
+    inspect_facts,
+    wants_inspection,
+)
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
@@ -491,9 +496,9 @@ class EventProcessor:
 
         Documents are searchable after step 2 regardless of what classification does.
         """
-        from app.events.processor import convert_record_dict_to_record  # noqa: PLC0415
+        from app.events.processor import convert_record_dict_to_record
         from app.modules.transformers.transformer import (
-            TransformContext,  # noqa: PLC0415
+            TransformContext,
         )
 
         if self.parsing_client is None or self.extraction_client is None or self.sink_orchestrator is None:
@@ -1897,12 +1902,24 @@ class EventProcessor:
                 if isinstance(file_content, str)
                 else content_len
             )
+            inspected = InspectedFacts()
+            if wants_inspection(extension, mime_type, file_content):
+                # Before the parse slot: the page count and text layer correct the class the record was admitted
+                # under (a size is rarely known), so a 1000-page file never waits among the small ones.
+                yield PipelineEvent(
+                    event=IndexingEvent.START_INSPECT,
+                    data=PipelineEventData(
+                        record_id=record_id, tier=classify(extension, mime_type), size_bytes=size_bytes
+                    ),
+                )
+                inspected = await inspect_facts(file_content, label=record_name)
             yield PipelineEvent(
                 event=IndexingEvent.START_PARSING,
                 data=PipelineEventData(
                     record_id=record_id,
                     tier=classify(extension, mime_type),
                     size_bytes=size_bytes,
+                    **({"pages": inspected.pages, "scanned": inspected.scanned} if inspected.pages else {}),
                 ),
             )
 
