@@ -11,7 +11,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py:1080` | writer read |
 | `atlassian/confluence_datacenter_personal` | container | container | the whole app | `app/connectors/sources/atlassian/confluence_datacenter_personal/connector.py:133` | writer read |
 | `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5320` | writer read |
-| `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4869` | writer read |
+| `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4878` | writer read |
 | `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
 | `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
 | `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1692` | writer read |
@@ -50,7 +50,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `rss` | container | container | the whole app | `app/connectors/sources/rss/connector.py:106` | writer read |
 | `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
 | `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:522` | grep, to confirm |
-| `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:124` | grep, to confirm |
+| `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:132` | grep, to confirm |
 | `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3751` | grep, to confirm |
 | `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3765` | grep, to confirm |
 | `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2057` | grep, to confirm |
