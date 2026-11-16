@@ -23,7 +23,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:332` | writer read |
 | `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1787` | writer read |
 | `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py:131` | writer read |
-| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1192` | writer read |
+| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1194` | writer read |
 | `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py:167` | writer read |
 | `github_teams` | container | container | repositories and projects | `app/connectors/sources/github_teams/projects.py:526` | writer read |
 | `github` | container | container | the whole app | `app/connectors/sources/github/connector.py:178` | writer read |

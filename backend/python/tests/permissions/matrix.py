@@ -117,7 +117,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("slack/individual", "container", CONTAINER, "slack/individual/connector.py:332"),
     Connector("google/gmail/team", "container", CONTAINER, "google/gmail/team/connector.py:1787"),
     Connector("google/gmail/individual", "container", CONTAINER, "google/gmail/individual/connector.py:131"),
-    Connector("microsoft/outlook", "container", CONTAINER, "microsoft/outlook/connector.py:1192"),
+    Connector("microsoft/outlook", "container", CONTAINER, "microsoft/outlook/connector.py:1194"),
     Connector("microsoft/outlook_individual", "container", CONTAINER, "microsoft/outlook_individual/connector.py:167"),
     Connector("github_teams", "container", CONTAINER, "github_teams/projects.py:526"),
     Connector("github", "container", CONTAINER, "github/connector.py:178"),
