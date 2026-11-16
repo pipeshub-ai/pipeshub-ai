@@ -146,6 +146,13 @@ class _Graph:
     async def get_document(self, key: str, collection: str, *, raise_on_error: bool = False) -> dict | None:
         return {"_key": key} if collection == CollectionNames.ORGS.value else None
 
+    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+                                   transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
+        """Every field must match, the org included, as in the providers. Users are the only nodes this store keeps, so any other
+        collection (the source accounts the user-added relink looks up) holds none."""
+        rows = self.users.values() if collection == CollectionNames.USERS.value else ()
+        return [dict(r) for r in rows if all(r.get(k) == v for k, v in filters.items())]
+
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         if collection == CollectionNames.USERS.value:
             for n in nodes:
