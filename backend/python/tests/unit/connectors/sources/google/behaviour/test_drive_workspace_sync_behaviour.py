@@ -3018,6 +3018,67 @@ async def test_a_file_deleted_before_a_relist_drops_the_drive_token_is_still_rem
     assert "f1" in ws.records.records
 
 
+def _drive_point(ws: Workspace, email: str, drive_id: str) -> dict | None:
+    user_id = ws.world.users[email].user_id
+    return next((v for k, v in ws.sync_points.sync_points.items() if k.endswith(f"drives/{user_id}_{drive_id}")), None)
+
+
+async def test_a_second_relist_keeps_the_unseen_item_check_the_first_one_owes(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import DRIVE_RELISTED
+
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    assert (_drive_point(ws, ALICE, "sd-1") or {}).get("pageToken")
+
+    await ws.connector._read_drive_again("sd-1", reseed=False)
+    await ws.connector._read_drive_again("sd-1", reseed=False)  # before the first relist's listing completed
+
+    assert (_drive_point(ws, ALICE, "sd-1") or {}).get(DRIVE_RELISTED), "the check is still owed"
+
+
+async def test_an_undecided_unseen_item_after_a_relist_is_kept_to_check_again(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import _Settled
+
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+
+    async def undecided(*_: object, **__: object) -> object:
+        return _Settled.UNDECIDED  # a member group of the drive could not be read
+
+    connector._apply_shared_drive_removal = undecided
+    connector._sync_ledger.seen.clear()  # this run's listing did not see f1
+    await connector._check_unseen_after_relist("sd-1", alice, None)
+
+    _, parts = await connector._read_undecided(connector._undecided_key(alice, "sd-1"))
+    assert any(e.startswith("f1:") for part in parts for e in part), "parked with the undecided removals"
+
+
+async def test_a_dropped_checkpoint_keeps_the_unseen_item_check_a_relist_owes(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import DRIVE_RELISTED
+
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    real_keep = connector._keep_failed_items
+
+    async def too_many(key: str, failed: set[str]) -> bool:  # too many failed items to keep by id: dropped
+        await connector.drive_delta_sync_point.delete_sync_point(key)
+        return False
+
+    connector._keep_failed_items = too_many
+    del ws.world.drives["sd-1"]["members"][CAROL]  # a relist drops the token
+    await ws.sync()
+    connector._keep_failed_items = real_keep
+
+    assert (_drive_point(ws, ALICE, "sd-1") or {}).get(DRIVE_RELISTED), "the check the relist owes is kept"
+
+
 async def relisted(ws: Workspace) -> bool:
     before = len(ws.http.requests)
     await ws.sync()

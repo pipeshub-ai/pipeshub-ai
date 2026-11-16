@@ -2318,9 +2318,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         kept, so removals their feed reports still apply."""
         for user in self.synced_users:
             key = generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
-            had_token = bool((await self.drive_delta_sync_point.read_sync_point(key) or {}).get("pageToken"))
+            stored = await self.drive_delta_sync_point.read_sync_point(key) or {}
             await self.drive_delta_sync_point.delete_sync_point(key)
-            if had_token:  # only a dropped token loses removals
+            # Only a dropped token loses removals; a check still owed from an earlier relist is kept.
+            if stored.get("pageToken") or stored.get(DRIVE_RELISTED):
                 await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RELISTED: True})
             if reseed:
                 # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare. Ids
@@ -2347,9 +2348,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             for record in page:
                 if not record.is_placeholder and record.external_record_id not in self._sync_ledger.seen:
-                    await self._apply_shared_drive_removal(
+                    settled = await self._apply_shared_drive_removal(
                         record.external_record_id, user, drive_id, source, ask_audience=True
                     )
+                    if settled is _Settled.UNDECIDED:  # checked again on later runs, as an undecided removal is
+                        await self._park_undecided_removal(
+                            self._undecided_key(user, drive_id), f"{record.external_record_id}:{drive_id}"
+                        )
             if len(page) < FILTER_CLEANUP_PAGE_SIZE:
                 break
             after = page[-1].id
@@ -5816,6 +5821,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
                             if hold is None and not await self._keep_failed_items(sync_point_key, drive_failed):
                                 hold = {}  # too many to keep by id: the drive is listed in full again
+                                if (sync_point or {}).get(DRIVE_RELISTED):  # the unseen-item check is still owed
+                                    await self.drive_delta_sync_point.update_sync_point(
+                                        sync_point_key, {DRIVE_RELISTED: True}
+                                    )
                             if not listing_finished or search_incomplete or hold is not None:
                                 self._sync_ledger.note_skipped_drive()
                                 self.logger.warning(
