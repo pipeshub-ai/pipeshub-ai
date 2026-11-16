@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any, Optional
@@ -19,6 +18,8 @@ from app.services.messaging.backpressure import get_default_backpressure_coordin
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
+    import contextlib
+
     from app.services.messaging.backpressure import BackpressureCoordinator
 import httpx
 from docling_core.types.doc.document import DoclingDocument
