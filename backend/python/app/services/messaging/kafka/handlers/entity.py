@@ -496,10 +496,11 @@ class EntityEventService(BaseEventService):
                 return False
 
             user_id = existing_user.get("id") or existing_user.get("_key")
+            org_id = payload["orgId"]
             user_data = {
                 "id": user_id,
                 "userId": payload["userId"],
-                "orgId": payload["orgId"],
+                "orgId": org_id,
                 "email": payload["email"],
                 "fullName": payload.get("fullName", ""),
                 "firstName": payload.get("firstName", ""),
@@ -550,6 +551,10 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+            new_email = payload.get("email")
+            if new_email and new_email.lower() != (existing_user.get("email") or "").lower():
+                # the source accounts at the old address are not this user's any more; the ones at the new one may be
+                await self._relink_source_accounts(org_id, new_email, user_key=user_id)
 
             # A node written before the field existed carries no `isActive`,
             # and the permission reads filter on `isActive == true`, so such a
@@ -624,9 +629,11 @@ class EntityEventService(BaseEventService):
                 user_key, CollectionNames.USERS.value, CollectionNames.AUTHENTICATED_AS.value, CollectionNames.SOURCE_ACCOUNTS.value,
             )
 
-    async def _relink_source_accounts(self, org_id: str, email: str) -> None:
+    async def _relink_source_accounts(self, org_id: str, email: str, user_key: str | None = None) -> None:
         """Link the user with this address to the source accounts that hold it, in every connector that keeps its accounts in the graph
-        (the same rule as a user sync: one live account per connector, or none). A connector with the setting off is not touched."""
+        (the same rule as a user sync: one live account per connector, or none). With ``user_key`` (an address change), the connectors
+        the user is linked in now are relinked too, so a link made for its old address goes. A connector with the setting off is not
+        touched."""
         from app.connectors.core.base.data_processor.source_accounts import (
             SourceAccountGraph,
             graph_mode_key,
@@ -636,8 +643,14 @@ class EntityEventService(BaseEventService):
         found = await self.graph_provider.get_nodes_by_filters(
             CollectionNames.SOURCE_ACCOUNTS.value, {"email": address, "orgId": org_id}, raise_on_error=True,
         )
+        connectors = {a.get("connectorId") for a in found if a.get("connectorId")}
+        if user_key:
+            linked = await self.graph_provider.get_edges_from_node(
+                f"{CollectionNames.USERS.value}/{user_key}", CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True,
+            )
+            connectors |= {e.get("connectorId") for e in linked if e.get("via") == "directory" and e.get("connectorId")}
         config = self.app_container.config_service()
-        for connector_id in sorted({a.get("connectorId") for a in found if a.get("connectorId")}):
+        for connector_id in sorted(connectors):
             mode = await config.get_config(graph_mode_key(connector_id), use_cache=False)
             if not (isinstance(mode, dict) and mode.get("enabled") is True):
                 continue

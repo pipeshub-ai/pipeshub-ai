@@ -83,11 +83,11 @@ async def test_the_old_accounts_role_memberships_go_with_its_grants(drive: Drive
     provider = drive.backend.provider
 
     async def roles_of(node: str) -> set[str]:
-        edges = await provider.get_edges_from_node(node, CollectionNames.PERMISSION.value)
+        edges = await provider.get_edges_from_node(node, CollectionNames.PERMISSION.value, raise_on_error=True)
         return {e.get("_to") or e.get("to_id") for e in edges if CollectionNames.ROLES.value in str(e.get("_to") or e.get("to_collection"))}
 
     async def linked_to(account: str) -> set[str]:
-        edges = await provider.get_edges_to_node(account, CollectionNames.AUTHENTICATED_AS.value)
+        edges = await provider.get_edges_to_node(account, CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True)
         return {e.get("_from") or f"{e.get('from_collection')}/{e.get('from_id')}" for e in edges}
 
     ben = f"{CollectionNames.USERS.value}/{drive.users['ben']}"
@@ -112,3 +112,4 @@ async def test_the_old_accounts_role_memberships_go_with_its_grants(drive: Drive
     assert await linked_to(old) == set(), "a withdrawn account's memberships grant nobody"
     assert ben in await linked_to(new), "the address now links the new account"
     assert await roles_of(new) == set() and await roles_of(ben) == set(), "the new holder has none of the old account's memberships"
+    assert await roles_of(old) == held, "the old account keeps its memberships after withdrawal"

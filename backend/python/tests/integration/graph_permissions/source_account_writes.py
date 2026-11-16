@@ -210,6 +210,7 @@ async def role_memberships_stay_with_the_old_account(processor: Any, provider: A
     assert await linked_to(old) == set(), "a withdrawn account's memberships grant nobody"
     assert ana in await linked_to(new), "the address now links the new account"
     assert await roles_of(new) == set() and await roles_of(ana) == set(), "the new holder has none of the old account's memberships"
+    assert await roles_of(old) == held, "the old account keeps its memberships after withdrawal"
 
 
 async def a_deleted_user_is_not_linked_again(processor: Any, provider: Any, connector_id: str, emails: dict[str, str], users: dict[str, str],  # noqa: ANN401
@@ -275,3 +276,29 @@ async def a_stale_address_links_nothing(provider: Any, connector_id: str, org_id
     assert not [x for x in await links_of(provider, users["cal"]) if x[1] == "directory"], "no account holds the new address"
     await provider.set_directory_link(users["cal"], connector_id, emails["cal"], org_id)
     assert not [x for x in await links_of(provider, users["cal"]) if x[1] == "directory"], "the stale address links nothing"
+
+
+async def an_address_change_moves_the_directory_link(provider: Any, config_service: Any, org_id: str, connector_id: str,  # noqa: ANN401
+                                                     emails: dict[str, str], users: dict[str, str], user_id: str) -> None:
+    """After ``write`` with the setting on: cal's PipesHub address changes (the user-updated event). The link to the account at the old
+    address goes, and the account at the new address is linked when it is the only live one there."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+    from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+    def directory(links: set[tuple[str, str | None]]) -> set[str]:
+        return {to for to, via in links if via == "directory"}
+
+    old = f"{ACCOUNTS_COLL}/{account_node_id(org_id, connector_id, 's-cal')}"
+    assert directory(await links_of(provider, users["cal"])) == {old}
+    container = MagicMock()
+    container.config_service = lambda: config_service
+    service = EntityEventService(logging.getLogger("source-accounts"), provider, container)
+    with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        moved = f"moved-{uuid.uuid4().hex[:8]}@acme.com"
+        assert await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": moved})
+        assert directory(await links_of(provider, users["cal"])) == set(), "no account holds the new address: the old link goes"
+        assert await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": emails["cal"]})
+        assert directory(await links_of(provider, users["cal"])) == {old}, "back at its address: the one live account there is linked again"

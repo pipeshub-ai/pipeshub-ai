@@ -212,3 +212,10 @@ async def test_a_relink_for_an_address_the_user_no_longer_holds_writes_nothing(s
     await scenario.enable(setup.processor, APP)
     await setup.write()
     await scenario.a_stale_address_links_nothing(setup.w.p, APP, setup.w.org, setup.emails, setup.users)
+
+
+async def test_an_address_change_moves_the_directory_link(setup: Setup) -> None:
+    await scenario.enable(setup.processor, APP)
+    await setup.write()
+    await scenario.an_address_change_moves_the_directory_link(setup.w.p, setup.processor.config_service, setup.w.org, APP, setup.emails,
+                                                              setup.users, "uid-cal")

@@ -220,3 +220,14 @@ async def test_a_relink_for_an_address_the_user_no_longer_holds_writes_nothing(w
     await scenario.enable(world.processor, world.connector_id)
     await world.write()
     await scenario.a_stale_address_links_nothing(world.backend.provider, world.connector_id, ORG, world.emails, world.users)
+
+
+async def test_an_address_change_moves_the_directory_link(world: World) -> None:
+    await scenario.enable(world.processor, world.connector_id)
+    await world.write()
+    cal_user_id = f"uid-cal-{uuid.uuid4().hex[:6]}"
+    await world.backend.provider.batch_upsert_nodes([{"_key": world.users["cal"], "userId": cal_user_id, "email": world.emails["cal"], "orgId": ORG,
+                                                      "isActive": True, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}],
+                                                    collection=CollectionNames.USERS.value)
+    await scenario.an_address_change_moves_the_directory_link(world.backend.provider, world.processor.config_service, ORG, world.connector_id,
+                                                              world.emails, world.users, cal_user_id)
