@@ -1222,6 +1222,18 @@ class TestSharedSqlKnowledge:
         kept = await eq.shared_sql_knowledge(graph, self.KNOWLEDGE, "sa-1", "org-1", MagicMock())
         assert [k and k["connectorId"] for k in kept] == ["drive-mine", None]
 
+    async def test_a_source_whose_app_could_not_be_read_is_dropped(self) -> None:
+        # The graph's knowledge projection types an entry "UNKNOWN" when it cannot read the app.
+        graph = self._graph([])
+        knowledge = [
+            {"connectorId": "pg-mine", "type": "UNKNOWN"},
+            {"connectorId": "untyped"},
+            {"connectorId": "drive-mine", "type": "GOOGLE_DRIVE"},
+        ]
+        kept = await eq.shared_sql_knowledge(graph, knowledge, "sa-1", "org-1", MagicMock())
+        assert [k["connectorId"] for k in kept] == ["drive-mine"]
+        graph.get_user_connector_instances.assert_not_awaited()
+
     async def test_no_lookup_without_a_database(self) -> None:
         graph = self._graph([])
         knowledge = [{"connectorId": "drive-mine", "type": "GOOGLE_DRIVE"}]

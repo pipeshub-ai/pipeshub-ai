@@ -40,6 +40,8 @@ from app.utils.connector_instances import fetch_user_connector_instances
 logger = create_logger("execute_query")
 
 _SQL_CONNECTOR_TYPES = {Connectors.POSTGRESQL.value, Connectors.SNOWFLAKE.value, Connectors.MARIADB.value}
+# What the graph providers put on a knowledge entry whose app document they could not read.
+_UNRESOLVED_TYPE = "UNKNOWN"
 async def has_sql_connector_configured(
     graph_provider: IGraphDBProvider,
     user_id: str,
@@ -135,24 +137,31 @@ async def shared_sql_knowledge(
 
     A service-account agent is run by anyone in its org on one identity, so a
     personal database (its creator's or the account's own) is never one it may
-    query or search. A failed lookup keeps no database.
+    query or search. A failed lookup keeps no database, and neither does a
+    source whose app could not be read: its type is unknown, so it may be one.
     """
-    if not agent_knowledge_has_sql_connector(agent_knowledge):
-        return agent_knowledge
-    instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, log)
-    # The lookup lists only connectors of *org_id* (through its org edge, on every graph store).
-    shared = {
-        str(i.get("_key") or i.get("id"))
-        for i in instances
-        if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value
-    }
     kept = [
-        k for k in agent_knowledge
-        if not (isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES)
-        or str(k.get("connectorId") or "").strip() in shared
+        k for k in agent_knowledge or []
+        if not (isinstance(k, dict) and str(k.get("type") or "").strip().upper() in ("", _UNRESOLVED_TYPE))
     ]
-    if len(kept) < len(agent_knowledge):
-        log.info("Service-account agent: %d database(s) not shared with the org are not used", len(agent_knowledge) - len(kept))
+    if agent_knowledge_has_sql_connector(kept):
+        instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, log)
+        # The lookup lists only connectors of *org_id* (through its org edge, on every graph store).
+        shared = {
+            str(i.get("_key") or i.get("id"))
+            for i in instances
+            if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value
+        }
+        kept = [
+            k for k in kept
+            if not (isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES)
+            or str(k.get("connectorId") or "").strip() in shared
+        ]
+    if len(kept) < len(agent_knowledge or []):
+        log.info(
+            "Service-account agent: %d source(s) not used (unreadable, or a database not shared with the org)",
+            len(agent_knowledge) - len(kept),
+        )
     return kept
 
 

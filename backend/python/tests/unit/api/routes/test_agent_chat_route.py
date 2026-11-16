@@ -468,6 +468,15 @@ class TestChatStreamKnowledge:
         (call,) = loop.calls
         assert {k["connectorId"] for k in call["query_info"]["knowledge"]} == {"drive"}
 
+    def test_a_service_account_agent_drops_a_source_whose_app_could_not_be_read(self, graph, loop) -> None:
+        self._databases(graph, "sa")
+        graph.nodes["agentKnowledge"]["k-pg-alice"]["type"] = "UNKNOWN"
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert "pg-alice" not in {k["connectorId"] for k in call["query_info"]["knowledge"]}
+        assert "pg-alice" not in call["query_info"]["filters"]["apps"]
+
     def test_an_agent_run_by_its_owner_keeps_the_owners_databases(self, graph, loop) -> None:
         self._databases(graph, "private")
         c, _ = make_client(graph)
