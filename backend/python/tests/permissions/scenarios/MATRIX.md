@@ -50,7 +50,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `rss` | container | container | the whole app | `app/connectors/sources/rss/connector.py:106` | writer read |
 | `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
 | `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:522` | grep, to confirm |
-| `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:132` | grep, to confirm |
+| `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:145` | grep, to confirm |
 | `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3751` | grep, to confirm |
 | `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3765` | grep, to confirm |
 | `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2061` | grep, to confirm |
