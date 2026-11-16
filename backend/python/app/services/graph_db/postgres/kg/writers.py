@@ -185,7 +185,7 @@ class KgWriter:
 
     async def analyze_request(self, app_sk: int) -> bool:
         """Ask the maintenance worker to refresh the statistics of the kg tables (``python -m db.maintain analyze``): after a connector's first load or a restore, until they
-        know the org the planner puts it at one row and a browse may read every kg row of it. One row per org; an open request keeps its time."""
+        know the org the planner puts it at one row and a browse may read every kg row of it. One row per org; a later request moves its time forward, so statistics taken before the load ended do not close it."""
         return await self.tx.fetchval("/* pipeshub:kg.w_analyze_request */ SELECT kg.w_analyze_request($1)", app_sk)
 
     async def projection_set(self, app_sk: int, *, epoch: int, mode: str, digest: str | None, cursor: str | None, verified_at: datetime | None) -> bool:

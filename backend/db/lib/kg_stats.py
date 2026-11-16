@@ -10,8 +10,11 @@ burst of first loads coalesces into one ANALYZE per table), and the requests it 
 cannot be locked immediately without waiting, the relation is skipped" (same page), so a concurrent ANALYZE, VACUUM or index build is not waited for; the
 skipped table is taken by a later pass.
 
-shortcut: an open request keeps its first time, so a load that asks while an ANALYZE of a table is running, and commits after the ANALYZE took its sample, is counted as
-covered by it; autovacuum or the next request picks its rows up. Store the asker's commit order (an xid8) instead if that window ever matters.
+A later request moves the time forward (a first seed asks while most of a connector is still to be copied; the promotion that ends the load asks again), so
+statistics taken before the load ended never close it.
+
+shortcut: a load that asks while an ANALYZE of a table is running, and commits after the ANALYZE took its sample, is counted as covered by it; autovacuum or the
+next request picks its rows up. Store the asker's commit order (an xid8) instead if that window ever matters.
 """
 import os
 

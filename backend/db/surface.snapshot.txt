@@ -1280,7 +1280,7 @@ func kg.log_graph_change() owner=pipeshub_owner secdef=false leakproof=false vol
 func kg.proj_doc(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=e4d226f14291993cd491a2d70f1c2146 ext=-
 func kg.refuse_truncate() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=7e7bdc290cfd80fba9d7f003e6e3314f ext=-
 func kg.stamp_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=9b8e44a765c404cfd58a435604150d46 ext=-
-func kg.w_analyze_request(bigint) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3817bceb5a35c7da253febf980001d8b ext=-
+func kg.w_analyze_request(bigint) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7c519f6a2a4cec92038c04d99a5534f7 ext=-
 func kg.w_app_cross_set(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=d39fe554581dafffacce0dee83a7b721 ext=-
 func kg.w_app_facts_set(bigint,boolean,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e81274fd2cfe9af69cd104b6ffe729dd ext=-
 func kg.w_changes_ack(integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=0dc7ce7a2801c979cf848575b5b62411 ext=-
@@ -1818,7 +1818,7 @@ operator ext.>=(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> functio
 operator ext.>=(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_ge
 operator ext.||(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_concat
 operator ext.||(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_concat
-pin kg.w_analyze_request(bigint) kg.analyze_requests upsert key=- set= txn=- max=5000
+pin kg.w_analyze_request(bigint) kg.analyze_requests upsert key=- set=requested_at txn=- max=5000
 pin kg.w_app_cross_set(bigint[]) kg.projection_state upsert key=- set=cross_app txn=- max=5000
 pin kg.w_app_facts_set(bigint,boolean,boolean) kg.projection_state upsert key=- set=opens,has_group_level,facts_set txn=- max=5000
 pin kg.w_changes_ack(integer) kg.graph_changes delete key=- set=- txn=txid max=5000

@@ -39,7 +39,7 @@ def last(cluster, name) -> dict:
 
 def test_a_first_load_asks_and_the_job_analyzes_every_browse_table_as_the_owner_and_clears_the_request(rdb, monkeypatch):
     cluster, name = rdb
-    assert ask(cluster, name, ORG_A) == [(True,)] and ask(cluster, name, ORG_A, 6) == [(True,)]          # asking twice keeps one request, the first
+    assert ask(cluster, name, ORG_A) == [(True,)] and ask(cluster, name, ORG_A, 6) == [(True,)]          # asking twice keeps one request per org
     assert ask(cluster, name, ORG_B) == [(True,)]
     with connect_as(cluster, name, "pipeshub_connectors_login") as c, uow(c, "pipeshub_connectors", None):
         assert c.execute(ASK, (5,)).fetchall() == [(False,)]                                 # no org: no request
@@ -85,6 +85,23 @@ def test_statistics_taken_after_a_request_close_it_without_another_analyze(rdb, 
     with psycopg.connect(f"postgresql://pipeshub_jobs@127.0.0.1:{cluster.port}/{name}", autocommit=True) as jobs:
         assert kg_stats.due(jobs) == [] and kg_stats.close_covered(jobs) == 1
     assert maintain.main(["analyze"]) == 0 and last(cluster, name) == seen
+
+
+def test_a_later_ask_moves_the_request_so_statistics_taken_while_a_load_is_copied_do_not_close_it(rdb, monkeypatch):
+    cluster, name = rdb
+    env(monkeypatch, cluster, name)
+    ask(cluster, name, ORG_A)                                                                 # a first seed, while most of the connector is still to be copied
+    with cluster.admin(name) as c:                                                            # autovacuum, before the load ends
+        for t in kg_stats.TABLES:
+            c.execute(f"ANALYZE {t}")
+    ask(cluster, name, ORG_A)                                                                 # the promotion that ends the first load
+    with cluster.admin(name) as c:
+        c.execute(f"ANALYZE {kg_stats.TABLES[0]}")                                            # one table is not every table
+    with psycopg.connect(f"postgresql://pipeshub_jobs@127.0.0.1:{cluster.port}/{name}", autocommit=True) as jobs:
+        assert kg_stats.close_covered(jobs) == 0 and sorted(kg_stats.due(jobs)) == sorted(kg_stats.TABLES[1:])
+    seen = last(cluster, name)
+    assert maintain.main(["analyze"]) == 0
+    assert all(v != seen[t] for t, v in last(cluster, name).items() if t != kg_stats.TABLES[0]) and requests(cluster, name) == []
 
 
 def test_an_idle_job_never_takes_the_migrate_lock_and_a_due_one_waits_for_it(rdb, monkeypatch):
