@@ -41,8 +41,8 @@ async def snapshot(provider: Any, world: World, viewer: str, ns: Namespace, org:
         out[("context", n.id)] = {k: ctx.get(k) for k in ("role", *ABILITIES)}
         if n.kind == "record":
             details = await provider.check_record_access_with_details(ns.id(viewer), org, ns.id(n.id))
-            out[("details", n.id)] = None if not details else sorted(
-                (p.get("relationship"), p.get("accessType")) for p in details.get("permissions") or [])
+            # the role only: which path is named for it among equal roles is the store's choice
+            out[("details", n.id)] = None if not details else sorted(p.get("relationship") for p in details.get("permissions") or [])
     found = await provider.get_accessible_virtual_record_ids(ns.id(viewer), org)
     out["search"] = sorted(ns.local(v) for v in found or {})      # the virtual record ids: which record stands for a shared one may differ
     return out
