@@ -383,6 +383,19 @@ class TestWithdrawnAccounts:
                                          {"alice-key": _user("alice-key", "alice@example.com")})
         assert [g.email for g in grants] == ["alice@example.com"]
 
+    def test_a_synced_account_whose_directory_entry_has_no_email_keeps_the_grant_the_payload_names(self) -> None:
+        c = _connector()
+        c._listed_user_keys = {"bob-key"}
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "bob-key",
+                                     "user": {"key": "bob-key", "emailAddress": "bob@example.com"}}]},
+        )
+        issue = {"id": "9", "key": "P-9", "fields": {
+            "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, {"bob-key": _user("bob-key", "")})
+        assert [g.email for g in grants] == ["bob@example.com"]
+
     def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
         """"left" has no access in Jira (not in the directory) but carries alice's email: alice must not get left's level."""
         c = _connector()
