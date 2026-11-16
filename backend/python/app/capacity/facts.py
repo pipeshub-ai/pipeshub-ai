@@ -96,7 +96,7 @@ def facts_from_json(text: str) -> CapacityFacts:
         local = raw.get("local_cpu_embedding", False)
         if not isinstance(local, bool):
             raise ValueError("bad flag")
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:  # OverflowError: ints too large for a double
         raise ValueError("facts payload does not match the schema") from exc
     return CapacityFacts(
         cpu_quota=quota,

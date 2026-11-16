@@ -20,6 +20,7 @@ PROC_MEMINFO = Path("/proc/meminfo")
 NUMA_ROOT = Path("/sys/devices/system/node")
 # Some kernels report this for an unlimited v1 memory limit (2^63 - 4096).
 MEM_V1_NO_LIMIT_SENTINEL = 1 << 62
+CONTAINER_CPUS_ENV = "PIPESHUB_CONTAINER_CPUS"  # set by ``numa.pin``
 
 
 def read_text(path: Path | None) -> str | None:
@@ -48,12 +49,11 @@ def resolve_path(v1_controller: str, v1_filename: str, v2_filename: str | None =
     if direct_v2.exists():
         return direct_v2
     direct_v1 = CGROUP_ROOT / v1_controller / v1_filename
-    if direct_v1.exists():
-        return direct_v1
+    # A v1 file directly under the controller directory is the hierarchy root's when the full
+    # hierarchy is mounted, so this process's own membership is tried first; the direct file is
+    # the answer when only the container's own cgroup is mounted (its membership path is then "/").
     cgroup_self = read_text(PROC_SELF_CGROUP)
-    if not cgroup_self:
-        return None
-    for line in cgroup_self.splitlines():
+    for line in (cgroup_self or "").splitlines():
         parts = line.split(":", 2)
         if len(parts) != 3:
             continue
@@ -67,7 +67,7 @@ def resolve_path(v1_controller: str, v1_filename: str, v2_filename: str | None =
             candidate = CGROUP_ROOT / v1_controller / rel / v1_filename
             if candidate.exists():
                 return candidate
-    return None
+    return direct_v1 if direct_v1.exists() else None
 
 
 def cpu_quota_v2() -> float | None:
@@ -106,10 +106,16 @@ def cpu_quota() -> tuple[float | None, str]:
 
 
 def cpu_affinity() -> int | None:
+    """CPUs this container may use. A NUMA-pinned cell reports the count from before its pin, so
+    every cell sizes from the same container-wide number."""
     try:
-        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+        own = len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
     except (AttributeError, OSError):
         return None
+    raw = os.environ.get(CONTAINER_CPUS_ENV, "")
+    if raw.isascii() and raw.isdigit() and own < int(raw) <= (os.cpu_count() or own):
+        return int(raw)
+    return own
 
 
 def memory_limit_v2() -> int | None:

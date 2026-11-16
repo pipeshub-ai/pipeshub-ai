@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -58,7 +59,8 @@ def test_the_temp_file_name_is_random_and_opened_exclusively(tmp_path: Path) -> 
         _write(claim)
         _write(claim)
     assert len(seen) == 2 and seen[0] != seen[1] and all(s.endswith(":True") for s in seen)
-    assert str(os.getpid()) not in seen[0]
+    names = [s.rsplit(":", 1)[0] for s in seen]
+    assert all(re.fullmatch(r"\.0\.[0-9a-f]{16}\.tmp", n) for n in names), names
     assert stat.S_IMODE((claim.directory / "0.json").stat().st_mode) == 0o600
     assert list(claim.directory.glob(".*.tmp")) == []
 
@@ -232,3 +234,27 @@ def test_nonpositive_cell_counts_mean_one_cell(tmp_path: Path, count: int) -> No
     assert claim is not None and claim.index == 0
     _write(claim)
     assert read_cells(tmp_path, count).healthy
+
+
+def test_a_link_to_a_device_or_a_fifo_is_unreadable_and_never_blocks(tmp_path: Path) -> None:
+    """A link to ``/dev/zero`` reports size 0 and never ends; a FIFO blocks a reader. ``/health`` must not follow either."""
+    claim = claim_cell(tmp_path / "cells", 2)
+    other = claim_cell(tmp_path / "cells", 2)
+    assert claim is not None and other is not None
+    (claim.directory / "0.json").symlink_to("/dev/zero")
+    fifo = claim.directory / "1.json"
+    os.mkfifo(fifo)
+    started = time.monotonic()
+    merged = read_cells(claim.directory, 2)
+    assert time.monotonic() - started < 2
+    assert not merged.healthy
+    assert [c["reason"] for c in merged.cells] == ["unreadable", "unreadable"]
+
+
+def test_a_regular_file_is_read_through_the_descriptor_with_a_bound(tmp_path: Path) -> None:
+    """The size is checked on the open file, so a file that grows after ``stat`` cannot pass the cap."""
+    claim = claim_cell(tmp_path / "cells", 1)
+    assert claim is not None
+    (claim.directory / "0.json").write_text('{"ts_ms": 1, "pad": "' + "x" * (cells._MAX_FILE_BYTES + 10) + '"}')
+    merged = read_cells(claim.directory, 1)
+    assert not merged.healthy and merged.cells[0]["reason"] == "unreadable"

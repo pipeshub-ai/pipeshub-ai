@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import secrets
 import stat
@@ -36,6 +37,10 @@ _log = logging.getLogger(__name__)
 
 STALE_TICKS = 3
 _MAX_FILE_BYTES = 1 << 20
+_MAX_TICK_S = 3600.0  # a file cannot stretch its own staleness window past this
+# How long a cell may hold its index before its first write. A worker claims at process start, and
+# a service can take minutes to load its models before it publishes, so this is deliberately wide.
+STARTUP_GRACE_S = 600.0
 CLAIM_ATTEMPTS = 5  # a worker that finds no free index tries again after these delays
 CLAIM_BACKOFF_S = 0.05
 
@@ -115,6 +120,9 @@ def claim_cell(directory: Path, cells: int) -> CellClaim | None:
         except OSError:
             os.close(fd)
             continue
+        # The claim time is the lock file's mtime, so a reader can bound the wait for a first write.
+        with contextlib.suppress(OSError):
+            os.utime(fd)
         # The index is ours: whatever its dead predecessor left is not this cell's.
         with contextlib.suppress(OSError):
             (directory / f"{index}.json").unlink()
@@ -189,6 +197,45 @@ def _slot_held(directory: Path, index: int) -> bool:
         os.close(fd)
 
 
+def _read_cell_file(path: Path) -> object:
+    """The JSON in a cell file, read without following a link or blocking.
+
+    The file must be a regular file of at most ``_MAX_FILE_BYTES``; the read is bounded on the open
+    descriptor, so a link to a device or a FIFO cannot hang or exhaust ``/health``.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("cell file is not a regular file")
+        chunks: list[bytes] = []
+        total = 0
+        while total <= _MAX_FILE_BYTES:
+            chunk = os.read(fd, _MAX_FILE_BYTES + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > _MAX_FILE_BYTES:
+            raise ValueError("cell file too large")
+        return json.loads(b"".join(chunks))
+    finally:
+        os.close(fd)
+
+
+def _finite(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{name} is not a finite number")
+    return float(value)
+
+
+def _claimed_for_s(directory: Path, index: int, now_ms: int) -> float | None:
+    """Seconds since this index was claimed (the lock file's mtime), or ``None`` if unknown."""
+    try:
+        return max(0.0, now_ms / 1000 - os.lstat(directory / f"{index}.lock").st_mtime)
+    except OSError:
+        return None
+
+
 def read_cells(directory: Path, cells: int, *, now_ms: int | None = None) -> MergedCells:
     """The files of the cells whose index lock is held, in index order.
 
@@ -196,7 +243,8 @@ def read_cells(directory: Path, cells: int, *, now_ms: int | None = None) -> Mer
     a dead loop is unhealthy. A file whose lock is free belongs to a cell that died and was not replaced:
     it is ignored, so a dead cell cannot hold ``/health`` at 503 for good. A reader never deletes a file,
     because its view of the lock can be one claim behind and the file may be a new cell's first. A cell that holds its lock but has not written
-    yet is starting, and is not counted.
+    yet is starting and is not counted, for ``STARTUP_GRACE_S`` after its claim; a cell still silent
+    after that is unhealthy.
     """
     now = int(time.time() * 1000) if now_ms is None else now_ms
     merged: list[dict[str, Any]] = []
@@ -210,21 +258,24 @@ def read_cells(directory: Path, cells: int, *, now_ms: int | None = None) -> Mer
             continue  # the next cell to claim this index removes its predecessor's file
         entry: dict[str, Any] = {"cell": index, "status": "healthy"}
         try:
-            if path.stat().st_size > _MAX_FILE_BYTES:
-                raise ValueError("cell file too large")
-            raw = json.loads(path.read_text())
+            raw = _read_cell_file(path)
             if not isinstance(raw, dict):
                 raise ValueError("cell file is not a JSON object")
-            tick_s = float(raw.get("tick_s") or 5.0)
-            age_ms = now - int(raw["ts_ms"])
+            tick_s = _finite(raw["tick_s"], "tick_s") if raw.get("tick_s") is not None else 5.0
+            if not 0 < tick_s <= _MAX_TICK_S:
+                raise ValueError("tick_s out of range")
+            age_ms = now - int(_finite(raw["ts_ms"], "ts_ms"))
             entry.update(pid=raw.get("pid"), age_ms=max(0, age_ms), stats=raw.get("stats"))
             if raw.get("loop_failure"):
                 entry.update(status="unhealthy", reason="loop_failure", loop_failure=raw["loop_failure"])
             elif age_ms > STALE_TICKS * tick_s * 1000:
                 entry.update(status="unhealthy", reason="stale")
         except FileNotFoundError:
-            continue
-        except (OSError, ValueError, KeyError, TypeError):
+            waited = _claimed_for_s(directory, index, now)
+            if waited is None or waited <= STARTUP_GRACE_S:
+                continue  # still starting
+            entry.update(status="unhealthy", reason="no_first_write")
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
             entry.update(status="unhealthy", reason="unreadable")
         healthy = healthy and entry["status"] == "healthy"
         merged.append(entry)

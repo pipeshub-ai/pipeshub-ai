@@ -72,14 +72,18 @@ def test_fleet_and_tokens_monotone_in_cpus_with_memory_following() -> None:
 
 
 def test_tokens_monotone_in_memory() -> None:
-    """More memory never lowers C or the Docling max at a fixed CPU count."""
+    """More memory never lowers the Docling max at a fixed CPU count.
+
+    ``C`` and ``cells`` are not asserted: more memory can allow more cells, and each cell adds one to
+    the untracked threads ``U`` that ``C = floor(1.25 * cpus) - U`` subtracts, so ``C`` may fall.
+    """
     for cpus in (8, 16, 64, 128):
         prev = None
         for mem in range(1, 1025, 3):
             plan = plan_capacity(_facts(cpus, mem), AUTO)
-            cur = (plan.member_budget.cpu_tokens, plan.widths.docling_workers_max, plan.cells)
+            cur = plan.widths.docling_workers_max
             if prev is not None:
-                assert cur[1] >= prev[1], (cpus, mem, prev, cur)
+                assert cur >= prev, (cpus, mem, prev, cur)
             prev = cur
 
 

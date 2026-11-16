@@ -163,7 +163,7 @@ def test_an_indexing_worker_claims_pins_and_marks_its_children(tmp_path: Path) -
         apply._pin_numa(plan, env, "indexing")
         apply._pin_numa(plan, env, "indexing")  # a child of this process now skips
     claim.assert_called_once()
-    pin.assert_called_once_with(3, plan.numa_masks)
+    pin.assert_called_once_with(3, plan.numa_masks, env)  # the pre-pin CPU count is recorded in this env
     assert env[apply.CELL_ENV] == "3"
 
 

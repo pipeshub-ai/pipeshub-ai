@@ -7,7 +7,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.capacity.cells import STALE_TICKS, claim_cell, read_cells, write_cell
+from app.capacity.cells import (
+    _OFD,
+    STALE_TICKS,
+    STARTUP_GRACE_S,
+    claim_cell,
+    read_cells,
+    write_cell,
+)
+
+pytestmark = pytest.mark.skipif(not _OFD, reason="cell claims need Linux open-file-description locks")
 
 
 def _write(claim, **kw) -> None:
@@ -71,6 +80,60 @@ def test_an_unreadable_file_of_a_live_cell_is_unhealthy(tmp_path, content: str) 
     (tmp_path / "0.json").write_text(content)
     merged = read_cells(tmp_path, 1)
     assert not merged.healthy and merged.cells[0]["reason"] == "unreadable"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"ts_ms":0,"tick_s":"nan"}',
+        '{"ts_ms":0,"tick_s":NaN}',
+        '{"ts_ms":0,"tick_s":Infinity}',
+        '{"ts_ms":0,"tick_s":0}',
+        '{"ts_ms":0,"tick_s":-5}',
+        '{"ts_ms":0,"tick_s":1e300}',
+        '{"ts_ms":1e309}',
+        '{"ts_ms":NaN}',
+        '{"ts_ms":true}',
+        '{"ts_ms":"12"}',
+    ],
+)
+def test_non_finite_or_out_of_range_numbers_are_unreadable_not_healthy_or_a_500(tmp_path, content: str) -> None:
+    claim_cell(tmp_path, 1)
+    (tmp_path / "0.json").write_text(content)
+    merged = read_cells(tmp_path, 1, now_ms=10**12)
+    assert not merged.healthy and merged.cells[0]["reason"] == "unreadable"
+
+
+def _age_claim(directory, seconds: float) -> None:
+    import os
+    import time
+
+    past = time.time() - seconds
+    os.utime(directory / "0.lock", (past, past))
+
+
+def test_a_cell_that_never_writes_is_unhealthy_after_the_grace(tmp_path) -> None:
+    claim_cell(tmp_path, 1)
+    _age_claim(tmp_path, STARTUP_GRACE_S - 60)
+    assert read_cells(tmp_path, 1).cells == []  # still starting
+    _age_claim(tmp_path, STARTUP_GRACE_S + 60)
+    merged = read_cells(tmp_path, 1)
+    assert not merged.healthy and merged.cells[0]["reason"] == "no_first_write"
+
+
+def test_a_reclaimed_index_starts_its_grace_again(tmp_path) -> None:
+    first = claim_cell(tmp_path, 1)
+    _age_claim(tmp_path, STARTUP_GRACE_S + 60)
+    first.release()
+    claim_cell(tmp_path, 1)  # the lock file is old, the claim is not
+    assert read_cells(tmp_path, 1).cells == []
+
+
+def test_the_first_write_ends_the_wait(tmp_path) -> None:
+    claim = claim_cell(tmp_path, 1)
+    _age_claim(tmp_path, STARTUP_GRACE_S + 60)
+    _write(claim)
+    assert read_cells(tmp_path, 1).healthy
 
 
 def _request(claim) -> MagicMock:

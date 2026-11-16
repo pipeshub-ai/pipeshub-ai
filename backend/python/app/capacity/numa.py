@@ -11,11 +11,15 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, MutableMapping
 
     from app.capacity.facts import CapacityFacts
 
 NUMA_ENV = "PIPESHUB_NUMA_PINNING"
+# The CPUs this container had before a cell was pinned to one node. A pin is a placement choice, not a
+# quota: the governor, which splits the container's CPUs over its cells, must keep sizing from the
+# container-wide count (utilisation counters are container-wide too). Children inherit it with the pin.
+CONTAINER_CPUS_ENV = "PIPESHUB_CONTAINER_CPUS"
 
 
 def enabled(env: Mapping[str, str]) -> bool:
@@ -30,12 +34,19 @@ def masks(facts: CapacityFacts, cells: int) -> tuple[tuple[int, ...], ...]:
     return tuple(nodes[i % len(nodes)] for i in range(cells))
 
 
-def pin(index: int, all_masks: tuple[tuple[int, ...], ...]) -> bool:
-    """Restrict this process to its cell's node. False when there is nothing to do or the OS refuses."""
+def pin(index: int, all_masks: tuple[tuple[int, ...], ...], env: MutableMapping[str, str] | None = None) -> bool:
+    """Restrict this process to its cell's node. False when there is nothing to do or the OS refuses.
+
+    On success the CPU count before the pin is left in ``env`` (default ``os.environ``) as
+    ``CONTAINER_CPUS_ENV``, for the resource governor and the processes this one starts.
+    """
     if not all_masks or not hasattr(os, "sched_setaffinity"):
         return False
+    target = os.environ if env is None else env
     try:
+        before = len(os.sched_getaffinity(0))
         os.sched_setaffinity(0, set(all_masks[index % len(all_masks)]))
     except OSError:
         return False
+    target.setdefault(CONTAINER_CPUS_ENV, str(before))
     return True

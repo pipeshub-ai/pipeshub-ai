@@ -167,9 +167,14 @@ def test_resolve_marks_local_embedding_on_exported_facts(tmp_path, monkeypatch: 
         json.dumps({**json.loads(_facts().to_json()), "member_id": "x" * 1000}),
         json.dumps({**json.loads(_facts().to_json()), "padding": "x" * MAX_FACTS_BYTES}),
         "[" * 100000,
+        json.dumps({**json.loads(_facts().to_json()), "cpu_quota": 10**400}),
+        json.dumps({**json.loads(_facts().to_json()), "cpu_affinity": 10**400}),
+        json.dumps({**json.loads(_facts().to_json()), "mem_host": 10**400}),
+        json.dumps({**json.loads(_facts().to_json()), "numa": [[0, [1e309]]]}),
+        json.dumps({**json.loads(_facts().to_json()), "gpus": [[0, 1, 1e309]]}),
     ],
     ids=["text", "list", "wrong_v", "v_string", "str_cpu", "inf", "negative", "bad_cgroup", "bad_numa", "many_gpus",
-         "long_member", "oversized", "deep"],
+         "long_member", "oversized", "deep", "huge_quota", "huge_affinity", "huge_mem", "inf_numa", "inf_gpu"],
 )
 def test_env_facts_untrusted(payload: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     build_tree(tmp_path, cpu_max="300000 100000", memory_max=str(6 * GIB))

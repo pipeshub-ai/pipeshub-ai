@@ -97,7 +97,7 @@ def _pin_numa(plan: CapacityPlan, env: MutableMapping[str, str], service: str) -
     directory = cells_directory()
     claim = process_claim(directory, plan.cells) if directory is not None else None
     if claim is not None:
-        numa.pin(claim.index, plan.numa_masks)
+        numa.pin(claim.index, plan.numa_masks, env)
         env[CELL_ENV] = str(claim.index)
 
 

@@ -222,7 +222,10 @@ def test_small_in_one_process_beats_large_in_another() -> None:
     plan = next_grant(state, f, POLICY, 18, 1.0)
     assert [h.ticket for h in plan.order] == [2, 1]
     state.heads.append(_head(3, Family.QUERY_EMBED, None, 99))
-    assert next_grant(state, f, POLICY, 18, 1.0).order[0].ticket == 3 or next_grant(state, f, POLICY, 18, 1.0).order[0].family is Family.DOCLING
+    plan = next_grant(state, f, POLICY, 18, 1.0)
+    # The docling head is its family's owner below its floor, so it goes first (contracts 13.5 step 1);
+    # then query_embed ahead of the remaining critical work, then big work.
+    assert [h.ticket for h in plan.order] == [2, 3, 1]
 
 
 def test_owner_first_then_oldest_latency_waiter() -> None:
@@ -265,15 +268,16 @@ def test_aging_raises_the_guarantee_and_never_the_order() -> None:
 # ---- memory counted once ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("young,real_gib,admits,peak", [(10, 1.5, 23, 61.5), (16, 1.5, 17, 61.5), (16, 3.0, 17, 61.5 + 17 * 1.5 + 16 * 1.5)])
-def test_mem_available_rows(young, real_gib, admits, peak) -> None:
+@pytest.mark.parametrize("young,admits,peak", [(10, 23, 61.5), (16, 17, 61.5)])
+def test_mem_available_rows(young, admits, peak) -> None:
+    """Young units (RSS far below the estimate) are charged their estimate. Grown units are covered by
+    ``test_mem_counted_once_and_not_free_plus_reserved``."""
     est = int(1.5 * GIB)
     units = [UnitMem(est=est, actual=int(est * 0.07))] * young
     avail = mem_available(64 * GIB, 2 * GIB, 12 * GIB, units)
     n = avail // est
     assert n == admits
-    if real_gib == 1.5:
-        assert 12 + (young + n) * 1.5 <= peak + 1e-9 <= 64
+    assert 12 + (young + n) * 1.5 <= peak + 1e-9 <= 64
 
 
 def test_mem_counted_once_and_not_free_plus_reserved() -> None:

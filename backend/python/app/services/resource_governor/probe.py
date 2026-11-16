@@ -97,25 +97,25 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
     (non-namespaced) cgroupfs — see corner case: "Nested/host-mounted
     cgroupfs".
 
-    Tries, in order: the v2 unified path directly under the cgroup root, the
-    v1 controller path directly under the root (both true in the common
-    Docker/Kubernetes case where the container's own cgroup is mounted at
-    ``/sys/fs/cgroup``), then resolves this process's own relative path via
-    ``/proc/self/cgroup`` and joins it — needed when the host's full
-    cgroupfs is bind-mounted instead.
+    Tries, in order: the v2 unified path directly under the cgroup root (true
+    where the container's own cgroup is mounted at ``/sys/fs/cgroup``), then
+    this process's own relative path via ``/proc/self/cgroup`` joined onto the
+    root (needed when the host's full cgroupfs is bind-mounted), then the v1
+    controller path directly under the root (the container's own v1 cgroup
+    mounted at the controller directory).
     """
     v2_name = v2_filename or v1_filename
     direct_v2 = _CGROUP_ROOT / v2_name
     if direct_v2.exists():
         return direct_v2
     direct_v1 = _CGROUP_ROOT / v1_controller / v1_filename
-    if direct_v1.exists():
-        return direct_v1
 
+    # A v1 file directly under the controller directory is the hierarchy
+    # root's when the full hierarchy is mounted, so this process's own
+    # membership is tried first; the direct file answers when only the
+    # container's own cgroup is mounted (its membership path is then "/").
     cgroup_self = _read_text(_PROC_SELF_CGROUP)
-    if not cgroup_self:
-        return None
-    for line in cgroup_self.splitlines():
+    for line in (cgroup_self or "").splitlines():
         parts = line.split(":", 2)
         if len(parts) != 3:
             continue
@@ -129,7 +129,7 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
             candidate = _CGROUP_ROOT / v1_controller / rel / v1_filename
             if candidate.exists():
                 return candidate
-    return None
+    return direct_v1 if direct_v1.exists() else None
 
 
 @functools.cache
@@ -472,10 +472,17 @@ def _cgroup_v1_cpu_quota() -> float | None:
 
 
 def _affinity_cpu_count() -> int | None:
+    """CPUs this container may use. A NUMA-pinned cell reports the count from before its pin (left
+    in ``PIPESHUB_CONTAINER_CPUS``): the cpu counters read here are container-wide, and the
+    ceilings are split over all the container's cells, so a node-local count would shrink both."""
     try:
-        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+        own = len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
     except (AttributeError, OSError):
         return None
+    raw = os.environ.get("PIPESHUB_CONTAINER_CPUS", "")
+    if raw.isascii() and raw.isdigit() and own < int(raw) <= (os.cpu_count() or own):
+        return int(raw)
+    return own
 
 
 @functools.cache

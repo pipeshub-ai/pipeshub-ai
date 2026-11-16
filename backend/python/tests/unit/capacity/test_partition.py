@@ -40,8 +40,8 @@ def test_guaranteed_shares_fit(cpus, mem) -> None:
     held = sum(m.floors.values())
     assert held <= max(0, m.cpu_tokens - m.large_min_tokens)
     assert (sum(m.desired_floors.values()) > held) == ("critical_floor_over_capacity" in plan.warnings)
-    # The indexing governor leaves the local embedding model its CPUs.
-    assert plan.embedding_reserve_cpus + plan.budget.cpus * 0 <= cpus
+    # The reserve for the local embedding model is taken out of the indexing governor's CPUs, so it fits inside them.
+    assert 0 <= plan.embedding_reserve_cpus <= gov["indexing"].cpus
     assert gov["indexing"].reserve_embedding_cpus is True
 
 
