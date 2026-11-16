@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from app.services.paid_cache.retention import GRACE_MS, sweep_record
 from app.services.paid_cache.run import OPEN_PROTECTS_MS, RunScope
@@ -340,7 +341,7 @@ async def test_an_object_a_run_reuses_while_the_sweep_runs_is_not_deleted() -> N
     real_list = store.list_files
     calls = 0
 
-    async def list_files(org: str, rec: str, *a, **k):
+    async def list_files(org: str, rec: str, *a: Any, **k: Any) -> Any:  # noqa: ANN401
         nonlocal calls
         calls += 1
         result = await real_list(org, rec, *a, **k)

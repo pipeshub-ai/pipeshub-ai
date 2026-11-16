@@ -151,7 +151,7 @@ async def _reindex(handler, payload: dict) -> None:
     decided: list[object] = []
     real = paid_run.refresh_requested
 
-    def spy(event_payload):
+    def spy(event_payload: object) -> bool:
         decided.append(event_payload)
         return real(event_payload)
 
