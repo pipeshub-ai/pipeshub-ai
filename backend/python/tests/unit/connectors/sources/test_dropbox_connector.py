@@ -3011,8 +3011,10 @@ class TestSyncPersonalRecordGroups:
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         assert len(args) == 0
 
-    async def test_the_owner_grant_names_the_member_so_a_reused_address_still_reaches_its_holder(self, connector):
-        from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+    async def test_the_owner_grant_names_the_member_so_a_reused_address_still_reaches_its_holder(self, connector) -> None:
+        from app.connectors.core.base.data_processor.source_accounts import (
+            SourceAccounts,
+        )
 
         user = _make_app_user()
         await connector.sync_personal_record_groups([user])

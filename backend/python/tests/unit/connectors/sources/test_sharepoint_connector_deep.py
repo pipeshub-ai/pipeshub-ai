@@ -710,7 +710,7 @@ class TestRunIncrementalSync:
         assert c._sync_site_content.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_a_rewrite_that_withheld_grants_stays_pending_when_deleted_users_are_read_meanwhile(self):
+    async def test_a_rewrite_that_withheld_grants_stays_pending_when_deleted_users_are_read_meanwhile(self) -> None:
         c, *_ = _make_connector()
         _stub_run_sync_parts(c)
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={"version": 0})
