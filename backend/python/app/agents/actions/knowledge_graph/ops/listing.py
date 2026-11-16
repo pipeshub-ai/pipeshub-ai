@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.navigator import cursor_keeps_to
-from app.agents.actions.knowledge_graph.views import CITE_NOTE
+from app.agents.actions.knowledge_graph.views import CITE_NOTE, PREPARING
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
@@ -133,6 +133,8 @@ def _render_flat_text(
         return f"Error: {error}"
 
     items = response.items or []
+    if not items and getattr(response, "preparing", None) is True:
+        return PREPARING
     if not items:
         if query:
             return f'No items found matching "{query}".'
@@ -224,7 +226,8 @@ async def _page_inside_bounds(
         )
     else:
         hint = None
-    return KnowledgeHubNodesResponse(success=True, items=items), hint
+    # A source still being prepared answers an empty first page with no cursor: say so, not that nothing matched.
+    return KnowledgeHubNodesResponse(success=True, items=items, preparing=read.first.preparing if not items else None), hint
 
 
 def _asks_for_contents(node_types: list[str] | None, record_types: list[str] | None) -> bool:

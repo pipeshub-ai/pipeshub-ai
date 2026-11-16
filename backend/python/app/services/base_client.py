@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+import weakref
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -165,6 +166,20 @@ class CircuitState(Enum):
     HALF_OPEN = "half_open"   # cooldown elapsed, single probe in flight
 
 
+# Every live breaker, held weakly so a discarded client takes its breaker with it.
+_BREAKERS: "weakref.WeakSet[CircuitBreaker]" = weakref.WeakSet()
+# Clients are created on any thread, so the registry is only added to and copied under this lock: a set that
+# changes size during a walk raises.
+_BREAKERS_LOCK = threading.Lock()
+
+
+def open_circuits() -> list[str]:
+    """The services whose breaker is open or half open in this process, sorted, once each."""
+    with _BREAKERS_LOCK:
+        breakers = list(_BREAKERS)
+    return sorted({b.service_name for b in breakers if b.state in (CircuitState.OPEN.value, CircuitState.HALF_OPEN.value)})
+
+
 class CircuitBreaker:
     """Per-client circuit breaker guarding a single downstream service.
 
@@ -205,6 +220,8 @@ class CircuitBreaker:
         self._half_open_probe_in_flight = False
         self._half_open_probe_started_at: float | None = None
         self._lock = threading.Lock()
+        with _BREAKERS_LOCK:
+            _BREAKERS.add(self)
 
     def _probe_timed_out(self, now: float) -> bool:
         return (

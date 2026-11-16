@@ -2029,10 +2029,11 @@ class TestIndexingHealthCheck:
         mock_governor.stats.side_effect = governor_error
         consumer = MagicMock()
         consumer.dispatch_stats.side_effect = dispatch_error
+        consumer.admission_explain = None
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890), patch(
             "app.indexing_main.container"
-        ) as mock_container:
+        ) as mock_container, patch("app.indexing_main.open_circuits", return_value=[]):
             mock_container.kafka_consumers = [("record", consumer)]
             result = await health_check(_make_health_request(governor=mock_governor))
 
@@ -2047,6 +2048,7 @@ class TestIndexingHealthCheck:
             "timestamp": 1234567890,
             "resource_governor": {"error": "unavailable"},
             "dispatch": {"record": {"error": "unavailable"}},
+            "openCircuits": [],
         }
         assert [c.args for c in mock_container.logger.return_value.warning.call_args_list] == [
             ("Resource governor stats failed: %s", governor_error),

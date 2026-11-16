@@ -34,6 +34,7 @@ from app.core.org_context import (
     spawn_detached,
     system,
 )
+from app.edition import check_runtime_settings
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.events.dedup import will_promote_queued_copies
@@ -79,6 +80,7 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.services.base_client import open_circuits
 from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -162,6 +164,9 @@ class CoordinationRunner(Protocol):
 
 # signal.signal(signal.SIGTERM, handle_sigterm)
 # signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
@@ -3130,6 +3135,7 @@ async def health_check(request: Request) -> JSONResponse:
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
         dispatch: dict[str, Any] = {}
+        admission: dict[str, Any] = {}
         loop_lag: dict[str, Any] = {}
         for entry in getattr(container, "kafka_consumers", None) or []:
             consumer = entry[1] if len(entry) > 1 else None
@@ -3138,6 +3144,13 @@ async def health_check(request: Request) -> JSONResponse:
             lag_monitor = getattr(consumer, "loop_lag_monitor", None)
             if isinstance(lag_monitor, LoopLagMonitor):
                 loop_lag[str(entry[0])] = lag_monitor.stats()
+            explain = getattr(consumer, "admission_explain", None)
+            if callable(explain):
+                try:
+                    admission[str(entry[0])] = explain()
+                except Exception as stats_error:
+                    container.logger().warning("Admission stats failed for %s: %s", entry[0], stats_error)
+                    admission[str(entry[0])] = {"error": "unavailable"}
             stats = getattr(consumer, "dispatch_stats", None)
             if not callable(stats):
                 continue
@@ -3148,6 +3161,14 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        if admission:
+            content["admission"] = admission
+        # Services whose circuit breaker is open or half open in this process.
+        try:
+            content["openCircuits"] = open_circuits()
+        except Exception as circuits_error:
+            container.logger().warning("Open circuit listing failed: %s", circuits_error)
+            content["openCircuits"] = {"error": "unavailable"}
         if loop_lag:
             content["worker_loop_lag"] = loop_lag
         from app.modules.indexing.replay_set import eviction_policy_warning

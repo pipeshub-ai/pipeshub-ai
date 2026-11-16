@@ -29,6 +29,7 @@ from app.api.routes.extraction import (
 from app.api.routes.extraction import router as extraction_router
 from app.api.validation_errors import input_free_422
 from app.containers.extraction import ExtractionAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.edition_services import configure_app
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
@@ -48,6 +49,9 @@ def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
 
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ExtractionAppContainer.init("extraction_service")
 container_lock = asyncio.Lock()

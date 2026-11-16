@@ -47,6 +47,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
     "kg.w_counts_add": (([5], [1], [7], [3], [False], [None], [None], [2]), "kg.counts"),
     "kg.w_counts_delete": (([1],), "kg.counts"),
+    "kg.w_analyze_request": ((5,), "kg.analyze_requests"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
     "kg.w_counts_add": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::smallint[]", "%s::boolean[]", "%s::text[]", "%s::text[]", "%s::bigint[]"],
@@ -100,7 +101,7 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
     with conn(pdb) as c:
         tables = c.execute("SELECT c.oid::regclass::text, c.relkind::text, c.relispartition, COALESCE(r.vetted_org_policy, false), r.class FROM pg_class c "
                            "LEFT JOIN kernel.rls_registry r ON r.rel = c.oid WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p')").fetchall()
-        assert len(tables) == 12, tables
+        assert len(tables) == 13, tables         # kg_0016 added kg.analyze_requests
         assert [t[0] for t in tables if not t[3]] == [], "kg tables without kernel.require_vetted_org_policy"
         # rule 128 exempts a table the vetted role also reads unbound; no kg table is one (its vetted functions read through the per-org policy), and one that set the flag
         # would slip past 128 with the policy missing
@@ -232,6 +233,7 @@ BAD = {
                         ([5], [1], [7], [4], [False], [None], [None], [2]), ([5], [2], [None], [None], [None], ["x" * 65], [None], [2]), ([5], [2], [None], [None], [None], [None], ["bogus"], [2]),
                         ([5], [1], [7], [3], [False], [None], [None], [None]), (None, [1], [7], [3], [False], [None], [None], [2])],
     "kg.w_counts_delete": [([None],), (None,), ([1] * 5001,)],
+    "kg.w_analyze_request": [(-1,), (None,)],
     "kg.w_projection_set": [(-1, 1, "shadow", None, None, None), (5, 1, "bogus", None, None, None), (5, -1, "shadow", None, None, None), (5, 1, "shadow", "x" * 129, None, None), (None, 1, "shadow", None, None, None)],
 }
 
