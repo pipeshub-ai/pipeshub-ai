@@ -49,6 +49,7 @@ PARSE_POOL_ALLOWED = {
     "_Lane._start_worker", "_Lane._new_worker",  # the one-line hook
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
     "class _EventToken", "_EventToken.__init__", "_EventToken.cancelled", "_EventToken:Expr", "_capacity_timeout",  # the same flag: a cancel event seen as the ledger's token, and the requeue-uncounted timeout of a capacity wait
+    "import:import dataclasses",  # the lane's demand carries the worker's memory charge (the flag only)
     "import:import contextvars",  # the thread fallback keeps its permit past a cancelled caller (the flag only)
     "import:from app.capacity.member_budget import AdmissionTimeout, Cancelled",  # the ledger's own exception types, caught only around the optional reservation
     "run_blocking", "_run_blocking", "_lane_demand", "assign:_LANE_WAIT_S",  # PIPESHUB_CAPACITY_PROFILE=auto only: an optional permit, adopted or reserved; without the flag nothing is held and the old body runs (test_member_permits)
