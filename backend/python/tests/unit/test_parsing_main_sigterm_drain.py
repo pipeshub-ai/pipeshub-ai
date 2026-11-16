@@ -20,7 +20,7 @@ PARSING_MAIN = Path(__file__).resolve().parents[2] / "app" / "parsing_main.py"
 
 SERVICE = textwrap.dedent(
     """
-    import asyncio, sys
+    import asyncio, pathlib, sys
     import uvicorn
     from fastapi import FastAPI
 
@@ -28,7 +28,10 @@ SERVICE = textwrap.dedent(
 
     @app.get("/slow")
     async def slow():
-        await asyncio.sleep(2)
+        # Server-side marker that the request is in the handler; it stays pending until the test releases it.
+        pathlib.Path(sys.argv[2]).write_text("started")
+        while not pathlib.Path(sys.argv[3]).exists():
+            await asyncio.sleep(0.05)
         return {"done": True}
 
     @app.get("/up")
@@ -61,9 +64,10 @@ def _free_port() -> int:
 
 def test_a_service_started_the_way_the_pod_starts_it_drains_on_sigterm(tmp_path: Path) -> None:
     port = _free_port()
+    started, release = tmp_path / "started", tmp_path / "release"
     (tmp_path / "drain_service.py").write_text(SERVICE)
     proc = subprocess.Popen(
-        [sys.executable, "-m", "drain_service", str(port)], cwd=tmp_path,
+        [sys.executable, "-m", "drain_service", str(port), str(started), str(release)], cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": str(tmp_path)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
@@ -85,8 +89,13 @@ def test_a_service_started_the_way_the_pod_starts_it_drains_on_sigterm(tmp_path:
 
         thread = threading.Thread(target=call)
         thread.start()
-        time.sleep(0.5)
+        deadline = time.monotonic() + 30
+        while not started.exists():  # the request is inside the handler, not merely sent
+            assert time.monotonic() < deadline and thread.is_alive(), result
+            time.sleep(0.02)
         proc.send_signal(signal.SIGTERM)
+        time.sleep(0.3)  # the signal is handled while the request is still pending
+        release.touch()
         thread.join(timeout=20)
         assert "error" not in result, result
         assert b"done" in result["body"]

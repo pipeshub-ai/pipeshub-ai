@@ -19,7 +19,7 @@ def _services() -> tuple[dict, dict]:
 
 def test_parsing_reads_the_apps_redis_key_space_and_database() -> None:
     base, parsing = _services()
-    for key in ("REDIS_KV_PREFIX", "REDIS_DB", "PIPESHUB_BLOCK_PRIVATE_ADDRESSES"):
+    for key in ("REDIS_KV_PREFIX", "REDIS_DB", "PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_DEFAULT_REGION", "OLLAMA_API_URL"):
         assert _env(parsing)[key] == _env(base)[key], key
 
 

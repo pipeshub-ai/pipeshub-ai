@@ -140,7 +140,11 @@ Name of the parsing Deployment, Service and PDB, and the host in PARSING_SERVICE
 {{- end }}
 
 {{- define "pipeshub-ai.parsingSelectorLabels" -}}
-app.kubernetes.io/name: {{ printf "%s-parsing" (include "pipeshub-ai.name" . | trunc 55 | trimSuffix "-") }}
+{{- $parsing := printf "%s-parsing" (include "pipeshub-ai.name" . | trunc 55 | trimSuffix "-") -}}
+{{- if eq $parsing (include "pipeshub-ai.name" .) -}}
+{{- fail (printf "the parsing pods' application name %q equals the main application's name; change nameOverride" $parsing) -}}
+{{- end -}}
+app.kubernetes.io/name: {{ $parsing }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 

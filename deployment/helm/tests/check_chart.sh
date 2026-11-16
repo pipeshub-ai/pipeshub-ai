@@ -177,6 +177,11 @@ assert first["ports"] == [{"protocol": "TCP", "port": 8092}], first
 assert list(source) == ["podSelector"], source
 app = source["podSelector"]["matchLabels"]
 assert app["app.kubernetes.io/name"] and not app["app.kubernetes.io/name"].endswith("-parsing"), app
+# The rule must select the application pods: every selector label is a label of the main Deployment's pods.
+all_docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+main_pod = next(d for d in all_docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["metadata"]["labels"]
+assert all(main_pod.get(k) == v for k, v in app.items()), (app, main_pod)
+assert app.get("app.kubernetes.io/instance"), app
 extra = spec["ingress"][1:]
 assert extra == [{"from": [{"namespaceSelector": {"matchLabels": {"team": "monitoring"}}}], "ports": [{"port": 8092}]}], extra
 assert spec["egress"], "no egress rules"
@@ -361,6 +366,7 @@ REFUSED=(
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
+  "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
 )
 for entry in "${REFUSED[@]}"; do

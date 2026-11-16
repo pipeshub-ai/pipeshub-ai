@@ -28,6 +28,13 @@ services:
       - PARSING_SERVICE_PORT=8092
       # Requests in the route beyond this get 429 at once; empty = not limited by count.
       - PARSING_MAX_CONCURRENT=${PARSING_MAX_CONCURRENT:-}
+      # Model credentials and endpoints the parser may need when a saved model configuration omits them
+      # (OCR and table summaries run here): the same values as the app.
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+      - OLLAMA_API_URL=http://host.docker.internal:11434
       # The configuration store and secrets are the app's: same values, same stores.
       - SECRET_KEY=${SECRET_KEY:-}
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
