@@ -613,6 +613,9 @@ class JiraConnector(BaseConnector):
         self._parent_level_failures: set[str] = set()
         # Those parents in the project being synced, whose children the next sync reads again.
         self._parents_to_retry: set[str] = set()
+        # Ids of issues whose comments, their grants or files this sync could not write; saved with the
+        # project checkpoint before the cursor passes them, and read first by the next sync.
+        self._issues_to_retry: set[str] = set()
         # Sub-tasks among the issues just built, which have no children to read again.
         self._subtask_ids: set[str] = set()
 
@@ -1603,6 +1606,7 @@ class JiraConnector(BaseConnector):
         issue_placement: str | None = None,
         subtask_parents: str | None = None,
         browse_holders: str | None = None,
+        issues_to_retry: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1624,6 +1628,7 @@ class JiraConnector(BaseConnector):
             "issue_placement": issue_placement if issue_placement is not None else existing.get("issue_placement"),
             "subtask_parents": subtask_parents if subtask_parents is not None else existing.get("subtask_parents"),
             "browse_holders": browse_holders if browse_holders is not None else existing.get("browse_holders"),
+            "issues_to_retry": issues_to_retry if issues_to_retry is not None else existing.get("issues_to_retry"),
         }
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
@@ -4284,6 +4289,7 @@ class JiraConnector(BaseConnector):
         self._issue_security[project_id] = security
         self._issue_build_failures = 0
         self._parents_to_retry = set()
+        self._issues_to_retry = set()
         readable = security.knowledge == SchemeKnowledge.PRESENT and security.members_readable
         if (reason := unreadable_reason(security)) is not None:
             self._unreadable_security[project_key] = reason
@@ -4340,6 +4346,19 @@ class JiraConnector(BaseConnector):
         if unsettled_parents:
             unsettled_parents = await self._settle_subtasks(
                 project_key, project_id, jira_users, stats, unsettled_parents, [])
+        # Issues whose comments, grants or files an earlier sync could not write: the cursor has passed them.
+        try:
+            retry_ids = [str(i) for i in json.loads((project_sync_data or {}).get("issues_to_retry") or "[]") if str(i).isdigit()]
+        except (TypeError, ValueError):
+            retry_ids = []
+        if retry_ids and not is_new_project:
+            for start in range(0, len(retry_ids), SUBTASK_REREAD_CHUNK):
+                async for retry_batch, _more, _ts in self._fetch_issues_batched(
+                    project_key, project_id, jira_users, None, None, issue_ids=retry_ids[start:start + SUBTASK_REREAD_CHUNK],
+                ):
+                    if retry_batch:
+                        await self._process_new_records(retry_batch, project_key, stats)
+        saved_retry = await self._save_issues_to_retry(project_key, retry_ids)
 
         async for issues_batch, _has_more, last_issue_timestamp in self._fetch_issues_batched(
             project_key,
@@ -4386,8 +4405,10 @@ class JiraConnector(BaseConnector):
                 # Before the cursor passes these parents, which would not bring them back.
                 unsettled_parents = await self._settle_subtasks(
                     project_key, project_id, jira_users, stats, parents, unsettled_parents)
-            # Likewise before the cursor passes the stories of an epic that could not be read.
+            # Likewise before the cursor passes the stories of an epic that could not be read, and the
+            # issues whose comments, grants or files could not be written.
             unsettled_parents = await self._save_parents_to_retry(project_key, unsettled_parents)
+            saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
 
             # Update checkpoint AFTER successful processing
             if last_issue_updated_in_batch:
@@ -4449,6 +4470,7 @@ class JiraConnector(BaseConnector):
                     f"Some issues of {project_key} could not be read again; re-reading them next sync"
                 )
 
+        saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
             self.logger.warning(
@@ -4538,6 +4560,14 @@ class JiraConnector(BaseConnector):
                 project_key, security_levels=json.dumps(levels, sort_keys=True)
             )
 
+    async def _save_issues_to_retry(self, project_key: str, saved: list[str]) -> list[str]:
+        """Save the issues this sync could not finish (``_issues_to_retry``) in the project checkpoint, in place of
+        ``saved``, the list it holds; the next sync reads them first. Returns what it holds now."""
+        now = sorted(self._issues_to_retry)
+        if now != sorted(saved):
+            await self._update_project_sync_checkpoint(project_key, issues_to_retry=json.dumps(now))
+        return now
+
     async def _save_parents_to_retry(self, project_key: str, unsettled: list[str]) -> list[str]:
         """Add the epics whose level could not be read to the parents saved in the checkpoint."""
         new = [parent_id for parent_id in sorted(self._parents_to_retry) if parent_id not in unsettled]
@@ -4616,6 +4646,7 @@ class JiraConnector(BaseConnector):
         leveled_only: bool = False,
         stored_only: bool = False,
         parent_ids: list[str] | None = None,
+        issue_ids: list[str] | None = None,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission], bool]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -4662,6 +4693,9 @@ class JiraConnector(BaseConnector):
         if parent_ids:
             # Only the children of these issues (ids are numeric).
             jql_conditions.append(f'parent in ({", ".join(str(int(i)) for i in parent_ids)})')
+        if issue_ids:
+            # Only these issues (ids are numeric).
+            jql_conditions.append(f'id in ({", ".join(str(int(i)) for i in issue_ids)})')
 
         # Build final JQL (ORDER BY required for consistent pagination)
         # Add id ASC as secondary sort for stable ordering when timestamps are equal
@@ -5415,7 +5449,7 @@ class JiraConnector(BaseConnector):
             )
             if existing_record is not None:
                 delete_ids.extend(await self._with_their_files(await self._stored_comment_records(issue_id)))
-            self._leave_changed(issue_record, existing_record)
+            self._leave_changed(issue_record, existing_record, retry=True)
             return records, delete_ids, False
         # Not returned: the stored comment records stay. A personal connector's one reader is the
         # account the comments were read as, so it has no restricted comment to write.
@@ -5426,7 +5460,7 @@ class JiraConnector(BaseConnector):
                 stored=existing_record is not None,
             )
             if unresolved:
-                self._leave_changed(issue_record, existing_record)
+                self._leave_changed(issue_record, existing_record, retry=True)
             records.extend(built_comments)
             delete_ids.extend(stale_ids)
             comment_records = {r.external_record_id: r for r, _, _ in built_comments}
@@ -5469,7 +5503,7 @@ class JiraConnector(BaseConnector):
                 records.extend(attachment_records)
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
-            self._leave_changed(issue_record, existing_record)
+            self._leave_changed(issue_record, existing_record, retry=True)
 
         if len(records) > 1 and issue_record.source_updated_at == updated_at:
             # Its comments and files are written after it: it is stored as changed and takes this read's
@@ -5478,11 +5512,14 @@ class JiraConnector(BaseConnector):
             self._settle_after_dependents[issue_record.external_record_id] = updated_at
         return records, delete_ids, False
 
-    def _leave_changed(self, issue_record: TicketRecord, existing_record: Record | None) -> None:
+    def _leave_changed(self, issue_record: TicketRecord, existing_record: Record | None, *, retry: bool = False) -> None:
         """Store the issue with the time of the last read that completed, not this read's (0 for a new issue, or when that
-        time is this read's: a full sync of an unchanged issue): the next sync takes it as changed and reads it, its
-        comments, their grants and its files again."""
+        time is this read's: a full sync of an unchanged issue): a later read takes it as changed and reads it, its
+        comments, their grants and its files again. ``retry``: a dependent read or grant failed, so the next sync reads it
+        first whatever its `updated` (the cursor moves past it)."""
         self._settle_after_dependents.pop(issue_record.external_record_id, None)
+        if retry:
+            self._issues_to_retry.add(issue_record.external_record_id)
         stored = existing_record.source_updated_at if existing_record is not None else None
         issue_record.source_updated_at = stored if stored and stored != issue_record.updated_at else 0
 

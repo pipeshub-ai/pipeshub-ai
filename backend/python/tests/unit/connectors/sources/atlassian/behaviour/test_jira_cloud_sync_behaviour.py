@@ -86,17 +86,25 @@ class IssueSearch:
 
     def __init__(self) -> None:
         self.pages: dict[tuple[str, Optional[str]], Any] = {}
+        self.issues_by_id: dict[str, dict[str, Any]] = {}
         self.bodies: list[dict[str, Any]] = []
         self.tokens: list[str] = []
 
     def add(self, project_key: str, token: Optional[str], response: object) -> None:
         self.pages[(project_key, token)] = response
+        for page in response if isinstance(response, list) else [response]:
+            for found in page.get("issues", []) if isinstance(page, dict) else []:
+                self.issues_by_id[str(found.get("id"))] = found
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.bodies.append(body)
         self.tokens.append(bearer(request))
         key = body["jql"].split('project = "')[1].split('"')[0]
+        if "id in (" in body["jql"]:
+            # As Jira does: only the named issues, as last queued for the project, without using up its pages.
+            ids = {i.strip() for i in body["jql"].split("id in (")[1].split(")")[0].split(",")}
+            return json_response({"issues": [i for i in self.issues_by_id.values() if str(i.get("id")) in ids]})
         if "parent in (" in body["jql"]:
             # As Jira does: only the children of the named issues, without using up the
             # pages queued for the project's own search.
@@ -2126,6 +2134,29 @@ class TestRestrictedComments:
         assert "attachment_901" not in db.records and "attachment_902" not in db.records, (
             "no attachment is given a record while it is unknown which of them a restricted comment holds"
         )
+
+    async def test_an_issue_whose_comments_could_not_be_read_is_read_again_by_the_next_sync_though_the_cursor_passed_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """The comment list fails, so the restricted comment has no record and the issue is left to retry. The next incremental
+        sync's search starts after the issue's `updated` (the cursor moved past it), yet the issue is read again by id and its
+        restricted comment gets its record; once it does, nothing is left to retry."""
+        restricted = comment("c1", "figures", visibility={"type": "group", "value": "admins", "identifier": "g-admins"})
+        latest = comment("c2", "thanks")
+        search.add("ENG", None, [{"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [latest], total=2)]}, {"issues": []}])
+        api.on("GET", f"{JIRA}/issue/1/comment", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "comment_c1" not in db.records and "1" in tickets(db)
+
+        jira_has_comments(api, 1, [restricted, latest])
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "comment_c1" in db.records, "the issue is read again although the incremental search no longer lists it"
+        assert any("id in (1)" in b["jql"] for b in search.bodies)
+        reads = len(search.bodies)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert not any("id in (" in b["jql"] for b in search.bodies[reads:]), "nothing is left to retry"
 
     async def test_opening_an_issue_does_not_offer_a_file_from_a_restricted_comment(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
