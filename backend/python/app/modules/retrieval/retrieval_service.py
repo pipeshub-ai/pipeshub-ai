@@ -129,6 +129,7 @@ from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
+from app.utils.user_lookup import get_caller_user
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -1787,30 +1788,25 @@ class RetrievalService:
                 exclude_app_ids=excluded,
             )
 
-        user_task = self._get_user_cached(user_id)
+        # Before the access reads, not beside them: for a brand-new caller this lookup is what writes their graph
+        # user, and a read that ran first would answer for a user who is not there yet.
+        user = await self._get_user_cached(user_id)
 
         # A container scope cannot leave one app out, so an exclusion keeps the
         # record-id path. So does a scope the container filter recently could
         # not serve (``narrow_access_memo``): the record-id path is the exact
         # one, so preferring it never widens what a search may return.
         if excluded or prefer_record_ids:
-            accessible, user = await asyncio.gather(_legacy(), user_task)
-            return None, accessible, user
+            return None, await _legacy(), user
 
         # Recognised locally, without asking the graph: no container expresses a
         # date range or a per-record metadata term, so those keep the record-id
         # path. This is a capability gap, not a preference. `apps` and `kb` are
         # containers and do not land here.
         if _unsupported_container_filters(filters, time_range):
-            accessible, user = await asyncio.gather(_legacy(), user_task)
-            return None, accessible, user
+            return None, await _legacy(), user
 
-        containers, user = await asyncio.gather(
-            self.graph_provider.get_accessible_containers(
-                user_id, org_id, filters, time_range
-            ),
-            user_task,
-        )
+        containers = await self.graph_provider.get_accessible_containers(user_id, org_id, filters, time_range)
         if containers.fallback_reason:
             # A data-readiness condition, not a rollout switch: an app whose
             # vector membership arrays were never built cannot be filtered by
@@ -2647,7 +2643,7 @@ class RetrievalService:
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
         try:
-            user_data = await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+            user_data = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
         if user_data is None:

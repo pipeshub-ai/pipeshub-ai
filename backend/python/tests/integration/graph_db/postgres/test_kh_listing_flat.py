@@ -138,8 +138,9 @@ async def test_another_organisations_connector_is_never_read(pg_db) -> None:
         page = await p.get_knowledge_hub_connector_page_v3(**asks(theirs), limit=10)       # asks for an org that is not the session's
     assert page["rows"] == [] and not page["hasMore"]
     other = new_org()
-    with ctx(other), pytest.raises(KnowledgeHubListingNotReady):      # the session's org holds no such connector: nothing of the other's is found
-        await p.get_knowledge_hub_connector_page_v3(**asks(other), limit=10)
+    with ctx(other):      # the session's org holds no such connector and nothing of it: nothing of the other's is found, an empty page
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(other), limit=10)
+    assert page["rows"] == [] and page["total"] == 0 and not page["hasMore"]
 
 
 async def test_a_connector_kg_serves_has_an_exact_total_beyond_the_scan_and_one_it_does_not_has_a_lower_bound(pg_db, monkeypatch) -> None:
@@ -161,7 +162,7 @@ async def test_the_exact_total_stops_at_its_cap_and_says_so(pg_db, monkeypatch) 
     monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
     with ctx(org):
         page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=9), limit=3)
-    assert page["total"] == 4 and page["totalCapped"] is True
+    assert page["total"] == 4 and page["totalCapped"] is True and page["counts"] == {"record": 4}      # the counts by type add up to the total
 
 
 async def test_a_page_that_stops_early_says_where_and_the_walk_from_there_lists_every_readable_row_once(pg_db, monkeypatch) -> None:

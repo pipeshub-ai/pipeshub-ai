@@ -709,7 +709,8 @@
       "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     },
-    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal."
+    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal.",
+    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4222,6 +4223,10 @@
           "label": "MongoDB",
           "description": "Sitzungen und Benutzermetadaten"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "Sitzungen und Benutzermetadaten"
+        },
         "messageBroker": {
           "label": "Nachrichtenbroker",
           "description": "Verteiltes Ereignis-Streaming"
@@ -5340,6 +5345,7 @@
     "mcpServerNeedsToolsTooltip": "Wählen Sie Tools für jeden MCP-Server aus oder aktivieren Sie „Alle Tools“.",
     "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
+    "serviceAgentCollectionsNeedBinding": "Sammlungen können hinzugefügt werden, sobald dieser Service-Agent an ein Dienstkonto gebunden ist.",
     "mcpAgentApprovalsEnterprise": "Tool-Freigaben pro Agent sind Teil der Enterprise Edition. Hier gelten die eigenen Tool-Freigaben jeder Person.",
     "mcpAgentApprovals": "Tool-Freigaben pro Agent",
     "limitSource": "Auswählen, was {{name}} durchsucht",
@@ -5378,6 +5384,7 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "indexingNoteAria": "Hinweis zur Indexierung",
     "stageTrackLabel": "Pipeline",
     "stageParsed": "Geparst",
     "stageSearchable": "Durchsuchbar",
@@ -5819,6 +5826,7 @@
       "restoredMany_one": "{{count}} Element wiederhergestellt",
       "restoredMany_other": "{{count}} Elemente wiederhergestellt",
       "showing": "{{from}}–{{to}} von {{total}}",
+      "showingAtLeast": "{{from}}–{{to}} von {{total, number}}+",
       "previous": "Zurück",
       "next": "Weiter",
       "nameAndMore_one": "{{name}} und {{count}} weiteres",

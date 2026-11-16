@@ -258,6 +258,7 @@ def test_the_real_startup_path_waits_for_a_busy_connector_past_the_old_window(tm
     shim("sleep", 'exec /bin/sleep "$(awk "BEGIN{print $1/20}")"\n')
     shim("node", "exec /bin/sleep 1000\n")
     shim("python", f"""mod=${{2#app.}}; mod=${{mod%_main}}
+if [ "$mod" = capacity ]; then exit 0; fi
 if [ "$mod" = connectors ]; then end=$((SECONDS+10)); while [ $SECONDS -lt $end ]; do :; done; fi
 touch {flags}/$mod
 exec /bin/sleep 1000

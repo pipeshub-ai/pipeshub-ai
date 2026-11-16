@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any
 
-import anyio
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -46,12 +45,16 @@ from app.config.constants.ai_models import (
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
+from app.edition import check_runtime_settings
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import env_positive_int
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -1388,19 +1391,6 @@ async def download_progress(model_name: str) -> JSONResponse:
     )
 
 
-async def _client_gone(request: Request) -> bool:
-    """Whether the client has disconnected.
-
-    ``Request.is_disconnected`` polls inside an already-cancelled scope; behind
-    a ``BaseHTTPMiddleware`` (the telemetry one) that cancel lands before the
-    disconnect is read, so it always answers False. Wait a moment for real.
-    The body is already read by now, so the only message left is a disconnect.
-    """
-    with anyio.move_on_after(0.005):
-        return (await request.receive())["type"] == "http.disconnect"
-    return False
-
-
 @app.post("/v1/embeddings")
 async def create_embeddings(
     request: EmbeddingRequest,
@@ -1431,7 +1421,7 @@ async def create_embeddings(
             texts,
             trust_remote_code=request.trust_remote_code,
             priority=EncodePriority.from_header(x_embedding_priority),
-            should_stop=lambda: _client_gone(http_request),
+            should_stop=http_request.is_disconnected,
         )
     except EncodeAbandoned:
         # Nobody is reading this; 499 is the conventional "client closed request".

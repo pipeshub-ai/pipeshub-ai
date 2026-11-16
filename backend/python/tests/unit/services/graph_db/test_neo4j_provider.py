@@ -482,7 +482,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # the org's apps, by id
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
                   "subcategory": None, "version": "1.0.0", "status": "active",
                   "deprecatedReason": None, "replacedBy": None}],  # skills
@@ -566,7 +566,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # the org's apps, by id
                 [],  # skills query
                 [],  # mcp servers projection
                 [],  # org share query
@@ -576,7 +576,7 @@ class TestGetAgent:
             side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
-        result = await neo4j_provider.get_agent("agent-1")
+        result = await neo4j_provider.get_agent("agent-1", org_id="org-1")
 
         assert result is not None
         assert result["knowledge"][0]["filtersParsed"] == {}
@@ -4746,6 +4746,23 @@ class TestListUserKnowledgeBases:
             query = call[0][0]
             assert query.count("toLower(kb.name) CONTAINS toLower($search_term)") == 1
             assert "kb2" not in query
+
+    @pytest.mark.asyncio
+    async def test_folders_are_the_first_100_by_id_read_per_collection_of_the_page_and_say_when_there_are_more(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[], [{"total": 0}], []])
+
+        await neo4j_provider.list_user_knowledge_bases("user1", "org1", skip=0, limit=10)
+
+        call = neo4j_provider.client.execute_query.call_args_list[0]
+        query, params = call[0][0], call[1]["parameters"]
+        assert params["folders_cap"] == 100 and params["folders_fetch"] == 101
+        # The page of collections is cut before any folder is read, and each collection reads at most one folder more than the cap, in id order.
+        assert query.index("LIMIT $limit") < query.index("MATCH (folderRecord:Record)")
+        assert query.index("ORDER BY folderRecord.id") < query.index("LIMIT $folders_fetch") < query.index("RETURN collect({")
+        assert "folders: folders[0..$folders_cap]" in query
+        assert "foldersTruncated: size(folders) > $folders_cap" in query
 
     @pytest.mark.asyncio
     async def test_exception_raises(self, neo4j_provider: Neo4jProvider):

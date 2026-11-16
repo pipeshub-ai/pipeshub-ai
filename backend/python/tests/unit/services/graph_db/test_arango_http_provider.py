@@ -9548,6 +9548,21 @@ class TestListUserKnowledgeBases:
         assert count_query.count("FILTER kb.isHidden != true") == 2
 
     @pytest.mark.asyncio
+    async def test_folders_are_the_first_100_by_id_and_say_when_there_are_more(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = [[], [0], []]
+
+        await connected_provider.list_user_knowledge_bases("u1", "org1", skip=0, limit=10)
+
+        query, bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].args[:2]
+        assert (bind_vars["folders_cap"], bind_vars["folders_fetch"]) == (100, 101)
+        folders = query[query.index("LET folders = ("):query.index("RETURN {", query.index("LET folders = (") + 200)]
+        assert "COLLECT folder_from = edge._from" in folders                  # two edges to one folder count once
+        assert folders.index("SORT folder._key") < folders.index("LIMIT @folders_fetch")
+        assert query.index("LIMIT @skip, @limit") < query.index("LET folders = (")   # only the page's collections
+        assert "folders: SLICE(folders, 0, @folders_cap)" in query
+        assert "foldersTruncated: LENGTH(folders) > @folders_cap" in query
+
+    @pytest.mark.asyncio
     async def test_with_search_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
             [

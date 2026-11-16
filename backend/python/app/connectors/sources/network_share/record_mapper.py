@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from app.config import file_types
 from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
@@ -41,6 +42,11 @@ FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
 _HIDDEN_SYSTEM = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
 # Moved to slower storage: reading one makes the server fetch it back first.
 _NOT_ON_DISK = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+
+
+def is_on_disk(entry: DirectoryEntry) -> bool:
+    """False for a file moved to slower storage, which reading would make the server recall."""
+    return not (entry.attributes & _NOT_ON_DISK)
 
 
 def usable_file_id(file_id: int | None) -> bool:
@@ -79,13 +85,20 @@ def external_record_id(share: str, nfc_path: str) -> str:
 def mime_for(rel_path: str, *, is_directory: bool) -> str:
     if is_directory:
         return MimeTypes.FOLDER.value
+    base = rel_path.rsplit("/", 1)[-1]
+    extension = base.rpartition(".")[2] if "." in base else None
+    # A type indexed since the registry's second version is stored under its own mime, which the
+    # host's table may not know (.cfg) or may spell as another type's (text/plain for .log).
+    own = file_types.canonical_mime_for_new_extension(extension)
+    if own is not None:
+        return own
     guessed, _ = mimetypes.guess_type(rel_path)
-    if not guessed:
-        return MimeTypes.BIN.value
-    try:
-        return MimeTypes(guessed).value
-    except ValueError:
-        return MimeTypes.BIN.value
+    if guessed:
+        try:
+            return MimeTypes(guessed).value
+        except ValueError:
+            pass
+    return MimeTypes.BIN.value
 
 
 @dataclass(frozen=True)
@@ -208,7 +221,7 @@ class RecordMapper:
             indexing_status = ProgressStatus.COMPLETED.value
         # A file moved to slower storage is listed but not read unasked: reading
         # every one would make the server fetch them all back.
-        elif indexing_manual or entry.attributes & _NOT_ON_DISK:
+        elif indexing_manual or not is_on_disk(entry):
             indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         else:
             indexing_status = ProgressStatus.QUEUED.value

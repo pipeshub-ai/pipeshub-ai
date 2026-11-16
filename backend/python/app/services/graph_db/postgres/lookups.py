@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
     CollectionNames,
     Connectors,
+    OriginTypes,
     ProgressStatus,
 )
 from app.core.org_context import current_or_system, current_org_id
@@ -29,6 +30,7 @@ from app.services.graph_db.common.utils import (
     jira_issue_browse_url_regex,
     record_status_field,
 )
+from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
     _VALIDATOR,
@@ -66,6 +68,46 @@ def _doc_list(v: Any) -> list:  # noqa: ANN401
 def _vis_code(v: RecordVisibility) -> int:
     return _vis(v)
 
+
+
+# The record counts of ``get_connector_stats``, one statement per kind: a collection's records belong to its app; a connector's, to the record groups that chain up to
+# its app (10 hops at most). Written as one statement with the kind as a parameter, ``e.to_id IN (SELECT id FROM g)`` sat inside an OR: a sublink is pulled up into a
+# semi-join only at the top level of WHERE, so it stayed a filter and the plan read every records->belongsTo edge of the organisation (624 ms at 1M records for a
+# connector with no groups, 0.2 ms as its own statement). Each record and its stage state are read by their keys (a LIMIT subquery is not flattened into a join):
+# joined, the planner hashed a scan of every record (or stage state) of the organisation whenever it guessed the connector held many. A connector's record edges are
+# read group by group for the same reason (OFFSET 0 keeps each group's read its own subquery): as ``to_id IN (SELECT id FROM g)`` the planner hashed every
+# records->belongsTo edge of the organisation whenever it guessed the groups were many, and a recursive CTE's estimate is a guess (ten times its recursive step).
+# The collections come from ``k`` (OFFSET 0 keeps it a subquery) and not from literals: ``coll = 'stageStates'`` implies the predicate of every partial index on
+# that collection (nodes_stage_page, _revision, _status, and the records ones for 'records'), each leads with org_id, and on an organisation the statistics put at a
+# row or two a scan of such an index bounded by the org alone cost the same as the key probe. A collection known only at run time leaves the primary key.
+# The stage state's key is computed with the record (``n.sid``) and compared as a plain value: written as ``x.id = (n.doc->>...) || ...`` inside the lateral,
+# PostgreSQL 17.12 and 18.7 kept it as a filter on graph.nodes (row security; ``->>`` and ``||`` are not leakproof) and read every stage state of the org.
+STATS_KB = """/* pipeshub:graph.get_connector_stats */ WITH r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+        AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $2)
+    SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+    FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
+    CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
+        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
+    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
+    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
+    GROUP BY 1, 2, 3, 4"""
+STATS_CONNECTOR = """/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
+      SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups' AND e.to_coll = 'apps' AND e.to_id = $2
+      UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+        AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
+    r AS (SELECT DISTINCT e.from_id AS id FROM (SELECT DISTINCT id FROM g) g CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1
+        AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' AND e.to_id = g.id OFFSET 0) e)
+    SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+    FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
+    CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
+        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
+    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
+    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
+    GROUP BY 1, 2, 3, 4"""
 
 class LookupsMixin(PgBase):
     async def _lrows(self, sql: str, *args: Any, transaction: str | None = None, write: bool = False) -> list:  # noqa: ANN401
@@ -765,6 +807,15 @@ class LookupsMixin(PgBase):
             self.logger.exception("Get record key by external id failed")
             return None
 
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # The org's links only: a storage document belongs to one org (the storage service reads it by org and id, and the push asks it in the
+        # caller's org first), and a record of another org naming its id is not a link the platform wrote to it.
+        current_org_id()      # no org or a system context is an error, not the jobs role's refusal
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.ref_links */ SELECT doc_id, kind, node_id, origin, connector_name, connector_id
+            FROM graph.ref_links($1::text[], $2, $3, $4)""", doc_ids, OriginTypes.UPLOAD.value, Connectors.KNOWLEDGE_BASE.value, REF_LINKS_PER_DOC), None)
+        return [{"docId": r["doc_id"], "recordId": r["node_id"], "kind": r["kind"], "origin": r["origin"],
+                 "connectorName": r["connector_name"], "connectorId": r["connector_id"]} for r in rows]
+
     async def get_key_by_external_file_id(self, external_file_id: str) -> str | None:
         """The key of a record of this org by external id, whatever its connector. With no connector named there is no index for it."""
         return await self._key_by_external(external_file_id, None, None)
@@ -915,20 +966,7 @@ class LookupsMixin(PgBase):
             app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
                                   org, connector_id, transaction=transaction)
             is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
-            rows = [] if org_id != org else await self._lrows("""/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
-                  SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND NOT $3 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
-                    AND e.to_coll = 'apps' AND e.to_id = $2
-                  UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
-                    AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
-                r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
-                    AND ((NOT $3 AND e.to_coll = 'recordGroups' AND e.to_id IN (SELECT id FROM g)) OR ($3 AND e.to_coll = 'apps' AND e.to_id = $2)))
-                SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
-                       s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
-                FROM r JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND n.id = r.id
-                LEFT JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'stageStates' AND s.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities'
-                WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
-                  AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($4::text[])
-                GROUP BY 1, 2, 3, 4""", org, connector_id, is_kb, FOLDER_MIME_TYPES, transaction=transaction)
+            rows = [] if org_id != org else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES, transaction=transaction)
             result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
             return {"success": True, "data": result}
         except Exception as e:

@@ -29,6 +29,15 @@ def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_fleet_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests stand in for the services' collaborators; the fleet Redis binding is exercised, unpatched, in
+    tests/unit/services/messaging/test_fleet_state_startup.py and the spend integration tests."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("app.indexing_main._bind_fleet_state", AsyncMock(return_value=MagicMock()))
+
+
 
 @pytest.fixture(autouse=True)
 def disable_distributed_concurrency_by_default(monkeypatch):
@@ -1672,6 +1681,179 @@ class TestLifespan:
             assert parse_pool._State.governor is None
             assert parse_pool._State.pool is None
 
+    async def test_the_lifespan_claims_a_cell_publishes_its_stats_and_releases_it(self, tmp_path) -> None:
+        """The product's own wiring, not a support app: claim at start, a stats file every tick, release at stop."""
+        import json
+        from pathlib import Path
+
+        from app.capacity import cells
+        from app.indexing_main import lifespan
+
+        directory = tmp_path / "cells"
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider()
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        with (
+            patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+        ):
+            async with lifespan(mock_app):
+                claim = mock_app.state.cell_claim
+                assert claim is not None and claim.index == 0 and claim.directory == directory
+                for _ in range(100):  # the first tick writes at once
+                    if (directory / "0.json").exists():
+                        break
+                    await asyncio.sleep(0.05)
+                body = json.loads((directory / "0.json").read_text())
+                assert body["cell"] == 0 and body["pid"] == os.getpid() and "stats" in body
+                assert cells.read_cells(Path(directory), 2).cells[0]["status"] == "healthy"
+                task = mock_app.state.cell_task
+            assert task.cancelled() or task.done()
+            assert not cells._slot_held(directory, 0), "the claim was not released at shutdown"
+        assert cells._PROCESS == []
+
+    async def test_a_worker_that_finds_no_free_cell_retries_warns_once_and_keeps_trying(self, tmp_path) -> None:
+
+        from app.capacity.cells import CLAIM_ATTEMPTS
+        from app.indexing_main import _start_cell
+
+        mock_container = _make_container()
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path),
+            patch("app.indexing_main.process_claim", return_value=None) as claim,
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.0),
+            patch("app.indexing_main.spawn_detached") as spawn,
+            patch("app.indexing_main._claim_and_publish", new=MagicMock()),
+        ):
+            await _start_cell(app, MagicMock())
+        assert claim.call_count == CLAIM_ATTEMPTS
+        assert app.state.cell_claim is None
+        spawn.assert_called_once()  # the claim goes on in the background
+        assert spawn.call_args.kwargs["name"] == "cell-claim"
+        assert mock_container.logger().warning.call_count == 1
+
+    async def test_a_replacement_worker_claims_the_index_the_old_worker_releases(self, tmp_path) -> None:
+        """Every index is held at start-up (the worker being replaced still holds its own). The
+        replacement must serve at once, then claim and publish when the old worker lets go."""
+        import asyncio
+
+        from app.capacity import cells
+        from app.indexing_main import _start_cell, _stop_cell
+
+        directory = tmp_path / "cells"
+        old = cells.claim_cell(directory, 1)
+        assert old is not None
+        mock_container = _make_container()
+        app = MagicMock()
+        published = asyncio.Event()
+
+        async def publish(claim, _governor) -> None:
+            published.set()
+            await asyncio.sleep(3600)
+
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.001),
+            patch("app.indexing_main._CELL_CLAIM_RETRY_MAX_S", 0.01),
+            patch("app.indexing_main._publish_cell_stats", new=publish),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.adopt_claim") as adopt,
+        ):
+            # Two workers so that the claim path is taken; the directory is sized to the one index the old
+            # worker holds, and the test releases it below.
+            with patch("app.indexing_main.process_claim", wraps=lambda d, n: cells.process_claim(d, 1)):
+                try:
+                    await _start_cell(app, MagicMock())
+                    assert app.state.cell_claim is None and app.state.cell_task is not None
+                    assert not published.is_set()
+                    old.release()
+                    await asyncio.wait_for(published.wait(), 5)
+                    assert app.state.cell_claim is not None and app.state.cell_claim.index == 0
+                    adopt.assert_called_once_with(0)  # a late claim places the process on its node
+                    _stop_cell(app)
+                    assert not cells._slot_held(directory, 0), "the late claim was not released at shutdown"
+                finally:  # on failure too: no task and no claim may outlive the test
+                    _stop_cell(app)
+                    task = app.state.cell_task
+                    if isinstance(task, asyncio.Task):
+                        await asyncio.gather(task, return_exceptions=True)
+                    old.release()
+                    cells._PROCESS.clear()
+
+    async def test_no_sleep_follows_the_last_failed_attempt(self, tmp_path) -> None:
+        from app.capacity.cells import CLAIM_ATTEMPTS
+        from app.indexing_main import _start_cell
+
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path),
+            patch("app.indexing_main.process_claim", return_value=None),
+            patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("app.indexing_main.spawn_detached") as spawn,  # the background claimant is not started here
+            patch("app.indexing_main._claim_and_publish", new=MagicMock()),
+        ):
+            await _start_cell(app, MagicMock())
+        assert sleep.await_count == CLAIM_ATTEMPTS - 1
+        spawn.assert_called_once()
+
+    async def test_an_unsafe_cells_directory_is_not_retried_and_logs_one_warning_naming_the_cause(self, tmp_path, caplog) -> None:
+        import logging
+
+        from app.capacity import cells
+        from app.indexing_main import _start_cell
+
+        directory = tmp_path / "cells"
+        directory.mkdir()
+        directory.chmod(0o777)
+        cells._warned.clear()
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+            patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
+            caplog.at_level(logging.WARNING),
+        ):
+            await _start_cell(app, MagicMock())
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1 and "writable by others" in warnings[0], warnings
+        assert sleep.await_count == 0
+        assert app.state.cell_claim is None and app.state.cell_task is None
+
+    async def test_a_claim_that_fails_at_first_is_retried_and_published(self, tmp_path) -> None:
+        from app.capacity.cells import claim_cell
+        from app.indexing_main import _start_cell
+
+        mock_container = _make_container()
+        real = claim_cell(tmp_path / "cells", 2)
+        outcomes = [None, None, real]
+        app = MagicMock()
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+            patch("app.indexing_main.cells_directory", return_value=tmp_path / "cells"),
+            patch("app.indexing_main.process_claim", side_effect=outcomes),
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.0),
+            patch("app.indexing_main.spawn_detached") as spawn,
+            patch("app.indexing_main._publish_cell_stats", new=MagicMock()),
+        ):
+            await _start_cell(app, MagicMock())
+        assert app.state.cell_claim is real
+        spawn.assert_called_once()
+        assert mock_container.logger().warning.call_count == 0
+        real.release()
+
     async def test_the_class_units_backfill_runs_on_the_record_consumers_loop_on_every_store(self) -> None:
         """It embeds through the consumers' VectorStore, whose clients belong to their loop, so it is
         scheduled there on ArangoDB too, not only on Neo4j."""
@@ -1826,6 +2008,68 @@ def _make_health_request(governor=None, pipeline_runtime=None):
     return request
 
 
+class TestRedisEvictionPolicyWiring:
+    """The start-up check reads the Redis the replay set uses, and /health reports what it found."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self) -> "Iterator[None]":
+        from app.modules.indexing import replay_set
+
+        replay_set._eviction_warning = None
+        yield
+        replay_set._eviction_warning = None
+
+    @staticmethod
+    def _redis(policy: str) -> MagicMock:
+        redis = MagicMock()
+        redis.info = AsyncMock(return_value={"maxmemory_policy": policy})
+        redis.aclose = AsyncMock()
+        return redis
+
+    async def test_the_check_reads_the_config_services_redis_and_closes_it(self) -> None:
+        from app.indexing_main import _check_redis_eviction_policy
+        from app.modules.indexing import replay_set
+
+        container = MagicMock()
+        redis = self._redis("volatile-lru")
+        with patch(
+            "app.services.vector_db.rebuild_state.redis_from_config_service", AsyncMock(return_value=redis)
+        ) as factory:
+            await _check_redis_eviction_policy(container, MagicMock())
+
+        factory.assert_awaited_once_with(container.config_service())
+        redis.info.assert_awaited_once_with("memory")
+        redis.aclose.assert_awaited_once()
+        assert "volatile-lru" in (replay_set.eviction_policy_warning() or "")
+
+    async def test_an_unreachable_redis_does_not_stop_the_start(self) -> None:
+        from app.indexing_main import _check_redis_eviction_policy
+        from app.modules.indexing import replay_set
+
+        with patch(
+            "app.services.vector_db.rebuild_state.redis_from_config_service", AsyncMock(side_effect=OSError("down"))
+        ):
+            await _check_redis_eviction_policy(MagicMock(), MagicMock())
+
+        assert replay_set.eviction_policy_warning() is None
+
+    async def test_health_reports_the_warning_only_when_there_is_one(self) -> None:
+        import json
+
+        from app.indexing_main import _check_redis_eviction_policy, health_check
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1):
+            assert "redis" not in json.loads((await health_check(_make_health_request())).body)
+            with patch(
+                "app.services.vector_db.rebuild_state.redis_from_config_service",
+                AsyncMock(return_value=self._redis("allkeys-lru")),
+            ):
+                await _check_redis_eviction_policy(MagicMock(), MagicMock())
+            body = json.loads((await health_check(_make_health_request())).body)
+
+        assert "allkeys-lru" in body["redis"]["evictionPolicyWarning"]
+
+
 class TestIndexingHealthCheck:
     """Tests for health_check() endpoint."""
 
@@ -1949,6 +2193,7 @@ class TestIndexingHealthCheck:
     async def test_stats_failures_are_not_echoed(self):
         """Still healthy; the exceptions go to the log and the payload says only that stats are unavailable."""
         import json
+
         from app.indexing_main import health_check
 
         governor_error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
@@ -1957,10 +2202,11 @@ class TestIndexingHealthCheck:
         mock_governor.stats.side_effect = governor_error
         consumer = MagicMock()
         consumer.dispatch_stats.side_effect = dispatch_error
+        consumer.admission_explain = None
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890), patch(
             "app.indexing_main.container"
-        ) as mock_container:
+        ) as mock_container, patch("app.indexing_main.open_circuits", return_value=[]):
             mock_container.kafka_consumers = [("record", consumer)]
             result = await health_check(_make_health_request(governor=mock_governor))
 
@@ -1969,11 +2215,13 @@ class TestIndexingHealthCheck:
         # Slot stats are counters only, so nothing an exception says can reach them.
         assert all(isinstance(v, (int, float)) for v in body.pop("indexing_llm").values())
         assert set(body.pop("llm_gateway")) == {"limit", "in_use", "waiting", "providers"}
+        assert set(body.pop("llm_wire_hooks")) == {"unhooked", "warning"}
         assert body == {
             "status": "healthy",
             "timestamp": 1234567890,
             "resource_governor": {"error": "unavailable"},
             "dispatch": {"record": {"error": "unavailable"}},
+            "openCircuits": [],
         }
         assert [c.args for c in mock_container.logger.return_value.warning.call_args_list] == [
             ("Resource governor stats failed: %s", governor_error),
@@ -2033,6 +2281,7 @@ class TestIndexingHealthCheck:
     async def test_health_check_exception_is_not_echoed(self):
         """The exception goes to the log; the unauthenticated caller gets fixed text."""
         import json
+
         from app.indexing_main import health_check
 
         mock_ts = MagicMock(side_effect=[RuntimeError("SENTINEL timestamp error"), 9999999])
@@ -3576,6 +3825,47 @@ class TestRepublishOnlyWhatTheQueueHasPassed:
         graph.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_work_only_a_stopped_consumer_holds_does_not_keep_the_record_waiting(self) -> None:
+        """A replaced process left entries from weeks ago pending on the lane. They
+        wait for a reclaim; the record's own event is not behind them."""
+        from app.services.messaging.lanes.backlog import LaneBacklog, StalePending
+
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        weeks_ago = get_epoch_timestamp_in_ms() - 400 * HOUR_MS
+        backlog = AsyncMock(return_value=LaneBacklog(
+            "record-events",
+            {"record-events.3": weeks_ago},
+            oldest_live_ms={},
+            stale={"record-events.3": StalePending({"gone": (2000, 400 * HOUR_MS)}, weeks_ago)},
+        ))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 1
+
+        producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_live_work_behind_a_stopped_consumers_entries_still_keeps_it_waiting(self) -> None:
+        from app.services.messaging.lanes.backlog import LaneBacklog
+
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        now = get_epoch_timestamp_in_ms()
+        backlog = AsyncMock(return_value=LaneBacklog(
+            "record-events",
+            {"record-events.3": now - 400 * HOUR_MS},
+            oldest_live_ms={"record-events.3": now - 5 * HOUR_MS},
+        ))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_lane_that_has_moved_past_the_record_means_its_event_is_not_coming(self) -> None:
         record = self._queued(3)
         graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
@@ -4162,7 +4452,10 @@ class TestPipelineStageSweep:
     """The stage sweep reclaims abandoned running jobs with or without distributed concurrency."""
 
     async def _sweep(self, manager: object) -> AsyncMock:
-        from app.indexing_main import _STAGE_IN_PROGRESS_SWEEP_MS, _sweep_pipeline_stages
+        from app.indexing_main import (
+            _STAGE_IN_PROGRESS_SWEEP_MS,
+            _sweep_pipeline_stages,
+        )
 
         container = MagicMock()
         runtime = _stage_runtime()

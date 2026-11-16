@@ -22,24 +22,38 @@ test.describe('Workspace Services', () => {
   });
 
   test('shows core infrastructure service rows @smoke', async ({ page }) => {
-    await expect(page.locator('text=Redis').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=MongoDB').first()).toBeVisible({ timeout: 5_000 });
-    // These show resolved names from the API (e.g. "Kafka" or "Redis Streams" instead of "Message broker")
-    const broker = page.locator('text=/Kafka|Redis Streams|Message broker/');
-    await expect(broker.first()).toBeVisible({ timeout: 5_000 });
-    const graphDb = page.locator('text=/ArangoDB|Neo4j|Graph database/');
-    await expect(graphDb.first()).toBeVisible({ timeout: 5_000 });
-    const vectorDb = page.locator('text=/Qdrant|Vector database/');
-    await expect(vectorDb.first()).toBeVisible({ timeout: 5_000 });
+    const healthResponse = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === '/api/v1/health',
+    );
+    await page.reload();
+    const { services, serviceNames } = await (await healthResponse).json();
+
+    // Every install has a cache, a broker, a graph, a vector store and one
+    // document store: MongoDB, or PostgreSQL on a PostgreSQL-only install.
+    const keys = Object.keys(services);
+    expect(keys).toEqual(expect.arrayContaining(['redis', 'messageBroker', 'graphDb', 'vectorDb']));
+    expect(keys.filter((k) => k === 'mongodb' || k === 'postgres')).toHaveLength(1);
+
+    // Each row shows the name the API resolved. On a PostgreSQL-only install
+    // "PostgreSQL" names two rows (document store and graph), so count them.
+    const rowsPerName = new Map<string, number>();
+    for (const key of keys) {
+      const name: string = serviceNames[key];
+      expect(name, `serviceNames.${key}`).toBeTruthy();
+      rowsPerName.set(name, (rowsPerName.get(name) ?? 0) + 1);
+    }
+    for (const [name, count] of rowsPerName) {
+      await expect(page.getByText(name, { exact: true })).toHaveCount(count, { timeout: 5_000 });
+    }
   });
 
   test('shows dynamic service names from deployment config', async ({ page }) => {
-    // The message broker should resolve to either "Kafka" or "Redis Streams"
-    const brokerName = page.locator('text=/Kafka|Redis Streams/');
+    // The message broker should resolve to "Kafka", "Redis Streams" or "PostgreSQL queue"
+    const brokerName = page.locator('text=/Kafka|Redis Streams|PostgreSQL queue/');
     await expect(brokerName.first()).toBeVisible({ timeout: 5_000 });
 
-    // The graph DB should resolve to either "ArangoDB" or "Neo4j"
-    const graphDbName = page.locator('text=/ArangoDB|Neo4j/');
+    // The graph DB should resolve to "ArangoDB", "Neo4j" or "PostgreSQL"
+    const graphDbName = page.locator('text=/^(ArangoDB|Neo4j|PostgreSQL)$/');
     await expect(graphDbName.first()).toBeVisible({ timeout: 5_000 });
   });
 
@@ -90,9 +104,10 @@ test.describe('Workspace Services', () => {
   test('redis row label reflects the configured redis mode', async ({ page }) => {
     // deployment.redisMode from /api/v1/health (health.routes.ts) is
     // 'standalone' by default; the row appends '(Cluster)' / '(MemoryDB)'
-    // only when the backend reports one of those modes.
+    // only when the backend reports one of those modes. REDIS_MODE=postgres
+    // keeps the cache in PostgreSQL and names the row "PostgreSQL cache".
     const redisRow = page
-      .locator('text=/^Redis( \\((Cluster|MemoryDB)\\))?$/')
+      .locator('text=/^(Redis( \\((Cluster|MemoryDB)\\))?|PostgreSQL cache)$/')
       .first();
     await expect(redisRow).toBeVisible({ timeout: 5_000 });
   });

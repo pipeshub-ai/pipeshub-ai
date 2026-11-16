@@ -84,6 +84,7 @@
       "restoredMany_many": "Obnoveno {{count}} položky",
       "restoredMany_other": "Obnoveno {{count}} položek",
       "showing": "Zobrazeno {{from}}–{{to}} z {{total}}",
+      "showingAtLeast": "Zobrazeno {{from}}–{{to}} z {{total, number}}+",
       "previous": "Předchozí",
       "next": "Další",
       "nameAndMore_one": "{{name}} a {{count}} další",
@@ -844,7 +845,8 @@
       "folderSeparator": "Názvy složek nesmí obsahovat \"/\" ani \"\\\".",
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     },
-    "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu."
+    "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu.",
+    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4654,6 +4656,10 @@
           "label": "MongoDB",
           "description": "Relace a metadata uživatelů"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "Relace a metadata uživatelů"
+        },
         "messageBroker": {
           "label": "Zprostředkovatel zpráv",
           "description": "Distribuované streamování událostí"
@@ -5567,6 +5573,7 @@
     "mcpServerNeedsToolsTooltip": "Vyberte nástroje pro každý MCP server, nebo zapněte Všechny nástroje.",
     "mcpServerNeedsToolsBanner": "Vyberte alespoň jeden nástroj pro {{names}}, nebo zapněte Všechny nástroje.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} je váš osobní MCP server. Nelze jej přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet.",
+    "serviceAgentCollectionsNeedBinding": "Kolekce lze přidat, jakmile bude tento servisní agent svázán se servisním účtem.",
     "mcpAgentApprovalsEnterprise": "Schvalování nástrojů pro jednotlivé agenty je součástí edice Enterprise. Zde platí vlastní schválení nástrojů každého uživatele.",
     "mcpAgentApprovals": "Schvalování nástrojů pro jednotlivé agenty",
     "limitSource": "Vyberte, co {{name}} prohledává",
@@ -5605,6 +5612,7 @@
       "noRecordMetadata": "K této položce nejsou k dispozici žádná další metadata záznamu."
     },
     "indexingReasonAria": "Podrobnosti o selhání indexování",
+    "indexingNoteAria": "Poznámka k indexování",
     "stageTrackLabel": "Zpracování",
     "stageParsed": "Parsováno",
     "stageSearchable": "Prohledávatelné",

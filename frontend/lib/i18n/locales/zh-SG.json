@@ -70,6 +70,7 @@
       "restoredMany_one": "已恢复 {{count}} 个项目",
       "restoredMany_other": "已恢复 {{count}} 个项目",
       "showing": "第 {{from}}–{{to}} 项，共 {{total}} 项",
+      "showingAtLeast": "第 {{from}}–{{to}} 项，共 {{total, number}}+ 项",
       "previous": "上一页",
       "next": "下一页",
       "nameAndMore_one": "{{name}} 及另外 {{count}} 项",
@@ -797,7 +798,8 @@
       "folderSeparator": "文件夹名称不能包含“/”或“\\”。",
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
     },
-    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。"
+    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。",
+    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4512,6 +4514,10 @@
           "label": "MongoDB",
           "description": "会话和用户元数据"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "会话和用户元数据"
+        },
         "messageBroker": {
           "label": "消息代理",
           "description": "分布式事件流"
@@ -5398,6 +5404,7 @@
     "mcpServerNeedsToolsTooltip": "请为每个 MCP 服务器选择工具，或开启“全部工具”。",
     "mcpServerNeedsToolsBanner": "请为 {{names}} 至少选择一个工具，或开启“全部工具”。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的个人 MCP 服务器，不能添加到与组织共享或以服务账号运行的智能体中。",
+    "serviceAgentCollectionsNeedBinding": "将此服务智能体绑定到服务账号后，才能添加集合。",
     "mcpAgentApprovalsEnterprise": "按智能体设置的工具审批属于企业版。在这里，适用每个人自己的工具审批设置。",
     "mcpAgentApprovals": "按智能体设置工具审批",
     "limitSource": "选择 {{name}} 的搜索范围",
@@ -5436,6 +5443,7 @@
       "noRecordMetadata": "此项目没有其他记录元数据。"
     },
     "indexingReasonAria": "索引失败详情",
+    "indexingNoteAria": "索引说明",
     "stageTrackLabel": "处理流程",
     "stageParsed": "已解析",
     "stageSearchable": "可搜索",

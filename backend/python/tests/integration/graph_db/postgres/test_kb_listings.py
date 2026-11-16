@@ -7,19 +7,21 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+import os
+import re
 
+import asyncpg
 import pytest
 
 from app.core import org_context
+from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 
+from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
-from .test_kb import folder, grant, kb, other_org, team, users
-
-if TYPE_CHECKING:
-    from .test_access import World
+from .test_kb import FOLDER, folder, grant, kb, other_org, team, users
 
 pytestmark = pytest.mark.integration
 
@@ -215,6 +217,66 @@ async def test_the_flat_listing_sorts_strings_by_code_point_and_numbers_by_value
     assert [x["createdAtTimestamp"] for x in (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="createdAtTimestamp", sort_order="asc"))[0]] == [2, 9, 10, 33, 100, 1000]
 
 
+async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flat listing of a collection (the page, and one folder's page with the collection's filters) reads the collection's edges by its id, each node by its id and
+    each folder's children by the folder, whatever the organisation's other connectors hold; one folder's page reads that folder only. Its estimates cannot be trusted:
+    the collection's edges are estimated at one row (coll, to_coll and to_id are correlated) and the jsonb filters at the planner's default 0.5 %, so a join left to the
+    planner read every record of the organisation for each folder at a million records (past the 20 s timeout)."""
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
+    await tree(w)
+    await users(w, "me")
+    await grant(w, "me", "READER")
+    # 20 more folders of 10 records each and 200 more root records in kb1 (400 records); 20,000 records and their links in another connector
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', id, jsonb_build_object('recordName', id, 'mimeType', mime,
+        'connectorId', app, 'orgId', $1::text, 'createdAtTimestamp', 1000) FROM (SELECT 'kf' || g AS id, $2::text AS mime, 'kb1' AS app FROM generate_series(1, 20) g
+        UNION ALL SELECT 'kr' || g, 'text/plain', 'kb1' FROM generate_series(1, 400) g UNION ALL SELECT 'n' || g, 'text/plain', 'other' FROM generate_series(1, 20000) g) x""",
+        w.org, FOLDER), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, coll, 'records', f, to_coll, t, doc
+        FROM (SELECT 'belongsTo' AS coll, 'kf' || g AS f, 'apps' AS to_coll, 'kb1' AS t, '{}'::jsonb AS doc FROM generate_series(1, 20) g
+        UNION ALL SELECT 'belongsTo', 'kr' || g, 'apps', 'kb1', '{}' FROM generate_series(1, 400) g
+        UNION ALL SELECT 'nodeRelations', 'kf' || (1 + (g - 1) / 10), 'records', 'kr' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 200) g
+        UNION ALL SELECT 'nodeRelations', 'n' || (g / 10), 'records', 'n' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(10, 20000) g
+        UNION ALL SELECT 'isOfType', 'n' || g, 'files', 'nf' || g, '{}' FROM generate_series(1, 20000) g) x""", w.org), write=True)
+    # their files, as every file record has one: with none, the organisation's isOfType edges were rightly estimated at a row or two, and a read of all of them
+    # (the to_id index bounded by org and coll, in the page's file order) was as cheap as the record's own edge, and was taken now and then
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'files', 'nf' || g, '{"extension": "txt"}'::jsonb
+        FROM generate_series(1, 20000) g""", w.org), write=True)
+    con = await asyncpg.connect(admin_url)
+    try:
+        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
+    finally:
+        await con.close()
+    sent: list[tuple[str, tuple]] = []
+    real = uow.Tx.fetch
+
+    async def spy(tx: uow.Tx, sql: str, *args: object, **kw: object) -> object:
+        if "pipeshub:graph.list_kb_records" in sql:
+            sent.append((sql, args))
+        return await real(tx, sql, *args, **kw)
+    monkeypatch.setattr(uow.Tx, "fetch", spy)
+    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 404        # the tree's 4, the 20 folders' 200 and 200 at the root
+    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[1] == 1
+    assert len(sent) == 3                                                         # the page, then a folder's page and the collection's filters
+
+    def scans(node: dict) -> list[dict]:
+        return [node] + [x for child in node.get("Plans", []) for x in scans(child)]
+    for i, (sql, args) in enumerate(sent):
+        ran = await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args))
+        plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
+        for n in scans(plan):
+            rel = n.get("Relation Name") or ""
+            # a bitmap heap scan is as bounded as its bitmap index scans: each must carry the key, as a plain index scan must
+            conds = [x.get("Index Cond") or "" for x in scans(n) if x["Node Type"] == "Bitmap Index Scan"] if n["Node Type"] == "Bitmap Heap Scan" else \
+                [n.get("Index Cond") or ""] if n["Node Type"] in ("Index Scan", "Index Only Scan") else [""]
+            if rel.startswith("nodes"):
+                assert conds and all(re.search(r"\bid = ", c) for c in conds), (i, n["Node Type"], n.get("Index Name"), conds)
+            if rel.startswith("edges"):      # every edge read is bounded by a node of the collection: its id, a folder or a record
+                assert conds and all(re.search(r"\b(to_id|from_id) = ", c) for c in conds), (i, n["Node Type"], conds)
+        if i == 1:      # one folder's page reads that folder, not the collection
+            assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 600, plan.get("Shared Hit Blocks")
+
+
 async def test_a_failed_flat_listing_raises_and_the_next_call_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await tree(w)
     await users(w, "me")
@@ -312,7 +374,7 @@ async def test_a_template_opens_for_its_own_grant_or_a_team_the_user_is_in_and_n
     t = await w.p.get_template("t1", "reader")
     assert (t["access_type"], t["can_edit"], t["can_delete"], t["can_share"]) == ("INDIVIDUAL", False, False, False)
     t = await w.p.get_template("t1", "member")
-    assert (t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) == ("TEAM", "WRITER", True, False)
+    assert (t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) == ("TEAM", "WRITER", False, False)      # a team's grant edits nothing
     await users(w, "odd", "oddteam")                                                                               # a grant with a role that is none of the known ones opens nothing
     await w.edge("permission", ("users", "odd"), ("agentTemplates", "t1"), type="USER", role="EDITOR")
     await w.nodes("teams", {"_key": "tx"})
@@ -324,7 +386,7 @@ async def test_a_template_opens_for_its_own_grant_or_a_team_the_user_is_in_and_n
         await w.edge("permission", ("users", "member"), ("teams", team_key), type="USER", role="READER")
         await w.edge("permission", ("teams", team_key), ("agentTemplates", "t1"), type="TEAM", role=role)
     t = await w.p.get_template("t1", "member")
-    assert (t["access_type"], t["user_role"], t["can_delete"]) == ("TEAM", "OWNER", True)
+    assert (t["access_type"], t["user_role"], t["can_delete"]) == ("TEAM", "OWNER", False)                  # not even a team owner's
     await w.p.delete_edges_from("tz", "teams", "permission")
     assert (await w.p.get_template("t1", "member"))["user_role"] == "WRITER"
     assert (await w.p.get_template("t1", "both"))["access_type"] == "INDIVIDUAL"                                    # the user's own grant first
@@ -353,6 +415,73 @@ async def test_a_clone_is_a_new_active_template_with_no_owner_and_no_grants(w: W
     assert await w.p.clone_agent_template("nope") is None
     with other_org():
         assert await w.p.clone_agent_template("t1") is None
+
+
+async def template_world(w: World) -> None:
+    """own owns t1 and t2; member reaches t1 through two teams (WRITER and READER) and t3 through one; both holds t1 directly and through a team."""
+    await users(w, "own", "member", "both", "odd")
+    await tpl(w, "t1", updatedAtTimestamp=1)
+    await tpl(w, "t2")
+    await tpl(w, "t3")
+    await tpl(w, "dead", isDeleted=True)
+    for t in ("t1", "t2", "dead"):
+        await w.edge("permission", ("users", "own"), ("agentTemplates", t), type="USER", role="OWNER", id=f"p-{t}", createdAtTimestamp=5)
+    await w.edge("permission", ("users", "both"), ("agentTemplates", "t1"), type="USER", role="READER")
+    await w.edge("permission", ("users", "odd"), ("agentTemplates", "t2"), type="USER", role="EDITOR")             # a role that is none of the known ones
+    await w.nodes("teams", {"_key": "tw"}, {"_key": "tr"}, {"_key": "towner"})
+    for tm in ("tw", "tr"):
+        await w.edge("permission", ("users", "member"), ("teams", tm), type="USER", role="READER")
+    await w.edge("permission", ("users", "both"), ("teams", "tw"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "tw"), ("agentTemplates", "t1"), type="TEAM", role="WRITER")
+    await w.edge("permission", ("teams", "tr"), ("agentTemplates", "t1"), type="TEAM", role="READER")
+    await w.edge("permission", ("teams", "tr"), ("agentTemplates", "t3"), type="TEAM", role="READER")
+    await w.edge("permission", ("teams", "tr"), ("agentTemplates", "dead"), type="TEAM", role="OWNER")
+    await w.edge("permission", ("users", "member"), ("teams", "towner"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "towner"), ("agentTemplates", "t2"), type="TEAM", role="OWNER")             # a team owner, not the user's own grant
+
+
+async def test_the_template_list_is_the_users_own_grants_then_their_teams_and_no_one_elses(w: World) -> None:
+    await template_world(w)
+    other = _org()
+    with other_org(other):
+        ow = World(w.p, other)
+        await users(ow, "own")
+        await tpl(ow, "t9")
+        await ow.edge("permission", ("users", "own"), ("agentTemplates", "t9"), type="USER", role="OWNER")
+    got = await w.p.get_all_agent_templates("own")
+    assert [(t["_key"], t["access_type"], t["user_role"], t["permission_id"], t["permission_created_at"], t["can_delete"]) for t in got] == [
+        ("t1", "USER", "OWNER", "p-t1", 5, True), ("t2", "USER", "OWNER", "p-t2", 5, True)]            # not the deleted one, nor another org's
+    assert got[0]["name"] == "t1" and got[0]["_id"] == "agentTemplates/t1" and (got[0]["can_edit"], got[0]["can_share"], got[0]["can_view"]) == (True, True, True)
+    got = await w.p.get_all_agent_templates("member")
+    assert [(t["_key"], t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) for t in got] == [
+        ("t1", "TEAM", "WRITER", False, False), ("t2", "TEAM", "OWNER", False, False), ("t3", "TEAM", "READER", False, False)]      # once each, the highest team role
+    assert [(t["_key"], t["access_type"], t["user_role"]) for t in await w.p.get_all_agent_templates("both")] == [("t1", "USER", "READER")]      # their own grant first
+    assert await w.p.get_all_agent_templates("odd") == [] and await w.p.get_all_agent_templates("nobody") == []
+    with other_org(other):
+        assert [t["_key"] for t in await w.p.get_all_agent_templates("own")] == ["t9"]
+    await w.p.delete_edges_from("member", "users", "permission")                                                  # leaves the teams: loses them
+    assert await w.p.get_all_agent_templates("member") == []
+
+
+async def test_a_template_is_edited_or_deleted_only_by_the_user_who_owns_it(w: World) -> None:
+    await template_world(w)
+    p = w.p
+    doc = lambda k: p.get_document(k, "agentTemplates")  # noqa: E731
+    assert await p.update_agent_template("t1", {"name": "New", "description": "d", "models": ["m"], "createdBy": "mallory", "isDeleted": True}, "own") is True
+    d = await doc("t1")
+    assert (d["name"], d["description"], d["models"], d["updatedByUserId"]) == ("New", "d", ["m"], "own") and d["updatedAtTimestamp"] > 1
+    assert d.get("createdBy") is None and not d.get("isDeleted")                                                      # fields outside the list are not written
+    for t, user in (("t1", "member"), ("t1", "both"), ("t2", "member"), ("t2", "odd"), ("dead", "own"), ("missing", "own"), ("t1", "nobody")):
+        assert await p.update_agent_template(t, {"name": "x"}, user) is False, (t, user)      # a team writer, a reader, a team owner, an unknown role, deleted, missing
+        assert await p.delete_agent_template(t, user) is False, (t, user)
+    with other_org():
+        assert await p.update_agent_template("t1", {"name": "x"}, "own") is False and await p.delete_agent_template("t1", "own") is False
+    assert (await doc("t1"))["name"] == "New" and not (await doc("t2")).get("isDeleted")
+    assert await p.delete_agent_template("t2", "own") is True
+    d = await doc("t2")
+    assert d["isDeleted"] is True and d["deletedByUserId"] == "own" and d["deletedAtTimestamp"] > 0                       # kept, marked
+    assert [t["_key"] for t in await p.get_all_agent_templates("own")] == ["t1"]
+    assert await p.delete_agent_template("t2", "own") is False and await p.update_agent_template("t2", {"name": "x"}, "own") is False
 
 
 # ---- the legacy hub app ----------------------------------------------------------------------------------------------------------------------
@@ -386,6 +515,7 @@ CALLS = {
     "get_kb_children": ("k", 0, 1), "get_folder_children": ("k", "f", 0, 1), "list_kb_records": ("k", "u", "o", 0, 1),
     "list_accessible_artifacts": ("u", "o", 0, 1, None, None, None, None, None, "name", "asc"), "get_artifact_detail": ("u", "o", "a"),
     "get_template": ("t", "u"), "clone_agent_template": ("t",), "delete_kb_hub_app": ("o",),
+    "get_all_agent_templates": ("u",), "update_agent_template": ("t", {"name": "n"}, "u"), "delete_agent_template": ("t", "u"), "_template_owned": ("t", "u", None),
 }
 
 
@@ -399,3 +529,18 @@ async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_
         await getattr(pg_provider, name)(*CALLS[name])
     with org_context.system("test.no-org"), pytest.raises(Exception, match="(?i)system|org"):
         await getattr(pg_provider, name)(*CALLS[name])
+
+
+async def test_a_templates_listed_edit_and_delete_rights_are_what_the_writes_allow(w: World) -> None:
+    """A direct writer and a team owner are told they may not edit or delete, and they may not; the owner is told they may, and they may."""
+    await template_world(w)
+    await users(w, "writer")
+    await w.edge("permission", ("users", "writer"), ("agentTemplates", "t2"), type="USER", role="WRITER")
+    for user, expected in (("writer", False), ("member", False), ("own", True)):               # member reaches t2 as a team owner
+        listed = next(t for t in await w.p.get_all_agent_templates(user) if t["_key"] == "t2")
+        opened = await w.p.get_template("t2", user)
+        assert (listed["can_edit"], listed["can_delete"], opened["can_edit"], opened["can_delete"]) == (expected,) * 4, user
+        assert await w.p.update_agent_template("t2", {"name": f"by {user}"}, user) is expected, user
+    for user in ("writer", "member"):
+        assert await w.p.delete_agent_template("t2", user) is False, user
+    assert await w.p.delete_agent_template("t2", "own") is True

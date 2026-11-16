@@ -43,6 +43,8 @@ on:
       - 'backend/python/app/services/messaging/**'
       - 'backend/python/app/services/vector_db/**'
       - 'backend/python/app/services/graph_db/**'
+      # The record schema and the validator Neo4j and PostgreSQL write through.
+      - 'backend/python/app/schema/**'
       - 'backend/python/app/services/permissions/**'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/config/**'
