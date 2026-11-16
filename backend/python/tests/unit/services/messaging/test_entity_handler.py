@@ -604,7 +604,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1"))
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1", user_id=None))
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -624,7 +624,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_cached_access_moves_before_the_source_accounts_are_unlinked(self) -> None:
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1"))
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1", user_id=None))
         svc = _make_entity_service(graph_provider=graph_provider)
         order: list[str] = []
         svc._unlink_source_accounts = AsyncMock(side_effect=lambda _key: order.append("unlink"))
@@ -635,6 +635,26 @@ class TestUserDeleted:
         with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock(side_effect=notified)):
             assert await svc.process_event("userDeleted", {"orgId": "org-1", "email": "alice@test.com"}) is True
         assert order[:2] == ["notify", "unlink"], "a stalled unlink must not keep access cached from before the delete"
+
+    @pytest.mark.asyncio
+    async def test_a_late_delete_finds_its_user_by_user_id_not_the_new_holder_of_the_address(self) -> None:
+        """u-old was deleted after u-new took the address. Its late userDeleted deactivates u-old, never u-new."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "key-old", "orgId": "org-1", "email": "old@test.com"})
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is True
+        written = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert (written["id"], written["email"], written["isActive"]) == ("key-old", "old@test.com", False)
+
+    @pytest.mark.asyncio
+    async def test_a_delete_never_deactivates_a_user_of_another_user_id_found_by_address(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is False
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
