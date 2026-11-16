@@ -7238,8 +7238,9 @@ class JiraConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
+            # The synced directory alone: this map also holds the issue's own people, read from its payload.
             await check_unlisted_holders(
-                self, permissions, user_by_account_id
+                self, permissions, synced_user_by_account_id or {}
             )
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder

@@ -6537,8 +6537,9 @@ class JiraDataCenterConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
+            # The synced directory alone: the ChainMap also holds the issue's own people, read from its payload.
             await check_unlisted_holders(
-                self, permissions, user_by_account_id
+                self, permissions, synced_users
             )
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
                 # Stored open, and the issue is not known to be without a level now: closed, not left readable

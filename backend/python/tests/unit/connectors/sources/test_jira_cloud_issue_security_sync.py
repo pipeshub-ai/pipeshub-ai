@@ -1745,3 +1745,19 @@ class TestHoldersOutsideTheListingGoThroughTheAccountCheck:
         dep.remove_user_access_to_connector.assert_awaited_once_with("conn-sec", "guest@example.org")
         assert ("guest@example.org", "ext-2") in {(p.email, p.external_id) for p in perms}
         assert accounts.holds("guest@example.org", "ext-2") and not accounts.holds("guest@example.org", "ext-1")
+
+
+class TestReindexChecksTheIssuesOwnPeopleOutsideTheListing:
+    @pytest.mark.asyncio
+    async def test_a_reporter_outside_the_listing_goes_through_the_account_check_on_a_reindex(self) -> None:
+        """The reindex adds the issue's own people to its lookup map; they are still not in the user listing."""
+        issue = _issue({"id": "10102", "name": "Leadership"}, updated="2025-01-01T00:00:00.000+0000")
+        issue["fields"]["reporter"] = {"accountId": "ext-r", "emailAddress": "guest@example.org", "active": True}
+        members = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": {"type": "reporter"}}]}
+        c = _reindex_connector(issue, [_resp(200, SCHEME), _resp(200, members)])
+        check = AsyncMock(return_value=True)
+        c.data_entities_processor.source_accounts = MagicMock(return_value=MagicMock(before_grants=check))
+
+        await c._check_and_fetch_updated_issue(_stored_ticket(), {})
+
+        assert ("guest@example.org", "ext-r") in check.await_args.args[0]
