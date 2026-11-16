@@ -82,6 +82,18 @@ describe('a sidebar folder of a source still being prepared', () => {
     expect(childIds('kb-eng')).toEqual(['f-a', 'f-b']);
   });
 
+  it('stops a walk at a next page still being prepared instead of asking for it again and again', async () => {
+    storeChildrenList('kb-eng', [folder('f-a', 'Alpha')], { hasNext: true, nextCursor: 'p2', nodeType: 'app', pagesLoaded: 1 });
+    const before = kb().nodeChildrenPagination.get('kb-eng');
+    getNodeChildren.mockResolvedValue(preparing());
+
+    await openFolderChildren('kb-eng', 'app', { until: () => false });      // as the move dialog walks
+
+    expect(getNodeChildren).toHaveBeenCalledTimes(1);
+    expect(kb().nodeChildrenPagination.get('kb-eng')).toBe(before);      // the cursor waits for a later open
+    expect(childIds('kb-eng')).toEqual(['f-a']);
+  });
+
   it('keeps the children read before when a reload finds the source being prepared again', async () => {
     seed([folder('f-a', 'Alpha')]);
     useKnowledgeBaseStore.setState((s) => ({ expandedFolders: { ...s.expandedFolders, 'kb-eng': true } }));

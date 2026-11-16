@@ -159,8 +159,10 @@ export async function openFolderChildren(
   for (let step = 0; options.until && step < MAX_PAGES_PER_WALK; step += 1) {
     const state = useKnowledgeBaseStore.getState();
     if (options.until(state.nodeChildrenCache.get(id) ?? [])) break;
-    if (!state.nodeChildrenPagination.get(id)?.hasNext) break;
-    await loadNextChildrenPage(id);
+    const cursor = state.nodeChildrenPagination.get(id);
+    if (!cursor?.hasNext) break;
+    // A page that added nothing while the cursor stayed (the source is still being prepared) would only be asked again: the walk stops and the cursor waits for a later open.
+    if (!(await loadNextChildrenPage(id)) && useKnowledgeBaseStore.getState().nodeChildrenPagination.get(id) === cursor) break;
   }
   showFolderChildren(id);
 }
