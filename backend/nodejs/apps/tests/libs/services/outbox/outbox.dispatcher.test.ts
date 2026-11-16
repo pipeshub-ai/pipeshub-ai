@@ -2,7 +2,15 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { OutboxDispatcher } from '../../../../src/libs/services/outbox/outbox.dispatcher';
+import {
+  OutboxDispatcher,
+  kickOutbox,
+} from '../../../../src/libs/services/outbox/outbox.dispatcher';
+import {
+  setOutboxRepository,
+  type OutboxEventRow,
+  type OutboxRepository,
+} from '../../../../src/libs/repositories/outbox';
 import { OutboxEvent } from '../../../../src/libs/repositories/outbox/schema/outbox.schema';
 
 function makeLogger() {
@@ -315,5 +323,149 @@ describe('OutboxDispatcher', () => {
 
     release!();
     await first;
+  });
+});
+
+/**
+ * A queue whose claim hands each row out once, as the stores' atomic claims do
+ * (PostgreSQL FOR UPDATE SKIP LOCKED, MongoDB findOneAndUpdate). `onEmpty` runs
+ * when a claim finds nothing, before it answers.
+ */
+function memoryOutbox(onEmpty: () => void = () => {}) {
+  const pending: OutboxEventRow[] = [];
+  const published: string[] = [];
+  const repo = {
+    claimNext: async () => {
+      const next = pending.shift();
+      if (next) return next;
+      onEmpty();
+      return null;
+    },
+    markPublished: async (id: string) => {
+      published.push(id);
+    },
+    markFailed: async () => {},
+  } as unknown as OutboxRepository;
+  const add = (id: string) =>
+    pending.push({
+      _id: id,
+      topic: 'entity-events',
+      key: 'userAdded',
+      orderingKey: `user:org-1:${id}`,
+      value: '{}',
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: new Date(),
+      createdAt: new Date(),
+    });
+  return { repo, add, published };
+}
+
+async function until(check: () => boolean, ms = 2000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+describe('kickOutbox', () => {
+  const HOUR = 60 * 60 * 1000;
+  let dispatcher: OutboxDispatcher | null = null;
+
+  afterEach(async () => {
+    await dispatcher?.stop();
+    dispatcher = null;
+    setOutboxRepository();
+    sinon.restore();
+  });
+
+  it('delivers what was just committed without waiting for the timer', async () => {
+    const outbox = memoryOutbox();
+    setOutboxRepository(outbox.repo);
+    const producer = makeProducer();
+    dispatcher = new OutboxDispatcher(producer as any, makeLogger() as any, HOUR);
+    dispatcher.start();
+
+    outbox.add('org-created');
+    outbox.add('admin-added');
+    kickOutbox();
+
+    await until(() => outbox.published.length === 2);
+    expect(outbox.published).to.deep.equal(['org-created', 'admin-added']);
+    expect(producer.publish.callCount).to.equal(2);
+  });
+
+  it('makes a running pass look again when the kick lands after its last empty claim', async () => {
+    // The pass in flight found the queue empty just before the new rows
+    // committed; without another look they would wait for the next tick.
+    let kicked = false;
+    const outbox = memoryOutbox(() => {
+      if (kicked) return;
+      kicked = true;
+      outbox.add('admin-added');
+      kickOutbox();
+    });
+    setOutboxRepository(outbox.repo);
+    const producer = makeProducer();
+    dispatcher = new OutboxDispatcher(producer as any, makeLogger() as any, HOUR);
+    dispatcher.start();
+    outbox.add('org-created');
+
+    expect(await dispatcher.drain()).to.equal(2);
+    expect(outbox.published).to.deep.equal(['org-created', 'admin-added']);
+  });
+
+  it('never sends an event twice, however many kicks and ticks overlap', async () => {
+    let emptyClaims = 0;
+    const outbox = memoryOutbox(() => {
+      emptyClaims += 1;
+    });
+    setOutboxRepository(outbox.repo);
+    const producer = makeProducer();
+    dispatcher = new OutboxDispatcher(producer as any, makeLogger() as any, 5);
+    dispatcher.start();
+    outbox.add('org-created');
+
+    kickOutbox();
+    kickOutbox();
+    await Promise.all([dispatcher.drain(), dispatcher.drain()]);
+    // Two more passes found the queue empty: timer ticks ran after the kicks and drains.
+    const afterDrains = emptyClaims;
+    await until(() => emptyClaims >= afterDrains + 2);
+
+    expect(producer.publish.callCount).to.equal(1);
+    expect(outbox.published).to.deep.equal(['org-created']);
+  });
+
+  it('leaves the timer running as the fallback', async () => {
+    let emptyClaims = 0;
+    const outbox = memoryOutbox(() => {
+      emptyClaims += 1;
+    });
+    setOutboxRepository(outbox.repo);
+    const producer = makeProducer();
+    dispatcher = new OutboxDispatcher(producer as any, makeLogger() as any, 10);
+    dispatcher.start();
+    kickOutbox();
+    // The kick's pass is over before the row lands, so only a tick can deliver it.
+    await until(() => emptyClaims >= 1);
+
+    outbox.add('later');
+    await until(() => outbox.published.length === 1);
+    expect(outbox.published).to.deep.equal(['later']);
+  });
+
+  it('does nothing once the dispatcher has stopped', async () => {
+    const outbox = memoryOutbox();
+    setOutboxRepository(outbox.repo);
+    const producer = makeProducer();
+    const stopped = new OutboxDispatcher(producer as any, makeLogger() as any, HOUR);
+    stopped.start();
+    await stopped.stop();
+    outbox.add('org-created');
+
+    kickOutbox();
+    expect(producer.publish.called).to.equal(false);
   });
 });

@@ -7,9 +7,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-import json
 import os
-import re
 
 import asyncpg
 import pytest
@@ -18,6 +16,7 @@ from app.core import org_context
 from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from tests.support import plan_gate
 
 from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
@@ -259,20 +258,12 @@ async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(
     assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[1] == 1
     assert len(sent) == 3                                                         # the page, then a folder's page and the collection's filters
 
-    def scans(node: dict) -> list[dict]:
-        return [node] + [x for child in node.get("Plans", []) for x in scans(child)]
     for i, (sql, args) in enumerate(sent):
         ran = await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args))
-        plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
-        for n in scans(plan):
-            rel = n.get("Relation Name") or ""
-            # a bitmap heap scan is as bounded as its bitmap index scans: each must carry the key, as a plain index scan must
-            conds = [x.get("Index Cond") or "" for x in scans(n) if x["Node Type"] == "Bitmap Index Scan"] if n["Node Type"] == "Bitmap Heap Scan" else \
-                [n.get("Index Cond") or ""] if n["Node Type"] in ("Index Scan", "Index Only Scan") else [""]
-            if rel.startswith("nodes"):
-                assert conds and all(re.search(r"\bid = ", c) for c in conds), (i, n["Node Type"], n.get("Index Name"), conds)
-            if rel.startswith("edges"):      # every edge read is bounded by a node of the collection: its id, a folder or a record
-                assert conds and all(re.search(r"\b(to_id|from_id) = ", c) for c in conds), (i, n["Node Type"], conds)
+        plan = plan_gate.root(ran)
+        assert not (bad := plan_gate.unkeyed(plan, "nodes", r"\bid = ")), (i, bad)
+        # every edge read is bounded by a node of the collection: its id, a folder or a record
+        assert not (bad := plan_gate.unkeyed(plan, "edges", r"\b(to_id|from_id) = ")), (i, bad)
         if i == 1:      # one folder's page reads that folder, not the collection
             assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 600, plan.get("Shared Hit Blocks")
 
