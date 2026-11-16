@@ -176,7 +176,8 @@ class RecordsMixin(PgBase):
             return None
 
     # ---- lookups by id -----------------------------------------------------------------------------------------
-    async def get_existing_record_keys(self, record_ids: list[str], transaction: str | None = None) -> set[str]:
+    async def get_existing_record_keys(self, record_ids: list[str], transaction: str | None = None, *,
+                                       raise_on_error: bool = False) -> set[str]:
         org = current_org_id()
         ids = _uniq(record_ids)
         if not ids:
@@ -187,6 +188,8 @@ class RecordsMixin(PgBase):
             return {r["id"] for r in rows}
         except Exception as e:
             self.logger.error("Failed to check record existence: %s", e)
+            if raise_on_error:
+                raise
             return set()
 
     async def get_records_by_record_ids(self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE, *,
