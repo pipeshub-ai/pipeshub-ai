@@ -89,10 +89,49 @@ def _pairs_per_s(b: MemberBudget, seconds: float) -> float:
     return n / seconds
 
 
-def test_two_hundred_llm_waiters_do_not_slow_the_ledger_or_burn_cpu(ledger: Path) -> None:
+async def test_idle_llm_waiters_cost_a_bounded_number_of_ledger_attempts(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Counts, not wall-clock throughput, so it holds on any runner: 200 waiters on full LLM slots make no
+    reservation attempts while nothing is freed (beyond the watcher's fallback tick), and about one per slot freed.
+    Polling waiters made thousands per second (each a locked ledger transaction)."""
+    b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=3)
+    held = [await b.reserve(Demand(Family.LLM, 0), deadline_s=1) for _ in range(3)]
+    attempts = {"take": 0, "lock": 0}
+    real_take, real_lock = b._take, b._lock
+
+    def take(*a: object, **k: object) -> object:
+        attempts["take"] += 1
+        return real_take(*a, **k)
+
+    def lock() -> None:
+        attempts["lock"] += 1
+        real_lock()
+
+    waiters = [asyncio.create_task(b.reserve(Demand(Family.LLM, 0), deadline_s=30)) for _ in range(200)]
+    await asyncio.sleep(0.5)  # every waiter has made its first attempt
+    monkeypatch.setattr(b, "_take", take)
+    monkeypatch.setattr(b, "_lock", lock)
+    await asyncio.sleep(2.0)  # idle: nothing is freed
+    idle = dict(attempts)
+    assert idle["take"] <= 60 and idle["lock"] <= 120, idle  # the fallback tick (one waiter per 50-100 ms), not 200 pollers
+    for h in held:
+        h.release()
+        await asyncio.sleep(0.3)
+    served = [w for w in waiters if w.done() and not w.cancelled() and w.exception() is None]
+    assert len(served) == 3
+    freed = {k: attempts[k] - idle[k] for k in attempts}
+    assert freed["take"] <= 3 * 4 + 20 and freed["lock"] <= 3 * 8 + 40, freed  # about one wake per freed slot, plus the tick
+    for w in waiters:
+        w.cancel()
+    await asyncio.gather(*waiters, return_exceptions=True)
+    for w in served:
+        w.result().release()
+
+
+def test_two_hundred_llm_waiters_do_not_burn_cpu_or_collapse_the_ledger(ledger: Path) -> None:
+    """Informational throughput (logged) with a loose catastrophe floor; the exact gate is the counting test above."""
     ctx = mp.get_context("spawn")
     b = lp.open_budget(str(ledger), "main", cpu_tokens=16, mem=1 << 36)
-    idle = max(_pairs_per_s(b, 0.5) for _ in range(3))  # best of three windows: a shared host adds noise
+    idle = max(_pairs_per_s(b, 0.5) for _ in range(3))
     held = [b.try_reserve(Demand(Family.LLM, 0)) for _ in range(24)]
     pipes = [ctx.Pipe(duplex=False) for _ in range(4)]
     procs = [ctx.Process(target=lp.llm_waiters, args=(str(ledger), 50, 6.0, w)) for _, w in pipes]
@@ -105,10 +144,9 @@ def test_two_hundred_llm_waiters_do_not_slow_the_ledger_or_burn_cpu(ledger: Path
     cpu = sum(r.recv() for r, _ in pipes)
     for h in held:
         h.release()  # type: ignore[union-attr]
-    # Polling waiters took the loaded rate to 5 % of idle. A shared CI runner adds noise, so the default floor is 60 %;
-    # the strict 90 % is for a quiet host (LEDGER_WAITER_MIN_RATIO=0.9).
-    assert loaded >= float(os.environ.get("LEDGER_WAITER_MIN_RATIO", "0.6")) * idle, (idle, loaded)
-    assert cpu <= 0.1 * 6.0 * len(procs) + 2.0, cpu  # about 0.1 core per process at most (spawn start-up included)
+    print(f"ledger pairs/s: idle {idle:.0f}, with 200 LLM waiters {loaded:.0f}; waiters used {cpu:.1f} CPU-s")
+    assert loaded >= 0.3 * idle, (idle, loaded)  # polling took it to 5 %
+    assert cpu <= 0.1 * 6.0 * len(procs) + 2.0, cpu
 
 
 async def test_a_cancel_token_is_a_method_and_stops_a_wait(ledger: Path) -> None:

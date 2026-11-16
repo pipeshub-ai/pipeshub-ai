@@ -275,8 +275,9 @@ class _Watcher:
 
     One thread per process reads the two change counters (a plain ``pread``, no ledger lock) every
     ``WATCH_S`` while anyone waits, and wakes the waiters of the side that changed: a release of an LLM slot
-    wakes LLM waiters only, so CPU churn never makes them take the lock. Every waiter is also woken at
-    ``FALLBACK_S`` (jittered) in case a change was missed.
+    wakes LLM waiters only, one per freed slot (oldest first), so neither CPU churn nor a crowd of idle LLM
+    waiters makes the lock busy. A CPU waiter is also woken at ``FALLBACK_S`` (jittered), and one LLM waiter per
+    process at that rate, in case a change was missed.
     """
 
     def __init__(self, budget: MemberBudget) -> None:
@@ -301,6 +302,7 @@ class _Watcher:
     def _run(self) -> None:
         last = self._budget._changes()
         next_reap = time.monotonic() + REAP_S
+        next_llm_fallback = time.monotonic() + FALLBACK_S
         while True:
             time.sleep(WATCH_S)
             if time.monotonic() >= next_reap:
@@ -317,13 +319,24 @@ class _Watcher:
             except OSError:
                 continue
             now = time.monotonic()
+            llm_wakes = max(0, cur[1] - last[1])  # one LLM slot freed per bump: wake that many, oldest first
+            cpu_changed = cur[0] != last[0]
             for token, (llm, wake, due) in entries:
-                changed = cur[1] != last[1] if llm else cur[0] != last[0]
-                if changed or now >= due:
-                    with self._lock:
-                        if token in self._entries:
-                            self._entries[token] = (llm, wake, now + FALLBACK_S * (1 + random.random()))
-                    wake()
+                if llm:
+                    fire = llm_wakes > 0
+                    if fire:
+                        llm_wakes -= 1
+                    elif now >= next_llm_fallback:
+                        fire = True
+                        next_llm_fallback = now + FALLBACK_S * (1 + random.random())  # one waiter per tick, not all
+                    if not fire:
+                        continue
+                elif not (cpu_changed or now >= due):
+                    continue
+                with self._lock:
+                    if token in self._entries:
+                        self._entries[token] = (llm, wake, now + FALLBACK_S * (1 + random.random()))
+                wake()
             last = cur
 
 
@@ -769,6 +782,13 @@ class MemberBudget:
         if deadline_s is None and cancel is None:
             raise ValueError("reserve needs a deadline or a cancel token: an unbounded wait cannot be stopped")
 
+    @staticmethod
+    def _check_stop(d: Demand, cancel: CancelToken | None, end: float | None, deadline_s: float | None) -> None:
+        if cancel is not None and cancel.cancelled():
+            raise Cancelled("reserve cancelled")
+        if end is not None and time.monotonic() >= end:
+            raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
+
     async def reserve(self, d: Demand, *, deadline_s: float | None = None, cancel: CancelToken | None = None) -> Permit:
         """Wait for capacity in the ledger's order. ``AdmissionTimeout`` at the deadline, ``Cancelled`` on cancel.
 
@@ -777,26 +797,22 @@ class MemberBudget:
         self._check_wait(deadline_s, cancel)
         end = None if deadline_s is None else time.monotonic() + deadline_s
         head: WaiterHead | None = None
-        seen: tuple[int, int] | None = None
         loop = asyncio.get_running_loop()
         event = asyncio.Event()
         token = self._watcher.add(lambda: loop.call_soon_threadsafe(event.set), llm=d.family is Family.LLM)
+        woken = True
         try:
             while True:
-                event.clear()  # before the attempt: a change that lands after it is not lost
-                seen_now = self._changes()
-                if d.family is Family.LLM and seen is not None and seen_now[1] == seen[1]:
-                    # An LLM slot frees only through a release or a reap, and both bump the counter: with it
-                    # unchanged a fallback wake has nothing to try, so it does not take the ledger lock.
-                    if cancel is not None and cancel.cancelled():
-                        raise Cancelled("reserve cancelled")
+                if d.family is Family.LLM and not woken:
+                    # An LLM waiter tries only when the watcher wakes it (a slot freed, or its fallback tick); a
+                    # timeout of its own wait just re-checks the deadline and the cancel token.
+                    self._check_stop(d, cancel, end, deadline_s)
                     left = None if end is None else end - time.monotonic()
-                    if left is not None and left <= 0:
-                        raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(event.wait(), FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
+                    woken = event.is_set()
                     continue
-                seen = seen_now
+                event.clear()  # before the attempt: a change that lands after it is not lost
                 permit = self._take(d, head)
                 if permit is not None:
                     head = None
@@ -810,6 +826,7 @@ class MemberBudget:
                     raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(event.wait(), FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
+                woken = event.is_set()
         finally:
             self._watcher.remove(token)
             self.withdraw_head(head)
@@ -819,22 +836,17 @@ class MemberBudget:
         self._check_wait(deadline_s, cancel)
         end = None if deadline_s is None else time.monotonic() + deadline_s
         head: WaiterHead | None = None
-        seen: tuple[int, int] | None = None
         event = threading.Event()
         token = self._watcher.add(event.set, llm=d.family is Family.LLM)
+        woken = True
         try:
             while True:
-                event.clear()
-                seen_now = self._changes()
-                if d.family is Family.LLM and seen is not None and seen_now[1] == seen[1]:
-                    if cancel is not None and cancel.cancelled():
-                        raise Cancelled("reserve cancelled")
+                if d.family is Family.LLM and not woken:
+                    self._check_stop(d, cancel, end, deadline_s)
                     left = None if end is None else end - time.monotonic()
-                    if left is not None and left <= 0:
-                        raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
-                    event.wait(FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
+                    woken = event.wait(FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
                     continue
-                seen = seen_now
+                event.clear()
                 permit = self._take(d, head)
                 if permit is not None:
                     head = None
@@ -846,7 +858,7 @@ class MemberBudget:
                 left = None if end is None else end - time.monotonic()
                 if left is not None and left <= 0:
                     raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
-                event.wait(FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
+                woken = event.wait(FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
         finally:
             self._watcher.remove(token)
             self.withdraw_head(head)
