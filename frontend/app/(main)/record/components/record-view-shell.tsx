@@ -211,12 +211,14 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           shouldOpenByRange(details.record)
         ) {
           const epoch = epochRef.current;
-          const opened = await openRecordRange({
+          // A range that cannot be opened is no reason to fail the page: the whole record is tried below, and only
+          // its failure is shown.
+          const opened: Awaited<ReturnType<typeof openRecordRange>> = await openRecordRange({
             recordId,
             onFallback: () => {
               if (epochRef.current === epoch) setRangeBlockedFor(recordId);
             },
-          });
+          }).catch(() => ({ mode: 'whole' as const }));
           if (cancelled) {
             if (opened.mode === 'range') opened.transport.destroy();
             return;

@@ -10,8 +10,9 @@
  * fetched in spans and handed over once, whole.
  *
  * Whole-body mode is the way out: a server that does not answer 206 (an old server, a connector record, a flag
- * that is off), a range it refuses (416) or a document that changed (the answer to `If-Range` is a 200) ends
- * range mode, and the owner opens the whole record through the content cache instead.
+ * that is off), a range it refuses (416), a document that changed (the answer to `If-Range` is a 200) or a first
+ * request that fails (a 5xx, the network, a timeout) ends range mode, and the owner opens the whole record through
+ * the content cache instead. Only a failure of that whole-file load is shown as an error.
  */
 import type { PDFDataRangeTransport } from 'pdfjs-dist';
 import { apiClient } from '@/lib/api/axios-instance';
@@ -140,7 +141,13 @@ function concat(pieces: Uint8Array[], size: number): Uint8Array {
 export async function openRecordRange(options: RecordRangeOptions): Promise<RangeOpen> {
   const { recordId, fetcher = fetchRecordRange, onFallback, onProgress } = options;
   const controller = new AbortController();
-  const first = await fetcher({ recordId, first: 0, last: RECORD_RANGE_CHUNK_BYTES - 1, ifRange: null, signal: controller.signal });
+  let first: RangeAnswer;
+  try {
+    first = await fetcher({ recordId, first: 0, last: RECORD_RANGE_CHUNK_BYTES - 1, ifRange: null, signal: controller.signal });
+  } catch {
+    // Ranges are an optimisation: whatever went wrong, the whole-file load decides whether the record opens.
+    return { mode: 'whole' };
+  }
   if (first.status !== 206 || first.total === null || first.etag === null || first.etag.startsWith('W/')) {
     // No usable partial answer: a weak or missing tag cannot pin later ranges to this version.
     return { mode: 'whole' };
@@ -151,6 +158,9 @@ export async function openRecordRange(options: RecordRangeOptions): Promise<Rang
   const stats: RecordRangeStats = { requests: 1, viewedBytes: first.bytes.length };
   const have: Array<[number, number]> = [[0, first.bytes.length]];
   let ended = false;
+  /** Requests of the viewer that holds the transport now; a remount aborts those of the viewer it follows. */
+  let mount = new AbortController();
+  controller.signal.addEventListener('abort', () => mount.abort(), { once: true });
 
   const end = (reason: 'whole-body' | 'unsatisfiable' | 'changed'): void => {
     if (ended) return;
@@ -164,27 +174,31 @@ export async function openRecordRange(options: RecordRangeOptions): Promise<Rang
 
     /** One viewer holds the transport at a time: a remounted viewer replaces the listener of the one it follows. */
     addRangeListener(listener: (begin: number, chunk: Uint8Array) => void): void {
+      // The answers to what the previous viewer asked for belong to a document that is gone: handing them to this
+      // one would trip pdf.js, so they are dropped (and their requests aborted); this viewer asks for what it needs.
+      mount.abort();
+      mount = new AbortController();
       (this as unknown as { _rangeListeners: unknown[] })._rangeListeners.length = 0;
       super.addRangeListener(listener);
     }
 
     requestDataRange(begin: number, endExclusive: number): void {
-      void this.fetchRange(begin, Math.min(endExclusive, total));
+      void this.fetchRange(begin, Math.min(endExclusive, total), mount.signal);
     }
 
-    private async fetchRange(begin: number, endExclusive: number): Promise<void> {
+    private async fetchRange(begin: number, endExclusive: number, signal: AbortSignal): Promise<void> {
       const pieces: Uint8Array[] = [];
-      for (let from = begin; from < endExclusive && !ended; ) {
+      for (let from = begin; from < endExclusive && !ended && !signal.aborted; ) {
         const to = Math.min(from + RECORD_RANGE_MAX_SPAN_BYTES, endExclusive);
         stats.requests += 1;
         let answer: RangeAnswer;
         try {
-          answer = await fetcher({ recordId, first: from, last: to - 1, ifRange: etag, signal: controller.signal });
+          answer = await fetcher({ recordId, first: from, last: to - 1, ifRange: etag, signal });
         } catch {
-          if (!ended) end('whole-body');
+          if (!ended && !signal.aborted) end('whole-body');
           return;
         }
-        if (ended) return;
+        if (ended || signal.aborted) return;
         if (answer.status === 416) return end('unsatisfiable');
         if (answer.status !== 206) return end(answer.status === 200 ? 'changed' : 'whole-body');
         // A short answer would leave pdf.js waiting for the rest: treat it as a failure of range mode.
@@ -192,7 +206,7 @@ export async function openRecordRange(options: RecordRangeOptions): Promise<Rang
         pieces.push(answer.bytes);
         from = to;
       }
-      if (ended || pieces.length === 0) return;
+      if (ended || signal.aborted || pieces.length === 0) return;
       const whole = pieces.length === 1 ? pieces[0] : concat(pieces, endExclusive - begin);
       addInterval(have, begin, endExclusive);
       stats.viewedBytes = have.reduce((n, [b, e]) => n + (e - b), 0);
@@ -208,6 +222,7 @@ export async function openRecordRange(options: RecordRangeOptions): Promise<Rang
     destroy(): void {
       ended = true;
       controller.abort();
+      mount.abort();
     }
   }
 

@@ -180,6 +180,86 @@ describe('RecordRangeTransport', () => {
     expect(t._rangeListeners).toHaveLength(1);
   });
 
+  it.each([
+    ['a 5xx', Object.assign(new Error('Request failed with status code 500'), { statusCode: 500 })],
+    ['a network error', new Error('Network Error')],
+    ['a timeout', Object.assign(new Error('timeout of 30000ms exceeded'), { code: 'ECONNABORTED' })],
+  ])('%s on the first request opens the whole file instead of failing', async (_name, failure) => {
+    const out = await openRecordRange({
+      recordId: 'r1',
+      fetcher: async () => {
+        throw failure;
+      },
+    });
+    expect(out).toEqual({ mode: 'whole' });
+  });
+
+  it('a viewer that throws when given bytes ends range mode instead of leaving the page waiting', async () => {
+    const s = server();
+    const fallback = vi.fn();
+    const out = await openRecordRange({ recordId: 'r1', fetcher: s.fetcher, onFallback: fallback });
+    if (out.mode !== 'range') throw new Error('range mode expected');
+    (out.transport as unknown as { onDataRange: () => void }).onDataRange = () => {
+      throw new Error('pdf.js: unexpected range');
+    };
+    out.transport.requestDataRange(20 * MIB, 21 * MIB);
+    await settle();
+    expect(fallback).toHaveBeenCalledWith('whole-body');
+  });
+
+  it('a remount with a range in flight drops its answer and does not leave range mode', async () => {
+    let release: (() => void) | undefined;
+    const fallback = vi.fn();
+    let n = 0;
+    const signals: AbortSignal[] = [];
+    const out = await openRecordRange({
+      recordId: 'r1',
+      onFallback: fallback,
+      fetcher: async (r) => {
+        signals.push(r.signal);
+        if (++n === 2) await new Promise<void>((res) => (release = res));
+        if (r.signal.aborted) throw new Error('aborted');
+        return { status: 206, bytes: new Uint8Array(r.last - r.first + 1), total: TOTAL, etag: ETAG };
+      },
+    });
+    if (out.mode !== 'range') throw new Error('range mode expected');
+    const t = out.transport as unknown as { given: unknown[]; addRangeListener(l: unknown): void };
+    t.addRangeListener(() => {});
+    out.transport.requestDataRange(20 * MIB, 21 * MIB);
+    await settle();
+    t.addRangeListener(() => {});
+    expect(signals[1].aborted).toBe(true);
+    release?.();
+    await settle();
+    expect(t.given).toEqual([]);
+    expect(fallback).not.toHaveBeenCalled();
+    // The new viewer's own request is answered.
+    out.transport.requestDataRange(30 * MIB, 31 * MIB);
+    await settle();
+    expect(t.given).toEqual([{ begin: 30 * MIB, size: MIB }]);
+  });
+
+  it('destroy aborts a range request that is waiting for an answer', async () => {
+    let seen: AbortSignal | undefined;
+    let n = 0;
+    const out = await openRecordRange({
+      recordId: 'r1',
+      fetcher: async (r) => {
+        if (++n === 2) {
+          seen = r.signal;
+          return await new Promise<RangeAnswer>(() => undefined);
+        }
+        return { status: 206, bytes: new Uint8Array(r.last - r.first + 1), total: TOTAL, etag: ETAG };
+      },
+    });
+    if (out.mode !== 'range') throw new Error('range mode expected');
+    out.transport.requestDataRange(20 * MIB, 21 * MIB);
+    await settle();
+    expect(seen?.aborted).toBe(false);
+    out.transport.destroy();
+    expect(seen?.aborted).toBe(true);
+  });
+
   it('destroy stops later requests', async () => {
     const s = server();
     const out = await openRecordRange({ recordId: 'r1', fetcher: s.fetcher });

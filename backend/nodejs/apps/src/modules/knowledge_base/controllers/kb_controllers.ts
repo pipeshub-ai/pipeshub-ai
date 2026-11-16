@@ -4,7 +4,7 @@ import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { injectRequestHeaders } from '../../../libs/context/request-context';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
-import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
+import { abortOnClientClose, releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import {
   BadRequestError,
   ForbiddenError,
@@ -2267,18 +2267,25 @@ export const getRecordBuffer =
       }
       const headers = injectRequestHeaders(forwarded);
 
-      // Make request to FastAPI backend
+      // Make request to FastAPI backend. The request is cancelled when the client leaves before it answers.
+      const clientGone = abortOnClientClose(res);
       const response = await axios.get(
         `${connectorUrl}/api/v1/stream/record/${encodeURIComponent(recordId)}?${queryParams.toString()}`,
         {
           responseType: 'stream',
           headers,
+          signal: clientGone,
           // A 304 is an answer, not a failure.
           validateStatus: (status) =>
             (status >= 200 && status < 300) || status === 304,
         },
       );
 
+      if (res.destroyed) {
+        // The client left while the upstream was answering: the body has nobody to go to.
+        (response.data as { destroy?: () => void }).destroy?.();
+        return;
+      }
       const upstreamHeaders = response.headers as Record<string, unknown>;
       for (const name of RECORD_STREAM_RELAYED_HEADERS) {
         const value = upstreamHeaders[name];
@@ -2336,6 +2343,10 @@ export const getRecordBuffer =
         res.destroy(error);
       });
     } catch (error: any) {
+      if (axios.isCancel(error)) {
+        // The client left before the upstream answered; there is nobody to answer.
+        return;
+      }
       // A range past the end is a normal answer of the range contract, not a failure.
       const log =
         error?.response?.status === 416
