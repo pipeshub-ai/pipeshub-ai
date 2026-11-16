@@ -1350,7 +1350,7 @@ class TestSyncUsers:
         assert len(call_args) == 2
 
     @pytest.mark.asyncio
-    async def test_a_frozen_user_is_not_linked(self):
+    async def test_a_frozen_user_is_not_linked(self) -> None:
         """Salesforce emails are not unique: a frozen duplicate must not take an active user's address."""
         connector = _make_connector()
         users = [
