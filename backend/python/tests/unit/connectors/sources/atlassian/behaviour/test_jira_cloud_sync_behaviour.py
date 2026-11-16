@@ -2158,6 +2158,32 @@ class TestRestrictedComments:
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
         assert not any("id in (" in b["jql"] for b in search.bodies[reads:]), "nothing is left to retry"
 
+    async def test_an_issue_that_failed_to_build_is_read_again_by_the_next_sync_though_the_cursor_passed_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """Building the issue raises (the page goes on without it, and the cursor moves past it). The next incremental sync's search
+        no longer lists it, yet it is read again by id and written; then nothing is left to retry."""
+        search.add("ENG", None, [{"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]}, {"issues": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        build = connector._build_records_for_issue
+        calls = {"n": 0}
+
+        async def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("malformed issue")
+            return await build(*args, **kwargs)
+        connector._build_records_for_issue = fails_once
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" not in tickets(db)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "1" in tickets(db), "the issue is read again although the incremental search no longer lists it"
+        reads = len(search.bodies)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert not any("id in (" in b["jql"] for b in search.bodies[reads:]), "nothing is left to retry"
+
     async def test_opening_an_issue_does_not_offer_a_file_from_a_restricted_comment(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
         connector, _ = await ready_connector(db, checkpoints)

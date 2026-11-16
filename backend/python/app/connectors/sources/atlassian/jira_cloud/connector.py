@@ -613,8 +613,8 @@ class JiraConnector(BaseConnector):
         self._parent_level_failures: set[str] = set()
         # Those parents in the project being synced, whose children the next sync reads again.
         self._parents_to_retry: set[str] = set()
-        # Ids of issues whose comments, their grants or files this sync could not write; saved with the
-        # project checkpoint before the cursor passes them, and read first by the next sync.
+        # Ids of issues this sync could not write in full (a build that failed, or comments, their grants or files
+        # not written); saved with the project checkpoint before the cursor passes them, and read first by the next sync.
         self._issues_to_retry: set[str] = set()
         # Sub-tasks among the issues just built, which have no children to read again.
         self._subtask_ids: set[str] = set()
@@ -4346,7 +4346,8 @@ class JiraConnector(BaseConnector):
         if unsettled_parents:
             unsettled_parents = await self._settle_subtasks(
                 project_key, project_id, jira_users, stats, unsettled_parents, [])
-        # Issues whose comments, grants or files an earlier sync could not write: the cursor has passed them.
+        # Issues an earlier sync could not write in full: the cursor has passed them. One read again here leaves the
+        # list only if it is written in full this time; one Jira no longer returns (deleted, moved) leaves it.
         try:
             retry_ids = [str(i) for i in json.loads((project_sync_data or {}).get("issues_to_retry") or "[]") if str(i).isdigit()]
         except (TypeError, ValueError):
@@ -5240,6 +5241,8 @@ class JiraConnector(BaseConnector):
                     exc_info=True,
                 )
                 self._issue_build_failures += 1
+                if str(issue.get("id") or "").isdigit():      # the cursor moves past it: the next sync reads it first
+                    self._issues_to_retry.add(str(issue["id"]))
                 continue
 
             deferred_delete_ids.extend(issue_delete_ids)
