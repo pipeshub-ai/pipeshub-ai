@@ -160,11 +160,16 @@ class CircuitState(Enum):
 
 # Every live breaker, held weakly so a discarded client takes its breaker with it.
 _BREAKERS: "weakref.WeakSet[CircuitBreaker]" = weakref.WeakSet()
+# Clients are created on any thread, so the registry is only added to and copied under this lock: a set that
+# changes size during a walk raises.
+_BREAKERS_LOCK = threading.Lock()
 
 
 def open_circuits() -> list[str]:
     """The services whose breaker is open or half open in this process, sorted, once each."""
-    return sorted({b.service_name for b in list(_BREAKERS) if b.state in (CircuitState.OPEN.value, CircuitState.HALF_OPEN.value)})
+    with _BREAKERS_LOCK:
+        breakers = list(_BREAKERS)
+    return sorted({b.service_name for b in breakers if b.state in (CircuitState.OPEN.value, CircuitState.HALF_OPEN.value)})
 
 
 class CircuitBreaker:
@@ -207,7 +212,8 @@ class CircuitBreaker:
         self._half_open_probe_in_flight = False
         self._half_open_probe_started_at: float | None = None
         self._lock = threading.Lock()
-        _BREAKERS.add(self)
+        with _BREAKERS_LOCK:
+            _BREAKERS.add(self)
 
     def _probe_timed_out(self, now: float) -> bool:
         return (

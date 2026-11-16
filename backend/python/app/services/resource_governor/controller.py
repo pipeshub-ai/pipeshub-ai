@@ -42,6 +42,7 @@ from app.services.resource_governor.models import (
     Pool,
     PoolDemand,
     ResourceSnapshot,
+    merge_cooldown_causes,
 )
 from app.services.resource_governor.policy import (
     CPU_BRAKE_PRESSURE_AVG10,
@@ -649,8 +650,11 @@ class ResourceGovernor:
                 cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
                 rule=LimitRule.MEM_INCIDENT,
                 rule_since=now,
-                cooldown_cause="memory",
-                rule_services=(),
+                cooldown_causes=merge_cooldown_causes(
+                    self._state.get(Pool.HEAVY_PARSE).cooldown_causes,
+                    (("memory", now + INCIDENT_COOLDOWN_SECONDS),),
+                    now,
+                ),
             ))
         self._logger.warning(
             "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
@@ -708,10 +712,11 @@ class ResourceGovernor:
                     "completions": window.completions,
                 },
             }
-            if pool_state.cooldown_cause is not None and pool_state.cooldown_until > now:
-                entry["cooldownCause"] = pool_state.cooldown_cause
-            if pool_state.rule_services:
-                entry["services"] = list(pool_state.rule_services)
+            cause = pool_state.active_cooldown_cause(now)
+            if cause is not None and pool_state.cooldown_until > now:
+                entry["cooldownCause"] = cause
+            if services := pool_state.active_services(now):
+                entry["services"] = list(services)
             pools[pool.value] = entry
         slots = self._heavy_parse_slots
         shared: dict[str, int] | None = None

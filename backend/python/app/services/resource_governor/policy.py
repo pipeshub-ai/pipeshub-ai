@@ -27,6 +27,7 @@ from app.services.resource_governor.models import (
     PoolDemand,
     PoolState,
     ResourceSnapshot,
+    merge_cooldown_causes,
 )
 from app.utils.env_config import env_float as _env_float
 
@@ -874,7 +875,7 @@ def _with_rule(
     *,
     limit: int,
     ceiling: int,
-    cause: str | None = None,
+    causes: tuple[tuple[str, float], ...] = (),
     services: tuple[str, ...] | None = None,
 ) -> PoolState:
     """*state* tagged with the rule that produced *limit* (observability only).
@@ -887,13 +888,16 @@ def _with_rule(
         rule = LimitRule.COLLAPSED
     elif limit >= ceiling and rule in _GROWTH_HOLDS:
         rule = LimitRule.AT_CEILING
-    return replace(
+    tagged = replace(
         state,
         rule=rule,
         rule_since=state.rule_since if state.rule is rule and state.rule_since is not None else now,
-        cooldown_cause=state.cooldown_cause if cause is None else cause,
+        cooldown_causes=merge_cooldown_causes(state.cooldown_causes, causes, now),
         rule_services=state.rule_services if services is None else services,
     )
+    # Service names belong to the downstream restriction: once the rule is something else and that cooldown
+    # has closed, a pool that grows or holds names none.
+    return replace(tagged, rule_services=tagged.active_services(now))
 
 
 def _feedback_services(feedback: FeedbackWindow) -> tuple[str, ...]:
@@ -1095,6 +1099,7 @@ def _next_pool_limit(
         candidates.append((min(current, max(floor, current - shrink_step)), LimitRule.CPU))
 
     downstream_shrink = False
+    downstream_incident = False
     if downstream is not None:
         wanted, downstream_incident = _downstream_shrink_target(current, floor, downstream)
         if wanted is not None:
@@ -1125,10 +1130,24 @@ def _next_pool_limit(
         next_state = _reset_for_shrink(state, cooldown_until=cooldown_until)
         if downstream_shrink:
             next_state = replace(next_state, downstream_holdoff=DOWNSTREAM_GROW_CONFIRM_SAMPLES)
+        # Every rule that fired starts a cooldown of its own: an incident-class rule runs the longer window.
+        # The binding rule is listed last, so it is the one named when windows end together.
+        fired = [rule for _, rule in candidates if rule is not binding] + [binding]
+        causes = tuple(
+            (
+                _SHRINK_CAUSE[rule],
+                now
+                + (
+                    INCIDENT_COOLDOWN_SECONDS
+                    if rule is LimitRule.MEM_HARD or (rule is LimitRule.DOWNSTREAM and downstream_incident)
+                    else SHRINK_COOLDOWN_SECONDS
+                ),
+            )
+            for rule in fired
+        )
         return shrink_to, _with_rule(
-            next_state, binding, now, limit=shrink_to, ceiling=ceiling,
-            cause=_SHRINK_CAUSE[binding],
-            services=_feedback_services(downstream) if binding is LimitRule.DOWNSTREAM and downstream else (),
+            next_state, binding, now, limit=shrink_to, ceiling=ceiling, causes=causes,
+            services=_feedback_services(downstream) if downstream_shrink and downstream else None,
         )
 
     if pressure is None:

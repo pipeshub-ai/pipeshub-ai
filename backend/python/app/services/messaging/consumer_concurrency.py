@@ -879,6 +879,18 @@ def parse_lease_pool(tier: ParseTier | None, host: "ConcurrencyHost | None" = No
     return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
 
 
+def admission_parse_lease_pool(host: ConcurrencyHost, tier: ParseTier | None) -> str:
+    """The cluster lease pool a record of *tier* waits on for its parse.
+
+    The one place that decides it: the message wrappers take the pool from here and the admission explain
+    lists the pools from here, so the two cannot disagree. Without a governor every tier shares the single
+    ``parsing`` pool (its limit was never split by tier); with one, the tier and the priority lane choose.
+    """
+    if host.governor is None:
+        return "parsing"
+    return parse_lease_pool(tier, host)
+
+
 class GateWaiters:
     """Tasks spawned but not yet admitted through an index gate, by tier.
 
@@ -895,11 +907,14 @@ class GateWaiters:
     loop and admitted or released on the worker loop.
     """
 
-    __slots__ = ("_lock", "_counts")
+    __slots__ = ("_lock", "_counts", "_retained")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._counts: dict[ParseTier, int] = dict.fromkeys(ParseTier, 0)
+        # Of the counted tasks, those already admitted through the gate that stay counted until they end (the
+        # priority lane counts records in flight). Read only to tell them from tasks that are still waiting.
+        self._retained: dict[ParseTier, int] = dict.fromkeys(ParseTier, 0)
 
     def add(self, tier: ParseTier) -> None:
         with self._lock:
@@ -919,6 +934,23 @@ class GateWaiters:
         with self._lock:
             return dict(self._counts)
 
+    def retain(self, tier: ParseTier) -> None:
+        with self._lock:
+            self._retained[tier] += 1
+
+    def unretain(self, tier: ParseTier) -> None:
+        with self._lock:
+            self._retained[tier] -= 1
+
+    def retained_snapshot(self) -> dict[ParseTier, int]:
+        with self._lock:
+            return dict(self._retained)
+
+    def view(self) -> tuple[dict[ParseTier, int], dict[ParseTier, int]]:
+        """``(snapshot, retained_snapshot)`` taken together."""
+        with self._lock:
+            return dict(self._counts), dict(self._retained)
+
     def reset(self) -> None:
         """Forget every waiter. For consumer shutdown, after the worker loop
         is gone: no token can be admitted or released after that, and a
@@ -926,6 +958,7 @@ class GateWaiters:
         with self._lock:
             for tier in self._counts:
                 self._counts[tier] = 0
+                self._retained[tier] = 0
 
 
 class GateWaiterToken:
@@ -947,15 +980,20 @@ class GateWaiterToken:
     waiter against one gate while it queues on the other.
     """
 
-    __slots__ = ("_host", "_tier", "_message", "_admitted", "_released", "_in_gate")
+    __slots__ = ("_host", "_tier", "_message", "_lock", "_admitted", "_released", "_in_gate", "_retained")
 
     def __init__(self, host: ConcurrencyHost, tier: ParseTier, message: "StreamMessage | None" = None) -> None:
         self._host = host
         self._tier = tier
         self._message = message
+        # The worker loop enters the gate and admits; the done callback releases, and a cancel runs that on
+        # the cancelling thread. Every transition below happens under this lock, with its counter updates, so
+        # each counter moves exactly once per token whatever the order of the two sides.
+        self._lock = threading.Lock()
         self._admitted = False
         self._released = False
         self._in_gate = False
+        self._retained = False
         host.gate_waiters.add(tier)
 
     def _backlog(self) -> "AdmissionBacklog | None":
@@ -964,14 +1002,16 @@ class GateWaiterToken:
 
     def enter_gate(self) -> None:
         """Call just before awaiting the index permit: the record counts as waiting at the gate."""
-        if self._in_gate or self._admitted or self._released:
-            return
-        backlog = self._backlog()
-        if backlog is not None:
-            backlog.add(self._tier, PHASE_GATE, None, self._message)
-            self._in_gate = True
+        with self._lock:
+            if self._in_gate or self._admitted or self._released:
+                return
+            backlog = self._backlog()
+            if backlog is not None:
+                self._in_gate = True
+                backlog.add(self._tier, PHASE_GATE, None, self._message)
 
     def _leave_gate(self) -> None:
+        """Caller holds the lock."""
         if self._in_gate:
             self._in_gate = False
             backlog = self._backlog()
@@ -984,26 +1024,34 @@ class GateWaiterToken:
 
     def admit(self) -> None:
         """Call once the local indexing gate/semaphore has been acquired."""
-        if self._admitted or self._released:
-            return
-        self._leave_gate()
-        if _lane(self._host) is not None:
-            # The lane's cap is on records in flight, not on records waiting, so it counts
-            # a record until the task ends.
-            return
-        self._admitted = True
-        self._host.gate_waiters.remove(self._tier)
+        with self._lock:
+            if self._admitted or self._released:
+                return
+            self._leave_gate()
+            if _lane(self._host) is not None:
+                # The lane's cap is on records in flight, not on records waiting, so it counts
+                # a record until the task ends. It is no longer waiting, which the explain needs to know.
+                if not self._retained:
+                    self._retained = True
+                    self._host.gate_waiters.retain(self._tier)
+                return
+            self._admitted = True
+            self._host.gate_waiters.remove(self._tier)
 
     def release(self) -> None:
         """Idempotent cleanup for the task's terminal state (call from the
         future-done callback). A no-op if ``admit()`` already ran — the
         waiter count was already decremented then."""
-        if self._released:
-            return
-        self._released = True
-        self._leave_gate()
-        if not self._admitted:
-            self._host.gate_waiters.remove(self._tier)
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+            self._leave_gate()
+            if self._retained:
+                self._retained = False
+                self._host.gate_waiters.unretain(self._tier)
+            if not self._admitted:
+                self._host.gate_waiters.remove(self._tier)
 
 
 def index_gates_saturated(host: ConcurrencyHost) -> bool:
@@ -1714,7 +1762,7 @@ def _lease_pools(host: ConcurrencyHost) -> dict[str, int]:
         return pools
     for tier in ParseTier:
         pools[admission_lease_pool(host, tier)] = index_ceiling(host, tier)
-        pools[parse_lease_pool(tier, host)] = parse_ceiling(host, tier)
+        pools[admission_parse_lease_pool(host, tier)] = parse_ceiling(host, tier)
     return pools
 
 
@@ -1730,11 +1778,12 @@ def admission_explain(host: ConcurrencyHost) -> dict[str, Any]:
     else:
         totals = {tier: dict.fromkeys(_PHASES, 0) for tier in (ParseTier.HEAVY, ParseTier.LIGHT)}
         lease_waiting = {}
-    waiters = host.gate_waiters.snapshot()
+    waiters, retained = host.gate_waiters.view()
     tiers = {
         tier.value: {
             **totals[tier],
-            "buffered": max(0, waiters.get(tier, 0) - totals[tier][PHASE_GATE]),
+            # Spawned and neither at the gate nor already through it: waiting in back-off, for a lease or its turn.
+            "buffered": max(0, waiters.get(tier, 0) - totals[tier][PHASE_GATE] - retained.get(tier, 0)),
         }
         for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
     }

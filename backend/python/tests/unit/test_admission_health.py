@@ -85,6 +85,21 @@ class TestIndexingHealth:
         assert "SENTINEL" not in response.body.decode()
 
 
+    async def test_a_failing_circuit_walk_does_not_fail_health(self) -> None:
+        from app.indexing_main import health_check
+
+        with patch("app.indexing_main.container") as container, patch(
+            "app.indexing_main.open_circuits", side_effect=RuntimeError("SENTINEL")
+        ):
+            container.kafka_consumers = []
+            container.worker_loop = None
+            response = await health_check(_request(None))
+        assert response.status_code == 200
+        assert json.loads(response.body)["openCircuits"] == {"error": "unavailable"}
+        assert "SENTINEL" not in response.body.decode()
+        container.logger().warning.assert_called()
+
+
 @pytest.mark.asyncio
 class TestParsingHealth:
     async def test_admission_has_governor_and_parse_sections(self) -> None:

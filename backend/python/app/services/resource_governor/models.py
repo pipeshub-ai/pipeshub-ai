@@ -288,12 +288,44 @@ class PoolState:
     hold_baseline: float | None = None
     downstream_holdoff: int = 0
     # Observability only (see LimitRule): the rule that produced or held the
-    # current limit, since when (the controller clock), and, for a cooldown or a
-    # downstream rule, what started it and which services reported.
+    # current limit, since when (the controller clock), what started each
+    # cooldown that is still open (``(cause, expiry)`` pairs, one per cause, so
+    # a later shrink with a shorter window cannot rename a longer one), and
+    # which services the last downstream shrink named.
     rule: LimitRule = LimitRule.START
     rule_since: float | None = None
-    cooldown_cause: str | None = None
+    cooldown_causes: tuple[tuple[str, float], ...] = ()
     rule_services: tuple[str, ...] = ()
+
+    def active_cooldown_cause(self, now: float) -> str | None:
+        """The cause whose cooldown window ends last and is still open at *now* (the later-listed on a tie)."""
+        best: str | None = None
+        best_until = now
+        for cause, until in self.cooldown_causes:
+            if until > now and until >= best_until:
+                best, best_until = cause, until
+        return best
+
+    def active_services(self, now: float) -> tuple[str, ...]:
+        """The services to report at *now*: only while a downstream restriction (its rule, its hold-off or
+        its cooldown) is in force, never for a pool that has since grown or holds for another reason."""
+        downstream = self.rule in (LimitRule.DOWNSTREAM, LimitRule.DOWNSTREAM_HOLDOFF) or any(
+            cause == "downstream" and until > now for cause, until in self.cooldown_causes
+        )
+        return self.rule_services if downstream else ()
+
+
+def merge_cooldown_causes(
+    existing: tuple[tuple[str, float], ...], fired: tuple[tuple[str, float], ...], now: float
+) -> tuple[tuple[str, float], ...]:
+    """*existing* without the windows already closed at *now*, plus *fired* (a cause keeps its later expiry).
+
+    A cause that fires again moves to the end, so among causes that end together the latest to fire is named.
+    """
+    kept = {cause: until for cause, until in existing if until > now}
+    for cause, until in fired:
+        kept[cause] = max(until, kept.pop(cause, 0.0))
+    return tuple(kept.items())
 
 
 @dataclass(frozen=True)

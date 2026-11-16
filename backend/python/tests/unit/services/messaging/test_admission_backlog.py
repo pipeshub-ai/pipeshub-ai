@@ -468,3 +468,151 @@ class TestAnObserverThatRaises:
     def test_the_control_an_unguarded_call_would_raise_into_the_record_path(self) -> None:
         with pytest.raises(RuntimeError):
             _Raising().entered(H, PHASE_GATE, None)
+
+
+class _Interleaver:
+    """A backlog observer that runs *action* on another thread at one chosen step of the counter update.
+
+    It is the cancellation callback of a future landing in the middle of the worker's own update. The
+    other thread is given a bounded time to finish: if the token serialises the two, it is still waiting
+    for the worker when the time is up, and finishes when the worker does.
+    """
+
+    def __init__(self, on: str, action: Any) -> None:  # noqa: ANN401
+        self.on = on
+        self.action = action
+        self.done_early: bool | None = None
+        self.thread: threading.Thread | None = None
+
+    def _fire(self, call: str) -> None:
+        if call != self.on or self.thread is not None:
+            return
+        self.thread = threading.Thread(target=self.action)
+        self.thread.start()
+        self.thread.join(timeout=0.3)
+        self.done_early = not self.thread.is_alive()
+
+    def entered(self, tier: ParseTier, phase: str, message: Any) -> None:  # noqa: ANN401
+        self._fire("entered")
+
+    def left(self, tier: ParseTier, phase: str, message: Any) -> None:  # noqa: ANN401
+        self._fire("left")
+
+
+class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
+    """The worker's gate entry and admit, and the done callback's release (which a cancel runs on the
+    cancelling thread), each change the counters exactly once, whatever the order."""
+
+    def _host(self, observer: Any = None) -> SimpleNamespace:  # noqa: ANN401
+        return SimpleNamespace(admission_backlog=AdmissionBacklog(observer=observer), gate_waiters=GateWaiters())
+
+    def test_a_cancel_between_the_count_and_the_flag_leaves_no_phantom_at_the_gate(self) -> None:
+        host = self._host()
+        token = GateWaiterToken(host, H)
+        host.admission_backlog.observer = _Interleaver("entered", token.release)
+        token.enter_gate()
+        host.admission_backlog.observer.thread.join(5)
+        assert host.admission_backlog.totals()[H][PHASE_GATE] == 0
+        assert host.gate_waiters.count() == 0
+
+    def test_a_release_between_the_gate_exit_and_the_admit_does_not_count_the_waiter_out_twice(self) -> None:
+        host = self._host()
+        token = GateWaiterToken(host, H)
+        token.enter_gate()
+        host.admission_backlog.observer = _Interleaver("left", token.release)
+        token.admit()
+        host.admission_backlog.observer.thread.join(5)
+        assert host.admission_backlog.totals()[H][PHASE_GATE] == 0
+        assert host.gate_waiters.count() == 0  # -1 if both the admit and the release took the waiter out
+
+    def test_a_release_before_the_gate_entry_means_the_entry_counts_nothing(self) -> None:
+        host = self._host()
+        token = GateWaiterToken(host, H)
+        token.release()
+        token.enter_gate()
+        token.admit()
+        assert host.admission_backlog.totals()[H][PHASE_GATE] == 0
+        assert host.gate_waiters.count() == 0
+
+    @pytest.mark.parametrize("seed", [3, 77, None])
+    def test_many_tokens_ended_from_two_threads_always_end_at_zero(self, seed: int | None) -> None:
+        rng = random.Random(random.randrange(10**6) if seed is None else seed)
+        host = self._host()
+        tokens = [GateWaiterToken(host, rng.choice((H, L))) for _ in range(1500)]
+        plans = [rng.choice(("admit", "none")) for _ in tokens]
+
+        def worker() -> None:
+            for token, plan in zip(tokens, plans):
+                token.enter_gate()
+                if plan == "admit":
+                    token.admit()
+
+        def canceller() -> None:
+            for token in reversed(tokens):
+                token.release()
+
+        threads = [threading.Thread(target=worker), threading.Thread(target=canceller)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        assert all(not thread.is_alive() for thread in threads)
+        for token in tokens:
+            token.release()
+        totals = host.admission_backlog.totals()
+        assert all(totals[t][PHASE_GATE] == 0 for t in (H, L)), totals
+        assert host.gate_waiters.snapshot() == {H: 0, L: 0}
+
+    def test_the_counter_operations_stay_within_the_hot_path_budget(self) -> None:
+        import time
+
+        host = self._host()
+        rounds = 20000
+        best = float("inf")
+        for _ in range(5):
+            started = time.perf_counter()
+            for _ in range(rounds):
+                token = GateWaiterToken(host, H)
+                token.enter_gate()
+                token.admit()
+                token.release()
+            best = min(best, (time.perf_counter() - started) / rounds)
+        # four calls and one construction per round; each operation well under the 1 microsecond budget
+        # on a quiet host, so the bound here only has to catch an order-of-magnitude regression
+        assert best / 5 < 5e-6, best
+
+
+class TestBufferedIsNotCountedTwiceForTheLane:
+    def test_an_admitted_lane_record_is_in_flight_and_not_buffered(self) -> None:
+        lane = cc.PriorityLane(2, 2)
+        host = SimpleNamespace(
+            admission_backlog=AdmissionBacklog(), gate_waiters=GateWaiters(), priority_lane=lane, governor=None,
+            stage_admission=None, concurrency_manager=None,
+        )
+        admitted = GateWaiterToken(host, H)
+        admitted.enter_gate()
+        admitted.admit()
+        at_gate = GateWaiterToken(host, H)
+        at_gate.enter_gate()
+        before_gate = GateWaiterToken(host, H)  # spawned, in retry back-off or waiting for a lease
+        explain = cc.admission_explain(host)
+        assert explain["priority"]["heavy"]["inFlight"] == 3
+        assert explain["priority"]["heavy"]["gateWaiting"] == 1
+        assert explain["backlog"]["tiers"]["heavy"]["buffered"] == 1
+        admitted.release()
+        assert cc.admission_explain(host)["priority"]["heavy"]["inFlight"] == 2
+        assert cc.admission_explain(host)["backlog"]["tiers"]["heavy"]["buffered"] == 1
+        at_gate.release()
+        before_gate.release()
+        assert host.gate_waiters.snapshot() == {H: 0, L: 0}
+        assert host.gate_waiters.retained_snapshot() == {H: 0, L: 0}
+
+    def test_without_the_lane_an_admitted_record_is_in_neither(self) -> None:
+        host = SimpleNamespace(
+            admission_backlog=AdmissionBacklog(), gate_waiters=GateWaiters(), priority_lane=None, governor=None,
+            stage_admission=None, concurrency_manager=None,
+        )
+        token = GateWaiterToken(host, H)
+        token.enter_gate()
+        token.admit()
+        assert cc.admission_explain(host)["backlog"]["tiers"]["heavy"]["buffered"] == 0

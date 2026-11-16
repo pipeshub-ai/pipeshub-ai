@@ -49,6 +49,9 @@ EDITED = {
         "GateWaiterToken.__slots__", "GateWaiterToken.__init__", "GateWaiterToken._backlog",
         "GateWaiterToken.enter_gate", "GateWaiterToken._leave_gate", "GateWaiterToken.admit",
         "GateWaiterToken.release",
+        # The waiter counter also tells admitted records from waiting ones; the pool a parse waits on has one decision.
+        "GateWaiters.__slots__", "GateWaiters.__init__", "GateWaiters.reset", "GateWaiters.retain",
+        "GateWaiters.unretain", "GateWaiters.retained_snapshot", "GateWaiters.view", "admission_parse_lease_pool",
         "acquire_index_slot",  # the legacy semaphore path counts its holders and waiters
         "_wait_for_heavy_parse_slots",  # counts a caller that has to wait for the shared slots
     },

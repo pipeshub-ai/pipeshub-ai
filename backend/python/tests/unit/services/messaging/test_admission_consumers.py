@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -219,3 +220,55 @@ def test_an_admission_pause_during_a_downstream_pause_is_reported_as_both_and_cl
         assert pause["admission"] is False and pause["downstream"] is True
     finally:
         kafka.governor.close()
+
+
+# ---- the pools the explain lists are the pools the wrappers ask for --------------------------
+
+def _governorless(consumer_cls: str, **kw: object) -> Any:  # noqa: ANN401
+    consumer = (_redis if consumer_cls == "redis" else _kafka)(**kw)
+    consumer.concurrency_manager = MagicMock()
+    return consumer
+
+
+@pytest.mark.parametrize("kind", ["redis", "kafka"])
+def test_a_governorless_consumer_lists_the_one_parse_pool_both_tiers_take(kind: str) -> None:
+    consumer = _governorless(kind)
+    assert consumer.governor is None
+    leases = consumer.admission_explain()["leases"]
+    assert "parsing" in leases and "parsing:light" not in leases
+    for tier in (H, L):
+        assert cc.admission_parse_lease_pool(consumer, tier) == "parsing"
+
+
+@pytest.mark.parametrize("kind", ["redis", "kafka"])
+def test_a_governorless_priority_consumer_lists_the_parse_pool_it_takes(kind: str) -> None:
+    lane = cc.PriorityLane(heavy_limit=2, light_limit=3, workers=1)
+    consumer = _governorless(kind, priority_lane=lane)
+    assert consumer.governor is None
+    leases = consumer.admission_explain()["leases"]
+    assert "parsing" in leases, leases
+    assert cc.admission_parse_lease_pool(consumer, L) == "parsing"
+
+
+@pytest.mark.parametrize("kind", ["redis", "kafka"])
+def test_a_governed_consumer_lists_a_parse_pool_per_tier(kind: str) -> None:
+    consumer = (_redis if kind == "redis" else _kafka)(governor=make_test_governor())
+    try:
+        consumer.concurrency_manager = MagicMock()
+        assert {"parsing", "parsing:light"} <= set(consumer.admission_explain()["leases"])
+        assert cc.admission_parse_lease_pool(consumer, L) == "parsing:light"
+        assert cc.admission_parse_lease_pool(consumer, H) == "parsing"
+    finally:
+        consumer.governor.close()
+
+
+@pytest.mark.parametrize("path", [
+    "app/services/messaging/redis_streams/indexing_consumer.py",
+    "app/services/messaging/kafka/consumer/indexing_consumer.py",
+])
+def test_the_wrappers_choose_their_parse_pool_through_the_function_the_explain_uses(path: str) -> None:
+    """Drift guard: a wrapper that picks the pool by its own condition can disagree with the explain."""
+    import pathlib
+    source = (pathlib.Path(__file__).resolve().parents[4] / path).read_text()
+    assert "concurrency.admission_parse_lease_pool(self, parse_tier)" in source
+    assert "concurrency.parse_lease_pool(" not in source

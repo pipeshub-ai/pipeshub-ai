@@ -166,7 +166,7 @@ class TestEveryBranchNamesItsRule:
             (
                 "cooldown",
                 Pool.INDEX_HEAVY,
-                {"state": PoolState(cooldown_until=NOW + 20.0, cooldown_cause="memory"), "demand": _BUSY},
+                {"state": PoolState(cooldown_until=NOW + 20.0, cooldown_causes=(("memory", NOW + 20.0),)), "demand": _BUSY},
                 LimitRule.COOLDOWN,
             ),
         ],
@@ -180,7 +180,7 @@ class TestEveryBranchNamesItsRule:
         limit, state = _step(Pool.INDEX_HEAVY, current=8)
         assert state.rule is LimitRule.MEM_TARGET
         assert limit < 8
-        assert state.cooldown_cause == "memory"
+        assert state.active_cooldown_cause(NOW) == "memory"
 
     def test_confirming_while_the_streak_is_short(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(policy_mod, "LIGHT_GROW_CONFIRM_SAMPLES", 3)
@@ -229,7 +229,7 @@ class TestEveryBranchNamesItsRule:
         )
         assert state.rule is LimitRule.DOWNSTREAM
         assert state.rule_services == ("embedding", "qdrant")
-        assert state.cooldown_cause == "downstream"
+        assert state.active_cooldown_cause(NOW) == "downstream"
 
     def test_rule_since_keeps_its_first_instant_while_the_rule_holds(self) -> None:
         _, first = _step(Pool.INDEX_HEAVY, now=NOW)
@@ -585,6 +585,69 @@ class TestBreakers:
         gc.collect()
         assert "svc-c" not in open_circuits()
 
+    def test_a_breaker_made_on_another_thread_during_the_walk_neither_breaks_it_nor_is_lost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The registry changes under the walk, as it does when a client is first used on another thread."""
+        import weakref
+
+        from app.services import base_client
+
+        made: list[CircuitBreaker] = []
+
+        def make() -> None:
+            breaker = CircuitBreaker("svc-late", failure_threshold=1, cooldown_seconds=60)
+            breaker.record_failure()
+            made.append(breaker)
+
+        class Registry(weakref.WeakSet):
+            started = False
+
+            def __iter__(self):  # noqa: ANN204
+                inner = super().__iter__()
+                if not Registry.started:
+                    Registry.started = True
+                    thread = threading.Thread(target=make)
+                    thread.start()
+                    thread.join(timeout=0.3)  # a registry that is locked keeps it waiting; one that is not does not
+                    Registry.thread = thread
+                yield from inner
+
+        registry = Registry()
+        keep = CircuitBreaker("svc-early", failure_threshold=1, cooldown_seconds=60)
+        registry.add(keep)
+        monkeypatch.setattr(base_client, "_BREAKERS", registry)
+        monkeypatch.setattr(base_client, "_BREAKERS_LOCK", getattr(base_client, "_BREAKERS_LOCK", threading.Lock()))
+        keep.record_failure()
+        assert base_client.open_circuits() == ["svc-early"]
+        Registry.thread.join(5)
+        assert made and "svc-late" in base_client.open_circuits()
+
+    @pytest.mark.parametrize("seed", [1, 2])
+    def test_walking_while_breakers_are_made_and_dropped_on_other_threads_never_raises(self, seed: int) -> None:
+        stop = threading.Event()
+        errors: list[BaseException] = []
+
+        def churn() -> None:
+            while not stop.is_set():
+                CircuitBreaker(f"svc-churn-{seed}", failure_threshold=1, cooldown_seconds=60)
+
+        threads = [threading.Thread(target=churn) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        try:
+            for _ in range(3000):
+                try:
+                    open_circuits()
+                except BaseException as error:
+                    errors.append(error)
+                    break
+        finally:
+            stop.set()
+            for thread in threads:
+                thread.join(5)
+        assert not errors, errors
+
     def test_a_strong_set_would_retain_the_client(self) -> None:
         """Negative control: a plain set keeps a discarded breaker alive, a WeakSet does not."""
         import weakref
@@ -712,3 +775,101 @@ def test_logger_is_not_involved() -> None:
         logger.removeHandler(handler)
         governor.close()
     assert records == []
+
+
+def _pool_health(states: dict[Pool, PoolState], at: float) -> dict[str, Any]:
+    """The ``pools`` section of the governor's explain, read at the controller instant *at*."""
+    governor = make_test_governor()
+    try:
+        governor._clock = lambda: at
+        governor._state = ControllerState(pools={p: states.get(p, PoolState()) for p in Pool})
+        return governor.admission_explain()["pools"]
+    finally:
+        governor.close()
+
+
+_SOFT = _snap(working_set_gb=3.0, limit_gb=4.0)  # 0.75: over the soft mark, under the hard one
+_OUTAGE = FeedbackWindow(unavailable={"embedding": 1})  # an incident: the longer cooldown window
+_SLOW = FeedbackWindow(timeouts={"embedding": 9})  # shrinks without an incident: the shorter window
+
+
+class TestCooldownCauseFollowsItsOwnDeadline:
+    """Each cause of a shrink keeps its own expiry; health names the cause whose window is still open."""
+
+    def test_a_later_shorter_cause_does_not_rename_a_longer_cooldown(self) -> None:
+        # t=0 an outage starts a 60 s cooldown; t=15 a soft memory shrink asks for 30 s more, ending at 45.
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_OUTAGE, current=8, now=NOW)
+        _, state = _step(Pool.INDEX_HEAVY, snap=_SOFT, state=state, current=8, now=NOW + 15)
+        assert state.cooldown_until == NOW + 60
+        pool = _pool_health({Pool.INDEX_HEAVY: state}, NOW + 50)["index_heavy"]
+        assert pool["cooldownCause"] == "downstream"
+
+    def test_a_cause_whose_window_has_closed_is_not_reported_while_another_is_open(self) -> None:
+        _, state = _step(Pool.INDEX_HEAVY, snap=_SOFT, current=8, now=NOW)  # memory, until NOW + 30
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_OUTAGE, state=state, current=8, now=NOW + 10)  # until NOW + 70
+        assert _pool_health({Pool.INDEX_HEAVY: state}, NOW + 40)["index_heavy"]["cooldownCause"] == "downstream"
+        assert "cooldownCause" not in _pool_health({Pool.INDEX_HEAVY: state}, NOW + 71)["index_heavy"]
+
+    def test_the_cause_that_ends_last_wins_and_a_tie_goes_to_the_rule_that_bound(self) -> None:
+        # One sample, two causes with the same window: the smaller target (memory, hard) is the one that binds.
+        _, state = _step(
+            Pool.INDEX_HEAVY, snap=_snap(working_set_gb=3.5, limit_gb=4.0), feedback=_OUTAGE, current=8, now=NOW
+        )
+        assert state.rule is LimitRule.MEM_HARD
+        assert _pool_health({Pool.INDEX_HEAVY: state}, NOW + 5)["index_heavy"]["cooldownCause"] == "memory"
+
+    def test_a_cause_shrinks_back_to_nothing_once_every_window_has_closed(self) -> None:
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_SLOW, current=8, now=NOW)
+        assert _pool_health({Pool.INDEX_HEAVY: state}, NOW + 10)["index_heavy"]["cooldownCause"] == "downstream"
+        assert "cooldownCause" not in _pool_health({Pool.INDEX_HEAVY: state}, NOW + 31)["index_heavy"]
+
+    def test_the_causes_kept_stay_few(self) -> None:
+        state = PoolState()
+        for step in range(200):
+            feedback, snap = (_OUTAGE, _snap()) if step % 2 else (None, _SOFT)
+            _, state = _step(Pool.INDEX_HEAVY, snap=snap, feedback=feedback, state=state, current=8, now=NOW + step)
+        assert len(state.cooldown_causes) <= 3
+
+
+def _clean_samples(
+    state: PoolState, count: int, *, current: int, ceilings: Ceilings | None = None
+) -> tuple[int, PoolState]:
+    """*count* healthy samples 15 s apart, from 60 s after the shrink: the cooldown and the hold-off are over."""
+    limit = current
+    for step in range(count):
+        limit, state = _step(
+            Pool.INDEX_HEAVY, state=state, current=limit, ceilings=ceilings, demand=_BUSY, now=NOW + 60 + 15 * step
+        )
+    return limit, state
+
+
+class TestServicesAreNamedOnlyWhileTheDownstreamRestrictionLasts:
+    def test_services_follow_the_cooldown_that_they_started(self) -> None:
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_SLOW, current=8, now=NOW)
+        assert _pool_health({Pool.INDEX_HEAVY: state}, NOW + 5)["index_heavy"]["services"] == ["embedding"]
+        _, later = _clean_samples(state, 4, current=2)
+        health = _pool_health({Pool.INDEX_HEAVY: later}, NOW + 120)["index_heavy"]
+        assert health["rule"] in {"grow", "no_demand", "confirming", "at_ceiling"}, health["rule"]
+        assert "services" not in health
+
+    def test_a_pool_that_grew_back_to_its_ceiling_names_no_service(self) -> None:
+        ceilings = _ceilings()
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_SLOW, current=ceilings.index_heavy, ceilings=ceilings, now=NOW)
+        _, state = _clean_samples(state, 4, current=ceilings.index_heavy, ceilings=ceilings)
+        health = _pool_health({Pool.INDEX_HEAVY: state}, NOW + 120)["index_heavy"]
+        assert health["rule"] == "at_ceiling"
+        assert "services" not in health
+
+    def test_services_are_kept_while_the_holdoff_after_a_downstream_shrink_lasts(self) -> None:
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_SLOW, current=8, now=NOW)
+        _, held = _step(Pool.INDEX_HEAVY, state=state, current=4, demand=_BUSY, now=NOW + 40)
+        health = _pool_health({Pool.INDEX_HEAVY: held}, NOW + 40)["index_heavy"]
+        assert health["rule"] == "downstream_holdoff"
+        assert health["services"] == ["embedding"]
+
+    def test_a_later_memory_shrink_does_not_hide_a_downstream_cooldown_that_is_still_open(self) -> None:
+        _, state = _step(Pool.INDEX_HEAVY, feedback=_OUTAGE, current=8, now=NOW)
+        _, state = _step(Pool.INDEX_HEAVY, snap=_SOFT, state=state, current=4, now=NOW + 15)
+        health = _pool_health({Pool.INDEX_HEAVY: state}, NOW + 40)["index_heavy"]
+        assert health["cooldownCause"] == "downstream"
+        assert health["services"] == ["embedding"]

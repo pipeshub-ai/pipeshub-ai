@@ -3075,7 +3075,11 @@ async def health_check(request: Request) -> JSONResponse:
         if admission:
             content["admission"] = admission
         # Services whose circuit breaker is open or half open in this process.
-        content["openCircuits"] = open_circuits()
+        try:
+            content["openCircuits"] = open_circuits()
+        except Exception as circuits_error:
+            container.logger().warning("Open circuit listing failed: %s", circuits_error)
+            content["openCircuits"] = {"error": "unavailable"}
         if loop_lag:
             content["worker_loop_lag"] = loop_lag
         from app.modules.indexing.replay_set import eviction_policy_warning
