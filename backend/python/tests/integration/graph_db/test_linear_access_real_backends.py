@@ -20,7 +20,7 @@ import types
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -59,6 +59,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -343,7 +344,7 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
               "authType": "API_TOKEN", "createdBy": "it-admin", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
             collection=CollectionNames.APPS.value)
 
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = org_id
         processor.messaging_producer = AsyncMock()
         processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)

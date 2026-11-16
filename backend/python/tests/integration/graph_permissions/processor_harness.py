@@ -6,7 +6,7 @@ than by hand. A hand-built fixture can encode a graph the write path would
 never produce, so it proves the query is self-consistent, not that it works on
 real synced data.
 
-Two substitutions are needed and only two:
+Three substitutions are needed and only three:
 
 * ``initialize()`` is skipped. It builds a Kafka/Redis producer from config,
   and the graph writes never read it back — it only emits record-events. The
@@ -14,14 +14,17 @@ Two substitutions are needed and only two:
   ``messaging_producer`` after construction.
 * The producer is a recorder. Tests can assert on what would have been
   published without a broker running.
+* Config is a dict (``InMemoryConfigService``): the processor keeps
+  per-connector state there (which source account holds each address).
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from tests.support.in_memory_config import InMemoryConfigService
 
 
 class RecordingProducer:
@@ -54,7 +57,7 @@ class RecordingProducer:
 def build_processor(provider, org_id: str) -> tuple[DataSourceEntitiesProcessor, RecordingProducer]:
     """A processor writing through `provider` into the live graph."""
     logger = MagicMock()
-    config_service = AsyncMock()
+    config_service = InMemoryConfigService()
     data_store = GraphDataStore(logger, provider)
 
     processor = DataSourceEntitiesProcessor(logger, data_store, config_service)

@@ -24,7 +24,6 @@ import types
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
 
 import gitlab.base
 import gitlab.utils
@@ -57,6 +56,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from app.models.entities import Record
@@ -195,7 +195,7 @@ class World:
         self.logger.addHandler(self.logs)
         self.producer = Producer()
         self.store = GraphDataStore(self.logger, graph)
-        self.processor = DataSourceEntitiesProcessor(self.logger, self.store, MagicMock())
+        self.processor = DataSourceEntitiesProcessor(self.logger, self.store, InMemoryConfigService())
         self.processor.org_id = self.org_id
         self.processor.messaging_producer = self.producer
         self.users: dict[str, str] = {}  # email -> PipesHub userId

@@ -449,7 +449,7 @@ def site_db() -> SiteDb:
 
 
 def acl(db: SiteDb) -> list[tuple[str, Optional[str]]]:
-    return sorted((str(p.entity_type), p.external_id or p.email) for p in db.record_group_permissions["10000"])
+    return sorted((str(p.entity_type), p.email or p.external_id) for p in db.record_group_permissions["10000"])
 
 
 def saved_members(db: SiteDb, group_id: str) -> list[str]:
@@ -1169,7 +1169,7 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert acl(site_db) == eng_before, "ENG's saved access is kept"
-        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
+        ops = sorted((str(p.entity_type), p.email or p.external_id) for p in site_db.record_group_permissions["20000"])
         assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
 
     async def test_a_renamed_project_keeps_its_saved_access_on_a_short_read(self, api, site_db, checkpoints, search) -> None:
@@ -1823,7 +1823,7 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert acl(site_db) == eng_before, "ENG's saved access is kept"
-        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
+        ops = sorted((str(p.entity_type), p.email or p.external_id) for p in site_db.record_group_permissions["20000"])
         assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
 
     async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_the_roles_groups(

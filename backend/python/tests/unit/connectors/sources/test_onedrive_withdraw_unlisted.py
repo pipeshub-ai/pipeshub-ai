@@ -13,6 +13,9 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
 )
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.models.entities import AppUser
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 def _user(sid: str, active: bool = True) -> AppUser:
@@ -37,7 +40,8 @@ def _connector(stored_ids: list[str], listing: object, complete: bool = True, st
             stored.pop(u.source_user_id)
 
     proc.withdraw_app_user_access = AsyncMock(side_effect=withdraw)
-    c = OneDriveConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
+    proc.get_user_by_email = AsyncMock(return_value=None)
+    c = stub_source_accounts(OneDriveConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator"))
     c.msgraph_client = MagicMock()
     c.msgraph_client.get_user_status = AsyncMock(side_effect=status) if isinstance(status, Exception) else AsyncMock(return_value=status)
     if isinstance(listing, Exception):
@@ -320,3 +324,19 @@ async def test_listing_with_an_empty_page_then_users_and_a_matching_count_is_com
 async def test_listing_with_an_empty_page_and_lost_users_is_incomplete_through_the_count() -> None:
     client, _ = _client(_result([_graph_user("a")], "https://next", count=3), _result([], "https://next2"), _result([_graph_user("b")]))
     assert (await client.get_all_users()).complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_grant_to_the_deleted_account_behind_a_reused_address_is_not_written() -> None:
+    """A Graph grant names its account by object id: one to the old account that held ana@x.com stays unwritten."""
+    c, _ = _connector([], [])
+    c.source_accounts.current = {"ana@x.com": "new-oid"}
+    c.source_accounts.reused = {"ana@x.com": "new-oid"}
+
+    def grant(oid: str) -> MagicMock:
+        user = MagicMock(id=oid, additional_data={"email": "ana@x.com"})
+        return MagicMock(granted_to_v2=MagicMock(user=user, group=None), granted_to_identities_v2=None, roles=["read"])
+
+    shared = MagicMock(granted_to_v2=None, granted_to_identities_v2=[MagicMock(user=MagicMock(id="old-oid", additional_data={"email": "ana@x.com"}), group=None)], roles=["read"])
+    out = await c._convert_to_permissions([grant("old-oid"), grant("new-oid"), shared])
+    assert [p.external_id for p in out] == ["new-oid"]

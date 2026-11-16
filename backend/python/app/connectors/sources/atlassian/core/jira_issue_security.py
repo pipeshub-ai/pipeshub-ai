@@ -483,14 +483,15 @@ def _permissions_for_holder(
     value = holder.get("value")
     grants: list[Permission] = []
 
-    def add_user(email: str | None) -> None:
+    def add_user(email: str | None, account_id: str | None = None) -> None:
         if not email:
             return
         key = f"user:{email.lower()}"
         if key in seen:
             return
         seen.add(key)
-        grants.append(Permission(entity_type=EntityType.USER, email=email, type=PermissionType.READ))
+        # The account id lets the processor tell a re-used address's new holder from the deleted account.
+        grants.append(Permission(entity_type=EntityType.USER, email=email, external_id=account_id, type=PermissionType.READ))
 
     def add_group(external_id: str | None) -> None:
         if not external_id:
@@ -520,7 +521,8 @@ def _permissions_for_holder(
         email, inactive = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        add_user(email)
+        named = holder.get("user") if isinstance(holder.get("user"), dict) else {}
+        add_user(email, named.get("accountId") or named.get("key") or parameter)
         # A person who resolves to no e-mail is unread, not outside the level.
         return grants, False, None if email else HOLDER_USER
 

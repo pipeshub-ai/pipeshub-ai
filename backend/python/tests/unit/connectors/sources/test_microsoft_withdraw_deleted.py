@@ -23,6 +23,9 @@ from app.models.entities import AppUser
 from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
 )
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 AUTO = "auto"  # the page's count is the number of users on it
 
@@ -240,7 +243,7 @@ async def test_outlook_direct_reads_are_bounded_to_the_absent_accounts() -> None
 
 def _sharepoint(stored_ids: list[str], listing: object, complete: bool = True, status: object = "gone") -> tuple[SharePointConnector, dict]:
     proc, stored = _processor(stored_ids)
-    c = SharePointConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
+    c = stub_source_accounts(SharePointConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator"))
     c.msgraph_client = MagicMock()
     c.user_sync_point = MagicMock()
     c.user_sync_point.read_sync_point = AsyncMock(return_value=None)

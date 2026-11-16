@@ -42,6 +42,9 @@ from app.models.entities import (
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # ===========================================================================
 # Helpers
@@ -68,7 +71,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1")
+    return stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1"))
 
 
 # ===========================================================================
@@ -375,7 +378,7 @@ def _make_connector_cov():
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
+    return stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id"))
 
 
 class TestSharePointSiteUrlConstruction:
@@ -666,7 +669,7 @@ def _make_mock_deps_fullcov():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps_fullcov()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
+    return stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id"))
 
 
 def _make_file_record(**overrides):

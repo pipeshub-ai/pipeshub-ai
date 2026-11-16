@@ -39,7 +39,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -56,6 +56,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -146,7 +147,7 @@ async def tree(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
             cleanup.push_async_callback(disconnect)
 
         connector_id = f"kb-folder-delete-{uuid.uuid4().hex[:10]}"
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = ORG_ID
         processor.messaging_producer = AsyncMock()
         processor.messaging_producer.send_messages.side_effect = lambda _topic, messages: [True] * len(messages)

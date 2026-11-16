@@ -105,6 +105,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
     ContainerTracker,
 )
@@ -665,6 +666,9 @@ class SharePointConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(
+            connector_id, deleted_users=lambda: list_deleted_users(self.client)
+        )
 
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
@@ -2792,6 +2796,7 @@ class SharePointConnector(BaseConnector):
         Handles user, group and SharePoint site group permissions; site groups
         need the ``site_id`` they were synced under.
         """
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         permissions = []
 
 
@@ -2853,12 +2858,13 @@ class SharePointConnector(BaseConnector):
 
         return permissions
 
-    def _user_may_be_granted(self, email: str) -> bool:
-        """Whether a grant naming this user is written. Never for an account the tenant has disabled or deleted.
-        While no disabled set is known, only for a user the listing showed as active: the others are withheld
-        without failing the item, and the next run writes them once the set is known."""
+    def _user_may_be_granted(self, email: str, object_id: str | None = None) -> bool:
+        """Whether a grant naming this user is written. Never for an account the tenant has disabled or deleted,
+        nor for an earlier account that held the same address (``object_id``: the Entra id the grant names, None
+        for a SharePoint principal). While no disabled set is known, only for a user the listing showed as active:
+        the others are withheld without failing the item, and the next run writes them once the set is known."""
         email = email.lower()
-        if email in self._inactive_emails:
+        if email in self._inactive_emails or not self.source_accounts.may_grant(email, object_id):
             return False
         if self._disabled_set_unknown and email not in self._confirmed_active_emails:
             self._withheld_unknown_user = True
@@ -2869,7 +2875,7 @@ class SharePointConnector(BaseConnector):
         """A Graph identity whose grant is not written (see _user_may_be_granted)."""
         email = (getattr(user, 'additional_data', None) or {}).get("email")
         if isinstance(email, str):
-            return not self._user_may_be_granted(email)
+            return not self._user_may_be_granted(email, getattr(user, 'id', None))
         if self._disabled_set_unknown:
             # No email, so the listing cannot have shown this account active: withheld like an unlisted one.
             self._withheld_unknown_user = True
@@ -2948,15 +2954,22 @@ class SharePointConnector(BaseConnector):
         return permissions
 
     async def _m365_owner_permissions(self, group_id: str, role: PermissionType) -> list[Permission]:
+        await self.source_accounts.ensure_loaded()
         if group_id not in self._m365_group_owners:
             self._m365_group_owners[group_id] = await self._fetch_graph_group_members(group_id, is_owner=True)
         return [
             Permission(external_id=owner['id'], email=owner['email'], type=role, entity_type=EntityType.USER)
-            for owner in self._m365_group_owners[group_id]
+            for owner in self._m365_group_owners[group_id] if self._names_current_holder(owner)
         ]
+
+    def _names_current_holder(self, member: dict) -> bool:
+        """An expanded Graph member (``id``, ``email``) whose address its account still holds (see SourceAccounts)."""
+        email = member.get('email')
+        return isinstance(email, str) and self.source_accounts.may_grant(email, member.get('id'))
 
     async def _sharepoint_principal_permissions(self, principal: dict, role: PermissionType, site_id: str) -> list[Permission]:
         """Grants for one SharePoint principal: a role assignment's Member, or a user of an associated site group."""
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         login_name = principal.get('LoginName') or ''
         principal_type = principal.get('PrincipalType')
 
@@ -2996,9 +3009,10 @@ class SharePointConnector(BaseConnector):
             return []
         object_id = match.group(1)
         if await self._get_directory_object_type(object_id) == DIRECTORY_ROLE_ODATA_TYPE:
+            await self.source_accounts.ensure_loaded()
             return [
                 Permission(external_id=member['id'], email=member['email'], type=role, entity_type=EntityType.USER)
-                for member in await self._get_directory_role_member_users(object_id)
+                for member in await self._get_directory_role_member_users(object_id) if self._names_current_holder(member)
             ]
         return [Permission(external_id=object_id, email=None, type=role, entity_type=EntityType.GROUP)]
 
@@ -3359,6 +3373,7 @@ class SharePointConnector(BaseConnector):
     async def _site_group_member_users(self, site_id: str, group_id: str, principals: list[dict]) -> list[AppUser]:
         """The enabled people a SharePoint group's members stand for. Raises when a member group can't be read.
         A tenant-wide claim is noted for the group (see _site_group_permissions), not expanded."""
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         users: list[dict] = []
         for principal in principals:
             login_name = principal.get('LoginName', '') or ''
@@ -3383,7 +3398,7 @@ class SharePointConnector(BaseConnector):
                         users.extend(await self._fetch_graph_group_members(claim_id))
             else:
                 email = principal.get('Email') or principal.get('UserPrincipalName')
-                if email and email.lower() not in self._inactive_emails:
+                if email and email.lower() not in self._inactive_emails and self.source_accounts.may_grant(email, None):
                     users.append({'id': str(principal.get('Id')), 'email': email, 'name': principal.get('Title')})
         return [
             AppUser(source_user_id=user['id'], email=user['email'], full_name=user.get('name'),

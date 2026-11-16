@@ -1003,6 +1003,7 @@ def processor(data_store_provider):
     """Return a DataSourceEntitiesProcessor wired to the in-memory store."""
     logger = MagicMock()
     config_service = AsyncMock()
+    config_service.get_config.return_value = None    # no saved connector state
     proc = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     proc.org_id = ORG_ID
     proc.messaging_producer = AsyncMock()

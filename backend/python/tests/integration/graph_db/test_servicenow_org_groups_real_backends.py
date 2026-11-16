@@ -42,6 +42,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -104,7 +105,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
         run = uuid.uuid4().hex[:10]
         org_id, connector_id = f"org-sng-{run}", f"conn-sng-{run}"
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = org_id
         with patch("app.connectors.sources.servicenow.servicenow.connector.ServicenowApp"):
             connector = ServiceNowConnector(
