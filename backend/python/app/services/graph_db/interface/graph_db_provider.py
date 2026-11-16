@@ -8920,7 +8920,9 @@ class IGraphDBProvider(ABC):
     ) -> "dict[tuple[str, str], PermittedEntityRows]":
         """One window of each entity's candidate records, filtered inside the
         query by connector or permission role. Not the access decision: the
-        role test reads neither ``accessRule`` nor the connector gate.
+        role test does not read the connector gate, and reads ``accessRule``
+        only so far that a record needing its own grant (RESTRICTED,
+        PARENT_AND_GRANT) takes no role from what it inherits.
 
         Candidates are exactly those of :meth:`get_entity_candidate_records`
         (same refs, scoping, scan cap and newest-first order), narrowed by

@@ -657,3 +657,37 @@ class TestRecordsFoundByTheirName:
             (row,) = out[("record", title_records[name])]
             assert set(row) == set(ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS)
             assert row["indexingStatus"] == TITLE_RECORDS[name]["status"]
+
+
+async def _set_rule(provider: Neo4jProvider | ArangoHTTPProvider, record_key: str, rule: str) -> None:
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query("MATCH (r:Record {id: $id}) SET r.accessRule = $rule", parameters={"id": record_key, "rule": rule})
+    else:
+        await provider.http_client.execute_aql(
+            f"UPDATE @id WITH {{accessRule: @rule}} IN {CollectionNames.RECORDS.value}", {"id": record_key, "rule": rule})
+
+
+async def _grant_user(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str, record_key: str) -> None:
+    keys = _keys(org_id)
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (u:User {id: $user}), (r:Record {id: $id}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER'}]->(r)",
+            parameters={"user": keys["user"], "id": record_key})
+    else:
+        await _insert(provider, CollectionNames.PERMISSION.value, [{
+            "_from": f"{CollectionNames.USERS.value}/{keys['user']}", "_to": f"{CollectionNames.RECORDS.value}/{record_key}",
+            "type": "USER", "role": "READER"}])
+
+
+@pytest.mark.parametrize("rule", ["PARENT_AND_GRANT", "RESTRICTED"])
+async def test_a_record_that_needs_its_own_grant_takes_no_role_from_the_group_it_inherits(backend, rule: str) -> None:
+    """The role test reads a role on the record group a record inherits from as a role on the record. A record whose rule needs its own grant
+    takes no role from it: without a grant of its own it is not returned, and with one it is."""
+    provider, org_id = backend
+    inherited = _keys(org_id)["records"]["inherited"]
+    await _set_rule(provider, inherited, rule)
+    rows = await _permitted(provider, org_id, limit_per_entity=20, window=200, timeout_seconds=30)
+    assert inherited not in {row["_key"] for row in rows}
+    await _grant_user(provider, org_id, inherited)
+    rows = await _permitted(provider, org_id, limit_per_entity=20, window=200, timeout_seconds=30)
+    assert inherited in {row["_key"] for row in rows}
