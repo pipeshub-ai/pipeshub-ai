@@ -205,3 +205,17 @@ async def test_the_pages_a_run_used_are_listed_in_its_manifest(store: MemoryResu
 
     open_manifest = store.files[(ORG, REC, "manifests/rev1/parse.open.json")][0]
     assert open_manifest.count(b"ocr_page/") >= PAGES - 50
+
+
+@pytest.mark.parametrize("batch", range(8))
+async def test_a_page_paid_while_its_batch_is_cancelled_is_still_stored(monkeypatch: pytest.MonkeyPatch, batch: int) -> None:
+    """TC-1 repeated: 8 x 5 fresh runs. A sibling's outage cancels the batch; every answered page is stored."""
+    del batch
+    for _ in range(5):
+        memory = MemoryResultStore()
+        cache = PaidResultCache(memory)
+        monkeypatch.setattr(vlm_ocr_strategy, "paid_cache_for", lambda *_a, _c=cache, **_k: _c)
+        try:
+            await test_a_retry_pays_only_the_pages_not_done(memory)
+        finally:
+            clear_run()

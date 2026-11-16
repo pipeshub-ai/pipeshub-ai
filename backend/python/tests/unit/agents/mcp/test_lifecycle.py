@@ -159,6 +159,8 @@ class TestDeletionEventsCleanUp:
         graph.batch_upsert_nodes = AsyncMock()
         container = MagicMock()
         container.config_service.return_value = store
+        # The org-deleted handler publishes a delayed purge: a real producer's send_event is a coroutine.
+        container.messaging_producer = AsyncMock()
         return EntityEventService(MagicMock(), graph, container)
 
     async def test_user_deleted_removes_their_mcp_data(self, refresh_service: MagicMock) -> None:

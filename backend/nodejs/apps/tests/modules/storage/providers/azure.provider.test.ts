@@ -1618,6 +1618,16 @@ describe('AzureBlobStorageAdapter - additional coverage', () => {
       })
     }
 
+    it('logs the creation of the adapter once per container, not once per request', async () => {
+      const { Logger } = require('../../../../src/libs/services/logger.service')
+      const info = sinon.stub(Logger.prototype, 'info')
+      const { ContainerClient } = require('@azure/storage-blob')
+      sinon.stub(ContainerClient.prototype, 'createIfNotExists').resolves({ succeeded: true })
+      for (let i = 0; i < 25; i++) { newAdapter() }
+      const created = info.getCalls().filter((c: any) => c.args[0] === 'Azure Blob Storage adapter initialized')
+      expect(created.length).to.equal(1)
+    })
+
     it('makes the first upload wait until the container exists', async () => {
       const { ContainerClient, BlockBlobClient } = require('@azure/storage-blob')
       let finishCreate: (value: { succeeded: boolean }) => void = () => undefined

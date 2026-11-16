@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from app.core.org_context import spawn_in_request
+from app.services.paid_cache import locks as lock_limits
 from app.services.paid_cache.keys import CacheKey, valid_record_id
 from app.services.paid_cache.locks import (
     DELETED_TTL_MS,
@@ -308,27 +309,63 @@ class PaidResultCache:
                     await self._note(scope, key, path, stored=False)
                     return value
             held = lock if lock is not None and lock.token is not None else None
+            started = time.monotonic()
             if held is not None:
                 held.start_heartbeat()
             try:
                 result = await compute()
-            finally:
+            except BaseException:
                 if held is not None:
-                    await held.stop_heartbeat()
+                    await _uninterrupted(held.stop_heartbeat())
+                raise
             value, keep = (result.value, False) if isinstance(result, NotCached) else (result, not _is_empty(result))
-            if keep and held is not None and not await held.still_owned():
-                # The lease was lost while the call ran: another payer may hold the key now, so this result is
-                # handed back to the caller (counted once) and not stored.
-                self._count(key, "lock_lost")
-                self.logger.warning("Paid-result lock for %s was lost during the call; the result is not stored", key.kind)
-            elif keep:
-                await self._store_result(key, path, value, scope, overwrite=unusable or refresh)
-            else:
-                self._count(key, "not_cached")
+            # The call has been paid for. Stopping the timer, the ownership check and the store run to the end
+            # even if this caller is cancelled meanwhile (a sibling's outage cancelling its batch): a paid result
+            # is kept, so the retry does not pay for it again. The cancellation is let through afterwards.
+            await _uninterrupted(self._settle(key, path, value, held, scope, started, keep=keep, overwrite=unusable or refresh))
             return value
         finally:
             if lock is not None:
-                await lock.release()
+                await _uninterrupted(lock.release())
+
+    async def _settle(
+        self, key: CacheKey, path: str, value: Any, held: "_Held | None", scope: RunScope | None,  # noqa: ANN401
+        started: float, *, keep: bool, overwrite: bool,
+    ) -> None:
+        """After a paid call: stop the lock's timer, then store the result if it is still worth and safe to."""
+        try:
+            if held is not None:
+                await held.stop_heartbeat()
+        finally:
+            await self._store_if_valid(key, path, value, held, scope, started, keep=keep, overwrite=overwrite)
+
+    async def _store_if_valid(
+        self, key: CacheKey, path: str, value: Any, held: "_Held | None", scope: RunScope | None,  # noqa: ANN401
+        started: float, *, keep: bool, overwrite: bool,
+    ) -> None:
+        if not keep:
+            self._count(key, "not_cached")
+        elif held is not None and not await held.still_owned():
+            # The lease was lost while the call ran: another payer may hold the key now, so this result is
+            # handed back to the caller (counted once) and not stored.
+            self._count(key, "lock_lost")
+            self.logger.warning("Paid-result lock for %s was lost during the call; the result is not stored", key.kind)
+        elif time.monotonic() - started > lock_limits.STAGE_DEADLINE_S:
+            # A call that ran past the stage's deadline is no longer inside what the delayed re-purge covers.
+            self._count(key, "deadline_exceeded")
+            self.logger.warning(
+                "Paid-result for %s took longer than the stage deadline (%s s); the result is not stored",
+                key.kind, lock_limits.STAGE_DEADLINE_S,
+            )
+        else:
+            try:
+                async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                    await self._store_result(key, path, value, scope, overwrite=overwrite)
+            except TimeoutError:
+                self._count(key, "deadline_exceeded")
+                self.logger.warning(
+                    "Paid-result write for %s did not finish within %s s; abandoned", key.kind, lock_limits.WRITE_DEADLINE_S,
+                )
 
     async def _lookup(
         self, key: CacheKey, path: str, validate: Callable[[Any], object] | None = None, *, report: bool = True,
@@ -478,6 +515,27 @@ class _Held:
             await self._backend.release(self._name, self.token)
         except Exception:
             self._logger.debug("Paid-result lock release failed", exc_info=True)
+
+
+async def _uninterrupted(work: Awaitable[Any]) -> Any:  # noqa: ANN401 - whatever the work returns
+    """Runs ``work`` to its end even if the caller is cancelled meanwhile, then lets the cancellation through."""
+    task = spawn_in_request(_await(work), name="paid-cache-settle")
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+async def _await(work: Awaitable[Any]) -> Any:  # noqa: ANN401
+    return await work
 
 
 def _is_empty(value: Any) -> bool:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape

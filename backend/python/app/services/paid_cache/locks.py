@@ -24,12 +24,19 @@ _RELEASE_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call(
 DELETED_TTL_MS = 24 * 3600 * 1000
 
 
-#: What bounds a write that lands after its record was deleted: a lock lives at most ``LOCK_TTL_MS`` past its
-#: last renewal, and a signed upload that has started ends within ``WRITE_DEADLINE_S``.
+#: What bounds a write that lands after its record was deleted. A lock lives at most ``LOCK_TTL_MS`` past its
+#: last renewal, a signed upload that has started ends within ``WRITE_DEADLINE_S`` (enforced: the store sequence
+#: runs under that timeout), and a result is stored only if its computation started less than
+#: ``STAGE_DEADLINE_S`` ago, the longest a paid stage (a parse) may run.
 WRITE_DEADLINE_S = 120
+STAGE_DEADLINE_S = 2400
 REPURGE_MARGIN_S = 60
-#: The delayed second purge of a deleted record is due this long after the delete.
-REPURGE_DELAY_S = LOCK_TTL_MS // 1000 + WRITE_DEADLINE_S + REPURGE_MARGIN_S
+#: The delayed second purge of a deleted record is a chain of hops, each due this long after the one before
+#: (lock TTL + write deadline + margin), so no queued message waits long enough to outlive its signature.
+REPURGE_HOP_S = LOCK_TTL_MS // 1000 + WRITE_DEADLINE_S + REPURGE_MARGIN_S
+REPURGE_DELAY_S = REPURGE_HOP_S
+#: The chain ends once this long has passed since the delete: the longest paid stage plus a lock's life and a margin.
+REPURGE_HORIZON_S = STAGE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
 
 
 def lock_name(org_id: str, record_id: str, digest: str) -> str:

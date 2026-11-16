@@ -10,6 +10,7 @@ import asyncio
 import os
 import random
 import uuid
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -18,7 +19,7 @@ import pytest
 from app.config.constants.arangodb import EventTypes
 from app.core.org_context import OrgContext, bind
 from app.services.messaging.config import IndexingEvent
-from app.services.paid_cache import access
+from app.services.paid_cache import access, repurge
 from app.services.paid_cache import cache as cache_module
 from app.services.paid_cache.cache import PaidResultCache
 from app.services.paid_cache.keys import CacheKey
@@ -143,3 +144,61 @@ async def test_after_a_delete_the_fence_refuses_late_writes_on_real_redis(store:
     assert await cache.get_or_compute(key, compute) == "late"
     assert await store.list_files(org, rec) == []
     await store.purge_org(org)
+
+
+async def test_an_orphaned_parse_paying_for_2400_s_after_a_delete_with_redis_flushed_leaves_nothing_on_the_real_store(
+    store: NodePaidResultStore, redis: Redis, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The delete, a flushed Redis, a parse that keeps paying pages for 2400 s, and the chain of hops."""
+    now = [1_000_000.0]
+    monkeypatch.setattr(repurge, "time", SimpleNamespace(time=lambda: now[0]))
+    ns = f"s7it-{uuid.uuid4().hex[:8]}"
+    org, rec = new_org(), str(uuid.uuid4())
+    indexing = PaidResultCache(store, RedisLocks(redis, ns))
+    monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: indexing)
+    producer = AsyncMock()
+    handler = make_record_handler(producer=producer)
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"_key": rec, "orgId": org, "virtualRecordId": "vr"})
+    handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+    handler._request_code_edge_build_for_deleted = AsyncMock()
+    handler._hand_over_shared_copy = AsyncMock()
+
+    async def deliver(event_type: str, payload: dict) -> None:
+        with bind(OrgContext(org, None, "service", "envelope", "req-1")):
+            [e async for e in handler.process_event(event_type, payload) if e.event != IndexingEvent.START_DOWNLOAD]
+
+    async def compute() -> str:
+        return "text"
+
+    try:
+        start = now[0]
+        await deliver(EventTypes.DELETE_RECORD.value, {"recordId": rec, "orgId": org, "virtualRecordId": "vr"})
+        pending = [producer.send_event.await_args.kwargs["payload"]]
+        for name in [k async for k in redis.scan_iter(match=f"{ns}:*")]:
+            await redis.delete(name)                                # Redis restarted: marker and locks are gone
+        parsing = PaidResultCache(store, RedisLocks(redis, ns))
+        scope = RunScope(org, rec, "rev1", "parse")
+        page, hops = 0, 0
+        while now[0] - start < 2400 or pending:
+            if now[0] - start < 2400:
+                now[0] += 200
+                key = CacheKey(org, rec, "ocr_page", 1, "m", "p", "q", f"p{page}")
+                await scope.note(parsing.store, key.relative_path(), opens=True)
+                await parsing.get_or_compute(key, compute)
+                page += 1
+                if now[0] - start >= 2400:
+                    await scope.finish(parsing.store)
+            else:
+                now[0] = max(now[0], pending[0]["_retry_not_before"])
+            while pending and pending[0]["_retry_not_before"] <= now[0]:
+                due = pending.pop(0)
+                producer.send_event.reset_mock()
+                await deliver("purgePaidResults", due)
+                hops += 1
+                if producer.send_event.await_args is not None:
+                    pending.append(producer.send_event.await_args.kwargs["payload"])
+        assert page >= 12 and hops >= 6
+        assert await store.list_files(org, rec) == []
+    finally:
+        clear_run()
+        await store.purge_org(org)

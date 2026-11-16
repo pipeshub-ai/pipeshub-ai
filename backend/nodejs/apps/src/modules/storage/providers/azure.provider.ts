@@ -31,15 +31,19 @@ import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
 import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 
-@injectable()
 /** Containers (by URL) that a check in this process has seen to exist. */
 const verifiedContainers = new Set<string>();
+
+/** Containers (by URL) whose adapter creation this process has already logged. */
+const announcedAdapters = new Set<string>();
 
 /** For tests: forget which containers were seen, so the next adapter checks again. */
 export const forgetVerifiedContainers = (): void => {
   verifiedContainers.clear();
+  announcedAdapters.clear();
 };
 
+@injectable()
 class AzureBlobStorageAdapter implements StorageServiceInterface {
   private blobServiceClient: BlobServiceClient;
   private containerClient: any;
@@ -105,10 +109,15 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
 
       this.containerReady = this.startContainerCheck();
 
-      this.logger.info('Azure Blob Storage adapter initialized', {
-        account: accountName,
-        container: containerName,
-      });
+      // The controller builds an adapter per request: say so once per container, not once per request.
+      const announced: string = this.containerClient.url ?? containerName;
+      if (!announcedAdapters.has(announced)) {
+        announcedAdapters.add(announced);
+        this.logger.info('Azure Blob Storage adapter initialized', {
+          account: accountName,
+          container: containerName,
+        });
+      }
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;

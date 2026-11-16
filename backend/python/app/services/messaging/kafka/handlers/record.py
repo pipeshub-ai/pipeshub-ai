@@ -114,7 +114,7 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
-from app.services.paid_cache.repurge import ORG_SCOPE
+from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
@@ -1780,6 +1780,7 @@ class RecordEventHandler(BaseEventService):
                 purge_org, purge_record_id = current_org_id(), payload.get("recordId")
                 if payload.get("scope") == ORG_SCOPE and not purge_record_id:
                     await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_org(purge_org)
+                    await schedule_next_hop(self.producer, purge_org, payload, loop=self._producer_loop)
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_org))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_org))
                     return
@@ -1790,6 +1791,8 @@ class RecordEventHandler(BaseEventService):
                     )
                 # A storage failure raises, so the broker redelivers until the purge succeeds.
                 await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(purge_org, purge_record_id)
+                # A hop of the chain: it purged, and now publishes the next (signed when it is published).
+                await schedule_next_hop(self.producer, purge_org, payload, loop=self._producer_loop)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
                 return
@@ -1879,7 +1882,7 @@ class RecordEventHandler(BaseEventService):
                     await paid_cache_access.paid_cache_for(self.config_service, self.logger).delete_record(org_id, record_id)
                     # Redis can lose the marker while a parse that outlived the record is still running: a
                     # durable delayed purge removes whatever such a write left. A publish failure raises.
-                    await schedule_paid_repurge(self.producer, org_id, record_id)
+                    await schedule_paid_repurge(self.producer, org_id, record_id, loop=self._producer_loop)
                 else:
                     self.logger.warning(
                         "deleteRecord %s carries no orgId and the record is gone; "
