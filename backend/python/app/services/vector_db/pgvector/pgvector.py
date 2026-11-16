@@ -242,6 +242,16 @@ class PgVectorService(IVectorDBService):
         _, catalog = self._assert_connected()
         return await catalog.orgs_of_vrids(virtual_record_ids)
 
+    async def other_orgs_hold_virtual_record(self, virtual_record_id: str, org_id: str) -> bool:
+        """A vetted function answers it (true or false, never which org): a scroll here reads one org only."""
+        db, _ = self._assert_connected()
+
+        async def read(tx: Tx) -> bool:
+            return await tx.fetchval("/* pipeshub:pgvector.vrid_held_elsewhere */ SELECT retrieval.vrid_held_elsewhere($1)", virtual_record_id)
+
+        with org_scope(org_id):
+            return bool(await db.run(read, custom_plan=True))
+
     def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
         return classify_pg_search_error(error)
 

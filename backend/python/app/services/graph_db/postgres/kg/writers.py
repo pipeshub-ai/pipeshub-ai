@@ -23,7 +23,7 @@ RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "r
 # The per-item checks of w_records_upsert (kg manifest) on the values a node's document supplies: one row that fails a check refuses the whole call. The id is not here: a key
 # the node-key writer took (``w_nodes_upsert``, the same bound) is one this writer takes.
 RECORD_LENGTHS = {"vrid": (0, 256), "record_type": (0, 64), "external_id": (0, 2000)}
-RECORD_ENUMS = {"rule": ("OPEN", "STRICT", "RESTRICTED"), "model": ("APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"), "origin": ("CONNECTOR", "UPLOAD")}
+RECORD_ENUMS = {"rule": ("OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT"), "model": ("APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"), "origin": ("CONNECTOR", "UPLOAD")}
 # The per-item check of w_grants_set that a permission edge's document can fail: its type is part of the key of kg.scope_members, so it keeps a bound.
 GRANT_TYPE_LENGTH = (1, 64)
 
@@ -182,6 +182,11 @@ class KgWriter:
 
     async def counts_delete(self, ids: list[int]) -> int:
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_counts_delete */ SELECT kg.w_counts_delete($1::bigint[])", p) for p in _chunks(sorted(ids))])
+
+    async def analyze_request(self, app_sk: int) -> bool:
+        """Ask the maintenance worker to refresh the statistics of the kg tables (``python -m db.maintain analyze``): after a connector's first load or a restore, until they
+        know the org the planner puts it at one row and a browse may read every kg row of it. One row per org; a later request moves its time forward, so statistics taken before the load ended do not close it."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_analyze_request */ SELECT kg.w_analyze_request($1)", app_sk)
 
     async def projection_set(self, app_sk: int, *, epoch: int, mode: str, digest: str | None, cursor: str | None, verified_at: datetime | None) -> bool:
         return await self.tx.fetchval("/* pipeshub:kg.w_projection_set */ SELECT kg.w_projection_set($1, $2, $3, $4, $5, $6)", app_sk, epoch, mode, digest, cursor, verified_at)

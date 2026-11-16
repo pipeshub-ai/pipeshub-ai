@@ -338,7 +338,7 @@ async def test_the_role_walk_is_a_superset_of_the_access_check_when_rules_roles_
     assert extra > 0                                       # the walk is not the access decision
 
 
-async def test_the_role_walk_ignores_the_access_rule_and_the_gate_and_lists_placeholders(w: World) -> None:
+async def test_the_role_walk_gives_no_inherited_role_to_a_record_that_needs_its_own_grant_ignores_the_gate_and_lists_placeholders(w: World) -> None:
     await entity_world(w, "other-org")
     await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
     await w.nodes("records", rec("shut", **done(accessRule="RESTRICTED")), rec("stub", **done(isPlaceholder=True)))
@@ -347,7 +347,8 @@ async def test_the_role_walk_ignores_the_access_rule_and_the_gate_and_lists_plac
         await w.edge("mentionsEntity", ("records", r), ("namedEntities", "E"))
     await w.edge("permission", ("users", "u"), ("recordGroups", "g"), type="USER", role="READER")
     assert "shut" not in await w.allowed("u", "shut")                                       # the access check shuts a restricted record that only inherits
-    assert {"shut", "stub"} <= await walk(w, "u")                                            # the role walk does not read the rule; a stub is a record
+    walked = await walk(w, "u")
+    assert "stub" in walked and "shut" not in walked                                         # a restricted record takes no role from what it inherits; a stub is a record
     assert "stub" in await w.allowed("u", "stub")
     await user(w, "nogate")
     await w.edge("permission", ("users", "nogate"), ("records", "old"), type="USER", role="READER")

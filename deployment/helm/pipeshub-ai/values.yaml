@@ -457,6 +457,16 @@ config:
   governorIndexLightWorkingSetGb: ""  # (0.02) RAM assumed per in-flight light record
   governorHeavyParseWorkingSetGb: ""  # (1.5) RAM assumed per in-flight heavy parse
   governorBaselineMemoryMb: ""        # process baseline excluded from pressure
+  parsePoolWorkers: ""  # (derived from the CPU limit) worker processes for large text, code and CSV parses
+  embeddingServerMaxConcurrency: ""  # (derived) bundled embedding server encode slots
+  embeddingServerQueryReservedSlots: ""  # (1) encode slots kept for search queries
+  embeddingBatchConcurrency: ""  # (derived) embedding requests in flight per batch
+  maxConcurrentIndexingLlmCalls: ""  # (24) LLM calls in flight per LLM-calling service
+  cpuBudget: ""  # CPUs the capacity plan may use, instead of the pod limit (inactive until capacityProfile is auto)
+  memoryBudget: ""  # bytes the capacity plan may use, instead of the pod limit (inactive until capacityProfile is auto)
+  capacityProfile: ""  # (legacy) legacy or auto: auto sizes every cap from the pod's CPU and memory
+  capacityCellCpus: ""  # (16) CPUs one indexing process is planned for under auto
+  cpuOversub: ""  # (1.25) running threads per CPU the member budget admits under auto
   indexingConcurrencyLeaseSeconds: 120
   # Must stay below any caller's own deadline so redis-py raises its own clean
   # timeout rather than having a command cancelled underneath it — a cancelled
@@ -992,3 +1002,65 @@ neo4j:
     NEO4J_dbms_memory_heap_initial__size: 512m
     NEO4J_dbms_memory_heap_max__size: 2g
     NEO4J_dbms_memory_pagecache_size: 1g
+
+# Parsing in its own pods (off by default; the chart then renders exactly as
+# without this block). When enabled, a Deployment and ClusterIP Service named
+# <release fullname>-parsing run the application image with PIPESHUB_ROLE=parsing
+# (only the Parsing service and the Docling service it calls), and the app pods
+# get USE_PARSING_SERVICE=true and PARSING_SERVICE_URL pointing at it.
+# The pods carry the label pipeshub.ai/workload=parsing. The replica count is
+# fixed by parsing.replicas.
+parsing:
+  enabled: false
+  replicas: 1
+  port: 8092
+  # With networkPolicy.enabled the parsing pods get a policy of their own: ingress on `port` only from
+  # the application pods, egress as networkPolicy.egress. List anything else that must reach them (a
+  # metrics scraper, for example) in extraIngress, as NetworkPolicy ingress rules.
+  networkPolicy:
+    extraIngress: []
+  # Parses in flight per parsing pod. Beyond it a pod answers 429 with
+  # Retry-After at once (PARSING_MAX_CONCURRENT). Empty = not limited by count.
+  maxConcurrent: ""
+  # Parses the application pods keep in flight toward the parsing pods in total
+  # (PARSING_SERVICE_CONCURRENCY on the app). Size it as the most parsing pods
+  # times maxConcurrent. Empty = the application's own CPU-derived slots.
+  clientConcurrency: ""
+  # Parse pods are CPU-bound (Docling layout analysis). The CPU request must
+  # stay set: the pod's CPU use is measured against it.
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  # A parse in flight when a pod is stopped gets this long to finish.
+  terminationGracePeriodSeconds: 120
+  # Dedicated node pool: select and tolerate its taint here.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Prefer one parsing pod per node. Ignored when affinity is set.
+  spreadAcrossNodes: true
+  podAnnotations: {}
+  podLabels: {}
+  # Extra container env entries ({name, value} items).
+  extraEnv: []
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  healthCheck:
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 60
+    readinessProbe:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    livenessProbe:
+      periodSeconds: 20
+      timeoutSeconds: 10
+      failureThreshold: 6
