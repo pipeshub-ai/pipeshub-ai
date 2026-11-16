@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AccessRule
-from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
@@ -18,7 +17,6 @@ from app.connectors.sources.atlassian.jira_data_center_personal.connector import
     JiraDataCenterPersonalConnector,
 )
 from app.models.entities import AppUser, RecordType, TicketRecord
-from tests.support.in_memory_config import InMemoryConfigService
 
 
 def _connector(cls=JiraDataCenterConnector) -> JiraDataCenterConnector:

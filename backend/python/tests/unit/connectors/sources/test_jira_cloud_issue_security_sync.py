@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AccessRule
-from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
