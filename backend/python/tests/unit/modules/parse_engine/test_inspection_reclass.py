@@ -102,11 +102,12 @@ def test_inspect_facts_runs_through_the_pool_and_reports_pages_and_scan() -> Non
     assert facts == inspection.InspectedFacts(pages=7, scanned=True)
 
 
-def test_only_a_pdf_with_its_bytes_in_hand_is_inspected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_a_pdf_or_office_document_with_its_bytes_in_hand_is_inspected(monkeypatch: pytest.MonkeyPatch) -> None:
     assert inspection.wants_inspection("pdf", None, b"%PDF")
     assert not inspection.wants_inspection("pdf", None, None)  # no bytes
     assert not inspection.wants_inspection("txt", "text/plain", b"x")
-    assert not inspection.wants_inspection("xlsx", None, b"x")
+    assert inspection.wants_inspection("xlsx", None, b"x")  # office packages are read for their page or cell counts
+    assert not inspection.wants_inspection("png", None, b"x")
     monkeypatch.setenv("PARSE_ADMISSION", "legacy")
     assert not inspection.wants_inspection("pdf", None, b"%PDF")  # off: no event, no read
 
