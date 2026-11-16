@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
 from . import gen
 from .kh_layer import (
     PARTS,
@@ -24,6 +26,7 @@ from .kh_layer import (
     check_world,
     check_worlds,
     children_of,
+    cursor_in_the_clear,
     on_every_store,
     refused_by_cap,
     world_part,
@@ -56,8 +59,10 @@ from .kh_worlds import (
     SIDESEED,
     STUBQ,
     STUBSEED,
+    STUBTOP,
     TWOWAY,
     UNPLACED,
+    WIDE,
     XBADGE,
     XDECL,
     XGRANT,
@@ -78,10 +83,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the s
 # run out of memory on them.
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
-# children), and a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`). A readable node the flatten listing or a browse
-# leaves out is `under` or `browse_gap` and fails, however deep it lies. `truncated` counts the rows a viewer's whole-tree browse did not open
-# past `MAX_OPENS`.
-GAPS = {"gap", "truncated"}
+# children), a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`), and a stub left out whose listing lies past the
+# children its listing asks the check about. A readable node the flatten listing or a browse leaves out is `under` or `browse_gap` and fails, however
+# deep it lies and however many children sort ahead of it. `truncated` counts the rows a viewer's whole-tree browse did not open
+# past `MAX_OPENS`; `unlisted`, a node the viewer may open that no browse of the whole tree lists (the shapes `kh_layer._browse` names).
+GAPS = {"gap", "truncated", "unlisted"}
 
 
 def _describe(found: list[KhFinding]) -> str:
@@ -197,6 +203,67 @@ async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(
                 await layer.release([world])
 
 
+async def test_a_browse_lists_every_child_the_check_admits_however_many_sort_ahead_of_it(graph_layers) -> None:
+    """WIDE: f's 230 children are all left to the check, which admits the first ten and the last thirty (past the first 200 by id). Every page
+    of f lists them in order, the later pages from the cursor of the earlier, with a total that is exact or says it is a lower bound. g's
+    second page starts at a child the check admitted on the first."""
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    for layer in graph_layers:
+        await layer.preload([WIDE])
+        try:
+            assert list(await children_of(layer, WIDE, "u", "f", "recordGroup")) == readable[:7], layer.name
+            items, totals, counted = await browse_pages(layer, WIDE, "u", "f", "recordGroup")
+            ns = await layer._ns(WIDE)
+            assert [ns.local(i.id) for i in items] == readable, layer.name
+            assert set(totals) == set(counted) == {len(readable)}, (layer.name, totals, counted)
+            items, totals, _ = await browse_pages(layer, WIDE, "u", "g", "recordGroup")
+            assert [ns.local(i.id) for i in items] == [f"j{i:02d}" for i in range(10)] and set(totals) == {10}, layer.name
+            bad = _bad(await check_world(layer, WIDE, "wide"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([WIDE])
+
+
+async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_the_viewer_may_not_open(graph_layers, monkeypatch) -> None:
+    """WIDE with no time to ask past the first window: the first page of f ends at the last child asked, k199, which the viewer may not open, and
+    the next page resumes there. The cursor carries that position sealed: a client reading it finds no name or id of a child it may not open,
+    and the pages still list all forty readable children in order."""
+    monkeypatch.setattr(IGraphDBProvider, "_KH_UNDECIDED_BUDGET_S", -1.0)
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    denied = [f"k{i:03d}" for i in range(10, 200)]
+    for layer in graph_layers:
+        await layer.preload([WIDE])
+        try:
+            ns, cursors = await layer._ns(WIDE), []
+            items, _, _ = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
+            assert [ns.local(i.id) for i in items] == readable, layer.name
+            assert cursors, layer.name
+            assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], layer.name
+        finally:
+            await layer.release([WIDE])
+
+
+async def test_a_chain_top_whose_group_is_a_placeholder_is_reached_from_the_app(graph_layers) -> None:
+    """STUBTOP: r is granted, belongs to the placeholder group s and hangs from nothing. Opening s lists r, so the folder f lists s with an arrow
+    (Neo4j left s out and f showed no arrow, so no browse reached r). A store that keeps no placeholder group places r under the App instead. On
+    every store a browse from the App reaches r, following the arrows."""
+    for layer in graph_layers:
+        await layer.preload([STUBTOP])
+        try:
+            reached, queue = {}, [("A", "app")]
+            while queue:
+                node, kind = queue.pop()
+                for row, arrow in (await children_of(layer, STUBTOP, "u", node, kind) or {}).items():
+                    reached[row] = arrow
+                    if arrow:
+                        queue.append((row, "recordGroup" if STUBTOP.node(row).kind == "group" else "record"))
+            assert "r" in reached, (layer.name, reached)
+            bad = _bad(await check_world(layer, STUBTOP, "stubtop"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([STUBTOP])
+
+
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:
     """The worlds with a record of another connector inside a declared group (node `m4`): no row the oracle denies, no count that includes one."""
     worlds = [w for w in [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS] if "m4" in {n.id for n in w.nodes}]
@@ -281,9 +348,9 @@ async def test_a_child_the_check_admits_by_its_own_reach_keeps_its_row_and_its_s
 async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(graph_layers) -> None:
     """Where a node's rules list nothing under it, opening it lists what the check admits of its frontier: the children its browse asks the check
     about, and those of the stubs it lists on the way down. The sidebar keeps a record whose child the check admits below a seed (SIDESEED), a
-    stub is listed over such a child (STUBSEED) and over a stub that holds a child the check admits by another parent (NESTSTUB), and a stub
-    whose readable child is past the children its browse asks about is not listed, as opening it lists nothing (CAPSTUB). A stub child the walk
-    from the App reaches by another parent counts with what lies below it (REACHSTUB)."""
+    stub is listed over such a child (STUBSEED) and over a stub that holds a child the check admits by another parent (NESTSTUB). A stub whose
+    readable child lies past the children its listing asks the check about is not listed, though opening it lists that child (CAPSTUB). A stub
+    child the walk from the App reaches by another parent counts with what lies below it (REACHSTUB)."""
     for layer in graph_layers:
         worlds = [SIDESEED, STUBSEED, NESTSTUB, CAPSTUB, REACHSTUB]
         await layer.preload(worlds)
@@ -293,7 +360,7 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert await children_of(layer, NESTSTUB, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
             assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
-            assert await children_of(layer, CAPSTUB, "u", "S", "record") == {}, layer.name
+            assert await children_of(layer, CAPSTUB, "u", "S", "record") == {"k200": False}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "R", "record") == {"S": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup") == {"R": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup", only_containers=True) == {"R": True}, layer.name

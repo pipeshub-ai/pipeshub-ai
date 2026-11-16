@@ -51,9 +51,9 @@ class Slow(Graph):
         await asyncio.sleep(0.001)
         return await super().get_document(key, collection, **kw)
 
-    async def update_node_fields_if_match(self, *a: Any) -> bool:
+    async def update_node_fields_if_match(self, *a: Any, **kw: Any) -> bool:
         await asyncio.sleep(0.001)
-        return await super().update_node_fields_if_match(*a)
+        return await super().update_node_fields_if_match(*a, **kw)
 
 
 async def test_fifty_writes_at_once_are_none_refused_and_every_one_is_accounted_for() -> None:
@@ -92,7 +92,7 @@ async def test_a_close_that_cannot_land_leaves_a_lease_that_the_sweep_closes() -
     clock, g = Clock(), Graph()
     token = await open_write(g, "c", ["r1"], clock=clock)
     real = g.update_node_fields_if_match
-    g.update_node_fields_if_match = lambda *a: _false()      # type: ignore[method-assign]
+    g.update_node_fields_if_match = lambda *a, **kw: _false()      # type: ignore[method-assign]
     assert not await close_write(g, "c", token, attempts=2)
     g.update_node_fields_if_match = real                     # type: ignore[method-assign]
     clock.now += DEAD

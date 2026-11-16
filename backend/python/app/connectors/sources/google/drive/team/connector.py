@@ -385,6 +385,9 @@ class _Settled(Enum):
     that decided nothing leaves it there, to be checked again."""
 
     KEPT = "kept"
+    # Kept because someone else still opens it, while the reporting user could not: off its list like KEPT, and
+    # this user's grant went.
+    LOST = "lost"
     REMOVED = "removed"
     UNDECIDED = "undecided"
     NOT_STORED = "not_stored"  # nothing was stored for it: off its list like REMOVED
@@ -3015,8 +3018,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         kept = []
         for record, perms in batch_records:
             verdict = await self._withdrawal_verdict(record, parents, w, stored)
-            if verdict == "unknown" and record.external_record_id in w.unsettled:
-                # Its own removal found nothing stored: kept, minus this user, only if someone else still opens it.
+            if verdict == "unknown":
+                # Its own removal, or a folder above it, settled nothing (nothing stored, or a folder this sync deleted
+                # may hold it): kept, minus this user, only if someone else still opens it. Drive reports a folder's
+                # removal alone, and a read by id of an item this user cannot open finds nothing, so a record left
+                # out here when someone else opens it would never be written.
                 verdict = "lost" if await self._another_can_open_unstored(record, perms, w.user_email) else "deleted"
             if verdict in ("deleted", "unknown"):
                 if failed is not None:
@@ -3039,13 +3045,20 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _another_can_open_unstored(self, record: Record, perms: list, reporter: str) -> bool:
         """Whether an active synced user other than the reporter, named on the new record's grants directly or
-        through a group, can still open its file. A check that fails counts as no: the record is read again by id."""
+        through a group, can still open its file. A check that fails counts as no: the record is read again by id.
+        A group whose members the directory will not list may still open it, so it counts as yes, as for a stored
+        record (`_another_synced_user_can_open`)."""
         named: set[str] = set()
         for p in perms:
             if p.entity_type == EntityType.USER and p.email:
                 named.add(p.email.lower())
-            elif p.entity_type == EntityType.GROUP and (p.email or p.external_id):
-                named |= await self._synced_group_members(p.email or p.external_id) or set()
+            elif p.entity_type == EntityType.GROUP and (group_id := p.email or p.external_id):
+                if _is_audience_group(group_id):
+                    continue  # not a directory group: its people are not asked here
+                members = await self._synced_group_members(group_id)
+                if members is None:
+                    return True
+                named |= members
         sources: dict[str, GoogleDriveDataSource] = {}
         for user in self.synced_users:
             if user.email and user.is_active and user.email.lower() in named - {reporter}:
@@ -3502,7 +3515,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         # nothing from a new record of it waiting in the batch except as that outcome says.
         _record_withdrawal(file_id, {
             _Settled.REMOVED: None,  # deleted: recorded where it was deleted
-            _Settled.KEPT: _Withdrawal.KEPT,
+            _Settled.KEPT: _Withdrawal.KEPT,  # the reporting user still opens it
+            # The reporting user could not open it: their grant went, whoever else still opens it or is unknown.
+            _Settled.LOST: _Withdrawal.LOST,
+            _Settled.UNDECIDED: _Withdrawal.LOST,
             _Settled.NOT_STORED: _Withdrawal.NOT_STORED,
         }.get(outcome, outcome) if isinstance(outcome, (_Settled, _Withdrawal)) else None)
         held.clear(file_id)
@@ -3783,6 +3799,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             return _Settled.NOT_STORED
         unknown = False
         sources = {user.email: user_drive_data_source} if user and user_drive_data_source else {}
+        opened_by: dict[str, str] = {}  # who confirmed each kept item is still open
 
         async def still_open(item: Record) -> bool:
             nonlocal unknown
@@ -3802,6 +3819,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if metadata.get("trashed"):
                     return False
                 self.logger.info(f"Keeping {item.record_name}: {candidate.email} can still open it")
+                opened_by[item.external_record_id] = candidate.email.lower()
                 return True
             if drive_id in self._drive_members_unread:
                 # Unknown is not empty: a member of that group may still open it. Kept, as for a group grant whose
@@ -3822,7 +3840,13 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         try:
             if await still_open(record):
-                return _Settled.UNDECIDED if unknown else _Settled.KEPT
+                if unknown:
+                    return _Settled.UNDECIDED
+                if user is not None and opened_by.get(record.external_record_id) != user.email.lower():
+                    # The drive's feed reported it removed for this user, and their own check did not open it.
+                    await self._drop_reporters_grant(record, user)
+                    return _Settled.LOST
+                return _Settled.KEPT
             if record.mime_type in FOLDER_MIME_TYPES:
                 kept = await remove_folder_confirming_contents(
                     self.data_entities_processor, self.connector_id, record, still_open, self.logger

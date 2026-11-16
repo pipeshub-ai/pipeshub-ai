@@ -379,12 +379,74 @@ class KbListingsMixin(PgBase):
         except Exception as e:
             self.logger.error("❌ Failed to get template access: %s", e)
             return None
-        if not r:
-            return None
-        role = r["role"]
-        return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
-                "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
-                "can_delete": role == "OWNER", "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
+        return _with_access(r) if r else None
+
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
+        """The live templates the user holds a grant on (``access_type`` USER) or reaches through a team they are in (TEAM, the highest team role), once each,
+        their own grants first; a failed read is an empty list."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_all_agent_templates */ SELECT * FROM (
+                  SELECT DISTINCT ON (t.id) t.id, t.doc, gr.access, gr.role, gr.pid, gr.created, gr.updated, gr.ord FROM (
+                      SELECT p.to_id AS tid, 'USER' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created,
+                             p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
+                        FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
+                          AND p.to_coll = 'agentTemplates' AND p.doc->>'type' = 'USER' AND p.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
+                      UNION ALL
+                      SELECT g.to_id, 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
+                             CASE g.doc->>'role' WHEN 'OWNER' THEN 4 WHEN 'ORGANIZER' THEN 3 WHEN 'WRITER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END
+                        FROM graph.nodes u JOIN graph.edges m ON m.org_id = u.org_id AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = u.id
+                          AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
+                          JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
+                          JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
+                          AND g.to_coll = 'agentTemplates' AND g.doc->>'type' = 'TEAM' AND g.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2) gr
+                  JOIN graph.nodes t ON t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = gr.tid AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+                  ORDER BY t.id, gr.ord, gr.rk DESC, gr.pid) x
+                ORDER BY x.ord, x.id""", org, user_id, _TEMPLATE_ROLES), transaction)
+        except Exception as e:
+            self.logger.error("Failed to get all agent templates: %s", e)
+            return []
+        return [_with_access(r) for r in rows]
+
+    async def _template_owned(self, template_id: str, user_id: str, transaction: str | None) -> bool:
+        """Whether the user's own grant on the live template is OWNER (a team's is not enough, as on the other stores)."""
+        org = current_org_id()
+        return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.template_owned */ SELECT 1 FROM graph.nodes u
+            JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentTemplates'
+              AND p.to_id = $3 AND p.doc->>'role' = 'OWNER'
+            JOIN graph.nodes t ON t.org_id = u.org_id AND t.coll = 'agentTemplates' AND t.id = p.to_id AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 LIMIT 1""", org, user_id, template_id), transaction))
+
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None = None) -> bool | None:
+        """Write the allowed fields of the update when the user owns the live template; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            data = {"updatedAtTimestamp": get_epoch_timestamp_in_ms(), "updatedByUserId": user_id,
+                    **{f: template_updates[f] for f in ("name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags") if f in template_updates}}
+            return await self.update_node(template_id, _TEMPLATES, data, transaction=transaction)
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            self.logger.error("Failed to update agent template: %s", e)
+            return False
+
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
+        """Mark the live template deleted when the user owns it; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            return await self.update_node(template_id, _TEMPLATES, {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
+                                          transaction=transaction)
+        except Exception as e:
+            self.logger.error("Failed to delete agent template: %s", e)
+            return False
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         """A copy of the template under a new key, active and not deleted, with no owner and no grants; None for a missing template."""
@@ -426,6 +488,16 @@ class KbListingsMixin(PgBase):
 
 def _scalar(v: Any) -> Any:  # noqa: ANN401
     return json.loads(v) if isinstance(v, str) else v
+
+
+def _with_access(r: Any) -> dict:  # noqa: ANN401
+    """A template row with the user's access to it: how they reach it, the grant and what it lets them do. Edit and delete need the user's own OWNER
+    grant (``_template_owned``), so a team's grant or a direct writer's says no to both."""
+    role = r["role"]
+    owner = r["access"] in ("USER", "INDIVIDUAL") and role == "OWNER"
+    return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
+            "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": owner,
+            "can_delete": owner, "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
 
 
 def _doc_list(v: Any) -> list:  # noqa: ANN401

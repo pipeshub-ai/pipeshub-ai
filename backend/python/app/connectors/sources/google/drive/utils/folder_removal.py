@@ -53,7 +53,9 @@ async def remove_folder_confirming_contents(
     kept_ids: set[str] = set()
     # Deepest first, so a folder removed after its contents leaves nothing to re-point.
     for record in reversed(below):
-        if record.is_placeholder or await still_open(record):
+        if record.is_placeholder:
+            continue  # a stand-in for a folder never read is not deleted, nor known to be open to anyone
+        if await still_open(record):
             kept_ids.add(record.external_record_id)
             continue
         await processor.on_record_deleted(record_id=record.id)
