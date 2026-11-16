@@ -1,0 +1,331 @@
+# Feature map: search (flow `search`). Semantic search, exact search, web search providers, code graph, graph pages.
+# @S, @N, @IT expand to catalog id prefixes (see the sed step that wrote this file).
+
+[[feature]]
+id = "search.semantic"
+title = "Semantic search and retrieve"
+flow = "search"
+what = "A user searches the knowledge they can read and gets ranked chunks; retrieve returns chunks with citations and stores nothing. Results never include records the caller cannot read."
+routes = ["POST /api/v1/search", "POST /api/v1/retrieve", "POST /api/v1/search/updateAppConfig"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/validators/es_validators.ts",
+  "backend/python/app/api/routes/search.py",
+  "backend/python/app/api/routes/knowledge_search.py",
+  "backend/python/app/modules/retrieval/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "search.semantic.visibility"
+  says = "A user without permission on a knowledge base record never gets it from search or retrieve, a revoked user loses it, and a deleted record disappears."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/search/integration_test_record_visibility.py::TestRecordVisibility::test_user_without_permission_cannot_retrieve_kb_records",
+    "it:response-validation/enterprise-search/search/integration_test_record_visibility.py::TestRecordVisibility::test_revoked_user_cannot_retrieve_kb_records",
+    "it:response-validation/enterprise-search/search/integration_test_record_visibility.py::TestRecordVisibility::test_granted_user_can_retrieve_kb_records",
+    "it:response-validation/enterprise-search/search/integration_test_record_visibility.py::TestDeletedRecordVisibility::test_deleted_record_disappears_from_retrieval",
+    "it:response-validation/enterprise-search/search/integration_test_permission_matrix.py::TestPermissionMatrix::test_what_the_person_can_see",
+  ]
+
+  [[feature.behavior]]
+  id = "search.semantic.find"
+  says = "A query finds its document: a unique term ranks the document first, a query sharing no words with its answer still finds it, and every hit carries content and a traceable record."
+  priority = "P0"
+  tests = [
+    "it:retrieval/test_search_quality.py::TestFindingAnExactTerm::test_a_unique_term_finds_its_document_first",
+    "it:retrieval/test_search_quality.py::TestFindingSomethingDescribedDifferently::test_a_query_sharing_no_words_with_its_answer_still_finds_it",
+    "it:retrieval/test_search_quality.py::TestWhatComesBack::test_hits_carry_content_and_a_traceable_record",
+  ]
+
+  [[feature.behavior]]
+  id = "search.semantic.kb-filter"
+  says = "POST /api/v1/search with a knowledge base filter returns a response that matches the OpenAPI spec and is stored in the search history."
+  priority = "P1"
+  tests = ["it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_post_search_with_kb_filter_response_matches_spec"]
+
+  [[feature.behavior]]
+  id = "search.semantic.retrieve-stores-nothing"
+  says = "POST /api/v1/retrieve forwards only the fields the caller set and stores no citation or search history; an AI service failure keeps its status, an unreachable one is 503 and a slow one 504."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.retrieve.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.semantic.scopes"
+  says = "An OAuth token needs semantic:read or semantic:write for POST /api/v1/search and semantic:write for POST /api/v1/retrieve; a token with neither gets 403, and a missing token gets 401."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "search.semantic.degraded-flag"
+  says = "When the store answered with less than its full search, the response keeps the flag that says so; a complete search adds none."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.search-degraded.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.semantic.update-config-internal"
+  says = "POST /api/v1/search/updateAppConfig accepts only a scoped service token with the fetch-config scope; a user token is refused."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "search.history"
+title = "Search history, archive and sharing"
+flow = "search"
+what = "A user lists, reads, archives, unarchives and deletes their past searches, clears the history, and shares a search with other users. Only the owner changes a search; a recipient can read a shared one."
+routes = [
+  "GET /api/v1/search",
+  "DELETE /api/v1/search",
+  "* /api/v1/search/{searchId}",
+  "PATCH /api/v1/search/{searchId}/archive",
+  "PATCH /api/v1/search/{searchId}/unarchive",
+  "PATCH /api/v1/search/{searchId}/share",
+  "PATCH /api/v1/search/{searchId}/unshare",
+]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/schema/search.schema.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "search.history.list"
+  says = "GET /api/v1/search lists the caller's searches, honors limit and sort order, and matches the OpenAPI spec."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_get_search_history_response_matches_spec",
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_get_search_history_with_limit_caps_rows",
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_get_search_history_with_sort_order_variants",
+  ]
+
+  [[feature.behavior]]
+  id = "search.history.get-delete"
+  says = "A search is read and deleted by id, and DELETE /api/v1/search clears the whole history."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_get_search_by_id_response_matches_spec",
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_delete_search_by_id_response_matches_spec",
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_delete_search_history_response_matches_spec",
+  ]
+
+  [[feature.behavior]]
+  id = "search.history.archive"
+  says = "Archiving a search removes it from the default history and unarchiving brings it back."
+  priority = "P2"
+  tests = ["it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_archive_unarchive_lifecycle_matches_spec_and_history"]
+
+  [[feature.behavior]]
+  id = "search.history.owner-only"
+  says = "Archive, share, unshare and delete only match searches the caller owns; getSearchById still shows a search shared with the caller."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.search-ownership.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.history.share"
+  says = "The owner shares a search with users and revokes their access."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_patch_search_share_response_matches_spec",
+    "it:response-validation/enterprise-search/search/integration_test_search.py::TestSemanticSearch::test_patch_search_unshare_response_matches_spec",
+  ]
+
+[[feature]]
+id = "search.exact"
+title = "Exact text and entity search"
+flow = "search"
+what = "A caller finds an exact string or regular expression in the records they can read, and searches the knowledge-graph entities (people, organizations, amounts, dates) with their related records."
+routes = ["POST /api/v1/search/grep", "POST /api/v1/search/entities", "POST /api/v1/search/entities/neighbors"]
+code = ["backend/nodejs/apps/src/modules/enterprise_search/controller/exact_search.controller.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "search.exact.no-identity-in-body"
+  says = "The request body cannot name another user or organization: only the documented fields are forwarded, and a caller without access gets 0 matches."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/exact_search.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.exact.permissions"
+  says = "An entity filter tells a reader nothing about documents they cannot read, and a deleted document is no longer found by its values."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:named_entities/integration_test_named_entities.py::TestPermissions::test_a_filter_tells_a_reader_nothing_about_documents_they_cannot_read",
+    "it:named_entities/integration_test_named_entities.py::TestLifecycle::test_a_deleted_document_is_no_longer_found_by_its_values",
+  ]
+
+  [[feature.behavior]]
+  id = "search.exact.filters"
+  says = "Entity filters match a name, an amount range, an ISO date and a kind, all constraints must hold in the same document, and an unusable filter is refused."
+  priority = "P1"
+  tests = [
+    "it:named_entities/integration_test_named_entities.py::TestEntityFilters::test_a_name_finds_the_document_that_names_it",
+    "it:named_entities/integration_test_named_entities.py::TestEntityFilters::test_an_amount_range_finds_the_document_that_states_it",
+    "it:named_entities/integration_test_named_entities.py::TestEntityFilters::test_constraints_must_hold_in_the_same_document",
+    "it:named_entities/integration_test_named_entities.py::TestEntityFilters::test_an_unusable_filter_is_refused",
+  ]
+
+  [[feature.behavior]]
+  id = "search.exact.errors"
+  says = "A refused pattern becomes an error, an unreachable AI service is 503 and a slow one 504, and the 501 of a deployment without local file storage keeps its words."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/exact_search.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.exact.secrets"
+  says = "Nothing secret reaches the knowledge graph when entities are extracted."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:named_entities/integration_test_named_entities.py::TestWhatIsStored::test_nothing_secret_reaches_the_graph"]
+
+[[feature]]
+id = "search.web"
+title = "Web search providers"
+flow = "search"
+what = "An admin adds, edits, removes and picks the default web search provider and sets the web search settings; a member can list providers but never sees keys or server addresses. DuckDuckGo is always available."
+routes = ["* /api/v1/configurationManager/web-search/**", "GET /api/v1/configurationManager/web-search"]
+pages = ["frontend/app/(main)/workspace/web-search/page.tsx", "frontend/app/(main)/@sidebar/workspace/web-search/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/routes/cm_routes.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/types/web-search.types.ts",
+  "backend/python/app/web/**",
+  "frontend/app/(main)/workspace/web-search/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "search.web.admin-only-writes"
+  says = "Only an org admin can change web search settings or providers; a member gets 403 on PUT settings, POST and PUT and DELETE providers and PUT default."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.web.member-masking"
+  says = "GET /api/v1/configurationManager/web-search shows a member the provider list with API keys and server addresses hidden; an admin gets them masked unless secrets may be revealed."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.web.list"
+  says = "GET /api/v1/configurationManager/web-search answers 200 matching the spec, 401 without a token and 401 for an invalid token."
+  priority = "P1"
+  tests = [
+    "it:response-validation/configuration-manager/integration_test_web_search.py::TestGetWebSearchProviders::test_get_web_search_providers_200_matches_openapi",
+    "it:response-validation/configuration-manager/integration_test_web_search.py::TestGetWebSearchProviders::test_get_web_search_missing_authorization",
+    "it:response-validation/configuration-manager/integration_test_web_search.py::TestGetWebSearchProviders::test_get_web_search_invalid_bearer_token",
+  ]
+
+  [[feature.behavior]]
+  id = "search.web.provider-calls"
+  says = "Each provider (Brave, Exa, Firecrawl, Keenable, SearXNG, Serper, Tavily, DuckDuckGo) searches through the shared contract, a bad key is an error, and a keyless provider uses its public endpoint."
+  priority = "P1"
+  tests = ["py:tests/unit/web/search/test_provider_contract.py", "py:tests/unit/web/search/test_providers.py"]
+
+  [[feature.behavior]]
+  id = "search.web.settings-page"
+  says = "The Web search page in workspace settings lets an admin manage providers and settings in the browser."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/workspace/web-search.spec.ts"]
+
+[[feature]]
+id = "search.code-graph"
+title = "Code repository search"
+flow = "search"
+what = "A caller lists the code repositories they can read with their graph status, and searches, reads and outlines code in them, by text or by meaning. Results follow the caller's own access."
+routes = ["GET /api/v1/code-graph/repos", "POST /api/v1/code-graph/search", "POST /api/v1/code-graph/semantic-search", "POST /api/v1/code-graph/read", "POST /api/v1/code-graph/outline"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/code-graph.routes.ts",
+  "backend/python/app/api/routes/code_graph.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "search.code-graph.scope"
+  says = "An OAuth token needs code:read on every code-graph route, and semantic:read is not enough; a signed-in dashboard session passes without scopes."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/routes/code-graph.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.code-graph.caller-token"
+  says = "Each call is relayed with the caller's own token, so the query service filters repositories by that caller's access."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/routes/code-graph.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.code-graph.validation"
+  says = "A search with no pattern, or with a limit over 200, is rejected with 400; a semantic search limit is at most 50 and a read at most 2000 lines."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/routes/code-graph.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.code-graph.errors"
+  says = "A query-service refusal or failure is passed on as an error and never as an empty list."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/routes/code-graph.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.code-graph.repos"
+  says = "GET /api/v1/code-graph/repos matches the spec and answers 401 without a token."
+  priority = "P1"
+  tests = [
+    "it:response-validation/code_graph/integration_test_code_graph_repos.py::TestCodeGraphRepos::test_repos_match_spec",
+    "it:response-validation/code_graph/integration_test_code_graph_repos.py::TestCodeGraphRepos::test_repos_unauthenticated_is_401",
+  ]
+
+[[feature]]
+id = "search.graph-view"
+title = "Graph page"
+flow = "search"
+what = "A user explores the code graph in the browser: finds the node for a symbol or file, expands a node's neighbours, and checks which nodes are still visible. The page shows only nodes the user can read."
+routes = ["POST /api/v1/graph/expand", "POST /api/v1/graph/resolve", "POST /api/v1/graph/revalidate"]
+pages = ["frontend/app/(main)/graph/page.tsx", "frontend/app/(main)/@sidebar/graph/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/graph-view.routes.ts",
+  "backend/python/app/api/routes/graph_view.py",
+  "frontend/app/(main)/graph/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "search.graph-view.scope"
+  says = "An OAuth token needs code:read on expand, resolve and revalidate, and no new scope is required."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/routes/graph-view.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.graph-view.no-store"
+  says = "Every graph answer is marked private and no-store before anything can fail."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/routes/graph-view.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.graph-view.relay"
+  says = "A request is relayed with the same body and the caller's own token, unknown fields are dropped, what the query service would refuse is refused first, and a large answer is gzipped for a client that accepts it."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/routes/graph-view.relay.test.ts", "node:tests/modules/enterprise_search/routes/graph-view.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.graph-view.errors"
+  says = "An upstream error or an unreachable query service is an error, never an empty graph."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/routes/graph-view.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "search.graph-view.page"
+  says = "The graph page renders nodes, edges and the table twin, keeps its URL state and revalidates visible nodes."
+  priority = "P2"
+  tests = ["fe:app/(main)/graph/__tests__/controller.test.ts", "fe:app/(main)/graph/__tests__/revalidate.test.ts", "fe:app/(main)/graph/__tests__/components.test.tsx"]
