@@ -632,6 +632,26 @@ async def test_a_restart_that_demotes_the_copy_while_a_batch_runs_is_not_overwri
     assert await state(pg_db, org, "app1") == ("done", "legacy", CODE_EPOCH)
 
 
+async def test_a_finishing_batch_does_not_clear_an_inexact_mark_set_after_it_read_the_copy_state(pg_db, monkeypatch) -> None:
+    """Another copy marks the copy inexact at the same cursor between the finishing batch's read and its lock: the batch writes nothing over it, and the copy ends
+    not listed from (epoch 0), never at this code's epoch with the mark cleared."""
+    p, org = await fresh_world(pg_db)
+    real, marked = bf.app_nodes, []
+
+    async def nodes(tx, o: str, app: str, after: tuple | None, limit: int) -> list:  # noqa: ANN001
+        got = await real(tx, o, app, after, limit)
+        if not got and after is not None and not marked:
+            marked.append(after)
+            await _admin("""UPDATE kg.projection_state s SET verify_digest = $2 FROM kg.node_keys k
+                WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 AND s.org_id = $1 AND k.id = 'app1'""", org, bf.INEXACT)
+        return got
+    monkeypatch.setattr(bf, "app_nodes", nodes)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "app1", page=3)
+    assert marked, "the finishing batch never ran"
+    assert await state(pg_db, org, "app1") == ("done", "legacy", 0)      # on main: ("done", "legacy", CODE_EPOCH), the mark cleared
+
+
 @pytest.mark.parametrize("calls", ["one_call", "a_batch_per_call"])
 async def test_a_copy_that_meets_a_value_kg_refuses_goes_on_past_it_and_ends_not_listed_from(pg_db, calls: str) -> None:
     """The projection takes a connector off the readers when it writes a row without a value kg refuses, and clears its copy cursor with it. A copy that meets such a

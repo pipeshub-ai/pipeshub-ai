@@ -85,6 +85,12 @@ INEXACT = "copy:inexact"
 COPY_STATE = "/* pipeshub:kg.copy_state */ SELECT backfill_cursor, verify_digest FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"
 
 
+async def _copy_state(tx: Tx, org: str, app_sk: int) -> tuple[str | None, bool]:
+    """(copy cursor, whether the copy is marked inexact) of a connector, or of the org's principals (``app_sk`` 0)."""
+    row = await tx.fetchrow(COPY_STATE, org, app_sk)
+    return (row["backfill_cursor"], row["verify_digest"] == INEXACT) if row else (None, False)
+
+
 async def _app_sk(tx: Tx, app_id: str) -> int:
     return (await KgWriter(tx).nodes_upsert({("apps", app_id)}))[("apps", app_id)]
 
@@ -127,8 +133,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
         while (max_batches is None or done < max_batches) and not (stop is not None and stop.is_set()):
             async def batch(tx: Tx) -> bool:
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
-                row = await tx.fetchrow(COPY_STATE, org, app_sk)
-                cursor, inexact = (row["backfill_cursor"], row["verify_digest"] == INEXACT) if row else (None, False)
+                cursor, inexact = await _copy_state(tx, org, app_sk)
                 if cursor == "done":
                     return False
                 after = _parse(cursor)
@@ -145,9 +150,9 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                     # with it. Starting the copy again would meet the same node every time: the copy goes on past it, marked inexact, and ends not listed from (epoch 0).
                     # The verify names the difference; once the graph no longer holds the value, the drain projects the node again and a verify can pass.
                     inexact = True
-                elif (await modes.state(tx, org, app_sk))[0] != cursor:
-                    # The cursor was read before the lock: a restart that demoted the copy meanwhile (under the org key, exclusively) has committed by now. The batch
-                    # writes no cursor over it, and the next batch starts the copy again from where the restart left it.
+                elif await _copy_state(tx, org, app_sk) != (cursor, inexact):
+                    # The copy state was read before the lock: a restart that demoted the copy, or another copy that moved its cursor or marked it inexact, has
+                    # committed by now. The batch writes nothing over it, and the next batch goes on from the state as it is.
                     return True
                 if not nodes:      # the copy is finished, by this code: the listing reads it from here on (kh_listing.head), the access check only once it is verified and promoted
                     await w.projection_set(app_sk, epoch=0 if inexact else CODE_EPOCH, mode="legacy", digest=INEXACT if inexact else None, cursor="done", verified_at=None)
