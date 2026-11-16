@@ -561,6 +561,25 @@ class TestTeamMembers:
             external_group_id="dbmid:gone", connector_id="dbx-1", trash_live_records=True)
 
 
+    @pytest.mark.asyncio
+    async def test_only_active_members_are_linked(self, team) -> None:
+        """An invited, suspended or removed member sharing an active member's address must not take it."""
+        def member(member_id: str, status: str) -> SimpleNamespace:
+            return SimpleNamespace(profile=SimpleNamespace(
+                team_member_id=member_id, email="maya@x.com", name=SimpleNamespace(display_name="Maya"),
+                status=SimpleNamespace(_tag=status, is_active=lambda: status == "active")),
+                role=SimpleNamespace(_tag="member_only"))
+        team.data_source.team_members_list = AsyncMock(return_value=ok(SimpleNamespace(members=[
+            member("dbmid:a", "active"), member("dbmid:i", "invited"), member("dbmid:s", "suspended"),
+            member("dbmid:r", "removed")], has_more=False, cursor="c")))
+        team.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        await team._sync_members()
+
+        linked = team.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in linked] == ["dbmid:a"]
+
+
 class TestTeamRun:
     @pytest.mark.asyncio
     async def test_a_run_that_skipped_part_of_dropbox_fails_notifies_and_removes_nothing(self, team) -> None:

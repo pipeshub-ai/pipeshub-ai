@@ -2238,6 +2238,7 @@ class ServiceNowConnector(BaseConnector):
                 ServiceNowFields.LAST_NAME,
                 ServiceNowFields.TITLE,
                 ServiceNowFields.ACTIVE,
+                ServiceNowFields.LOCKED_OUT,
                 ServiceNowFields.SYS_CREATED_ON,
                 ServiceNowFields.SYS_UPDATED_ON,
             ],
@@ -2251,7 +2252,17 @@ class ServiceNowConnector(BaseConnector):
             for user_data in users_data:
                 # The anonymous guest signs in to no PipesHub account. Synced, it would turn the
                 # default knowledge bases' Guest User deny into a grant per user (_fetch_deny_records).
-                if not self._is_active(user_data) or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME:
+                # A locked-out user cannot sign in either: the Locked out box is there "to lock the user out of the
+                # instance and terminate all their active sessions" (https://www.servicenow.com/docs/bundle/
+                # zurich-platform-administration/page/administer/users-and-groups/task/t_CreateAUser.html). Emails
+                # are not unique here, so linked, a locked-out duplicate of an active user's address would read as
+                # that address changing hands. Withdrawn like an inactive user; unlocking changes the row, so the
+                # next delta links it again.
+                # shortcut: a user locked out and linked before this check is withdrawn only once its row changes;
+                # the reconcile query reads `active` alone, so add locked_out there if that gap matters.
+                if (not self._is_active(user_data)
+                        or str(user_data.get(ServiceNowFields.LOCKED_OUT) or "").lower() == "true"
+                        or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME):
                     inactive.add(user_data.sys_id)
                     continue
                 if not (user_data.email or "").strip():

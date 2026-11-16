@@ -266,6 +266,16 @@ async def test_sharepoint_deleted_account_is_withdrawn_blocked_one_listed_stays(
 
 
 @pytest.mark.asyncio
+async def test_sharepoint_disabled_account_is_not_linked() -> None:
+    """A disabled account sharing an enabled one's address must not take it."""
+    c, _ = _sharepoint([], [_app_user("a"), _app_user("blocked", active=False)])
+    await c._sync_users()
+    linked = c.data_entities_processor.on_new_app_users.await_args.args[0]
+    assert [u.source_user_id for u in linked] == ["a"]
+    assert c._inactive_emails == {"blocked@x.com"}
+
+
+@pytest.mark.asyncio
 async def test_sharepoint_stale_listing_with_a_matching_count_withdraws_nobody() -> None:
     c, stored = _sharepoint(["a", "new"], [_app_user("a")], status="present")
     await c._sync_users()

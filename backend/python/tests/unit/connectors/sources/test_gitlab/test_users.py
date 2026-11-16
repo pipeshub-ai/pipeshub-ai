@@ -690,3 +690,25 @@ class TestSyncUsersFromProjectsGroups:
         # Should not raise
         await users._sync_users_from_projects_groups(dict_member)
         c.logger.warning.assert_called()
+
+    async def test_an_account_that_cannot_use_gitlab_is_not_linked(self) -> None:
+        """Blocked, banned, deactivated or awaiting accounts sharing an active user's address must not take it."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+        rows = {"active": ("active", None), "blocked": ("blocked", None), "banned": ("banned", None),
+                "deactivated": ("deactivated", None), "awaiting": ("active", "awaiting"), "plain": (None, None)}
+        dict_member = {
+            i: SimpleNamespace(id=i, username=key, name=key, public_email="maya@example.com", email="",
+                               **({"state": state} if state else {}),
+                               **({"membership_state": membership} if membership else {}))
+            for i, (key, (state, membership)) in enumerate(rows.items(), start=1)
+        }
+        users = UsersSync(c)
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+
+        await users._sync_users_from_projects_groups(dict_member)
+
+        linked = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.full_name for u in linked] == ["active", "plain"]
