@@ -140,8 +140,10 @@ class PeopleMixin(IdentityMixin):
 
     # ---- a principal by email -------------------------------------------------------------------------------------------------------
     @_soft(None)
-    async def get_entity_id_by_email(self, email: str, transaction: str | None = None) -> str | None:
+    async def get_entity_id_by_email(self, email: str, transaction: str | None = None, *, org_id: str) -> str | None:
         """The id of the user, else the group, else the person of the org with this email (case-insensitive). A failed read answers None."""
+        if not self._named_org(org_id):
+            return None
         found = await self._principals_by_email(_BY_EMAIL_COLLS, [email], transaction)
         if found is not None:      # the vetted read of graph_0006: the user, else the group, else the person; the lowest id (byte order, as COLLATE "C") of a kind
             return min(found, key=lambda r: (_BY_EMAIL_COLLS.index(r["coll"]), r["node_id"]))["node_id"] if found else None
@@ -150,11 +152,11 @@ class PeopleMixin(IdentityMixin):
         return rows[0]["id"] if rows else None
 
     @_soft(dict)
-    async def bulk_get_entity_ids_by_email(self, emails: list[str], transaction: str | None = None) -> dict[str, tuple[str, str, str]]:
+    async def bulk_get_entity_ids_by_email(self, emails: list[str], transaction: str | None = None, *, org_id: str) -> dict[str, tuple[str, str, str]]:
         """``{stored email: (id, collection, permission type)}`` of the users, groups and persons of the org whose email is one of ``emails`` (case-insensitive),
         keyed by the address as stored, as on Neo4j; an address held by more than one is the user's, else the group's. A failed read answers ``{}``."""
         wanted = sorted({e for e in emails if e})
-        if not wanted:
+        if not self._named_org(org_id) or not wanted:
             return {}
         found = await self._principals_by_email(_BY_EMAIL_COLLS, wanted, transaction)      # the vetted read of graph_0006
         if found is not None and all(isinstance(_doc(r["doc"]).get("email"), str) for r in found):

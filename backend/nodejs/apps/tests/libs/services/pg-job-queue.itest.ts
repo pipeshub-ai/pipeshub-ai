@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { PgJob, PgJobQueue, PgJobWorker } from '../../../src/libs/services/pg-job-queue.service'
 import { ensurePgRuntime } from '../../../src/libs/db/runtime-boot'
 import { configurePg } from '../../../src/libs/db'
+import type { Tx } from '../../../src/libs/db/uow'
 import { pgReconcilePending } from '../../../src/modules/crawling_manager/services/crawling_pg'
 import sinon from 'sinon'
 import { ConnectorScheduleSweepService, SWEEP_QUEUE_NAME } from '../../../src/modules/crawling_manager/services/connector_schedule_sweep'
@@ -57,6 +58,71 @@ type D = { n?: number; tag?: string }
     await sleep(200)
     expect((await queue.getCompleted()).length).to.be.at.most(2)             // removeOnComplete: 2
   })
+
+  for (const [state, opt, finishing] of [
+    ['completed', 'removeOnComplete', '/* pipeshub:sched.complete */'],
+    ['failed', 'removeOnFail', '/* pipeshub:sched.fail */'],
+  ] as const) {
+    it(`two runs finishing at once keep at most ${opt} ${state} runs, even when both trim before either commits`, async () => {
+      const queue = new PgJobQueue<D>(q, { [opt]: 1, attempts: 1 })
+      const rt = ensurePgRuntime()
+      const real = rt.withUow.bind(rt)
+      let trimmed = 0
+      // Each finishing transaction stays open after its trim until the other one has trimmed too (both trims then ran before either
+      // commit) or is blocked on the trim lock (it can only trim after this commit). Nothing else releases it: the deadline fails the test.
+      const holdOpen = async (query: Tx['query']) => {
+        const deadline = Date.now() + 15000
+        while (trimmed < 2) {
+          const waiting = await query<{ n: number }>(
+            "/* pipeshub:test.trimwaiter */ SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = 7402 AND NOT granted",
+          )                                                                     // 7402: the scheduler's trim lock class
+          if ((waiting.rows[0]?.n ?? 0) > 0) return
+          if (Date.now() > deadline) throw new Error('the other finishing transaction neither trimmed nor waited on the trim lock')
+          await sleep(20)
+        }
+      }
+      sinon.stub(rt, 'withUow').callsFake(((opts: never, fn: (tx: Tx) => Promise<unknown>) => real(opts, async (tx: Tx) => {
+        let finishes = false
+        const query = tx.query.bind(tx)
+        tx.query = ((text: string, values?: unknown[]) => {
+          if (text.startsWith(finishing)) finishes = true
+          return query(text, values)
+        }) as typeof tx.query
+        const out = await fn(tx)
+        if (finishes) {
+          trimmed++
+          await holdOpen(query)
+        }
+        return out
+      })) as never)
+      try {
+        let go = () => {}
+        const gate = new Promise<void>((r) => { go = r })
+        const started: string[] = []
+        const done: string[] = []
+        const errors: unknown[] = []
+        const w = worker(async (j) => {
+          started.push(j.id)
+          await gate
+          if (state === 'failed') throw new Error('fails')
+        }, 2)
+        w.on(state, (j: PgJob<D>) => done.push(j.id))
+        w.on('error', (e: unknown) => errors.push(e))
+        await queue.add('a', { n: 1 }, { jobId: 'a' })
+        await queue.add('b', { n: 2 }, { jobId: 'b' })
+        await until(() => started.length === 2)
+        go()
+        await until(() => done.length === 2)
+        expect(errors).to.deep.equal([])                                       // both finishing writes committed
+        expect(started).to.have.length(2)                                      // neither run went back to the queue
+        expect(trimmed).to.equal(2)
+        const kept = state === 'completed' ? await queue.getCompleted() : await queue.getFailed()
+        expect(kept.length).to.equal(1)
+      } finally {
+        sinon.restore()
+      }
+    })
+  }
 
   it('removeOnComplete: true drops the finished job only, not the ones that finished before it', async () => {
     const queue = new PgJobQueue<D>(q, { attempts: 1 })
@@ -280,6 +346,25 @@ type D = { n?: number; tag?: string }
     try { await active?.remove() } catch (e) { err = e }
     expect(err).to.be.instanceOf(Error)
     await until(async () => (await job.getState()) === 'completed')
+  })
+
+  it('runs that stall past maxStalledCount and fail keep at most removeOnFail failed runs', async () => {
+    const queue = new PgJobQueue<D>(q, { attempts: 1, removeOnFail: 1 })
+    const jobs = [await queue.add('stuck', { n: 1 }), await queue.add('stuck', { n: 2 })]
+    // workers that claimed them, died and already used up maxStalledCount (1): active, claims expired
+    await ensurePgRuntime().withUow({ preOrg: true, write: true }, (tx) =>
+      tx.query(
+        `/* pipeshub:test.stuck */ UPDATE platform.sched_jobs SET state = 'active', attempts_made = 1, stalled = 1, locked_by = 'dead', locked_until = now() - interval '1 second' WHERE queue = $1 AND id = ANY($2::text[])`,
+        [q, jobs.map((j) => j.id)],
+      ),
+    )
+    const stalled: string[] = []
+    const ran: string[] = []
+    const w = worker(async (j) => { ran.push(j.id) })
+    w.on('stalled', (id: string) => stalled.push(id))
+    await until(() => stalled.length === 2)
+    expect(ran).to.deep.equal([])
+    expect((await queue.getFailed()).map((j) => j.failedReason)).to.deep.equal(['job stalled more than allowable limit'])
   })
 
   it('keeps the reconcile-pending marks: a newer save keeps its mark, an older one clears it', async () => {
