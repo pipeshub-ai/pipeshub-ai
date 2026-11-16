@@ -3974,8 +3974,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # whose dependency is paused): hand the message back with no attempt
             # counted, so it cannot be dead-lettered for waiting.
             outcome = "requeued"
-            self.logger.warning(
-                "%s handed back without counting an attempt: %s", message_id, e,
+            self.logger.log(
+                e.log_level, "%s handed back without counting an attempt: %s", message_id, e,
             )
             if parsed_message is not None:
                 if not e.counts_toward_backstop:
