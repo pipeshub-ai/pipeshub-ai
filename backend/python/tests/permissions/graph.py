@@ -121,7 +121,8 @@ def without_link_source_orgs(graph: Graph) -> Graph:
     its own and its groups' grants only (oracle R5), so nothing a viewer reads may change: a reader that differs here counts the account's
     organisation for the viewer."""
     sources = {e["to"] for e in graph["edges"] if e["type"] == "AUTHENTICATED_AS"}
-    return {"nodes": graph["nodes"], "edges": [e for e in graph["edges"] if not (e["type"] == "BELONGS_TO" and e["from"] in sources)]}
+    orgs = {n["id"] for n in graph["nodes"] if n["kind"] == "Organization"}
+    return {"nodes": graph["nodes"], "edges": [e for e in graph["edges"] if not (e["type"] == "BELONGS_TO" and e["from"] in sources and e["to"] in orgs)]}
 
 
 # How a layer stores a world: as compiled, with the linked accounts as SourceAccount nodes, or without the linked accounts' organisations.
