@@ -226,12 +226,21 @@ class SourceAccounts:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
 
-    async def before_link(self, users: list["AppUser"]) -> bool:
+    @property
+    def lock(self) -> asyncio.Lock:
+        """The connector's one read-update-save at a time in this process; the SourceAccount writer takes it too."""
+        return self._lock
+
+    async def before_link(self, users: list["AppUser"], then: Callable[[], Awaitable[None]] | None = None) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
         to a different account than the one it was linked to before. False when the stored links could not be read:
-        then nobody is linked and no grant is written this run (``ensure_loaded`` raises)."""
+        then nobody is linked and no grant is written this run (``ensure_loaded`` raises). ``then`` (the link write)
+        runs after a successful check under the same lock, so no other listing of the connector runs in between."""
         async with self._lock:
-            return await self._before_link(users)
+            ok = await self._before_link(users)
+            if ok and then is not None:
+                await then()
+            return ok
 
     async def _before_link(self, users: list["AppUser"]) -> bool:
         try:

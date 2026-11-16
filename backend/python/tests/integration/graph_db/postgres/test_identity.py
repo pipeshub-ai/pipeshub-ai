@@ -348,7 +348,8 @@ CALLS = [
 
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str, args: tuple) -> None:
-    kwargs = {"is_external": False} if name == "ensure_app_membership" else {"chunk_size": 10} if name == "get_graph_user_keys_by_mongo_user_ids" else {}
+    kwargs = ({"is_external": False} if name == "ensure_app_membership" else {"chunk_size": 10} if name == "get_graph_user_keys_by_mongo_user_ids"
+              else {"org_id": "o"} if name == "get_users_by_emails" else {})
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, name)(*args, **kwargs)
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):

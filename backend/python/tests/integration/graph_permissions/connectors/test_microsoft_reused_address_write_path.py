@@ -7,6 +7,8 @@ PipesHub keeps one user per address; these check that the new account reads noth
 nobody else loses anything, and that a restored account (the same object id) keeps its access.
 """
 
+import os
+
 import pytest
 
 from app.config.constants.arangodb import Connectors
@@ -67,6 +69,8 @@ async def test_an_address_taken_after_the_old_account_was_withdrawn_reads_nothin
     assert await _everyone(drive) == {name: readers - {"ben"} for name, readers in before.items()}
 
 
+@pytest.mark.skipif(os.environ.get("PERM_SOURCE_ACCOUNTS") == "1",
+                    reason="the registry's hand-over of a user's role; with accounts the membership is the account's (test_source_account_writers)")
 async def test_the_old_accounts_role_memberships_go_with_its_grants(drive: Drive) -> None:
     """A role membership written for the old account is its access too (remove_user_access_to_connector on each store)."""
     from app.config.constants.arangodb import CollectionNames

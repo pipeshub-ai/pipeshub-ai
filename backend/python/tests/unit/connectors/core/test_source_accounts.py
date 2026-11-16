@@ -624,3 +624,18 @@ async def test_concurrent_user_syncs_of_one_connector_keep_every_address_they_li
     await asyncio.gather(accounts.before_link([_user(first, "acc-1")]), second_listing())
 
     assert _saved(config)["linked"] == {first: "acc-1", second: "acc-2"}
+
+
+@pytest.mark.asyncio
+async def test_the_link_write_runs_after_the_check_under_the_same_lock_and_not_after_a_failed_read(world) -> None:
+    directory, accounts, _ = world
+    held = []
+
+    async def link() -> None:
+        held.append(accounts.lock.locked())
+
+    assert await accounts.before_link([_user("ana@x.com", "a")], then=link)
+    assert held == [True], "the SourceAccount write is serialized with the connector's other listings"
+    directory.processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
+    assert await accounts.before_link([_user("ana@x.com", "a")], then=link) is False
+    assert held == [True], "nobody is linked when the stored links could not be read"

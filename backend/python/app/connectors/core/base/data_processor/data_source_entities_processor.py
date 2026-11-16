@@ -5593,14 +5593,18 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
             directory = users[0].app_name not in NOT_SOURCE_ACCOUNTS
-            if directory and not await self.source_accounts(users[0].connector_id).before_link(users):
-                return
             graph = await self._account_graph(users[0].connector_id) if directory else None
 
-            async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_upsert_app_users(users)
-                if graph:
-                    await graph.upsert(tx_store, users)
+            async def link() -> None:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.batch_upsert_app_users(users)
+                    if graph:
+                        await graph.upsert(tx_store, users)
+
+            if not directory:
+                await link()
+            elif not await self.source_accounts(users[0].connector_id).before_link(users, then=link):
+                return
             if graph:
                 await self._access_changed([users[0].connector_id])
 
@@ -5613,7 +5617,9 @@ class DataSourceEntitiesProcessor:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
         the user's node). Without it no grant of the connector reaches the user."""
         graph = await self._account_graph(connector_id)
-        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+        # the SourceAccount writer reads and writes the connector's accounts under the lock the user listing holds
+        lock = self.source_accounts(connector_id).lock if graph else contextlib.nullcontext()
+        async with lock, self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 await tx_store.delete_edge(
                     user_id, CollectionNames.USERS.value,
@@ -5634,7 +5640,8 @@ class DataSourceEntitiesProcessor:
         link_changed = False
         graph = await self._account_graph(connector_id) if app_name not in NOT_SOURCE_ACCOUNTS else None
         account = graph.node_id(source_user_id) if graph else None
-        async with self.data_store_provider.transaction() as tx_store:
+        lock = self.source_accounts(connector_id).lock if graph else contextlib.nullcontext()
+        async with lock, self.data_store_provider.transaction() as tx_store:
             authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
             authenticator_key = authenticator.get("_key") or authenticator.get("id")
             if not authenticator_key:
