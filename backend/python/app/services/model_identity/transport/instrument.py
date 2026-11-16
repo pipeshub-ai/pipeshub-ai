@@ -9,11 +9,13 @@ forwarding.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
 
+from app.services.llm_gateway.wire import install_wire_hooks
 from app.services.model_identity import metrics
 from app.services.model_identity.forwarders.registry import get_forwarder_registry
 from app.services.model_identity.runtime import note_forwarding
@@ -86,7 +88,24 @@ def _endpoint_of(config: Mapping[str, Any] | None) -> str | None:
     return endpoint if isinstance(endpoint, str) and endpoint.strip() else None
 
 
+def _wire_hooks_required() -> bool:
+    return os.environ.get("LLM_WIRE_HOOKS_REQUIRED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
 def instrument_model(model: Any, provider: str, config: Mapping[str, Any] | None) -> Any:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
+    """Install the wire hooks and identity forwarding on a chat or embeddings model.
+
+    The wire hooks (``llm_gateway.wire``) go on every model, so the gateway judges a provider's health
+    from what happened on the wire; a chat model whose requests cannot be observed is refused
+    (``WireHookError``). They are installed after identity forwarding, which may replace a client by a
+    private copy. See ``_instrument_identity`` for the forwarding half.
+    """
+    model = _instrument_identity(model, provider, config)
+    install_wire_hooks(model, provider, require=_wire_hooks_required)
+    return model
+
+
+def _instrument_identity(model: Any, provider: str, config: Mapping[str, Any] | None) -> Any:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """Install identity forwarding on every httpx client of a chat or embeddings model.
 
     Idempotent, and a no-op when the connection has not enabled forwarding.

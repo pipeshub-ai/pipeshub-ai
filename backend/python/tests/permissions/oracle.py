@@ -5,7 +5,8 @@ disagreement with a graph provider is a finding. It answers what
 `IGraphDBProvider.check_access` answers, plus *why*: every verdict carries a
 reason code naming the rule or hop that decided it.
 
-Rules: R1 principals, R2 access rule (absent reads OPEN, unknown fails closed),
+Rules: R1 principals, R2 access rule (absent reads OPEN, unknown fails closed; PARENT_AND_GRANT hops as
+RESTRICTED and passes below a seed as OPEN does, with its own grant required),
 R3 grant edges, R4 gate, R5 granted set, R6 hop, R7 walk up the hierarchy,
 R8 declared record-group-level arm, R9 seed, R10 below a seed, R11 target
 guards, R12 open apps (APP_LEVEL / KB), R13 unattached uploads. Inheritance
@@ -28,6 +29,7 @@ HIERARCHY = {"PARENT_CHILD", "ATTACHMENT"}
 ORG_SHARE_TYPES = {"ORG", "ORGANIZATION"}
 RGL = "RECORD_GROUP_LEVEL"
 MAX_HOPS = 50
+PAG = "PARENT_AND_GRANT"
 SEARCHABLE = {"COMPLETED"}
 
 
@@ -158,6 +160,10 @@ def hop_failure(s: Store, v: Viewer, c: str, p: str, opens: bool) -> str | None:
         if i and g:
             return None
         return f"R6:RESTRICTED-{'no-grant' if i else 'no-inherit'}@{c}"
+    if r == PAG:
+        if i and g:
+            return None
+        return f"R6:PARENT_AND_GRANT-{'no-grant' if i else 'no-inherit'}@{c}"
     return f"R6:unknown-rule@{c}"
 
 
@@ -232,17 +238,23 @@ def _seed(s: Store, v: Viewer, n: str, app: str) -> bool:
         and not _deleted(s, n) and _rule(s, n) == "OPEN" and n in v.granted
 
 
+def _below_seed_hop(s: Store, v: Viewer, c: str, p: str) -> bool:
+    """The hop c -> p below a seed: a live OPEN node that inherits or is granted, or a live PARENT_AND_GRANT node that inherits and is granted."""
+    if _deleted(s, c):
+        return False
+    r, i, g = _rule(s, c), _inherits(s, c, p), c in v.granted
+    return (r == "OPEN" and (i or g)) or (r == PAG and i and g)
+
+
 def below_seed(s: Store, v: Viewer, t: str, app: str, opens: bool) -> bool:
-    """R10: t hangs, over OPEN live nodes that each inherit or are granted, under a
+    """R10: t hangs, over live nodes that each pass the hop below a seed (``_below_seed_hop``), under a
     seed that no other arm admits."""
     frontier = {t}
     for _ in range(MAX_HOPS):
         nxt: set[str] = set()
         for c in frontier:
-            if _deleted(s, c) or _rule(s, c) != "OPEN":
-                continue
             for p in _parents(s, c):
-                if not (_inherits(s, c, p) or c in v.granted):
+                if not _below_seed_hop(s, v, c, p):
                     continue
                 if _seed(s, v, p, app) and not from_app(s, v, p, app, opens) \
                         and not declared(s, v, p, app, opens):

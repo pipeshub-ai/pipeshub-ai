@@ -123,9 +123,9 @@ ENV HF_HOME=/root/.cache/huggingface \
 # FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 
-# Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py propagates
-# this to all libraries. Override via OMP_NUM_THREADS in .env if needed.
-ENV OMP_NUM_THREADS=2
+# Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py applies this
+# default to all libraries unless OMP_NUM_THREADS is set (in .env, say), which wins.
+ENV PIPESHUB_OMP_DEFAULT=2
 
 # Several third-party deps (talon, pysbd, ...) ship regex string literals with
 # unescaped backslashes and hit Python 3.12+'s SyntaxWarning at import time.
