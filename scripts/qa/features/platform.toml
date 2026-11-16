@@ -1,0 +1,1201 @@
+# Platform: the indexing pipeline (flow sync-indexing), the Slack bot (slack-bot), the desktop app (desktop)
+# and the edition seams (edition-seams). Most of it has no route in the API spec.
+
+# ---------------------------------------------------------------------------
+# Indexing pipeline
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "platform.index-record-flow"
+title = "A record becomes searchable"
+flow = "sync-indexing"
+what = "A new or changed record from a connector or an upload is read from the broker, fetched from the connectors service, parsed into blocks, embedded and written to the vector store and blob storage. Its indexing status moves NOT_STARTED, QUEUED, IN_PROGRESS and then COMPLETED, EMPTY, FILE_TYPE_NOT_SUPPORTED, PASSWORD_PROTECTED or FAILED."
+code = [
+  "backend/python/app/indexing_main.py",
+  "backend/python/app/events/**",
+  "backend/python/app/services/messaging/kafka/handlers/record.py",
+  "backend/python/app/modules/transformers/sink_orchestrator.py",
+  "backend/python/app/modules/indexing/run.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.completed"
+  says = "A record whose vectors were written ends COMPLETED with its blocks stored, and is marked as having an indexed copy so search can find it. In the same write, extraction status is set to QUEUED for the classify stage, or to NOT_STARTED when classification is left for the record's first use."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/modules/transformers/test_sink_orchestrator.py",
+    "py:tests/unit/events/test_orchestrator_flow.py",
+    "it:messaging/test_e2e_record_pipeline.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.in-progress-markers"
+  says = "While a record is processed its statuses track the parse and index phases, and its content revision is written with IN_PROGRESS so later stage writes apply only to that revision."
+  priority = "P1"
+  tests = ["py:tests/unit/events/test_orchestrator_flow.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.empty"
+  says = "A file that parses to no blocks ends EMPTY, and an update to empty content drops the old vectors and the indexed copy unless another record still holds them."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/events/test_empty_update_drops_indexed_copy.py",
+    "py:tests/unit/events/test_service_parse_empty_update.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.unsupported"
+  says = "A file type the gate rejects ends FILE_TYPE_NOT_SUPPORTED with a reason. A type the gate accepts but no parser can route is failed on its first attempt with a reason and is not retried."
+  priority = "P1"
+  tests = ["py:tests/unit/services/messaging/test_record_handler_unsupported.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.password"
+  says = "A file that needs a password to open ends PASSWORD_PROTECTED, not FAILED. It is never retried, text that merely mentions a password does not count, and its queued duplicates get the same status. An owner-password-only PDF is indexed normally."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_record_handler_password.py",
+    "py:tests/unit/events/test_events_password.py",
+    "py:tests/unit/modules/parsers/test_encryption.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.duplicates"
+  says = "Records with the same content hash in one collection are indexed once. A finished twin is reused, a twin in progress makes the duplicate wait, and a failed or deleted twin lets the duplicate index itself."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/events/test_dedup_selection.py",
+    "py:tests/unit/events/test_duplicate_enrichment_handoff.py",
+    "py:tests/unit/events/test_events.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.reindex"
+  says = "A reindex or new-record event on a record that is already COMPLETED does not index it again unless the event is a forced reindex. An update or reindex event deletes the old embeddings before the new ones are written, except for file types that are reconciled block by block."
+  priority = "P1"
+  tests = ["py:tests/unit/services/messaging/test_record_handler.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-record-flow.no-llm"
+  says = "With no AI model configured, a record that needs one (images, spreadsheets) fails with the message that no model is set up, and a text record still completes because classification only skips."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/utils/test_user_errors.py",
+    "py:tests/unit/modules/transformers/test_document_extraction_outcomes.py",
+  ]
+
+[[feature]]
+id = "platform.index-resync-status"
+title = "Record status after a connector re-sync"
+flow = "sync-indexing"
+what = "A sync saves every record it lists. A record with unchanged content keeps its outcome (COMPLETED, EMPTY, FILE_TYPE_NOT_SUPPORTED, PASSWORD_PROTECTED, FAILED) or its pending work. A content change, a restore from the trash or a new record is indexed again."
+code = [
+  "backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py",
+  "backend/python/app/services/graph_db/common/record_visibility.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-resync-status.unchanged"
+  says = "A re-sync of an unchanged record keeps its indexing status, reason and queue time, so a sync is not a retry and queued records are not published twice."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/connectors/core/test_unchanged_record_keeps_indexing_fields.py",
+    "py:tests/unit/connectors/core/test_data_source_entities_processor.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-resync-status.changed"
+  says = "A record with a new revision, or the same revision read as another file type, is indexed again whatever status it held, including PASSWORD_PROTECTED."
+  priority = "P0"
+  tests = ["py:tests/unit/connectors/core/test_unchanged_record_keeps_indexing_fields.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-resync-status.auto-index-off"
+  says = "Turning automatic indexing off stops an unchanged record that has not started, but never takes back what indexing already reached."
+  priority = "P1"
+  tests = ["py:tests/unit/connectors/core/test_unchanged_record_keeps_indexing_fields.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-resync-status.searchable-while-requeued"
+  says = "A record that was indexed stays searchable from its previous copy while an edited version is queued or re-indexed, and is hidden when it is in the trash."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/modules/transformers/test_sink_orchestrator.py",
+    "py:tests/integration/graph_db/test_search_keeps_indexed_copy_real_backends.py",
+    "py:tests/integration/test_search_keeps_indexed_copy_e2e.py",
+  ]
+
+[[feature]]
+id = "platform.index-retry"
+title = "Indexing retries and failure outcomes"
+flow = "sync-indexing"
+what = "A transient failure puts the record back to QUEUED and re-publishes it with a growing delay. A terminal failure, or exhausted attempts, ends it FAILED with a reason and releases its queued duplicates. A record that crashes the process is not run again after two unfinished attempts."
+code = [
+  "backend/python/app/services/messaging/error_classifier.py",
+  "backend/python/app/services/messaging/retry_manager.py",
+  "backend/python/app/services/messaging/fail_safe_retry_tracker.py",
+  "backend/python/app/services/messaging/disposition.py",
+  "backend/python/app/services/messaging/redis_streams/indexing_consumer.py",
+  "backend/python/app/services/messaging/kafka/consumer/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-retry.classify"
+  says = "Errors are classified: 400, 401, 403, 404, 413, 422 and other 4xx answers are terminal, while 408, 409, 429 and 5xx answers are transient. Content and parsing failures are terminal and network failures are transient."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_error_classifier.py",
+    "py:tests/unit/services/messaging/test_error_classifier_poison.py",
+    "py:tests/unit/services/messaging/test_handler_failures_reach_classifier.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-retry.dead-letter"
+  says = "A record that keeps failing is dead-lettered after the attempt limit instead of being run again: its message is acknowledged and the record ends FAILED with a reason."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/services/messaging/test_fail_safe_retry_tracker.py",
+    "py:tests/unit/services/messaging/test_redis_streams_indexing_consumer.py",
+    "py:tests/unit/services/messaging/test_retry_manager.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-retry.progress-requeue"
+  says = "An embedding run that finished at least one batch before it was cut is re-queued without counting an attempt, and resumes from the stored points. A cut with no new batch, a shutdown or a lost lease is counted or left for redelivery."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_progress_requeue.py",
+    "py:tests/unit/modules/indexing/test_embed_resume.py",
+    "py:tests/unit/events/test_events_resume.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-retry.crash-suspects"
+  says = "A record whose attempts never finished twice, because the process died, is failed without running again. A record with one unfinished attempt runs one at a time, apart from other records."
+  priority = "P1"
+  tests = ["py:tests/unit/services/messaging/test_unfinished_attempts.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-retry.deleted-record"
+  says = "A record deleted or trashed while it is indexed is not a failure: its message is acknowledged and no status is written."
+  priority = "P1"
+  tests = ["py:tests/unit/services/messaging/test_record_deleted.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-retry.record-lease"
+  says = "Only one worker indexes a record at a time. A record whose lease is not free is handed back without counting an attempt, and a lost lease cancels the handler and leaves the message for redelivery."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_lease_renewer.py",
+    "py:tests/unit/services/messaging/test_lease_resilience.py",
+    "py:tests/unit/services/messaging/test_unfinished_attempts.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-retry.worker-loop-failure"
+  says = "If the worker event loop exits without a stop request, the consumers stop reading and the indexing health check answers 503."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_worker_loop.py",
+    "py:tests/unit/test_indexing_main.py",
+  ]
+
+[[feature]]
+id = "platform.index-admission"
+title = "Indexing admission, fairness and backpressure"
+flow = "sync-indexing"
+what = "The indexing service admits records through heavy and light permits sized to the machine, shares the permits fairly between connectors, and pauses reading when a downstream service asks it to slow down."
+code = [
+  "backend/python/app/services/resource_governor/**",
+  "backend/python/app/services/messaging/backpressure.py",
+  "backend/python/app/services/messaging/consumer_concurrency.py",
+  "backend/python/app/services/messaging/distributed_concurrency.py",
+  "backend/python/app/services/messaging/scheduling/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-admission.tiers"
+  says = "A file is classed heavy or light from its extension, or from its MIME type when the extension is unknown. Text-like types are light and unproven types stay heavy."
+  priority = "P1"
+  tests = ["py:tests/unit/services/resource_governor/test_tiers.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-admission.permits"
+  says = "A request that waits too long for a permit gives up without leaking one, and a cancelled waiter does not leak one either."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/resource_governor/test_admission.py",
+    "py:tests/unit/services/resource_governor/test_gate.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-admission.fair-share"
+  says = "A busy connector or workspace cannot starve a quiet one: dispatch interleaves by deficit round robin, and the parsing service holds a workspace to its share of a pool while another one is waiting or running."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_drr_scheduler.py",
+    "py:tests/unit/services/resource_governor/test_org_share.py",
+    "py:tests/unit/services/messaging/test_fair_scheduling_redis.py",
+    "py:tests/unit/services/messaging/test_fair_scheduling_kafka.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-admission.backpressure"
+  says = "Reading stops at the pending task ceiling and while a downstream service signals 429 with a Retry-After, and resumes when the pause ends. A longer signal extends an active pause and a shorter one does not shorten it."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_backpressure.py",
+    "py:tests/unit/services/messaging/test_fair_scheduling_limits.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-admission.parse-now"
+  says = "A record opened before it is indexed can be parsed ahead of the queue on a priority lane with its own permits, and its outcome is written to a parse marker without changing the record's own statuses when automatic indexing is off."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/services/messaging/test_record_handler_parse_now.py",
+    "py:tests/unit/modules/pipeline/test_parse_now.py",
+    "py:tests/unit/modules/indexing/test_parse_now_marker.py",
+    "py:tests/unit/services/messaging/test_parse_now_priority_redis.py",
+  ]
+
+[[feature]]
+id = "platform.index-recovery"
+title = "Indexing recovery sweeps"
+flow = "sync-indexing"
+what = "Background loops in the indexing process find records whose events were lost or whose worker died, and send them again. A source that answers 429 defers a record instead of failing it."
+code = [
+  "backend/python/app/indexing_main.py",
+  "backend/python/app/modules/indexing/record_republish.py",
+  "backend/python/app/modules/indexing/rate_limit_deferral.py",
+  "backend/python/app/modules/indexing/recovery_budget.py",
+  "backend/python/app/modules/indexing/connector_sweep.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-recovery.stale-in-progress"
+  says = "A record left IN_PROGRESS past its lease is put back in line and republished, and it stays searchable from its previous indexed copy. A record whose lease is still held, or that finished mid-scan, is left alone. A record that keeps failing or being cut off after recovery is ended instead of re-queued for ever."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/test_indexing_main.py",
+    "py:tests/unit/modules/indexing/test_recovery_budget.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-recovery.stranded"
+  says = "A record whose queue event was lost is sent again once it has waited past the threshold and the queue has passed it. The sweep never sends filtered or trashed records or records of a connector that is off or being deleted, and the wait before the next resend doubles each time."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/test_stranded_sweep_parked_while_off.py",
+    "py:tests/unit/test_stranded_sweep_simulated_day.py",
+    "py:tests/unit/modules/indexing/test_record_republish.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-recovery.rate-limited"
+  says = "A content fetch answered 429 with Retry-After leaves the record QUEUED with a retry time and a reason, counts no attempt, and is sent again after that time. A record still refused after a day ends FAILED with the reason."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_rate_limited_records.py",
+    "py:tests/unit/modules/indexing/test_rate_limit_deferral.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-recovery.startup-order"
+  says = "The indexing service ensures the graph schema before any consumer starts, retries until the schema is in place, and a failed startup stops the consumers it already started."
+  priority = "P1"
+  tests = ["py:tests/unit/test_indexing_main.py"]
+
+[[feature]]
+id = "platform.index-maintenance"
+title = "Indexing maintenance jobs"
+flow = "sync-indexing"
+what = "The indexing service runs background jobs that bring existing data up to date: stamping connector and group ids onto vector points, adding class units for code records, rebuilding the entity index from the graph, and sweeping orphaned entities and scope data. Each job runs on one replica at a time and resumes after a restart."
+code = [
+  "backend/python/app/modules/indexing/vector_membership_backfill.py",
+  "backend/python/app/modules/indexing/class_units_backfill.py",
+  "backend/python/app/modules/indexing/entity_index_rebuild.py",
+  "backend/python/app/modules/indexing/named_entity_sweep.py",
+  "backend/python/app/modules/indexing/scope_sweep_loop.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.leader-lease"
+  says = "Only the replica that holds the lease runs a job. A replica that does not hold it cannot renew or take it, a lease that expired and moved to another replica is not taken back, and a released lease goes to the next replica."
+  priority = "P0"
+  tests = ["py:tests/unit/modules/indexing/test_leader_lease.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.membership-backfill"
+  says = "The membership backfill takes one connector and one page of records per tick, stamps the connector and record group ids onto each record's vector points, saves a cursor after every full page, and marks the connector done after the last page. A pass that lost the lease stops without saving progress."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/indexing/test_vector_membership_backfill_scanner.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.backfill-retry"
+  says = "A record that keeps failing does not block the backfill: after three passes with failures the connector is marked done, and each failed tick doubles the wait before the next one."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/indexing/test_vector_membership_backfill_scanner.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.class-units"
+  says = "Class units are added to code records indexed before they existed only when CODE_GRAPH_BACKFILL is true. Only completed code records with no residue unit are embedded, from the stored blob without fetching the source, a missing blob is counted as failed and skipped, and a second run does nothing."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/indexing/test_class_units_backfill.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.entity-index"
+  says = "The entity index is rebuilt from the graph, connectors before organizations, without extraction or an LLM call. Records of every status get a point, points of trashed records are removed, and a change of embedding model or a collection that was dropped runs the passes again."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/indexing/test_entity_index_rebuild.py", "py:tests/unit/modules/indexing/test_entity_index_outlives_records_rebuild.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.entity-sweep"
+  says = "Once a day per organization the rebuild deletes entity points whose node is gone or belongs to another organization, and never touches record points. A failed lookup deletes nothing."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/indexing/test_entity_index_rebuild.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.deleted-connector-entities"
+  says = "Entity points left by a deleted connector are removed by the rebuild once the cleanup request is older than 15 minutes. A connector that still exists, or whose lookup fails, is never cleaned."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/indexing/test_entity_cleanup_reconcile.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.named-entity-sweep"
+  says = "Orphaned named entities are swept every six hours by one replica, whether or not the Labs flag is on. A grace period below one hour is raised to one hour."
+  priority = "P2"
+  tests = ["py:tests/unit/modules/indexing/test_named_entity_sweep_loop.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-maintenance.scope-sweep"
+  says = "The scope sweep runs only when the scope fields are on. It sweeps every organization each round, every 300 seconds unless the setting is a number of 30 or more, with a random wait added so replicas do not sweep together."
+  priority = "P2"
+  tests = ["py:tests/unit/modules/indexing/test_scope_sweep_loop.py"]
+
+[[feature]]
+id = "platform.index-delete"
+title = "Removing records from the index"
+flow = "sync-indexing"
+what = "Deleting a record, a connector or a collection removes the matching vectors, stored blocks and entity points. Deleted and trashed records disappear from search and from the record API."
+code = [
+  "backend/python/app/services/messaging/kafka/handlers/record.py",
+  "backend/python/app/modules/indexing/connector_off_events.py",
+  "backend/python/app/modules/indexing/stored_content_cleanup.py",
+  "backend/python/app/services/graph_db/**/delete*.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-delete.record"
+  says = "A deleteRecord event removes the record's embeddings and its entity points, hands a shared copy over to the next holder, and retries the delete when the hand-over fails."
+  priority = "P0"
+  tests = ["py:tests/unit/services/messaging/test_record_handler.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-delete.visible"
+  says = "A deleted record is gone from the graph and the record API."
+  priority = "P0"
+  tests = [
+    "it:messaging/test_e2e_record_pipeline.py::TestRecordCleanupStage::test_deleted_record_not_in_api",
+    "it:messaging/test_e2e_record_pipeline.py::TestRecordCleanupStage::test_deleted_record_removed_from_graph",
+    "py:tests/unit/services/graph_db/test_delete_record_through_providers.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-delete.bulk"
+  says = "A bulk delete of an empty list removes nothing and still completes, and a bulk delete that names a connector goes through the virtual-record purge instead of the plain delete."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_record_handler.py",
+    "py:tests/unit/modules/indexing/test_indexing_run.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-delete.connector-off"
+  says = "The backlog of a turned-off connector drains at read speed without being dispatched, and the events of a removed connector are acknowledged without writing a status. An unreadable connector state drops nothing."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_connector_off_at_read.py",
+    "py:tests/unit/modules/indexing/test_connector_off_events.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-delete.stored-documents"
+  says = "Stored documents of deleted records are purged. A file the graph still lists is rescheduled with a growing delay and not purged, until a day has passed, after which it is kept."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_record_handler_stored_content.py",
+    "py:tests/unit/modules/indexing/test_stored_content_cleanup.py",
+  ]
+
+[[feature]]
+id = "platform.index-stages"
+title = "Classification and entity extraction stages"
+flow = "sync-indexing"
+what = "After a record is searchable, pipeline stages run on their own topics with their own permits and retries: classify writes the summary, categories, topics and departments, and entities extracts named entities. They never block search."
+code = [
+  "backend/python/app/modules/pipeline/**",
+  "backend/python/app/modules/transformers/document_extraction.py",
+  "backend/python/app/modules/named_entities/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-stages.ordering"
+  says = "A stage runs once after its last prerequisite finishes, even when prerequisites finish at the same time, and an inapplicable stage is skipped while its successors still run."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/pipeline/test_coordinator.py"]
+
+  [[feature.behavior]]
+  id = "platform.index-stages.revision"
+  says = "A stage result for a superseded content revision is stale and saves nothing. A record that was deleted or trashed before its stages are handed off raises the deleted-record outcome."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/modules/pipeline/test_classify_stage.py",
+    "py:tests/unit/modules/pipeline/test_ingress.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-stages.classify"
+  says = "Classification applies to text and images when it is on, and saves the summary and taxonomy only for records still on the revision it read. With no AI model configured it ends SKIPPED with a reason and the record stays searchable."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/modules/pipeline/test_classify_stage.py",
+    "py:tests/unit/modules/transformers/test_document_extraction_outcomes.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-stages.entities"
+  says = "Entity extraction needs only the indexed text, saves each entity with the blocks it came from, and a failed extraction is retried and writes nothing."
+  priority = "P1"
+  tests = ["py:tests/unit/modules/pipeline/test_entities_stage.py"]
+
+[[feature]]
+id = "platform.index-brokers"
+title = "Message brokers and lanes for indexing"
+flow = "sync-indexing"
+what = "Record events travel over Kafka, Redis Streams or a PostgreSQL queue, chosen by MESSAGE_BROKER. On Redis Streams a connector is assigned one of eight lanes so one connector cannot hold up the rest."
+code = [
+  "backend/python/app/services/messaging/messaging_factory.py",
+  "backend/python/app/services/messaging/lanes/**",
+  "backend/python/app/services/messaging/kafka/**",
+  "backend/python/app/services/messaging/redis_streams/**",
+  "backend/python/app/services/messaging/postgres/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.index-brokers.factory"
+  says = "The messaging factory builds the producer and consumer for the configured broker, and an unknown MESSAGE_BROKER value is refused."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_messaging_factory.py",
+    "py:tests/unit/services/messaging/test_messaging_factory_redis.py",
+    "py:tests/unit/services/messaging/test_postgres_broker_wiring.py",
+    "py:tests/unit/services/messaging/test_messaging_config.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-brokers.lanes"
+  says = "Connectors that hash to the same lane are spread over idle lanes, a lane with a large connector is avoided by small ones, and a connector keeps its lane when nothing better is free."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/services/messaging/test_lane_assignment_policy.py",
+    "py:tests/unit/services/messaging/test_lane_assignment.py",
+    "py:tests/integration/messaging/test_redis_lane_assignment_it.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-brokers.redelivery"
+  says = "A message that was not acknowledged is redelivered after a crash on Redis Streams and PostgreSQL."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_redis_pending_recovery.py",
+    "py:tests/integration/pg_runtime/test_consumer_kill.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-brokers.dead-letter"
+  says = "An undecodable message is dead-lettered on its first delivery instead of blocking Kafka or the PostgreSQL queue."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_kafka_indexing_poison_offset.py",
+    "py:tests/unit/services/messaging/test_postgres_undecodable_message.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.index-brokers.kafka-security"
+  says = "Kafka clients get TLS when it is enabled, plus SASL credentials over TLS, and a SASL username without a password is refused."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/services/messaging/test_kafka_security_kwargs.py"]
+
+[[feature]]
+id = "platform.record-titles"
+title = "Record titles before indexing"
+flow = "sync-indexing"
+what = "A record can be found by its name before it is indexed: a separate consumer stores the title of each record on its own topic."
+code = [
+  "backend/python/app/services/messaging/record_titles.py",
+  "backend/python/app/modules/indexing/record_title_consumer.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.record-titles.title"
+  says = "A title event keeps a name as it is, cuts a long name, ignores a blank or non-text name, and a delete names no record."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/services/messaging/test_record_titles.py",
+    "py:tests/unit/modules/indexing/test_record_title_consumer.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.record-titles.hint"
+  says = "A title event is only a hint. The point is built from the stored record, and an event for another org, a trashed record or a record being deleted writes nothing."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/modules/indexing/test_record_title_consumer.py"]
+
+  [[feature.behavior]]
+  id = "platform.record-titles.shutdown"
+  says = "The title consumer starts once its topic exists and stops cleanly on shutdown."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/modules/indexing/test_record_title_wiring.py",
+    "py:tests/unit/modules/indexing/test_record_title_shutdown.py",
+  ]
+
+[[feature]]
+id = "platform.parsing-services"
+title = "Parsing, document, extraction and embedding services"
+flow = "sync-indexing"
+what = "Heavy work runs in separate services: parsing turns file bytes into blocks, docling handles PDFs and OCR, extraction classifies a document with an AI model, and embedding serves OpenAI-compatible embeddings. The parsing and extraction routes need a service token with the matching scope."
+code = [
+  "backend/python/app/parsing_main.py",
+  "backend/python/app/docling_main.py",
+  "backend/python/app/extraction_main.py",
+  "backend/python/app/embedding_main.py",
+  "backend/python/app/api/routes/parsing.py",
+  "backend/python/app/api/routes/extraction.py",
+  "backend/python/app/services/parsing/**",
+  "backend/python/app/services/docling/**",
+  "backend/python/app/services/extraction/**",
+  "backend/python/app/modules/parsers/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.parse-scope"
+  says = "The parse routes (POST /api/v1/parse and GET /api/v1/parse/providers) need a service token with the document:parse scope, and the extract routes (classify and entities) need document:classify. A request with no token gets 401, a session or wrong-scope token gets 403, and an org_id that differs from the token's org is refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/api/routes/test_parsing_routes.py",
+    "py:tests/unit/api/routes/test_extraction_routes.py",
+    "py:tests/unit/api/test_route_auth_policy.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.parse"
+  says = "The parsing client sends a file and receives blocks, can pick a provider, lists the providers, and treats an unreachable service as retryable."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/services/parsing/test_parsing_client.py",
+    "py:tests/unit/services/parsing/test_registry.py",
+    "py:tests/unit/api/routes/test_parsing_routes.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.unparseable"
+  says = "An unparseable file or a file that needs a password is answered 422 with a code, and the client does not retry it and keeps its circuit breaker closed. A file the parser cannot read because no image model exists is also not retried."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/parsing/test_parsing_client.py",
+    "py:tests/unit/api/routes/test_parsing_routes.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.backpressure"
+  says = "A parse request that cannot get a slot in time is answered 429 with Retry-After, and an organisation past its share is backpressured while another waits. The client reports exhausted backpressure as retryable."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/parsing/test_parse_route_file_path.py",
+    "py:tests/unit/services/parsing/test_parsing_client.py",
+    "py:tests/unit/api/routes/test_parsing_routes.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.formats"
+  says = "Each supported format (HTML, Markdown, MDX, CSV, Excel, Word, EPUB, JSON, images and PDF) parses to blocks, and a large spreadsheet is bounded by size guards instead of exhausting memory."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/modules/parsers/test_html_parser.py",
+    "py:tests/unit/modules/parsers/test_markdown_parser.py",
+    "py:tests/unit/modules/parsers/test_csv_parser.py",
+    "py:tests/unit/modules/parsers/test_excel_parser.py",
+    "py:tests/unit/modules/parsers/test_docx_parser.py",
+    "py:tests/unit/modules/parsers/test_epub_parser.py",
+    "py:tests/unit/modules/parsers/test_json_parser.py",
+    "py:tests/unit/modules/parsers/test_image_parser.py",
+    "py:tests/unit/modules/parsers/test_excel_size_guard_gaps.py",
+    "py:tests/unit/modules/parsers/test_mdx_parser.py",
+    "py:tests/unit/modules/parsers/test_pdf_parsers.py",
+    "py:tests/unit/modules/parsers/real_files/test_realfile_formats.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.image-ssrf"
+  says = "The image parser does not fetch image addresses that point at private or local hosts."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/modules/parsers/test_image_parser_ssrf.py"]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.embeddings"
+  says = "POST /v1/embeddings accepts one input or a batch, rejects an empty input, and answers 413 for too many inputs. /v1/tokenize rejects too many items or characters."
+  priority = "P1"
+  tests = ["py:tests/unit/test_embedding_main.py"]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.classify-cap"
+  says = "The classify request body is capped in size before it is parsed, and a workspace with no AI model gets a 422 that clients do not retry."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/test_extraction_main.py",
+    "py:tests/unit/services/extraction/test_extraction_client.py",
+    "py:tests/unit/api/routes/test_extraction_routes.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.parsing-services.docling"
+  says = "The docling service starts and stops cleanly and releases its parse permit exactly once when a request ends. The docling client raises when the service is unreachable, shedding load or refusing its token, and returns nothing for a failure on the file itself."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/test_docling_main.py",
+    "py:tests/unit/services/docling/test_docling_gate_release.py",
+    "py:tests/unit/services/docling/test_docling_client.py",
+  ]
+
+[[feature]]
+id = "platform.vector-store"
+title = "Vector store and blob storage backends"
+flow = "sync-indexing"
+what = "Vectors are written through one interface that supports Qdrant, OpenSearch, Redis and PostgreSQL (pgvector), chosen by VECTOR_DB_TYPE. Parsed blocks are stored in blob storage with compression and signed uploads."
+code = [
+  "backend/python/app/services/vector_db/**",
+  "backend/python/app/modules/transformers/blob_storage.py",
+  "backend/python/app/modules/transformers/vectorstore.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.vector-store.factory"
+  says = "The vector store factory builds the backend named by VECTOR_DB_TYPE (qdrant by default, including pgvector), refuses an unknown value, and Qdrant, OpenSearch and Redis pass the shared contract tests."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/services/vector_db/test_factory.py",
+    "py:tests/integration/vector_db/test_contract_integration.py",
+    "py:tests/unit/services/vector_db/test_vector_db_provider_factory.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.vector-store.filters"
+  says = "A filter with an empty list matches nothing instead of everything, a delete or update filter must name exactly one org, and scope filters keep a search inside the connectors and record groups the caller may read."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/services/vector_db/test_empty_list_matches_nothing.py",
+    "py:tests/unit/services/vector_db/test_filters.py",
+    "py:tests/unit/services/vector_db/test_pgvector_scope_filter.py",
+    "py:tests/unit/services/vector_db/test_scope_filter_stores.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.vector-store.pipeline-e2e"
+  says = "Vectors written by the indexing pipeline are found by a similarity search on Qdrant, OpenSearch and Redis."
+  priority = "P1"
+  tests = ["py:tests/integration/vector_db/test_e2e_pipeline.py"]
+
+  [[feature.behavior]]
+  id = "platform.vector-store.blob"
+  says = "Blob storage compresses records above a size threshold, retries a write once when its target file is not there yet, treats a 403 from an expired or skewed signature as transient and looks the document up again, and reports a missing document as not found without retrying."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/modules/transformers/test_blob_storage_compression_threshold.py",
+    "py:tests/unit/modules/transformers/test_blob_storage_enoent_retry.py",
+    "py:tests/unit/modules/transformers/test_blob_storage_signature_403.py",
+    "py:tests/unit/modules/transformers/test_blob_storage_not_found.py",
+  ]
+
+# ---------------------------------------------------------------------------
+# Slack bot
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "platform.slack-bot-events"
+title = "Slack bot event intake"
+flow = "slack-bot"
+what = "Slack posts events to /slack/events on the API, which proxies them to the Slack bot process. The bot verifies each delivery against the saved bots, answers each event once, and rate limits bad traffic."
+code = [
+  "backend/nodejs/apps/src/integrations/slack-bot/src/receiver.ts",
+  "backend/nodejs/apps/src/integrations/slack-bot/src/botRegistry.ts",
+  "backend/nodejs/apps/src/integrations/slack-bot/src/authorizeFn.ts",
+  "backend/nodejs/apps/src/integrations/slack-bot/src/slackApp.ts",
+  "backend/nodejs/apps/src/app.ts",
+  "backend/nodejs/apps/src/libs/middlewares/rate-limit.middleware.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.signature"
+  says = "A delivery without Slack signature headers, with a non-numeric timestamp or one more than five minutes from now (past or future), or whose signature matches no saved bot is refused with 401 and is not processed."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/integrations/slack-bot/slackEventsGuard.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.registry"
+  says = "The bot checks a signature against its cached registry, force-refreshes once when nothing matches (at most every 30 seconds, so forged signatures cannot flood the API) and then stops."
+  priority = "P1"
+  tests = ["node:tests/integrations/slack-bot/slackEventsGuard.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.dedupe"
+  says = "A repeated event_id is acknowledged without being handled again, while the retry of a delivery that failed is handled."
+  priority = "P0"
+  tests = ["node:tests/integrations/slack-bot/slackEventsGuard.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.rate-limit"
+  says = "The gateway counts only failed deliveries (400 and above) per client address, never throttles accepted ones, and answers 429 once failures pass the per-minute limit."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/libs/middlewares/rate-limit.middleware.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.proxy"
+  says = "The gateway proxies /slack/events to the bot, passes a complete answer through, answers 502 when the bot is down, and cuts the client response when the bot's answer is cut midway."
+  priority = "P1"
+  tests = ["node:tests/app.slack-proxy-cut.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.token"
+  says = "The bot resolves its Slack token from the bot that matched the request, then from the registry by team or bot id, then from BOT_TOKEN, and fails when none exists."
+  priority = "P1"
+  tests = ["node:tests/integrations/slack-bot/authorizeFn.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-events.health"
+  says = "The Slack bot process exposes a health route."
+  priority = "P2"
+  tests = ["node:tests/integrations/slack-bot/healthRoute.test.ts"]
+
+[[feature]]
+id = "platform.slack-bot-answers"
+title = "Answering in Slack"
+flow = "slack-bot"
+what = "A person sends the bot a direct message or mentions it in a channel and gets an answer streamed into the thread, from the default assistant or from the agent the bot is linked to. The bot knows the person by their Slack profile email and acts with that person's own access."
+code = [
+  "backend/nodejs/apps/src/integrations/slack-bot/src/index.ts",
+  "backend/nodejs/apps/src/integrations/slack-bot/src/helpers.ts",
+  "backend/nodejs/apps/src/integrations/slack-bot/src/utils/**",
+  "backend/nodejs/apps/src/libs/repositories/slack-thread/**",
+  "backend/python/app/utils/fetch_slack_thread.py",
+  "backend/python/app/utils/slack_replies.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.identity"
+  says = "The bot reads the sender's email from Slack and calls the API with a token scoped to that user and bot. If Slack gives no email, the bot answers that it cannot verify the profile and does not call the API."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/libs/utils/createJwt.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.ignore-bots"
+  says = "Messages from bots, including the bot itself, are ignored. Direct messages and mentions are answered, and other channel messages are not."
+  priority = "P1"
+  tests = ["node:tests/integrations/slack-bot/helpers.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.threads"
+  says = "A Slack thread keeps one conversation per bot and user, so a reply in the thread continues the same conversation. A mention in a thread sends the earlier thread messages and files with the question."
+  priority = "P0"
+  tests = ["node:tests/integrations/slack-bot/helpers.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.attachments"
+  says = "Supported files (text, CSV, images, PDF) up to 5 MB are uploaded with the question. Unsupported, oversized or unreadable files are named in a thread notice and the question is still answered."
+  priority = "P1"
+  tests = ["node:tests/integrations/slack-bot/helpers.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.citations"
+  says = "File citations in an answer link to the record page, the Sources list drops any text-fragment directive, and parenthesised URLs are not cut short."
+  priority = "P1"
+  tests = ["node:tests/integrations/slack-bot/citations.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.stream"
+  says = "The answer streams as it is produced. A model attempt that is discarded midway takes back its streamed text so the retry is posted once, and a tool server's progress shows as plain-text status."
+  priority = "P1"
+  tests = ["node:tests/integrations/slack-bot/agui-stream.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.confirm"
+  says = "When a mention in a thread includes messages from other people, the bot hands the thread to the assistant as untrusted background and instructs it to ask the current person, in the thread, to confirm any change to a connected tool, naming the tool and the change."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/integrations/slack-bot/helpers.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-answers.slack-records"
+  says = "A Slack thread indexed from a workspace reads back in full when opened from an answer, and a placeholder node is never opened as a record."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/utils/test_fetch_slack_thread.py",
+    "py:tests/unit/utils/test_slack_thread_placeholder_access.py",
+  ]
+
+[[feature]]
+id = "platform.slack-bot-admin"
+title = "Slack bots page"
+flow = "slack-bot"
+pages = ["frontend/app/(main)/workspace/bots/page.tsx"]
+what = "An administrator adds, edits and removes Slack bots on the Bots page and links each bot to an agent. A member who opens the page is sent to General settings. The bot token and signing secret are saved by the configuration API and shown masked."
+code = [
+  "frontend/app/(main)/workspace/bots/**",
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/maskConfigSecrets.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-admin.admin-only"
+  says = "A signed-in user who is not an administrator is redirected from /workspace/bots to /workspace/general and no bot data is requested for them."
+  priority = "P0"
+  kind = "security"
+  tests = ["fe:app/(main)/workspace/__tests__/admin-pages-wait-for-admin.test.tsx"]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-admin.secrets"
+  says = "A bot's token and signing secret are returned masked unless the deployment lets an admin reveal them, and an edit that sends the placeholder back keeps the saved secret."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/configuration_manager/utils/maskConfigSecrets.test.ts",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-admin.agent-link"
+  says = "The page lists every agent across pages, shows the linked agent by name, shows the default assistant when the agent was deleted, and does not call an agent deleted while the list is incomplete."
+  priority = "P1"
+  tests = [
+    "fe:app/(main)/workspace/bots/__tests__/api.test.ts",
+    "fe:app/(main)/workspace/bots/__tests__/bot-config-panel.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.slack-bot-admin.load-failure"
+  says = "If the bot list cannot be loaded the page shows an error, and an agent list that fails leaves the previous agents in place."
+  priority = "P2"
+  tests = []
+
+# ---------------------------------------------------------------------------
+# Desktop app
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "platform.desktop-relay"
+title = "Desktop relay for local folders"
+flow = "desktop"
+what = "The desktop app connects over Socket.IO and registers a device. The connectors service then asks that device, through service-only routes, for file events and file content of the user's local folders."
+code = [
+  "backend/nodejs/apps/src/modules/desktop_proxy/**",
+  "backend/nodejs/apps/src/libs/services/desktop-presence.provider.ts",
+  "backend/nodejs/apps/src/utils/local-fs-utils.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.handshake"
+  says = "A socket handshake without a token, with an expired token, or with a token that has no user or organisation is refused. A revoked session is refused with an authentication message, and a failing session check is refused with a retryable message."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/desktop_proxy/socket/desktop-proxy.gateway.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.revocation"
+  says = "A device whose token was revoked is disconnected at the next 30-second check."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/desktop_proxy/socket/desktop-proxy.gateway.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.routes"
+  says = "POST /api/v1/desktop/internal/local-fs/file-events/pull and /content need a service token with the desktop:command scope and a valid body, and they address only the user in the token, never a user named in the body."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/desktop_proxy/controllers/desktop-proxy.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.errors"
+  says = "The relay answers 409 when the desktop is offline, 504 when it does not answer in time, 502 when it reports a failure, and 503 before the socket namespace is attached."
+  priority = "P1"
+  tests = ["node:tests/modules/desktop_proxy/controllers/desktop-proxy.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.device-routing"
+  says = "A request goes only to the device that owns the connector, never to another device of the same user or to another user. A reconnecting device is routed to its newest socket, and a page answered by another device is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/desktop_proxy/socket/local-fs-relay.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.content"
+  says = "File content is reassembled byte for byte from chunks, a short or aborted transfer is rejected, a file over 100 MB is refused up front, and at most three transfers run per device."
+  priority = "P1"
+  tests = ["node:tests/modules/desktop_proxy/socket/local-fs-relay.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-relay.presence"
+  says = "The connector service can ask whether a user's desktop or device is online, and gets no answer, not offline, before the namespace is attached."
+  priority = "P2"
+  tests = [
+    "node:tests/libs/services/desktop-presence.provider.test.ts",
+    "node:tests/modules/desktop_proxy/socket/local-fs-relay.test.ts",
+  ]
+
+[[feature]]
+id = "platform.desktop-signin"
+title = "Desktop app sign-in and integration consent"
+flow = "desktop"
+what = "The desktop app signs in and authorizes connectors, toolsets and MCP servers in the system browser, and the browser hands the result back over the pipeshub:// deep link. Microsoft sign-in uses a PKCE challenge."
+code = [
+  "frontend/lib/electron/**",
+  "frontend/lib/auth/desktop-oauth.ts",
+  "backend/python/app/utils/desktop_state.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.desktop-signin.pkce"
+  says = "Microsoft sign-in from the desktop app sends the S256 hash of a random 43-character verifier as the PKCE challenge and keeps the verifier in the renderer until the token exchange."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "platform.desktop-signin.deep-link"
+  says = "The app completes a callback only from a deep link that matches its own state and family, ignores links for another state, surfaces a provider error without completing, and treats cancel as silent."
+  priority = "P0"
+  kind = "security"
+  tests = ["fe:lib/electron/__tests__/desktop-oauth-return.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.desktop-signin.state-marker"
+  says = "An OAuth state started from the desktop app carries the phd. marker so the callback page hands the code to the app, and a state without it completes in the browser."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/utils/test_desktop_state.py",
+    "fe:lib/electron/__tests__/desktop-oauth-return.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.desktop-signin.streaming"
+  says = "The desktop app streams chat answers through its own fetch because the app origin cannot use the browser's streaming path."
+  priority = "P2"
+  tests = ["fe:lib/electron/__tests__/streaming-fetch.test.ts"]
+
+# ---------------------------------------------------------------------------
+# Edition seams
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "platform.edition-python"
+title = "Python extension points and their defaults"
+flow = "edition-seams"
+what = "The Python services reach every replaceable behavior through edition modules. Each has a default that works on its own: one connector worker, no model decorators, lane assignment by hash, a web access gate that refuses internal addresses by their spelling."
+code = [
+  "backend/python/app/edition.py",
+  "backend/python/app/edition_config.py",
+  "backend/python/app/edition_services.py",
+  "backend/python/app/edition_containers.py",
+  "backend/python/app/services/messaging/lanes/assignment_policy.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.edition-python.defaults"
+  says = "The default hooks change nothing: model and embedding decorators return their input, configure_app and extra toolsets do nothing, and a registered error classifier is asked first and skipped if it fails."
+  priority = "P0"
+  tests = ["py:tests/unit/test_edition_hook_defaults.py"]
+
+  [[feature.behavior]]
+  id = "platform.edition-python.single-process"
+  says = "Connector sync runs in one process: one worker, no leased bootstrap ids kept after a restart, no sync reaper and no external executor."
+  priority = "P1"
+  tests = ["py:tests/unit/test_edition_hook_defaults.py"]
+
+  [[feature.behavior]]
+  id = "platform.edition-python.web-gate"
+  says = "The default web access gate allows any search and any http or https URL whose host is not internal by its spelling (localhost, link-local, private or metadata literal addresses, non-http schemes, no host). A hostname is checked again after DNS resolution when it is fetched."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/test_edition_hook_defaults.py"]
+
+  [[feature.behavior]]
+  id = "platform.edition-python.lanes"
+  says = "Lane assignment follows the default rule, and an administrator is never allowed to move a connector to another lane."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/messaging/test_lane_assignment_policy.py",
+    "py:tests/unit/services/messaging/test_lane_assignment.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.edition-python.lazy-routers"
+  says = "Importing the edition config does not load the chat, agent or entity routers, they load on first attribute access, and an unknown attribute still raises."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/test_edition_config_lazy_routers.py",
+    "py:tests/unit/test_import_boundaries.py",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.edition-python.service-exports"
+  says = "The edition services module exports the token refresh services, and resolves the event service, entity event service and record event handler on demand. An unknown name raises AttributeError."
+  priority = "P1"
+  tests = ["py:tests/unit/test_edition_services.py"]
+
+[[feature]]
+id = "platform.edition-node"
+title = "Node extension points and their defaults"
+flow = "edition-seams"
+what = "The Node API wires routers, boot hooks and policy constants through config.ts, edition.ts and the edition boot object. The defaults mount nothing extra, add no broker topics or CSP sources, and leave telemetry on."
+code = [
+  "backend/nodejs/apps/src/config.ts",
+  "backend/nodejs/apps/src/edition.ts",
+  "backend/nodejs/apps/src/libs/edition/edition-boot.ts",
+  "frontend/config-pages.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.edition-node.boot"
+  says = "The default boot object adds no broker topics and no CSP sources, mounts no routes, starts no workers and does nothing on initialize, listen, stop or dispose."
+  priority = "P0"
+  tests = ["node:tests/libs/edition/edition-boot.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.edition-node.sign-in-methods"
+  says = "A saved sign-in policy that names a method this build does not offer is rewritten at startup, and a failure to rewrite one policy does not stop the others or mark the migration done."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/services/migrations/sign_in_methods_removal.migration.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.edition-node.pages"
+  says = "A frontend page this build does not implement answers 404, and the pages it implements are exported from config-pages.ts."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "platform.edition-node.vector-rebuild"
+  says = "The routes that drop and rebuild the records vector collection are offered by default."
+  priority = "P2"
+  tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.test.ts"]
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+[[feature]]
+id = "platform.startup-migrations"
+title = "Startup data migrations"
+flow = "sync-indexing"
+what = "The Node API runs one-time data migrations at startup, each guarded by a done flag so it runs once, and moves the key-value store from etcd to Redis when needed. The connector service runs its graph migrations at startup."
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/services/migration.service.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/services/migrations/**",
+  "backend/nodejs/apps/src/libs/keyValueStore/migration/**",
+  "backend/python/app/migrations/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.startup-migrations.order"
+  says = "The service account staging runs first, then the sign-in methods migration, then the others, and an unexpected failure in one is logged and swallowed so the API still starts."
+  priority = "P0"
+  tests = ["node:tests/modules/configuration_manager/services/migration.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.startup-migrations.idempotent"
+  says = "A migration whose done flag is set is skipped, and one that finished with errors leaves its flag unset so the next boot retries."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/configuration_manager/services/migrations/admin_role.migration.test.ts",
+    "node:tests/modules/configuration_manager/services/migrations/chat_sessions.migration.test.ts",
+    "node:tests/modules/configuration_manager/services/migrations/document_orgid_backfill.migration.test.ts",
+    "node:tests/modules/configuration_manager/services/migrations/scheduled_jobs_backfill.migration.test.ts",
+    "node:tests/modules/configuration_manager/services/migrations/chat_kb_filters.migration.test.ts",
+    "node:tests/modules/configuration_manager/services/migrations/sign_in_methods_removal.migration.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "platform.startup-migrations.kv-store"
+  says = "The key-value store migration copies etcd data to Redis only when the store is Redis, ETCD_URL is set, etcd is reachable and the migration has not completed, and a failed migration stops startup."
+  priority = "P1"
+  tests = ["node:tests/libs/keyValueStore/migration/kvStoreMigration.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "platform.startup-migrations.graph"
+  says = "Each graph migration sets a done flag after success, does not run again once done, and is retried on the next start after a failure."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/migrations/test_all_team_migration.py",
+    "py:tests/unit/migrations/test_app_org_id_migration.py",
+    "py:tests/unit/migrations/test_hierarchy_backfill_migration.py",
+    "py:tests/unit/migrations/test_redundant_group_edges_migration.py",
+    "py:tests/unit/migrations/test_service_account_kind_migration.py",
+  ]
+
+[ignore]
+pages = ["frontend/app/(main)/@sidebar/workspace/bots/page.tsx"]
+
+[[feature]]
+id = "platform.classify-on-first-use"
+title = "Classify on first use"
+flow = "sync-indexing"
+what = "With the Labs setting on, indexing makes a record searchable and leaves classification (summary, categories, topics) for later. The first search that returns the record asks for its classification in the background."
+code = ["backend/python/app/modules/pipeline/first_use.py", "backend/python/app/services/featureflag/platform_settings.py"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "platform.classify-on-first-use.off"
+  says = "With the setting off, a search asks for no classification."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/modules/pipeline/test_first_use.py"]
+
+  [[feature.behavior]]
+  id = "platform.classify-on-first-use.once"
+  says = "Only indexed records waiting for classification are picked, each record and revision is asked for once even when two searches run at the same time, and at most 50 are asked per search after dropping those already asked for."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/modules/pipeline/test_first_use.py"]
+
+  [[feature.behavior]]
+  id = "platform.classify-on-first-use.never-blocks-search"
+  says = "A broken or refusing message broker never fails the search; the records it could not ask for are asked again by the next search."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/modules/pipeline/test_first_use.py"]
