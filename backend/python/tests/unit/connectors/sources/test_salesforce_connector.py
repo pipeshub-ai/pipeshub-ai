@@ -3818,6 +3818,48 @@ class TestSyncPermissionsEdgesReusedAddress:
         connector._sync_permissions_for_user.assert_not_awaited()
 
 
+class TestSyncPermissionsEdgesHolderChangesDuringTheCrawl:
+
+    @pytest.mark.asyncio
+    async def test_an_address_admitted_to_another_account_during_the_crawl_gets_none_of_the_earlier_ones_records(
+        self,
+    ) -> None:
+        """Another process gives alice@ to a new account while the earlier one's record access is being read: the edges,
+        written by email, must not put the earlier account's records on alice's PipesHub user."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            _bucket,
+            source_accounts_key,
+        )
+
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        dep = connector.data_entities_processor
+        mock_tx = dep.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}], [],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
+        ])
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def crawl(**_: object) -> list:
+            # Another replica admits sf-new for alice@ and publishes a new version.
+            await dep.account_config.set_config(
+                source_accounts_key("conn-sf-1", _bucket("alice@example.com")),
+                {"linked": {"alice@example.com": "sf-new"}, "reused": {"alice@example.com": "sf-new"}})
+            await dep.account_config.set_config(source_accounts_key("conn-sf-1"), {"seeded": True, "version": "v2"})
+            return [("alice@example.com", "opp-1", "READER", False)]
+
+        connector._sync_permissions_for_user = AsyncMock(side_effect=crawl)
+        connector._sync_product_readers = AsyncMock()
+
+        with patch("app.connectors.core.base.data_processor.source_accounts.STATE_MAX_AGE_SECONDS", 0):
+            await connector._sync_permissions_edges(api_version="59.0")
+
+        connector._sync_permissions_for_user.assert_awaited_once()
+        written = [e for c in mock_tx.batch_create_edges.await_args_list for e in c.args[0]]
+        assert not [e for e in written if "user-1" in str(e)]
+
+
 class TestSyncPermissionsEdgesFrozenUnreadable:
 
     @pytest.mark.asyncio
