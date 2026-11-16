@@ -1216,11 +1216,6 @@ class TestSharedSqlKnowledge:
         kept = await eq.shared_sql_knowledge(graph, self.KNOWLEDGE, "sa-1", "org-1", MagicMock())
         assert [k and k["connectorId"] for k in kept] == ["pg-team", "sf-legacy", "drive-mine", None]
 
-    async def test_another_orgs_database_is_dropped(self) -> None:
-        graph = self._graph([{"_key": "pg-team", "scope": "team", "orgId": "org-2", "type": "POSTGRESQL"}])
-        kept = await eq.shared_sql_knowledge(graph, self.KNOWLEDGE, "sa-1", "org-1", MagicMock())
-        assert [k and k["connectorId"] for k in kept] == ["drive-mine", None]
-
     async def test_a_failed_lookup_keeps_no_database(self) -> None:
         graph = MagicMock()
         graph.get_user_connector_instances = AsyncMock(side_effect=RuntimeError("down"))

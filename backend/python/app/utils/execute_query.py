@@ -140,11 +140,11 @@ async def shared_sql_knowledge(
     if not agent_knowledge_has_sql_connector(agent_knowledge):
         return agent_knowledge
     instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, log)
+    # The lookup lists only connectors of *org_id* (through its org edge, on every graph store).
     shared = {
         str(i.get("_key") or i.get("id"))
         for i in instances
         if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value
-        and (i.get("orgId") or org_id) == org_id
     }
     kept = [
         k for k in agent_knowledge
