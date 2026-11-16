@@ -262,6 +262,7 @@ class PermissionsMixin(PgBase):
             SELECT u.doc FROM anc
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('users', 'sourceAccounts') AND p.to_coll = anc.coll AND p.to_id = anc.id
               JOIN graph.nodes u ON u.org_id = $1 AND u.coll = p.from_coll AND u.id = p.from_id
+                AND NOT (u.coll = 'sourceAccounts' AND coalesce(u.doc->>'state', '') = 'withdrawn')      -- a withdrawn account holds for nobody
             GROUP BY u.coll, u.id, u.doc ORDER BY min(anc.depth), u.id LIMIT $4""", current_org_id(), key, _INHERIT_HOPS, limit), transaction)
 
     @_soft(None)

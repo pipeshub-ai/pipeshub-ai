@@ -90,6 +90,9 @@ async def test_with_the_setting_on_each_account_holds_its_own_grants(setup: Setu
     assert await setup.w.p.update_node(ana_account.get("_key") or ana_account["id"], CollectionNames.SOURCE_ACCOUNTS.value, {"state": "withdrawn"})
     assert await setup.w.p._refuse_without_delete_role(records["by-id"].id, {"connectorId": APP, "connectorName": scenario.APP.value},
                                                        "uid-ana", None) is not None, "a withdrawn account links nobody: no delete through it"
+    assert setup.emails["ana"] not in {u.email for u in await setup.processor.get_users_with_permission_to_node(records["by-id"].id, CollectionNames.RECORDS.value)}
+    first = await setup.processor.get_first_user_with_permission_to_node(records["by-id"].id, CollectionNames.RECORDS.value)
+    assert first is None or first.email != setup.emails["ana"], "a withdrawn account holds for nobody"
     assert await setup.w.p.update_node(ana_account.get("_key") or ana_account["id"], CollectionNames.SOURCE_ACCOUNTS.value, {"state": "listed"})
 
     await setup.processor.on_new_app_users([scenario.account(APP, setup.emails, "s-ana", "ana2")])

@@ -10758,7 +10758,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER edge._to == vertex._id
                     // a source account the connector acts as holds a grant like a synced user
                     LET user = DOCUMENT(edge._from)
-                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR IS_SAME_COLLECTION("sourceAccounts", user))
+                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR (IS_SAME_COLLECTION("sourceAccounts", user) AND user.state != "withdrawn"))
                     LIMIT 1
                     RETURN user
             """
@@ -10806,7 +10806,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR edge IN @@edge_collection
                     FILTER edge._to == vertex._id
                     LET user = DOCUMENT(edge._from)
-                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR IS_SAME_COLLECTION("sourceAccounts", user))
+                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR (IS_SAME_COLLECTION("sourceAccounts", user) AND user.state != "withdrawn"))
                     RETURN DISTINCT user
             """
             bind_vars = {

@@ -10133,6 +10133,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE start.id = $node_key
             MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
             MATCH (u:User|SourceAccount)-[:PERMISSION]->(ancestor)
+            WHERE NOT (u:SourceAccount AND coalesce(u.state, '') = 'withdrawn')      // a withdrawn account holds for nobody
             RETURN u
             LIMIT 1
             """
@@ -10174,6 +10175,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE start.id = $node_key
             MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
             MATCH (u:User|SourceAccount)-[:PERMISSION]->(ancestor)
+            WHERE NOT (u:SourceAccount AND coalesce(u.state, '') = 'withdrawn')      // a withdrawn account holds for nobody
             RETURN DISTINCT u
             """
 

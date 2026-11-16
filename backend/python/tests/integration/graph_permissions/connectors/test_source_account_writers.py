@@ -64,6 +64,14 @@ async def test_with_the_setting_on_each_account_holds_its_own_grants(world: Worl
 
     owners = {u.email for u in await world.processor.get_users_with_permission_to_node(records["by-id"].id, CollectionNames.RECORDS.value)}
     assert world.emails["ana"] in owners, "a reverse lookup finds the account that holds the grant"
+    # withdrawn, ana's account holds for nobody: it is no one to act as, ask or compare against
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+    ana_account = account_node_id(ORG, world.connector_id, "s-ana")
+    assert await world.backend.provider.update_node(ana_account, CollectionNames.SOURCE_ACCOUNTS.value, {"state": "withdrawn"})
+    assert world.emails["ana"] not in {u.email for u in await world.processor.get_users_with_permission_to_node(records["by-id"].id, CollectionNames.RECORDS.value)}
+    first = await world.processor.get_first_user_with_permission_to_node(records["by-id"].id, CollectionNames.RECORDS.value)
+    assert first is None or first.email != world.emails["ana"]
+    assert await world.backend.provider.update_node(ana_account, CollectionNames.SOURCE_ACCOUNTS.value, {"state": "listed"})
 
     renamed = scenario.account(world.connector_id, world.emails, "s-ana", "ana2")
     await world.processor.on_new_app_users([renamed])
