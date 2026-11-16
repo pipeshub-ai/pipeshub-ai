@@ -173,7 +173,7 @@ class TestCreateKnowledgeBase:
 
     @pytest.mark.asyncio
     async def test_hidden_kb_is_owned_by_owner_user_id_not_the_caller(self, service) -> None:
-        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+        async def lookup(user_id: str, **_kwargs: object) -> dict | None:
             users = {
                 "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
                 "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
@@ -224,7 +224,7 @@ class TestCreateKnowledgeBase:
 
     @pytest.mark.asyncio
     async def test_owner_in_another_org_is_not_found(self, service) -> None:
-        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+        async def lookup(user_id: str, **_kwargs: object) -> dict | None:
             if user_id == "editor-1":
                 return {"id": "ek1", "orgId": "org1"}
             return {"id": "ok1", "orgId": "org-other"}
@@ -285,7 +285,7 @@ class TestCreateKnowledgeBase:
     async def test_hidden_create_does_not_demote_the_requester_via_reader_grants(
         self, service,
     ) -> None:
-        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+        async def lookup(user_id: str, **_kwargs: object) -> dict | None:
             users = {
                 "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
                 "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
@@ -3393,7 +3393,7 @@ class TestListKbRecords:
     async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
         result = await service.list_kb_records("kb1", "user1", "org1")
-        service.graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="user1", raise_on_error=True)
+        service.graph_provider.get_user_by_user_id.assert_awaited_once_with("user1", raise_on_error=True)
         assert result.get("code") != 404
         assert "error" in result
 

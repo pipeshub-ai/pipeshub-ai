@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 
 import asyncpg
 import pytest
@@ -18,6 +17,7 @@ from app.core import org_context
 from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from tests.support.pg_plan import assert_keyed_access
 
 from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
@@ -236,7 +236,12 @@ async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(
         FROM (SELECT 'belongsTo' AS coll, 'kf' || g AS f, 'apps' AS to_coll, 'kb1' AS t, '{}'::jsonb AS doc FROM generate_series(1, 20) g
         UNION ALL SELECT 'belongsTo', 'kr' || g, 'apps', 'kb1', '{}' FROM generate_series(1, 400) g
         UNION ALL SELECT 'nodeRelations', 'kf' || (1 + (g - 1) / 10), 'records', 'kr' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 200) g
-        UNION ALL SELECT 'nodeRelations', 'n' || (g / 10), 'records', 'n' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(10, 20000) g) x""", w.org), write=True)
+        UNION ALL SELECT 'nodeRelations', 'n' || (g / 10), 'records', 'n' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(10, 20000) g
+        UNION ALL SELECT 'isOfType', 'n' || g, 'files', 'nf' || g, '{}' FROM generate_series(1, 20000) g) x""", w.org), write=True)
+    # their files, as every file record has one: with none, the organisation's isOfType edges were rightly estimated at a row or two, and a read of all of them
+    # (the to_id index bounded by org and coll, in the page's file order) was as cheap as the record's own edge, and was taken now and then
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'files', 'nf' || g, '{"extension": "txt"}'::jsonb
+        FROM generate_series(1, 20000) g""", w.org), write=True)
     con = await asyncpg.connect(admin_url)
     try:
         await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
@@ -254,17 +259,10 @@ async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(
     assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[1] == 1
     assert len(sent) == 3                                                         # the page, then a folder's page and the collection's filters
 
-    def scans(node: dict) -> list[dict]:
-        return [node] + [x for child in node.get("Plans", []) for x in scans(child)]
     for i, (sql, args) in enumerate(sent):
         ran = await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args))
         plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
-        for n in scans(plan):
-            rel, cond = n.get("Relation Name") or "", n.get("Index Cond") or ""
-            if rel.startswith("nodes"):
-                assert n["Node Type"] in ("Index Scan", "Index Only Scan") and re.search(r"\bid = ", cond), (i, n["Node Type"], n.get("Index Name"), cond)
-            if rel.startswith("edges"):      # every edge read is bounded by a node of the collection: its id, a folder or a record
-                assert n["Node Type"] in ("Index Scan", "Index Only Scan") and re.search(r"\b(to_id|from_id) = ", cond), (i, n["Node Type"], cond)
+        assert_keyed_access(plan, at=i)      # a node read by its id and an edge by a to_id or from_id: an index scan, or a bitmap scan on that index, never a scan of the organisation
         if i == 1:      # one folder's page reads that folder, not the collection
             assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 600, plan.get("Shared Hit Blocks")
 

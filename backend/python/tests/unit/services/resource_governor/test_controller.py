@@ -284,7 +284,7 @@ class TestResourceGovernorController:
             "worker_count", "ceilings", "fleet_ceilings", "limits", "in_use", "demand",
             "downstream_feedback", "lanes",
             "mem_pressure_raw",
-            "record_memory", "download_ahead",
+            "record_memory", "download_ahead", "admission",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
