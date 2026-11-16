@@ -250,6 +250,8 @@ export function seedChildrenFromListing(
   params: KnowledgeHubQueryParams,
   response: KnowledgeHubApiResponse,
 ): void {
+  // A source still being prepared answers an empty page with no cursor: its children are not listed yet, not none.
+  if (response.preparing) return;
   // No pagination means nothing says the listing is complete.
   if (response.pagination?.hasNext !== false) return;
   if (Object.keys(params).some((key) => !PARAMS_THAT_KEEP_EVERY_CHILD.has(key))) return;

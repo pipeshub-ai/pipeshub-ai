@@ -53,6 +53,18 @@ describe('seedChildrenFromListing', () => {
     expect(getNodeChildren).not.toHaveBeenCalled();
   });
 
+  it('seeds nothing from a source still being prepared, so opening the collection asks for its children once they are listed', async () => {
+    const response = hubResponse([]);
+    seedChildrenFromListing('kb-eng', 'app', TABLE_PARAMS, { ...response, preparing: true, pagination: { ...response.pagination!, hasNext: false, nextCursor: null } });
+    expect(kb().nodeChildrenCache.has('kb-eng')).toBe(false);
+
+    getNodeChildren.mockResolvedValue(hubResponse([folder('f-a', 'Alpha')]));
+    await openFolderChildren('kb-eng', 'app');
+
+    expect(childIds('kb-eng')).toEqual(['f-a']);
+    expect(getNodeChildren).toHaveBeenCalled();
+  });
+
   it('keeps exactly what the server lists as containers, and adds no record to the tree', () => {
     const withChildren = hubNode({ id: 'r-thread', name: 'Thread', nodeType: 'record', hasChildren: true });
     const plainRecord = hubNode({ id: 'r-doc', name: 'Doc', nodeType: 'record', hasChildren: false });
