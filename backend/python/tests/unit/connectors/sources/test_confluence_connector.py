@@ -2029,7 +2029,7 @@ class TestCreatePermissionFromPrincipal:
         assert perm.entity_type == EntityType.GROUP
 
     @pytest.mark.asyncio
-    async def test_a_stored_source_account_without_a_user_holds_the_grant_itself(self):
+    async def test_a_stored_source_account_without_a_user_holds_the_grant_itself(self) -> None:
         """Two accounts can share an address, so a stored account may have no PipesHub user: the grant names it, not an empty pseudo-group."""
         c = _conn()
         c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
