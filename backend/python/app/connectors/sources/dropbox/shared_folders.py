@@ -112,6 +112,19 @@ def member_grant_id(user: object) -> str:
     return team_member_id if isinstance(team_member_id, str) and team_member_id else user.account_id
 
 
+def outside_members(memberships: Iterable) -> list[tuple[str, str]]:
+    """(address, account_id) of the members outside the team: never listed, so the grants that name them pass them
+    through the account check (``UserInfo.account_id``, "The account ID of the user.", sharing_folders.stone)."""
+    out = []
+    for membership in memberships:
+        user = getattr(membership, "user", None)
+        email = getattr(user, "email", None)
+        if email and not email.endswith("#") and isinstance(getattr(user, "account_id", None), str) \
+                and member_grant_id(user) == user.account_id:
+            out.append((email, user.account_id))
+    return out
+
+
 def event_member_id(user: object) -> str | None:
     """The team member an event-log user names, when it is one: "team_member_id ... Team member ID. Might be missing
     due to historical data gap." (https://github.com/dropbox/dropbox-api-spec/blob/master/team_log_generated.stone,

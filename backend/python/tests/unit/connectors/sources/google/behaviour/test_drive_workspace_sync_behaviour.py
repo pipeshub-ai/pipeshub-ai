@@ -140,6 +140,22 @@ def reader(email: str) -> dict[str, Any]:
 # --- identities, users and groups --------------------------------------------
 
 
+async def test_an_outsiders_address_handed_to_another_google_account_loses_the_earlier_accounts_shares(ws: Workspace) -> None:
+    """Someone outside the Workspace is never listed. Once a share names their address under another permissionId, the
+    earlier account's shares stop reaching that address, even on items not read again."""
+    ws.world.add_item("old", "old.txt", parent="root-bob", owner=BOB, perms=[{**reader(PARTNER), "id": "perm-partner-1"}])
+    await ws.sync()
+    assert PARTNER in {p.email for p in ws.records.permissions["old"]}
+
+    ws.world.add_item("new", "new.txt", parent="root-bob", owner=BOB, perms=[{**reader(PARTNER), "id": "perm-partner-2"}])
+    await ws.sync()
+
+    assert PARTNER in {p.email for p in ws.records.permissions["new"]}
+    assert PARTNER not in {p.email for p in ws.records.permissions["old"]}
+    accounts = ws.records.source_accounts(CONNECTOR_ID)
+    assert accounts.holds(PARTNER, "perm-partner-2") and not accounts.holds(PARTNER, "perm-partner-1")
+
+
 async def test_the_new_holder_of_a_reused_address_gets_the_shares_naming_its_permission_id_only(ws: Workspace) -> None:
     """Drive names a grantee by its permissionId, not its Directory id. Once Alice's address belongs to a new
     account, its permissionId is noted against that account, so a share naming it is written and one naming the

@@ -38,6 +38,9 @@ from app.models.entities import AppUser
 from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
+from types import SimpleNamespace
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+from tests.support.in_memory_config import InMemoryConfigService
 
 
 # ---------------------------------------------------------------------------
@@ -973,6 +976,7 @@ def _make_dropbox_connector(mock_logger, mock_data_entities_processor,
     connector.dropbox_cursor_sync_point = MagicMock()
     connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
+    connector.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     return connector
 
 
@@ -1318,7 +1322,9 @@ def _make_connector():
     dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
     cs = AsyncMock()
-    return DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1", "team", "test-user-id")
+    conn = DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1", "team", "test-user-id")
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
+    return conn
 
 
 def _make_file_metadata(name="test.pdf"):
@@ -1802,6 +1808,7 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
             scope="personal",
             created_by="test-user-id",
         )
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     conn.data_source = AsyncMock()
@@ -4108,3 +4115,39 @@ class TestExtractFolderInfoFromEvent:
 # ===========================================================================
 # run_sync
 # ===========================================================================
+
+
+class TestOutsideMembersGoThroughTheAccountCheck:
+    """A member outside the team is never listed; the grants that name it pass it through the account check."""
+
+    @staticmethod
+    def _members(account_id: str) -> MagicMock:
+        membership = MagicMock()
+        membership.access_type._tag = "viewer"
+        membership.is_inherited = False
+        membership.user = SimpleNamespace(account_id=account_id, email="guest@example.org", team_member_id=None)
+        data = MagicMock(users=[membership], groups=[], invitees=[])
+        data.cursor = None
+        return MagicMock(success=True, data=data)
+
+    async def test_an_outsiders_address_handed_to_another_account_loses_the_earlier_accounts_grants(
+        self, dropbox_connector, mock_data_entities_processor
+    ) -> None:
+        dep = mock_data_entities_processor
+        dep.get_app_user_links = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="pipeshub-guest"))
+        dep.remove_user_access_to_connector = AsyncMock(return_value=1)
+        accounts = SourceAccounts(dep, "dbx-conn-1", InMemoryConfigService(), logging.getLogger("t"))
+        dropbox_connector.source_accounts = accounts
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(return_value=self._members("dbid:first"))
+        await dropbox_connector._convert_dropbox_permissions_to_permissions("id:a", True, "dbmid:admin")
+        dep.remove_user_access_to_connector.assert_not_awaited()
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(return_value=self._members("dbid:second"))
+        grants = await dropbox_connector._convert_dropbox_permissions_to_permissions("id:b", True, "dbmid:admin")
+
+        dep.remove_user_access_to_connector.assert_awaited_once_with("dbx-conn-1", "guest@example.org")
+        assert [(g.email, g.external_id) for g in grants] == [("guest@example.org", "dbid:second")]
+        assert accounts.holds("guest@example.org", "dbid:second") and not accounts.holds("guest@example.org", "dbid:first")

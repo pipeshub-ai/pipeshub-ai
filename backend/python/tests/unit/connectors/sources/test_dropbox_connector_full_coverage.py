@@ -285,6 +285,7 @@ def connector(mock_logger, mock_data_entities_processor,
             scope="personal",
             created_by="test-user-id",
         )
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     conn.data_source = AsyncMock()

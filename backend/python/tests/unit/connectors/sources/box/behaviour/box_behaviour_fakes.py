@@ -14,6 +14,7 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
@@ -21,6 +22,7 @@ import requests
 from requests.adapters import BaseAdapter
 from requests.structures import CaseInsensitiveDict
 
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
@@ -384,6 +386,18 @@ class FakeBoxApi(BaseAdapter):
         return response
 
 
+class _MemoryConfig:
+    def __init__(self) -> None:
+        self.saved: dict[str, Any] = {}
+
+    async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
+        return self.saved.get(key, default)
+
+    async def set_config(self, key: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
+        self.saved[key] = value
+        return True
+
+
 class FakeBoxRecordsDb:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -489,8 +503,29 @@ class FakeBoxRecordsDb:
             stored = self.app_users.get(user.email.lower())
             self.app_users[user.email.lower()] = user.model_copy(update={"id": stored.id}) if stored else user
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.app_users.values())
+
+    def source_accounts(self, connector_id: str) -> SourceAccounts:
+        """The real per-address account check, kept in memory."""
+        if not hasattr(self, "_accounts"):
+            self._accounts = SourceAccounts(self, connector_id, _MemoryConfig(), logging.getLogger("fake"))
+        return self._accounts
+
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return [SimpleNamespace(id=email, email=email, source_user_id=u.source_user_id) for email, u in self.app_users.items()]
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        return SimpleNamespace(id=email.lower(), email=email)
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Drop the user's own grants on this connector's records."""
+        removed = 0
+        for stored in self.permissions.values():
+            for key in [k for k, p in stored.items() if (getattr(p, "email", None) or "").lower() == user_email.lower()]:
+                del stored[key]
+                removed += 1
+        return removed
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> AppUser | None:
         return next((u for u in self.app_users.values() if u.source_user_id == source_user_id), None)

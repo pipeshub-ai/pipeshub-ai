@@ -20,6 +20,9 @@ from app.connectors.sources.zoom.connector import (
 )
 from app.models.entities import MeetingRecord, OriginTypes, Record, RecordGroupType, RecordType
 from app.models.permission import PermissionType
+import logging
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+from tests.support.in_memory_config import InMemoryConfigService
 
 
 def _make_connector(
@@ -1171,6 +1174,37 @@ class TestMeetingGrantsNameTheZoomAccount:
             ("host@example.com", "zu-host"), ("p1@example.com", "zu-p1"), ("alt@example.com", "zu-alt"),
             ("guest@else.com", None), ("inv@example.com", None),
         }
+
+
+class TestOutsideParticipantsGoThroughTheAccountCheck:
+    """A signed-in participant from another Zoom account is never listed; its participant_user_id is checked."""
+
+    @pytest.mark.asyncio
+    async def test_an_outsiders_address_handed_to_another_account_loses_the_earlier_accounts_grants(self) -> None:
+        connector = _make_connector()
+        dep = connector.data_entities_processor
+        dep.get_app_user_links = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="pipeshub-guest"))
+        dep.remove_user_access_to_connector = AsyncMock(return_value=1)
+        connector.source_accounts = SourceAccounts(dep, "zoom-conn-1", InMemoryConfigService(), logging.getLogger("t"))
+        connector._listed_emails = {"host@example.com"}
+
+        async def meeting(participant_id: str) -> list:
+            connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
+                return_value=[ZoomParticipant(user_email="guest@example.org", participant_user_id=participant_id),
+                              ZoomParticipant(user_email="host@example.com", participant_user_id="zu-host")])
+            return await connector._build_meeting_permissions(
+                meeting_detail=None, encoded_uuid="u", host_email="host@example.com", host_id="zu-host")
+
+        await meeting("zu-guest-1")
+        dep.remove_user_access_to_connector.assert_not_awaited()
+        perms = await meeting("zu-guest-2")
+
+        dep.remove_user_access_to_connector.assert_awaited_once_with("zoom-conn-1", "guest@example.org")
+        assert ("guest@example.org", "zu-guest-2") in {(p.email, p.external_id) for p in perms}
+        accounts = connector.source_accounts
+        assert accounts.holds("guest@example.org", "zu-guest-2") and not accounts.holds("guest@example.org", "zu-guest-1")
 
 
 class TestBuildRecordGroup:

@@ -721,6 +721,15 @@ class FakeEntitiesProcessor:
         self.deleted_groups.append(external_group_id)
         return True
 
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return [SimpleNamespace(id=email, email=email, source_user_id=u.source_user_id) for email, u in self.app_users.items()]
+
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return list(self.app_users.values())
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        return SimpleNamespace(id=email.lower(), email=email)
+
     async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
         """Drop the user's own grants on records and record groups, and their group memberships."""
         removed = 0

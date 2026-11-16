@@ -285,6 +285,8 @@ class ZoomConnector(BaseConnector):
             created_by,
         )
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
+        self._listed_emails: set[str] = set()
         self.connector_name = Connectors.ZOOM
         self.external_client: Optional[ZoomClient] = None
         self.data_source: Optional[ZoomDataSource] = None
@@ -362,6 +364,7 @@ class ZoomConnector(BaseConnector):
 
             users = await self._list_users()
             self.logger.info("👥 Zoom: %d active users found.", len(users))
+            self._listed_emails = {u.email.strip().lower() for u in users if u.email}
 
             app_users = self._build_app_users(users)
             if app_users:
@@ -1034,9 +1037,16 @@ class ZoomConnector(BaseConnector):
         # 2 — participants → READ, first: their grants carry the Zoom user id an address-only one would shadow
         try:
             participants = await self._list_meeting_participants(encoded_uuid)
-            self._add_participant_permissions(perms, participants, seen_emails)
         except Exception as exc:
+            participants = []
             self.logger.warning("Zoom: failed to fetch participants: %s", exc)
+        # A signed-in participant from outside the account is never listed; its participant_user_id names its Zoom
+        # account, so its address passing to another account is caught before the grants are written.
+        outsiders = [(p.user_email, p.participant_user_id) for p in participants if p.participant_user_id
+                     and self._listed_emails and p.user_email.strip().lower() not in self._listed_emails]
+        if outsiders and not await self.source_accounts.before_grants(outsiders):
+            raise RuntimeError("The stored users could not be read; the meeting's grants are not written this run")
+        self._add_participant_permissions(perms, participants, seen_emails)
 
         # 3 — alt-hosts → READ
         # shortcut: an alternative host, an invitee or a participant who joined without signing in is named by

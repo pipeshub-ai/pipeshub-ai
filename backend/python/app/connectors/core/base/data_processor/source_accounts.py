@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors
@@ -177,6 +178,22 @@ class SourceAccounts:
         marker["deletedChecked"] = True
         return deleted
 
+    async def before_grants(self, accounts: Iterable[tuple[str | None, str | None]]) -> bool:
+        """The check ``before_link`` makes, for accounts a connector grants but does not list (an external
+        collaborator, a customer): ``(address, source id)`` pairs from the data the grant comes from, passed before
+        the grants are written. Only pairs this process has not seen as they are go through, so a page of grants
+        repeating known accounts costs nothing. False as ``before_link``: the stored links could not be read."""
+        fresh = []
+        for email, source_id in accounts:
+            if not email or not (account := _account_id(source_id)):
+                continue
+            email = email.lower()
+            bucket = _bucket(email)
+            if bucket in self._read and self._linked.get(bucket, {}).get(email) == account:
+                continue
+            fresh.append(SimpleNamespace(email=email, source_user_id=account))
+        return await self.before_link(fresh) if fresh else True
+
     async def before_link(self, users: list["AppUser"]) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
         to a different account than the one it was linked to before. False when the stored links could not be read:
@@ -264,11 +281,12 @@ class SourceAccounts:
         email = email.lower()
         holder = self.holder(email)
         if holder is None:
-            # shortcut: an address never seen to change hands takes any id, so a grantee that never goes through
-            # before_link (an external collaborator a connector does not list) is not checked when its address passes
-            # to another account; failing closed here would drop every such grant. A connector that writes grants to
-            # unlisted accounts it can see with an id passes them through before_link (Zendesk end users do); upgrade
-            # the others the same way.
+            # shortcut: an address never seen to change hands takes any id; failing closed here would drop every grant
+            # to an account a connector does not list. Connectors pass the unlisted accounts their grants name with an
+            # id through before_grants (Drive, Dropbox, Box and Zoom outsiders, Zendesk end users); still unchecked:
+            # Microsoft guests outside the listing, Jira holders resolved from the payload email, Google group members
+            # outside the Workspace (a second id space beside Drive's permissionId), and grantees named by address
+            # alone (Dropbox invitees, Zoom alternative hosts and invitees). Upgrade each the same way.
             return True
         return source_id is not None and (
             source_id == holder or self._other.get(_bucket(email), {}).get(email) == [holder, source_id]

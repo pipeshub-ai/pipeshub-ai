@@ -540,3 +540,21 @@ async def test_an_other_id_stops_passing_once_the_address_changes_hands_again(wo
 
     assert not accounts.holds("ana@x.com", "perm-a2")
     assert accounts.holds("ana@x.com", "a3")
+
+
+@pytest.mark.asyncio
+async def test_an_unlisted_accounts_address_handed_to_another_account_is_caught_from_its_grants(world) -> None:
+    """An external collaborator is never listed; the grants that name it by address and id go through the same check."""
+    directory, accounts, _ = world
+    directory.nodes["guest@else.com"] = "node-guest"
+    assert await accounts.before_grants([("Guest@else.com", "ext-1"), ("nobody@else.com", None), (None, "x")])
+    directory.calls.clear()
+    reads = directory.processor.get_app_user_links.await_count
+
+    assert await accounts.before_grants([("guest@else.com", "ext-1")])          # known as it is: nothing read
+    assert directory.processor.get_app_user_links.await_count == reads
+
+    assert await accounts.before_grants([("guest@else.com", "ext-2")])          # the address went to another account
+    assert directory.calls == [("remove", "guest@else.com")]
+    await accounts.ensure_loaded()
+    assert accounts.holds("guest@else.com", "ext-2") and not accounts.holds("guest@else.com", "ext-1")

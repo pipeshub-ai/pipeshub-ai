@@ -567,6 +567,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.synced_users: List[AppUser] = []
         self.synced_user_emails: set[str] = set() # to filter out non workspace emails during shared drive file share processing
         self._listed_ids: dict[str, str] = {}
+        self._listed_domains: set[str] = set()
         # Audience groups written by the last user listing; a discoverable share grants only these.
         self._audience_groups: set[str] = set()
         self._audience_loaded = False
@@ -1011,6 +1012,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
             self._listed_ids = {u.email.lower(): u.source_user_id for u in all_users if u.email and u.source_user_id}
+            self._listed_domains = {_email_domain(e) for e in self._listed_ids} | {
+                d for domains in alias_domains.values() for d in domains}
             self._alias_domains = alias_domains
             await self._note_holder_permission_ids(all_users)
             if listing_complete:
@@ -1049,6 +1052,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 ids[user.email] = (user.source_user_id, permission_id)
         if ids:
             await accounts.note_other_ids(ids)
+
+    def _is_unlisted(self, email: str) -> bool:
+        """Outside the Workspace: not listed, and not in a domain of anyone listed. False until a complete listing
+        was read this run, so a cut or missing listing never takes a Workspace user for an outsider."""
+        if not self._listed_ids or self._listing_cut:
+            return False
+        address = email.lower()
+        return address not in self._listed_ids and _email_domain(address) not in self._listed_domains
 
     def _listed_id(self, email: str | None) -> str | None:
         # A grant built for a listed account (the syncing user, a group member the directory lists) names it by
@@ -1835,6 +1846,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         organizer_permissions: list[Permission] = []
         saw_permission_details = False
         individually_shared_emails: set[str] = set()
+        unlisted: list[tuple[str, str]] = []
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
         source_entries = 0
@@ -1946,6 +1958,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             organizer_permissions.append(permission)
 
                         self._track_external_collaborator(entity_type, email)
+                        if entity_type == EntityType.USER and email and external_id and self._is_unlisted(email):
+                            unlisted.append((email, external_id))
 
                         # A "file"-type entry means this user was granted access on an item, as
                         # opposed to Shared Drive membership ("member"); inherited ones were
@@ -2007,6 +2021,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}")
                 raise
 
+        # Someone outside the Workspace is never listed; the share names them by permissionId ("a unique identifier
+        # for the grantee", https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions), so
+        # their address passing to another Google account is caught before this item's grants are written.
+        if unlisted and not await self.source_accounts.before_grants(unlisted):
+            raise RuntimeError("The stored users could not be read; the item's grants are not written this run")
         # A successful but empty ACL means this user cannot enumerate permissions: a
         # viewer on a shared drive item gets 200 with an empty list rather than the 403
         # handled above. Record the access they demonstrably have instead of leaving a

@@ -95,6 +95,7 @@ from app.connectors.sources.dropbox.shared_folders import (
     event_member_id,
     folder_grants,
     member_grant_id,
+    outside_members,
     outside_namespace,
     parents_first,
     plan_shared_folders,
@@ -1074,6 +1075,9 @@ class DropboxConnector(BaseConnector):
             self.logger.warning(f"Error converting Dropbox permissions for {file_or_folder_id}: {e}")
             return None
 
+        outside = outside_members(getattr(members_result.data, "users", None) or [])
+        if outside and not await self.source_accounts.before_grants(outside):
+            raise RuntimeError(f"The stored users could not be read; {file_or_folder_id} keeps its grants")
         return DropboxGrants(permissions, covered_emails=covered_emails)
 
 
@@ -1371,6 +1375,8 @@ class DropboxConnector(BaseConnector):
             groups.extend(response.data.groups)
             invitees.extend(response.data.invitees)
             cursor = _next_cursor(response.data)
+        if (outside := outside_members(users)) and not await self.source_accounts.before_grants(outside):
+            raise RuntimeError(f"The stored users could not be read; shared folder {folder_id} keeps its grants")
         return folder_grants(users, groups, invitees)
 
     async def _refresh_shared_folder(self, folder_id: str, event_member_id: str) -> None:
@@ -2572,6 +2578,8 @@ class DropboxConnector(BaseConnector):
             }
 
             permissions_list = []
+            if (outside := outside_members(all_users_list)) and not await self.source_accounts.before_grants(outside):
+                raise RuntimeError(f"The stored users could not be read; team folder {folder_id} keeps its grants")
 
             for user_info in all_users_list:
                 access_level_tag = user_info.access_type._tag
