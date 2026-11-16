@@ -163,12 +163,15 @@ def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[...,
             if not is_record_schema_error(error):
                 raise
             if txn:
-                if await guard.is_wide():
-                    # as wide as ours: the refusal is the data's (a wrong type), permanent, and not retried. No other process
-                    # can have widened it while this transaction held records, so the check cannot be stale here
+                # Aborted first, whatever the schema says now: the server leaves the transaction open on a 1620, and a
+                # schema change does not wait for a transaction whose first records write was the refused one, so another
+                # process may have widened it between the refusal and the check below.
+                await self._abort_record_schema_refused_transaction(txn)
+                if await guard.is_wide() and not guard.narrowed:
+                    # as wide as ours and not seen narrower: the refusal is the data's (a wrong type) and stays permanent
                     raise
                 guard.note_narrow()
-                await self._abort_after_record_schema_refusal(txn)
+                self._widen_records_schema_in_background()
                 raise RecordSchemaNarrowError(f"the records schema refused a write in transaction {txn}; it was aborted") from error
             # Outside a transaction the statement wrote nothing. Whatever the schema says now (another process may have widened
             # it between the refusal and this check), it is sent once more; a data error fails again and is raised.
@@ -527,8 +530,8 @@ class ArangoHTTPClient:
             self.logger.debug(f"Transaction aborted: {txn_id}")
 
 
-    async def _abort_after_record_schema_refusal(self, txn_id: str) -> None:
-        """Abort ``txn_id`` and remember it, then widen the schema in a task of its own (never inside the transaction)."""
+    async def _abort_record_schema_refused_transaction(self, txn_id: str) -> None:
+        """Abort ``txn_id`` and remember it, so a caller that catches the error and goes on can neither write nor commit."""
         guard = self.record_guard
         assert guard is not None
         try:
@@ -539,6 +542,11 @@ class ArangoHTTPClient:
                     self.logger.warning("could not abort transaction %s: %s", txn_id, await resp.text())
         finally:
             guard.mark_aborted(txn_id)
+
+    def _widen_records_schema_in_background(self) -> None:
+        """Widen the schema in a task of its own, never inside the transaction that was refused."""
+        guard = self.record_guard
+        assert guard is not None
         task = spawn_detached(guard.ensure_wide("1620"), name="record-schema-widen")
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
