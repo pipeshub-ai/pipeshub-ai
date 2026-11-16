@@ -4655,6 +4655,10 @@
           "label": "MongoDB",
           "description": "Relace a metadata uživatelů"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "Relace a metadata uživatelů"
+        },
         "messageBroker": {
           "label": "Zprostředkovatel zpráv",
           "description": "Distribuované streamování událostí"
