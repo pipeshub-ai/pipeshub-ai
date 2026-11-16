@@ -26,6 +26,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     collect_paged_values,
     hold_levels_naming_unread_roles,
     level_reads_alike,
+    level_grants,
     levels_after_walk,
     plan_level_reread,
     pre_walk_marker,
@@ -894,3 +895,25 @@ class TestPagingWithTotalOnly:
             return 200, {"values": [{"n": start}], "maxResults": 1000}
         status, values = await collect_paged_values(endless)
         assert values is None
+
+
+class TestOneGrantPerPerson:
+    def test_a_grant_naming_the_account_is_kept_over_an_address_only_one_seen_first(self) -> None:
+        """The reporter field names no account here, the user holder does: the named grant must stay, as the processor
+        refuses an address-only grant to a re-used address and the current holder would lose the issue."""
+        holders = [{"type": "reporter"},
+                   {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "emailAddress": "ana@x.com"}}]
+        grants, unreadable, _ = level_grants(
+            holders, project_key="P", fields={"reporter": {"displayName": "Ana"}}, user_by_id={},
+            app_roles_mapping=None, reporter_email="ana@x.com", assignee_email=None,
+        )
+        assert not unreadable
+        assert [(p.external_id, p.email) for p in grants] == [("acc-1", "ana@x.com")]
+
+    def test_the_reporter_and_assignee_grants_name_their_accounts(self) -> None:
+        grants, _, _ = level_grants(
+            [{"type": "reporter"}, {"type": "assignee"}], project_key="P",
+            fields={"reporter": {"accountId": "acc-1"}, "assignee": {"key": "JIRAUSER2"}}, user_by_id={},
+            app_roles_mapping=None, reporter_email="rep@x.com", assignee_email="asg@x.com",
+        )
+        assert {(p.external_id, p.email) for p in grants} == {("acc-1", "rep@x.com"), ("JIRAUSER2", "asg@x.com")}
