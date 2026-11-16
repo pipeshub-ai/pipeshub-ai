@@ -45,7 +45,7 @@ EDITED = {
         "class LocalPermits", "LocalPermits.__slots__", "LocalPermits.__init__", "LocalPermits:Expr",
         "assign:PHASE_GATE", "assign:PHASE_LEASE", "assign:PHASE_DOWNLOAD", "assign:PHASE_PARSE",
         "assign:_PHASES", "assign:_SLOT", "assign:_SUM",
-        "in_phase", "_read_paused_for_admission", "consumer_id", "_lease_pools", "_local_permits_name", "admission_explain",
+        "in_phase", "_counted", "at_gate", "_read_paused_for_admission", "consumer_id", "_lease_pools", "_local_permits_name", "admission_explain",
         "GateWaiterToken.__slots__", "GateWaiterToken.__init__", "GateWaiterToken._backlog",
         "GateWaiterToken.enter_gate", "GateWaiterToken._leave_gate", "GateWaiterToken.admit",
         "GateWaiterToken.release",

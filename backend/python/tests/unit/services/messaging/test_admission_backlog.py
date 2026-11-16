@@ -265,8 +265,8 @@ class TestPhasesEndWhenTheWaitEnds:
             await asyncio.wait_for(gate.wait(), timeout)
             return True
 
-        task = asyncio.create_task(cc.in_phase(host, PHASE_PARSE, H, None, wait()))
-        timed = asyncio.create_task(cc.in_phase(host, PHASE_PARSE, H, None, wait(0.05)))
+        task = asyncio.ensure_future(cc.in_phase(host, PHASE_PARSE, H, None, wait()))
+        timed = asyncio.ensure_future(cc.in_phase(host, PHASE_PARSE, H, None, wait(0.05)))
         await asyncio.sleep(0.01)
         assert host.admission_backlog.totals()[H][PHASE_PARSE] == 2
         with pytest.raises(TimeoutError):
@@ -616,3 +616,126 @@ class TestBufferedIsNotCountedTwiceForTheLane:
         token.enter_gate()
         token.admit()
         assert cc.admission_explain(host)["backlog"]["tiers"]["heavy"]["buffered"] == 0
+
+
+@pytest.mark.asyncio
+class TestOnlyARealWaitIsCounted:
+    """An acquire that is granted at once never touches the backlog; one that has to wait is counted from the moment it suspends."""
+
+    async def test_an_immediate_grant_is_not_counted_and_not_observed(self) -> None:
+        recorder = _Recorder()
+        host = SimpleNamespace(admission_backlog=AdmissionBacklog(observer=recorder))
+
+        async def at_once() -> str:
+            return "granted"
+
+        assert await cc.in_phase(host, PHASE_PARSE, H, None, at_once(), pool="p") == "granted"
+        assert recorder.events == [] and host.admission_backlog.totals()[H][PHASE_PARSE] == 0
+        assert host.admission_backlog.lease_waiting() == {}
+
+    async def test_a_wait_is_counted_from_its_first_suspension_and_not_after_it_ends(self) -> None:
+        recorder = _Recorder()
+        host = SimpleNamespace(admission_backlog=AdmissionBacklog(observer=recorder))
+        gate = asyncio.Event()
+
+        async def waits() -> int:
+            await gate.wait()
+            return 7
+
+        task = asyncio.ensure_future(cc.in_phase(host, PHASE_LEASE, H, "m", waits(), pool="indexing"))
+        await asyncio.sleep(0.01)
+        assert host.admission_backlog.totals()[H][PHASE_LEASE] == 1 and host.admission_backlog.lease_waiting() == {"indexing": 1}
+        gate.set()
+        assert await task == 7
+        assert host.admission_backlog.totals()[H][PHASE_LEASE] == 0 and host.admission_backlog.lease_waiting() == {}
+        assert [e[0] for e in recorder.events] == ["in", "out"] and recorder.events[0][3] == "m"
+
+    async def test_an_exception_raised_while_waiting_and_one_raised_at_once_both_pass_through_without_a_leak(self) -> None:
+        host = SimpleNamespace(admission_backlog=AdmissionBacklog())
+        gate = asyncio.Event()
+
+        async def fails_late() -> None:
+            await gate.wait()
+            raise ValueError("late")
+
+        async def fails_now() -> None:
+            raise KeyError("now")
+
+        task = asyncio.ensure_future(cc.in_phase(host, PHASE_PARSE, H, None, fails_late()))
+        await asyncio.sleep(0.01)
+        gate.set()
+        with pytest.raises(ValueError, match="late"):
+            await task
+        with pytest.raises(KeyError):
+            await cc.in_phase(host, PHASE_PARSE, H, None, fails_now())
+        assert host.admission_backlog.totals()[H][PHASE_PARSE] == 0
+
+    async def test_a_cancelled_wait_leaves_and_the_cancellation_reaches_the_awaitable(self) -> None:
+        host = SimpleNamespace(admission_backlog=AdmissionBacklog())
+        seen: list[str] = []
+
+        async def waits() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                seen.append("cancelled")
+                raise
+
+        task = asyncio.ensure_future(cc.in_phase(host, PHASE_PARSE, H, None, waits()))
+        await asyncio.sleep(0.01)
+        assert host.admission_backlog.totals()[H][PHASE_PARSE] == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert seen == ["cancelled"] and host.admission_backlog.totals()[H][PHASE_PARSE] == 0
+
+    async def test_a_wait_that_swallows_the_cancellation_and_finishes_still_leaves(self) -> None:
+        host = SimpleNamespace(admission_backlog=AdmissionBacklog())
+
+        async def stubborn() -> str:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return "finished anyway"
+            return "unreachable"
+
+        task = asyncio.ensure_future(cc.in_phase(host, PHASE_PARSE, H, None, stubborn()))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        assert await task == "finished anyway"
+        assert host.admission_backlog.totals()[H][PHASE_PARSE] == 0
+
+    async def test_the_gate_token_enters_the_gate_only_when_the_permit_is_not_free(self) -> None:
+        host = SimpleNamespace(admission_backlog=AdmissionBacklog(), gate_waiters=GateWaiters())
+        free = GateWaiterToken(host, H)
+
+        async def now() -> int:
+            return 1
+
+        assert await cc.at_gate(free, now()) == 1
+        assert host.admission_backlog.totals()[H][PHASE_GATE] == 0
+        free.admit()
+
+        busy = GateWaiterToken(host, H)
+        gate = asyncio.Event()
+
+        async def later() -> int:
+            await gate.wait()
+            return 2
+
+        task = asyncio.ensure_future(cc.at_gate(busy, later()))
+        await asyncio.sleep(0.01)
+        assert host.admission_backlog.totals()[H][PHASE_GATE] == 1
+        gate.set()
+        assert await task == 2
+        busy.admit()
+        assert host.admission_backlog.totals()[H][PHASE_GATE] == 0 and host.gate_waiters.count(H) == 0
+        assert await cc.at_gate(None, now()) == 1
+
+    async def test_a_host_without_a_backlog_gets_the_awaitable_itself(self) -> None:
+        async def now() -> int:
+            return 3
+
+        coro = now()
+        assert cc.in_phase(SimpleNamespace(), PHASE_GATE, H, None, coro) is coro
+        assert await coro == 3

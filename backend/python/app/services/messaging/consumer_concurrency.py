@@ -32,6 +32,7 @@ import os
 import random
 import threading
 import time
+import types
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
@@ -60,7 +61,14 @@ from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import reset_admitted_in, set_admitted_in
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Generator,
+        Mapping,
+    )
     from logging import Logger
 
     from app.modules.indexing.record_progress import RecordProgress
@@ -272,7 +280,51 @@ class AdmissionBacklog:
             self._lease_waiting.clear()
 
 
-async def in_phase(
+@types.coroutine
+def _counted(
+    awaitable: "Awaitable[T]",
+    backlog: "AdmissionBacklog | None",
+    tier: ParseTier,
+    phase: str,
+    pool: str | None,
+    message: "StreamMessage | None",
+    token: "GateWaiterToken | None" = None,
+) -> "Generator[Any, Any, T]":
+    """Await *awaitable*, counting a wait only if it really has to wait.
+
+    The awaitable runs until its first suspension before anything is counted: an acquire that is granted at once (the
+    common case) never touches the backlog. Only on the transition into waiting is the count entered, and it is left
+    when the wait ends however it ends (granted, timed out, cancelled or failed). Values, exceptions and cancellation
+    pass through unchanged.
+    """
+    steps = awaitable.__await__()
+    try:
+        yielded = next(steps)
+    except StopIteration as done:
+        return done.value
+    if token is not None:
+        token.enter_gate()
+    else:
+        backlog.add(tier, phase, pool, message)  # type: ignore[union-attr]
+    try:
+        while True:
+            try:
+                sent = yield yielded
+            except GeneratorExit:
+                steps.close()  # type: ignore[attr-defined]
+                raise
+            except BaseException as error:
+                yielded = steps.throw(error)  # type: ignore[attr-defined]
+            else:
+                yielded = steps.send(sent)  # type: ignore[attr-defined]
+    except StopIteration as done:
+        return done.value
+    finally:
+        if token is None:
+            backlog.remove(tier, phase, pool, message)  # type: ignore[union-attr]
+
+
+def in_phase(
     host: object,
     phase: str,
     tier: "ParseTier | None",
@@ -280,18 +332,22 @@ async def in_phase(
     awaitable: "Awaitable[T]",
     *,
     pool: str | None = None,
-) -> T:
-    """Await *awaitable* counted as waiting at *phase*; the count ends when the wait does,
-    however it ends (granted, timed out or cancelled)."""
+) -> "Awaitable[T]":
+    """*awaitable*, counted as waiting at *phase* for as long as it actually waits.
+
+    A host without a backlog gets the awaitable back untouched."""
     backlog = getattr(host, "admission_backlog", None)
     if not isinstance(backlog, AdmissionBacklog):
-        return await awaitable
-    resolved = tier if tier is not None else ParseTier.HEAVY
-    backlog.add(resolved, phase, pool, message)
-    try:
-        return await awaitable
-    finally:
-        backlog.remove(resolved, phase, pool, message)
+        return awaitable
+    return _counted(awaitable, backlog, tier if tier is not None else ParseTier.HEAVY, phase, pool, message)
+
+
+def at_gate(token: "GateWaiterToken | None", awaitable: "Awaitable[T]") -> "Awaitable[T]":
+    """*awaitable* (the index permit), with *token* entered into the gate only if it has to wait. The token leaves
+    the gate in ``admit()`` or ``release()``, as before."""
+    if token is None:
+        return awaitable
+    return _counted(awaitable, None, ParseTier.HEAVY, PHASE_GATE, None, None, token)
 
 
 class LocalPermits:

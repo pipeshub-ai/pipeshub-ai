@@ -3649,9 +3649,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
-            if waiter_token is not None:
-                waiter_token.enter_gate()
-            index_admission = await concurrency.acquire_index_slot(self, index_tier)
+            index_admission = await concurrency.at_gate(
+                waiter_token, concurrency.acquire_index_slot(self, index_tier)
+            )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
             if waiter_token is not None:
