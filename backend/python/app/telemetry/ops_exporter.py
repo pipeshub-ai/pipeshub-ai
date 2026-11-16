@@ -374,8 +374,10 @@ class SnapshotWriter:
     they are folded."""
 
     def __init__(self, run_dir: Path, service: str, source: Callable[[], tuple[dict[str, Any], dict[str, Any]]],
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 domain: Callable[[], str | None] = memory_domain_id) -> None:
         self._dir = run_dir / "signals"
+        self._domain = domain
         self._service = service
         self._source = source
         self._clock = clock
@@ -403,7 +405,7 @@ class SnapshotWriter:
                 _write_json(
                     self.path,
                     {"pid": self._pid, "nonce": self._nonce, "start": self._start, "at": self._clock(),
-                     "service": self._service, "signal": signal, "metrics": metrics},
+                     "service": self._service, "domain": self._domain(), "signal": signal, "metrics": metrics},
                 )
             return True
         except Exception as exc:
@@ -531,6 +533,9 @@ class SignalCollector:
         carry = self._load_carry()
         if ident in carry["folded"]:
             return
+        # A snapshot written under another memory cgroup (the container restarted and kept the run
+        # directory) must not seed this cgroup's high-water mark; its summed counters still count.
+        other_domain = "domain" in snapshot and snapshot["domain"] != carry["domain"]
         for name, rows in (snapshot.get("metrics") or {}).items():
             spec = SERIES.get(name)
             if spec is None or spec.kind != "counter" or spec.fleet or not isinstance(rows, list):
@@ -549,6 +554,8 @@ class SignalCollector:
                 key = json.dumps([name, *labels], separators=(",", ":"))
                 if spec.carry:
                     carry["values"][key] = carry["values"].get(key, 0.0) + value
+                elif other_domain:
+                    continue  # a reading from another cgroup is not this one's
                 else:
                     carry["hw"][key] = max(carry["hw"].get(key, 0.0), value)
         carry["folded"] = [*carry["folded"], ident][-_FOLDED_KEPT:]
@@ -563,9 +570,16 @@ class SignalCollector:
         with self._carry_lock():
             try:
                 snapshot = json.loads(path.read_text())
-                self._fold_locked(snapshot)
-            except (OSError, ValueError, AttributeError):
-                pass
+            except (OSError, ValueError):
+                snapshot = None
+            if isinstance(snapshot, dict):
+                try:
+                    self._fold_locked(snapshot)
+                except OSError:
+                    logger.debug("ops exporter: the carry could not be written; the snapshot stays for a later scan", exc_info=True)
+                    return  # the counters live in this file until the carry has them
+                except (ValueError, AttributeError):
+                    pass  # an unusable snapshot: nothing to keep
             with contextlib.suppress(OSError):
                 path.unlink()
         self._invalidate()
@@ -620,7 +634,14 @@ class SignalCollector:
                 snapshot["_stale"] = not fresh
                 live.append(snapshot)
                 continue
-            self._fold_locked(snapshot)
+            try:
+                self._fold_locked(snapshot)
+            except OSError:
+                # The carry cannot be written (disk full): the file keeps the counters, and its process is
+                # still counted, as a late one, so the series does not dip. A later scan folds it.
+                snapshot["_stale"] = True
+                live.append(snapshot)
+                continue
             with contextlib.suppress(OSError):
                 path.unlink()
         return live
@@ -754,6 +775,11 @@ class SignalCollector:
                        self._max_series, ", ".join(cut[:8]))
 
 
+def family_for(host: str) -> socket.AddressFamily:
+    """The socket family of a bind address (``valid_bind`` accepts IPv4 and IPv6)."""
+    return socket.AF_INET6 if ":" in host else socket.AF_INET
+
+
 class SingleFlight:
     """One render at a time: scrapes that arrive while a render runs share its result.
 
@@ -865,6 +891,7 @@ class BoundedServer(HTTPServer):
         self._queue: collections.deque[tuple[socket.socket, object, float]] = collections.deque()
         self._closing = threading.Event()
         self._flight = SingleFlight()
+        self.address_family = family_for(address[0])
         super().__init__(address, handler)
         threading.Thread(target=self._reap, name="ops-exporter-reaper", daemon=True).start()
         self._admitter = threading.Thread(target=self._admit_loop, name="ops-exporter-admit", daemon=True)
@@ -987,6 +1014,10 @@ class BoundedServer(HTTPServer):
             self._wake.notify_all()
         for sock in queued:
             self.shutdown_request(sock)
+        with self._lock:
+            active = list(self._conns)
+        for sock in active:  # handlers leave now, however slowly their clients trickle
+            self._cut(sock)
         super().server_close()
 
     def handle_error(self, request: object, client_address: object) -> None:
@@ -1041,6 +1072,7 @@ class OpsExporter:
         self.registry = CollectorRegistry(auto_describe=False)
         self.registry.register(self.collector)  # type: ignore[arg-type]
         self._server: BoundedServer | None = None
+        self._bind_lock = threading.Lock()  # a bind and the final swap in stop() never overlap
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -1049,16 +1081,19 @@ class OpsExporter:
         return self._server is not None
 
     def try_bind(self) -> bool:
-        if self._server is not None:
+        with self._bind_lock:
+            if self._server is not None:
+                return True
+            if self._stop.is_set():
+                return False  # a stopped exporter never starts serving
+            handler = type("Handler", (_Handler,), {"registry": self.registry})
+            try:
+                server = BoundedServer((self._bind, self._port), handler)
+            except (OSError, OverflowError):
+                return False
+            self._server = server
+            threading.Thread(target=server.serve_forever, name="ops-exporter-http", daemon=True).start()
             return True
-        handler = type("Handler", (_Handler,), {"registry": self.registry})
-        try:
-            server = BoundedServer((self._bind, self._port), handler)
-        except (OSError, OverflowError):
-            return False
-        self._server = server
-        threading.Thread(target=server.serve_forever, name="ops-exporter-http", daemon=True).start()
-        return True
 
     def start(self) -> None:
         if self._thread is not None:
@@ -1092,7 +1127,8 @@ class OpsExporter:
             self.collector.retire(self.writer.path)
         with contextlib.suppress(Exception):
             self.collector.gc()
-        server, self._server = self._server, None
+        with self._bind_lock:  # waits for a bind in progress, which then finds the exporter stopped
+            server, self._server = self._server, None
         if server is not None:
             server.shutdown()
             server.server_close()

@@ -332,3 +332,16 @@ def test_downstream_comes_from_the_window_of_the_sample_the_pools_came_from() ->
     assert body["downstream"]["qdrant"]["throttles"] == 2
     del stats["admission"]["feedback"]
     assert explain.project(stats)["downstream"]["qdrant"]["throttles"] == 7  # no window in the block: the old source
+
+
+def test_each_identity_scalar_is_checked_against_its_own_schema_type() -> None:
+    """A value of the wrong type for its field is dropped alone; the valid fields next to it stay."""
+    body = explain.project({}, {"pid": "seven", "seq": True, "draining": "false", "loopLagMs": "slow", "pod": 5,
+                                "memberId": "m-1", "containerStartMs": 12.5, "restartsRecent": 2})
+    for dropped in ("pid", "seq", "draining", "loopLagMs", "pod"):
+        assert dropped not in body, dropped
+    assert body["memberId"] == "m-1" and body["containerStartMs"] == 12.5 and body["restartsRecent"] == 2
+    ok = explain.project({}, {"pid": 7, "seq": 3, "draining": True, "loopLagMs": 1.5, "pod": "p"})
+    assert (ok["pid"], ok["seq"], ok["draining"], ok["loopLagMs"], ok["pod"]) == (7, 3, True, 1.5, "p")
+    SCHEMA_VALIDATOR = jsonschema.validators.validator_for(SCHEMA)(SCHEMA)
+    SCHEMA_VALIDATOR.validate(ok)

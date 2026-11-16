@@ -113,6 +113,7 @@ def test_a_bad_port_never_kills_the_snapshot_thread(port: str, tmp_path: Path, m
     errors: list[BaseException] = []
     old = threading.excepthook
     threading.excepthook = lambda args: errors.append(args.exc_value)  # type: ignore[assignment]
+    exporter = None
     try:
         exporter = ox.exporter_from_env(_Gov(), "indexing")
         assert exporter is not None
@@ -120,8 +121,9 @@ def test_a_bad_port_never_kills_the_snapshot_thread(port: str, tmp_path: Path, m
         exporter.start()
         time.sleep(0.4)
         alive = exporter._thread is not None and exporter._thread.is_alive()
-        exporter._stop.set()
     finally:
+        if exporter is not None:
+            exporter.stop()  # the snapshot loop, and the HTTP server the port fallback may have bound
         threading.excepthook = old
     assert alive and not errors
 

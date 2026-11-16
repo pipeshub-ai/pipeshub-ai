@@ -81,6 +81,9 @@ IDENTITY_KEYS = frozenset(
         "restartsRecent", "restartsByRole", "unexpectedRestartAtMs", "loopLagMs",
     }
 )
+# The scalar identity keys by the type `load_signal_v1.schema.json` gives them; the rest are numbers.
+_IDENTITY_STRINGS = frozenset({"memberId", "pod"})
+_IDENTITY_INTEGERS = frozenset({"pid", "seq"})
 SIGNAL_KEYS = frozenset({"v", "workerCount", "cpu", "mem", "pools", "waiting", "downstream"}) | IDENTITY_KEYS
 CPU_KEYS = frozenset({"quota", "util", "psiSomeAvg10", "psiSomeAvg60", "throttledRatio", "saturated"})
 MEM_KEYS = frozenset(
@@ -166,7 +169,16 @@ def _clean_identity(identity: Mapping[str, Any] | None) -> dict[str, Any]:
         elif key == "service":
             if isinstance(value, str) and _SERVICE_NAME.match(value):
                 out[key] = value
-        elif isinstance(value, (str, bool)) or _num(value) is not None:
+        elif key in _IDENTITY_STRINGS:
+            if isinstance(value, str):
+                out[key] = value
+        elif key == "draining":
+            if isinstance(value, bool):
+                out[key] = value
+        elif key in _IDENTITY_INTEGERS:
+            if isinstance(value, int) and not isinstance(value, bool):
+                out[key] = value
+        elif _num(value) is not None:  # the nullable numbers (a null is simply absent)
             out[key] = value
     return out
 

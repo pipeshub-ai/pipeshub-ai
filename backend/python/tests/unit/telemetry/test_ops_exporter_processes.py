@@ -135,7 +135,14 @@ def _holds(port: int, pid: int) -> bool:
         fds = os.listdir(f"/proc/{pid}/fd")
     except OSError:
         return False
-    return any(os.readlink(f"/proc/{pid}/fd/{fd}").removeprefix("socket:[").removesuffix("]") in inodes for fd in fds if "socket" in os.readlink(f"/proc/{pid}/fd/{fd}"))
+    for fd in fds:
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")  # read once: a scrape connection may close under the scan
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target.removeprefix("socket:[").removesuffix("]") in inodes:
+            return True
+    return False
 
 
 def test_scrape_latency_with_64_snapshot_files(tmp_path: Path) -> None:
