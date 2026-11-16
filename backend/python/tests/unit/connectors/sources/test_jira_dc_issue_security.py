@@ -383,6 +383,24 @@ class TestWithdrawnAccounts:
                                          {"alice-key": _user("alice-key", "alice@example.com")})
         assert [g.email for g in grants] == ["alice@example.com"]
 
+    def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
+        """"left" has no access in Jira (not in the directory) but carries alice's email: alice must not get left's level."""
+        c = _connector()
+        c._listed_user_keys = {"alice-key"}
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [
+                {"type": "user", "parameter": "left", "user": {"key": "left", "emailAddress": "alice@example.com"}},
+                {"type": "reporter"},
+            ]},
+        )
+        issue = {"id": "9", "key": "P-9", "fields": {
+            "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"},
+            "reporter": {"key": "left", "name": "left", "emailAddress": "alice@example.com"}}}
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
+        assert grants == []
+
     @pytest.mark.parametrize(("complete", "shown"), [(True, False), (False, False), (False, True)],
                              ids=["read_in_full", "not_read_in_full", "shown_deactivated_by_a_short_list"])
     async def test_a_linked_level_holder_the_list_missed_keeps_its_grant_and_an_unnamed_one_marks_a_re_read(
