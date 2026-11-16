@@ -9,6 +9,7 @@ sleeps are recorded, not slept. The seed of the random cases is printed on failu
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 import threading
 
@@ -30,7 +31,7 @@ from app.services.spend_guard.retry_policy import (
     RetryKind,
     decide_retry,
 )
-from tests.support.spend_world import fleet, sim_clock  # noqa: E402, F401 - fixtures
+from tests.support.spend_world import fleet, sim_clock  # noqa: F401 - fixtures
 
 PROVIDER = "FakeChat:fake-model@host"
 SEED = random.SystemRandom().randrange(1, 2**31)
@@ -50,12 +51,12 @@ def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 class Model:
     """Answers each request with the next scripted reply: an int status, (status, retry_after), or 'ok'."""
 
-    def __init__(self, script=None, default=(503, None)) -> None:  # noqa: ANN001
+    def __init__(self, script=None, default=(503, None)) -> None:
         self.script = list(script or [])
         self.default = default
         self.requests = 0
 
-    async def ainvoke(self, value, /, **kwargs):  # noqa: ANN001, ANN202
+    async def ainvoke(self, value: object, /, **kwargs: object) -> str:
         wire.admit_request()
         wire.note_request_sent()
         self.requests += 1
@@ -71,7 +72,7 @@ class Model:
 # ---- 1. a 5xx storm: the breaker still opens, and the retries do not outrun it --------------------------------------
 
 
-async def test_a_5xx_storm_opens_the_breaker_and_retries_stop_at_it(fleet, sim_clock, slept) -> None:  # noqa: ANN001
+async def test_a_5xx_storm_opens_the_breaker_and_retries_stop_at_it(fleet, sim_clock, slept) -> None:
     gateway = LLMGateway(8, retry_budget=RetryBudget())
     model = Model()
     errors = []
@@ -87,12 +88,12 @@ async def test_a_5xx_storm_opens_the_breaker_and_retries_stop_at_it(fleet, sim_c
     assert sum(e.requests for e in errors) == 5, "every failed request is counted in the errors' `requests`"
 
 
-async def test_concurrent_jobs_in_a_5xx_storm(fleet, sim_clock, slept) -> None:  # noqa: ANN001
+async def test_concurrent_jobs_in_a_5xx_storm(fleet, sim_clock, slept) -> None:
     """Many jobs at once: requests stay within 5 + the attempts already in flight when it opened (<= the slots)."""
     gateway = LLMGateway(8, retry_budget=RetryBudget())
 
     class Slow(Model):
-        async def ainvoke(self, value, /, **kwargs):  # noqa: ANN001, ANN202
+        async def ainvoke(self, value, /, **kwargs):  # noqa: ANN202
             await asyncio.sleep(0)  # interleave: several attempts are in flight together
             return await super().ainvoke(value, **kwargs)
 
@@ -100,10 +101,8 @@ async def test_concurrent_jobs_in_a_5xx_storm(fleet, sim_clock, slept) -> None: 
 
     async def one(i: int) -> None:
         with llm_job(f"job-{i}", allowance=20):
-            try:
+            with contextlib.suppress(ProviderUnavailableError):
                 await gateway.invoke(model, f"DOC:{i}", provider=PROVIDER)
-            except ProviderUnavailableError:
-                pass
 
     await asyncio.gather(*(one(i) for i in range(40)))
     assert model.requests <= 5 + 8, f"{model.requests} requests: more than 5 + the 8 in flight"
@@ -123,7 +122,7 @@ async def test_the_send_allowance_bounds_the_gateway_retries(slept, allowance: i
     assert raised.value.requests == model.requests
 
 
-async def test_failed_sends_are_counted_across_the_attempts(fleet, sim_clock, slept) -> None:  # noqa: ANN001
+async def test_failed_sends_are_counted_across_the_attempts(fleet, sim_clock, slept) -> None:
     gateway = LLMGateway(8, retry_budget=RetryBudget())
     model = Model(script=[503, 502, 500])
     with llm_job("job", allowance=20) as trace, pytest.raises(ProviderUnavailableError) as raised:
@@ -135,7 +134,7 @@ async def test_failed_sends_are_counted_across_the_attempts(fleet, sim_clock, sl
 
 
 @pytest.mark.parametrize("trial_reply", [503, (429, None), (429, 5.0)])
-async def test_a_half_open_trial_is_not_repeated(fleet, sim_clock, slept, trial_reply) -> None:  # noqa: ANN001
+async def test_a_half_open_trial_is_not_repeated(fleet, sim_clock, slept, trial_reply) -> None:
     gateway = LLMGateway(8, retry_budget=RetryBudget())
     model = Model()
     for i in range(5):

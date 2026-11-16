@@ -152,7 +152,7 @@ def wire_scope() -> Iterator[WireOutcome]:
         _current.reset(token)
 
 
-def open_scope() -> tuple[WireOutcome, Any]:  # noqa: ANN401 - the contextvar token
+def open_scope() -> tuple[WireOutcome, Any]:
     """``wire_scope`` for a caller that cannot indent its code under a ``with``: pair with ``close_scope``."""
     outcome = WireOutcome()
     return outcome, _current.set(outcome)

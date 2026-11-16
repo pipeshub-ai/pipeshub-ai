@@ -4172,7 +4172,7 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
         graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
         previous = graph.get_document.side_effect
 
-        async def get_document(key, collection, **kwargs):
+        async def get_document(key, collection, **kwargs) -> dict:  # noqa: ANN001
             if collection == CollectionNames.RECORDS.value:
                 return {**row, "deferredUntilMs": now + HOUR_MS}
             return previous(key, collection, **kwargs)

@@ -55,7 +55,7 @@ async def test_a_wait_set_while_the_scan_was_looking_is_seen_under_the_lease() -
     graph, rows = stale_scan_graph([enrichment_twin(1_000)])
     previous = graph.get_document.side_effect
 
-    async def get_document(doc_id, collection, **kwargs):  # noqa: ANN001, ANN202
+    async def get_document(doc_id, collection, **kwargs):  # noqa: ANN202
         row = await previous(doc_id, collection, **kwargs)
         if row and doc_id == "twin":
             row["deferredUntilMs"] = NOW_MS() + 300_000

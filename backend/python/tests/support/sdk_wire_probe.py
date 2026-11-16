@@ -20,8 +20,8 @@ from typing import Any
 
 sys.path.insert(0, os.getcwd())
 
-import httpx  # noqa: E402
-import requests  # noqa: E402
+import httpx
+import requests
 
 STATUS = int(sys.argv[1]) if len(sys.argv) > 1 else 500
 COUNT = {"n": 0}
@@ -161,7 +161,7 @@ async def _one(kind: str, provider: str, model_name: str, sdk_retries: int | Non
         else:
             await asyncio.wait_for(model.aembed_documents(["DOC:x"]), 120)
         err = "no error?!"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         err = f"{type(exc).__name__}"
     return COUNT["n"], type(model).__name__, f"{err} {time.monotonic() - started:.1f}s"
 
@@ -182,7 +182,7 @@ async def main() -> int:
             try:
                 n0, wrapper, info0 = await _one(kind, provider, model_name, INDEXING_SDK_RETRIES)
                 nd, _, infod = await _one(kind, provider, model_name, None)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(f"BUILD-ERR {kind:4} {provider:18} {type(exc).__name__}: {str(exc)[:100]}")
                 continue
             verdict = "OK" if n0 == 1 else ("UNSEEN" if n0 == 0 else "SDK-RETRIES")

@@ -30,7 +30,7 @@ class Throttle(Exception):
 
     status_code = 429
 
-    class response:  # noqa: N801
+    class response:
         headers = {"retry-after": "600"}
 
 
