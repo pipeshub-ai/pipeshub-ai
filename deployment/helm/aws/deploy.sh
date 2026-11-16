@@ -687,7 +687,7 @@ if $EXISTING_CLUSTER; then
 elif cluster_exists; then
   note "Cluster ${CLUSTER} already exists. Finished steps are skipped, and the Helm release is upgraded."
 else
-  note "Creates 8 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
+  note "Creates 9 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
   note "A new cluster takes about an hour, mostly waiting for EKS."
 fi
 confirm "Continue?"
