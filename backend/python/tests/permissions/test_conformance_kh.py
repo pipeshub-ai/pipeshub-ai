@@ -53,6 +53,7 @@ from .kh_worlds import (
     OPENGRANTTEAM,
     OPENGROUP,
     OPENSTUB,
+    PAGMEMBER,
     PAGSEED,
     PAGSTORY,
     REACHSTUB,
@@ -579,7 +580,7 @@ async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_
     """PAGSEED: dave reads the issue i1 only by his own grant, and the PARENT_AND_GRANT comment c1 (granted to his group), the file f1 in it and
     the reply c5 granted to him, by the access check and by browsing i1; never without the record's own grant or under a parent he cannot read.
     PAGSTORY: a RESTRICTED story under an epic read the same way stays closed. DECLPAG: under a member of a declared group it stays closed, as an
-    OPEN child there does."""
+    OPEN child there does. PAGMEMBER: under a member that is also read below a seed it is read, as an OPEN child there is."""
     oracle = OracleLayer()
     expected = {
         (PAGSEED, "dave"): {"i1", "c1", "f1", "c5"},
@@ -588,12 +589,13 @@ async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_
         (PAGSEED, "carol"): {"i2"},
         (PAGSTORY, "dave"): {"epic"},
         (DECLPAG, "u"): {"d", "k"},
+        (PAGMEMBER, "u"): {"S", "M", "C", "O"},
     }
     asked = {PAGSEED: ["P", "i1", "i2", "c1", "c2", "c3", "c4", "c5", "f1", "s1"], PAGSTORY: ["P", "epic", "story", "sub", "plain", "note"],
-             DECLPAG: ["d", "k", "c"]}
+             DECLPAG: ["d", "k", "c"], PAGMEMBER: ["S", "M", "C", "O"]}
     for (world, who), want in expected.items():
         assert await oracle.admitted(world, who, asked[world]) == want, who
-    worlds = [PAGSEED, PAGSTORY, DECLPAG]
+    worlds = [PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
     for layer in graph_layers:
         await layer.preload(worlds)
         try:

@@ -884,8 +884,23 @@ grants: [[u, d], [u, k], [u, c]]
 gates: [[u, A]]
 """))
 
+# PAGMEMBER: as DECLPAG, but the member M also inherits from S, an OPEN record u is granted on (a seed). M is read below that seed, not only through
+# the declaration, so what hangs under it is read below the seed too: the PARENT_AND_GRANT record C (granted) and the OPEN record O (inheriting).
+PAGMEMBER = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: JIRA}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, belongs: [A]}
+  - {id: M, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S], belongs: [d]}
+  - {id: C, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [M], inherits: [M], belongs: [A]}
+  - {id: O, kind: record, connector: A, rule: OPEN, parents: [M], inherits: [M], belongs: [A]}
+grants: [[u, d], [u, S], [u, C]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
              STUBSEED, NESTSTUB, CAPSTUB, WIDE, HIDESEED, FLATSIDE, REACHSTUB,
-             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED, STUBTOP, PAGSEED, PAGSTORY, DECLPAG]
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED, STUBTOP, PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
