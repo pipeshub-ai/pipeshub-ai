@@ -138,3 +138,38 @@ async def test_native_image_clients_count_their_requests_in_the_wire_scope(monke
     provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
     await provider.embed_images([])  # type: ignore[union-attr]
     assert installed == [client]
+
+
+async def test_bedrock_deferral_leaves_no_sibling_image_running(monkeypatch: pytest.MonkeyPatch, one_attempt: None) -> None:
+    """The same for Bedrock: images queued behind the semaphore must not start a paid request after the deferral."""
+    import asyncio
+
+    class BotoThrottle(Exception):
+        response = {"ResponseMetadata": {"HTTPStatusCode": 429, "HTTPHeaders": {"retry-after": "600"}}}
+
+    started: list[int] = []
+    client = MagicMock()
+
+    def invoke(**_: Any) -> Any:  # noqa: ANN401
+        started.append(1)
+        raise BotoThrottle("ThrottlingException")
+
+    client.invoke_model.side_effect = invoke
+    monkeypatch.setattr("boto3.client", lambda **_: client)
+    provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
+    with pytest.raises(EmbeddingRateLimited):
+        await provider.embed_images([IMAGE] * 40)  # type: ignore[union-attr]
+    count = len(started)
+    await asyncio.sleep(0.2)
+    assert len(started) == count and count < 40
+
+
+async def test_bedrock_one_images_unexpected_failure_does_not_abort_the_batch(
+    monkeypatch: pytest.MonkeyPatch, one_attempt: None
+) -> None:
+    client = MagicMock()
+    client.invoke_model.side_effect = ValueError("a malformed image")
+    monkeypatch.setattr("boto3.client", lambda **_: client)
+    provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
+    results = await provider.embed_images([IMAGE, IMAGE])  # type: ignore[union-attr]
+    assert [r.error is not None for r in results] == [True, True]

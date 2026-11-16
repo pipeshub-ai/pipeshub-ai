@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.exceptions.indexing_exceptions import EmbeddingError
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -145,22 +146,16 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                         self.logger.warning(f"Bedrock embed failed for index {i}: {e}")
                     return ImageEmbeddingResult(index=i, error=str(e))
 
-        # return_exceptions=True: an unexpected (non-Client/NoCredentials) error from
-        # one image must not abort the whole batch — every other image should still
-        # get a result. Bare exceptions are normalised into ImageEmbeddingResult below
-        # so callers only ever see the interface's result type.
-        raw_results = await asyncio.gather(
-            *[embed_single(i, ref) for i, ref in enumerate(image_base64s)],
-            return_exceptions=True,
-        )
-        results: list[ImageEmbeddingResult] = []
-        for i, r in enumerate(raw_results):
-            if isinstance(r, ImageEmbeddingResult):
-                results.append(r)
-            elif isinstance(r, EmbeddingRateLimited):
-                raise r  # the provider's wait goes to the record handler, which hands the record back
-            else:
+        async def guarded(i: int, image_ref: str) -> ImageEmbeddingResult:
+            # One image's unexpected failure must not abort the batch (every other image still gets a result), but a provider's
+            # wait past the call's allowance is the whole record's: it propagates, and the other images are cancelled.
+            try:
+                return await embed_single(i, image_ref)
+            except EmbeddingRateLimited:
+                raise
+            except Exception as exc:
                 if self.logger:
-                    self.logger.warning(f"Bedrock embed failed for index {i}: {r}")
-                results.append(ImageEmbeddingResult(index=i, error=str(r)))
-        return results
+                    self.logger.warning(f"Bedrock embed failed for index {i}: {exc}")
+                return ImageEmbeddingResult(index=i, error=str(exc))
+
+        return await gather_or_cancel([guarded(i, ref) for i, ref in enumerate(image_base64s)])
