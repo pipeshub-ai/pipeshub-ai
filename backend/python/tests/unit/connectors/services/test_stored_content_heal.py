@@ -42,9 +42,13 @@ class HealGraph:
     async def get_all_orgs(self, **_kw) -> list[dict[str, Any]]:
         return [{"_key": ORG}, {"_key": OTHER_ORG}]
 
-    async def get_all_documents(self, collection, transaction=None) -> list[dict[str, Any]]:
-        assert collection == APPS
-        return [copy.deepcopy(doc) for doc in self.apps.values()]
+    async def get_documents_paginated(
+        self, collection, skip=0, limit=50, filters=None, sort_field=None, transaction=None, *,
+        raise_on_error=False, after_key=None, return_fields=None,
+    ) -> list[dict[str, Any]]:
+        assert collection == APPS and sort_field == "_key" and not skip and not filters
+        keys = sorted(k for k in self.apps if after_key is None or k > after_key)[:limit]
+        return [copy.deepcopy(self.apps[k]) for k in keys]
 
     async def page_records_for_vector_membership_backfill(
         self, connector_id, after_key, limit, transaction=None,

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 _APPS = CollectionNames.APPS.value
+_APPS_PAGE = 1000
 _BACKOFF_FACTOR = 2
 _MAX_BACKOFF_MULTIPLIER = 16
 
@@ -112,7 +113,7 @@ class ConnectorSweep(ABC):
                 await self.before_org(org_id)
                 if outcome:
                     return
-                apps = of_org(await self.graph.get_all_documents(_APPS), org_id)
+                apps = of_org(await self._connectors(), org_id)
                 any_apps = any_apps or bool(apps)
                 pending = sorted(
                     (
@@ -136,6 +137,21 @@ class ConnectorSweep(ABC):
             # Never "idle": that would end the loop with these orgs' connectors not done.
             raise RuntimeError(f"{self.name}: {len(failed)} org(s) failed this tick")
         return "idle" if any_apps else "no_apps"
+
+    async def _connectors(self) -> list[dict[str, Any]]:
+        """Every connector the bound org reads. A failed read raises: Neo4j and ArangoDB answer
+        ``get_all_documents`` with no rows on a failure, which would read as an org with
+        nothing left to sweep and could end the sweep as idle."""
+        apps: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            page = await self.graph.get_documents_paginated(
+                _APPS, limit=_APPS_PAGE, sort_field="_key", after_key=after, raise_on_error=True,
+            )
+            apps.extend(page)
+            after = key_of(page[-1]) if page else None
+            if len(page) < _APPS_PAGE or after is None:
+                return apps
 
     async def _page(self, app: dict[str, Any]) -> str:
         fields = self.fields

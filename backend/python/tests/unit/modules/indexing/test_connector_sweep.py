@@ -87,11 +87,21 @@ class _Graph:
     async def get_all_orgs(self, **_kw: object) -> list[dict]:
         return [{"_key": ORG_A}, {"_key": ORG_B}]
 
-    async def get_all_documents(self, collection: str, transaction: object = None) -> list[dict]:
+    def _read(self, *, raise_on_error: bool) -> list[dict]:
         org = current_org_id()
         if org in self.broken_orgs:
-            raise RuntimeError("graph did not answer")
+            # As the stores answer a failed read: PostgreSQL raises; Neo4j and ArangoDB log and answer [] unless asked to raise.
+            if self.scoped or raise_on_error:
+                raise RuntimeError("graph did not answer")
+            return []
         return [dict(a) for a in self.apps.values() if not self.scoped or a["orgId"] == org]
+
+    async def get_documents_paginated(self, collection: str, skip: int = 0, limit: int = 50, filters: object = None,
+                                      sort_field: str | None = None, transaction: object = None, *, raise_on_error: bool = False,
+                                      after_key: str | None = None, return_fields: object = None) -> list[dict]:
+        assert sort_field == "_key" and not skip and not filters
+        rows = sorted(self._read(raise_on_error=raise_on_error), key=lambda a: a["_key"])
+        return [a for a in rows if after_key is None or a["_key"] > after_key][:limit]
 
     async def page_records_for_vector_membership_backfill(self, app_key: str, after_key: object, limit: int) -> list[dict]:
         assert self.apps[app_key]["orgId"] == current_org_id()
@@ -154,3 +164,19 @@ async def test_no_connector_in_any_org_is_no_apps() -> None:
     graph = _Graph(scoped=True)
     graph.apps.clear()
     assert await _Probe(graph).tick() == "no_apps"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connector_read_that_answers_empty_never_reads_as_done() -> None:
+    """Neo4j and ArangoDB answer a failed read with no rows: a later org's failed read must not end the sweep as idle."""
+    graph = _Graph(scoped=False)
+    graph.apps["a1"]["probeState"] = graph.apps["a2"]["probeState"] = "v1"
+    graph.broken_orgs.add(ORG_B)
+    sweep = _Probe(graph)
+
+    with pytest.raises(RuntimeError, match="1 org"):
+        await sweep.tick()
+
+    graph.broken_orgs.clear()
+    assert [await sweep.tick() for _ in range(2)] == ["page", "idle"]
+    assert sweep.visits == [("b1", ORG_B)]
