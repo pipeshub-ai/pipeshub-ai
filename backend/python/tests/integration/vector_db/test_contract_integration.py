@@ -87,6 +87,47 @@ class _VectorDBContractTests:
         finally:
             await vector_service.delete_collection(col)
 
+    async def test_the_stray_sweep_removes_only_unreferenced_blocks_and_is_idempotent(self, vector_service) -> None:
+        """The sweep goes through the provider interface alone: scroll the record, delete by block id."""
+        from app.modules.indexing.stray_sweep import sweep_stray_points
+
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_sweep")
+        org = "org-sweep"
+        blocks = {"keep-1": 2, "keep-2": 1, "stray-1": 2, "stray-2": 1}
+        points = [
+            VectorPoint(
+                id=point_id(f"sweep-{block}-{n}"), dense_vector=make_dense([1.0, float(n)]),
+                payload={"page_content": f"{block} {n}",
+                         "metadata": {"orgId": org, "virtualRecordId": "r-sweep", "blockId": block}},
+            )
+            for block, count in blocks.items() for n in range(count)
+        ]
+        other_org = VectorPoint(
+            id=point_id("sweep-other-org"), dense_vector=make_dense([1.0]),
+            payload={"page_content": "x", "metadata": {"orgId": "org-other", "virtualRecordId": "r-sweep",
+                                                         "blockId": "stray-1"}},
+        )
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            await vector_service.upsert_points(col, [*points, other_org])
+
+            async def count_is(n: int) -> bool:
+                return (await vector_service.get_collection_info(col)).points_count == n
+
+            await wait_for(lambda: count_is(len(points) + 1), timeout=VISIBILITY_TIMEOUT)
+            await vector_service.make_searchable(col)
+            result = await sweep_stray_points(vector_service, col, org_id=org, virtual_record_id="r-sweep",
+                                              keep_block_ids={"keep-1", "keep-2"})
+            assert result.stray_blocks == 2
+            await wait_for(lambda: count_is(3 + 1), timeout=VISIBILITY_TIMEOUT)  # 3 kept + the other org's
+            await vector_service.make_searchable(col)
+            again = await sweep_stray_points(vector_service, col, org_id=org, virtual_record_id="r-sweep",
+                                             keep_block_ids={"keep-1", "keep-2"})
+            assert again.stray_blocks == 0 and await count_is(4)
+        finally:
+            await vector_service.delete_collection(col)
+
     async def test_a_write_for_one_org_leaves_the_other_orgs_points_alone(self, vector_service) -> None:
         """The same virtual record id under two orgs: ids, filters and deletes of org A never reach org B."""
         provider = vector_service.get_service_name()

@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
+from app.modules.reconciliation.block_identity import ID_SCHEME, BlockIdentity
 from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
 from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
@@ -37,6 +38,18 @@ class IndexingPipeline:
         self.logger = create_logger("indexing_pipeline")
 
     @staticmethod
+    def assign_block_ids(reconciliation_service: ReconciliationService, record: object) -> ReconciliationMetadata:
+        """Give the record's blocks content-derived ids (every parser's output goes through here) and
+        return the metadata built from them. Without an org or virtual record the ids stay as parsed
+        and the metadata carries no scheme, so the next diff re-keys instead of pairing them."""
+        block_containers = record.block_containers
+        assigned = BlockIdentity.assign(block_containers, record.org_id, record.virtual_record_id)
+        metadata = reconciliation_service.build_metadata(block_containers)
+        if assigned:
+            metadata.id_scheme = ID_SCHEME
+        return metadata
+
+    @staticmethod
     async def build_reconciliation_context(
         ctx: TransformContext,
         logger: logging.Logger,
@@ -48,7 +61,7 @@ class IndexingPipeline:
         if not block_containers:
             return None
         reconciliation_service = ReconciliationService(logger)
-        new_metadata = reconciliation_service.build_metadata(block_containers)
+        new_metadata = IndexingPipeline.assign_block_ids(reconciliation_service, record)
 
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
             prev_vrid = ctx.prev_virtual_record_id
@@ -69,6 +82,7 @@ class IndexingPipeline:
                             block_containers, unchanged_id_map
                         )
                         new_metadata = reconciliation_service.build_metadata(block_containers)
+                        new_metadata.id_scheme = old_metadata.id_scheme
 
                     logger.info(
                         f"📊 Reconciliation (1:1): {len(blocks_to_index_ids)} to index, "

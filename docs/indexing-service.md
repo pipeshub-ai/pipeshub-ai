@@ -797,6 +797,14 @@ A record is findable by name as soon as its connector has saved it, not when its
 - **Failures.** A batch the embedding model or the vector store cannot write (a failed count, or an exception) is written again up to `MAX_DELIVERY_ATTEMPTS` times with a growing wait, then published again to `record-title-events` with an `attempt` counter, at most 5 times per event, after which it is dropped with an error log (ids and counts, never names); other consumers are not affected. Lost, dropped or never-published events are only repaired by a rebuild of the entity index (an entity index version or embedding model change). A malformed event is logged and dropped.
 - **Rebuild.** `entity_index_rebuild` no longer skips records that are not indexed; it writes a point for every live record, indexed or not, except internal records and stubs, and deletes the points of trashed ones. It runs when the entity index version or embedding model changes, so it is the backstop for lost titles, not a routine repair.
 
+### 4.15 Stable block ids and the stray-point sweep
+
+Two runs that index the same record (a retry, a replica that raced the first run, a re-update) must leave one set of points, not two.
+
+- **Block ids follow content.** A parser mints a random id for each block it builds. `BlockIdentity.assign` (`app/modules/reconciliation/block_identity.py`) replaces them once per parse, for every parser, in `IndexingPipeline.build_reconciliation_context`, after the reconciliation hashes and before the diff and the embedding. A block's id is `uuid5(NS_BLOCK_V1, "<orgId>|<virtualRecordId>|b|<contentHash>|<occurrence>")` (`g` for a group). `contentHash` is the reconciliation hash and `occurrence` is the 0-based ordinal of that hash among the blocks of its kind in container order; a block without a hash uses `pos:<index>`. Nothing else feeds it: no worker, attempt, clock or random number. A vector point's id already derives from the block id, the kind and the text (`deterministic_point_id`), so two runs over the same bytes write the same point ids and the second upsert overwrites the first. Changed content has a different hash, so a different id.
+- **The scheme is recorded** as `idScheme: "content-v1"` in the record's reconciliation metadata. When the stored metadata has another scheme (none, for a record indexed before ids followed content), the diff does not pair old and new ids: every old block is deleted and every new one indexed, once, on that record's next re-parse. There is no migration job.
+- **The stray-point sweep** (`app/modules/indexing/stray_sweep.py`) is the backstop. After a record is indexed, `VectorStore.apply` lists the record's points through `IVectorDBService.scroll` (only the `blockId`) and deletes, with `delete_points`, those whose block id the record's current revision does not have: not a block, not a group, not the record summary and not the code residue. A point with no `blockId` is left alone. The pass is idempotent, bounded to `INDEXING_STRAY_SWEEP_MAX_POINTS` points listed per record per run (the rest is met by the next run), deletes in batches, and never fails the record: an error is logged as a warning. It runs when nothing changed too, so strays left by an interrupted run or by a racing run of an older version go on the next run.
+
 ---
 
 ## 5. Root cause: throughput collapses to a few records after the first few hundred
@@ -1032,5 +1040,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `INDEXING_SLOW_STEP_SECONDS` | 30 | a single step at least this long logs a WARNING (section 4.10) |
 | `INDEXING_LOOP_LAG_WARN_SECONDS` | 1.0 | worker-loop lateness that logs a warning; `0` turns the lag monitor off (section 4.10) |
 | `INDEXING_LOOP_STALL_STACK_SECONDS` | 5 | how long the worker loop may not run before its stack is logged; `0` turns the watchdog off (section 4.10) |
+| `INDEXING_STRAY_SWEEP` | on | `off` stops the stray-point sweep that follows each record's indexing (section 4.15) |
+| `INDEXING_STRAY_SWEEP_MAX_POINTS` | 100000 | most points the sweep lists for one record in one run (section 4.15) |
 | `RECORD_TITLE_BATCH_SIZE` / `RECORD_TITLE_FLUSH_SECONDS` | 100 / 2 | record names written per entity-index call, and how long a partial batch waits for more (section 4.12); a value below 1 (0.1 for the wait) uses the default |
 | `MAX_CONCURRENT_INDEXING_LLM_CALLS` | 24 | the LLM gateway's process-wide cap on indexing-time model calls, across event loops (§2.4); also the `classify` stage consumer's job limit |

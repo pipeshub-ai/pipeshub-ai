@@ -70,6 +70,7 @@ from app.modules.indexing.embed_resume import (
     digest_of,
 )
 from app.modules.indexing.record_progress import carried_counters, current_progress
+from app.modules.indexing.stray_sweep import sweep_enabled, sweep_stray_points
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
@@ -1237,6 +1238,7 @@ class VectorStore(Transformer):
                 self.logger.info(
                     f"Reconciliation: No changes detected for record {record_id}"
                 )
+                await self._sweep_stray_points(record, block_containers)
                 return True
 
             # Shallow copy with only blocks/block_groups that need indexing
@@ -1252,7 +1254,7 @@ class VectorStore(Transformer):
                 ],
             )
 
-        return await self.index_documents(
+        indexed = await self.index_documents(
             block_containers,
             org_id,
             record_id,
@@ -1263,6 +1265,26 @@ class VectorStore(Transformer):
             titles=titles,
             member_blocks=member_blocks,
         )
+        await self._sweep_stray_points(record, record.block_containers)
+        return indexed
+
+    async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> None:
+        """Drop the record's points that *revision* (its whole current container) does not reference.
+        Best effort: the record is already searchable, so a failure here is logged and not raised."""
+        if not sweep_enabled() or revision is None or not record.org_id or not record.virtual_record_id:
+            return
+        vrid = record.virtual_record_id
+        keep = {b.id for b in revision.blocks} | {g.id for g in revision.block_groups}
+        keep |= {self.record_summary_block_id(vrid), code_residue_block_id(vrid)}
+        try:
+            collection_name = self.collection_registry.resolve_write_collection(
+                self._record_context(record.org_id, record))
+            await sweep_stray_points(
+                self.vector_db_service, collection_name,
+                org_id=org_for_filter(record.org_id, match_bound=True), virtual_record_id=vrid, keep_block_ids=keep,
+            )
+        except Exception as e:  # a backstop must not fail an indexed record
+            self.logger.warning(f"Stray point sweep of {vrid} failed: {e}")
 
     # ------------------------------------------------------------------
     # Record summary helpers

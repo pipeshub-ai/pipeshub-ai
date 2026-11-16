@@ -220,6 +220,17 @@ async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     assert (await sql(store, "SELECT count(*) FROM retrieval.points WHERE org_id = $1", A))[0][0] == (2 if store._safe_mode else 0)
 
 
+async def test_the_stray_sweep_removes_only_unreferenced_blocks_of_one_org(store) -> None:
+    from app.modules.indexing.stray_sweep import sweep_stray_points
+
+    await store.upsert_points("records", [point(A, "keep"), point(A, "stray-1", i=1), point(A, "stray-2", i=2, terms=(5,))])
+    await store.upsert_points("records", [point(B, "stray-1")])
+    result = await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})
+    assert result.stray_blocks == 2
+    assert (await live(store, A), await live(store, B)) == (1, 1)
+    assert (await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})).stray_blocks == 0
+
+
 async def test_deletes_run_in_batches(store, monkeypatch) -> None:
     monkeypatch.setattr(writes, "DELETE_BATCH", 2)
     await store.upsert_points("records", [point(A, f"p{n}", terms=(n + 1,)) for n in range(5)])

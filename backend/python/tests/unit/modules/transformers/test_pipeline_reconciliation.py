@@ -8,10 +8,8 @@ import pytest
 from app.config.constants.arangodb import EventTypes
 from app.models.blocks import (
     Block,
-    BlockGroup,
     BlocksContainer,
     BlockType,
-    GroupType,
 )
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import (
@@ -259,40 +257,57 @@ class TestBuildReconciliationContext1to1:
         assert result.block_ids_to_delete == {"old-block-id"}
 
     @pytest.mark.asyncio
-    async def test_unchanged_blocks_have_ids_preserved(self):
-        """When old and new share a content hash, old IDs must be preserved."""
+    async def test_unchanged_blocks_keep_their_ids(self) -> None:
+        """Metadata of the content-derived scheme: an unchanged block has the same id, so nothing is indexed."""
+        from app.modules.reconciliation.block_identity import ID_SCHEME, BlockIdentity
+
+        block = Block(index=0, type=BlockType.TEXT, data="stable-text")
+        stored = BlocksContainer(blocks=[Block(index=0, type=BlockType.TEXT, data="stable-text")])
+        BlockIdentity.assign(stored, "org-1", "vr-1")
+        old_id = stored.blocks[0].id
+        old_metadata = {
+            "hash_to_block_ids": {stored.blocks[0].content_hash: [old_id]},
+            "block_id_to_index": {old_id: 0},
+            "idScheme": ID_SCHEME,
+        }
+        pipeline = _pipeline(blob_meta=old_metadata)
+        record = _record(blocks=[block])
+        ctx = _ctx(record, event_type=EventTypes.UPDATE_RECORD.value, prev_vrid="vr-1")
+
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
+
+        assert block.id == old_id
+        assert result.block_ids_to_delete == set()
+        assert result.blocks_to_index_ids == set()
+        assert result.new_metadata["idScheme"] == ID_SCHEME
+
+    @pytest.mark.asyncio
+    async def test_metadata_of_random_ids_is_rekeyed_once(self) -> None:
+        """A record indexed before ids followed content: its old ids go and the block is indexed under its new id."""
         import hashlib
         import json as _json
 
         block = Block(index=0, type=BlockType.TEXT, data="stable-text")
-        # Reuse the same hashing formula that build_metadata applies
         payload = _json.dumps(block.data, sort_keys=True).encode("utf-8")
-        content_hash = (
-            hashlib.sha256(payload).hexdigest()
-            + ":"
-            + hashlib.md5(payload).hexdigest()
-        )
-
+        content_hash = hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
         old_metadata = {
             "hash_to_block_ids": {content_hash: ["old-id-xyz"]},
             "block_id_to_index": {"old-id-xyz": 0},
         }
         pipeline = _pipeline(blob_meta=old_metadata)
         record = _record(blocks=[block])
-        ctx = _ctx(
-            record,
-            event_type=EventTypes.UPDATE_RECORD.value,
-            prev_vrid="vr-1",
-        )
+        ctx = _ctx(record, event_type=EventTypes.UPDATE_RECORD.value, prev_vrid="vr-1")
 
         result = await IndexingPipeline.build_reconciliation_context(
             ctx, pipeline.logger, pipeline.sink_orchestrator
         )
 
-        # The new block should have taken over the old id
-        assert block.id == "old-id-xyz"
-        assert result.block_ids_to_delete == set()
-        assert result.blocks_to_index_ids == set()
+        assert block.id != "old-id-xyz"
+        assert result.blocks_to_index_ids == {block.id}
+        assert result.block_ids_to_delete == {"old-id-xyz"}
+        assert result.new_metadata["idScheme"] == "content-v1"
 
     @pytest.mark.asyncio
     async def test_reindex_event_uses_diff_path(self):
