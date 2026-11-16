@@ -147,6 +147,8 @@ class AutoInputs:
     heavy_cap: int | None
     budget: MemberBudget | None
     tick_s: float
+    plan_fleet: Ceilings | None = None  # the whole container's ceilings from the plan
+    plan_cells: int = 1
 
     def partition(self, fleet: Ceilings) -> Ceilings:
         """The Docling and query governors hold heavy parses to their service's share of the member budget."""
@@ -159,8 +161,11 @@ class AutoInputs:
             return None
         from app.capacity.controller import ElectedController
 
-        cells = max(1, int(self.resolve_kwargs.get("cells", 1)))
-        return ContainerLink(self.budget, ElectedController(self.budget, self.tick_s), fleet, cells, logger)
+        # The shared ramp belongs to the container, whichever service holds the role: the plan's fleet, shared by
+        # the plan's cells. This service's own heavy cap stays on its own gates (``partition``, ``ceilings``).
+        whole = self.plan_fleet or fleet
+        cells = max(1, self.plan_cells) if self.plan_fleet is not None else max(1, int(self.resolve_kwargs.get("cells", 1)))
+        return ContainerLink(self.budget, ElectedController(self.budget, self.tick_s), whole, cells, logger)
 
 
 def auto_inputs(worker_count: int, tick_s: float = 5.0) -> AutoInputs | None:
@@ -181,4 +186,6 @@ def auto_inputs(worker_count: int, tick_s: float = 5.0) -> AutoInputs | None:
         heavy_cap=governor.heavy_cap if governor is not None else None,
         budget=runtime.member_budget(service),
         tick_s=tick_s,
+        plan_fleet=Ceilings(*plan.fleet_ceilings) if plan.fleet_ceilings else None,
+        plan_cells=plan.cells,
     )
