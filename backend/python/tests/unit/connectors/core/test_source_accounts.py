@@ -20,6 +20,7 @@ from app.connectors.core.base.data_processor.source_accounts import (
     BUCKETS,
     SourceAccounts,
     _bucket,
+    grant_fence,
     source_accounts_key,
 )
 from app.models.entities import AppUser
@@ -752,3 +753,109 @@ async def test_a_replica_with_nothing_to_change_never_writes_an_older_marker_ver
     marker = config.saved[source_accounts_key(CONNECTOR)]
     assert marker["version"] == accounts._version, "replica A's version stands"
     assert marker["deletedChecked"] is True
+
+
+def _other_bucket(email: str) -> str:
+    return next(f"o{i}@x.com" for i in range(10_000) if _bucket(f"o{i}@x.com") != _bucket(email))
+
+
+@pytest.mark.asyncio
+async def test_a_newer_version_seen_while_rechecking_other_addresses_reloads_every_loaded_bucket(world) -> None:
+    """Process P loaded ana's bucket; process Q gives ana to a new account; P's recheck of another address takes Q's
+    version. P must still read ana's bucket again before judging a grant to her."""
+    directory, p, config = world
+    other = _other_bucket("ana@x.com")
+    await _admit(directory, p, [_user("ana@x.com", "old-oid"), _user(other, "o-oid")])
+    await p.ensure_loaded(["ana@x.com", other])
+    assert p.may_grant("ana@x.com", "old-oid")
+    q = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await _admit(directory, q, [_user("ana@x.com", "new-oid")])
+
+    await p.recheck([_grant(other, "o-oid")])
+    await p.ensure_loaded(["ana@x.com"])
+
+    assert not p.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reload_after_a_newer_version_is_tried_again(world) -> None:
+    """The newer version is taken, then the bucket read fails: the next check must read the bucket again rather than
+    trust the copy loaded under the older version."""
+    directory, p, config = world
+    await _admit(directory, p, [_user("ana@x.com", "old-oid")])
+    await p.ensure_loaded(["ana@x.com"])
+    q = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await _admit(directory, q, [_user("ana@x.com", "new-oid")])
+    real_get = config.get_config
+    bucket_key = source_accounts_key(CONNECTOR, _bucket("ana@x.com"))
+
+    async def bucket_down(key: str, *a: object, **kw: object) -> object:
+        if key == bucket_key:
+            raise ConnectionError("down")
+        return await real_get(key, *a, **kw)
+
+    config.get_config = bucket_down
+    p.loaded_at = 0.0
+    with pytest.raises(ConnectionError):
+        await p.ensure_loaded(["ana@x.com"])
+    config.get_config = real_get
+    await p.ensure_loaded(["ana@x.com"])
+
+    assert not p.may_grant("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_change_of_hands_waits_for_a_grant_write_under_way_and_removes_after_it(world) -> None:
+    """A write judged ana's grant for the old account and has not committed yet; the new account is admitted meanwhile.
+    The removal must come after that write, or the old account's grant is committed onto the new holder's user."""
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    directory.calls.clear()
+    judged, release = asyncio.Event(), asyncio.Event()
+
+    async def write() -> None:
+        async with grant_fence().shared():
+            await accounts.ensure_loaded(["ana@x.com"])
+            assert accounts.holds("ana@x.com", "old-oid")
+            judged.set()
+            await asyncio.wait_for(release.wait(), 1)
+            directory.calls.append(("write", "ana@x.com"))
+
+    async def admit() -> None:
+        await judged.wait()
+        admission = asyncio.ensure_future(_admit(directory, accounts, [_user("ana@x.com", "new-oid")]))
+        await asyncio.sleep(0.05)       # the admission has had every chance to remove first
+        release.set()
+        await admission
+
+    await asyncio.gather(write(), admit())
+
+    assert [c[0] for c in directory.calls] == ["write", "remove", "link"]
+
+
+@pytest.mark.asyncio
+async def test_a_listing_with_no_change_of_hands_does_not_wait_for_grant_writes(world) -> None:
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
+    async with grant_fence().shared():
+        await asyncio.wait_for(_admit(directory, accounts, [_user("ana@x.com", "ana-oid")]), 1)
+
+
+@pytest.mark.asyncio
+async def test_a_grant_write_waits_for_a_change_of_hands_under_way() -> None:
+    fence, order = grant_fence(), []
+    admitting = asyncio.Event()
+
+    async def admission() -> None:
+        async with fence.exclusive():
+            admitting.set()
+            await asyncio.sleep(0.05)
+            order.append("admitted")
+
+    async def write() -> None:
+        await admitting.wait()
+        async with fence.shared():
+            order.append("write")
+
+    await asyncio.gather(admission(), write())
+    assert order == ["admitted", "write"]

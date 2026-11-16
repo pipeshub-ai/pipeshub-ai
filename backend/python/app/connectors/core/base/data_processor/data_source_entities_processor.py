@@ -28,7 +28,11 @@ from app.connectors.core.base.data_processor.record_organizations import (
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
-from app.connectors.core.base.data_processor.source_accounts import NOT_SOURCE_ACCOUNTS, SourceAccounts
+from app.connectors.core.base.data_processor.source_accounts import (
+    NOT_SOURCE_ACCOUNTS,
+    SourceAccounts,
+    grant_fence,
+)
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_store.data_store import (
@@ -559,7 +563,8 @@ class DataSourceEntitiesProcessor:
         stats_token = _PENDING_RUN_STATS.set(pending_stats)
         try:
             options = {} if explicit is None else {"explicit": explicit}
-            async with self.data_store_provider.transaction(**options) as tx_store:
+            # Grants are judged and written inside: an address's change of hands waits for it (GrantFence).
+            async with grant_fence().shared(), self.data_store_provider.transaction(**options) as tx_store:
                 yield tx_store
         finally:
             _PENDING_FULL_SYNC_SEEN.reset(token)
@@ -6443,7 +6448,8 @@ class DataSourceEntitiesProcessor:
     ) -> bool:
         try:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
-            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after({connector_id}), grant_fence().shared(), \
+                    self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
                 user = await tx_store.get_user_by_email(user_email)
                 if not user:
