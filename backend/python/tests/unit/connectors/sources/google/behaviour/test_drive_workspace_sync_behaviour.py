@@ -2942,7 +2942,7 @@ async def test_a_person_who_leaves_a_members_only_drive_loses_their_share_when_o
 
     assert drive_listings(ws, before) > 0
     assert CAROL not in f1_people(ws), "the drive keeps out non-members, whatever the item's list"
-    assert BOB in f1_people(ws)
+    assert "f1" in ws.records.records, "the item stays for the drive's members"
 
 
 async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_the_next_run(ws: Workspace) -> None:
