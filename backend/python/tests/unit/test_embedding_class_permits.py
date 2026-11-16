@@ -127,3 +127,46 @@ async def test_an_encode_holds_its_member_tokens_and_returns_them(monkeypatch: p
     assert budget.snapshot()["families"]["embed"]["used"] == 0  # and gave it back
     assert budget.snapshot()["by_class"].get("embed/large", 0) == 0
     budget.close()
+
+
+async def test_a_busy_node_answers_429_with_retry_after_and_frees_its_encode_slot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No member tokens come free in time: a 429 (backpressure), not a 500, and the encode slot is not kept."""
+    from fastapi import HTTPException
+
+    d = tmp_path / "ledger"
+    d.mkdir(mode=0o700)
+    budget = MemberBudget(d, cpu_tokens=2, mem_bytes=64 << 30, floors=plan_floors(8, 2, None, 1.0, AdmissionPolicy()), service="emb")
+    monkeypatch.setattr("app.capacity.admission.member_budget", lambda *_a, **_k: budget)
+    monkeypatch.setattr(em, "EMBED_PERMIT_WAIT_S", 0.2)
+    mgr = em.ModelManager(max_concurrency=1, query_reserved_slots=0)
+
+    class Lease:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_a: object) -> None:
+            return None
+
+    monkeypatch.setattr(mgr, "_lease", lambda *_a, **_k: Lease())
+    monkeypatch.setattr(em, "model_manager", mgr)
+    from app.capacity.budget_policy import Demand
+
+    held = budget.try_reserve(Demand(Family.EMBED, 2, 0, "small"))  # the node's embed tokens are all taken
+    assert held is not None
+    request = em.EmbeddingRequest(model="m", input="x")
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(HTTPException) as err:
+        await em.create_embeddings(request, SimpleHttpRequest())
+    assert err.value.status_code == 429
+    assert err.value.headers == {"Retry-After": str(em.EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS)}
+    assert asyncio.get_running_loop().time() - started < 3.0
+    held.release()
+    # the encode slot went back: the next request is admitted at once
+    token = await asyncio.wait_for(mgr._encode_gate.acquire(BULK), 1)
+    mgr._encode_gate.release(BULK, token)
+    budget.close()
+
+
+class SimpleHttpRequest:
+    async def is_disconnected(self) -> bool:
+        return False

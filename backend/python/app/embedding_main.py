@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.validation_errors import input_free_422
 from app.capacity.admission import parse_class, reserve_or_adopt
+from app.capacity.member_budget import AdmissionTimeout
 from app.capacity.budget_policy import EMBED_WEIGHT, QUERY_EMBED_WEIGHT, Demand, Family
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
@@ -423,7 +424,11 @@ class EncodeAbandoned(Exception):
 
 
 # The longest an encode waits for its member tokens; a wait is always bounded.
-EMBED_PERMIT_WAIT_S = 600.0
+# How long an encode that holds an encode slot waits for its member tokens before it answers 429. Short on purpose:
+# the wait is spent holding an encode slot and a model lease, so a long one would let bulk requests queued for tokens
+# take every slot; a caller that is told to back off (Retry-After) retries and queues behind the others instead.
+EMBED_PERMIT_WAIT_S = 10.0
+EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 
 
 def embed_class(priority: EncodePriority, header: str | None) -> str | None:
@@ -1511,6 +1516,14 @@ async def create_embeddings(
     except EncodeAbandoned:
         # Nobody is reading this; 499 is the conventional "client closed request".
         raise HTTPException(status_code=499, detail="Client closed request") from None
+    except AdmissionTimeout:
+        # The node is busy, not broken: no member tokens came free in time. The client treats a 429 with Retry-After as
+        # backpressure (its own bounded retry), not as a failure that feeds retry counts and circuit breakers.
+        raise HTTPException(
+            status_code=429,
+            detail="Embedding capacity is busy; retry shortly.",
+            headers={"Retry-After": str(EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+        ) from None
     except Exception as exc:
         logger.exception("Embedding failed for model=%s", request.model)
         raise HTTPException(

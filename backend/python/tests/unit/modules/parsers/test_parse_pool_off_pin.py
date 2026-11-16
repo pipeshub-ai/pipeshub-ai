@@ -55,7 +55,7 @@ PARSE_POOL_ALLOWED = {
     "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
     "import:from app.modules.parse_engine import pools as class_pools",  # PARSE_ADMISSION=classes: the pool routing and the lane permit
     "import:from app.modules.parse_engine import wiring",
-    "_ParsePool.__init__", "_ParsePool._make_lane",  # one lane factory hook; the default factory builds the same _Lane (test_class_pools::test_default_lane_factory_is_the_legacy_lane)
+    "_ParsePool.__init__", "_ParsePool._make_lane",  # one lane factory hook; the default factory builds the same _Lane (test_parse_pool_classes::test_default_lane_factory_is_the_legacy_lane)
     "set_resource_governor",  # refuses PARSE_LANES=on with PARSE_ADMISSION=classes; a no-op with the flag off
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
 }

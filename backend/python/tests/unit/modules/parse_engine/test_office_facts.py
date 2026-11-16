@@ -166,3 +166,15 @@ def test_an_xlsx_cell_area_reaches_the_class_through_the_event_and_the_consumers
     ctx = wiring.ClassContext(extension="xlsx").inspected(data.pages, scanned=data.scanned, cells=data.cells)
     assert ctx.cells == cells and ctx.facts() == {"cells": cells}
     assert wiring.class_of(ctx, 2 * MIB) is not CostClass.SMALL  # 10.4 million cells in a 2 MiB file: not small
+
+
+def test_metadata_from_an_earlier_revision_never_lowers_the_class_either() -> None:
+    from app.modules.parse_engine.cost import CostHint
+
+    big = 200 * MIB
+    docx = estimate(CostInputs(FormatKind.DOCX, big, hint=CostHint(pages=1)))
+    assert docx.cls is not CostClass.SMALL, docx
+    xlsx = estimate(CostInputs(FormatKind.XLSX, big, hint=CostHint(cells=1)))
+    assert xlsx.cls is not CostClass.SMALL, xlsx
+    # a hint that agrees with a small file keeps it small
+    assert estimate(CostInputs(FormatKind.DOCX, MIB, hint=CostHint(pages=3))).cls is CostClass.SMALL

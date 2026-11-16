@@ -47,10 +47,29 @@ async def test_gate_never_reserves_twice_for_one_step() -> None:
     assert budget.reserve_calls == 1 and budget.snapshot()["used"] == 0
 
 
-async def test_ordering_ticket_holds_no_tokens() -> None:
+async def test_ordering_ticket_holds_no_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production Docling gate, built with a member budget installed in the process: its tickets order the small
+    PDFs but reserve nothing (the Docling service reserves the conversion, once). Fails if the gate starts reserving."""
+    from app.modules.parse_engine import wiring
+    from tests.unit.services.messaging.governor_test_helpers import make_test_governor
+
     budget = FakeMemberBudget(2)
-    docling = ClassGate("docling", numbers=lambda: AdmissionNumbers(), capacity=lambda: PoolCapacity(2))
+    monkeypatch.setattr("app.capacity.runtime.member_budget", lambda *_a, **_k: budget)
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    monkeypatch.setenv("PARSE_DOCLING_WIDTH", "2")
+    wiring.reset_for_tests()
+    docling = wiring.docling_gate(make_test_governor(logger_name="test.reserve"))
+    assert docling._budget is None  # an ordering gate: there is no budget for it to reserve from
     tickets = [await docling.acquire(GateRequest(CostClass.SMALL), deadline_s=1) for _ in range(2)]
     assert budget.snapshot()["used"] == 0 and budget.reserve_calls == 0
     for t in tickets:
         t.release()
+    wiring.reset_for_tests()
+
+
+async def test_a_gate_given_a_budget_does_reserve_so_the_check_above_can_fail() -> None:
+    budget = FakeMemberBudget(2)
+    gate = ClassGate("heavy_parse", numbers=lambda: AdmissionNumbers(), budget=budget, capacity=lambda: PoolCapacity(2))
+    ticket = await gate.acquire(GateRequest(CostClass.SMALL), deadline_s=1)
+    assert budget.snapshot()["used"] == 1 and budget.reserve_calls == 1  # the control: this gate reserves
+    ticket.release()

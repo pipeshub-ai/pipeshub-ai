@@ -421,3 +421,34 @@ def test_a_small_cpu_parse_never_waits_behind_a_large_one_waiting_for_a_start_to
 
     waits = asyncio.run(run())
     assert waits[-1] < 0.5, waits  # without the fix the slowest small waits 1.5-2 s for a start token
+
+
+def test_the_admission_backlog_counts_a_cost_class_record_in_the_heavy_slots() -> None:
+    """Every waiting stage is entered and left with the dispatch level, which is a cost class under classes."""
+    backlog = cc.AdmissionBacklog()
+    for level in (S, L, H):
+        for phase in (cc.PHASE_GATE, cc.PHASE_LEASE, cc.PHASE_DOWNLOAD, cc.PHASE_PARSE):
+            backlog.add(level, phase)  # a KeyError here left the waiter counted for ever
+    totals = backlog.totals()[ParseTier.HEAVY]
+    assert totals == {cc.PHASE_GATE: 3, cc.PHASE_LEASE: 3, cc.PHASE_DOWNLOAD: 3, cc.PHASE_PARSE: 3}
+    for level in (S, L, H):
+        for phase in (cc.PHASE_GATE, cc.PHASE_LEASE, cc.PHASE_DOWNLOAD, cc.PHASE_PARSE):
+            backlog.remove(level, phase)
+    assert all(v == 0 for v in backlog.totals()[ParseTier.HEAVY].values())
+
+
+def test_a_gate_waiter_of_a_cost_class_leaves_the_backlog_clean() -> None:
+    async def run() -> int:
+        h = host()
+        h.admission_backlog = cc.AdmissionBacklog()
+        ctx = wiring.class_context(msg("pdf", 150 * MIB).payload)
+        level = cc.dispatch_tier(h, msg("pdf", 150 * MIB))
+        token = cc.GateWaiterToken(h, level)
+        token.enter_gate()
+        admission = await cc.acquire_index_slot(h, level, **cc.class_kwargs(ctx))
+        token.admit()
+        cc.release_admission(admission)
+        token.release()
+        return sum(h.admission_backlog.totals()[ParseTier.HEAVY].values())
+
+    assert asyncio.run(run()) == 0

@@ -76,10 +76,18 @@ class MemoryBudget:
     Waiters are served first come, first served, except that one already
     holding its content (a record that downloaded before it could reserve)
     goes ahead of those holding none: its memory is in use either way, and
-    running it first frees it soonest. When nothing is reserved the head is
-    admitted whatever it needs, so no record waits for ever: no running record
-    would free memory, and the content other waiters hold only goes when they
-    run or give up.
+    running it first frees it soonest. Under ``PARSE_ADMISSION=classes`` a small
+    record's reservation (``ahead``) also goes ahead of big ones that hold no
+    content, in arrival order among its own kind. When nothing is reserved the
+    head is admitted whatever it needs, so no record waits for ever: no running
+    record would free memory, and the content other waiters hold only goes when
+    they run or give up.
+
+    Known limit of ``ahead``: while small reservations keep arriving and
+    overlapping, the budget never returns to nothing reserved, so a big record
+    that does not fit waits (its own timeout hands it back, uncounted, with its
+    first-wait time kept). There is no aging rule here: ageing is applied at the
+    class gate before a record reaches this budget.
     """
 
     def __init__(self) -> None:

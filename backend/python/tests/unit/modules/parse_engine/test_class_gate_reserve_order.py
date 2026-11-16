@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
+
+import pytest
 
 from app.modules.parse_engine.admission import AdmissionNumbers
-from app.modules.parse_engine.budget_port import Family
+from app.modules.parse_engine.budget_port import AdmissionTimeout, Family
 from app.modules.parse_engine.class_gate import ClassGate, GateRequest, PoolCapacity
 from app.modules.parse_engine.cost import CostClass
 from tests.support.fake_member_budget import FakeMemberBudget
@@ -52,3 +55,49 @@ async def test_a_unit_refused_by_the_ledger_does_not_count_as_running_and_starve
     await asyncio.gather(blocked, return_exceptions=True)
     for p in held:
         p.release()
+
+
+async def test_a_policy_timer_admits_a_waiter_even_when_nothing_else_changes() -> None:
+    """Small demand stops being recent: the big share rises from the recent cap to the borrow cap with no event."""
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    numbers = AdmissionNumbers(small_recent_s=0.4)
+    gate = ClassGate("heavy_parse", numbers=lambda: numbers, capacity=lambda: PoolCapacity(10))
+    small = await gate.acquire(GateRequest(cls=S, est_seconds=10.0), deadline_s=1)
+    big = [await gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1) for _ in range(5)]  # up to the recent cap
+    small.release()
+    blocked = asyncio.create_task(gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=5))
+    await asyncio.sleep(0.15)
+    assert not blocked.done()  # the sixth large is over the recent cap while small demand is recent
+    started = time.monotonic()
+    permit = await asyncio.wait_for(blocked, 4)  # no release, no capacity change: only the clock moved
+    assert time.monotonic() - started < 2.0
+    permit.release()
+    for p in big:
+        p.release()
+
+
+async def test_the_class_cap_applies_to_the_whole_weight_of_a_request_in_an_ordering_gate() -> None:
+    """Capacity 10, small demand recent: large work stops at 5. A request of weight 2 over four running is refused."""
+    gate = ClassGate("heavy_parse", numbers=lambda: N, capacity=lambda: PoolCapacity(10))
+    (await gate.acquire(GateRequest(cls=S, est_seconds=10.0), deadline_s=1)).release()  # small demand is now recent
+    running = [await gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1) for _ in range(4)]
+    heavy = asyncio.create_task(gate.acquire(GateRequest(cls=L, cpu=2, est_seconds=120.0), deadline_s=0.4))
+    await settle()
+    await asyncio.sleep(0.2)
+    assert not heavy.done()  # 4 + 2 would be 6 large tokens against a cap of 5
+    assert gate.running(L) == 4
+    one = await asyncio.wait_for(gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1), 1)  # 4 + 1 fits
+    assert gate.running(L) == 5
+    with pytest.raises(AdmissionTimeout):  # the weight-2 request times out, it was never granted
+        await heavy
+    one.release()
+    for p in running:
+        p.release()
+
+
+async def test_a_class_with_nothing_running_takes_a_unit_heavier_than_its_ceiling() -> None:
+    gate = ClassGate("heavy_parse", numbers=lambda: N, capacity=lambda: PoolCapacity(4))
+    permit = await asyncio.wait_for(gate.acquire(GateRequest(cls=L, cpu=3, est_seconds=120.0), deadline_s=1), 1)
+    assert gate.running(L) == 3
+    permit.release()

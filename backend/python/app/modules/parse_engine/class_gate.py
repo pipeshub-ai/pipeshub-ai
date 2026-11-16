@@ -178,6 +178,7 @@ class ClassGate:
         self.grants: deque[GrantRecord] = deque(maxlen=log_size)
         self.upgrades = 0
         self._seen_capacity: PoolCapacity | None = None
+        self._repump_at = float("inf")  # the next time the policy changes by the clock alone (see ``_pump``)
 
     # -- public ---------------------------------------------------------
 
@@ -207,6 +208,8 @@ class ClassGate:
                     if w.future.done():
                         break
                 await asyncio.wait({w.future}, timeout=_POLL_S if left is None else min(_POLL_S, left))
+                if not w.future.done() and self._clock() >= self._repump_at:
+                    self._pump()  # a timer of the policy (small demand no longer recent, aging) came due
             inner: Permit | None = None
             if self._budget is not None:
                 left = None if end is None else max(0.0, end - self._clock())
@@ -352,6 +355,27 @@ class ClassGate:
         return out
 
     def _pump(self) -> None:
+        self._pump_grants()
+        self._repump_at = self._next_policy_change()
+
+    def _next_policy_change(self) -> float:
+        """When a rule of the admission policy next changes by the clock alone: small demand stops being recent (the
+        big share rises) or the oldest waiting big record reaches the aging threshold. Waiters recheck then, even if
+        no capacity moved."""
+        numbers = self._numbers()
+        now = self._clock()
+        due = float("inf")
+        if self._last_small > float("-inf") and not self._running[CostClass.SMALL]:
+            expiry = self._last_small + numbers.small_recent_s
+            if expiry > now:
+                due = min(due, expiry)
+        for cls in _BIG:
+            oldest = self._oldest_wait(cls, now)
+            if 0.0 < oldest < numbers.aging_s:
+                due = min(due, now + (numbers.aging_s - oldest))
+        return due
+
+    def _pump_grants(self) -> None:
         numbers = self._numbers()
         while True:
             cap = self._capacity_now()
@@ -384,6 +408,10 @@ class ClassGate:
                 if g.cls is CostClass.HUGE:
                     # One ceiling per class: huge work can never take large's share.
                     w.ceiling = min(w.ceiling, slots(numbers.huge_cap, P))
+                if self._budget is None and self._running[g.cls] and self._running[g.cls] + w.req.cpu > w.ceiling:
+                    # An ordering gate has no ledger to enforce the class ceiling: apply it to the whole weight of the
+                    # request. A class with nothing running still takes a unit heavier than its ceiling, alone.
+                    return
             self.grants.append(GrantRecord(g.cls, g.rule, {c: self.waiting(c) for c in CostClass}))
             self._dequeue(w)
             w.claimed = True

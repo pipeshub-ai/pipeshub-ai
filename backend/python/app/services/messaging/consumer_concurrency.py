@@ -229,6 +229,12 @@ _SLOT = {
 _SUM = 8
 
 
+def _backlog_tier(level: "ParseTier | CostClass") -> ParseTier:
+    """Under ``PARSE_ADMISSION=classes`` a heavy-format record's dispatch level is its cost class; the backlog counts
+    those records in the heavy tier's slots."""
+    return ParseTier.HEAVY if isinstance(level, CostClass) else level
+
+
 class AdmissionBacklog:
     """Live counts of records waiting at each admission stage, per tier, and of waiters per lease pool.
 
@@ -256,6 +262,7 @@ class AdmissionBacklog:
                 logging.getLogger(__name__).exception("admission backlog observer failed; its errors are ignored")
 
     def add(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        tier = _backlog_tier(tier)
         with self._lock:
             self._totals[_SLOT[tier, phase]] += 1
             if pool is not None:
@@ -264,6 +271,7 @@ class AdmissionBacklog:
             self._observed("entered", tier, phase, message)
 
     def remove(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        tier = _backlog_tier(tier)
         with self._lock:
             self._totals[_SLOT[tier, phase]] -= 1
             if pool is not None:

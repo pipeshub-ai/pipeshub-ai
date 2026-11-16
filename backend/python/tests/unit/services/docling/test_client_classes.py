@@ -4,6 +4,8 @@ and the governor's downstream feedback sees no incident). With classes off nothi
 """
 from __future__ import annotations
 
+import asyncio
+
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -122,3 +124,28 @@ async def test_without_classes_a_429_still_signals_the_coordinator_and_nothing_i
     assert result == "{}"
     _fresh.signal.assert_called_once()
     assert "X-Parse-Class" not in sent[-1] and PARSE_DEADLINE_HEADER not in sent[-1]
+
+
+async def test_a_retry_after_a_retry_after_wait_is_admitted_again_at_the_reduced_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Four admitted calls are all told to wait: their retries must not all go out at the limit they started with."""
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    pools.set_class(CostClass.SMALL)
+    engine = shared_docling_engine()
+    client = DoclingClient(service_url="http://docling.test")
+    ok = httpx.Response(200, json={"success": True, "parse_result": "{}"}, request=httpx.Request("POST", "http://x"))
+    throttled = httpx.Response(429, headers={"Retry-After": "1"}, request=httpx.Request("POST", "http://x"))
+    calls = {"n": 0}
+    over: list[tuple[int, int]] = []
+    async def request(_self: object, _method: str, _url: str, **_kw: object) -> httpx.Response:
+        calls["n"] += 1
+        await asyncio.sleep(0.01)  # a real call is not instantaneous: the others are in flight too
+        if calls["n"] > 4 and engine.in_flight > engine.limit:
+            over.append((engine.in_flight, engine.limit))
+        return throttled if calls["n"] <= 4 else ok
+
+    with patch.object(httpx.AsyncClient, "request", request):  # the Retry-After wait (about a second) is real
+        results = await asyncio.gather(*(client.parse_pdf(f"{i}.pdf", PDF) for i in range(4)))
+    assert results == ["{}"] * 4
+    assert engine.limit < 4  # the throttles reduced it
+    assert over == []  # every retry was admitted at the reduced limit, not at the one the call began with
+    assert engine.in_flight == 0

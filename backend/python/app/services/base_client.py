@@ -6,6 +6,7 @@ to get consistent retry/timeout/error-handling behaviour.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -418,6 +419,11 @@ class BaseServiceClient:
             limits=self._limits,
         )
 
+    def _attempt_slot(self) -> contextlib.AbstractAsyncContextManager[Any]:
+        """Admission for one HTTP attempt. None by default; a client with a concurrency limiter overrides it, so a
+        retry (after a backoff or a ``Retry-After`` wait) is admitted again at the limit then in force."""
+        return contextlib.nullcontext()
+
     async def _request_with_retry(
         self,
         method: str,
@@ -534,7 +540,8 @@ class BaseServiceClient:
                     if data is not None:
                         kwargs["data"] = data
 
-                    response = await client.request(method, url, **kwargs)
+                    async with self._attempt_slot():
+                        response = await client.request(method, url, **kwargs)
                     last_status = response.status_code
                     # A 429 with Retry-After is the service declining before any work; every other answer may
                     # have done some.

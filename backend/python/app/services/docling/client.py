@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.exceptions.indexing_exceptions import IndexingError
 from app.models.blocks import BlocksContainer
@@ -236,24 +237,22 @@ class DoclingClient(BaseServiceClient):
             headers[PARSE_DEADLINE_HEADER] = str(int(docling_deadline_s(current_est_seconds() or 0.0) * 1000))
         return headers
 
+    def _attempt_slot(self) -> contextlib.AbstractAsyncContextManager[Any]:
+        """Under classes every HTTP attempt takes a slot of the Docling limiter, so a retry after a ``Retry-After``
+        wait is admitted again at the limit that wait reduced, not at the one it started with."""
+        return self._limiter.slot() if self._limiter is not None else super()._attempt_slot()
+
     async def _call_parse_pdf(self, record_name: str, pdf_binary: bytes, form_data: dict) -> httpx.Response:
-        """One ``/parse-pdf`` call; under classes it holds a slot of the Docling limiter for its duration."""
-        if self._limiter is None:
-            return await self._post_multipart(
-                "/parse-pdf",
-                files={"file": (record_name, pdf_binary, "application/pdf")},
-                data=form_data,
-                operation=f"parse_pdf({record_name})",
-            )
-        async with self._limiter.slot():
-            response = await self._post_multipart(
-                "/parse-pdf",
-                files={"file": (record_name, pdf_binary, "application/pdf")},
-                data=form_data,
-                operation=f"parse_pdf({record_name})",
-                extra_headers=self._class_headers(),
-            )
-        self._limiter.on_success()
+        """One ``/parse-pdf`` call; under classes each HTTP attempt holds a slot of the Docling limiter."""
+        response = await self._post_multipart(
+            "/parse-pdf",
+            files={"file": (record_name, pdf_binary, "application/pdf")},
+            data=form_data,
+            operation=f"parse_pdf({record_name})",
+            extra_headers=self._class_headers() if self._limiter is not None else None,
+        )
+        if self._limiter is not None:
+            self._limiter.on_success()
         return response
 
     async def parse_pdf(
