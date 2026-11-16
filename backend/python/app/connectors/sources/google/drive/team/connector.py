@@ -3022,8 +3022,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Its own removal, or a folder above it, settled nothing (nothing stored, or a folder this sync deleted
                 # may hold it): kept, minus this user, only if someone else still opens it. Drive reports a folder's
                 # removal alone, and a read by id of an item this user cannot open finds nothing, so a record left
-                # out here when someone else opens it would never be written.
-                verdict = "lost" if await self._another_can_open_unstored(record, perms, w.user_email) else "deleted"
+                # out here when someone else opens it would never be written. Undecided is kept too: a record left out
+                # on a guess is lost for good, one kept is settled by later reads.
+                opened = await self._another_can_open_unstored(record, perms, w.user_email)
+                verdict = "deleted" if opened is False else "lost"
             if verdict in ("deleted", "unknown"):
                 if failed is not None:
                     failed.add(record.external_record_id)
@@ -3043,59 +3045,66 @@ class GoogleDriveTeamConnector(BaseConnector):
         if kept:
             await self.data_entities_processor.on_new_records(kept)
 
-    async def _another_can_open_unstored(self, record: Record, perms: list, reporter: str) -> bool:
+    async def _another_can_open_unstored(self, record: Record, perms: list, reporter: str) -> bool | None:
         """Whether someone other than the reporter can still open the file of a new record the sync's own removal
-        found nothing stored for. Drive is asked before anything is decided:
-        - each active synced user named on its grants, directly or through a directory group: one who opens it says
-          yes, and a read that finds it in the trash says no for everyone;
-        - up to AUDIENCE_PROBES people of each audience on it (a discoverable domain or "anyone" share, stored as a
-          group grant), as for a stored record (`_another_synced_user_can_open`): one who opens it says yes, a "not
-          found" leaves that share out, and any other answer leaves it unknown.
-        A directory group whose members will not list, or an audience nobody asked could answer for, may still open
-        it and counts as yes, unless every answer read was "cannot open". A failed read of a named user counts as no:
-        the record is read again by id."""
-        named: set[str] = set()
-        audiences: list[str] = []
-        unknown = False
+        found nothing stored for, decided share by share from Drive's answers:
+        - a user share: that user is asked (files.get);
+        - a directory group share: each of its active synced members is asked; a group the directory will not list,
+          or with nobody synced to ask, is unknown;
+        - an audience share (a discoverable domain or "anyone" share, stored as a group grant): up to AUDIENCE_PROBES
+          people of it are asked, as for a stored record (`_another_synced_user_can_open`).
+        True when any share is still open to someone. False when a read finds the file in the trash (for everyone),
+        or when every share answered a definite "cannot open" (not found, a known refusal). Otherwise None: a share
+        could not be decided (a failed read, an unlistable group, an audience nobody answered for), which is never
+        taken as "nobody can"."""
+        by_email = {u.email.lower(): u for u in self.synced_users if u.email and u.is_active}
+        synced = await self._synced_user_emails()
+        sources: dict[str, GoogleDriveDataSource] = {}
+        states: dict[str, str | None] = {}  # email -> "open" / "trashed" / "unable" / None (the read failed)
+
+        async def state_of(email: str) -> str | None:
+            if email not in states:
+                try:
+                    states[email] = await self._file_state_for(record, by_email[email], sources)
+                except Exception as e:
+                    self.logger.warning(f"Could not ask whether {record.external_record_id} is still open: {e}")
+                    states[email] = None
+            return states[email]
+
+        verdicts: list[bool | None] = []  # per share: True open, False a definite no, None undecided
         for p in perms:
             if p.entity_type == EntityType.USER and p.email:
-                named.add(p.email.lower())
+                email = p.email.lower()
+                if email == reporter:
+                    continue
+                people = [email] if email in by_email else []
             elif p.entity_type == EntityType.GROUP and (group_id := p.email or p.external_id):
                 if _is_audience_group(group_id):
-                    audiences.append(group_id)
+                    pool = [e for part in self._audience_people(group_id) for e in part]
+                    pool = [e for e in dict.fromkeys(pool) if e in synced and e in by_email and e != reporter]
+                    asked = secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES, len(pool)))
+                    answers = [await self._audience_member_can_open(record, by_email[e], sources) for e in asked]
+                    verdicts.append(True if any(answers) else (False if asked and all(a is False for a in answers) else None))
                     continue
                 members = await self._synced_group_members(group_id)
+                people = sorted(e for e in members or () if e in by_email and e != reporter)
                 if members is None:
-                    unknown = True
+                    verdicts.append(None)
                     continue
-                named |= members
-        sources: dict[str, GoogleDriveDataSource] = {}
-        by_email = {u.email.lower(): u for u in self.synced_users if u.email and u.is_active}
-        answered_unable = 0
-        for email in sorted(named - {reporter}):
-            if email not in by_email:
+            else:
                 continue
-            try:
-                state = await self._file_state_for(record, by_email[email], sources)
-            except Exception as e:
-                self.logger.warning(f"Could not ask whether {record.external_record_id} is still open: {e}")
+            if not people:
+                verdicts.append(None)  # nobody synced to ask: someone outside may still open it
+                continue
+            found = [await state_of(e) for e in people]
+            if "trashed" in found:
                 return False
-            if state == "open":
-                return True
-            if state == "trashed":
-                return False
-            answered_unable += 1
-        synced = await self._synced_user_emails()
-        for group_id in dict.fromkeys(audiences):
-            pool = [e for people in self._audience_people(group_id) for e in people if e in synced and e in by_email]
-            pool = [e for e in dict.fromkeys(pool) if e != reporter]
-            asked = secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES, len(pool)))
-            answers = [await self._audience_member_can_open(record, by_email[e], sources) for e in asked]
-            if any(answers):
-                return True
-            answered_unable += sum(1 for a in answers if a is False)
-            unknown = unknown or not asked or any(a is None for a in answers)
-        return unknown and not answered_unable
+            verdicts.append(True if "open" in found else (False if all(f == "unable" for f in found) else None))
+        if any(v is True for v in verdicts):
+            return True
+        if all(v is False for v in verdicts):
+            return False
+        return None
 
     async def _withdrawal_verdict(
         self, record: Record, parents: dict[str, str | None], w: _SyncWithdrawals, stored: dict[str, Record | None]

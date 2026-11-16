@@ -4329,6 +4329,40 @@ async def test_a_new_record_shared_with_an_audience_a_person_of_it_still_opens_i
     assert [p.external_id for p in written[0][1]] == ["domain-members:example.com"], "without Alice"
 
 
+async def test_a_named_readers_not_found_does_not_drop_a_new_record_an_unlisted_group_may_open(ws: Workspace) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    await ws.sync()
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(email=BOB, type=PermissionType.READ, entity_type=EntityType.USER),  # Bob's read: not found
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("k", "root-carol"), grants, unsettled="k")
+
+    assert [r.external_record_id for r, _ in written] == ["k"], "the group's share is undecided: kept, not dropped"
+    assert ALICE not in {p.email for p in written[0][1]}
+
+
+async def test_a_failed_read_does_not_stop_an_audience_that_opens_a_new_record_from_keeping_it(ws: Workspace) -> None:
+    dave = "dave@example.com"
+    ws.world.add_user(dave)
+    ws.records.active_users.append(User(id="u-dave", email=dave, is_active=True))
+    ws.world.add_item("a", "a.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    ws.http.fail("GET", "/drive/v3/files/a", 500, "backendError", when=lambda r: r.identity == BOB)
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(email=BOB, type=PermissionType.OWNER, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("a", "root-bob"), grants, unsettled="a")
+
+    assert [r.external_record_id for r, _ in written] == ["a"], "Dave, of the domain, still opens it"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (
