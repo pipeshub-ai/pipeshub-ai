@@ -90,6 +90,19 @@ class TestIndexAndParseCeiling:
         assert concurrency.parse_lease_pool(ParseTier.LIGHT) == concurrency.parse_lease_pool(ParseTier.HEAVY) == "parsing"
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == concurrency.parse_ceiling(host, ParseTier.HEAVY) == 6
 
+    def test_two_indexing_pods_share_one_remote_lease_of_n(self, monkeypatch) -> None:
+        """Every record of every pod, whatever its tier, takes the same cluster lease pool at the same limit:
+        the cluster-wide count of remote parses is that one counter's limit, N, not N per tier."""
+        monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+        monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "6")
+        pods = [_host(governor=_make_governor()), _host(governor=_make_governor(cpu_quota=16.0))]
+        taken = {
+            (concurrency.parse_lease_pool(tier), concurrency.parse_ceiling(pod, tier))
+            for pod in pods
+            for tier in (ParseTier.HEAVY, ParseTier.LIGHT, None)
+        }
+        assert taken == {("parsing", 6)}
+
     def test_remote_fleet_lease_is_the_configured_number_not_the_local_ceiling(self, monkeypatch) -> None:
         """A local heavy ceiling above PARSING_SERVICE_CONCURRENCY must not widen the fleet lease."""
         monkeypatch.setenv("USE_PARSING_SERVICE", "true")

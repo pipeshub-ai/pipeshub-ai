@@ -144,6 +144,8 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-parsing 'value: "8"' present 'name: PARSING_SERVICE_CONCURRENCY'
   expect local-parsing 'name: PARSING_UVICORN_WORKERS' present 'name: PIPESHUB_ROLE'
   expect local-parsing 'path: /health/ready' present 'name: PIPESHUB_ROLE'
+  # A scale-down or rollout gives an in-flight parse this long to finish before the kill.
+  expect local-parsing 'terminationGracePeriodSeconds: 120' present 'name: PIPESHUB_ROLE'
   # The parsing pods must not match the main Deployment's selector (its autoscaler would measure them).
   expect local-parsing 'app.kubernetes.io/name: pipeshub-ai-parsing' present 'name: ci-pipeshub-ai-parsing'
   expect local-parsing 'kind: NetworkPolicy' absent 'name: ci-pipeshub-ai-parsing'
