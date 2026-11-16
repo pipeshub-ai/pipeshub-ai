@@ -25,7 +25,12 @@ from app.services.paid_cache.locks import (
     InProcessLocks,
     RedisLocks,
 )
-from app.services.paid_cache.repurge import repurge_event_payload, schedule_repurge
+from app.services.paid_cache.repurge import (
+    org_repurge_event_payload,
+    repurge_event_payload,
+    schedule_org_repurge,
+    schedule_repurge,
+)
 from app.services.paid_cache.run import RunScope, clear_run
 from tests.support.paid_cache import MemoryResultStore
 from tests.support.record_handler import make_record_handler
@@ -304,3 +309,93 @@ async def test_a_flush_that_races_the_final_manifest_does_not_bring_the_open_one
 
     assert (ORG, REC, "manifests/rev/parse.json") in store.files
     assert (ORG, REC, "manifests/rev/parse.open.json") not in store.files
+
+
+# -- the org purge schedules one delayed re-purge for the org (D-156) -----------------------------------------------
+
+def _org_handler(producer: Any) -> Any:  # noqa: ANN401 - an EntityEventService over mocks
+    from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+    handler = EntityEventService.__new__(EntityEventService)
+    handler.logger = logging.getLogger("org-purge-test")
+    handler.app_container = MagicMock()
+    handler.app_container.messaging_producer = producer
+    return handler
+
+
+async def test_an_org_purge_publishes_one_delayed_org_repurge_and_no_per_record_events(world: Any) -> None:  # noqa: ANN401
+    producer = AsyncMock()
+    before = time.time()
+
+    await schedule_org_repurge(producer, ORG)
+
+    producer.send_event.assert_awaited_once()
+    sent = producer.send_event.await_args.kwargs
+    assert (sent["topic"], sent["event_type"], sent["key"]) == ("record-events", "purgePaidResults", ORG)
+    assert sent["payload"]["scope"] == "org" and "recordId" not in sent["payload"]
+    assert sent["payload"]["_retry_not_before"] - before == pytest.approx(REPURGE_DELAY_S, abs=5)
+    with pytest.raises(RuntimeError):
+        await schedule_org_repurge(None, ORG)
+
+
+async def test_a_late_write_after_an_org_purge_is_removed_by_the_org_repurge(world: Any) -> None:  # noqa: ANN401
+    store, locks, cache = world
+    producer = AsyncMock()
+    store.files[(ORG, REC, KEY.relative_path())] = (b"{}", 1)
+    store.files[("org-2", REC, KEY.relative_path())] = (b"{}", 1)
+    await cache.purge_org(ORG)
+    await schedule_org_repurge(producer, ORG)
+    locks._held.clear()                                   # Redis restarted: the org marker is gone
+
+    async def compute() -> str:
+        return "late"
+
+    for rec in ("rec-1", "rec-9"):                        # orphaned parses of two records of the deleted org
+        await cache.get_or_compute(CacheKey(ORG, rec, "ocr_page", 1, "m", "p", "q", "late"), compute)
+    assert store.paths(ORG, "rec-1") != [] and store.paths(ORG, "rec-9") != []
+
+    delivered = producer.send_event.await_args.kwargs
+    events = await _signed(_handler(), delivered["event_type"], delivered["payload"])
+
+    assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+    assert store.paths(ORG, "rec-1") == [] and store.paths(ORG, "rec-9") == []
+    assert store.paths("org-2", REC) != []
+
+
+async def test_an_org_repurge_takes_its_org_from_the_envelope_not_the_body(world: Any) -> None:  # noqa: ANN401
+    store, _locks, _cache = world
+    store.files[(ORG, REC, KEY.relative_path())] = (b"{}", 1)
+    store.files[("org-2", REC, KEY.relative_path())] = (b"{}", 1)
+
+    await _signed(_handler(), "purgePaidResults", org_repurge_event_payload(ORG), org="org-2")
+
+    assert store.paths("org-2", REC) == [] and store.paths(ORG, REC) != []
+
+
+async def test_an_unsigned_org_repurge_fails_closed(world: Any) -> None:  # noqa: ANN401
+    with pytest.raises(MissingOrgContext):
+        await _events(_handler(), "purgePaidResults", org_repurge_event_payload(ORG))
+
+
+async def test_the_org_delete_handler_purges_then_schedules_the_org_repurge(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
+    from app.services.messaging.kafka.handlers import entity
+
+    store, _locks, _cache = world
+    store.files[(ORG, REC, KEY.relative_path())] = (b"{}", 1)
+    producer = AsyncMock()
+    handler = _org_handler(producer)
+    handler.graph_provider = AsyncMock()
+    handler._remove_mcp_data = AsyncMock()
+    handler._remove_personal_toolsets = AsyncMock()
+    handler._remove_api_toolset_data = AsyncMock()
+    monkeypatch.setattr(entity, "notify_principals_changed", AsyncMock())
+
+    assert await handler._handle_org_deleted({"orgId": ORG}) is True
+
+    assert store.paths(ORG, REC) == []
+    producer.send_event.assert_awaited_once()
+    assert producer.send_event.await_args.kwargs["payload"]["scope"] == "org"
+
+    producer.send_event.side_effect = ConnectionError("broker down")
+    with pytest.raises(ConnectionError):                  # not acknowledged: the delete event is redelivered
+        await handler._handle_org_deleted({"orgId": ORG})

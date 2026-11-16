@@ -106,6 +106,7 @@ async def test_an_org_delete_removes_the_orgs_whole_folder(store: MemoryResultSt
 
     _seed(store)
     app_container = MagicMock()
+    app_container.messaging_producer = AsyncMock()
     service = EntityEventService(MagicMock(), AsyncMock(), app_container)
     service._remove_mcp_data = AsyncMock()
     service._remove_personal_toolsets = AsyncMock()
@@ -122,7 +123,7 @@ async def test_an_org_delete_whose_purge_fails_is_redelivered(store: MemoryResul
 
     _seed(store)
     store.failing = {"purge"}
-    service = EntityEventService(MagicMock(), AsyncMock(), MagicMock())
+    service = EntityEventService(MagicMock(), AsyncMock(), MagicMock(messaging_producer=AsyncMock()))
     service._remove_mcp_data = AsyncMock()
     service._remove_personal_toolsets = AsyncMock()
     service._remove_api_toolset_data = AsyncMock()

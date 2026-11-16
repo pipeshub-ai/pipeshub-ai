@@ -89,3 +89,26 @@ async def test_the_lock_and_delete_marker_keys_carry_the_namespace_on_a_real_red
     assert await RedisLocks(redis, "other").is_marked(deleted_name("org-ns", "rec-ns")) is False
     await locks.release(name, token)
     await redis.delete("idxs-ns:pc:deleted:{org-ns:rec-ns}")
+
+
+async def test_ownership_is_one_compare_on_the_token_and_a_stolen_lock_is_not_stored(redis, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    locks = RedisLocks(redis)
+    name = lock_name("org-1", "rec-2", "f" * 64)
+    token = await locks.acquire(name, 5000)
+    assert token is not None
+    assert await locks.owns(name, token) is True
+    assert await locks.owns(name, "not-the-token") is False
+    await redis.set(name, "another-payer", px=5000)         # Redis lost the lock and another payer took it
+    assert await locks.owns(name, token) is False
+    await redis.delete(name)
+
+    store = MemoryResultStore()
+    cache = PaidResultCache(store, locks)
+    key = CacheKey("org-1", "rec-2", "ocr_page", 1, "m", "p", "q", "i")
+
+    async def compute() -> str:
+        await redis.set(lock_name(key.org_id, key.record_id, key.digest()), "another-payer", px=5000)
+        return "text"
+
+    assert await cache.get_or_compute(key, compute) == "text"
+    assert store.results("org-1", "rec-2") == []

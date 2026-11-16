@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 LOCK_TTL_MS = 120_000
 
 _RENEW_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end return 0"
+_OWNS_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return 1 end return 0"
 _RELEASE_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
 
 
@@ -50,6 +51,9 @@ class LockBackend(Protocol):
 
     async def renew(self, name: str, token: str, ttl_ms: int) -> bool: ...
 
+    async def owns(self, name: str, token: str) -> bool:
+        """True while this token still holds the lock (one atomic compare). Raises when unreachable."""
+
     async def release(self, name: str, token: str) -> None: ...
 
     async def mark(self, name: str, ttl_ms: int) -> None:
@@ -77,6 +81,9 @@ class RedisLocks:
 
     async def renew(self, name: str, token: str, ttl_ms: int) -> bool:
         return bool(await self._client.eval(_RENEW_LUA, 1, self.key_of(name), token, ttl_ms))  # type: ignore[misc]
+
+    async def owns(self, name: str, token: str) -> bool:
+        return bool(await self._client.eval(_OWNS_LUA, 1, self.key_of(name), token))  # type: ignore[misc]
 
     async def release(self, name: str, token: str) -> None:
         await self._client.eval(_RELEASE_LUA, 1, self.key_of(name), token)  # type: ignore[misc]
@@ -112,6 +119,10 @@ class InProcessLocks:
             return False
         self._held[name] = (token, self._clock() + ttl_ms / 1000)
         return True
+
+    async def owns(self, name: str, token: str) -> bool:
+        held = self._held.get(name)
+        return held is not None and held[0] == token and held[1] > self._clock()
 
     async def release(self, name: str, token: str) -> None:
         held = self._held.get(name)

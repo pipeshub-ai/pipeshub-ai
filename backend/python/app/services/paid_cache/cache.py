@@ -307,14 +307,21 @@ class PaidResultCache:
                     self._count(key, "hit")
                     await self._note(scope, key, path, stored=False)
                     return value
-            renewal = lock.keep_alive() if lock is not None and lock.token is not None else None
+            held = lock if lock is not None and lock.token is not None else None
+            if held is not None:
+                held.start_heartbeat()
             try:
                 result = await compute()
             finally:
-                if renewal is not None:
-                    renewal.cancel()
+                if held is not None:
+                    await held.stop_heartbeat()
             value, keep = (result.value, False) if isinstance(result, NotCached) else (result, not _is_empty(result))
-            if keep:
+            if keep and held is not None and not await held.still_owned():
+                # The lease was lost while the call ran: another payer may hold the key now, so this result is
+                # handed back to the caller (counted once) and not stored.
+                self._count(key, "lock_lost")
+                self.logger.warning("Paid-result lock for %s was lost during the call; the result is not stored", key.kind)
+            elif keep:
                 await self._store_result(key, path, value, scope, overwrite=unusable or refresh)
             else:
                 self._count(key, "not_cached")
@@ -429,18 +436,40 @@ class _Held:
         self._name = name
         self.token = token
         self._logger = logger
+        self._heartbeat: asyncio.Task[None] | None = None
+        #: Set when a renewal found the lock gone or taken.
+        self.lost = False
 
-    def keep_alive(self) -> "asyncio.Task[None]":
-        async def renew() -> None:
-            while True:
-                await asyncio.sleep(LOCK_TTL_MS / 3000)
-                try:
-                    if self.token is not None and not await self._backend.renew(self._name, self.token, LOCK_TTL_MS):
-                        return
-                except Exception:
-                    self._logger.debug("Paid-result lock renewal failed", exc_info=True)
+    def start_heartbeat(self) -> None:
+        """Renews the lock's TTL about every third of it while the holder's paid call runs."""
+        self._heartbeat = spawn_in_request(self._renew_loop(), name="paid-cache-lock-renewal")
 
-        return spawn_in_request(renew(), name="paid-cache-lock-renewal")
+    async def _renew_loop(self) -> None:
+        while True:
+            await asyncio.sleep(LOCK_TTL_MS / 3000)
+            try:
+                if self.token is not None and not await self._backend.renew(self._name, self.token, LOCK_TTL_MS):
+                    self.lost = True
+                    return
+            except Exception:
+                self._logger.debug("Paid-result lock renewal failed", exc_info=True)
+
+    async def stop_heartbeat(self) -> None:
+        """Ends the timer and waits for it: no task outlives the call, whatever ended it."""
+        task, self._heartbeat = self._heartbeat, None
+        if task is not None:
+            task.cancel()
+            await asyncio.wait([task])
+
+    async def still_owned(self) -> bool:
+        """One atomic compare on the token. A lock that cannot be asked is treated as lost: nothing is stored."""
+        if self.lost or self.token is None:
+            return False
+        try:
+            return await self._backend.owns(self._name, self.token)
+        except Exception:
+            self._logger.debug("Paid-result lock ownership check failed", exc_info=True)
+            return False
 
     async def release(self) -> None:
         if self.token is None:

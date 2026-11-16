@@ -114,6 +114,7 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
+from app.services.paid_cache.repurge import ORG_SCOPE
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
@@ -1777,6 +1778,11 @@ class RecordEventHandler(BaseEventService):
                 # The org is the signed envelope's (bound by the consumer), never a field of the body; an unbound
                 # message fails closed.
                 purge_org, purge_record_id = current_org_id(), payload.get("recordId")
+                if payload.get("scope") == ORG_SCOPE and not purge_record_id:
+                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_org(purge_org)
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_org))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_org))
+                    return
                 if not purge_record_id:
                     raise ProcessingError(
                         "purgePaidResults carries no recordId",
