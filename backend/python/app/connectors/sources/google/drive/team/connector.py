@@ -3081,16 +3081,21 @@ class GoogleDriveTeamConnector(BaseConnector):
                 people = [email] if email in by_email else []
             elif p.entity_type == EntityType.GROUP and (group_id := p.email or p.external_id):
                 if _is_audience_group(group_id):
-                    # As for a stored record: the people the share always holds first, then those it may reach;
-                    # only a "not found" from the first is a no for the share.
-                    found: list[list[bool | None]] = []
+                    # As for a stored record: the people the share always holds first, then those it may reach.
+                    # The trash, seen by anyone, is a no for everyone; a "not found" is a no for the share only from
+                    # the first.
+                    found: list[list[str | None]] = []
                     left = AUDIENCE_PROBES
                     for people in self._audience_people(group_id):
                         pool = [e for e in people if e in synced and e in by_email and e != reporter]
                         asked = secrets.SystemRandom().sample(pool, min(left, len(pool)))
                         left -= len(asked)
-                        found.append([await self._audience_member_can_open(record, by_email[e], sources) for e in asked])
-                    verdicts.append(True if any(a for part in found for a in part) else (False if False in found[0] else None))
+                        found.append([await self._audience_member_state(record, by_email[e], sources) for e in asked])
+                    if any("trashed" in part for part in found):
+                        return False
+                    verdicts.append(
+                        True if any("open" in part for part in found) else (False if "not_found" in found[0] else None)
+                    )
                     continue
                 members = await self._synced_group_members(group_id)
                 people = sorted(e for e in members or () if e in by_email and e != reporter)
@@ -4439,19 +4444,26 @@ class GoogleDriveTeamConnector(BaseConnector):
     ) -> bool | None:
         """Whether a person of an audience can open the file. Only "not found" (or the trash) is a no: a refusal can
         come from the person's own settings, such as Drive turned off for them. None for that and any other error."""
+        state = await self._audience_member_state(record, user, sources)
+        return None if state is None else state == "open"
+
+    async def _audience_member_state(
+        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
+    ) -> str | None:
+        """`_audience_member_can_open` with the trash told apart: "open", "trashed", "not_found", or None."""
         try:
             source = sources.get(user.email) or await self._build_user_drive_data_source(user)
             sources[user.email] = source
             metadata = await source.files_get(fileId=record.external_record_id, supportsAllDrives=True, fields="id, trashed")
         except HttpError as e:
             if e.resp.status == HttpStatusCode.NOT_FOUND.value:
-                return False
+                return "not_found"
             self.logger.warning(f"Could not ask a person of its audience whether they can open {record.record_name}: {e}")
             return None
         except Exception as e:
             self.logger.warning(f"Could not ask a person of its audience whether they can open {record.record_name}: {e}")
             return None
-        return not metadata.get("trashed")
+        return "trashed" if metadata.get("trashed") else "open"
 
     async def _user_can_open(
         self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]

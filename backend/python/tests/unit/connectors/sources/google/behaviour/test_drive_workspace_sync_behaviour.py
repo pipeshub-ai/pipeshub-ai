@@ -4380,6 +4380,41 @@ async def test_a_not_found_from_someone_an_audience_only_may_reach_does_not_drop
     assert [r.external_record_id for r, _ in written] == ["p"], "Erin's not found says nothing of the share's own people"
 
 
+async def test_a_new_record_a_person_of_its_audience_finds_in_the_trash_is_not_written(ws: Workspace) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    ws.world.add_item("t", "t.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    ws.world.trash("t")
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("t", "root-bob"), grants, unsettled="t")
+
+    assert written == [], "Bob, of the domain, finds it in the trash: no for everyone, the unlisted group too"
+
+
+async def test_the_trash_seen_by_someone_an_audience_only_may_reach_is_still_a_no(ws: Workspace) -> None:
+    erin = "erin@labs.example.org"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    ws.world.add_item("t", "t.txt", parent="root-bob", owner=BOB, perms=[reader(erin)])
+    await ws.sync()
+    ws.world.trash("t")
+    ws.connector._audience_members["domain-members:partner.org"] = {erin}
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:partner.org", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("t", "root-bob"), grants, unsettled="t")
+
+    assert written == [], "Erin finds it in the trash"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (
