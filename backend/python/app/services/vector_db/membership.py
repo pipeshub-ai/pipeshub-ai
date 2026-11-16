@@ -369,6 +369,9 @@ async def _derive_group_root(
 
     Records written before ``rootRecordGroupId`` existed have no stored value,
     so the backfill derives it from the edges rather than needing a re-sync.
+
+    A failed read raises: answering empty would read as "no parent" and publish
+    a thread group as its own root. None means the hierarchy itself is malformed.
     """
     if not group_id:
         return None
@@ -379,20 +382,11 @@ async def _derive_group_root(
     seen = {current}
     reached_root = False
     for _ in range(_MAX_GROUP_ROOT_DEPTH):
-        try:
-            # raising: a provider that answers a failed read with [] would otherwise read as "no parent", a root
-            edges = await graph_provider.get_edges_from_node(
-                f"{_RECORD_GROUPS_PREFIX}{current}", CollectionNames.BELONGS_TO.value, raise_on_error=True
-            )
-        except Exception:
-            # Abort, not "arrived": on the first hop `current` is still the
-            # group we started from, and returning it would publish a thread
-            # group as its own root. Container filtering drops a root-scoped
-            # connector's descendants, so such a value matches nothing and the
-            # record disappears from search with nothing to notice it. None
-            # tells the caller the walk failed, so it leaves the stored root
-            # alone rather than overwriting it.
-            return None
+        edges = await graph_provider.get_edges_from_node(
+            f"{_RECORD_GROUPS_PREFIX}{current}",
+            CollectionNames.BELONGS_TO.value,
+            raise_on_error=True,
+        )
         parent = None
         if isinstance(edges, (list, tuple)):
             for edge in edges:
@@ -403,8 +397,8 @@ async def _derive_group_root(
                         break
         if parent is None:
             # No unseen parent: either a genuine root, or a cycle. A cycle means
-            # the hierarchy is malformed, and guessing a root from it is the
-            # same silent-loss risk as above.
+            # the hierarchy is malformed, and a root guessed from it could be a
+            # group that is not one.
             reached_root = not _has_parent_edge(edges, seen)
             break
         seen.add(parent)
@@ -444,18 +438,17 @@ class VirtualRecordState:
     record_group_ids: list[str]
     records: list[Any]
     #: False when the graph did not return a document for every record key it
-    #: reported for this VRID. Both providers' ``get_document`` swallow every
-    #: exception and return ``None``, so a dropped connection is otherwise
-    #: indistinguishable from "this record does not exist" — and a shorter
-    #: ``records`` list makes a collection look abandoned when it is not.
-    #: Destructive callers must refuse to act on an incomplete read.
+    #: reported for this VRID: a record deleted mid-read, since a failed read
+    #: raises. A shorter ``records`` list can make a collection look abandoned
+    #: when it is not, so destructive callers must refuse to act on it.
     complete: bool = True
     #: Root of each record's group chain; empty for connectors that don't set it.
     root_record_group_ids: list[str] = field(default_factory=list)
-    #: False when a root had to be derived from the graph and that walk failed.
-    #: Separate from ``complete``, which gates the destructive path: here the
-    #: records read fine, only the root is missing, and writing the array anyway
-    #: would replace a good root with an empty one on a transient graph error.
+    #: False when a root had to be derived from the graph and the hierarchy gave
+    #: none (a cycle, or deeper than the walk goes). Separate from ``complete``,
+    #: which gates the destructive path: here the records read fine, only the
+    #: root is missing, and writing the array anyway would replace a good root
+    #: with an empty one.
     roots_resolved: bool = True
 
 
@@ -520,25 +513,32 @@ async def resolve_virtual_record_state(
         # everything else — and the backfill repeats it for every VRID.
         semaphore = asyncio.Semaphore(MEMBERSHIP_RESOLVE_CONCURRENCY)
 
+        # Raising: these arrays replace what the points hold, so a failed read
+        # answered as None or [] would drop a connector or group from them. A
+        # raise leaves the points as they are, for the caller to retry or report.
         async def _get_document(key: str):
             async with semaphore:
                 return await graph_provider.get_document(
-                    key, CollectionNames.RECORDS.value
+                    key, CollectionNames.RECORDS.value, raise_on_error=True
                 )
 
         async def _get_edges(key: str):
             async with semaphore:
-                # raising: a failed read is not "no groups", which would drop real members from the point
                 return await graph_provider.get_edges_from_node(
                     f"{CollectionNames.RECORDS.value}/{key}",
                     CollectionNames.BELONGS_TO.value,
                     raise_on_error=True,
                 )
 
+        # Every read ends before a failure is raised: raising at the first one
+        # would leave the rest running outside the VRID lock and its timeout.
         docs, edge_lists = await asyncio.gather(
-            asyncio.gather(*(_get_document(key) for key in record_keys)),
-            asyncio.gather(*(_get_edges(key) for key in record_keys)),
+            asyncio.gather(*(_get_document(key) for key in record_keys), return_exceptions=True),
+            asyncio.gather(*(_get_edges(key) for key in record_keys), return_exceptions=True),
         )
+        for result in (*docs, *edge_lists):
+            if isinstance(result, BaseException):
+                raise result
         if org_id:
             kept = [i for i, doc in enumerate(docs) if not _of_other_org(doc, org_id)]
             record_keys = [record_keys[i] for i in kept]
@@ -578,8 +578,8 @@ async def resolve_virtual_record_state(
                 roots_resolved = False
         _add_unique(root_record_group_ids, seen_roots, current_root)
 
-    # Only documents the graph actually returned: a None from a failed
-    # get_document must not reach a strategy as if it were a record.
+    # Only documents the graph actually returned: the None of a record deleted
+    # mid-read must not reach a strategy as if it were a record.
     resolved = [doc for doc in docs if isinstance(doc, dict)]
     return VirtualRecordState(
         connector_ids=connector_ids,
@@ -587,9 +587,9 @@ async def resolve_virtual_record_state(
         root_record_group_ids=root_record_group_ids,
         roots_resolved=roots_resolved,
         records=resolved,
-        # A key that resolved to nothing is either a read that failed or a
-        # record deleted mid-flight. Neither is safe to read as "no record
-        # here" on a destructive path, so both count as incomplete.
+        # A key that resolved to nothing is a record deleted mid-flight (a failed
+        # read raises above). That is not safe to read as "no record here" on a
+        # destructive path, so it counts as incomplete.
         complete=len(resolved) == len(record_keys),
     )
 
@@ -830,7 +830,7 @@ async def _sync_vector_membership_locked(
     state = await resolve_virtual_record_state(graph_provider, virtual_record_id, org_id=org_id)
     connector_ids, record_group_ids = state.connector_ids, state.record_group_ids
 
-    # A record the graph did not return (a failed read, or one deleted meanwhile) makes the arrays and the stamp partial: writing them
+    # A record the graph did not return (one deleted meanwhile; a failed read raises above) makes the arrays and the stamp partial: writing them
     # would drop real members or keep stale ones, and a stamp from them could be trusted. Write nothing; the point is marked stale.
     if not state.complete:
         if logger is not None:

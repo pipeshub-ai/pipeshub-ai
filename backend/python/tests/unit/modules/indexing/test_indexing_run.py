@@ -327,7 +327,8 @@ class TestIndexingPipelineBulkDelete:
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["virtual_record_ids_skipped"] == 1
         assert result["virtual_record_ids_processed"] == 0
         pipeline.vector_db_service.delete_points.assert_not_awaited()
         pipeline.graph_provider.delete_nodes.assert_not_awaited()
@@ -358,9 +359,52 @@ class TestIndexingPipelineBulkDelete:
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
+        assert result["success"] is False
+        assert result["virtual_record_ids_skipped"] == 1
         assert result["virtual_record_ids_processed"] == 0
         pipeline.vector_db_service.delete_points.assert_not_awaited()
         pipeline.graph_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_skip_beside_real_deletes_fails_and_a_retry_finishes_the_batch(self) -> None:
+        """The sweeper never reaches a VRID a live record still holds, so a shared
+        id whose rewrite failed has only the redelivery. The retry repeats the
+        delete that already happened, which must be harmless.
+        """
+        pipeline = _make_indexing_pipeline()
+
+        async def remaining(virtual_record_id: str, *_args: object, **_kwargs: object) -> list[str]:
+            return ["rec-keep"] if virtual_record_id == "vr-shared" else []
+
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=remaining
+        )
+        pipeline.graph_provider.get_document = AsyncMock(
+            side_effect=RuntimeError("graph is restarting")
+        )
+        pipeline.graph_provider.get_edges_from_node = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        first = await pipeline.bulk_delete_embeddings(["vr-shared", "vr-last"])
+
+        assert first["success"] is False
+        assert first["virtual_record_ids_skipped"] == 1
+        assert first["virtual_record_ids_deleted"] == 1
+        pipeline.vector_db_service.set_payload.assert_not_awaited()
+
+        pipeline.graph_provider.get_document = AsyncMock(
+            return_value={"connectorId": "conn-2"}
+        )
+
+        retry = await pipeline.bulk_delete_embeddings(["vr-shared", "vr-last"])
+
+        assert retry["success"] is True
+        assert retry["virtual_record_ids_skipped"] == 0
+        assert retry["virtual_record_ids_rewritten"] == 1
+        pipeline.vector_db_service.set_payload.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_mixed_rewrite_and_delete(self):

@@ -1478,6 +1478,13 @@ class TestGetEdgesFromNode:
         result = await connected_provider.get_edges_from_node("users/u1", "permission")
         assert len(result) == 1
 
+    @pytest.mark.asyncio
+    async def test_exception_is_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        assert await connected_provider.get_edges_from_node("users/u1", "permission") == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_edges_from_node("users/u1", "permission", raise_on_error=True)
+
 
 class TestGetEdgesFromNodeWithTargetName:
     @pytest.mark.asyncio
