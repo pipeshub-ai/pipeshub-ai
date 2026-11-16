@@ -808,6 +808,64 @@ async def test_a_group_member_check_that_errors_leaves_the_item_undecided_not_ch
     assert (ENG, "GROUP", "READ") not in ws.grants("doc"), "asked again, Dana cannot open it"
 
 
+async def test_one_group_member_who_opens_the_item_decides_for_the_group_though_another_errors(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner_shared_with_a_group(ws)
+    ws.world.groups[ENG]["members"].append(BOB)
+    await ws.sync()
+    ws.http.fail("GET", "/drive/v3/files/doc", 500, "backendError",
+                 when=lambda r: r.identity == DANA and r.query.get("fields") == "id, trashed")
+    record = await ws.records.get_record_by_external_id(CONNECTOR_ID, "doc")
+    await ws.records.delete_permission_from_record(record.id, DANA)
+
+    await ws.connector._drop_grants_of_people_who_cannot_open(record, {}, skip_email=CAROL)
+
+    assert (ENG, "GROUP", "READ") in ws.grants("doc"), "Bob, a member, opens it: the group still grants it"
+
+
+async def test_a_reporter_who_still_opens_an_item_through_their_own_share_does_not_keep_the_group_for_others(
+    ws: Workspace,
+) -> None:
+    _folder_of_a_suspended_owner_shared_with_a_group(ws)
+    ws.world.groups[ENG]["members"].append(CAROL)
+    ws.world.files["doc"].perms.append({"type": "user", "role": "writer", "emailAddress": CAROL})
+    await ws.sync()
+    assert (ENG, "GROUP", "READ") in ws.grants("doc")
+    ws.world.unshare("dir", ENG)
+    record = await ws.records.get_record_by_external_id(CONNECTOR_ID, "doc")
+    carol = next(u for u in ws.connector.synced_users if u.email == CAROL)
+
+    await ws.connector._drop_grants_of_people_who_cannot_open(record, {}, only=carol)
+
+    assert (ENG, "GROUP", "READ") not in ws.grants("doc"), "Dana, another member, cannot open it"
+    assert CAROL in ws.records.perm_emails("doc"), "Carol's own share stays"
+
+
+async def test_a_failed_grant_removal_does_not_stop_the_other_holders_being_checked(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner(ws)
+    ws.world.add_user(DANA)
+    ws.records.active_users.append(User(id="u-dana", email=DANA, is_active=True))
+    ws.world.files["dir"].perms.append(reader(DANA))
+    await ws.sync()
+    assert {CAROL, DANA} <= ws.records.perm_emails("doc")
+    for grantee in (CAROL, DANA):
+        ws.world.unshare("dir", grantee)
+    record = await ws.records.get_record_by_external_id(CONNECTOR_ID, "doc")
+    real_delete = ws.records.delete_permission_from_record
+
+    async def delete(record_id: str, user_email: str, connector_id: str | None = None) -> None:
+        if user_email == CAROL:
+            raise RuntimeError("database unavailable")
+        await real_delete(record_id, user_email, connector_id)
+
+    ws.records.delete_permission_from_record = delete
+
+    with pytest.raises(RuntimeError):
+        await ws.connector._drop_grants_of_people_who_cannot_open(record, {})
+
+    assert DANA not in ws.records.perm_emails("doc"), "Dana is still checked after Carol's removal failed"
+    assert CAROL in ws.records.perm_emails("doc") and BOB in ws.records.perm_emails("doc")
+
+
 async def test_a_full_read_removes_a_grant_nobody_can_read_the_sharing_of_any_more(ws: Workspace) -> None:
     _folder_of_a_suspended_owner(ws)
     await ws.sync()

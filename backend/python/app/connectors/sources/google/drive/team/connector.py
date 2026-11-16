@@ -265,6 +265,14 @@ FILTER_CLEANUP_PAGE_SIZE = 500
 
 
 
+def _failure_summary(error: Exception) -> str:
+    """What a failed source call said, safe to log: the HTTP status and Drive's reasons, never the request."""
+    if isinstance(error, HttpError):
+        reasons = ", ".join(sorted(drive_error_reasons(error))) or "no reason given"
+        return f"HTTP {error.resp.status}: {reasons}"
+    return type(error).__name__
+
+
 def _is_audience_group(group_id: str | None) -> bool:
     return bool(group_id) and (group_id == ALL_MEMBERS_GROUP_ID or group_id.startswith(DOMAIN_MEMBERS_GROUP_PREFIX))
 
@@ -3031,7 +3039,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning(
                     f"Could not tell whether a user removed from {record.record_name} can still open "
-                    f"{item.record_name} ({type(e).__name__}); it is checked again on later runs"
+                    f"{item.record_name} ({_failure_summary(e)}); it is checked again on later runs"
                 )
                 await self._park_descendant_recheck(user, item.external_record_id)
 
@@ -3060,7 +3068,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if record is not None:
                     await self._drop_grants_of_people_who_cannot_open(record, {user.email: source}, only=user)
             except Exception as e:
-                self.logger.warning(f"Still not known whether a user can open item {file_id}: {type(e).__name__}")
+                self.logger.warning(f"Still not known whether a user can open item {file_id}: {_failure_summary(e)}")
                 left.append(file_id)
         if left != items:
             await self.drive_delta_sync_point.update_sync_point(key, {"items": left})
@@ -3080,10 +3088,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         A group's grant goes when one of its members gets that 404: a group permission grants "members of a specific
         group" (https://developers.google.com/workspace/drive/api/guides/manage-sharing), so a member who cannot open
         the item shows the group no longer grants it. Members who can open it another way keep their own grants.
-        With ``only`` the groups asked about are that user's; otherwise up to AUDIENCE_PROBES members of each group,
-        picked at random. A refusal or other error on a group member's check decides nothing; a group no asked member
-        decided raises once the others are done, as does any failure of the user checks, so the item, change or parked
-        item is read again rather than taken as kept.
+        With ``only`` the groups asked about are that user's, and when that user still opens the item (perhaps through a
+        share of their own) up to AUDIENCE_PROBES of the group's other members are asked too; otherwise up to
+        AUDIENCE_PROBES members of each group, picked at random. A refusal or other error on a member's check decides
+        nothing: a group whose asked members all failed to answer is undecided. Every holder and group is tried; then
+        the first failure, or an undecided group, raises, so the item, change or parked item is read again rather than
+        taken as kept. A group the directory will not list keeps its grant.
 
         shortcut: a holder outside this deployment's synced users (an external collaborator) cannot be asked and keeps
         their grant; ask through another source if one appears. A group none of whose asked members is cut off keeps
@@ -3093,6 +3103,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
+        failure: Exception | None = None  # the first; every other holder and group is still tried
         for holder in holders:
             email = (holder.email or "").lower()
             if (
@@ -3103,40 +3114,60 @@ class GoogleDriveTeamConnector(BaseConnector):
                 or email not in by_email
             ):
                 continue
-            if not await self._user_can_open(record, by_email[email], sources):
-                self.logger.info(f"Removing a grant on {record.record_name}: its holder can no longer open it")
-                await self.data_entities_processor.delete_permission_from_record(
-                    record_id=record.id, user_email=holder.email, connector_id=record.connector_id
-                )
+            try:
+                if not await self._user_can_open(record, by_email[email], sources):
+                    self.logger.info(f"Removing a grant on {record.record_name}: its holder can no longer open it")
+                    await self.data_entities_processor.delete_permission_from_record(
+                        record_id=record.id, user_email=holder.email, connector_id=record.connector_id
+                    )
+            except Exception as e:
+                failure = failure or e
         groups = await self.data_entities_processor.get_groups_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         answers: dict[str, bool | None] = {}
         undecided = False
+
+        async def answer(email: str) -> bool | None:
+            if email not in answers:
+                answers[email] = await self._audience_member_can_open(record, by_email[email], sources)
+            return answers[email]
+
         for group in groups:
             group_id = group.source_user_group_id
             if not group_id or _is_audience_group(group_id):
                 continue
+            # A group the directory will not list cannot be asked about; its grant stays, as for a stored record
+            # whose group members cannot be read (`_another_synced_user_can_open`).
             members = await self._synced_group_members(group_id) or set()
+            pool = sorted(e for e in members if e in by_email and e != (skip_email or "").lower())
+            asked: list[str] = []
             if only is not None:
-                asked = [only.email.lower()] if only.email.lower() in members else []
+                if only.email.lower() not in members:
+                    continue
+                asked.append(only.email.lower())
+                # The reporting user still opening it may be through a share of their own: the group's other
+                # members answer for the group then.
+                if await answer(only.email.lower()) is True:
+                    others = [e for e in pool if e != only.email.lower()]
+                    asked += secrets.SystemRandom().sample(others, min(AUDIENCE_PROBES, len(others)))
             else:
-                pool = sorted(e for e in members if e in by_email and e != (skip_email or "").lower())
                 asked = secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES, len(pool)))
-            for email in asked:
-                if email not in answers:
-                    answers[email] = await self._audience_member_can_open(record, by_email[email], sources)
-                if answers[email] is False:
-                    self.logger.info(f"Removing a group's grant on {record.record_name}: a member can no longer open it")
+            found = [await answer(e) for e in asked]
+            if False in found:
+                self.logger.info(f"Removing a group's grant on {record.record_name}: a member can no longer open it")
+                try:
                     await self.data_entities_processor.delete_group_permission_from_record(
                         record.id, group_id, record.connector_id
                     )
-                    break
-            else:
-                undecided = undecided or any(answers[e] is None for e in asked)
+                except Exception as e:
+                    failure = failure or e
+            elif found and all(f is None for f in found):
+                undecided = True  # nobody asked answered: retried, never taken as kept
+        if failure is not None:
+            raise failure
         if undecided:
-            # Retried, never taken as kept: the item fails (and is read again by id), or the change or parked item
-            # stays listed.
+            # The item fails (and is read again by id), or the change or parked item stays listed.
             raise _RemovalUndecided(f"Whether a member of a group granted on {record.record_name} can open it is unknown")
 
     async def _decide_removed_change(
