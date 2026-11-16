@@ -48,6 +48,7 @@ def _capture(caplog: pytest.LogCaptureFixture) -> None:
 
 def _user_added_provider(existing_user: object = None) -> AsyncMock:
     gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
     gp.get_user_by_email = AsyncMock(return_value=existing_user)
     gp.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
     gp.get_nodes_by_filters = AsyncMock(return_value=[])

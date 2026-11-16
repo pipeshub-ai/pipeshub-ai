@@ -50,7 +50,7 @@ jobs:
           # and the suite side of each guard with the helpers it imports.
           # integration-tests/unit/test_guard_scope.py fails when a guard reads a
           # file this does not match.
-          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval)/|integration-tests/response-validation/helper/|integration-tests/[^/]+/suite_extensions/|\.github/workflows/integration-suite-guards\.yml$)'
+          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval|perf)/|backend/python/tests/perf/parse_bench/|deployment/docker-compose/docker-compose\.bench\.yml$|integration-tests/response-validation/helper/|integration-tests/[^/]+/suite_extensions/|\.github/workflows/integration-suite-guards\.yml$|\.github/workflows/perf-costclass\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -100,6 +100,8 @@ jobs:
             integration-tests/unit/test_admin_route_conditional_world.py
             integration-tests/unit/test_guard_scope.py
             integration-tests/unit/test_suite_extensions.py
+            integration-tests/unit/test_perf_costclass.py
+            integration-tests/unit/test_perf_costclass_driver.py
         run: |
           # `-c` and `--noconftest` because the files sit inside integration-tests,
           # whose pytest.ini asks for pytest-order and whose conftest expects a

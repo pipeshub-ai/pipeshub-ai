@@ -4529,6 +4529,7 @@ class IGraphDBProvider(ABC):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """
         Get all apps for an organization.
@@ -4537,6 +4538,8 @@ class IGraphDBProvider(ABC):
             org_id (str): Organization ID
             active_only: When True (default), only apps with isActive true.
             app_type: Only apps of this type, filtered in the database.
+            app_ids: Only these apps, filtered in the database; an id that is
+                not one of the organization's apps is not returned.
             raise_on_error: Raise instead of answering [] when the listing fails,
                 for a caller that must tell "none" from "unknown".
 
@@ -8920,7 +8923,10 @@ class IGraphDBProvider(ABC):
     ) -> "dict[tuple[str, str], PermittedEntityRows]":
         """One window of each entity's candidate records, filtered inside the
         query by connector or permission role. Not the access decision: the
-        role test reads neither ``accessRule`` nor the connector gate.
+        role test does not read the connector gate, and reads ``accessRule``
+        only so far that a record needing its own grant (RESTRICTED,
+        PARENT_AND_GRANT) takes its role from its own grants alone, never
+        from what it inherits.
 
         Candidates are exactly those of :meth:`get_entity_candidate_records`
         (same refs, scoping, scan cap and newest-first order), narrowed by

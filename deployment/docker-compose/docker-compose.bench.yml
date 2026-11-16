@@ -1,0 +1,109 @@
+# Resource-pinned stack for the cost-class benchmark (integration-tests/perf/bench_costclass.py).
+# Layered over the Neo4j integration compose file:
+#
+#   docker compose -p <project> -f docker-compose.integration.neo4j.yml -f docker-compose.bench.yml up -d pipeshub-ai fake-ai
+#
+# Every container gets a CPU limit, a cpuset that no other container of the stack shares, and a memory
+# limit (swap equal to memory, so a limit is a limit). The runner (integration-tests/perf/run_tiers_e2e.sh)
+# fills in the BENCH_* variables from the idle cores it finds. Nothing here has a default for a cpuset:
+# a missing variable stops the run instead of silently pinning to someone else's cores.
+#
+# Sizes: siblings 11 CPUs (Neo4j 4, Qdrant 4, Redis 1, Mongo 2), or 16 for the B-06 knee
+# (Neo4j 6, Qdrant 6, Redis 2, Mongo 2). The app is 2 to 24 CPUs at 4 GB per CPU.
+#
+# The app is the only service with a published port (BENCH_PORT_HTTP -> 3000), so several stacks can
+# share a host. One app container only: a replica run is not built. The fake provider has 1 CPU and
+# mailpit with minio share 1 more (BENCH_AUX_CPUSET), so no container floats over the others' cores.
+services:
+  pipeshub-ai:
+    ports: !override
+      - "${BENCH_PORT_HTTP:?set BENCH_PORT_HTTP}:3000"
+    deploy: !reset null
+    cpus: ${BENCH_APP_CPUS:?set BENCH_APP_CPUS}
+    cpuset: ${BENCH_APP_CPUSET:?set BENCH_APP_CPUSET}
+    mem_limit: ${BENCH_APP_MEM:?set BENCH_APP_MEM}
+    memswap_limit: ${BENCH_APP_MEM:?set BENCH_APP_MEM}
+    # Never restarted by Docker: a chaos run kills the indexing process inside the container and the
+    # container's own process monitor brings it back (Docker never applies a restart policy to what it
+    # was told to stop, and a crash of the whole app would be a failure to report, not to hide).
+    restart: "no"
+    environment:
+      # One app container, so a fleet of one.
+      - PIPESHUB_FLEET_MAX_MEMBERS=1
+      # One indexing process (the shipped default, spelled out): the B-06 knee is one process scaling.
+      - INDEXING_UVICORN_WORKERS=${BENCH_INDEXING_WORKERS:-1}
+
+  neo4j:
+    ports: !reset []
+    deploy: !reset null
+    cpus: ${BENCH_NEO4J_CPUS:?set BENCH_NEO4J_CPUS}
+    cpuset: ${BENCH_NEO4J_CPUSET:?set BENCH_NEO4J_CPUSET}
+    mem_limit: 3g
+    memswap_limit: 3g
+    restart: "no"
+
+  qdrant:
+    ports: !reset []
+    deploy: !reset null
+    cpus: ${BENCH_QDRANT_CPUS:?set BENCH_QDRANT_CPUS}
+    cpuset: ${BENCH_QDRANT_CPUSET:?set BENCH_QDRANT_CPUSET}
+    mem_limit: ${QDRANT_MEMORY_LIMIT:-4g}
+    memswap_limit: ${QDRANT_MEMORY_LIMIT:-4g}
+    restart: "no"
+
+  redis:
+    ports: !reset []
+    cpus: ${BENCH_REDIS_CPUS:?set BENCH_REDIS_CPUS}
+    cpuset: ${BENCH_REDIS_CPUSET:?set BENCH_REDIS_CPUSET}
+    mem_limit: 1g
+    memswap_limit: 1g
+    restart: "no"
+
+  mongodb:
+    ports: !reset []
+    cpus: ${BENCH_MONGO_CPUS:?set BENCH_MONGO_CPUS}
+    cpuset: ${BENCH_MONGO_CPUSET:?set BENCH_MONGO_CPUSET}
+    mem_limit: 2g
+    memswap_limit: 2g
+    restart: "no"
+
+  mailpit:
+    ports: !reset []
+    cpuset: ${BENCH_AUX_CPUSET:?set BENCH_AUX_CPUSET}
+    cpus: 0.5
+    mem_limit: 128m
+    memswap_limit: 128m
+    restart: "no"
+
+  minio:
+    ports: !reset []
+    cpuset: ${BENCH_AUX_CPUSET:?set BENCH_AUX_CPUSET}
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    restart: "no"
+
+  # The fake chat and vision provider (integration-tests/perf/fake_ai/server.py). Chat only; add
+  # --fake-embeddings through BENCH_FAKE_AI_ARGS for the sensitivity variant. It has no published port:
+  # the app reaches it as http://fake-ai:8080/v1.
+  fake-ai:
+    image: ${BENCH_FAKE_AI_IMAGE:-python:3.12-slim}
+    # BENCH_FAKE_AI_ARGS adds server flags ("--base-ms 2000", "--fake-embeddings"); the bench reads the
+    # running server's configuration back and refuses a run where a flag it was given did not take.
+    command: ["sh", "-c", "exec python /srv/fake_ai/server.py --port 8080 $${BENCH_FAKE_AI_ARGS:-}"]
+    volumes:
+      - ../../integration-tests/perf/fake_ai:/srv/fake_ai:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BENCH_FAKE_AI_ARGS=${BENCH_FAKE_AI_ARGS:-}
+    cpus: 1
+    cpuset: ${BENCH_FAKE_AI_CPUSET:?set BENCH_FAKE_AI_CPUSET}
+    mem_limit: 256m
+    memswap_limit: 256m
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+

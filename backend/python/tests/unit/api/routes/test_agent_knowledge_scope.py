@@ -54,10 +54,13 @@ def _services(
         return [{"id": v, **(apps or {})[v]} for v in values if v in (apps or {})]
 
     users = {"caller": {"_key": "caller-key", "email": "u@x.com"},
-             "creator": {"_key": "creator-key", "email": "c@x.com"}}
+             "creator": {"_key": "creator-key", "email": "c@x.com"},
+             "svc": {"_key": "svc-key", "userId": "svc", "orgId": ORG, "email": "s@x.com",
+                     "kind": "service", "isActive": True}}
     graph.get_document = AsyncMock(side_effect=_get_document)
     graph.get_nodes_by_field_in = AsyncMock(side_effect=_nodes)
     graph.get_user_by_user_id = AsyncMock(side_effect=lambda user_id, **_: users.get(user_id))
+    graph.get_user_connector_instances = AsyncMock(return_value=[{"_key": "jira-1", "scope": "team"}])
 
     async def _role(kb_id: str, user: str) -> str | None:
         return (roles or {}).get((kb_id, user))
@@ -117,6 +120,7 @@ async def _run(
 
 
 def _agent(*, service_account: bool) -> dict:
+    """A service agent here is bound to a service account, so it may search collections too."""
     return {
         "_key": "agent-1",
         "name": "agent",
@@ -125,6 +129,7 @@ def _agent(*, service_account: bool) -> dict:
         "models": [],
         "createdBy": "creator-key",
         "isServiceAccount": service_account,
+        **({"serviceAccountUserId": "svc"} if service_account else {}),
     }
 
 
@@ -195,6 +200,23 @@ class TestSavedAgentScope:
         assert "proj-kb" not in query_info["filters"]["kb"]
 
 
+async def test_an_unbound_service_agent_does_not_search_the_callers_project_collection() -> None:
+    """It would read the collection as its creator; a bound one (above) reads it as the account."""
+    hidden = {"type": "KB", "isHidden": True, "orgId": ORG}
+    unbound = {k: v for k, v in _agent(service_account=True).items() if k != "serviceAccountUserId"}
+    graphs: list = []
+    query_info = await _run(
+        unbound,
+        {"query": "q", "filters": {"apps": ["jira-1"], "kb": ["proj-kb"]}, "strictScope": True},
+        graph_out=graphs,
+        apps={"proj-kb": hidden},
+        roles={("proj-kb", "caller-key"): "READER"},
+    )
+    assert "proj-kb" not in query_info["filters"]["kb"]
+    assert all(k.get("connectorId") != "proj-kb" for k in query_info["knowledge"])
+    graphs[0].get_user_kb_permission.assert_not_awaited()
+
+
 LIMITED_KNOWLEDGE = [
     {"connectorId": "jira-1", "type": "JIRA", "filtersParsed": {"recordGroups": ["proj-a"]}},
     {"connectorId": "kb-1", "type": "KB"},
@@ -223,7 +245,7 @@ class TestSourceLimitedToSomeNodes:
         # The source stays enabled for the tools that work per app.
         assert [k["connectorId"] for k in query_info["knowledge"]] == ["jira-1", "kb-1"]
         # Resolved as the identity the search runs as.
-        searcher = "creator-key" if service_account else "caller-key"
+        searcher = "svc-key" if service_account else "caller-key"
         assert graphs[0].check_access.await_args.args[0] == searcher
 
     async def test_a_callers_selection_is_bounded_by_the_agent_and_by_the_project(self, service_account) -> None:
