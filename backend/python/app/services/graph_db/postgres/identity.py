@@ -1193,10 +1193,11 @@ class IdentityMixin(PgBase):
                   UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
                     AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
                 SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
-                JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
-                  AND jsonb_typeof(a.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
-                    WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_'))
-                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
+                CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+                  WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+                  AND jsonb_typeof(y.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(y.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
+                    WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_')) LIMIT 1) a
+                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
             return [dict(r) for r in rows]
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
@@ -1217,9 +1218,10 @@ class IdentityMixin(PgBase):
                   UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
                     AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
                 SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
-                JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
-                  AND a.doc->>'webSearch' = $3
-                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, provider], None)
+                CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+                  WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+                  AND y.doc->>'webSearch' = $3 LIMIT 1) a
+                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, provider], None)
             return [dict(r) for r in rows]
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
