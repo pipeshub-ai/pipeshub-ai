@@ -20,6 +20,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.models.entities import Person
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.integration.graph_db.test_record_graph_write_concurrency import (
     _open_arango,
@@ -51,6 +52,10 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
                 {"org": org},
             )
             await provider.http_client.execute_aql(
+                f"FOR d IN {CollectionNames.PEOPLE.value} FILTER d.orgId == @org REMOVE d IN {CollectionNames.PEOPLE.value}",
+                {"org": org},
+            )
+            await provider.http_client.execute_aql(
                 f"FOR d IN {CollectionNames.RECORD_GROUPS.value} FILTER d.orgId == @org "
                 f"REMOVE d IN {CollectionNames.RECORD_GROUPS.value}",
                 {"org": org},
@@ -64,8 +69,8 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
 
 async def _seed(provider: Any, org: str) -> None:  # noqa: ANN401
-    """A record with a user's own WRITER edge and a group's own READER edge, and a user whose READER edge is on the
-    record group the record inherits from."""
+    """A record with a user's own WRITER edge, a group's own READER edge and an external collaborator's (a Person's)
+    READER edge, and a user whose READER edge is on the record group the record inherits from."""
     app = f"{org}-app"
     await provider.batch_upsert_nodes([
         {"id": f"{org}-writer", "userId": f"{org}-writer", "orgId": org, "email": f"Writer@{org}.test", "fullName": "W"},
@@ -86,12 +91,14 @@ async def _seed(provider: Any, org: str) -> None:  # noqa: ANN401
          "externalRecordId": f"ext-{org}", "origin": "CONNECTOR", "connectorName": Connectors.GOOGLE_DRIVE_WORKSPACE.value,
          "connectorId": app, "version": 0, "createdAtTimestamp": 1, "updatedAtTimestamp": 1},
     ], CollectionNames.RECORDS.value)
+    await provider.batch_upsert_people([Person(id=f"{org}-partner", org_id=org, email=f"Partner@{org}.example.org")])
     record, rg = f"records/{org}-r", f"recordGroups/{org}-rg"
     await provider.batch_create_edges([{"_from": record, "_to": rg, "createdAtTimestamp": 1}],
                                       CollectionNames.INHERIT_PERMISSIONS.value)
     await provider.batch_create_edges([
         {"_from": f"users/{org}-writer", "_to": record, "type": "USER", "role": "WRITER", "createdAtTimestamp": 1},
         {"_from": f"groups/{org}-grp", "_to": record, "type": "GROUP", "role": "READER", "createdAtTimestamp": 1},
+        {"_from": f"person/{org}-partner", "_to": record, "type": "USER", "role": "READER", "createdAtTimestamp": 1},
         {"_from": f"users/{org}-inherited", "_to": rg, "type": "USER", "role": "READER", "createdAtTimestamp": 1},
     ], CollectionNames.PERMISSION.value)
 
@@ -99,8 +106,16 @@ async def _seed(provider: Any, org: str) -> None:  # noqa: ANN401
 async def test_roles_are_those_of_each_principals_own_edge_into_the_record(world: dict[str, Any]) -> None:
     provider, org = world["provider"], world["org"]
     processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, provider), AsyncMock())
+    processor.org_id = org
 
     users, groups = await processor.get_roles_on_record(f"{org}-r")
 
-    assert users == {f"writer@{org}.test": "WRITER"}, "a user reaching it through the record group has no own edge"
+    assert users == {f"writer@{org}.test": "WRITER", f"partner@{org}.example.org": "READER"}, (
+        "a user reaching it through the record group has no own edge"
+    )
     assert groups == {f"eng@{org}.test": "READER"}
+
+    for email in (f"Writer@{org}.test", f"Partner@{org}.example.org"):
+        await processor.delete_principal_permission_from_record(f"{org}-r", email, f"{org}-app")
+
+    assert await processor.get_roles_on_record(f"{org}-r") == ({}, {f"eng@{org}.test": "READER"})

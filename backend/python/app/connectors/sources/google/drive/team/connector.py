@@ -2247,6 +2247,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._group_digests[drive_id] = seen
             return
         await self._read_drive_again(drive_id, reseed=reseed)
+        if not await self._drive_has_synced_member(drive_id):
+            # Nobody synced lists the drive again, so its stored items get the new limits here; a failure raises
+            # before the new restrictions are saved, so the next run tries again.
+            await self._apply_limits_to_stored_items(drive_id)
         digests = {DRIVE_DIRECT_MEMBERS_MARK: membership} if membership else {}
         await self.drive_delta_sync_point.update_sync_point(
             key,
@@ -2257,6 +2261,21 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
         self._hidden_groups[drive_id] = set()
         self._group_digests[drive_id] = digests
+
+    async def _apply_limits_to_stored_items(self, drive_id: str) -> None:
+        """Apply a shared drive's limits to the stored grants of each of its items (`_drop_grants_the_drive_keeps_out`),
+        for a drive no synced user lists again."""
+        after: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, drive_id, limit=FILTER_CLEANUP_PAGE_SIZE, after_key=after
+            )
+            for record in page:
+                if not record.is_placeholder:
+                    await self._drop_grants_the_drive_keeps_out(record, drive_id)
+            if len(page) < FILTER_CLEANUP_PAGE_SIZE:
+                break
+            after = page[-1].id
 
     async def _drop_grants_the_drive_keeps_out(self, record: Record, drive_id: str | None) -> None:
         """An item whose sharing the reader cannot see keeps its stored grants, but its drive's limits still apply to
@@ -2271,7 +2290,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         user_roles, group_roles = await self.data_entities_processor.get_roles_on_record(record.id)
         for email in list(user_roles):
             if not may_stay(email):
-                await self.data_entities_processor.delete_permission_from_record(record.id, email, self.connector_id)
+                await self.data_entities_processor.delete_principal_permission_from_record(
+                    record.id, email, self.connector_id
+                )
                 del user_roles[email]
         held = [
             Permission(external_id=group_id, email=group_id, type=PermissionType(role), entity_type=EntityType.GROUP)
@@ -2390,9 +2411,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             for record in page:
                 if not record.is_placeholder and record.external_record_id not in self._sync_ledger.seen:
-                    settled = await self._apply_shared_drive_removal(
-                        record.external_record_id, user, drive_id, source, ask_audience=True
-                    )
+                    try:
+                        settled = await self._apply_shared_drive_removal(
+                            record.external_record_id, user, drive_id, source, ask_audience=True
+                        )
+                    except _RemovalUndecided:  # nobody asked answered: a later run asks again, the listing is done
+                        settled = _Settled.UNDECIDED
                     if settled is _Settled.UNDECIDED:  # checked again on later runs, as an undecided removal is
                         await self._park_undecided_removal(
                             self._undecided_key(user, drive_id), f"{record.external_record_id}:{drive_id}"
@@ -4349,7 +4373,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
                     if existing_record is not None:
                         if new_permissions:
-                            await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
+                            # The reader's own grant is a read grant whatever their role: it never lowers a role they
+                            # hold, such as one a group's split gave them (`_drop_grants_the_drive_keeps_out`).
+                            held = (await self.data_entities_processor.get_roles_on_record(existing_record.id))[0]
+                            if raising := [
+                                p for p in new_permissions
+                                if _role_rank(p) > _role_rank(None, held.get((p.email or "").lower()))
+                            ]:
+                                await self.data_entities_processor.add_permission_to_record(existing_record, raising)
                         await self._drop_grants_the_drive_keeps_out(existing_record, item_drive_id)
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single

@@ -1,5 +1,5 @@
 """``DataSourceEntitiesProcessor.get_roles_on_record`` on PostgreSQL, against a real database: the role on each user's
-and group's own permission edge into a record. Neo4j and ArangoDB are in ``../test_roles_on_record_real_backends.py``.
+and group's own permission edge into a record, and removing a user's and a Person's. Neo4j and ArangoDB are in ``../test_roles_on_record_real_backends.py``.
 
 Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
 """
@@ -14,6 +14,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.models.entities import Person
 
 from .test_access import APP, World, rec
 from .test_access import w as w
@@ -31,9 +32,18 @@ async def test_roles_are_those_of_each_principals_own_edge_into_the_record(w: Wo
     await w.edge("permission", ("users", "writer"), ("records", "r"), type="USER", role="WRITER")
     await w.edge("permission", ("groups", "grp"), ("records", "r"), type="GROUP", role="READER")
     await w.edge("permission", ("users", "inherited"), ("recordGroups", "rg"), type="USER", role="READER")
-    processor = DataSourceEntitiesProcessor(logging.getLogger("roles-on-record-pg"), GraphDataStore(logging.getLogger("roles-on-record-pg"), w.p), AsyncMock())
+    await w.p.batch_upsert_people([Person(id="partner", org_id=w.org, email="Partner@example.org")])    # an external collaborator
+    await w.edge("permission", ("person", "partner"), ("records", "r"), type="USER", role="READER")
+    log = logging.getLogger("roles-on-record-pg")
+    processor = DataSourceEntitiesProcessor(log, GraphDataStore(log, w.p), AsyncMock())
+    processor.org_id = w.org
 
     users, groups = await processor.get_roles_on_record("r")
 
-    assert users == {"writer@example.com": "WRITER"}, "a user reaching it through the record group has no own edge"
+    assert users == {"writer@example.com": "WRITER", "partner@example.org": "READER"}, "a user reaching it through the record group has no own edge"
     assert groups == {"eng@example.com": "READER"}
+
+    for email in ("Writer@example.com", "Partner@example.org"):
+        await processor.delete_principal_permission_from_record("r", email, APP)
+
+    assert await processor.get_roles_on_record("r") == ({}, {"eng@example.com": "READER"})

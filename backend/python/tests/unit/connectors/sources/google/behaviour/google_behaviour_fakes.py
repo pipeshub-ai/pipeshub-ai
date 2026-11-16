@@ -503,13 +503,15 @@ class FakeEntitiesProcessor:
         if record is None:
             return {}, {}
         perms = self.permissions.get(record.external_record_id, [])
-        users = {u.email.lower() for u in self.active_users if u.email}
         groups = {group.source_user_group_id for group, _ in self.user_groups.values()}
+        # A person outside the users is stored as a Person, by address, as the stores do.
         return (
-            {p.email.lower(): p.type.value for p in perms
-             if p.entity_type != EntityType.GROUP and p.email and p.email.lower() in users},
+            {p.email.lower(): p.type.value for p in perms if p.entity_type != EntityType.GROUP and p.email},
             {p.external_id: p.type.value for p in perms if p.entity_type == EntityType.GROUP and p.external_id in groups},
         )
+
+    async def delete_principal_permission_from_record(self, record_id: str, email: str, connector_id: str) -> None:
+        await self.delete_permission_from_record(record_id, email, connector_id)
 
     # writes
     async def on_new_records(

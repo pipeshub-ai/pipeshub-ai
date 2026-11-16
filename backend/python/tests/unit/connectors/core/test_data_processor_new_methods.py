@@ -860,11 +860,18 @@ class TestGetRolesOnRecord:
             edge(CollectionNames.USERS.value, "u-1", "READER"),
             edge(CollectionNames.GROUPS.value, "g-1", "WRITER"),
             edge(CollectionNames.RECORDS.value, "r-0", "READER"),
+            edge(CollectionNames.PEOPLE.value, "p-1", "WRITER"),
         ])
+        tx.get_nodes_by_field_in = AsyncMock(return_value=[{"_key": "p-1", "email": "Partner@Example.org"}])
 
         users, groups = await proc.get_roles_on_record("rec-1")
 
-        assert users == {"bob@example.com": "READER"}, "a user reaching it through another node has no edge here"
+        assert users == {"bob@example.com": "READER", "partner@example.org": "WRITER"}, (
+            "a user reaching it through another node has no edge here; a Person is named by address"
+        )
+        tx.get_nodes_by_field_in.assert_awaited_once_with(
+            CollectionNames.PEOPLE.value, "_key", ["p-1"], ["_key", "email"], raise_on_error=True
+        )
         assert groups == {"eng@example.com": "WRITER"}
         tx.get_edges_to_node.assert_awaited_once_with(
             f"{CollectionNames.RECORDS.value}/rec-1", CollectionNames.PERMISSION.value, raise_on_error=True

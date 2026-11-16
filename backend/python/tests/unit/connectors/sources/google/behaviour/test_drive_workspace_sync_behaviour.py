@@ -3001,6 +3001,12 @@ async def test_a_writer_group_split_on_a_relist_with_an_empty_list_keeps_its_pas
         "Dee writes through one group and reads through the other: she stays a writer"
     )
 
+    # Another reader-only relist: Bob's own grant from it is a read grant, which must not lower what the split gave.
+    ws.world.drives["sd-1"]["members"]["fay@example.com"] = "reader"
+    await ws.sync()
+
+    assert {g for g in ws.grants("f1") if g[0] in (BOB, DEE)} == {(BOB, "USER", "WRITE"), (DEE, "USER", "WRITE")}
+
 
 async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a_reader_reads_it_again(
     ws: Workspace,
@@ -3016,6 +3022,35 @@ async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a
 
     assert "domain-members:example.com" not in f1_people(ws), "a members-only drive is read by its members alone"
     assert "f1" in ws.records.records
+
+
+async def test_a_members_only_drive_its_last_synced_member_leaves_drops_their_stored_share(ws: Workspace) -> None:
+    ws.world.add_user("boss@example.com", suspended=True)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "boss@example.com": "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}])
+    await ws.sync()
+    assert ALICE in f1_people(ws)
+
+    # Alice, the only synced member, leaves: nobody synced lists the drive again.
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    await ws.sync()
+
+    assert ALICE not in f1_people(ws), "her own share no longer opens a file of a drive she is not in"
+
+
+async def test_an_external_member_who_leaves_a_members_only_drive_loses_their_share_on_a_reader_only_relist(
+    ws: Workspace,
+) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader", PARTNER: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": PARTNER}])
+    await ws.sync()
+    assert PARTNER in f1_people(ws), "a person outside the account, stored by address"
+
+    for person in (ALICE, PARTNER):
+        del ws.world.drives["sd-1"]["members"][person]
+    await ws.sync()
+
+    assert PARTNER not in f1_people(ws)
 
 
 async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_the_next_run(ws: Workspace) -> None:
@@ -3147,6 +3182,26 @@ async def test_an_undecided_unseen_item_after_a_relist_is_kept_to_check_again(ws
     connector._apply_shared_drive_removal = undecided
     connector._sync_ledger.seen.clear()  # this run's listing did not see f1
     await connector._check_unseen_after_relist("sd-1", alice, None)
+
+    _, parts = await connector._read_undecided(connector._undecided_key(alice, "sd-1"))
+    assert any(e.startswith("f1:") for part in parts for e in part), "parked with the undecided removals"
+
+
+async def test_an_unseen_item_whose_check_raises_undecided_after_a_relist_is_kept_to_check_again(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import _RemovalUndecided
+
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+
+    async def unanswered(*_: object, **__: object) -> object:
+        raise _RemovalUndecided("nobody of its audience answered")
+
+    connector._apply_shared_drive_removal = unanswered
+    connector._sync_ledger.seen.clear()  # this run's listing did not see f1
+    await connector._check_unseen_after_relist("sd-1", alice, None)  # the listing's token can be saved
 
     _, parts = await connector._read_undecided(connector._undecided_key(alice, "sd-1"))
     assert any(e.startswith("f1:") for part in parts for e in part), "parked with the undecided removals"
