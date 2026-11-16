@@ -118,6 +118,29 @@ def _private_temp_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
 
 
 @pytest.fixture(autouse=True)
+def _epoch_of_a_collection_whose_config_is_a_mock(monkeypatch) -> None:
+    """Every writer reads the epoch of its collection (its point ids depend on it). Tests that stand in a mock for
+    the configuration service have no epoch keys to read: they get a fixed token. A real service is used as it is.
+    Nothing is imported here: a test that never loaded the guard (the import-cost tests among them) is left as it is."""
+    module = sys.modules.get("app.services.vector_db.precision_guard")
+    if module is None:
+        return
+    from unittest.mock import NonCallableMock
+
+    from app.services.vector_db.collection_epoch import Fence
+
+    PrecisionGuard = module.PrecisionGuard
+    real = PrecisionGuard.capture
+
+    async def capture(self, collection):  # noqa: ANN202
+        if isinstance(self._pins._config, NonCallableMock):
+            return Fence(collection, "mock-token")
+        return await real(self, collection)
+
+    monkeypatch.setattr(PrecisionGuard, "capture", capture)
+
+
+@pytest.fixture(autouse=True)
 def _no_leaked_pipeshub_temp_files(_private_temp_dir: str) -> Iterator[None]:
     """Fail a test that leaves a ``pipeshub_*`` file or directory in the temp directory.
 
