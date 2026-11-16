@@ -2,8 +2,8 @@
 {{- /*
 Parsing service in its own pods, from the application image with
 PIPESHUB_ROLE=parsing. The Deployment is named <fullname>-parsing and its pods
-carry the label pipeshub.ai/workload=parsing; add-on charts (for example a scaler)
-target those two and nothing else. There is deliberately no HPA here.
+carry the label pipeshub.ai/workload=parsing, so other charts can select them by those two
+and nothing else.
 */ -}}
 {{- $name := include "pipeshub-ai.parsingName" . }}
 apiVersion: apps/v1
@@ -204,7 +204,7 @@ spec:
 {{- /*
 The parsing pods are a different application name from the main pods, so the main policy does not
 select them. They take parse requests only from the application pods, on the parsing port; anything
-else that needs them (a metrics scraper, a scaler) is admitted by parsing.networkPolicy.extraIngress.
+else that needs them (a metrics scraper, for example) is admitted by parsing.networkPolicy.extraIngress.
 Egress is the application policy's own rules.
 */}}
 apiVersion: networking.k8s.io/v1

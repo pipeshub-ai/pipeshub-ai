@@ -129,7 +129,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/*
 Labels of the parsing pods. Their application name differs from the main Deployment's, so
-nothing that selects the main pods (its autoscaler, its policies) also selects these.
+nothing that selects the main pods (its selectors, its policies) also selects these.
 */}}
 {{/*
 Name of the parsing Deployment, Service and PDB, and the host in PARSING_SERVICE_URL: the full name with

@@ -8,9 +8,6 @@ returns a ``BlocksContainer`` JSON.  All parser implementations live in
 import asyncio
 import logging
 import os
-import signal
-import sys
-import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -103,13 +100,9 @@ logger = logging.getLogger("parsing_main")
 PARSE_THREAD_POOL_HEADROOM = 4
 
 
-def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
-    logger.info("Received signal %s; shutting down gracefully", signum)
-    sys.exit(0)
-
-
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGINT, handle_sigterm)
+# No SIGTERM/SIGINT handler is installed here. uvicorn installs its own while it serves and drains
+# in-flight requests before it exits, but it imports this module again (``app.parsing_main:app``)
+# after that, so a handler set at import would replace it and drop the requests in flight.
 
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
@@ -406,7 +399,7 @@ app.include_router(parsing_router)
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics() -> PlainTextResponse:
-    """In-flight and saturation counters in Prometheus text format, for an external scaler or dashboard to read."""
+    """In-flight and saturation counters in Prometheus text format, for a dashboard or an alert to read."""
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     default_capacity = governor.ceilings.heavy if governor is not None else None
     return PlainTextResponse(

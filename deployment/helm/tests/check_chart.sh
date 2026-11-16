@@ -124,7 +124,7 @@ if [[ -f "$OUT/cloud.yaml" ]]; then
   expect local-neo4j-kafka 'ZOOKEEPER_SERVERS' absent
 fi
 # Parsing in its own pods: nothing renders by default; enabled, the Deployment,
-# Service and PDB use the names and labels add-on scalers target, and the
+# Service and PDB use the documented names and labels, and the
 # app pods are pointed at the Service.
 if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-neo4j-kafka 'ci-pipeshub-ai-parsing' absent
@@ -146,7 +146,7 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-parsing 'path: /health/ready' present 'name: PIPESHUB_ROLE'
   # A scale-down or rollout gives an in-flight parse this long to finish before the kill.
   expect local-parsing 'terminationGracePeriodSeconds: 120' present 'name: PIPESHUB_ROLE'
-  # The parsing pods must not match the main Deployment's selector (its autoscaler would measure them).
+  # The parsing pods must not match the main Deployment's selector.
   expect local-parsing 'app.kubernetes.io/name: pipeshub-ai-parsing' present 'name: ci-pipeshub-ai-parsing'
   expect local-parsing 'kind: NetworkPolicy' absent 'name: ci-pipeshub-ai-parsing'
   expect local-parsing 'value: "4"' absent 'name: PARSING_UVICORN_WORKERS'
@@ -398,9 +398,8 @@ else
   echo "ok refused: docker sandbox without a daemon suggests no socket mount"
 fi
 
-# The eksctl config: it parses, the parsing node group carries the taint, label
-# and autoscaler discovery tags, its max fits the pods the chart sizes for it,
-# and deploy.sh rewrites the cluster name inside the discovery tag.
+# The eksctl config: it parses, and the parsing node group carries the taint and label and
+# a max that fits the pods the chart sizes for it.
 if python3 - "$AWS_DIR" "$OUT" <<'PY'; then echo "ok cluster.yaml: parsing node group"; else failed=1; fi
 import subprocess, sys, yaml
 aws_dir, out = sys.argv[1:3]
@@ -423,10 +422,9 @@ else:
         if (g["minSize"], g["desiredCapacity"]) != (1, 1) or g["maxSize"] < 2: errors.append("min/desired must be 1, max at least 2")
         if g["labels"] != {"pipeshub/role": "parsing"}: errors.append(f"labels {g['labels']}")
         if g["taints"] != [{"key": "pipeshub/role", "value": "parsing", "effect": "NoSchedule"}]: errors.append(f"taints {g['taints']}")
-        if g["tags"] != {"k8s.io/cluster-autoscaler/enabled": "true", "k8s.io/cluster-autoscaler/acme": "owned"}: errors.append(f"tags {g['tags']}")
         if g["availabilityZones"] != ["eu-west-1a", "eu-west-1b", "eu-west-1c"]: errors.append("zones not rewritten")
     for n, g in groups.items():
-        if n != "parsing" and "tags" in g: errors.append(f"{n} carries autoscaler tags")
+        if "tags" in g: errors.append(f"{n} carries tags {g['tags']}")
 for e in errors:
     print("!! cluster.yaml:", e)
 sys.exit(1 if errors else 0)

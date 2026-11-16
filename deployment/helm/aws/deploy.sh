@@ -155,7 +155,6 @@ render_cluster_config() {
     -e "s|region: us-east-1\$|region: ${REGION}|" \
     -e "s|value: us-east-1\$|value: ${REGION}|" \
     -e "s|^  name: pipeshub\$|  name: ${CLUSTER}|" \
-    -e "s|^\(      k8s.io/cluster-autoscaler/\)pipeshub:|\1${CLUSTER}:|" \
     -e "s|^  version: \".*\"\$|  version: \"${K8S_VERSION}\"|" \
     -e "s|keyARN: .*|keyARN: ${KMS_KEY_ARN}|" \
     "${AWS_DIR}/cluster.yaml"

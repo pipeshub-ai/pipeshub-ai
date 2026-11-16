@@ -330,7 +330,7 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 
 # PIPESHUB_ROLE picks what this container runs. "all" (the default) is the full
 # application below. "parsing" runs only the stateless Parsing service and the
-# Docling service it calls on localhost, so a parse pod can scale on its own: it
+# Docling service it calls on localhost, so a parse pod can be sized on its own: it
 # never starts Node.js, the connectors, query, indexing, the embedding server
 # or the UI. Anything else is refused rather than guessed at.
 PIPESHUB_ROLE=${PIPESHUB_ROLE:-all}

@@ -117,12 +117,8 @@ managedNodeGroups:
   # compute optimised: c7i.2xlarge is 8 vCPU / 16 GiB, 2 GiB per vCPU against 4
   # on m7i. It always keeps one node, so a parsing pod has somewhere to run when
   # parsing.enabled is turned on. The node group's cost is paid whether or not
-  # it is. maxSize is the ceiling for a node autoscaler you add yourself; with
-  # parsing.replicas set by hand it is only headroom. Keep it in step with
-  # parsing.resources in values-eks.yaml (3 pods per node).
-  # The two k8s.io/cluster-autoscaler tags are what a Kubernetes node autoscaler
-  # looks for to discover this group's Auto Scaling group; the second carries
-  # the cluster name, which deploy.sh rewrites with --cluster.
+  # it is. maxSize is the most nodes the group can hold; keep it in step with
+  # parsing.replicas and parsing.resources in values-eks.yaml (3 pods per node).
   - name: parsing
     instanceType: c7i.2xlarge
     desiredCapacity: 1
@@ -141,8 +137,5 @@ managedNodeGroups:
       - key: pipeshub/role
         value: parsing
         effect: NoSchedule
-    tags:
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/pipeshub: owned
     updateConfig:
       maxUnavailable: 1

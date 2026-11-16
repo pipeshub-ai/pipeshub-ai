@@ -7,7 +7,7 @@ backpressure and retries. With it unset nothing is refused here: the resource go
 gate still queues and answers 429 after its own wait, exactly as before.
 
 The counters are per process. With ``PARSING_UVICORN_WORKERS`` above 1 each worker keeps its own,
-so a scrape sees one worker; run one worker per pod (the shipped default) to scale on them.
+so a scrape sees one worker; run one worker per pod (the shipped default) so the figures describe the pod.
 """
 from __future__ import annotations
 
