@@ -395,11 +395,13 @@ async def test_a_failed_instances_list_is_empty_and_comes_back(w: World, monkeyp
 
 async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """The stats of a connector read the record edges of its own record groups, and a collection's those of its app: the cost does not grow with the records of
-    the organisation's other connectors. As one statement with the kind as a parameter, the group test (``to_id IN (SELECT ...)``) sat inside an OR, which PostgreSQL
-    does not turn into a join, and the plan read every record edge of the organisation. As a join against the groups it still did whenever the planner guessed the
-    groups were many: the other connector's groups nest (200 under 4), so the recursive step is estimated at 50 groups a hop, and on a database where the organisation
-    fills its partition a scan of all its record edges came out cheaper. Every read of graph.edges and graph.nodes must name its key (``to_id =`` or ``id =``), so
-    the stage states of the other connector's records are not read either."""
+    the organisation's other connectors. Every read of graph.edges must be a range of the to_id index bounded by ``to_id =``, and every read of graph.nodes a probe of
+    the primary key with ``id =``, whatever the planner guesses:
+
+    - the other connector's groups nest (200 under 4), so a recursive step is estimated at 50 groups a hop: as a join against the groups, a scan of every record edge
+      of the organisation came out cheaper where the organisation fills its partition;
+    - the organisation is kept out of its partition's most common values (statistics target 1, a larger decoy org) and put at the average of many one-row orgs, as on
+      a shared database: the record and stage state reads then tied with a scan of a partial index (nodes_stage_page, _revision) bounded by the org alone."""
     admin_url = os.environ.get("PG_ADMIN_URL")
     assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
     await w.nodes("recordGroups", {"_key": "top"})
@@ -409,7 +411,7 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
     await w.nodes("stageStates", {"_key": "v1:1:entities", "status": "COMPLETED"})
     await w.edge("belongsTo", ("records", "r1"), ("recordGroups", "top"))
     await w.edge("belongsTo", ("records", "k1"), ("apps", "kb"))
-    # another connector: 20,000 records in its own groups and app
+    # another connector: 20,000 records in its own nested groups, with their stage states
     await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'n' || g, '{"recordType": "FILE"}'::jsonb
         FROM generate_series(1, 20000) g""", w.org), write=True)
     await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'belongsTo', 'records', 'n' || g,
@@ -419,28 +421,50 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
     await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'stageStates', 'n' || g || ':1:entities', '{"status": "COMPLETED"}'::jsonb
         FROM generate_series(1, 20000) g""", w.org), write=True)
     con = await asyncpg.connect(admin_url)
+    leaf, parent, bound = await con.fetchrow("SELECT c.oid::regclass::text, i.inhparent, pg_get_expr(c.relpartbound, c.oid) FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid "
+                                             "WHERE c.oid = (SELECT tableoid FROM graph.nodes WHERE org_id = $1 LIMIT 1)", w.org)
+    mod, rem = re.findall(r"\d+", bound)
+    same = f"satisfies_hash_partition({parent}, {mod}, {rem}, o)"            # an org id that lands in the organisation's partition
+    decoy = f"(SELECT o FROM (SELECT left(md5('decoy' || $1 || h), 24) o FROM generate_series(1, 64) h) c WHERE {same} LIMIT 1)"
+    tiny = f"(SELECT o FROM (SELECT left(md5('tiny' || $1 || h), 24) o FROM generate_series(1, 400000) h) c WHERE {same})"
     try:
-        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
-    finally:
-        await con.close()
-    sent: list[tuple[str, tuple]] = []
-    real = w.p._lrows
+        async with con.transaction():
+            await con.execute("SET LOCAL session_replication_role = replica")      # rows for the statistics only, not changes for the kg projection
+            await con.execute(f"INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT {decoy}, 'records', 'd' || g, '{{}}'::jsonb FROM generate_series(1, 50000) g", w.org)
+            await con.execute(f"INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT o, 'stageStates', 't', '{{}}'::jsonb FROM {tiny} t", w.org)
+        await con.execute(f"ALTER TABLE {leaf} ALTER COLUMN org_id SET STATISTICS 1")
+        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")
+        sent: list[tuple[str, tuple]] = []
+        real = w.p._lrows
 
-    async def spy(sql: str, *args: object, **kw: object) -> list:
-        sent.append((sql, args))
-        return await real(sql, *args, **kw)
-    monkeypatch.setattr(w.p, "_lrows", spy)
-    stats = (await w.p.get_connector_stats(w.org, APP))["data"]["stats"]
-    assert stats["total"] == 1 and stats["entitiesStatus"]["COMPLETED"] == 1
-    assert (await w.p.get_connector_stats(w.org, "kb"))["data"]["stats"]["total"] == 1
-    assert len(sent) == 2
-    for sql, args in sent:
-        plan = "\n".join(r[0] for r in await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, *args)))
-        scans = re.findall(r"(Seq Scan|Index Scan|Index Only Scan|Bitmap Index Scan) (?:using \S+ )?on (?:nodes|edges)\S*[^\n]*\n(?:\s+Index Cond: ([^\n]*))?", plan)
-        assert scans and all(kind != "Seq Scan" and re.search(r"\b(?:to_)?id = ", cond) for kind, cond in scans), plan
-        root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
-        touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
-        assert touched < 200, (touched, plan)
+        async def spy(sql: str, *args: object, **kw: object) -> list:
+            sent.append((sql, args))
+            return await real(sql, *args, **kw)
+        monkeypatch.setattr(w.p, "_lrows", spy)
+        stats = (await w.p.get_connector_stats(w.org, APP))["data"]["stats"]
+        assert stats["total"] == 1 and stats["entitiesStatus"]["COMPLETED"] == 1
+        assert (await w.p.get_connector_stats(w.org, "kb"))["data"]["stats"]["total"] == 1
+        assert len(sent) == 2
+        for sql, args in sent:
+            plan = "\n".join(r[0] for r in await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, *args)))
+            scans = re.findall(r"(Seq Scan|Bitmap Heap Scan|Bitmap Index Scan|Index Only Scan|Index Scan)(?: using (\S+))? on ((nodes|edges)\S*)[^\n]*\n(?:\s+Index Cond: ([^\n]*))?", plan)
+
+            def keyed(kind: str, using: str, on: str, rel: str, cond: str) -> bool:
+                index = on if kind == "Bitmap Index Scan" else using        # a bitmap heap scan is as bounded as its bitmap index scans, checked themselves
+                return kind == "Bitmap Heap Scan" or kind in ("Index Scan", "Index Only Scan", "Bitmap Index Scan") and (
+                    (rel == "nodes" and index.endswith("_pkey") and bool(re.search(r"\bid = ", cond))) or (rel == "edges" and "_org_id_coll_to_id_" in index and "to_id = " in cond))
+            assert scans and all(keyed(*scan) for scan in scans), plan
+            root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
+            touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
+            assert touched < 200, (touched, plan)
+    finally:
+        async with con.transaction():
+            await con.execute("SET LOCAL session_replication_role = replica")
+            await con.execute(f"DELETE FROM graph.nodes WHERE org_id = {decoy} AND coll = 'records'", w.org)
+            await con.execute(f"DELETE FROM graph.nodes x USING {tiny} t WHERE x.org_id = t.o AND x.coll = 'stageStates' AND x.id = 't'", w.org)
+        await con.execute(f"ALTER TABLE {leaf} ALTER COLUMN org_id SET STATISTICS -1")
+        await con.execute(f"ANALYZE {leaf}")                                       # the next tests plan with ordinary statistics
+        await con.close()
 
 
 async def test_the_stats_count_the_live_records_of_the_connector_once(w: World) -> None:
