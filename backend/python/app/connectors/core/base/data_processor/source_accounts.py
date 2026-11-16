@@ -288,8 +288,7 @@ class SourceAccounts:
         # Not may_grant: a SharePoint principal's grant carries its site user id, which never equals the Entra object
         # id the address is linked to. What matters here is an admission made meanwhile, which re-used addresses and
         # deleted-account evidence record.
-        refused = {id(p) for p in users if not self.holds(p.email, p.external_id)
-                   or not self._evidence_allows(p.email.lower(), p.external_id)}
+        refused = {id(p) for p in users if not self.admits(p.email, p.external_id)}
         return [p for p in permissions if id(p) not in refused]
 
     async def _save(self, buckets: Iterable[int], deleted: dict[int, dict[str, str]]) -> None:
@@ -502,6 +501,11 @@ class SourceAccounts:
         address. Only a re-used address is checked; there the grant must name the current account by id."""
         holder = self._holder(email.lower())
         return holder is None or (source_id is not None and source_id == holder)
+
+    def admits(self, email: str, source_id: str | None) -> bool:
+        """For a loaded state: ``holds``, and an address with unreconciled deleted-account evidence takes only a grant
+        naming the account it is linked to (``_evidence_allows``)."""
+        return self.holds(email, source_id) and self._evidence_allows(email.lower(), source_id)
 
     def _evidence_allows(self, email: str, source_id: str | None) -> bool:
         """An address a deleted account still holds in the source's deleted accounts, and that no listing has shown

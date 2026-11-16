@@ -498,11 +498,12 @@ class DataSourceEntitiesProcessor:
             return True
         accounts = self.source_accounts(connector_id)
         await accounts.ensure_loaded([email])
-        if accounts.holds(email, source_id):
+        if accounts.admits(email, source_id):
             return True
         self.logger.info(
-            "Skipped a grant on connector %s to user %s: its address belonged to another account before, and the "
-            "grant does not name the account that holds it now", connector_id, user_id,
+            "Skipped a grant on connector %s to user %s: its address belonged to another account (re-used, or a "
+            "deleted account still listed with it), and the grant does not name the account that holds it now",
+            connector_id, user_id,
         )
         return False
 
