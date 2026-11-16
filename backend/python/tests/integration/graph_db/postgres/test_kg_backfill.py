@@ -638,7 +638,7 @@ async def test_a_finishing_batch_does_not_clear_an_inexact_mark_set_after_it_rea
     p, org = await fresh_world(pg_db)
     real, marked = bf.app_nodes, []
 
-    async def nodes(tx, o: str, app: str, after: tuple | None, limit: int) -> list:  # noqa: ANN001
+    async def nodes(tx, o: str, app: str, after: tuple | None, limit: int) -> list:
         got = await real(tx, o, app, after, limit)
         if not got and after is not None and not marked:
             marked.append(after)
