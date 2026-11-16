@@ -19,7 +19,11 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from tests.integration.real_graph import backend_unavailable, connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

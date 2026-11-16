@@ -3638,7 +3638,7 @@ class TestMigrateGroupToUserByExternalId:
         tx_store.delete_user_group_by_id.assert_awaited_once_with("grp-1")
 
     @staticmethod
-    def _group_with_grants(user, get_edge=None):
+    def _group_with_grants(user: MagicMock | None, get_edge: AsyncMock | None = None) -> tuple[DataSourceEntitiesProcessor, MagicMock]:
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -3654,7 +3654,7 @@ class TestMigrateGroupToUserByExternalId:
         return proc, tx_store
 
     @pytest.mark.asyncio
-    async def test_a_user_not_found_in_the_org_keeps_the_group_and_its_grants(self):
+    async def test_a_user_not_found_in_the_org_keeps_the_group_and_its_grants(self) -> None:
         proc, tx_store = self._group_with_grants(None)
 
         await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
@@ -3664,7 +3664,7 @@ class TestMigrateGroupToUserByExternalId:
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_grant_that_could_not_be_moved_keeps_the_group(self):
+    async def test_a_grant_that_could_not_be_moved_keeps_the_group(self) -> None:
         user = MagicMock()
         user.id = "user-1"
         proc, tx_store = self._group_with_grants(user, AsyncMock(side_effect=[RuntimeError("edge error"), None]))
@@ -3676,7 +3676,7 @@ class TestMigrateGroupToUserByExternalId:
         tx_store.delete_user_group_by_id.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_grants_all_moved_delete_the_group(self):
+    async def test_grants_all_moved_delete_the_group(self) -> None:
         user = MagicMock()
         user.id = "user-1"
         proc, tx_store = self._group_with_grants(user)

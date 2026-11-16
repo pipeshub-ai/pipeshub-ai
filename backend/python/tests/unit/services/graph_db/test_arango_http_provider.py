@@ -2099,7 +2099,7 @@ class TestBulkGetEntityIdsByEmailUsersAndErrors:
         assert call.kwargs["bind_vars"] == {"emails": ["u@test.com"], "org_id": "org-1"}
 
     @pytest.mark.asyncio
-    async def test_groups_and_people_are_read_in_the_org_too(self, connected_provider):
+    async def test_groups_and_people_are_read_in_the_org_too(self, connected_provider) -> None:
         connected_provider.http_client.execute_aql.side_effect = [[], [], []]
         await connected_provider.bulk_get_entity_ids_by_email(["g@test.com"], org_id="org-1")
         calls = connected_provider.http_client.execute_aql.await_args_list
