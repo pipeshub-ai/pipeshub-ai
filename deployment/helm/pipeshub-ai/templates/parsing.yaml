@@ -11,7 +11,7 @@ kind: Deployment
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
     pipeshub.ai/workload: parsing
     app.kubernetes.io/component: parsing
 spec:
@@ -23,7 +23,7 @@ spec:
       maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable }}
   selector:
     matchLabels:
-      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
       pipeshub.ai/workload: parsing
   template:
     metadata:
@@ -32,7 +32,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        {{- include "pipeshub-ai.parsingLabels" . | nindent 8 }}
         pipeshub.ai/workload: parsing
         app.kubernetes.io/component: parsing
         {{- with .Values.parsing.podLabels }}
@@ -139,7 +139,7 @@ spec:
               podAffinityTerm:
                 labelSelector:
                   matchLabels:
-                    {{- include "pipeshub-ai.selectorLabels" . | nindent 20 }}
+                    {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 20 }}
                     pipeshub.ai/workload: parsing
                 topologyKey: kubernetes.io/hostname
       {{- end }}
@@ -171,7 +171,7 @@ kind: Service
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
     pipeshub.ai/workload: parsing
 spec:
   type: ClusterIP
@@ -181,7 +181,7 @@ spec:
       protocol: TCP
       name: parsing
   selector:
-    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 4 }}
     pipeshub.ai/workload: parsing
 {{- if .Values.parsing.podDisruptionBudget.enabled }}
 ---
@@ -190,13 +190,13 @@ kind: PodDisruptionBudget
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    {{- include "pipeshub-ai.parsingLabels" . | nindent 4 }}
     pipeshub.ai/workload: parsing
 spec:
   maxUnavailable: {{ .Values.parsing.podDisruptionBudget.maxUnavailable }}
   selector:
     matchLabels:
-      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
       pipeshub.ai/workload: parsing
 {{- end }}
 {{- end }}

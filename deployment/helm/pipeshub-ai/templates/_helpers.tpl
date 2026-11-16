@@ -128,6 +128,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Labels of the parsing pods. Their application name differs from the main Deployment's, so
+nothing that selects the main pods (its autoscaler, its policies) also selects these.
+*/}}
+{{- define "pipeshub-ai.parsingSelectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-parsing" (include "pipeshub-ai.name" .) }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "pipeshub-ai.parsingLabels" -}}
+helm.sh/chart: {{ include "pipeshub-ai.chart" . }}
+{{ include "pipeshub-ai.parsingSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- with .Values.global.commonLabels }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{/*
 Helper functions for secret management
 */}}
 

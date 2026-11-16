@@ -31,3 +31,12 @@ def test_parsing_has_time_to_drain_before_the_kill() -> None:
 def test_parsing_is_healthy_only_when_docling_answers() -> None:
     _, parsing = _services()
     assert parsing["healthcheck"]["test"][-1].endswith("/health/ready")
+
+
+def test_parsing_gets_every_redis_connection_setting_the_app_has() -> None:
+    """Parsing reads the app's configuration store, so it needs the app's whole Redis setup (mode, cluster, TLS, user)."""
+    base, parsing = _services()
+    wanted = {key for key in _env(base) if key.startswith("REDIS_") and not key.startswith("REDIS_STREAMS_")}
+    assert wanted <= set(_env(parsing)), sorted(wanted - set(_env(parsing)))
+    for key in wanted:
+        assert _env(parsing)[key] == _env(base)[key], key
