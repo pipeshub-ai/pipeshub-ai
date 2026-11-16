@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.models import ScrollWindowExceededError, VectorChunkPayload
+from app.services.vector_db.models import FilterValue, ScrollWindowExceededError, VectorChunkPayload
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -110,10 +110,9 @@ async def sweep_stray_points(
 
     ordered = sorted(strays)
     for start in range(0, len(ordered), _DELETE_BATCH):
-        batch = ordered[start:start + _DELETE_BATCH]
-        delete_filter = await vector_db.filter_collection(
-            must={"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": batch}
-        )
+        batch: list[str | int | float | bool] = [*ordered[start:start + _DELETE_BATCH]]
+        must: dict[str, FilterValue] = {"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": batch}
+        delete_filter = await vector_db.filter_collection(must=must)
         await vector_db.delete_points(collection_name, delete_filter)
     if strays or truncated:
         _logger.info(

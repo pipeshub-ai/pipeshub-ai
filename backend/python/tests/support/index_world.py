@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.config.constants.arangodb import EventTypes
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+from app.modules.reconciliation.service import ReconciliationService
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.modules.transformers.vectorstore import VectorStore, _process_text_blocks
@@ -85,3 +86,28 @@ async def index(store: VectorStore, blob: Blob, text: str, *, event: str = Event
 
 def documents(container: BlocksContainer) -> list:
     return _process_text_blocks(container.blocks, VRID, ORG, None)
+
+
+async def run(store: VectorStore, blob: Blob, container: BlocksContainer, event: str = EventTypes.UPDATE_RECORD.value) -> object:
+    """`index` for a container the caller built (several blocks of one kind, a table, repeats)."""
+    ctx = context_of(record_of(container), event)
+    sink = SimpleNamespace(blob_storage=blob, vector_store=store)
+    ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(ctx, MagicMock(), sink)
+    result = await store.apply(ctx)
+    blob.saved = ctx.reconciliation_context.new_metadata
+    return result
+
+
+async def legacy_record(db: IVectorDBService, container: BlocksContainer, dim: int = 2) -> tuple[VectorStore, Blob]:
+    """A record as the code before content ids stored it: random block ids, reconciliation metadata of no scheme, a full index."""
+    store = make_store(db, dim)
+    await store.index_documents(container, ORG, RID, VRID, record=record_of(container))
+    store._embed_documents_with_retry.reset_mock()
+    blob = Blob()
+    blob.saved = ReconciliationService().build_metadata(container).to_dict()
+    assert "idScheme" not in blob.saved
+    return store, blob
+
+
+def embedded_texts(store: VectorStore) -> list[str]:
+    return [t for call in store._embed_documents_with_retry.await_args_list for t in call.args[0]]

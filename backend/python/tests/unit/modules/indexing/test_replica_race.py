@@ -11,10 +11,12 @@ diff, `VectorStore.apply`, its point ids and the sweep.
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+import pytest
 import pytest_asyncio
 
 from app.config.constants.arangodb import EventTypes
@@ -166,3 +168,30 @@ def _legacy_metadata(container) -> dict:
     from app.modules.reconciliation.service import ReconciliationService
 
     return ReconciliationService().build_metadata(container).to_dict()
+
+
+@pytest.mark.parametrize("policy", ["A", "C"])
+async def test_two_concurrent_runs_of_one_record_give_equal_point_sets(
+    db: InMemoryVectorDBService, policy: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The race itself: two replicas index the same bytes at the same time, each with its own parse (its own random ids)."""
+    monkeypatch.setenv("EMBED_POINT_POLICY", policy)
+    wanted = await _fresh_points(DOC_V1)
+    await asyncio.gather(
+        index(_store(db), Blob(), DOC_V1, event=EventTypes.NEW_RECORD.value),
+        index(_store(db), Blob(), DOC_V1, event=EventTypes.NEW_RECORD.value),
+    )
+    assert _point_ids(db) == wanted
+
+
+async def test_two_concurrent_runs_without_content_ids_double_the_points(
+    db: InMemoryVectorDBService, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control for the test above: with random ids the runs share nothing."""
+    wanted = await _fresh_points(DOC_V1)
+    monkeypatch.setattr(BlockIdentity, "assign", staticmethod(lambda *_a, **_k: False))
+    await asyncio.gather(
+        index(_store(db), Blob(), DOC_V1, event=EventTypes.NEW_RECORD.value),
+        index(_store(db), Blob(), DOC_V1, event=EventTypes.NEW_RECORD.value),
+    )
+    assert not _point_ids(db) & wanted and len(_point_ids(db)) >= len(wanted)

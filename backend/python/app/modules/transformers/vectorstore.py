@@ -1261,6 +1261,11 @@ class VectorStore(Transformer):
                 )
                 if not blocks_to_index_ids and not block_ids_to_delete:
                     self.logger.info(f"Re-key: every block of record {record_id} moved, nothing to embed")
+                    # The moved points were written from payloads read moments earlier: membership is re-applied from the graph, and
+                    # a record deleted meanwhile is released, as after any other write of points.
+                    with stage("vector.cleanup"):
+                        await self._cleanup_orphaned_embeddings_if_needed(record_id, virtual_record_id, org_id, record)
+                        await self._resync_membership_after_write(virtual_record_id, record_id)
                     await self._sweep_stray_points(record, record.block_containers)
                     return True
             block_containers = BlocksContainer(

@@ -44,9 +44,8 @@ class BlockIdentity:
         ReconciliationService.fill_content_hashes(container)
         for kind, items in (("g", container.block_groups), ("b", container.blocks)):
             seen: dict[str, int] = {}
-            for position, item in enumerate(items):
-                index = item.index if item.index is not None else position
-                content_hash = item.content_hash or f"pos:{index}"
+            for item in items:
+                content_hash = item.content_hash or f"pos:{item.index}"
                 occurrence = seen.get(content_hash, 0)
                 seen[content_hash] = occurrence + 1
                 item.id = _derive(org_id, virtual_record_id, kind, content_hash, occurrence)
