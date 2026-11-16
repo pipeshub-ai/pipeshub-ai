@@ -8,6 +8,7 @@ option the client library maps differently in cluster mode) is caught here.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -63,3 +64,23 @@ class TestKvStoreOnARealCluster:
         keys = await store.get_all_keys()
 
         assert set(keys) == {"/dir/a", "/dir/bbbb", "/dir/ccccccc"}
+
+    async def test_compare_and_set_on_a_real_cluster(self, store) -> None:
+        """The swap is a Lua script with its key in KEYS, which the cluster client routes to the key's slot."""
+        assert await store.compare_and_set("/cas", None, {"n": 1}) is True
+        assert await store.compare_and_set("/cas", None, {"n": 2}) is False
+        assert await store.compare_and_set("/cas", {"n": 0}, {"n": 2}) is False
+        assert await store.compare_and_set("/cas", {"n": 1}, {"n": 2}) is True
+        assert (await store.get_key("/cas")) == {"n": 2}
+
+    @pytest.mark.parametrize("expected", [{"n": 0}, None], ids=["present", "absent"])
+    async def test_concurrent_compare_and_set_has_exactly_one_winner(self, store, expected) -> None:
+        for round_ in range(5):
+            key = f"/cas-race/{round_}"
+            if expected is not None:
+                await store.create_key(key, expected)
+
+            results = await asyncio.gather(*(store.compare_and_set(key, expected, {"n": f"w{i}"}) for i in range(8)))
+
+            assert results.count(True) == 1, results
+            assert (await store.get_key(key)) == {"n": f"w{results.index(True)}"}

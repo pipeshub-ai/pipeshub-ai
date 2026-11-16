@@ -368,6 +368,11 @@ class FakeConfigService:
         self.saved[path] = value
         return True
 
+    async def compare_and_set_config(self, path: str, expected: object, new: object) -> bool:
+        if await self.get_config(path) != expected:
+            return False
+        return await self.set_config(path, new)
+
 
 async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # noqa: ANN401
     """Run ``connector.run_sync`` as ``run_sync_task`` runs a full sync (#4119).

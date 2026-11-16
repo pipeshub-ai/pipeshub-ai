@@ -936,6 +936,7 @@ class SlackConnector(BaseConnector):
 
         cursor: Optional[str] = None
         synced = skipped = bots_cached = 0
+        unusable: set[str] = set()
 
         while True:
             await self.rate_limiter.acquire(Tier.T2)
@@ -974,6 +975,16 @@ class SlackConnector(BaseConnector):
                 if uid and display_name:
                     self.user_id_to_name_cache[uid] = display_name
 
+                # users.list "includes both invited users and deleted/deactivated users"
+                # (https://docs.slack.dev/reference/methods/users.list/). Neither can use Slack, so neither is
+                # linked, and one linked before is withdrawn below: linked, one sharing an active member's
+                # address reads as that address changing hands. Reactivated or signed in, the member is linked
+                # when it is listed again. Checked before the email, which such a member may no longer show.
+                if m.get("deleted") or m.get("is_invited_user"):
+                    if uid:
+                        unusable.add(uid)
+                    continue
+
                 if not email and not is_bot:
                     self.logger.debug(f"Skipping {m.get('name')}: no email")
                     skipped += 1
@@ -981,13 +992,6 @@ class SlackConnector(BaseConnector):
 
                 if is_bot:
                     bots_cached += 1
-                    continue
-
-                # users.list "includes both invited users and deleted/deactivated users"
-                # (https://docs.slack.dev/reference/methods/users.list/). Neither can use Slack, so neither is
-                # linked: linked, one sharing an active member's address reads as that address changing hands.
-                # Reactivated or signed in, the member is linked when it is listed again.
-                if m.get("deleted") or m.get("is_invited_user"):
                     continue
 
                 app_user = self._to_app_user(m)
@@ -1007,6 +1011,15 @@ class SlackConnector(BaseConnector):
             cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
                 break
+
+        # A short list withdraws nobody, as it rewrites no role (_sync_workspace_roles).
+        if unusable and not self._users_read_failed:
+            gone = [
+                u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                if u.source_user_id in unusable
+            ]
+            if gone:
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
         # After all pages, build the internal-ID cache for fast mention resolution
         await self._build_user_id_caches()

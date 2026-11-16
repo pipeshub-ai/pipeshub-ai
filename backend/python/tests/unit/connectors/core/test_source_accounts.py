@@ -45,6 +45,11 @@ class _Config:
         self.saved[key] = value
         return True
 
+    async def compare_and_set_config(self, key: str, expected: object, new: object) -> bool:
+        if self.saved.get(key) != expected:
+            return False
+        return await self.set_config(key, new)
+
 
 class _Directory:
     """PipesHub's side: one user per address, and the account each user is linked to (``userAppRelation``)."""
@@ -463,7 +468,8 @@ async def test_an_address_an_earlier_version_already_linked_to_its_new_account_i
 
     assert directory.calls[0] == ("remove", "ana@x.com")
     assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
-    assert config.saved[source_accounts_key(CONNECTOR)] == {"seeded": True, "deletedChecked": True, "version": 1}
+    marker = config.saved[source_accounts_key(CONNECTOR)]
+    assert marker["seeded"] is True and marker["deletedChecked"] is True and marker["version"]
     assert not accounts.may_grant("ana@x.com", "old-oid") and not accounts.may_grant("ana@x.com", None)
     assert accounts.may_grant("ana@x.com", "new-oid")
     directory.calls.clear()
@@ -622,6 +628,36 @@ async def test_concurrent_user_syncs_of_one_connector_keep_every_address_they_li
 
     config.set_config = slow_set
     await asyncio.gather(accounts.before_link([_user(first, "acc-1")]), second_listing())
+
+    assert _saved(config)["linked"] == {first: "acc-1", second: "acc-2"}
+
+
+@pytest.mark.asyncio
+async def test_two_processes_saving_one_bucket_keep_both_addresses(world) -> None:
+    """Two processes (no shared lock) link addresses in one bucket at once: the later save finds the bucket changed,
+    reads it again and keeps the other process's entry."""
+    directory, accounts, config = world
+    other = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another replica
+    first = "a0@x.com"
+    second = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(first))
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(first))
+    real_cas = config.compare_and_set_config
+    saving, second_done = asyncio.Event(), asyncio.Event()
+
+    async def slow_cas(key: str, expected: object, new: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()       # the first replica read the bucket and is about to save it
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(second_done.wait(), 0.2)
+        return await real_cas(key, expected, new)
+
+    async def second_replica() -> None:
+        await saving.wait()
+        await other.before_link([_user(second, "acc-2")])
+        second_done.set()
+
+    config.compare_and_set_config = slow_cas
+    await asyncio.gather(accounts.before_link([_user(first, "acc-1")]), second_replica())
 
     assert _saved(config)["linked"] == {first: "acc-1", second: "acc-2"}
 

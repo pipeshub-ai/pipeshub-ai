@@ -6,7 +6,7 @@ import threading
 import uuid
 from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
 
-from app.config.key_value_store import KeyValueStore
+from app.config.key_value_store import KeyValueStore, decode_for_compare
 from app.core.org_context import spawn_detached
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
@@ -24,6 +24,17 @@ T = TypeVar("T")
 
 # Characters SCAN MATCH reads as a glob.
 _GLOB_SPECIAL = re.compile(r"([\\*?\[\]])")
+
+# A script runs with every other command blocked, so the compare and the SET are one step
+# (https://redis.io/docs/latest/develop/programmability/eval-intro/: "Redis guarantees the
+# script's atomic execution"). The key is passed in KEYS so a cluster routes it to its slot.
+_SET_IF_UNCHANGED = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+"""
 
 # Retry configuration
 RETRY_BASE_DELAY = 0.5  # seconds
@@ -328,6 +339,27 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         except Exception as e:
             raise ConnectionError(f"Failed to get key: {e}") from e
+
+    async def compare_and_set(self, key: str, expected: Optional[T], new: T) -> bool:
+        full_key = self._build_key(key)
+        try:
+            raw = await self._get_client().get(full_key)
+        except Exception as e:
+            raise ConnectionError(f"Failed to read key for compare-and-set: {e}") from e
+        current = decode_for_compare(self.deserializer, raw) if raw else None
+        if current != expected:
+            return False
+        data = self.serializer(new)
+        try:
+            if raw is None:
+                swapped = bool(await self._get_client().set(full_key, data, nx=True))
+            else:
+                swapped = bool(await self._get_client().eval(_SET_IF_UNCHANGED, 1, full_key, raw, data))
+        except Exception as e:
+            raise ConnectionError(f"Failed to compare-and-set key: {e}") from e
+        if swapped:
+            await self._notify_watchers(key, new)
+        return swapped
 
     async def delete_key(self, key: str) -> bool:
         """Delete a key from Redis."""
