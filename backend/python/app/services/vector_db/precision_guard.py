@@ -35,6 +35,8 @@ from app.services.vector_db.collection_pin import (
     CollectionPinStore,
     Pin,
 )
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import org_for_filter
 from app.utils.precision_witness import get_precision_witness
 
 # The counts that derive an index's precision are unindexed scans on a store with one space per organisation; they
@@ -50,6 +52,13 @@ class PrecisionUnreadable(Exception):
 
 class PrecisionDerivationTimeout(PrecisionUnreadable):
     """The counts that derive an index's precision did not finish in time: nothing is known, which is not "legacy"."""
+
+
+def _bound_org_or_none() -> str | None:
+    try:
+        return org_for_filter()
+    except OrgRequired:
+        return None
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -143,7 +152,7 @@ class PrecisionGuard:
 
     async def _derive(self, collection: str, org: str | None) -> Standing:
         counts = await self.tag_counts(collection, org)
-        dead = await self._pins.epochs.dead(collection)
+        dead = await self._pins.epochs.dead(collection, org)
         live = dict(counts)
         if dead and (counts[INT8] or counts[FP32]):
             gone = await self._dead_counts(collection, org, [d.token for d in dead])
@@ -204,25 +213,39 @@ class PrecisionGuard:
             raise FenceMoved(f"collection '{fence.collection}' was reset while this batch was being embedded; it is embedded again")
 
     async def sweep_dead(self, collection: str, org: str | None) -> None:
-        """Delete the points written under retired tokens, and mark a token swept once no writer of it can still be writing.
+        """Delete the points written under retired tokens, and mark a token swept for the space this sweep covered.
+
+        Every store deletes for one organisation, so the delete names the writer's (the argument, else the bound
+        one) and covers that organisation's points only. On a store with one space per organisation that is the
+        whole space, and the token is swept for it. On a shared store the token is swept only once no point of
+        it is left anywhere in the collection. Without an organisation nothing can be deleted and nothing is marked.
 
         Never raises: a sweep that cannot run is repeated at the end of the next record.
         """
         try:
-            dead = await self._pins.epochs.dead(collection)
+            scope = self.scope(org)
+            dead = await self._pins.epochs.dead(collection, scope)
             if not dead:
                 return
-            org = self.scope(org)
-            must: dict = {POINT_EPOCH: [d.token for d in dead]}
-            if org:
-                must[_ORG_FIELD] = org
+            delete_org = org or _bound_org_or_none()
+            if not delete_org:
+                return
+            tokens = [d.token for d in dead]
+            must: dict = {POINT_EPOCH: tokens, _ORG_FIELD: delete_org}
             await self._db.delete_points(collection, await self._db.filter_collection(must=must))
             window = sweep_window_seconds()
             for item in dead:
-                if self._pins.epochs.expired(item, window):
-                    await self._pins.epochs.mark_swept(collection, item.token)
+                if not self._pins.epochs.expired(item, window):
+                    continue
+                if scope is None and await self._remaining(collection, item.token):
+                    continue  # another organisation's points of the token are still there
+                await self._pins.epochs.mark_swept(collection, item.token, scope, everywhere=False)
         except Exception:
             self._logger.warning("could not sweep the points of retired epochs of '%s'", collection, exc_info=True)
+
+    async def _remaining(self, collection: str, token: str) -> int:
+        expression = await self._db.filter_collection(must={POINT_EPOCH: [token]})
+        return int(await self._db.count_points(collection, expression))
 
     # -- the pin ---------------------------------------------------------------------------------------------
 
@@ -291,6 +314,7 @@ class PrecisionGuard:
 
     async def _claim(
         self, collection: str, org: str | None, precision: str, fence: Fence, *, derived: bool, counted: bool = False,
+        writer_org: str | None = None,
     ) -> Pin:
         """The one place a pin is created.
 
@@ -322,7 +346,7 @@ class PrecisionGuard:
         if moved:
             await delete_config_confirmed(self._pins._config, self._pins.key(collection, org))
             raise FenceMoved(f"collection '{collection}' was reset while this batch was being embedded; it is embedded again")
-        await self.sweep_dead(collection, org)
+        await self.sweep_dead(collection, writer_org or org)
         return pin
 
     async def release_stale_derived(self, collection: str, org: str | None) -> bool:
@@ -365,11 +389,16 @@ class PrecisionGuard:
     async def delete_written(
         self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict | None = None,
     ) -> None:
-        """Remove what a rejected batch wrote: its precision, its epoch, and the record or ids in *extra*; nothing of another writer's."""
+        """Remove what a rejected batch wrote: its precision, its epoch, and the record or ids in *extra*; nothing of another writer's.
+
+        The delete always carries the writer's organisation: a shared store refuses a delete without one, and an
+        organisation's own space needs it. Only the derivation of an index's precision is collection-wide.
+        """
         must: dict = {TAG_FIELD: [precision], POINT_EPOCH: [fence.token], **(extra or {})}
-        org = self.scope(org)
-        if org:
-            must[_ORG_FIELD] = org
+        delete_org = org or _bound_org_or_none()
+        if not delete_org:
+            raise OrgRequired("the points of a rejected batch are removed for one organisation, and none was given")
+        must[_ORG_FIELD] = delete_org
         await self._db.delete_points(collection, await self._db.filter_collection(must=must))
 
     # -- replacing a pin left by a crash -------------------------------------------------------------------
@@ -453,6 +482,7 @@ class PrecisionGuard:
         Claims the pin when the collection is empty and the writer is not under a fallback. *fence* is the epoch
         the batch was accepted under (``capture``, before it was embedded); a claim is made only under it.
         """
+        writer_org = org
         org = self.scope(org)
         if claim and fence is None:
             fence = await self.capture(collection)
@@ -482,14 +512,21 @@ class PrecisionGuard:
                     f"the embedding server fell back to {precision} where {intent or INT8} was asked for; "
                     f"nothing is written to '{collection}' until it serves what was asked",
                 )
-            pin = await self._claim(collection, org, precision, fence, derived=False, counted=True)
+            pin = await self._claim(collection, org, precision, fence, derived=False, counted=True, writer_org=writer_org)
             standing = Standing(pin.precision, "pin")
         elif standing.source == "derived":
             standing = await self._restored(collection, org, standing, fence)
+        elif standing.source == "legacy" and claim and standing.precision == precision:
+            # Points written before pins existed are fp32. An accepted batch is confirmed against a pin, so the index gets one
+            # from that evidence now, under the fence, before any batch is accepted.
+            pin = await self._claim(collection, org, standing.precision or FP32, fence, derived=True, writer_org=writer_org)
+            standing = Standing(pin.precision, "pin")
         if standing.source == "pin" and standing.precision != precision and not fallback:
             standing = await self._replaced_if_empty(collection, org, precision, standing)
             if standing.precision is None:
-                pin = await self._claim(collection, org, precision, fence, derived=False)
+                if not claim:  # a check that claims nothing has nothing more to say about an index that is now empty
+                    return None
+                pin = await self._claim(collection, org, precision, fence, derived=False, writer_org=writer_org)
                 standing = Standing(pin.precision, "pin")
         self._judged(collection, standing, precision, fallback=fallback)
         return None

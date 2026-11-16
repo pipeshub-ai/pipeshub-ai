@@ -3193,6 +3193,7 @@ async def _accept_vector_store_job(
         if operation == "cleanup":
             job = start_vector_store_cleanup(
                 logger=logger,
+                config_service=config_service,
                 graph_provider=graph_provider,
                 kafka_service=kafka_service,
                 lock=lock,

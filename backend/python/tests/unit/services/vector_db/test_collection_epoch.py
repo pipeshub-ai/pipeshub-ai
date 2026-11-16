@@ -301,3 +301,37 @@ async def test_control_retiring_every_token_that_is_not_current_retires_the_one_
     await epochs.begin_reset("c")
     current = await epochs.current("c")
     assert (await epochs.states("c"))[current][0] == RETIRED  # the violation: the token that became current is dead
+
+
+@pytest.mark.asyncio
+async def test_a_token_swept_for_one_space_is_still_dead_in_the_others_and_quiet_only_where_it_was_swept() -> None:
+    epochs, _ = _epochs()
+    await epochs.capture("c")
+    await epochs.confirm_reset(await epochs.begin_reset("c"))
+    (dead,) = await epochs.dead("c", "o1")
+    await epochs.mark_swept("c", dead.token, "o1", everywhere=False)
+    assert await epochs.dead("c", "o1") == []
+    assert [d.token for d in await epochs.dead("c", "o2")] == [dead.token]
+    assert await epochs.quiet("c", "o1") is True
+    assert await epochs.quiet("c", "o2") is False
+    assert (await epochs.states("c"))[dead.token][0] == RETIRED  # nothing says it is swept everywhere
+
+
+@pytest.mark.asyncio
+async def test_retired_tokens_that_were_only_swept_per_space_are_forgotten_once_many_and_old() -> None:
+    now = [0.0]
+    epochs, config = _epochs(clock=lambda: now[0])
+    await epochs.capture("c")
+    first: str | None = None
+    for _ in range(20):
+        await epochs.confirm_reset(await epochs.begin_reset("c"))
+        now[0] += 10  # distinct retirement times
+        for dead in await epochs.dead("c", "o1"):
+            await epochs.mark_swept("c", dead.token, "o1", everywhere=False)
+            first = first or dead.token
+    now[0] += 2 * WINDOW
+    await epochs.confirm_reset(await epochs.begin_reset("c"))
+    states = await epochs.states("c")
+    assert sum(state == RETIRED for state, _ in states.values()) <= 17
+    assert first not in states
+    assert first not in await epochs.swept_for("c", "o1")

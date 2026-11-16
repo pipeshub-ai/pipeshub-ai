@@ -85,6 +85,9 @@ class CollectionEpochs:
     def _state_key(self, collection: str, token: str, state: str) -> str:
         return f"{self._base(collection)}/tokens/{token}/{state}"
 
+    def _swept_prefix(self, collection: str, scope: str | None) -> str:
+        return f"{self._base(collection)}/swept/{scope or '-'}/"
+
     def _pin_key(self, collection: str, scope: str | None) -> str:
         return f"{self._base(collection)}/pin/{scope or '-'}"
 
@@ -184,7 +187,9 @@ class CollectionEpochs:
 
     async def _prune(self, collection: str) -> None:
         """Keep the most recently swept tokens; delete the others. The time is the one stored in the swept key."""
-        swept = [t for t, (state, _) in (await self.states(collection)).items() if state == SWEPT]
+        states = await self.states(collection)
+        await self._forget_old_retired(collection, states)
+        swept = [t for t, (state, _) in states.items() if state == SWEPT]
         if len(swept) <= KEPT_SWEPT_TOKENS:
             return
         when: dict[str, float] = {}
@@ -197,24 +202,64 @@ class CollectionEpochs:
             for state in _ORDER:
                 await self._config.delete_config(self._state_key(collection, token, state))
 
+    async def _forget_old_retired(self, collection: str, states: dict[str, tuple[str, float]]) -> None:
+        """A token retired long ago and only ever swept per space is dropped once more than the kept number are older.
+
+        A sweep that cannot reach every space never marks a token swept for all of them, so without this the
+        retired tokens (and the keys that say where each was swept) would grow with every cleanup.
+        """
+        retired = sorted(((when, t) for t, (state, when) in states.items() if state == RETIRED), reverse=True)
+        window = sweep_window_seconds()
+        old = [t for when, t in retired[KEPT_SWEPT_TOKENS:] if self._clock() > when + window]
+        if not old:
+            return
+        prefix = f"{self._base(collection)}/swept/"
+        scoped = [key for key in await self._config.list_keys_in_directory(prefix) or [] if key.rsplit("/", 1)[-1] in old]
+        for token in old:
+            for state in _ORDER:
+                await self._config.delete_config(self._state_key(collection, token, state))
+        for key in scoped:
+            await self._config.delete_config(key)
+
     # -- what the guard asks ---------------------------------------------------------------------------------
 
-    async def dead(self, collection: str) -> list[Dead]:
-        """Tokens whose points are dead and not yet swept."""
-        return [Dead(t, when) for t, (state, when) in (await self.states(collection)).items() if state == RETIRED]
+    async def swept_for(self, collection: str, scope: str | None) -> set[str]:
+        """The retired tokens whose points are gone from this scope (one organisation's space, or the whole collection)."""
+        prefix = self._swept_prefix(collection, scope)
+        keys = await self._config.list_keys_in_directory(prefix) or []
+        return {key[len(prefix):] for key in keys if key.startswith(prefix) and "/" not in key[len(prefix):]}
+
+    async def dead(self, collection: str, scope: str | None = None) -> list[Dead]:
+        """Tokens whose points are dead and not yet swept from this scope."""
+        retired = [Dead(t, when) for t, (state, when) in (await self.states(collection)).items() if state == RETIRED]
+        if not retired:
+            return []
+        gone = await self.swept_for(collection, scope)
+        return [item for item in retired if item.token not in gone]
 
     async def quiet(self, collection: str, scope: str | None) -> bool:
         """No reset or release inside the window: nothing but the first writers can be in the index."""
         if await self._read(self._pin_key(collection, scope)) is not None:
             return False
         current = await self.current(collection)
+        states = await self.states(collection)
+        gone = await self.swept_for(collection, scope) if any(state == RETIRED for state, _ in states.values()) else set()
         return not any(
-            state == RETIRED or (state == LIVE and token != current)
-            for token, (state, _) in (await self.states(collection)).items()
+            (state == RETIRED and token not in gone) or (state == LIVE and token != current)
+            for token, (state, _) in states.items()
         )
 
-    async def mark_swept(self, collection: str, token: str) -> None:
-        await self._create(self._state_key(collection, token, SWEPT), {"at": int(self._clock() * 1000)})
+    async def mark_swept(self, collection: str, token: str, scope: str | None = None, *, everywhere: bool = True) -> None:
+        """The token's points are gone: from every space (``everywhere``) or from *scope* only.
+
+        A sweep deletes the points of one organisation, so what it proves is that scope's. Only a sweep that
+        reached every space may retire the token for all of them.
+        """
+        at = {"at": int(self._clock() * 1000)}
+        if everywhere:
+            await self._create(self._state_key(collection, token, SWEPT), at)
+        else:
+            await self._create(f"{self._swept_prefix(collection, scope)}{token}", at)
 
     def expired(self, dead: Dead, window: float) -> bool:
         return self._clock() > dead.retired_at + window

@@ -131,6 +131,8 @@ async def test_a_writer_that_died_before_it_confirmed_is_cleaned_by_the_redelive
             break
         except Exception as exc:
             assert precision_flip_in(exc) is not None
+    else:
+        pytest.fail("no redelivery completed")  # three hand-backs would leave the points as they were, which also pass below
     assert {p["embedPrecision"] for p in db.points} == {FP32}
 
 
@@ -520,3 +522,38 @@ async def test_the_old_token_is_retired_only_after_the_drop_has_returned(world) 
     await world.registry.delete_collection(REC)
     assert seen == [("live", True)]  # a new epoch is current, the old token is not yet retired
     assert (await world.pins.epochs.states(REC))[old.token][0] == "retired"
+
+
+# -- the pin an entity batch judges stored points against ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_an_entity_stored_with_the_precision_the_pin_has_left_is_written_again(world) -> None:
+    """The pin moves while the batch waits for the entity locks: the point stored with the old precision is not 'unchanged'."""
+    from types import SimpleNamespace
+
+    from app.modules.transformers.entity_vectorstore import EMBEDDING_MODEL_FIELD
+    from app.modules.indexing.embed_resume import POINT_PRECISION
+
+    entity = _entity()
+    world.vdb.dims[ENTITIES], world.vdb.points[ENTITIES] = 4, []
+    await world.pins._claim_unfenced(ENTITIES, INT8)
+    stored = {
+        "exists": True, "page_content": entity.embedding_text, "connectorIds": ["c1"], "recordGroupIds": ["g1"],
+        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: "m:4", POINT_PRECISION: INT8},
+    }
+    world.store._fetch_existing_states.side_effect = [{}, {world.store._point_id(entity.org_id, entity.entity_type.value, entity.entity_id): stored}]
+
+    class _MovesThePin:
+        async def __aenter__(self):  # noqa: ANN204
+            await world.pins.release(ENTITIES, None)  # a reset while this batch waits for the lock
+            await world.pins._claim_unfenced(ENTITIES, FP32)
+
+        async def __aexit__(self, *_a):  # noqa: ANN204
+            return False
+
+    world.store._entity_lock = lambda key: _MovesThePin()
+    world.served["precision"] = FP32
+    outcome = SimpleNamespace(written=0, unchanged=0, membership_only=0)
+    await world.store._upsert_batch(ENTITIES, [entity], outcome, set(), merge_membership=False)
+    assert (outcome.written, outcome.unchanged) == (1, 0)
+    assert {p["embedPrecision"] for p in world.vdb.points[ENTITIES]} == {FP32}

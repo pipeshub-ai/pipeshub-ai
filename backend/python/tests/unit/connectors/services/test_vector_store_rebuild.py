@@ -1,11 +1,16 @@
 """Unit tests for vector-store cleanup and reindex jobs."""
 
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import EventTypes, ProgressStatus
+from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.services.vector_db.collection_epoch import CollectionEpochs
+from app.services.vector_db.collection_manifest import CollectionManifestStore, ManagedCollection
 from app.services.vector_db.rebuild_state import (
     CLEANUP_PHASE_KEY,
     JOB_LOCK_KEY,
@@ -15,6 +20,20 @@ from app.services.vector_db.rebuild_state import (
     get_cleanup_phase,
     set_cleanup_phase,
 )
+
+
+def _config() -> ConfigurationService:
+    log = logging.getLogger("rebuild-test")
+    return ConfigurationService(log, InMemoryKeyValueStore(log))
+
+
+async def _config_with(*names: str) -> ConfigurationService:
+    """A configuration service whose manifest lists these records collections."""
+    config = _config()
+    manifest = CollectionManifestStore(config, logging.getLogger("rebuild-test"))
+    for name in names:
+        await manifest.record(ManagedCollection(name, "records", 4, "s"))
+    return config
 
 
 class FakeRedis:
@@ -156,6 +175,7 @@ async def test_cleanup_publishes_delete_event_only():
 
     await start_vector_store_cleanup(
         logger=MagicMock(),
+        config_service=_config(),
         graph_provider=graph,
         kafka_service=kafka,
         lock=lock,
@@ -192,6 +212,7 @@ async def test_cleanup_timeout_does_not_page_records():
         with pytest.raises(TimeoutError):
             await rebuild.start_vector_store_cleanup(
                 logger=MagicMock(),
+                config_service=_config(),
                 graph_provider=graph,
                 kafka_service=kafka,
                 lock=lock,
@@ -600,6 +621,7 @@ async def test_cleanup_rechecks_before_dropping():
         with pytest.raises(rebuild.VectorStoreRebuildConflictError):
             await rebuild.start_vector_store_cleanup(
                 logger=MagicMock(),
+                config_service=_config(),
                 graph_provider=graph,
                 kafka_service=kafka,
                 lock=lock,
@@ -889,6 +911,7 @@ async def test_cleanup_does_not_drop_when_the_listing_cannot_be_read():
         with pytest.raises(rebuild.VectorStoreRebuildConflictError):
             await rebuild.start_vector_store_cleanup(
                 logger=MagicMock(),
+                config_service=_config(),
                 graph_provider=graph,
                 kafka_service=kafka,
                 lock=lock,
@@ -993,3 +1016,63 @@ async def test_the_wait_is_read_from_the_verdict_key_and_a_missing_or_unreadable
     assert await rebuild.precision_wait_in_force(config) is False
     config.get_config = AsyncMock(side_effect=ConnectionError("kv down"))
     assert await rebuild.precision_wait_in_force(config) is False
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_completes_after_the_status_reset_and_before_the_drop_is_fenced():
+    """The epoch moves before any status is reset, so a record still being written when the drop comes is handed back."""
+    from app.connectors.services.vector_store_rebuild import start_vector_store_cleanup
+
+    config = await _config_with("records")
+    epochs = CollectionEpochs(config, logging.getLogger("rebuild-test"))
+    in_flight = await epochs.capture("records")  # a batch accepted before the cleanup started
+
+    redis = FakeRedis()
+    lock = RebuildJobLock(redis, token="cleanup")
+    await lock.try_acquire()
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(return_value=[])
+    seen: dict[str, bool] = {}
+
+    async def _after_the_reset(*_args, **_kwargs):
+        # The record's batch completes here: after the app reset, before the drop. Its confirmation asks the epoch.
+        seen["fenced_at_reset"] = await epochs.moved(in_flight)
+
+    graph.reset_indexing_status_for_connector = AsyncMock(side_effect=_after_the_reset)
+    kafka = AsyncMock()
+
+    async def _publish(topic, event):
+        seen["fenced_at_drop"] = await epochs.moved(in_flight)
+        redis.store[CLEANUP_PHASE_KEY] = PHASE_READY
+        return True
+
+    kafka.publish_event = AsyncMock(side_effect=_publish)
+    await start_vector_store_cleanup(
+        logger=MagicMock(), config_service=config, graph_provider=graph, kafka_service=kafka, lock=lock,
+        redis=redis, org_id="org-1", user_id="user-1", apps=[("org-1", "app-1")],
+    )
+    assert seen == {"fenced_at_reset": True, "fenced_at_drop": True}
+    # The drop retires the old token; the cleanup itself retires nothing, so a drop that fails hides nothing.
+    assert (await epochs.states("records"))[in_flight.token][0] == "live"
+
+
+@pytest.mark.asyncio
+async def test_a_cleanup_whose_epoch_cannot_move_resets_nothing():
+    from app.connectors.services.vector_store_rebuild import start_vector_store_cleanup
+
+    config = await _config_with("records")
+    redis = FakeRedis()
+    lock = RebuildJobLock(redis, token="cleanup")
+    await lock.try_acquire()
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(return_value=[])
+    kafka = AsyncMock()
+    kafka.publish_event = AsyncMock(return_value=True)
+    with patch.object(CollectionEpochs, "begin_reset", AsyncMock(side_effect=RuntimeError("kv down"))):
+        with pytest.raises(RuntimeError, match="kv down"):
+            await start_vector_store_cleanup(
+                logger=MagicMock(), config_service=config, graph_provider=graph, kafka_service=kafka, lock=lock,
+                redis=redis, org_id="org-1", user_id="user-1", apps=[("org-1", "app-1")],
+            )
+    graph.reset_indexing_status_for_connector.assert_not_awaited()
+    kafka.publish_event.assert_not_awaited()

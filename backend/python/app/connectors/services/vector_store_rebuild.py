@@ -16,6 +16,9 @@ from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.messaging.config import Topic
 from app.services.messaging.precision_check import VERDICT_KEY
+from app.services.vector_db.collection_epoch import CollectionEpochs
+from app.services.vector_db.collection_manifest import CollectionManifestStore
+from app.services.vector_db.collections import CollectionType
 from app.services.vector_db.rebuild_state import (
     JOB_LOCK_RENEW_INTERVAL_SECONDS,
     JOB_LOCK_TTL_SECONDS,
@@ -290,9 +293,25 @@ async def release_rebuild_lock(lock: RebuildJobLock, redis: Redis) -> None:
         await redis.aclose()
 
 
+async def _move_epochs_before_reset(config_service: Any, logger: Logger) -> None:  # noqa: ANN401
+    """Make a new epoch current for every records collection the cleanup is about to drop.
+
+    A record that is still being written when its status is reset can complete after that reset and before
+    the collection is dropped; the drop then removes its vectors while it stays COMPLETED. With the epoch
+    already moved, such a record's confirmation fails and it is handed back. The tokens are retired by the
+    drop itself, once it is confirmed: retiring them here would hide points of a collection that was not dropped.
+    A bump that cannot be written raises, before anything is reset.
+    """
+    epochs = CollectionEpochs(config_service, logger)
+    for entry in await CollectionManifestStore(config_service, logger).list(fresh=True, strict=True):
+        if entry.collection_type == CollectionType.RECORDS.value:
+            await epochs.begin_reset(entry.name)
+
+
 async def start_vector_store_cleanup(
     *,
     logger: Logger,
+    config_service: Any,  # noqa: ANN401
     graph_provider: IGraphDBProvider,
     kafka_service: KafkaService,
     lock: RebuildJobLock,
@@ -308,6 +327,7 @@ async def start_vector_store_cleanup(
         # before this job was scheduled, and a sync can start in between.
         await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
         await set_cleanup_phase(redis, PHASE_DROPPING)
+        await _move_epochs_before_reset(config_service, logger)
         await _reset_apps(graph_provider, apps)
         published = await kafka_service.publish_event(
             Topic.RECORD_EVENTS.value,

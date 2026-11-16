@@ -14,6 +14,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.services.messaging.precision_flip import FenceMoved, PrecisionFlip
 from app.services.vector_db.collection_epoch import CollectionEpochs
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.collection_pin import FP32, INT8, CollectionPinStore, Pin
 from app.services.vector_db.precision_guard import PrecisionGuard, PrecisionUnreadable
 from app.utils.precision_witness import PrecisionWitness, set_precision_witness
@@ -25,21 +26,24 @@ C, ORG = "c", "o1"
 class _Db:
     """Points with an org, a record, a precision tag and an epoch. With ``lag`` a write is counted only after ``make_searchable``."""
 
-    def __init__(self, *, lag: bool = False) -> None:
+    def __init__(self, *, lag: bool = False, per_org: bool = False) -> None:
+        self.per_org = per_org
         self.points: list[dict] = []
         self.lag = lag
         self.refreshes = 0
         self.exists = True
 
-    def write(self, precision: str | None, epoch: str | None, *, vrid: str = "v1", n: int = 1, ident: str | None = None) -> None:
+    def write(
+        self, precision: str | None, epoch: str | None, *, vrid: str = "v1", n: int = 1, ident: str | None = None, org: str = ORG,
+    ) -> None:
         for i in range(n):
             self.points.append({
-                "orgId": ORG, "virtualRecordId": vrid, "embedPrecision": precision, "embedEpoch": epoch,
+                "orgId": org, "virtualRecordId": vrid, "embedPrecision": precision, "embedEpoch": epoch,
                 "id": ident or f"{vrid}-{len(self.points)}-{i}", "visible": not self.lag,
             })
 
     def get_capabilities(self):  # noqa: ANN202
-        return SimpleNamespace(spaces_per_org=False)
+        return SimpleNamespace(spaces_per_org=self.per_org)
 
     async def make_searchable(self, collection):  # noqa: ANN202
         self.refreshes += 1
@@ -56,6 +60,9 @@ class _Db:
         return sum(1 for p in self.points if p["visible"] and self._match(p, expression))
 
     async def delete_points(self, collection, expression, refresh=False):  # noqa: ANN202
+        # Every provider refuses a delete that does not name one organisation (``filters.require_filter_org``).
+        if not expression.get("orgId"):
+            raise OrgRequired("the filter carries no organisation (metadata.orgId in MUST is required)")
         self.points = [p for p in self.points if not self._match(p, expression)]
 
     async def get_collection_info(self, collection):  # noqa: ANN202
@@ -66,10 +73,10 @@ class _Db:
 
 
 class _World:
-    def __init__(self, *, lag: bool = False, clock=None) -> None:
+    def __init__(self, *, lag: bool = False, clock=None, per_org: bool = False) -> None:
         self.config = ConfigurationService(log, InMemoryKeyValueStore(log))
         self.pins = CollectionPinStore(self.config, log, **({"clock": clock} if clock else {}))
-        self.db = _Db(lag=lag)
+        self.db = _Db(lag=lag, per_org=per_org)
         self.guard = PrecisionGuard(self.pins, self.db, log)
 
     async def cleanup(self, collection: str = C) -> None:
@@ -119,6 +126,82 @@ def _fence_off(monkeypatch) -> None:
         return False
 
     monkeypatch.setattr(CollectionEpochs, "moved", never)
+
+
+# -- a rollback on a store that refuses a delete without an organisation --------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_rollback_of_a_batch_of_the_old_precision_removes_its_points_on_a_shared_store(world) -> None:
+    world.db.write(INT8, None, vrid="other")
+    await world.pins._claim_unfenced(C, INT8)
+
+    async def replaced_and_claimed() -> None:
+        await world.pins.release(C, None)
+        world.db.points = [p for p in world.db.points if p["virtualRecordId"] != "other"]
+        await world.pins._claim_unfenced(C, FP32)
+
+    with pytest.raises(PrecisionFlip):
+        await world.batch(INT8, before_write=replaced_and_claimed)
+    assert INT8 not in world.db.precisions()  # the rollback carried the writer's organisation, so the store accepted it
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_of_a_shared_store_deletes_for_the_organisation_that_asked(world) -> None:
+    old = await world.guard.capture(C)
+    world.db.write(INT8, old.token)
+    await world.cleanup()
+    world.db.write(INT8, old.token)  # a straggler of the retired token
+    await world.guard.sweep_dead(C, ORG)
+    assert world.db.points == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("per_org", [True, False])
+async def test_a_sweep_for_one_organisation_does_not_hide_another_organisations_retired_points(monkeypatch, per_org) -> None:
+    now = [1_000_000.0]
+    world = _World(clock=lambda: now[0], per_org=per_org)
+    monkeypatch.setattr("app.services.vector_db.precision_guard.sweep_window_seconds", lambda: 5700.0)
+    old = await world.guard.capture(C)
+    await world.cleanup()
+    world.db.write(INT8, old.token, org="o1", vrid="a")  # stragglers of the retired token, in two organisations
+    world.db.write(INT8, old.token, org="o2", vrid="b")
+    now[0] += 6000  # the window is over
+    await world.guard.sweep_dead(C, "o1")
+    assert [p["virtualRecordId"] for p in world.db.points] == ["b"]
+    # o2's points are still there, so o2 still sees the token as dead and a derivation subtracts them
+    assert [d.token for d in await world.pins.epochs.dead(C, "o2" if per_org else None)] == [old.token]
+    await world.guard.sweep_dead(C, "o2")
+    assert world.db.points == []
+    assert await world.pins.epochs.dead(C, "o2" if per_org else None) == []
+
+
+# -- an index written before pins existed, and a check that claims nothing --------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_batch_into_an_index_with_only_untagged_points_completes_and_the_index_gets_a_pin(world) -> None:
+    world.db.write(None, None, vrid="old", n=3)  # points from before the tags and the pins
+    await world.batch(FP32, vrid="new")  # the confirmation after the write needs a pin, so the check made one
+    pin = await world.pins.get(C, fresh=True)
+    assert pin is not None and pin.precision == FP32 and pin.derived
+    assert {p["virtualRecordId"] for p in world.db.points} == {"old", "new"}
+
+
+@pytest.mark.asyncio
+async def test_a_batch_of_the_other_precision_into_an_untagged_index_is_still_refused(world) -> None:
+    world.db.write(None, None, vrid="old")
+    with pytest.raises(PrecisionFlip):
+        await world.batch(INT8, vrid="new")
+    assert world.db.precisions() == set()
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_claims_nothing_replaces_a_stale_pin_over_an_empty_index_and_returns() -> None:
+    now = [1_000_000.0]
+    world = _World(clock=lambda: now[0])
+    await world.pins._claim_unfenced(C, INT8)
+    now[0] += 3600  # the pin is old, and the index has nothing in it
+    assert await world.guard.verify_batch(C, ORG, FP32, fallback=False, claim=False) is None
+    assert await world.pins.get(C, fresh=True) is None  # the leftover is gone; nothing was claimed in its place
 
 
 # -- a batch in flight across a cleanup ------------------------------------------------------------------------
@@ -414,7 +497,7 @@ async def test_control_an_ids_only_rollback_removes_the_other_writers_points(wor
     await world.pins.epochs.confirm_reset(await world.pins.epochs.begin_reset(C))
     await world.batch(INT8, vrid="v1")
     world.db.write(INT8, fence_old.token, vrid="v1")
-    await world.db.delete_points(C, {"virtualRecordId": ["v1"], "embedPrecision": [INT8]})
+    await world.db.delete_points(C, {"orgId": ORG, "virtualRecordId": ["v1"], "embedPrecision": [INT8]})
     assert world.db.points == []
 
 

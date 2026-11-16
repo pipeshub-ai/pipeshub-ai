@@ -1226,6 +1226,11 @@ class EntityVectorStore:
                 self.logger.warning("Entity state re-read failed; rewriting %d points in full: %s", len(named), exc)
                 states = {}
 
+            # The pin read before the embed only chose what to embed. A reset can move it while this batch waited for
+            # the locks, and a stored point is judged against the pin as it is now, with the states just read. A batch
+            # that finds nothing stored has nothing to judge and costs no read.
+            if any(state.get("exists") for state in states.values()):
+                pinned = (await self._guard().standing(collection, named[0].org_id, fresh=True, derive=False)).precision
             pending: list[tuple[EntityRecord, list[str], list[str]]] = []
             for entity in named:
                 point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
