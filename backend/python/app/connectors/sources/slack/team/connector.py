@@ -938,94 +938,96 @@ class SlackConnector(BaseConnector):
         synced = skipped = bots_cached = 0
         unusable: set[str] = set()
 
-        while True:
-            await self.rate_limiter.acquire(Tier.T2)
-            ds = await self._fresh_datasource()
-            resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
+        try:
+            while True:
+                await self.rate_limiter.acquire(Tier.T2)
+                ds = await self._fresh_datasource()
+                resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
-            if not resp or not resp.success:
-                await self._fail_if_token_refused(resp, "users.list")
-                # The workspace_member role is written from these pages: with one
-                # missing it is left out or short, and must not be unlinked as unseen.
-                self._full_sync_read_failed = True
-                self._users_read_failed = True
-                self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
-                break
+                if not resp or not resp.success:
+                    await self._fail_if_token_refused(resp, "users.list")
+                    # The workspace_member role is written from these pages: with one
+                    # missing it is left out or short, and must not be unlinked as unseen.
+                    self._full_sync_read_failed = True
+                    self._users_read_failed = True
+                    self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
+                    break
 
-            members = resp.data.get("members", [])
-            if not members:
-                break
+                members = resp.data.get("members", [])
+                if not members:
+                    break
 
-            batch: list[AppUser] = []
-            for m in members:
-                uid = m.get("id")
-                is_bot = bool(m.get("is_bot"))
-                profile = m.get("profile", {}) or {}
-                email = (profile.get("email") or "").strip()
+                batch: list[AppUser] = []
+                for m in members:
+                    uid = m.get("id")
+                    is_bot = bool(m.get("is_bot"))
+                    profile = m.get("profile", {}) or {}
+                    email = (profile.get("email") or "").strip()
 
-                # Cache display name BEFORE any skip so mentions of users we
-                # won't materialise as AppUsers (no email, deactivated, etc.)
-                # still resolve to a name instead of a raw Slack ID.
-                # `*_normalized` are ASCII-stripped duplicates and add no value.
-                display_name = (
-                    profile.get("real_name")
-                    or profile.get("display_name")
-                    or m.get("name")
-                )
-                if uid and display_name:
-                    self.user_id_to_name_cache[uid] = display_name
+                    # Cache display name BEFORE any skip so mentions of users we
+                    # won't materialise as AppUsers (no email, deactivated, etc.)
+                    # still resolve to a name instead of a raw Slack ID.
+                    # `*_normalized` are ASCII-stripped duplicates and add no value.
+                    display_name = (
+                        profile.get("real_name")
+                        or profile.get("display_name")
+                        or m.get("name")
+                    )
+                    if uid and display_name:
+                        self.user_id_to_name_cache[uid] = display_name
 
-                # users.list "includes both invited users and deleted/deactivated users"
-                # (https://docs.slack.dev/reference/methods/users.list/). Neither can use Slack, so neither is
-                # linked, and one linked before is withdrawn below: linked, one sharing an active member's
-                # address reads as that address changing hands. Reactivated or signed in, the member is linked
-                # when it is listed again. Checked before the email, which such a member may no longer show.
-                if m.get("deleted") or m.get("is_invited_user"):
-                    if uid:
-                        unusable.add(uid)
-                    continue
+                    # users.list "includes both invited users and deleted/deactivated users"
+                    # (https://docs.slack.dev/reference/methods/users.list/). Neither can use Slack, so neither is
+                    # linked, and one linked before is withdrawn below: linked, one sharing an active member's
+                    # address reads as that address changing hands. Reactivated or signed in, the member is linked
+                    # when it is listed again. Checked before the email, which such a member may no longer show.
+                    if m.get("deleted") or m.get("is_invited_user"):
+                        if uid:
+                            unusable.add(uid)
+                        continue
 
-                if not email and not is_bot:
-                    self.logger.debug(f"Skipping {m.get('name')}: no email")
-                    skipped += 1
-                    continue
+                    if not email and not is_bot:
+                        self.logger.debug(f"Skipping {m.get('name')}: no email")
+                        skipped += 1
+                        continue
 
-                if is_bot:
-                    bots_cached += 1
-                    continue
+                    if is_bot:
+                        bots_cached += 1
+                        continue
 
-                app_user = self._to_app_user(m)
-                if app_user:
-                    batch.append(app_user)
-                    self.user_id_to_email_cache[m["id"]] = email
-                    is_guest = m.get("is_restricted", False) or m.get("is_ultra_restricted", False)
-                    if is_guest:
-                        self._guest_user_ids.add(m["id"])
-                    else:
-                        self._non_guest_app_users.append(app_user)
+                    app_user = self._to_app_user(m)
+                    if app_user:
+                        batch.append(app_user)
+                        self.user_id_to_email_cache[m["id"]] = email
+                        is_guest = m.get("is_restricted", False) or m.get("is_ultra_restricted", False)
+                        if is_guest:
+                            self._guest_user_ids.add(m["id"])
+                        else:
+                            self._non_guest_app_users.append(app_user)
 
-            if batch:
-                await self.data_entities_processor.on_new_app_users(batch)
-                synced += len(batch)
+                if batch:
+                    await self.data_entities_processor.on_new_app_users(batch)
+                    synced += len(batch)
 
-            cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
-            if not cursor:
-                break
-
-        # A short list still withdraws the members its pages reported deactivated or invited: that is stated, not
-        # inferred from absence, and the role rewrite that would also leave them out is skipped on a short list.
-        if unusable:
-            # A failed withdrawal must not stop the role rewrite after it, which already leaves these members out.
-            try:
-                gone = [
-                    u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
-                    if u.source_user_id in unusable
-                ]
-                if gone:
-                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
-            except Exception as e:
-                self.logger.error(f"Withdrawing deactivated or invited members failed; tried again next sync: {e}",
-                                  exc_info=True)
+                cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
+                if not cursor:
+                    break
+        finally:
+            # Also when linking raised part-way: the members a read page reported unusable are withdrawn all the same.
+            # A short list still withdraws the members its pages reported deactivated or invited: that is stated, not
+            # inferred from absence, and the role rewrite that would also leave them out is skipped on a short list.
+            if unusable:
+                # A failed withdrawal must not stop the role rewrite after it, which already leaves these members out.
+                try:
+                    gone = [
+                        u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                        if u.source_user_id in unusable
+                    ]
+                    if gone:
+                        await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+                except Exception as e:
+                    self.logger.error(f"Withdrawing deactivated or invited members failed; tried again next sync: {e}",
+                                      exc_info=True)
 
         # After all pages, build the internal-ID cache for fast mention resolution
         await self._build_user_id_caches(unusable)
@@ -1115,10 +1117,8 @@ class SlackConnector(BaseConnector):
             # not yet read, and with it their access to every public channel.
             self.logger.warning("ℹ️ User list was not read in full; workspace role left as it is")
             return
+        # Written also when empty: after a complete listing, a role nobody holds any more grants nobody.
         non_guests = getattr(self, "_non_guest_app_users", [])
-        if not non_guests:
-            self.logger.info("ℹ️ No non-guest users to sync workspace role for")
-            return
 
         role = AppRole(
             app_name=Connectors.SLACK_WORKSPACE,

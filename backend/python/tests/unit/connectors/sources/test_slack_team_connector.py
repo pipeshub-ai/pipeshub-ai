@@ -2201,13 +2201,15 @@ class TestSyncUsersAndCachesBasic:
 
 class TestWorkspaceRolesAndUserGroups:
     @pytest.mark.asyncio
-    async def test_sync_workspace_roles_skips_when_empty(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-
+    async def test_an_empty_workspace_role_is_written_after_a_complete_listing(self) -> None:
+        """Nobody eligible is left (the last member was deactivated, its withdrawal failed): the stored role must lose
+        its members, or they keep reading every public channel."""
         c = _connector_pipeline_ready()
         c._non_guest_app_users = []
+        c._users_read_failed = False
         await c._sync_workspace_roles()
-        c.data_entities_processor.on_new_app_roles.assert_not_called()
+        (role, members), = c.data_entities_processor.on_new_app_roles.call_args[0][0]
+        assert role.source_role_id == "workspace_member" and members == []
 
     @pytest.mark.asyncio
     async def test_sync_workspace_roles_with_members(self):
@@ -2759,6 +2761,32 @@ class TestSyncUsersAndCaches:
         c._build_user_id_caches.assert_awaited_once()
         assert any("tried again next sync" in str(call) for call in c.logger.error.call_args_list)
         assert [u.source_user_id for u in c._non_guest_app_users] == ["UOK"]
+
+    @pytest.mark.asyncio
+    async def test_a_member_reported_deactivated_is_withdrawn_when_linking_the_others_fails(self) -> None:
+        """The stored links cannot be read for linking (the call raises), but the member a page reported deleted is
+        still withdrawn, and the linking error still reaches the caller."""
+        from types import SimpleNamespace
+
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=RuntimeError("links unreadable"))
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[
+            SimpleNamespace(id="n-UOLD", source_user_id="UOLD", email=None)])
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        page = MagicMock(success=True, data={
+            "members": [{"id": "UOLD", "deleted": True, "profile": {"real_name": "Old"}},
+                        {"id": "UOK", "profile": {"email": "ok@x.com", "real_name": "Ok"}}],
+            "response_metadata": {"next_cursor": ""},
+        })
+        ds = MagicMock()
+        ds.users_list = AsyncMock(return_value=page)
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds), \
+                pytest.raises(RuntimeError, match="links unreadable"):
+            await c._sync_users()
+        gone = c.data_entities_processor.withdraw_app_user_access.call_args[0][1]
+        assert [u.source_user_id for u in gone] == ["UOLD"]
 
     @pytest.mark.asyncio
     async def test_a_member_listed_deactivated_gets_no_group_membership_from_its_stored_row(self) -> None:
