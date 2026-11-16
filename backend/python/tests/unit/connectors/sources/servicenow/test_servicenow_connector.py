@@ -869,6 +869,34 @@ class TestSyncUsers:
             await servicenow_connector._sync_users()
             servicenow_connector.data_entities_processor.on_new_app_users.assert_called_once()
 
+    async def test_a_locked_out_user_is_not_linked_and_is_withdrawn(self, servicenow_connector):
+        """Emails are not unique: a locked-out duplicate must not take an active user's address."""
+        servicenow_connector.user_sync_point = AsyncMock()
+        servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
+        servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value=set())
+        stored = MagicMock(source_user_id="u2")
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[stored])
+        servicenow_connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        rows = [
+            _sys_user_row(sys_id=sid, user_name=sid, email="maya@example.com", first_name="Maya", last_name="A",
+                          active="true", locked_out=locked, title=None, sys_created_on=None,
+                          sys_updated_on="2024-01-01")
+            for sid, locked in (("u1", "false"), ("u2", "true"))
+        ]
+        mock_datasource = AsyncMock()
+        mock_datasource.get_now_table_tableName = AsyncMock(side_effect=_listing(rows))
+        with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
+                          return_value=mock_datasource):
+            await servicenow_connector._sync_users()
+
+        linked = servicenow_connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in linked] == ["u1"]
+        servicenow_connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
+            servicenow_connector.connector_id, [stored])
+        fields = mock_datasource.get_now_table_tableName.call_args.kwargs["sysparm_fields"]
+        assert "locked_out" in fields
+
     async def test_skips_users_without_email(self, servicenow_connector):
         servicenow_connector.user_sync_point = AsyncMock()
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
