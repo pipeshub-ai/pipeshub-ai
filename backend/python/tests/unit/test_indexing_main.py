@@ -1708,7 +1708,7 @@ class TestLifespan:
             assert not cells._slot_held(directory, 0), "the claim was not released at shutdown"
         assert cells._PROCESS == []
 
-    async def test_a_worker_that_finds_no_free_cell_retries_then_warns_once(self, tmp_path) -> None:
+    async def test_a_worker_that_finds_no_free_cell_retries_warns_once_and_keeps_trying(self, tmp_path) -> None:
 
         from app.capacity.cells import CLAIM_ATTEMPTS
         from app.indexing_main import _start_cell
@@ -1721,11 +1721,55 @@ class TestLifespan:
             patch("app.indexing_main.cells_directory", return_value=tmp_path),
             patch("app.indexing_main.process_claim", return_value=None) as claim,
             patch("app.indexing_main.CLAIM_BACKOFF_S", 0.0),
+            patch("app.indexing_main.spawn_detached") as spawn,
+            patch("app.indexing_main._claim_and_publish", new=MagicMock()),
         ):
             await _start_cell(app, MagicMock())
         assert claim.call_count == CLAIM_ATTEMPTS
-        assert app.state.cell_claim is None and app.state.cell_task is None
+        assert app.state.cell_claim is None
+        spawn.assert_called_once()  # the claim goes on in the background
+        assert spawn.call_args.kwargs["name"] == "cell-claim"
         assert mock_container.logger().warning.call_count == 1
+
+    async def test_a_replacement_worker_claims_the_index_the_old_worker_releases(self, tmp_path) -> None:
+        """Every index is held at start-up (the worker being replaced still holds its own). The
+        replacement must serve at once, then claim and publish when the old worker lets go."""
+        import asyncio
+
+        from app.capacity import cells
+        from app.indexing_main import _start_cell, _stop_cell
+
+        directory = tmp_path / "cells"
+        old = cells.claim_cell(directory, 1)
+        assert old is not None
+        mock_container = _make_container()
+        app = MagicMock()
+        published = asyncio.Event()
+
+        async def publish(claim, _governor) -> None:
+            published.set()
+            await asyncio.sleep(3600)
+
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main.cells_directory", return_value=directory),
+            patch("app.indexing_main.CLAIM_BACKOFF_S", 0.001),
+            patch("app.indexing_main._CELL_CLAIM_RETRY_MAX_S", 0.01),
+            patch("app.indexing_main._publish_cell_stats", new=publish),
+            patch("app.indexing_main._indexing_worker_count", return_value=2),
+        ):
+            # Two workers so that the claim path is taken; the directory is sized to the one index the old
+            # worker holds, and the test releases it below.
+            with patch("app.indexing_main.process_claim", wraps=lambda d, n: cells.process_claim(d, 1)):
+                await _start_cell(app, MagicMock())
+                assert app.state.cell_claim is None and app.state.cell_task is not None
+                assert not published.is_set()
+                old.release()
+                await asyncio.wait_for(published.wait(), 5)
+                assert app.state.cell_claim is not None and app.state.cell_claim.index == 0
+                _stop_cell(app)
+        assert not cells._slot_held(directory, 0), "the late claim was not released at shutdown"
+        cells._PROCESS.clear()
 
     async def test_no_sleep_follows_the_last_failed_attempt(self, tmp_path) -> None:
         from app.capacity.cells import CLAIM_ATTEMPTS

@@ -141,6 +141,8 @@ from app.utils.user_errors import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from app.modules.indexing.run import IndexingPipeline
     from app.modules.pipeline.runtime import PipelineRuntime
     from app.services.messaging.interface.producer import IMessagingProducer
@@ -2236,11 +2238,41 @@ async def _publish_cell_stats(claim: CellClaim, governor: ResourceGovernor) -> N
         await asyncio.sleep(_CELL_TICK_S)
 
 
+_CELL_CLAIM_RETRY_MAX_S = 5.0
+
+
+async def _claim_and_publish(app: FastAPI, governor: ResourceGovernor, cells_dir: "Path", workers: int) -> None:
+    """Keep trying for an index in the background, then publish this cell's stats.
+
+    A replacement worker can start while every index is still held by the worker it replaces (the
+    supervisor retires the old one only after the new one answers). Start-up must not wait for that,
+    so the claim goes on after the service is ready and is taken when the old worker lets go.
+    """
+    logger = container.logger()
+    delay = CLAIM_BACKOFF_S * 2 ** (CLAIM_ATTEMPTS - 1)
+    while True:
+        try:
+            claim = process_claim(cells_dir, workers)
+        except OSError as exc:
+            logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
+            return
+        if claim is not None:
+            break
+        if directory_problem(cells_dir) is not None:
+            return
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _CELL_CLAIM_RETRY_MAX_S)
+    app.state.cell_claim = claim
+    logger.info("Claimed cell index %d after waiting for a free one", claim.index)
+    await _publish_cell_stats(claim, governor)
+
+
 async def _start_cell(app: FastAPI, governor: ResourceGovernor) -> None:
     """Claim this worker's cell index and start publishing its stats.
 
-    A claim that finds every index taken is retried with a growing delay; if it never succeeds
-    this worker logs one WARNING and serves without a cells block.
+    A claim that finds every index taken is retried briefly. If it still finds none, this worker logs
+    one WARNING and goes on trying in the background, so it publishes as soon as an index is free;
+    until then it serves without a cells block.
     """
     app.state.cell_claim = None
     app.state.cell_task = None
@@ -2263,7 +2295,11 @@ async def _start_cell(app: FastAPI, governor: ResourceGovernor) -> None:
         logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
         return
     if claim is None:
-        logger.warning("No free cell index in %s after %d attempts: this worker publishes no stats", cells_dir, CLAIM_ATTEMPTS)
+        logger.warning(
+            "No free cell index in %s after %d attempts: this worker keeps trying in the background and serves without a cells block until it has one",
+            cells_dir, CLAIM_ATTEMPTS,
+        )
+        app.state.cell_task = spawn_detached(_claim_and_publish(app, governor, cells_dir, workers), name="cell-claim")
         return
     app.state.cell_claim = claim
     app.state.cell_task = spawn_detached(_publish_cell_stats(claim, governor), name="cell-stats")

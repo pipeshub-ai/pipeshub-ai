@@ -40,6 +40,12 @@ assert indexing_worker_count() == 1
 print("ok", MAX_CONCURRENT_INDEXING_LLM_CALLS)')" || { echo "FAIL $svc: $out"; fail=1; continue; }
   grep -q "^capacity: service=$svc omp=2 " <<<"$out" || { echo "FAIL $svc: no capacity line in: $out"; fail=1; continue; }
   grep -q "^ok 24$" <<<"$out" || { echo "FAIL $svc: $out"; fail=1; continue; }
+  # The service's own entry module must import with every knob blank, and with no runtime_threads import
+  # of ours in front of it: a read of "" before the entry point's own first import would crash here.
+  if [ -f "$repo/backend/python/app/${svc}_main.py" ]; then
+    out="$(run "$svc" "import app.${svc}_main; print('entry ok')")" || { echo "FAIL $svc entry module: $out"; fail=1; continue; }
+    grep -q "^entry ok$" <<<"$out" || { echo "FAIL $svc entry module: $out"; fail=1; continue; }
+  fi
   echo "ok $svc"
 done
 exit $fail

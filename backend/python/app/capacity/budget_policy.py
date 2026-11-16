@@ -110,6 +110,10 @@ class LedgerState:
     def class_used(self, cls: str) -> int:
         return sum(v for (f, c), v in self.used.items() if c == cls and not is_critical(f, c) and f is not Family.LLM)
 
+    def critical_family_used(self, family: Family) -> int:
+        """Tokens ``family`` holds as critical work: the usage a held floor is measured against."""
+        return sum(v for (f, c), v in self.used.items() if f is family and is_critical(f, c))
+
     def critical_used(self) -> int:
         return sum(v for (f, c), v in self.used.items() if is_critical(f, c))
 
@@ -218,7 +222,7 @@ def plan_floors(
 
 
 def _critical_floor_shortfall(state: LedgerState, floors: Floors) -> int:
-    return sum(max(0, floors.of(f) - state.family_used(f)) for f in PRECEDENCE)
+    return sum(max(0, floors.of(f) - state.critical_family_used(f)) for f in PRECEDENCE)
 
 
 def _effective_large_min(state: LedgerState, policy: AdmissionPolicy, now_ms: int) -> float:
@@ -262,7 +266,12 @@ def admit(
         return Decision(False, "tokens")
     cls = d.cls
     if d.ceiling_tokens is not None:
-        used = state.class_used(cls) if cls else state.family_used(d.family)
+        if is_critical(d.family, cls):
+            # A held-floor family's ceiling is its own width: count what it holds as critical work
+            # (``class_used`` leaves critical work out, so the check would never see it).
+            used = state.critical_family_used(d.family)
+        else:
+            used = state.class_used(cls) if cls else state.family_used(d.family)
         if used + d.cpu > d.ceiling_tokens:
             return Decision(False, "ceiling")
     large_min = slots(_effective_large_min(state, policy, now_ms), cpu_tokens)
@@ -307,7 +316,7 @@ def next_grant(state: LedgerState, floors: Floors, policy: AdmissionPolicy, cpu_
     """
     heads = sorted(state.heads, key=lambda h: (h.enqueue_ms, h.ticket))
     critical = [h for h in heads if h.critical]
-    owners = [h for h in critical if state.family_used(h.family) < floors.of(h.family)]
+    owners = [h for h in critical if state.critical_family_used(h.family) < floors.of(h.family)]
     first = owners[:1]
     rest_critical = sorted(
         (h for h in critical if h not in first),

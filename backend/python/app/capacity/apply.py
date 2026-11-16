@@ -16,6 +16,7 @@ from app.capacity.sources import resolve_facts
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
+    from app.capacity.facts import CapacityFacts
     from app.capacity.plan import CapacityPlan, ServicePlan
 
 SERVICE_ENV = "PIPESHUB_SERVICE"
@@ -47,10 +48,11 @@ def apply_process_env(env: MutableMapping[str, str] | None = None) -> CapacityPl
     plan: CapacityPlan | None = None
     _FAILURE.clear()
     try:
-        plan = plan_capacity(resolve_facts(target, probe_gpu=False), target)
+        facts = resolve_facts(target, probe_gpu=False)
+        plan = plan_capacity(facts, target)
         service_plan: ServicePlan | None = plan.services.get(service)
         threads = dict((service_plan or next(iter(plan.services.values()))).threads_env)
-        _pin_numa(plan, target, service)
+        _pin_numa(plan, facts, target, service)
     except Exception as exc:  # nothing here may stop a service from starting
         _FAILURE[:] = [(_profile(target), _reason(exc))]
         threads = legacy_threads(target)
@@ -81,23 +83,37 @@ def _serves_a_cell(env: MutableMapping[str, str]) -> bool:
     """
     if env.get(CELL_ENV):
         return False
+    return not (_running_workers(env) > 1 and multiprocessing.current_process().name == "MainProcess")
+
+
+def _running_workers(env: MutableMapping[str, str]) -> int:
+    """Indexing worker processes the launcher will run (``INDEXING_UVICORN_WORKERS``, default 1).
+
+    This is what the service starts, not the number of cells the plan would propose, so NUMA
+    placement is built from it."""
     try:
-        workers = int(knob_value(env, "INDEXING_UVICORN_WORKERS") or 1)  # type: ignore[call-overload]
+        return max(1, int(knob_value(env, "INDEXING_UVICORN_WORKERS") or 1))  # type: ignore[call-overload]
     except ValueError:
-        workers = 1
-    return not (workers > 1 and multiprocessing.current_process().name == "MainProcess")
+        return 1
 
 
-def _pin_numa(plan: CapacityPlan, env: MutableMapping[str, str], service: str) -> None:
-    """Step 2 of the start-up order, only for an indexing cell and only when asked for."""
-    if service != "indexing" or not numa.enabled(env) or not plan.numa_masks or not _serves_a_cell(env):
+def _pin_numa(plan: CapacityPlan, facts: CapacityFacts, env: MutableMapping[str, str], service: str) -> None:
+    """Step 2 of the start-up order, only for an indexing cell and only when asked for.
+
+    The masks come from the workers that actually run, so one worker is never confined to one node
+    of several: with fewer workers than nodes nothing is pinned."""
+    if service != "indexing" or plan.profile != "auto" or not numa.enabled(env) or not _serves_a_cell(env):
+        return
+    workers = _running_workers(env)
+    masks = numa.masks(facts, workers)
+    if not masks:
         return
     from app.capacity.cells import cells_directory, process_claim
 
     directory = cells_directory()
-    claim = process_claim(directory, plan.cells) if directory is not None else None
+    claim = process_claim(directory, workers) if directory is not None else None
     if claim is not None:
-        numa.pin(claim.index, plan.numa_masks, env)
+        numa.pin(claim.index, masks, env)
         env[CELL_ENV] = str(claim.index)
 
 

@@ -78,13 +78,16 @@ def test_good_budget_overrides_are_used() -> None:
 @pytest.mark.parametrize("value", ["١٢", "0", "-2", "abc", "2.5", "\u00b2"])
 def test_the_default_omp_must_be_a_positive_ascii_int(profile: dict[str, str], value: str) -> None:
     env = {**profile, "PIPESHUB_OMP_DEFAULT": value}
-    apply_process_env(env)
+    # A fixed four-CPU container, whatever the host is: below two CPUs the auto plan picks one thread first.
+    with patch("app.capacity.apply.resolve_facts", return_value=_facts(4.0, 64)):
+        apply_process_env(env)
     assert env["OMP_NUM_THREADS"] == "2"
 
 
 def test_a_good_default_omp_is_used() -> None:
     env = {"PIPESHUB_OMP_DEFAULT": "3"}
-    apply_process_env(env)
+    with patch("app.capacity.apply.resolve_facts", return_value=_facts(4.0, 64)):
+        apply_process_env(env)
     assert env["OMP_NUM_THREADS"] == "3"
 
 
@@ -119,3 +122,11 @@ def test_the_process_claim_is_one_claim_and_one_lock(tmp_path) -> None:
     finally:
         first.release()
     assert cells._PROCESS == []
+
+
+@pytest.mark.parametrize("cpus", [0.5, 1.0, 1.9])
+def test_the_auto_plan_uses_one_thread_below_two_cpus(cpus: float) -> None:
+    env = dict(AUTO)
+    with patch("app.capacity.apply.resolve_facts", return_value=_facts(cpus, 64)):
+        apply_process_env(env)
+    assert env["OMP_NUM_THREADS"] == "1"

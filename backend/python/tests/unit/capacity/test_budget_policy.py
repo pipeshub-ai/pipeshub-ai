@@ -170,7 +170,9 @@ def _mix(rate: float, seed: int, c: int = 18, cpus: float = 16, seconds: float =
 
 @pytest.mark.parametrize("seed", [7, 31])
 def test_small_token_wait_p95(seed) -> None:
-    assert p95(_mix(0, seed)) <= 10.0
+    waits = _mix(0, seed)
+    assert len(waits) > 200, "an empty sample would read as no wait at all (p95 of nothing is 0)"
+    assert p95(waits) <= 10.0
 
 
 @pytest.mark.parametrize("rate", [0, 1, 3, 4.5])
@@ -248,7 +250,9 @@ def test_head_of_line_reserves_tokens_for_the_oldest_critical_head() -> None:
     plan = next_grant(state, f, POLICY, 18, 1.0)  # free = 2, the Docling head needs 4
     assert plan.blocked_critical.ticket == 1
     later = {h.ticket: may_take(state, h, plan, 18) for h in state.heads}
-    assert later == {1: True, 2: False, 3: False}  # 2 free - 1 = 1 < 4 needed: no overtaking
+    # Big work (2) cannot overtake: 2 free - 1 = 1 < 4 needed. The PARSE/SMALL head (3) is the owner of an unmet
+    # parse floor (4 PARSE/LARGE tokens do not count towards it), so it is served first, as the owner rule says.
+    assert later == {1: True, 2: False, 3: True}
     state.used[(Family.EMBED, "small")] = 2  # free = 4: the head fits, nothing is blocked
     assert next_grant(state, f, POLICY, 18, 1.0).blocked_critical is None
 
@@ -321,3 +325,29 @@ def test_huge_work_is_held_to_its_own_cap_inside_the_borrow_cap() -> None:
     assert slots(POLICY.huge_cap, 151) < slots(POLICY.borrow_cap, 151)
     assert taken == slots(POLICY.huge_cap, 151)
     assert admit(state, huge, nofloor, POLICY, 151, 1 << 60, 100_000.0).reason == "class_cap"
+
+
+# ---- review round 2 -----------------------------------------------------------------------------
+
+
+def test_a_critical_demand_is_held_to_its_ceiling() -> None:
+    """Four PARSE/SMALL tokens in use and a ceiling of four: two more must wait (the class helper leaves critical work out)."""
+    f = _floors(16, 18)
+    state = LedgerState(used={(Family.PARSE, "small"): 4})
+    d = Demand(Family.PARSE, 2, 0, "small", ceiling_tokens=4)
+    assert admit(state, d, f, POLICY, 18, 1 << 60, 1000.0).reason == "ceiling"
+    assert admit(state, Demand(Family.PARSE, 2, 0, "small", ceiling_tokens=6), f, POLICY, 18, 1 << 60, 1000.0).ok
+    other = Demand(Family.EMBED, 2, 0, "small", ceiling_tokens=4)
+    assert admit(state, other, f, POLICY, 18, 1 << 60, 1000.0).ok, "another family's tokens are not this family's ceiling"
+
+
+def test_large_work_does_not_satisfy_a_critical_floor() -> None:
+    """EMBED floor 4 with four EMBED/LARGE tokens in use: the floor is still unmet, so the older EMBED/SMALL
+    waiter keeps owner priority over a newer QUERY_EMBED waiter whose own floor is zero."""
+    f = bp.Floors({**dict.fromkeys(bp.PRECEDENCE, 0), Family.EMBED: 4}, {}, 1, 1)
+    state = LedgerState(used={(Family.EMBED, "large"): 4}, heads=[
+        _head(1, Family.EMBED, "small", 10), _head(2, Family.QUERY_EMBED, None, 20)])
+    assert state.critical_family_used(Family.EMBED) == 0
+    assert [h.ticket for h in next_grant(state, f, POLICY, 18, 1.0).order][:2] == [1, 2]
+    state.used[(Family.EMBED, "small")] = 4  # the floor is now met by critical work: no owner, query_embed leads
+    assert [h.ticket for h in next_grant(state, f, POLICY, 18, 1.0).order][:2] == [2, 1]

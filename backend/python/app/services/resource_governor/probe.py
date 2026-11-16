@@ -471,6 +471,14 @@ def _cgroup_v1_cpu_quota() -> float | None:
     return quota / period
 
 
+def _own_affinity_cpus() -> int | None:
+    """CPUs this process itself may run on (its live affinity mask), whatever the container has."""
+    try:
+        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return None
+
+
 def _affinity_cpu_count() -> int | None:
     """CPUs this container may use. A NUMA-pinned cell reports the count from before its pin (left
     in ``PIPESHUB_CONTAINER_CPUS``): the cpu counters read here are container-wide, and the
@@ -762,7 +770,16 @@ class SystemResourceProbe:
                                 0.0, delta_usec / (elapsed * 1_000_000 * host_cpus)
                             )
                     elif cpu_quota > 0:
-                        cpu_utilisation = max(0.0, delta_usec / (elapsed * 1_000_000 * cpu_quota))
+                        # A cgroup counter covers the whole container, so it divides by the container's
+                        # CPUs. ``os.times`` covers this process (and its children) only, so it divides
+                        # by what this process may run on: a cell pinned to one node of a larger
+                        # container would otherwise read half busy when it used every CPU it has.
+                        scope_cpus = cpu_quota
+                        if cpu_source == "os_times":
+                            own = _own_affinity_cpus()
+                            if own:
+                                scope_cpus = min(cpu_quota, float(own))
+                        cpu_utilisation = max(0.0, delta_usec / (elapsed * 1_000_000 * scope_cpus))
                     if throttled_usec is not None and self._prev_throttled_usec is not None:
                         throttled_delta = throttled_usec - self._prev_throttled_usec
                         cpu_throttled_ratio = max(0.0, throttled_delta / (elapsed * 1_000_000))

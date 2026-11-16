@@ -85,3 +85,67 @@ def test_nothing_mounted_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     _point(monkeypatch, tmp_path, "4:memory:/jobs/a\n")
     assert cgroup.memory_limit() == (None, "none")
     assert probe._resolve_cgroup_path("memory", "memory.limit_in_bytes") is None
+
+
+# ---- limits of visible ancestors ----------------------------------------------------------------
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def test_v2_ancestor_limits_apply_to_an_unlimited_member(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``/batch/service`` is unlimited but ``/batch`` allows 2 CPUs and 4 GiB: the member may use no more
+    (cgroup-v2 limits are hierarchical)."""
+    root = tmp_path / "cgroup"
+    _write(root / "batch" / "service" / "cpu.max", "max 100000")
+    _write(root / "batch" / "service" / "memory.max", "max")
+    _write(root / "batch" / "cpu.max", "200000 100000")
+    _write(root / "batch" / "memory.max", str(4 * GIB))
+    _point(monkeypatch, tmp_path, "0::/batch/service\n")
+    assert cgroup.cpu_quota() == (2.0, "v2")
+    assert cgroup.memory_limit() == (4 * GIB, "v2")
+
+
+def test_the_smallest_limit_wins_whichever_level_holds_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "cgroup"
+    _write(root / "a" / "b" / "cpu.max", "100000 100000")
+    _write(root / "a" / "cpu.max", "800000 100000")
+    _write(root / "a" / "b" / "memory.max", str(2 * GIB))
+    _write(root / "a" / "memory.max", str(8 * GIB))
+    _point(monkeypatch, tmp_path, "0::/a/b\n")
+    assert cgroup.cpu_quota() == (1.0, "v2")
+    assert cgroup.memory_limit() == (2 * GIB, "v2")
+
+
+def test_v1_ancestor_limits_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mem, cpu = tmp_path / "cgroup" / "memory", tmp_path / "cgroup" / "cpu"
+    _write(mem / "jobs" / "a" / "memory.limit_in_bytes", UNLIMITED)
+    _write(mem / "jobs" / "memory.limit_in_bytes", str(6 * GIB))
+    _write(mem / "memory.limit_in_bytes", UNLIMITED)
+    _write(cpu / "jobs" / "a" / "cpu.cfs_quota_us", "-1")
+    _write(cpu / "jobs" / "a" / "cpu.cfs_period_us", "100000")
+    _write(cpu / "jobs" / "cpu.cfs_quota_us", "300000")
+    _write(cpu / "jobs" / "cpu.cfs_period_us", "100000")
+    _point(monkeypatch, tmp_path, "4:memory:/jobs/a\n3:cpu,cpuacct:/jobs/a\n")
+    assert cgroup.memory_limit() == (6 * GIB, "v1")
+    assert cgroup.cpu_quota() == (3.0, "v1")
+
+
+def test_without_visible_ancestors_the_members_own_limit_is_used(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write(tmp_path / "cgroup" / "cpu.max", "300000 100000")
+    _write(tmp_path / "cgroup" / "memory.max", str(3 * GIB))
+    _point(monkeypatch, tmp_path, "0::/\n")
+    assert cgroup.cpu_quota() == (3.0, "v2")
+    assert cgroup.memory_limit() == (3 * GIB, "v2")
+
+
+def test_no_limit_anywhere_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "cgroup"
+    _write(root / "x" / "y" / "cpu.max", "max 100000")
+    _write(root / "x" / "cpu.max", "max 100000")
+    _write(root / "x" / "y" / "memory.max", "max")
+    _point(monkeypatch, tmp_path, "0::/x/y\n")
+    assert cgroup.cpu_quota() == (None, "none")
+    assert cgroup.memory_limit() == (None, "none")

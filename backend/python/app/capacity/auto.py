@@ -101,6 +101,14 @@ def _omp(env: Mapping[str, str], cpus: float) -> tuple[str, str]:
     return (image, "unit") if image.isascii() and image.isdigit() and int(image) > 0 else (str(DEFAULT_OMP), "unit")
 
 
+def _embedding_widths(c: int, omp_n: int, override: int | None, *, cuda: bool, gpus: int) -> tuple[int, int]:
+    """``(slots, processes)`` of the embedding service for ``c`` CPU tokens."""
+    if cuda:
+        return 2 * gpus, gpus
+    slots = override or max(2, (c - QUERY_EMBED_WEIGHT) // max(1, omp_n))
+    return slots, max(1, math.ceil(slots / EMBED_SLOTS_PER_PROCESS))
+
+
 def plan_auto(facts: CapacityFacts, env: Mapping[str, str], budget: CpuMem, warnings: list[str]) -> CapacityPlan:
     cpus, mem = budget.cpus, budget.mem_bytes
     oversub = _float(env, "PIPESHUB_CPU_OVERSUB", 1.25, warnings, maximum=16.0)
@@ -115,6 +123,9 @@ def plan_auto(facts: CapacityFacts, env: Mapping[str, str], budget: CpuMem, warn
     env_parse = _int(env, "MAX_CONCURRENT_PARSING")
     env_index = _int(env, "MAX_CONCURRENT_INDEXING")
     s_d = 1.0
+    omp, omp_source = _omp(env, cpus)
+    omp_n = int(omp) if omp.isascii() and omp.isdigit() else DEFAULT_OMP
+    embed_override = _int(env, "EMBEDDING_SERVER_MAX_CONCURRENCY")
 
     headroom = max(int(mem * HEADROOM_SHARE), HEADROOM_MIN)
     big_mem = max(0, mem - headroom)
@@ -126,11 +137,12 @@ def plan_auto(facts: CapacityFacts, env: Mapping[str, str], budget: CpuMem, warn
         base_no_docling = BASE_MEMORY
         docling_cap_mem = max(1, int(max(0, mem - base_no_docling) * DOCLING_MEMORY_SHARE // DOCLING_WORKING_SET))
         floors = plan_floors(cpus, c, None, s_d, policy, docling_workers_cap=docling_cap_mem)
-        embed_procs_guess = 1
+        # Every embedding process beyond the first holds its own model copy in memory (a GPU holds it on the device).
+        embed_procs = _embedding_widths(c, omp_n, embed_override, cuda=cuda, gpus=gpus)[1]
         baseline = (
             BASE_MEMORY
             + floors.docling_warm_workers * DOCLING_WORKING_SET
-            + (embed_procs_guess - 1) * EMBEDDING_MODEL_RSS
+            + (0 if cuda else (embed_procs - 1) * EMBEDDING_MODEL_RSS)
         )
         mem_cells = max(1, int(max(0, mem - baseline) // CELL_MIN_MEMORY))
         if workers is not None:
@@ -164,19 +176,12 @@ def plan_auto(facts: CapacityFacts, env: Mapping[str, str], budget: CpuMem, warn
         index_max_per_tier=_int(env, "GOVERNOR_INDEX_MAX") or 512,
     )
     fleet = ceil_mod.auto_ceilings(
-        cpus, env_parse, env_index, cells=cells, reserve_embedding_cpus=reserve_embedding, c=constants
+        cpus, env_parse, env_index, cells=cells, reserve_embedding_cpus=reserve_embedding, c=constants,
+        reservation=reserve_cpus,
     )
     per = ceil_mod.per_cell(fleet, cells)
 
-    omp, omp_source = _omp(env, cpus)
-    omp_n = int(omp) if omp.isascii() and omp.isdigit() else DEFAULT_OMP
-    embed_override = _int(env, "EMBEDDING_SERVER_MAX_CONCURRENCY")
-    if cuda:
-        embed_slots = 2 * gpus
-        embed_processes = gpus
-    else:
-        embed_slots = embed_override or max(2, (c - QUERY_EMBED_WEIGHT) // max(1, omp_n))
-        embed_processes = max(1, math.ceil(embed_slots / EMBED_SLOTS_PER_PROCESS))
+    embed_slots, embed_processes = _embedding_widths(c, omp_n, embed_override, cuda=cuda, gpus=gpus)
     llm_services = 1 + (2 if (env.get("USE_PARSING_SERVICE") or "").strip().lower() == "true" else 0)
     llm_each = _int(env, "MAX_CONCURRENT_INDEXING_LLM_CALLS") or LLM_PER_SERVICE
     widths = Widths(

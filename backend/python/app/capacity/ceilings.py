@@ -72,11 +72,17 @@ def auto_ceilings(
     cells: int = 1,
     reserve_embedding_cpus: bool = False,
     c: Constants = Constants(),
+    reservation: float | None = None,
 ) -> FleetCeilings:
-    """Fleet ceilings (all cells together); the governor splits them per cell."""
+    """Fleet ceilings (all cells together); the governor splits them per cell.
+
+    ``reservation`` is the CPUs kept for the embedding model when ``reserve_embedding_cpus`` is set;
+    the default is ``embedding_reservation`` of the quota. A plan that knows better (a free GPU needs
+    at most one) passes its own, so the reported reservation and the ceilings agree.
+    """
     cells = max(1, cells)
     cpus = ceiling_cpus(cpu_quota)
-    reservation = embedding_reservation(cpus, c)
+    reservation = embedding_reservation(cpus, c) if reservation is None else reservation
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
     light_max = c.light_parse_max * cells
     tier_max = c.index_max_per_tier * cells

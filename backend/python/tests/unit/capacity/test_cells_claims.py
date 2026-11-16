@@ -155,24 +155,32 @@ def _reader(directory: str, stop: float) -> None:
         read_cells(Path(directory), 2)
 
 
+CLAIM_ATTEMPTS_UNDER_LOAD = 1500
+
+
 def test_no_claim_is_missed_while_health_is_read_under_load(tmp_path: Path) -> None:
+    """A fixed number of claim attempts, made while the readers run: the result does not depend on how fast the host is.
+    The readers stop on a generous deadline, which only bounds a hang."""
     held = claim_cell(tmp_path, 2)
     assert held is not None
-    stop = time.time() + 2.0
+    stop = time.time() + 120.0
     readers = [mp.get_context("fork").Process(target=_reader, args=(str(tmp_path), stop)) for _ in range(2)]
     for r in readers:
         r.start()
-    misses = tries = 0
-    while time.time() < stop:
-        c = claim_cell(tmp_path, 2)
-        tries += 1
-        if c is None:
-            misses += 1
-        else:
-            c.release()
-    for r in readers:
-        r.join()
-    assert tries > 1000 and misses == 0, f"{misses} of {tries} claims found no free cell while slot 1 was free"
+    misses = 0
+    try:
+        for _ in range(CLAIM_ATTEMPTS_UNDER_LOAD):
+            c = claim_cell(tmp_path, 2)
+            if c is None:
+                misses += 1
+            else:
+                c.release()
+            assert time.time() < stop, "the claims did not finish: a hang, not a miss"
+    finally:
+        for r in readers:
+            r.terminate()
+            r.join()
+    assert misses == 0, f"{misses} of {CLAIM_ATTEMPTS_UNDER_LOAD} claims found no free cell while slot 1 was free"
 
 
 def test_a_replacement_cell_is_not_reported_stale_from_its_predecessor_file(tmp_path: Path) -> None:

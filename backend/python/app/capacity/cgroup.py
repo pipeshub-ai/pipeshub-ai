@@ -70,8 +70,27 @@ def resolve_path(v1_controller: str, v1_filename: str, v2_filename: str | None =
     return direct_v1 if direct_v1.exists() else None
 
 
-def cpu_quota_v2() -> float | None:
-    text = read_text(resolve_path("cpu", "cpu.max"))
+def _with_ancestors(path: Path | None, stop: Path) -> list[Path]:
+    """``path`` and the same-named file of every visible ancestor cgroup, up to ``stop`` (the hierarchy root).
+
+    A limit on an ancestor applies to every process below it, so the effective limit is the smallest
+    one on the way up. Only directories under the mount are visible: with just the container's own
+    cgroup mounted this is the one file. The file's own directory stays the identity of the member.
+    """
+    if path is None:
+        return []
+    found = [path]
+    directory = path.parent
+    while directory != stop and stop in directory.parents:
+        directory = directory.parent
+        candidate = directory / path.name
+        if candidate.exists():
+            found.append(candidate)
+    return found
+
+
+def _quota_v2(path: Path) -> float | None:
+    text = read_text(path)
     if not text:
         return None
     parts = text.split()
@@ -86,12 +105,24 @@ def cpu_quota_v2() -> float | None:
     return quota_us / period_us
 
 
+def _smallest(values: list[float | int | None]) -> float | int | None:
+    present = [v for v in values if v is not None]
+    return min(present) if present else None
+
+
+def cpu_quota_v2() -> float | None:
+    """The smallest ``cpu.max`` quota on the member's cgroup and its visible ancestors."""
+    return _smallest([_quota_v2(f) for f in _with_ancestors(resolve_path("cpu", "cpu.max"), CGROUP_ROOT)])  # type: ignore[return-value]
+
+
 def cpu_quota_v1() -> float | None:
-    quota = read_int(resolve_path("cpu", "cpu.cfs_quota_us"))
-    period = read_int(resolve_path("cpu", "cpu.cfs_period_us"))
-    if quota is None or period is None or quota <= 0 or period <= 0:
-        return None
-    return quota / period
+    """The smallest CFS quota on the member's cgroup and its visible ancestors."""
+    quota_file = resolve_path("cpu", "cpu.cfs_quota_us")
+    found: list[float | None] = []
+    for f in _with_ancestors(quota_file, CGROUP_ROOT / "cpu"):
+        quota, period = read_int(f), read_int(f.parent / "cpu.cfs_period_us")
+        found.append(None if quota is None or period is None or quota <= 0 or period <= 0 else quota / period)
+    return _smallest(found)  # type: ignore[return-value]
 
 
 def cpu_quota() -> tuple[float | None, str]:
@@ -119,20 +150,24 @@ def cpu_affinity() -> int | None:
 
 
 def memory_limit_v2() -> int | None:
-    raw = read_text(resolve_path("memory", "memory.max"))
-    if raw is None or raw == "max":
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+    """The smallest ``memory.max`` on the member's cgroup and its visible ancestors."""
+    found: list[int | None] = []
+    for f in _with_ancestors(resolve_path("memory", "memory.max"), CGROUP_ROOT):
+        raw = read_text(f)
+        try:
+            found.append(None if raw is None or raw == "max" else int(raw))
+        except ValueError:
+            found.append(None)
+    return _smallest(found)  # type: ignore[return-value]
 
 
 def memory_limit_v1() -> int | None:
-    limit = read_int(resolve_path("memory", "memory.limit_in_bytes"))
-    if limit is None or limit >= MEM_V1_NO_LIMIT_SENTINEL:
-        return None
-    return limit
+    """The smallest ``memory.limit_in_bytes`` on the member's cgroup and its visible ancestors."""
+    found: list[int | None] = []
+    for f in _with_ancestors(resolve_path("memory", "memory.limit_in_bytes"), CGROUP_ROOT / "memory"):
+        limit = read_int(f)
+        found.append(None if limit is None or limit >= MEM_V1_NO_LIMIT_SENTINEL else limit)
+    return _smallest(found)  # type: ignore[return-value]
 
 
 def memory_limit() -> tuple[int | None, str]:

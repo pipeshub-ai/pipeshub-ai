@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.capacity import apply, cells
+from app.capacity import apply, cells, numa
 from app.capacity.facts import CapacityFacts
 
 PY_ROOT = Path(__file__).resolve().parents[3]
@@ -130,21 +130,24 @@ def test_the_master_of_several_workers_is_not_a_cell() -> None:
     assert not apply._serves_a_cell({**env, apply.CELL_ENV: "1"}), "a child of a cell must not claim again"
 
 
+FACTS64 = CapacityFacts(cpu_quota=64.0, cpu_affinity=64, cpu_host=64, mem_limit=256 << 30, mem_host=256 << 30,
+                        cgroup="v2", member_id="m", numa=((0, tuple(range(32))), (1, tuple(range(32, 64)))))
+RUNNING = {"PIPESHUB_NUMA_PINNING": "auto", "INDEXING_UVICORN_WORKERS": "4"}
+
+
 def _plan_with_masks() -> object:
     from app.capacity.policy import plan_capacity
 
-    facts = CapacityFacts(cpu_quota=64.0, cpu_affinity=64, cpu_host=64, mem_limit=256 << 30, mem_host=256 << 30,
-                          cgroup="v2", member_id="m", numa=((0, tuple(range(32))), (1, tuple(range(32, 64)))))
-    return plan_capacity(facts, {"PIPESHUB_CAPACITY_PROFILE": "auto", "PIPESHUB_NUMA_PINNING": "auto"})
+    return plan_capacity(FACTS64, {"PIPESHUB_CAPACITY_PROFILE": "auto", "PIPESHUB_NUMA_PINNING": "auto"})
 
 
 @pytest.mark.parametrize("service", ["docling", "query", "parsing", "embedding", "extraction", "connectors", ""])
 def test_no_other_service_claims_or_pins(service: str) -> None:
     plan = _plan_with_masks()
     assert plan.numa_masks
-    env = {"PIPESHUB_NUMA_PINNING": "auto"}
+    env = dict(RUNNING)
     with patch("app.capacity.cells.process_claim") as claim, patch("app.capacity.numa.pin") as pin:
-        apply._pin_numa(plan, env, service)
+        apply._pin_numa(plan, FACTS64, env, service)
     claim.assert_not_called()
     pin.assert_not_called()
     assert apply.CELL_ENV not in env
@@ -152,7 +155,7 @@ def test_no_other_service_claims_or_pins(service: str) -> None:
 
 def test_an_indexing_worker_claims_pins_and_marks_its_children(tmp_path: Path) -> None:
     plan = _plan_with_masks()
-    env = {"PIPESHUB_NUMA_PINNING": "auto"}
+    env = dict(RUNNING)
     fake = cells.CellClaim(tmp_path, 3, -1)
     with (
         patch("app.capacity.cells.cells_directory", return_value=tmp_path),
@@ -160,21 +163,45 @@ def test_an_indexing_worker_claims_pins_and_marks_its_children(tmp_path: Path) -
         patch("app.capacity.numa.pin") as pin,
         patch("app.capacity.apply.multiprocessing.current_process", return_value=SimpleNamespace(name="SpawnProcess-1")),
     ):
-        apply._pin_numa(plan, env, "indexing")
-        apply._pin_numa(plan, env, "indexing")  # a child of this process now skips
+        apply._pin_numa(plan, FACTS64, env, "indexing")
+        apply._pin_numa(plan, FACTS64, env, "indexing")  # a child of this process now skips
     claim.assert_called_once()
-    pin.assert_called_once_with(3, plan.numa_masks, env)  # the pre-pin CPU count is recorded in this env
+    pin.assert_called_once_with(3, numa.masks(FACTS64, 4), env)  # the pre-pin CPU count is recorded in this env
     assert env[apply.CELL_ENV] == "3"
 
 
 def test_a_failed_claim_leaves_no_marker(tmp_path: Path) -> None:
     plan = _plan_with_masks()
-    env = {"PIPESHUB_NUMA_PINNING": "auto"}
+    env = dict(RUNNING)
     with (
         patch("app.capacity.cells.cells_directory", return_value=tmp_path),
         patch("app.capacity.cells.process_claim", return_value=None),
         patch("app.capacity.numa.pin") as pin,
     ):
-        apply._pin_numa(plan, env, "indexing")
+        apply._pin_numa(plan, FACTS64, env, "indexing")
     pin.assert_not_called()
     assert apply.CELL_ENV not in env
+
+
+def test_the_workers_that_run_decide_the_placement_not_the_planned_cells(tmp_path: Path) -> None:
+    """The plan proposes several cells, but the launcher starts one worker unless told otherwise. That
+    worker must keep every node: pinning it to node 0 would idle the other."""
+    plan = _plan_with_masks()
+    assert plan.cells > 1 and plan.numa_masks
+    for workers in (None, "1"):
+        env = {"PIPESHUB_NUMA_PINNING": "auto"} | ({} if workers is None else {"INDEXING_UVICORN_WORKERS": workers})
+        with patch("app.capacity.cells.process_claim") as claim, patch("app.capacity.numa.pin") as pin:
+            apply._pin_numa(plan, FACTS64, env, "indexing")
+        claim.assert_not_called()
+        pin.assert_not_called()
+        assert apply.CELL_ENV not in env
+
+
+def test_pinning_needs_the_auto_profile(tmp_path: Path) -> None:
+    from app.capacity.policy import plan_capacity
+
+    legacy = plan_capacity(FACTS64, {"PIPESHUB_CAPACITY_PROFILE": "legacy", "PIPESHUB_NUMA_PINNING": "auto"})
+    with patch("app.capacity.cells.process_claim") as claim, patch("app.capacity.numa.pin") as pin:
+        apply._pin_numa(legacy, FACTS64, dict(RUNNING), "indexing")
+    claim.assert_not_called()
+    pin.assert_not_called()

@@ -84,3 +84,37 @@ def test_an_unusable_value_is_ignored(raw: str, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv(numa.CONTAINER_CPUS_ENV, raw)
     assert cgroup.cpu_affinity() == 8
     assert probe._resolve_cpu_quota() == 8.0
+
+
+def _snapshots(monkeypatch: pytest.MonkeyPatch, source: str, busy_cpus: float) -> float | None:
+    """Utilisation read by two snapshots 10 s apart for a counter that grew by ``busy_cpus`` x 10 s."""
+    usage = iter([0, int(busy_cpus * 10 * 1_000_000)])
+    clock = iter([0.0, 10.0])
+    monkeypatch.setattr(probe, "_resolve_cpu_usage_usec", lambda: (next(usage), source))
+    monkeypatch.setattr(probe, "_resolve_memory", lambda: (None, None, "none"))
+    monkeypatch.setattr(probe, "_cgroup_v2_cpu_throttled_usec", lambda: None)
+    monkeypatch.setattr(probe, "_cpu_pressure", lambda: None)
+    sut = probe.SystemResourceProbe(clock=lambda: next(clock))
+    sut.snapshot()
+    return sut.snapshot().cpu_utilisation
+
+
+def test_a_pinned_process_reads_its_own_cpu_time_against_its_own_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``os.times`` counts this process only: a cell pinned to 16 of the container's 32 CPUs that uses all
+    16 is fully busy (1.0, so the brake can engage), not half busy."""
+    _affinity(monkeypatch, 16)
+    monkeypatch.setenv(numa.CONTAINER_CPUS_ENV, "32")
+    assert probe._resolve_cpu_quota() == 32.0  # the container-wide figure is unchanged for sizing
+    assert _snapshots(monkeypatch, "os_times", 16) == pytest.approx(1.0)
+
+
+def test_a_cgroup_counter_stays_container_wide_after_the_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    _affinity(monkeypatch, 16)
+    monkeypatch.setenv(numa.CONTAINER_CPUS_ENV, "32")
+    assert _snapshots(monkeypatch, "cgroup_v2", 14) == pytest.approx(14 / 32)
+
+
+def test_os_times_without_a_pin_keeps_the_quota_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    _affinity(monkeypatch, 32)
+    monkeypatch.setattr(probe, "_cgroup_v2_cpu_quota", lambda: 8.0)
+    assert _snapshots(monkeypatch, "os_times", 4) == pytest.approx(0.5)

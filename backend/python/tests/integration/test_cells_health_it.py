@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -44,7 +45,10 @@ def test_two_workers_serve_the_same_merged_body_and_a_dead_cell_is_503(tmp_path:
     env = {**os.environ, "CELLS_IT_DIR": str(tmp_path), "CELLS_IT_WORKERS": "2", "PYTHONPATH": str(PYTHON_ROOT)}
     proc = subprocess.Popen(
         [sys.executable, "-W", "ignore", "-m", "uvicorn", "tests.support.cells_health_app:app", "--workers", "2",
-         "--port", str(PORT), "--host", "127.0.0.1"],
+         "--port", str(PORT), "--host", "127.0.0.1",
+         # The supervisor replaces a worker that misses its health check (5 s by default); the stopped cell
+         # must stay in place for the whole observation window below.
+         "--timeout-worker-healthcheck", "60"],
         cwd=PYTHON_ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
@@ -58,7 +62,8 @@ def test_two_workers_serve_the_same_merged_body_and_a_dead_cell_is_503(tmp_path:
         try:
             _wait(lambda: _get()[0] == 503, timeout=30)
         finally:
-            os.kill(child, signal.SIGCONT)
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, signal.SIGCONT)
     finally:
         proc.terminate()
         proc.wait(timeout=20)

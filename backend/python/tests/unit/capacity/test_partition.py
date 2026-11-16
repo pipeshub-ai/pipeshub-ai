@@ -74,9 +74,11 @@ def test_pin_restricts_this_process_and_restores() -> None:
     before = os.sched_getaffinity(0)
     cpu = min(before)
     try:
-        assert numa.pin(0, ((cpu,),))
+        env: dict[str, str] = {}  # the pin records the pre-pin CPU count here, not in os.environ
+        assert numa.pin(0, ((cpu,),), env)
         assert os.sched_getaffinity(0) == {cpu}
-        assert numa.pin(0, ()) is False
+        assert env[numa.CONTAINER_CPUS_ENV] == str(len(before))
+        assert numa.pin(0, (), env) is False
     finally:
         os.sched_setaffinity(0, before)
 

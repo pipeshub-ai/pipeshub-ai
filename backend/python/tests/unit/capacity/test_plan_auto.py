@@ -159,3 +159,42 @@ def test_plan_json_roundtrips() -> None:
     import json
 
     assert json.loads(json.dumps(_plan(128, 256).as_dict(), default=str))["widths"]["embed_slots"] == 74
+
+
+@pytest.mark.parametrize("mem_gb", [12, 16, 20, 24, 32, 48, 64])
+def test_cells_leave_memory_for_every_embedding_process(mem_gb: int) -> None:
+    """Each embedding process past the first holds its own model, so the cell count is chosen
+    against the baseline that includes all of them (128 CPUs, CPU embedding)."""
+    from app.capacity import auto
+
+    plan = _plan(128, mem_gb)
+    baseline = (
+        auto.BASE_MEMORY
+        + plan.widths.docling_workers_warm * auto.DOCLING_WORKING_SET
+        + (plan.widths.embed_processes - 1) * auto.EMBEDDING_MODEL_RSS
+    )
+    if plan.cells > 1:
+        assert baseline + plan.cells * auto.CELL_MIN_MEMORY <= mem_gb * GIB, (plan.cells, plan.widths.embed_processes)
+    if plan.cells < 8:
+        assert "cells_bounded_by_memory" in plan.warnings
+
+
+def test_a_gpu_embedding_does_not_charge_model_copies_to_memory() -> None:
+    cpu = _plan(128, 20)
+    gpu = _plan(128, 20, gpus=((0, 24 * GIB, 1 * GIB), (1, 24 * GIB, 1 * GIB)))
+    assert gpu.embed_device == "cuda" and gpu.cells >= cpu.cells
+
+
+@pytest.mark.parametrize("cpus", [8, 16, 32, 64, 128])
+def test_the_reported_reservation_is_what_the_fleet_ceiling_leaves(cpus: int) -> None:
+    """With a free GPU the reserve is at most one CPU, and the heavy ceiling is the quota less that
+    same value, not the reservation of a CPU-only embedding server."""
+    from app.capacity.ceilings import auto_ceilings
+
+    gpu = _plan(cpus, 256, gpus=((0, 24 * GIB, 1 * GIB),))
+    assert gpu.embedding_reserve_cpus == 1.0
+    assert gpu.fleet_ceilings == auto_ceilings(cpus, None, None, cells=gpu.cells, reserve_embedding_cpus=True, reservation=1.0).as_tuple()
+    cpu_only = _plan(cpus, 256)
+    assert gpu.fleet_ceilings[0] >= cpu_only.fleet_ceilings[0]
+    if cpus >= 32:
+        assert gpu.fleet_ceilings[0] > cpu_only.fleet_ceilings[0], "the freed CPUs reach the heavy ceiling"
