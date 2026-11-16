@@ -357,14 +357,17 @@ async def test_a_placeholder_that_leads_through_a_placeholder_listed_elsewhere_i
 
 
 async def test_a_node_of_a_connector_kg_has_not_copied_is_not_ready_and_one_not_gated_is_not_found(pg_db) -> None:
+    """Not ready only for a start the viewer may open (r0000); one they may not (g1: u1 holds no grant on it, and nothing leads to it from the App) is the same not-found as a
+    missing one, so the refusal says nothing of a node they cannot see."""
     from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 
     from .test_kh_listing_flat import seed
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
+    with pytest.raises(KnowledgeHubListingNotReady):
+        await browse(p, org, "r0000", ["r0000"], start_type="record")
+    assert (await browse(p, org, "g1", ["r0000"], start_type="recordGroup"))["scope"]["admitted"] is False
     for start, typ in (("g1", "recordGroup"), ("r0000", "record")):
-        with pytest.raises(KnowledgeHubListingNotReady):
-            await browse(p, org, start, ["r0000"], start_type=typ)
         with ctx(org):      # not gated to its connector, or no such node: not found
             assert (await p.get_knowledge_hub_connector_page_v3(app_id="", org_id=org, grantee_ids=["u1"], gated_app_ids=["other"], granted_ids=["r0000"], flatten=False,
                                                                 start_id=start, start_type=typ, include_scope=True))["scope"]["admitted"] is False
