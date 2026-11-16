@@ -48,7 +48,11 @@ from app.services.parsing.interface import (
     ParseErrorCode,
     ParserProvider,
 )
-from app.services.parsing.load import parse_load, parsing_max_concurrent, stuck_conversions
+from app.services.parsing.load import (
+    parse_load,
+    parsing_max_concurrent,
+    stuck_conversions,
+)
 from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
