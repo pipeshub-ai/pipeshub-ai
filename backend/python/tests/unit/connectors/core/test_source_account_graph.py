@@ -1,6 +1,8 @@
 """The source-account setting and the account ids, without a store."""
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -18,7 +20,8 @@ def _processor(config) -> DataSourceEntitiesProcessor:
     return processor
 
 
-async def test_the_setting_is_off_unless_it_says_enabled() -> None:
+async def test_the_setting_is_off_unless_it_says_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PERM_SOURCE_ACCOUNTS", raising=False)      # with it, an absent setting reads as on
     config = InMemoryConfigService()
     processor = _processor(config)
     assert await processor._account_graph("c1") is None

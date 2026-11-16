@@ -8,6 +8,7 @@ under different id prefixes, so a whole corpus costs one load per backend.
 from __future__ import annotations
 
 import itertools
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,9 @@ from tests.integration.graph_permissions.loaders import (
 )
 
 from .graph import VARIANTS, Graph, Namespace, compile_world
+
+# Several processes (pytest-xdist workers, two runs) may share a store: a prefix carries this process's token, so no release deletes another's.
+_RUN = uuid.uuid4().hex[:6]
 
 if TYPE_CHECKING:
     from .model import World
@@ -76,7 +80,7 @@ class GraphCheckLayer:
         fresh = [w for w in dict.fromkeys(worlds) if w not in self._prefix]
         for w in fresh:
             # the layers of one store share it in a module: a prefix of each variant's own keeps the copies of a world apart
-            self._prefix[w] = f"{self._variant[:1] or 'w'}{next(self._counter)}"
+            self._prefix[w] = f"{self._variant[:1] or 'w'}{_RUN}{next(self._counter)}"
         nodes = [n for w in fresh for n in self._compiled(w)["nodes"]]
         edges = [e for w in fresh for e in self._compiled(w)["edges"]]
         if nodes:

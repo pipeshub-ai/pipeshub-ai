@@ -216,8 +216,12 @@ jobs:
         run: |
           PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_accounts)"
-          python -m pytest tests/integration/graph_db/postgres/test_identity.py tests/integration/graph_db/postgres/test_source_account_writers.py \
-            -m integration -p no:cacheprovider --timeout=600 -rs
+          sel=(tests/integration/graph_db/postgres/test_identity.py tests/integration/graph_db/postgres/test_source_account_writers.py -m integration -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/accounts.collected" "${sel[@]}"
+          python -m pytest "${sel[@]}" --timeout=600 -rs --junitxml="$RUNNER_TEMP/accounts-junit.xml"
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/accounts-junit.xml" --collected "$RUNNER_TEMP/accounts.collected" \
+            --allow 'test_identity::test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_account_holding_it' \
+            --allow 'test_source_account_writers::test_with_the_setting_off_nothing_new_is_written_and_everyone_reads_what_they_did'
 
       # One job is enough: the split is the same in every job. Collecting the folder and every shard takes a few minutes.
       - name: Every graph case runs in exactly one shard
