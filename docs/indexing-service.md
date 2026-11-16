@@ -323,6 +323,21 @@ FOR r IN records
 
 Only a record that was being embedded, or whose last attempt failed, carries them. The vector points keep their `contentRev` and `embedKey` payload fields, which older code ignores.
 
+### 2.6 Record processing diagnostics
+
+A stored record may carry four optional facts about how its processing went. They are for diagnosis only: they are in `INTERNAL_RECORD_FIELDS`, so the record endpoint never returns them and `pipeshub-openapi.yaml` does not describe them. They are declared in the records schema (ArangoDB; Neo4j and PostgreSQL read the same registry) before anything writes them, so a process on the previous schema never meets a key it rejects. Each field is either a number of the stated kind or unknown; absent and JSON null both mean "unknown". The schema refuses any other value on every store (a string, a fraction where an integer is stated, a negative attempt count, a page count below 1), so a reader meets only a valid number, absent, or null.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `firstQueuedAt` | number (epoch ms) | When the record first went in line for its current processing run. |
+| `failedAt` | number (epoch ms) | When its most recent run ended in FAILED. |
+| `indexingAttempts` | integer >= 0 | How many times processing was attempted. Informational; the retry limits are unchanged. |
+| `pageCount` | integer >= 1 | Page count of the PDF that was parsed; null when unknown or not a PDF. |
+
+The record endpoint, the record update response, the search response and the Node API's saved searches (when saved and when returned) leave out `INTERNAL_RECORD_FIELDS` (`api_record` / `api_records` in Python, `apiRecord` / `apiStoredRecords` in `enterprise_search/utils/internal-record-fields.ts`; a test compares the two name lists).
+
+In this version nothing writes them (`tests/unit/schema/test_record_diagnostics_schema.py` fails if application code starts to).
+
 ## 3. Light and heavy documents
 
 Every record is classified once, from the event payload's `extension` and `mimeType`, by `app/services/resource_governor/tiers.py::classify`:

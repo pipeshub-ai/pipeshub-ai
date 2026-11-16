@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.org_context import current_org_id, peek
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
+from app.services.graph_db.postgres.kg.stamp import MAX_DEPTH
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
@@ -72,17 +73,23 @@ def _links_up(x: str, kind: int) -> str:
             f"ORDER BY l.child_sk, l.kind)")
 
 
+def _not_held() -> str:
+    """Whether kg holds no row for the edge end ``e`` (collection name ``e.oc``, id ``e.oi``): one seek per collection, each on a constant collection code. A code computed
+    from the end (a CASE) leaves the collection out of the index bound, and PostgreSQL 18.7 then planned a scan of the organisation's records with a disabled sort."""
+    return (f"CASE e.oc WHEN 'records' THEN NOT EXISTS (SELECT 1 FROM {_id('3', 'e.oi')} k) WHEN 'recordGroups' THEN NOT EXISTS (SELECT 1 FROM {_id('2', 'e.oi')} k) "
+            f"ELSE NOT EXISTS (SELECT 1 FROM {_id('1', 'e.oi')} k) END")
+
+
 def _unheld(x: str) -> str:
     """Whether an edge the walk can follow touches the node of id ``x`` and a node kg does not hold: a hierarchy relation or a belongs-to edge, out of it or into it, whose
     other end is a record, a record group or an App kg has no row for (an id longer than its writers take, or a node removed while its edge stays). The walk follows such an
     edge; kg cannot, so the walk must answer. One rule for every read: each visited node is held to it."""
-    held = _id("(CASE e.oc WHEN 'records' THEN 3 WHEN 'recordGroups' THEN 2 ELSE 1 END)::smallint", "e.oi")
     out = [f"(SELECT e.to_coll AS oc, e.to_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{c}' AND e.from_id >= {x} AND e.from_id <= {x} ORDER BY e.from_id)"
            for c in ("nodeRelations", "belongsTo")]
     into = [f"(SELECT e.from_coll AS oc, e.from_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{c}' AND e.to_id >= {x} AND e.to_id <= {x} ORDER BY e.to_id)"
             for c in ("nodeRelations", "belongsTo")]
     return (f"EXISTS (SELECT 1 FROM ({' UNION ALL '.join(out + into)}) e WHERE e.oc IN ('records', 'recordGroups', 'apps') "
-            f"AND NOT EXISTS (SELECT 1 FROM {held} k))")
+            f"AND {_not_held()})")
 
 
 APP_KEY = "/* pipeshub:kg.hier_app */ SELECT sk FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= $2 ORDER BY k.id LIMIT 1) s WHERE s.id = $2"
@@ -145,6 +152,74 @@ APP_MEMBERS = f"""/* pipeshub:kg.hier_app_members */ SELECT c.sk FROM unnest($2:
             WHERE g.kind = 2 AND g.app_sk = $3 AND NOT g.deleted)
     OR EXISTS (SELECT 1 FROM (SELECT e.from_coll, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id >= c.id AND e.from_id <= c.id
                ORDER BY e.from_id) e WHERE e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $4)"""
+
+
+
+
+def _unheld_up(x: str) -> str:
+    """Whether an edge the hub's trail follows up from the node of id ``x`` (a hierarchy relation into it, a belongs-to edge out of it) has an end kg does not hold. Only these:
+    :func:`_unheld` also reads the edges down, every member of a large group."""
+    return (f"EXISTS (SELECT 1 FROM ((SELECT e.from_coll AS oc, e.from_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id >= {x} "
+            f"AND e.to_id <= {x} AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') ORDER BY e.to_id) "
+            f"UNION ALL (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id >= {x} AND e.from_id <= {x} ORDER BY e.from_id)) e "
+            f"WHERE e.oc IN ('records', 'recordGroups', 'apps') AND {_not_held()})")
+
+
+# Each asked id's node, a record first, then a group, then an app, with a record's file type. Every read is a seek on one (collection, id) key: the typed graph's trail runs
+# this under its profile (sorts, bitmap and sequential scans off), where an id list across several collections would be a scan of the whole organisation.
+HUB_NODES = f"""/* pipeshub:graph.hub_node */ SELECT q.id AS key, coalesce(r.coll, g.coll, a.coll) AS coll, coalesce(r.doc, g.doc, a.doc) AS doc,
+    (SELECT f.doc->>'isFile' FROM (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id >= r.id AND e.from_id <= r.id
+        AND e.from_coll = 'records' ORDER BY e.from_id) e CROSS JOIN LATERAL {_node("'files'", "e.to_id")} f LIMIT 1) AS is_file
+  FROM unnest($2::text[]) AS q(id)
+  LEFT JOIN LATERAL {_node("'records'", "q.id")} r ON true
+  LEFT JOIN LATERAL {_node("'recordGroups'", "q.id")} g ON r.id IS NULL
+  LEFT JOIN LATERAL {_node("'apps'", "q.id")} a ON r.id IS NULL AND g.id IS NULL
+  WHERE coalesce(r.id, g.id, a.id) IS NOT NULL"""
+
+# One node of the hub's trail ($2, an sk): its row, its record parents (the primary one and the linked ones that are records), its groups (the first and the linked ones) and
+# whether an edge the trail follows up from it has an end kg does not hold.
+TRAIL_NODE = f"""/* pipeshub:kg.hier_trail_node */ SELECT r.sk, r.coll, r.id, r.app_sk, r.path IS NULL AS no_path,
+    array(SELECT p.sk FROM (SELECT r.parent_sk AS sk UNION ALL SELECT l.parent_sk FROM {_links_up("r.sk", 1)} l) x CROSS JOIN LATERAL {_sk("x.sk")} p WHERE p.coll = 3) AS parents,
+    array(SELECT x.sk FROM (SELECT r.group_sk AS sk UNION ALL SELECT l.parent_sk FROM {_links_up("r.sk", 2)} l) x WHERE x.sk IS NOT NULL) AS groups,
+    {_unheld_up("r.id")} AS unheld
+  FROM {_sk("$2")} r"""
+# The App the node $3 (of collection $2) belongs to, the lowest id first: kg does not copy that edge, so the trail's last step is read from it, as the walk reads it.
+TRAIL_APP = """/* pipeshub:kg.hier_trail_app */ SELECT min(e.to_id) FROM (SELECT e.from_coll, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+    AND e.from_id >= $3 AND e.from_id <= $3 ORDER BY e.from_id) e WHERE e.from_coll = $2 AND e.to_coll = 'apps'"""
+_COLL_NAME = {3: "records", 2: "recordGroups"}
+
+
+async def trail(tx: Tx, org: str, node_id: str) -> list[tuple[int, str]]:
+    """The knowledge hub's trail from a node up, as (collection code, id): each step's parent chosen as the walk chooses it (``HubMixin._hub_trail``: a record's record parent,
+    else the group it belongs to, else the App it belongs to; a group's group, else its App). Raises Fallback where the walk would choose among several (it takes the lowest
+    id; kg keeps its own order), at a row of another connector or with no path (a cycle among them), and where an edge the walk follows up leads to a node kg does not hold."""
+    start = None
+    for coll in (3, 2, 1):                              # the walk's order when an id names nodes of more than one collection
+        if (start := await tx.fetchrow(NODE, org, coll, node_id)) is not None:
+            break
+    if start is None:
+        raise Fallback("unknown")
+    app_sk = await _served(tx, org, start["app_id"])
+    out: list[tuple[int, str]] = []
+    sk = start["sk"]
+    while True:
+        r = await tx.fetchrow(TRAIL_NODE, org, sk)
+        if r is None:
+            raise Fallback("unknown")
+        if r["app_sk"] != app_sk or (r["no_path"] and r["coll"] != 1) or len(out) > MAX_DEPTH:      # an App's row has no path
+            raise Fallback("reach")
+        if r["unheld"]:
+            raise Fallback("unheld")
+        out.append((r["coll"], r["id"]))
+        if r["coll"] == 1:
+            return out
+        up = r["parents"] if r["coll"] == 3 and r["parents"] else r["groups"]
+        if len(up) > 1:
+            raise Fallback("ambiguous")
+        if not up:
+            app = await tx.fetchval(TRAIL_APP, org, _COLL_NAME[r["coll"]], r["id"])
+            return [*out, (1, app)] if app is not None else out
+        sk = up[0]
 
 
 def _pc_unheld(x: str, *, up: bool) -> str:
