@@ -203,6 +203,23 @@ affinity: {}
 # when affinity is set.
 spreadAcrossNodes: false
 
+# Prometheus metrics of the indexing service's admission governor: one /metrics per pod on `port`,
+# bounded and without pid, pod, org or record labels. Scraped through a PodMonitor (needs the
+# Prometheus Operator CRDs, so it is off until you ask for it). With networkPolicy.enabled, add an ingress
+# rule that lets your Prometheus reach this port.
+# `bind` is the address the port listens on: `podIP` (the default) binds the pod's own address, so only
+# traffic to the pod reaches it; `0.0.0.0` listens on every interface; any other IP address is used as is.
+# The port is unauthenticated and served over plain HTTP: reach it only from your Prometheus.
+metrics:
+  enabled: true
+  port: 9091
+  bind: podIP
+  podMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}          # for example {release: kube-prometheus-stack}, to match your Prometheus' selector
+
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
   enabled: true
