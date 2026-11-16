@@ -650,3 +650,22 @@ async def test_an_unlisted_accounts_address_handed_to_another_account_is_caught_
     assert directory.calls == [("remove", "guest@else.com")]
     await accounts.ensure_loaded()
     assert accounts.holds("guest@else.com", "ext-2") and not accounts.holds("guest@else.com", "ext-1")
+
+
+@pytest.mark.asyncio
+async def test_an_unlisted_account_that_took_an_address_loses_nothing_on_later_pages_or_runs(world) -> None:
+    """The stored link can keep naming the earlier account (a deleted agent stays linked); once the address went to the
+    account a grant names, later pages and later runs must not remove that account's grants again."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "agent-5")])           # the staff listing linked her
+    assert await accounts.before_grants([("ana@x.com", "end-31")])               # a ticket page names the end user
+    assert directory.calls[-1] == ("remove", "ana@x.com")
+    directory.calls.clear()
+
+    assert await accounts.before_grants([("ana@x.com", "end-31"), ("bo@x.com", "end-32")])       # the next page
+    restarted = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))  # the next run
+    assert await restarted.before_grants([("ana@x.com", "end-31")])
+
+    assert ("remove", "ana@x.com") not in directory.calls
+    await restarted.ensure_loaded()
+    assert restarted.holds("ana@x.com", "end-31") and not restarted.holds("ana@x.com", "agent-5")

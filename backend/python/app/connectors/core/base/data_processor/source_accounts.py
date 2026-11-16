@@ -279,7 +279,11 @@ class SourceAccounts:
             # Each address is compared with the accounts it was linked to: the one this connector remembers, the one
             # its stored link names (another writer may have rewritten it already), and a deleted account the source
             # still lists with it. The listed id being linked to some other address says nothing about this one.
-            before = {linked.get(email), by_address.get(email), None if email in reused else old}
+            # Once the address went to this account, a stored link still naming the earlier one (a deleted staff
+            # account stays linked; an end user is never linked) was already acted on: compared again, it would remove
+            # this account's grants on every page and every run.
+            link = None if reused.get(email) == account else by_address.get(email)
+            before = {linked.get(email), link, None if email in reused else old}
             # shortcut: two live accounts listed with one address (Jira Data Center and Salesforce allow it) read as
             # a change of hands on every run, so the address keeps only the last-linked account's grants and they are
             # removed and written again each run; keying PipesHub users by source id would tell them apart.

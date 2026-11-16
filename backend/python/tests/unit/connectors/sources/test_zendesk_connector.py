@@ -57,6 +57,8 @@ from tests.support.in_memory_config import InMemoryConfigService
 from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
     stub_source_accounts,
 )
+from types import SimpleNamespace
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -2010,6 +2012,27 @@ class TestCacheSideloads:
         await zendesk_connector._cache_sideloads(self._end_user(900, active=False))   # deleted: never takes it back
         await zendesk_connector._cache_sideloads(self._end_user(900, suspended=True))
         assert accounts.holds("end@example.com", "950") and not accounts.holds("end@example.com", "900")
+
+    async def test_after_an_end_user_takes_a_deleted_agents_address_later_pages_and_runs_remove_nothing(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """The deleted agent stays linked under its old id; the end user's grants are taken once, at the change of
+        hands, and never again by a later ticket page or a later run."""
+        accounts = self._accounts(zendesk_connector, mock_data_entities_processor)
+        mock_data_entities_processor.get_app_user_links = AsyncMock(return_value=[
+            SimpleNamespace(id="pipeshub-user", email="agent@example.com", source_user_id="1")])
+        await zendesk_connector._cache_sideloads(self._end_user(31, "agent@example.com"))
+        mock_data_entities_processor.remove_user_access_to_connector.assert_awaited_once()
+
+        for page in range(5):
+            await zendesk_connector._cache_sideloads(
+                {"users": [{"id": 31, "email": "agent@example.com", "role": "end-user"},
+                           {"id": 100 + page, "email": f"other{page}@example.com", "role": "end-user"}]})
+        zendesk_connector.source_accounts = SourceAccounts(
+            mock_data_entities_processor, "zd-conn-1", accounts.config_service, logging.getLogger("t"))
+        await zendesk_connector._cache_sideloads(self._end_user(31, "agent@example.com"))     # the next run
+
+        mock_data_entities_processor.remove_user_access_to_connector.assert_awaited_once()
 
     async def test_an_end_user_who_takes_an_agents_address_gets_its_own_grants(
         self, zendesk_connector, mock_data_entities_processor
