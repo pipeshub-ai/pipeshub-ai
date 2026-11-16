@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.connectors.sources.salesforce.connector import (
     ACCOUNTS_SYNC_POINT_KEY,
     CASES_SYNC_POINT_KEY,
@@ -58,7 +59,6 @@ from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 from tests.support.data_store import runs_in_its_transaction
-from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from tests.support.in_memory_config import InMemoryConfigService
 
 # ===========================================================================
@@ -1356,7 +1356,7 @@ class TestSyncUsers:
         assert len(call_args) == 2
 
     @pytest.mark.asyncio
-    async def test_a_frozen_user_is_not_linked(self):
+    async def test_a_frozen_user_is_not_linked(self) -> None:
         """Salesforce emails are not unique: a frozen duplicate must not take an active user's address."""
         connector = _make_connector()
         users = [
