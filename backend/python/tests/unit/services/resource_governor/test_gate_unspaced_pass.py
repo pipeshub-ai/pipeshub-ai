@@ -64,3 +64,25 @@ async def test_an_unspaced_acquire_does_not_pass_a_head_that_waits_for_room() ->
     head.cancel()
     with pytest.raises(asyncio.CancelledError):
         await head
+
+
+@pytest.mark.asyncio
+async def test_a_newer_unspaced_call_queues_behind_an_older_unspaced_waiter() -> None:
+    clock = [0.0]
+    gate = _gate(2, clock)
+    assert await gate.acquire()  # drains the start token
+    assert await gate.acquire(spaced=False)  # the pool is now full
+    head = asyncio.create_task(gate.acquire())  # spaced, no token: blocked on room, then on rate
+    await asyncio.sleep(0.02)
+    older = asyncio.create_task(gate.acquire(timeout=3.0, spaced=False))
+    await asyncio.sleep(0.02)
+    gate.release()  # one permit frees; the head is blocked only by the rate limiter
+    await asyncio.sleep(0)  # the older waiter has not yet polled
+    newer = asyncio.create_task(gate.acquire(timeout=3.0, spaced=False))
+    done, _ = await asyncio.wait({older, newer}, return_when=asyncio.FIRST_COMPLETED, timeout=3.0)
+    assert older in done and newer not in done
+    clock[0] += 10.0
+    gate.release()
+    assert await asyncio.wait_for(head, 3) is True
+    gate.release()
+    assert await asyncio.wait_for(newer, 3) is True

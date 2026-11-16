@@ -116,6 +116,7 @@ class AdmissionGate:
         # permit, and one could lose that race for the whole of its
         # processing budget while newer arrivals went ahead of it.
         self._waiters: deque[_Waiter] = deque()
+        self._unspaced: list[_Waiter] = []  # unspaced waiters in arrival order: the oldest passes a rate-blocked head first
         # Priority waiters sit at the front, in arrival order among themselves.
         self._priority_waiting = 0
         self._unsubscribe: Callable[[], None] | None = None
@@ -181,6 +182,12 @@ class AdmissionGate:
         """An unspaced acquire (light work, no start token) may pass a head whose only block is the start-rate limiter."""
         return not spaced and bool(self._waiters) and self._head_block == "rate"
 
+    def _may_pass(self, waiter: _Waiter | None, spaced: bool) -> bool:  # noqa: FBT001
+        """Passing a rate-blocked head is first come among the unspaced: a newer call queues behind an older one."""
+        if not self._passes_rate_blocked_head(spaced):
+            return False
+        return (self._unspaced[0] is waiter) if self._unspaced else waiter is None
+
     def _try_admit(self, cost: int, cap: int | None = None, *, spaced: bool = True, as_head: bool = True) -> bool:
         limit = self._registry.get(self._pool) if cap is None else cap
         # Deadlock guard: an oversized request (cost > limit, or limit fully
@@ -236,7 +243,7 @@ class AdmissionGate:
         # ahead of an earlier priority waiter.
         if (not self._waiters or (priority and not self._priority_waiting)) and self._try_admit(cost, cap, spaced=spaced):
             return True
-        if self._passes_rate_blocked_head(spaced) and not priority and self._try_admit(cost, cap, spaced=False, as_head=False):
+        if not priority and self._may_pass(None, spaced) and self._try_admit(cost, cap, spaced=False, as_head=False):
             return True
 
         wait_start = self._clock()
@@ -250,6 +257,8 @@ class AdmissionGate:
             self._wake_head()
         else:
             self._waiters.append(waiter)
+        if not spaced:
+            self._unspaced.append(waiter)
         try:
             while True:
                 remaining = None if deadline is None else deadline - self._clock()
@@ -266,10 +275,12 @@ class AdmissionGate:
                 if self._waiters[0] is waiter:
                     if self._try_admit(cost, cap, spaced=spaced):
                         return True
-                elif self._passes_rate_blocked_head(spaced) and self._try_admit(cost, cap, spaced=False, as_head=False):
+                elif self._may_pass(waiter, spaced) and self._try_admit(cost, cap, spaced=False, as_head=False):
                     return True
         finally:
             self._total_wait_seconds += self._clock() - wait_start
+            with contextlib.suppress(ValueError):
+                self._unspaced.remove(waiter)
             with contextlib.suppress(ValueError):
                 self._waiters.remove(waiter)
                 if priority:
