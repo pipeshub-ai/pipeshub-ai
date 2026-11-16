@@ -1456,7 +1456,7 @@ class TestUpdateUserGroupPermission:
             ) is written
         connector.data_entities_processor.upsert_permission_edge.assert_called_once()
 
-    async def test_a_role_change_for_a_deleted_accounts_address_is_written_only_for_the_linked_account(self, connector):
+    async def test_a_role_change_for_a_deleted_accounts_address_is_written_only_for_the_linked_account(self, connector) -> None:
         """The source still lists a deleted account with the address and no listing has shown it since: an event
         naming the deleted account changes nothing, one naming the linked account does."""
         connector.source_accounts._deleted = {_bucket("user@test.com"): {"user@test.com": "dbmid:gone"}}
