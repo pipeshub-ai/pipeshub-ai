@@ -131,13 +131,35 @@ async def test_a_cancel_or_deadline_is_honoured_before_the_attempt_that_follows_
     assert b.snapshot()["used"] == 0  # no permit was taken and dropped on the way out
 
 
-def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(ledger: Path) -> None:
+def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wait is woken by a release exactly when its deadline has passed: it raises, it does not take the permit.
+
+    Deterministic: ``time.monotonic`` is the wait's clock, advanced by the test, so no wall-clock margin matters."""
     b = MemberBudget(ledger, cpu_tokens=1, mem_bytes=1 << 36)
     held = b.try_reserve(_small())
-    threading.Timer(0.12, held.release).start()  # freed just as the deadline passes
-    with pytest.raises(AdmissionTimeout):
-        b.reserve_blocking(_small(), deadline_s=0.1)
-    time.sleep(0.2)
+    now = [1000.0]
+    monkeypatch.setattr(mb.time, "monotonic", lambda: now[0])
+    waiting = threading.Event()
+    result: list[BaseException | object] = []
+    real_wait = threading.Event.wait
+
+    def wait_then_pass_the_deadline(self: threading.Event, timeout: float | None = None) -> bool:
+        if timeout is None or waiting.is_set():
+            return real_wait(self, timeout)  # thread start-up and everything else that waits on an Event
+        waiting.set()  # the waiter has made its first attempt and is about to sleep
+        now[0] += 10.0  # the deadline passes while it sleeps ...
+        held.release()  # ... and capacity frees at the same moment
+        return real_wait(self, 5)
+
+    monkeypatch.setattr(threading.Event, "wait", wait_then_pass_the_deadline)
+    try:
+        b.reserve_blocking(_small(), deadline_s=5)
+        result.append("took the permit")
+    except AdmissionTimeout as exc:
+        result.append(exc)
+    assert isinstance(result[0], AdmissionTimeout), result  # the free token was not taken after the deadline
+    monkeypatch.setattr(threading.Event, "wait", real_wait)
+    assert waiting.is_set()
     assert b.snapshot()["used"] == 0
 
 
@@ -188,12 +210,15 @@ def test_a_forked_child_that_only_closes_does_not_keep_the_parents_lock_alive(le
     pid = os.fork()
     if pid == 0:
         try:
+            os.close(r)
             b.close()  # the child's copy of the parent's handle, closed before any ledger transaction
             os.write(w, b"x")
             time.sleep(30)
         finally:
             os._exit(0)
-    os.read(r, 1)
+    os.close(w)  # the parent's write end: a failed child then ends the read with EOF instead of hanging it
+    assert os.read(r, 1) == b"x"
+    os.close(r)
     try:
         # The parent's slot lock must still be held by the parent alone: closing a copy does not release it,
         # and the child must not subtract the parent's holdings.
@@ -302,3 +327,45 @@ async def test_a_wake_that_is_lost_is_served_by_the_fallback_tick(ledger: Path, 
     held.release()  # the change wake is lost on purpose
     permit = await asyncio.wait_for(task, 2)  # the fallback tick serves it
     permit.release()
+
+
+async def test_a_wake_callback_whose_loop_is_gone_does_not_end_the_watcher(ledger: Path) -> None:
+    """A finished waiter's copied callback raises (its loop closed); the other waiters must still be woken."""
+    b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=1)
+    held = await b.reserve(_llm(), deadline_s=1)
+    dead_loop = asyncio.new_event_loop()
+    dead_loop.close()
+
+    def stale() -> None:
+        dead_loop.call_soon_threadsafe(lambda: None)  # RuntimeError: Event loop is closed
+
+    token = b._watcher.add(stale, llm=True, critical=False, since=b._changes())  # registered first: woken first
+    waiter = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
+    await asyncio.sleep(0.1)
+    held.release()  # the watcher wakes the stale entry first, and must carry on to the real waiter
+    permit = await asyncio.wait_for(waiter, 2)
+    permit.release()
+    b._watcher.remove(token)
+
+
+def test_a_permit_inherited_by_a_fork_with_its_lock_held_releases_nothing_and_does_not_block(ledger: Path) -> None:
+    b = MemberBudget(ledger, cpu_tokens=8, mem_bytes=1 << 34)
+    permit = b.try_reserve(_small(2))
+    holder_has_lock = threading.Event()
+    stop = threading.Event()
+
+    def hold_the_permit_lock() -> None:
+        with permit._lock:
+            holder_has_lock.set()
+            stop.wait(10)
+
+    t = threading.Thread(target=hold_the_permit_lock)
+    t.start()
+    holder_has_lock.wait(5)
+    try:
+        outcome = _in_a_forked_child(permit.release)  # the lock is copied locked into the child
+    finally:
+        stop.set()
+        t.join()
+    assert outcome == b"\x00"
+    assert b.snapshot()["used"] == 2  # the child released nothing of its parent's

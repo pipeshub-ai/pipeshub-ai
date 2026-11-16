@@ -347,3 +347,51 @@ def test_a_service_that_parses_in_another_pod_keeps_the_lifted_ceilings_and_join
     )
     assert g._fleet_ceilings.heavy >= 40
     assert g._container is None
+
+
+def _link_with_shared(tmp_path: Path, shared: Limits, fleet: object = None) -> cl.ContainerLink:
+    from app.capacity.budget_policy import AdmissionPolicy, plan_floors
+    from app.capacity.controller import ElectedController
+    from app.capacity.member_budget import MemberBudget
+    from app.services.resource_governor.models import Ceilings
+
+    d = tmp_path / "ledger"
+    d.mkdir(mode=0o700)
+    b = MemberBudget(d, cpu_tokens=160, mem_bytes=256 << 30, floors=plan_floors(128, 160, None, 1.0, AdmissionPolicy()))
+    link = cl.ContainerLink(b, ElectedController(b, 15), fleet or Ceilings(112, 544, 224, 544), 1)
+    epoch = b.elect_controller(15)
+    b.controller_beat(epoch, cl.encode_state(shared, ControllerState.initial()))
+    return link
+
+
+def _step(link: cl.ContainerLink, own: tuple, ceilings: object) -> Limits:
+    limits, _ = link.step(
+        own=own, snap=snap(128), ceilings=ceilings, demand={}, now=100.0, interval=15.0, feedback=None, heavy_working_set_gb=1.5
+    )
+    return limits
+
+
+def test_a_local_index_latency_hold_outlasts_the_shared_ramp(tmp_path: Path) -> None:
+    import dataclasses
+
+    from app.services.resource_governor.models import Ceilings, LimitRule
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    state = ControllerState.initial().with_update(
+        Pool.INDEX_HEAVY, dataclasses.replace(ControllerState.initial().get(Pool.INDEX_HEAVY), rule=LimitRule.LATENCY_HOLD)
+    )
+    own = (Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 100}), state)
+    limits = _step(link, own, Ceilings(112, 544, 224, 544))
+    assert limits.get(Pool.INDEX_HEAVY) <= 10  # held by the local latency view, not lifted by the shared ramp
+    assert limits.get(Pool.INDEX_LIGHT) > 10  # a pool that is not held follows the shared limit
+
+
+def test_a_pool_this_process_runs_without_stays_without_when_the_shared_plan_has_it(tmp_path: Path) -> None:
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    own = (Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 0}), ControllerState.initial())
+    limits = _step(link, own, Ceilings(112, 544, 224, 0))  # the local index_light ceiling is zero (collapsed tier)
+    assert limits.get(Pool.INDEX_LIGHT) == 0

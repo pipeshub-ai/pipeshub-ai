@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Limits,
     Pool,
     PoolDemand,
@@ -60,6 +61,10 @@ def decode_state(raw: Mapping[str, Any] | None) -> tuple[Limits, ControllerState
     except (KeyError, TypeError, ValueError):
         return None
     return limits, ControllerState(pools=pools)
+
+
+_INDEX_POOLS = (Pool.INDEX_HEAVY, Pool.INDEX_LIGHT)
+_HOLD_RULES = (LimitRule.LATENCY_HOLD, LimitRule.DOWNSTREAM_HOLDOFF)
 
 
 def _share(total: int, cells: int) -> int:
@@ -119,12 +124,22 @@ class ContainerLink:
         if shared is None:
             return own
         limits = Limits(values={
-            p: max(1, min(_share(shared[0].get(p), self.cells), _cap(p, ceilings))) if shared[0].get(p) > 0 else 0
+            p: (
+                max(1, min(_share(shared[0].get(p), self.cells), _cap(p, ceilings)))
+                if shared[0].get(p) > 0 and _cap(p, ceilings) > 0  # a pool this process runs without stays without
+                else 0
+            )
             for p in Pool
         })
         # A local memory incident (the heavy pool halved, with a cooldown) outlasts the shared ramp, which does not see
         # it: while a pool's cooldown runs, this process keeps the lower of its own and the shared limit.
-        held = {p: min(limits.get(p), own[0].get(p)) for p in Pool if own[1].get(p).cooldown_until > now}
+        # The same for an index pool this process holds back to avoid growing into downstream latency: the shared ramp
+        # has its own, smoothed view of that and may lift the pool before the local hold ends.
+        def holding(p: Pool) -> bool:
+            state = own[1].get(p)
+            return state.cooldown_until > now or (p in _INDEX_POOLS and state.rule in _HOLD_RULES)
+
+        held = {p: min(limits.get(p), own[0].get(p)) for p in Pool if holding(p)}
         if held:
             limits = Limits(values={p: held.get(p, limits.get(p)) for p in Pool})
         return limits, own[1]
@@ -141,7 +156,7 @@ class ContainerLink:
 
 def _cap(pool: Pool, ceilings: Ceilings) -> int:
     return {Pool.HEAVY_PARSE: ceilings.heavy, Pool.LIGHT_PARSE: ceilings.light,
-            Pool.INDEX_HEAVY: ceilings.index_heavy, Pool.INDEX_LIGHT: ceilings.index_light}[pool] or 1
+            Pool.INDEX_HEAVY: ceilings.index_heavy, Pool.INDEX_LIGHT: ceilings.index_light}[pool]
 
 
 @dataclasses.dataclass

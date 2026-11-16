@@ -257,11 +257,12 @@ class Permit:
         self.actual_bytes = max(0, int(rss_bytes))
 
     def release(self) -> None:
+        if os.getpid() != self.owner_pid:
+            return  # inherited across a fork: the owner process still holds it (checked before the lock, which a
+            # parent's other thread may have held when the fork happened)
         with self._lock:
             if self.released:
                 return
-            if os.getpid() != self.owner_pid:
-                return  # inherited across a fork: the owner process still holds it
             self.released = True
         self._budget._release(self)
 
@@ -348,7 +349,10 @@ class _Watcher:
             with self._lock:
                 self._last = cur
             for wake in wakes:
-                wake()
+                try:
+                    wake()
+                except Exception:  # a callback whose loop closed must not end the watcher for everyone else
+                    _LOG.debug("capacity ledger: a wake callback failed (its waiter is gone)", exc_info=True)
 
 
 _HANDLES: weakref.WeakSet[MemberBudget] = weakref.WeakSet()

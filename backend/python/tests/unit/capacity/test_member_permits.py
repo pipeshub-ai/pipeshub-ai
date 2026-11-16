@@ -291,3 +291,86 @@ async def test_a_gateway_call_that_finds_no_llm_slot_is_an_unavailable_provider_
         await gw.call(make_call, provider="p")
     assert err.value.sent is False
     held.release()
+
+
+async def test_a_member_slot_timeout_on_a_later_attempt_keeps_what_earlier_attempts_sent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.capacity import admission
+    from app.services.llm_gateway import gateway as gw_module
+    from app.services.llm_gateway.gateway import LLMGateway, ProviderUnavailableError
+
+    b = install_budget(monkeypatch, tmp_path / "l", llm=1)
+    monkeypatch.setattr(admission, "LLM_WAIT_S", 0.2)
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_delay: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(gw_module.asyncio, "sleep", fast_sleep)
+    gw = LLMGateway(5)
+    held: list[object] = []
+    # After the first attempt's rate-limit refusal another process takes the only slot, so the second attempt waits.
+    monkeypatch.setattr(gw, "note_rate_limit_retry", lambda: held.append(b.try_reserve(Demand(Family.LLM, 0))))
+
+    class RateLimited(Exception):
+        status_code = 429
+
+    async def make_call() -> str:
+        raise RateLimited("slow down")
+
+    with pytest.raises(ProviderUnavailableError) as err:
+        await gw.call(make_call, provider="p")
+    assert err.value.sent is True  # the first attempt reached the wire
+    assert (err.value.requests or 0) >= 1
+
+
+async def test_a_workbook_load_reserves_its_memory_in_the_member_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None
+) -> None:
+    from app.services.resource_governor.kinds import ParseKind, excel_load_max_bytes
+
+    b = install_budget(monkeypatch, tmp_path / "l", c=4, mem=3 * GIB)
+    seen: list[int] = []
+
+    def work() -> int:
+        seen.append(b.snapshot()["mem_charged"])
+        return 1
+
+    await parse_pool.submit(work, kind=ParseKind.EXCEL_LOAD)
+    assert seen == [excel_load_max_bytes()] and b.snapshot()["mem_charged"] == 0
+    # two loads at once need more memory than the container has: the second waits for the first, it is not admitted over it
+    started = time.monotonic()
+    results = await asyncio.gather(
+        parse_pool.submit(_hold, 0.4, kind=ParseKind.EXCEL_LOAD), parse_pool.submit(_hold, 0.4, kind=ParseKind.EXCEL_LOAD)
+    )
+    assert results == [1, 1] and time.monotonic() - started >= 0.7
+
+
+async def test_a_pool_job_keeps_its_tokens_until_its_lane_has_finished_with_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.unit.services.messaging.governor_test_helpers import make_test_governor
+
+    b = install_budget(monkeypatch, tmp_path / "l", c=2)
+    monkeypatch.setenv("PARSE_POOL_WORKERS", "1")
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    parse_pool.shutdown_parse_pool()
+    parse_pool.set_resource_governor(make_test_governor(logger_name="test.pool"))
+    try:
+        assert parse_pool._pool() is not None  # a real worker pool, not the thread fallback
+        task = asyncio.create_task(parse_pool.submit(time.sleep, 1.5, label="t", size=1))
+        await asyncio.sleep(0.8)  # the worker is up and running the job
+        assert b.snapshot()["used"] == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert b.snapshot()["used"] == 1  # the lane has not stopped the worker yet: its tokens still cover the parse
+        for _ in range(60):
+            if b.snapshot()["used"] == 0:
+                break
+            await asyncio.sleep(0.1)
+        assert b.snapshot()["used"] == 0  # released when the lane finished with the job
+    finally:
+        parse_pool.shutdown_parse_pool()
+        parse_pool.set_resource_governor(None)

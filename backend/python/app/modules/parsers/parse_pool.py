@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextvars
+import dataclasses
 import logging
 import os
 import pickle
@@ -440,14 +441,18 @@ def _pool(*, interactive: bool = False, kind: object | None = None) -> _ParsePoo
 _LANE_WAIT_S = 3600.0  # a wait for the member budget is always bounded
 
 
-def _lane_demand(kind: object | None = None) -> Demand:
-    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work).
+def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
+    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work), and the memory
+    its worker is charged for this kind of job (an Excel load grows to ``EXCEL_LOAD_MAX_MB``; it is held nowhere else
+    in the container's budget). A job of no known kind reserves no memory, as before.
 
     With ``PARSE_ADMISSION=classes`` an inspection reserves an inspect token, and any other job the class of
     its admission (small when it has none: an unscoped parse is a small one)."""
-    if wiring.classes_enabled():
-        return wiring.lane_demand(kind, class_pools.current_class())
-    return Demand(Family.PARSE, 1)
+    from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
+
+    demand = wiring.lane_demand(kind, class_pools.current_class()) if wiring.classes_enabled() else Demand(Family.PARSE, 1)
+    memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
+    return dataclasses.replace(demand, mem_bytes=memory) if memory else demand
 
 
 class _EventToken:
@@ -506,17 +511,23 @@ async def submit(
         permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
     wait_s = timeout or _LANE_WAIT_S
     try:
-        held = await reserve_or_adopt(permit, _lane_demand(kind), deadline_s=wait_s)
+        held = await reserve_or_adopt(permit, _lane_demand(kind, size), deadline_s=wait_s)
     except AdmissionTimeout as exc:
         raise _capacity_timeout(wait_s) from exc
     release_here = held is not None
     try:
         pool = _pool(interactive=interactive, kind=kind)
         if pool is not None:
+            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            if held is not None:
+                # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
+                # while still queued. The tokens go back then, not when the awaiting caller goes away.
+                job.future.add_done_callback(lambda _f, p=held: p.release())
+                release_here = False
             try:
-                return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
+                return await pool.submit(job)
             except _PoolClosed:
-                pass
+                release_here = held is not None  # never enqueued: nothing else will release it
         # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
         # ends, so the permit is released when the thread does, not when the caller goes away.
         future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
@@ -569,7 +580,7 @@ def run_blocking(
     wait_s = timeout or _LANE_WAIT_S
     try:
         held = reserve_or_adopt_blocking(
-            permit, _lane_demand(kind), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
+            permit, _lane_demand(kind, size), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
         )
     except AdmissionTimeout as exc:
         raise _capacity_timeout(wait_s) from exc
