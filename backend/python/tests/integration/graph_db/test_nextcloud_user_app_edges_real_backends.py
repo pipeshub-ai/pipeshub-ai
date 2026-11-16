@@ -50,6 +50,13 @@ class _Config:
     async def set_config(self, key: str, value: Any) -> None:  # noqa: ANN401
         self.values[key] = value
 
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        await self.set_config(key, new)
+        return True
+
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IGraphDBProvider]:

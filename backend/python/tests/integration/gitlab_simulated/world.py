@@ -122,19 +122,28 @@ class ConfigService:
         self.connector_id = connector_id
         self.config = config
         self.platform: dict[str, Any] = {}
+        self.other: dict[str, Any] = {}
 
     async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
-        return default
+        return json.loads(json.dumps(self.other[path])) if path in self.other else default
 
     async def set_config(self, path: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             self.config.clear()
             self.config.update(value)
+        else:
+            self.other[path] = json.loads(json.dumps(value))
         return True
+
+    async def compare_and_set_config(self, path: str, expected: Any, new: Any) -> bool:  # noqa: ANN401
+        # The processor keeps per-connector state (which source account holds each address) by compare-and-set.
+        if await self.get_config(path) != expected:
+            return False
+        return await self.set_config(path, new)
 
 
 class LogCapture(logging.Handler):

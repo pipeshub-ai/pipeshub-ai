@@ -528,16 +528,19 @@ class TestCreateConfigIfAbsentTtl:
 
 class TestCompareAndSetConfig:
     @pytest.mark.asyncio
-    async def test_a_win_caches_the_new_value_and_publishes(self) -> None:
+    async def test_a_win_evicts_the_cached_value_and_publishes(self) -> None:
+        """Not cached: a later writer's invalidation can land while this call waits for the store, and caching
+        ``new`` after it would serve the older value until the next change."""
         store = AsyncMock()
         store.compare_and_set = AsyncMock(return_value=True)
         svc = _build_service(store)
+        svc.cache["/k"] = {"n": 1}
 
         assert await svc.compare_and_set_config("/k", {"n": 1}, {"n": 2}) is True
 
         store.compare_and_set.assert_awaited_once_with("/k", {"n": 1}, {"n": 2})
         store.publish_change.assert_awaited_once_with("/k")
-        assert svc.cache["/k"] == {"n": 2}
+        assert "/k" not in svc.cache
 
     @pytest.mark.asyncio
     async def test_a_loss_drops_the_cached_value_and_publishes_nothing(self) -> None:
