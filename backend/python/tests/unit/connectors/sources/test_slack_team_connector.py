@@ -2684,6 +2684,30 @@ class TestSyncUsersAndCaches:
         c.data_entities_processor.on_new_app_users.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_deactivated_and_invited_members_are_not_linked(self):
+        """Neither can use Slack; linked, one sharing an active member's address would take that address."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        ds = MagicMock()
+        ds.users_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={
+                "members": [
+                    {"id": "UOK", "profile": {"email": "maya@x.com", "real_name": "Maya"}},
+                    {"id": "UOLD", "deleted": True, "profile": {"email": "maya@x.com", "real_name": "Maya"}},
+                    {"id": "UINV", "is_invited_user": True, "profile": {"email": "ivo@x.com", "real_name": "Ivo"}},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            },
+        ))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_users()
+        linked = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in linked] == ["UOK"]
+        assert [u.source_user_id for u in c._non_guest_app_users] == ["UOK"]
+
+    @pytest.mark.asyncio
     async def test_sync_users_list_failure_breaks_loop(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 

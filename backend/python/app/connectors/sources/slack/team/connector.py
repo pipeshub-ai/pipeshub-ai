@@ -983,11 +983,16 @@ class SlackConnector(BaseConnector):
                     bots_cached += 1
                     continue
 
+                # users.list "includes both invited users and deleted/deactivated users"
+                # (https://docs.slack.dev/reference/methods/users.list/). Neither can use Slack, so neither is
+                # linked: linked, one sharing an active member's address reads as that address changing hands.
+                # Reactivated or signed in, the member is linked when it is listed again.
+                if m.get("deleted") or m.get("is_invited_user"):
+                    continue
+
                 app_user = self._to_app_user(m)
                 if app_user:
                     batch.append(app_user)
-                    if m.get("deleted"):
-                        continue
                     self.user_id_to_email_cache[m["id"]] = email
                     is_guest = m.get("is_restricted", False) or m.get("is_ultra_restricted", False)
                     if is_guest:
