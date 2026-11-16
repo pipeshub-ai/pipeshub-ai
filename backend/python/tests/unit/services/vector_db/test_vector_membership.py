@@ -323,12 +323,14 @@ class TestBulkDeleteMembership:
         )
         pipeline.vector_db_service.delete_points = AsyncMock()
         pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
         assert result["virtual_record_ids_processed"] == 1
         pipeline.vector_db_service.delete_points.assert_awaited_once()
         pipeline.vector_db_service.set_payload.assert_not_awaited()
+        pipeline.graph_provider.delete_nodes.assert_awaited_once()      # the last copy: the mapping goes too
 
     @pytest.mark.asyncio
     async def test_shared_instance_rewrites_arrays(self):
@@ -734,6 +736,7 @@ class TestSyncAndRewriteMembership:
         gp.delete_nodes = AsyncMock(side_effect=RuntimeError("arango down"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -741,6 +744,7 @@ class TestSyncAndRewriteMembership:
 
         assert result == "deleted"
         vdb.delete_points.assert_awaited_once()
+        gp.delete_nodes.assert_awaited_once()          # the mapping delete was tried, and its failure did not undo the points delete
 
 
 class TestVectorStoreBindMembership:
@@ -1181,6 +1185,7 @@ class TestDeleteConfirmation:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0
@@ -1193,6 +1198,7 @@ class TestDeleteConfirmation:
 
         assert result == "deleted"
         vdb.delete_points.assert_awaited_once()
+        gp.delete_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_points_deleted_before_mapping(self):
