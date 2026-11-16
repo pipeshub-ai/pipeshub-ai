@@ -97,7 +97,7 @@ describe('local provider write identity', () => {
         windows.push([start, i])
       }
       for (const w of writers) {
-        for (const m of src.matchAll(new RegExp(w.replace(/[.()]/g, '\\$&'), 'g'))) {
+        for (const m of src.matchAll(new RegExp(w.replace(/[.()\\]/g, '\\$&'), 'g'))) {
           // a definition or import of the helper is not a call
           if (/(function|import)\s*[^\n]*$/.test(src.slice(Math.max(0, m.index! - 40), m.index!))) continue
           // cloneDocument fills the path of a new document: nothing earlier names those bytes
