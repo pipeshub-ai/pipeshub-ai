@@ -2247,7 +2247,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._group_digests[drive_id] = seen
             return
         await self._read_drive_again(drive_id, reseed=reseed)
-        if not await self._drive_has_synced_member(drive_id):
+        if any(now.values()) and not await self._drive_has_synced_member(drive_id):
             # Nobody synced lists the drive again, so its stored items get the new limits here; a failure raises
             # before the new restrictions are saved, so the next run tries again.
             await self._apply_limits_to_stored_items(drive_id)
