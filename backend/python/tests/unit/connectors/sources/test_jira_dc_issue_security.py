@@ -301,6 +301,16 @@ class TestWithdrawnAccounts:
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
 
+    async def test_an_account_without_product_access_is_withdrawn_with_its_grants(self) -> None:
+        """Still on the active user list, but in no product group: like an unlisted account it loses the connector and
+        its own grants, and no longer counts as linked this sync, where a list cut short would grant it again."""
+        c = _connector()
+        stored = self._stored(c)
+        c._licensed_keys = {"kept", "moved"}
+        await c._withdraw_ineligible_app_users(stored[1:])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
+        assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
+
     @pytest.mark.parametrize("flag", ["_user_bulk_incomplete", "_user_bulk_refused"])
     async def test_a_deactivated_row_from_the_search_fallback_or_a_refused_list_withdraws_nobody(self, flag: str) -> None:
         """A release without /user/list reads users through the search fallback; neither it nor a refused list is

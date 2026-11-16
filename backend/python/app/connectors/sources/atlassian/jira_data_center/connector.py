@@ -2569,7 +2569,10 @@ class JiraDataCenterConnector(BaseConnector):
             if u.source_user_id and u.source_user_id not in licensed and (u.email or "").lower() not in kept_emails
         ]
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            # Its own grants go with it, as for an account the user list no longer shows.
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+            # No longer linked: a user list cut short must not count them as linked accounts it did not show.
+            self._stored_app_users = [u for u in self._stored_app_users if u not in gone]
 
     async def _sync_user_groups(self, jira_users: list[AppUser]) -> Optional[GroupMemberships]:
         """
