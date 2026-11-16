@@ -161,3 +161,38 @@ async def test_the_stored_content_heal_checks_each_orgs_connector_inside_that_or
         doc = await _app(pg_provider, org_ctx, org, app)
         assert doc[StoredContentHealState.STATE] == HEAL_VERSION
         assert doc[StoredContentHealState.CHECKED] == 1
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+async def test_the_heal_window_counts_every_orgs_holders_each_read_in_its_own_org(pg_provider, org_ctx, two_orgs, monkeypatch, mode: str) -> None:
+    """The re-index window is one for every org: a holder another org is still indexing fills a slot, and is read only inside its own org
+    (another org's records read as nothing there, and refuse under enforce)."""
+    monkeypatch.setenv("ORG_CONTEXT_MODE", mode)
+    blob, checked = _Blob(), []
+    for org, app in two_orgs.items():
+        blob.stored[f"vr-{app}"] = {"id": f"rec-{app}"}
+        with org_ctx(org):
+            await pg_provider.batch_upsert_nodes([{"_key": f"held-{app}", "orgId": org, "recordName": "held", "connectorId": "held",
+                                                   "indexingStatus": "QUEUED", "isDeleted": False}], "records")
+    storage = MagicMock()
+
+    async def find_missing_documents(org_id: str, doc_ids: list[str]) -> list[str]:
+        checked.append(org_id)
+        return []
+
+    storage.find_missing_documents = find_missing_documents
+    heal = StoredContentHeal(logger=logger, graph_provider=pg_provider, blob_store=blob, storage=storage, publish=AsyncMock(), lock=_Leader(),
+                             max_in_flight=2)
+    held = {f"held-{app}": org for org, app in two_orgs.items()}
+    heal._in_flight = dict(held)
+
+    assert await heal.tick() == "waiting"
+    assert heal._in_flight == held
+    assert checked == []
+
+    for org, app in two_orgs.items():
+        with org_ctx(org):
+            await pg_provider.update_node(f"held-{app}", "records", {"indexingStatus": "COMPLETED"})
+    assert [await heal.tick() for _ in range(3)] == ["page", "page", "idle"]
+    assert heal._in_flight == {}
+    assert sorted(checked) == sorted(two_orgs)

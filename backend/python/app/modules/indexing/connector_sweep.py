@@ -94,6 +94,9 @@ class ConnectorSweep(ABC):
         self, app: dict[str, Any], app_key: str, rows: list[dict[str, Any]],
     ) -> PageResult: ...
 
+    async def before_org(self, org_id: str) -> None:
+        """Every tick, under each listed org's own context, before any page of that org."""
+
     async def tick(self) -> str:
         """``not_leader``, ``no_apps``, ``idle`` (every connector done), ``page``,
         ``waiting`` or ``deferred``. Orgs one at a time, each under its own org
@@ -105,9 +108,10 @@ class ConnectorSweep(ABC):
 
         async def one_org(org_id: str) -> None:
             nonlocal any_apps
-            if outcome:
-                return
             try:
+                await self.before_org(org_id)
+                if outcome:
+                    return
                 apps = of_org(await self.graph.get_all_documents(_APPS), org_id)
                 any_apps = any_apps or bool(apps)
                 pending = sorted(
