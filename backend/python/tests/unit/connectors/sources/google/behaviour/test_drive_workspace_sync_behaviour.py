@@ -3648,6 +3648,61 @@ async def test_a_placeholder_below_a_removed_folder_lets_no_new_record_under_it_
     assert written == [], "below the deleted folder: not written"
 
 
+async def _flush_one(ws: Workspace, record: object, perms: list, *, unsettled: str) -> list:
+    """Flush one new record while the sync's own removal of `unsettled` (the record or a folder above it) found
+    nothing stored; returns what was written."""
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+
+    connector = ws.connector
+    w = drive_connector._SyncWithdrawals(ALICE)
+    w.unsettled.add(unsettled)
+    drive_connector._withdrawals.set(w)
+    written: list = []
+
+    async def capture(batch: list) -> None:
+        written.extend(batch)
+
+    connector.data_entities_processor.on_new_records = capture
+    try:
+        await connector._flush_batch([(record, perms)])
+    finally:
+        drive_connector._withdrawals.set(None)
+    return written
+
+
+async def test_a_new_record_below_a_folder_removed_with_nothing_stored_is_written_for_whoever_still_opens_it(
+    ws: Workspace,
+) -> None:
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    ws.world.add_item("c", "c.txt", parent="root-bob", owner=BOB, perms=[reader(erin)])
+    await ws.sync()
+    grants = [Permission(email=e, type=PermissionType.READ, entity_type=EntityType.USER) for e in (ALICE, erin)]
+
+    written = await _flush_one(ws, _new_file_record("c", "top"), grants, unsettled="top")
+
+    assert [r.external_record_id for r, _ in written] == ["c"], "Erin still opens it: written"
+    assert {p.email for p in written[0][1]} == {erin}, "without Alice, whose feed removed the folder above it"
+
+
+async def test_a_new_record_shared_with_a_group_the_directory_wont_list_is_written_without_the_reporter(
+    ws: Workspace,
+) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    await ws.sync()
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("g", "root-carol"), grants, unsettled="g")
+
+    assert [r.external_record_id for r, _ in written] == ["g"], "an unknown group may still open it: kept"
+    assert [p.external_id for p in written[0][1]] == ["sales@example.com"], "without Alice"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (

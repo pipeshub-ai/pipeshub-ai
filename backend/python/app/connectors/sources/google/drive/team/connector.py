@@ -2957,8 +2957,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         kept = []
         for record, perms in batch_records:
             verdict = await self._withdrawal_verdict(record, parents, w, stored)
-            if verdict == "unknown" and record.external_record_id in w.unsettled:
-                # Its own removal found nothing stored: kept, minus this user, only if someone else still opens it.
+            if verdict == "unknown":
+                # Its own removal, or a folder above it, settled nothing (nothing stored, or a folder this sync deleted
+                # may hold it): kept, minus this user, only if someone else still opens it. Drive reports a folder's
+                # removal alone, and a read by id of an item this user cannot open finds nothing, so a record left
+                # out here when someone else opens it would never be written.
                 verdict = "lost" if await self._another_can_open_unstored(record, perms, w.user_email) else "deleted"
             if verdict in ("deleted", "unknown"):
                 if failed is not None:
@@ -2981,13 +2984,20 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _another_can_open_unstored(self, record: Record, perms: list, reporter: str) -> bool:
         """Whether an active synced user other than the reporter, named on the new record's grants directly or
-        through a group, can still open its file. A check that fails counts as no: the record is read again by id."""
+        through a group, can still open its file. A check that fails counts as no: the record is read again by id.
+        A group whose members the directory will not list may still open it, so it counts as yes, as for a stored
+        record (`_another_synced_user_can_open`)."""
         named: set[str] = set()
         for p in perms:
             if p.entity_type == EntityType.USER and p.email:
                 named.add(p.email.lower())
-            elif p.entity_type == EntityType.GROUP and (p.email or p.external_id):
-                named |= await self._synced_group_members(p.email or p.external_id) or set()
+            elif p.entity_type == EntityType.GROUP and (group_id := p.email or p.external_id):
+                if _is_audience_group(group_id):
+                    continue  # not a directory group: its people are not asked here
+                members = await self._synced_group_members(group_id)
+                if members is None:
+                    return True
+                named |= members
         sources: dict[str, GoogleDriveDataSource] = {}
         for user in self.synced_users:
             if user.email and user.is_active and user.email.lower() in named - {reporter}:
