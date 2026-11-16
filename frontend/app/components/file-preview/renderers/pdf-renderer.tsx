@@ -4,13 +4,13 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
-  PdfLoader,
   PdfHighlighter,
   Highlight,
   AreaHighlight,
   Popup,
 } from 'react-pdf-highlighter';
 import type { IHighlight } from 'react-pdf-highlighter';
+import { OwnedPdfLoader } from './owned-pdf-loader';
 import type { PDFRendererProps, PreviewCitation } from '../types';
 import { RECORD_RANGE_LOADER_OPTIONS } from '@/lib/record-content/range-options';
 
@@ -22,7 +22,7 @@ const SCROLL_DELAY_MS = 300;
 const NO_HIGHLIGHTS: IHighlight[] = [];
 const NAVIGATION_SETTLE_MS = 500;
 
-// PdfLoader passes its props straight to pdf.js getDocument(), but its prop
+// OwnedPdfLoader passes its props straight to pdf.js getDocument(), but its prop
 // types omit this option, hence the spread. Turning eval off stops a crafted
 // PDF font from running script in the page.
 const PDF_LOADER_SAFE_OPTIONS = { isEvalSupported: false };
@@ -498,7 +498,7 @@ export function PDFRenderer({
         overflow: 'hidden',
       }}
     >
-      <PdfLoader
+      <OwnedPdfLoader
         url={rangeTransport ? RANGE_MODE_URL : fileUrl}
         workerSrc={PDF_WORKER_SRC}
         {...PDF_LOADER_SAFE_OPTIONS}
@@ -628,7 +628,7 @@ export function PDFRenderer({
             />
           </>
         )}
-      </PdfLoader>
+      </OwnedPdfLoader>
     </Box>
   );
 }

@@ -4,7 +4,10 @@ import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { injectRequestHeaders } from '../../../libs/context/request-context';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
-import { abortOnClientClose, releaseOnClientClose } from '../../../libs/utils/release-on-close';
+import {
+  abortOnClientClose,
+  releaseOnClientClose,
+} from '../../../libs/utils/release-on-close';
 import {
   BadRequestError,
   ForbiddenError,
@@ -2323,6 +2326,13 @@ export const getRecordBuffer =
 
       // Handle any errors in the stream
       response.data.on('error', (error: any) => {
+        if (axios.isCancel(error) || res.destroyed) {
+          // The client left on purpose and the abort signal tore the upstream stream down: not a failure.
+          logger.debug('Client left while proxying record buffer', {
+            recordId,
+          });
+          return;
+        }
         logger.error('Stream error while proxying record buffer', {
           error: error?.message,
           recordId,

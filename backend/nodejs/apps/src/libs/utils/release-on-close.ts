@@ -19,7 +19,8 @@ export function releaseOnClientClose(res: Response, source: Readable): void {
     release();
     return;
   }
-  res.on('close', release);
+  // A response without an event emitter can never signal a close: nothing to release on.
+  if (typeof res.on === 'function') res.on('close', release);
 }
 
 /**
@@ -31,7 +32,7 @@ export function abortOnClientClose(res: Response): AbortSignal {
   const controller = new AbortController();
   if (res.destroyed) {
     controller.abort();
-  } else {
+  } else if (typeof res.on === 'function') {
     res.on('close', () => {
       if (!res.writableFinished) controller.abort();
     });

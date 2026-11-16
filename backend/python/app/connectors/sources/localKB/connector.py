@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, AppGroups, Connectors, OriginTypes
@@ -240,17 +241,24 @@ class KnowledgeBaseConnector(BaseConnector):
         except StorageUploadError as e:
             self.logger.error("Failed to open a bound read for record %s: %s", record.id, e)
             raise HTTPException(status_code=HttpStatusCode.BAD_GATEWAY.value, detail=_STORAGE_UNREADABLE) from e
-        headers: dict[str, str] = {}
-        if read.content_length is not None:
-            headers["Content-Length"] = str(read.content_length)
-        if read.status == 206 and read.content_range:
-            headers["Content-Range"] = read.content_range
-        return StreamingResponse(
-            read.chunks(),
-            status_code=read.status,
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers=headers,
-        )
+        try:
+            headers: dict[str, str] = {}
+            if read.content_length is not None:
+                headers["Content-Length"] = str(read.content_length)
+            if read.status == 206 and read.content_range:
+                headers["Content-Range"] = read.content_range
+            # The body generator closes the read once it runs; the background task covers a body that never starts
+            # (a client that left between the headers and the first chunk). ``close`` is idempotent.
+            return StreamingResponse(
+                read.chunks(),
+                status_code=read.status,
+                media_type=record.mime_type if record.mime_type else "application/octet-stream",
+                headers=headers,
+                background=BackgroundTask(read.close),
+            )
+        except BaseException:
+            await read.close()
+            raise
 
     async def stream_record(
         self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None

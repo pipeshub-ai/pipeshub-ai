@@ -8,7 +8,7 @@ export const RECORD_RANGE_CHUNK_BYTES = 1 * MIB;
 /** The server answers at most this span as a partial response, so a larger pdf.js request is split. */
 export const RECORD_RANGE_MAX_SPAN_BYTES = 8 * MIB;
 
-/** The options `PdfLoader` forwards to pdf.js's `getDocument`: no background fetch, no streaming, 1 MiB chunks. */
+/** The options the PDF loader forwards to pdf.js's `getDocument`: no background fetch, no streaming, 1 MiB chunks. */
 export const RECORD_RANGE_LOADER_OPTIONS = {
   disableAutoFetch: true,
   disableStream: true,

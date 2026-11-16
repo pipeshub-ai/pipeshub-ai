@@ -5,11 +5,14 @@ import { Theme } from '@radix-ui/themes';
 
 const loaderProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
-vi.mock('react-pdf-highlighter', () => ({
-  PdfLoader: (props: Record<string, unknown>) => {
+vi.mock('../owned-pdf-loader', () => ({
+  OwnedPdfLoader: (props: Record<string, unknown>) => {
     loaderProps.push(props);
     return null;
   },
+}));
+
+vi.mock('react-pdf-highlighter', () => ({
   PdfHighlighter: () => null,
   Highlight: () => null,
   AreaHighlight: () => null,

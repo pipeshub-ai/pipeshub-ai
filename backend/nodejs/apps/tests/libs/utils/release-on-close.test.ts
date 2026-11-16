@@ -128,3 +128,21 @@ describe('releaseOnClientClose', function () {
     }
   });
 });
+
+describe('a response without an event emitter', function () {
+  it('abortOnClientClose treats it as a client that never closes', () => {
+    const signal = abortOnClientClose({ destroyed: false } as never);
+    expect(signal.aborted).to.equal(false);
+  });
+
+  it('abortOnClientClose still aborts at once when it is already destroyed', () => {
+    expect(abortOnClientClose({ destroyed: true } as never).aborted).to.equal(true);
+  });
+
+  it('releaseOnClientClose does not throw and leaves the source open', () => {
+    const source = new PassThrough();
+    expect(() => releaseOnClientClose({ destroyed: false } as never, source)).to.not.throw();
+    expect(source.destroyed).to.equal(false);
+    source.destroy();
+  });
+});
