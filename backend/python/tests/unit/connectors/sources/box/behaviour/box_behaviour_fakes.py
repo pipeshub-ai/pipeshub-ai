@@ -24,6 +24,7 @@ from requests.structures import CaseInsensitiveDict
 
 from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.services.graph_db.common.record_visibility import is_live_record
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -386,18 +387,6 @@ class FakeBoxApi(BaseAdapter):
         return response
 
 
-class _MemoryConfig:
-    def __init__(self) -> None:
-        self.saved: dict[str, Any] = {}
-
-    async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
-        return self.saved.get(key, default)
-
-    async def set_config(self, key: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
-        self.saved[key] = value
-        return True
-
-
 class FakeBoxRecordsDb:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -509,7 +498,7 @@ class FakeBoxRecordsDb:
     def source_accounts(self, connector_id: str) -> SourceAccounts:
         """The real per-address account check, kept in memory."""
         if not hasattr(self, "_accounts"):
-            self._accounts = SourceAccounts(self, connector_id, _MemoryConfig(), logging.getLogger("fake"))
+            self._accounts = SourceAccounts(self, connector_id, InMemoryConfigService(), logging.getLogger("fake"))
         return self._accounts
 
     async def get_app_user_links(self, connector_id: str) -> list[Any]:
