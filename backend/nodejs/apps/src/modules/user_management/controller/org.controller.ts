@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { asAccount } from '../../../libs/context/orgContext';
 import { createUnitOfWork } from '../../../libs/repositories/doc-store';
+import { kickOutbox } from '../../../libs/services/outbox/outbox.dispatcher';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   detectRasterImageFormat,
@@ -261,6 +262,8 @@ export class OrgController {
             },
           ),
       );
+      // The admin signs in and calls next; the poll interval would leave their graph user missing until then.
+      kickOutbox();
       recordEvent(ORG_CREATED_EVENT, {
         orgId: org._id,
         userId: adminUserId,

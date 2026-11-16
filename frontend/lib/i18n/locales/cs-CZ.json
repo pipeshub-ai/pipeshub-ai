@@ -5573,6 +5573,7 @@
     "mcpServerNeedsToolsTooltip": "Vyberte nástroje pro každý MCP server, nebo zapněte Všechny nástroje.",
     "mcpServerNeedsToolsBanner": "Vyberte alespoň jeden nástroj pro {{names}}, nebo zapněte Všechny nástroje.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} je váš osobní MCP server. Nelze jej přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet.",
+    "serviceAgentCollectionsNeedBinding": "Kolekce lze přidat, jakmile bude tento servisní agent svázán se servisním účtem.",
     "mcpAgentApprovalsEnterprise": "Schvalování nástrojů pro jednotlivé agenty je součástí edice Enterprise. Zde platí vlastní schválení nástrojů každého uživatele.",
     "mcpAgentApprovals": "Schvalování nástrojů pro jednotlivé agenty",
     "limitSource": "Vyberte, co {{name}} prohledává",

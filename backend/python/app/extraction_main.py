@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.routes.extraction import (
     CLASSIFY_PATH,
