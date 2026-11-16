@@ -201,6 +201,33 @@ async def test_the_new_holder_of_a_reused_address_gets_its_own_mailbox_and_never
     assert GoogleGmailTeamConnector._owner_email_from_group(owned) == ALICE
 
 
+async def test_a_mailbox_of_a_middle_account_goes_even_when_the_saved_state_is_lost(ws: Harness) -> None:
+    """Alice's address passed to a second account and then a third. Whatever the sync point says, every mailbox the
+    connector stored for the address except the current holder's is removed."""
+    ws.gmail.deliver(ALICE, "first-mail", sender=OUTSIDER)
+    await ws.sync()
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, "second-account")
+    ws.gmail.add_mailbox(ALICE)
+    ws.gmail.deliver(ALICE, "second-mail", sender=OUTSIDER)
+    await ws.sync()
+    assert f"mailbox:{ALICE}#second-account" in ws.records.record_groups
+
+    for key in [k for k in ws.sync_points.sync_points if k.endswith("mailboxes")]:
+        del ws.sync_points.sync_points[key]                               # the saved mailbox state is lost
+    third = ws.directory.users[ALICE].user_id
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, third)
+    ws.gmail.add_mailbox(ALICE)
+    ws.gmail.deliver(ALICE, "third-mail", sender=OUTSIDER)
+    await ws.sync()
+
+    mailboxes = {g for g in ws.records.record_groups if g.startswith("mailbox:")}
+    assert f"mailbox:{ALICE}#second-account" not in mailboxes
+    assert f"mailbox:{ALICE}" not in mailboxes
+    assert f"mailbox:{ALICE}#{third}" in mailboxes
+    assert f"mailbox:{BOB}" in mailboxes                                  # never re-used: untouched
+
+
+
 async def test_a_user_the_service_account_may_not_impersonate_does_not_stop_the_others(ws: Harness) -> None:
     ws.gmail.deliver(ALICE, "a-1", sender=OUTSIDER)
     ws.gmail.deliver(BOB, "b-1", sender=OUTSIDER)

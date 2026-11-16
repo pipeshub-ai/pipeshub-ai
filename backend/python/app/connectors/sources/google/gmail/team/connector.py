@@ -17,6 +17,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     PermissionModel,
     Connectors,
     MimeTypes,
@@ -1860,12 +1861,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         current = sorted({user.email.lower() for user in users if user.email})
         if not current:
             return
-        stored = await self.user_sync_point.read_sync_point(_MAILBOXES_SYNC_POINT_KEY) or {}
-        known = stored.get("emails") or []
-        # A sync point holds scalars and lists only; each key names its address (_mailbox_owner).
-        keys = await self._remove_earlier_mailboxes(users, {
-            (self._owner_email_from_group(f"mailbox:{k}") or k).lower(): k for k in stored.get("mailboxKeys") or []
-        })
+        await self._remove_earlier_mailboxes(users)
+        known = (await self.user_sync_point.read_sync_point(_MAILBOXES_SYNC_POINT_KEY) or {}).get("emails") or []
         for email in sorted(set(known) - set(current)):
             self.logger.info(f"{email} is no longer in the Workspace directory; removing their mailbox grant")
             await self.data_entities_processor.on_new_record_groups([(
@@ -1882,38 +1879,37 @@ class GoogleGmailTeamConnector(BaseConnector):
                 ),
                 [],
             )])
-        await self.user_sync_point.update_sync_point(_MAILBOXES_SYNC_POINT_KEY, {"emails": current, "mailboxKeys": sorted(keys.values())})
+        await self.user_sync_point.update_sync_point(_MAILBOXES_SYNC_POINT_KEY, {"emails": current})
 
-    async def _remove_earlier_mailboxes(self, users: list[AppUser], keys: dict[str, str]) -> dict[str, str]:
-        """Once an address passed to a new account, the earlier account's mailbox, labels and mail go: nobody can read
-        them, and Google deletes a deleted user's "Gmail messages and attachments"
+    async def _remove_earlier_mailboxes(self, users: list[AppUser]) -> None:
+        """Once an address passed to a new account, every earlier account's mailbox goes with its labels and mail:
+        nobody can read them, and Google deletes a deleted user's "Gmail messages and attachments"
         (https://knowledge.workspace.google.com/admin/users/delete-or-remove-a-user-from-your-organization).
-        ``keys`` is the mailbox key each address had on the last run; an address with none was last keyed by itself.
-        Returns the keys to save; a mailbox that could not be removed keeps its key, so the next run tries again."""
-        for user in users:
-            if not user.email:
-                continue
-            key = await self._mailbox_owner(user.email)
-            # shortcut: an address with no saved key is taken as keyed by itself. That holds for every mailbox written
-            # before per-account keys existed, but if the saved keys are lost after an address changed hands twice,
-            # the middle account's mailbox (keyed by that account) is not found and stays, granting nobody; upgrade by
-            # listing this connector's mailbox groups for the address.
-            earlier = keys.get(user.email.lower(), user.email)
-            if earlier != key:
-                if key == user.email:
-                    # Only a re-used address removes anything: one that reads as never re-used keeps what it had.
+        The mailboxes are found in the graph, so no lost or partial saved state leaves one behind. Only a re-used
+        address removes anything, and never the mailbox of the account that holds it now. A mailbox that could not be
+        removed is found and tried again on the next run."""
+        current = {u.email.lower(): key for u in users if u.email
+                   and (key := await self._mailbox_record_group_id(u.email)) != f"mailbox:{u.email}"}
+        if not current:
+            return          # no address reads as re-used: nothing to look for
+        stored = await self.data_entities_processor.get_nodes_by_filters(
+            CollectionNames.RECORD_GROUPS.value,
+            {"connectorId": self.connector_id, "groupType": RecordGroupType.MAILBOX.value},
+            ["externalGroupId"], raise_on_error=True,
+        )
+        by_address: dict[str, set[str]] = {}
+        for group in stored:
+            external_id = group.get("externalGroupId") or ""
+            if external_id.startswith("mailbox:") and (owner := self._owner_email_from_group(external_id)):
+                by_address.setdefault(owner.lower(), set()).add(external_id)
+        for address, holder_group in sorted(current.items()):
+            for group_id in sorted(by_address.get(address, set())):
+                if group_id.lower() == holder_group.lower():
                     continue
-                group_id = f"mailbox:{earlier}"
-                if await self.data_entities_processor.get_record_group_by_external_id(
-                    self.connector_id, group_id
-                ) is not None and not await self.data_entities_processor.on_record_group_deleted(
-                    group_id, self.connector_id
-                ):
+                if await self.data_entities_processor.on_record_group_deleted(group_id, self.connector_id):
+                    self.logger.info("Removed the mailbox of an earlier account of a re-used address")
+                else:
                     self.logger.warning("Could not remove the mailbox of an earlier account of a re-used address; retrying next run")
-                    continue
-                self.logger.info("Removed the mailbox of an earlier account of a re-used address")
-            keys[user.email.lower()] = key
-        return keys
 
     async def test_connection_and_access(self) -> bool:
         """Reads the admin's directory entry and mailbox. Raises ConnectorInitError with what to fix when Google

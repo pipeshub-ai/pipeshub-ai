@@ -471,6 +471,13 @@ class FakeEntitiesProcessor:
             None,
         )
 
+    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+                                   *, raise_on_error: bool = False) -> list[dict[str, Any]]:
+        """Stored record groups as the graph returns them, matched field by field."""
+        assert collection == "recordGroups", collection
+        docs = [group.to_arango_base_record_group() for group in self.record_groups.values()]
+        return [d for d in docs if all(d.get(k) == v for k, v in filters.items())]
+
     async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Any | None:
         group = self.record_groups.get(external_group_id)
         if group is not None and getattr(group, "connector_id", None) not in (None, connector_id):
