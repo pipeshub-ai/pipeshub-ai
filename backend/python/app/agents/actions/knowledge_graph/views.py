@@ -38,6 +38,7 @@ _MAX_RESPONSE_BYTES = 25_000
 # so both paths offer the model the same number of records to read at once.
 _MAX_READ_HINT_IDS = 8
 _TRUNCATION_LINE = "... (output truncated — use page= to continue)"
+PREPARING = "This source is still being prepared, so nothing can be listed yet. Try again in a moment."
 # Kept out of the system prompt: only a turn that lists records needs it. A real
 # id from the listing as the example is what gets a small model to cite at all.
 CITE_NOTE = (
@@ -262,6 +263,8 @@ def render_navigation_view_with_ids(
         for row in view.rows:
             owners.append((len(lines), row.id))
             lines.append(_row_line(row, shortener, cite=cite_refs.get(row.id)))
+    elif view.preparing:
+        lines.append(f"\n({PREPARING})")
     elif view.current:
         lines.append("\n(no children)")
     else:

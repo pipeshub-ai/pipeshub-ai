@@ -14,6 +14,7 @@ class TestHealthCheck:
 
         error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
         mock_governor = MagicMock()
+        mock_governor.admission_explain.return_value = {}
         mock_governor.stats.side_effect = error
         mock_governor.fleet_ceilings.heavy = 6
         mock_registry = MagicMock()
@@ -34,7 +35,7 @@ class TestHealthCheck:
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
-        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes"}
+        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes", "admission"}
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error
@@ -52,6 +53,7 @@ class TestHealthCheck:
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.stats.side_effect = lambda: seen.setdefault("stats", threading.current_thread().name) and {}
 
         def fake_lanes_health(*_args: object) -> dict[str, object]:
@@ -81,6 +83,7 @@ class TestHealthCheck:
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.stats.return_value = {}
         release = threading.Event()
         loop = asyncio.get_running_loop()
@@ -108,6 +111,7 @@ class TestHealthCheck:
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.fleet_ceilings.heavy = 6
         governor.stats.return_value = {}
         # An explicit thread count in the environment would make the plan "explicit_threads".
@@ -224,6 +228,7 @@ class TestLifespan:
 
         container = MagicMock()
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.run = AsyncMock()
         governor.ceilings = SimpleNamespace(heavy=1, light=1)
         app = MagicMock()
@@ -268,6 +273,7 @@ class TestLifespan:
 
         order: list[str] = []
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.run = AsyncMock()
         governor.ceilings = SimpleNamespace(heavy=1, light=1)
         governor.stop.side_effect = lambda: order.append("governor.stop")

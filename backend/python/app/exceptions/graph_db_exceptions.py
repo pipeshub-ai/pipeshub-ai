@@ -98,7 +98,7 @@ class KnowledgeHubListingBusy(GraphDBError):
 
 class KnowledgeHubListingNotReady(GraphDBError):
     """A source whose copy in the typed graph has not been made yet (just connected, or right after an upgrade): its structure would be missing or partial,
-    so it is not listed as empty. Nothing is wrong with the request; retry."""
+    so it is not listed from. The knowledge hub answers it as an empty page marked ``preparing``; nothing is wrong with the request; ask again."""
 
     def __init__(self) -> None:
         super().__init__("This source is still being prepared. Try again in a moment.")
