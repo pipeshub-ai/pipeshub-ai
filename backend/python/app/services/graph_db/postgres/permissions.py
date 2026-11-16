@@ -521,7 +521,7 @@ class PermissionsMixin(PgBase):
               JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
                 AND m.doc->>'type' = 'USER'
             UNION ALL
-            SELECT 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.coll = 'users' AND pr.id = $4
+            SELECT 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.coll = 'users'
               JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
               JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
@@ -569,7 +569,7 @@ class PermissionsMixin(PgBase):
               JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
                 AND m.doc->>'type' = 'USER'
             UNION ALL
-            SELECT t.origin, 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.origin = t.origin AND pr.coll = 'users' AND pr.id = $4
+            SELECT t.origin, 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.origin = t.origin AND pr.coll = 'users'
               JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
               JOIN graph.nodes o2 ON o2.org_id = $1 AND o2.coll = 'organizations' AND o2.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o2.id AND p.to_coll = t.coll AND p.to_id = t.id

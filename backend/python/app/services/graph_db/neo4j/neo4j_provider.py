@@ -8480,7 +8480,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     UNION
                     WITH userDoc, caller
                     MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[orgPerm:PERMISSION]->(granted)
-                    WHERE userDoc = caller AND orgPerm.type IN $orgShareTypes
+                    WHERE userDoc:User AND orgPerm.type IN $orgShareTypes
                     RETURN granted
                 }}
                 WITH granted
@@ -13417,7 +13417,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Organization access: User -> Organization -> Record
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(org:Organization {id: $org_id})-[orgRecPerm:PERMISSION]->(rec5:Record {id: $record_id})
-            WHERE u.id = $user_key AND orgRecPerm.type IN $org_share_types
+            WHERE u:User AND orgRecPerm.type IN $org_share_types
               AND (rec5.origin <> "CONNECTOR" OR rec5.connectorId IN $user_apps_ids)
             WITH u, rec, kh_ancestors, kh_kbs, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess,
                  [x IN COLLECT({type: "ORGANIZATION", source: org, role: orgRecPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgAccess
@@ -13426,7 +13426,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (u, kh_ancestors) {
                 UNWIND [a IN kh_ancestors WHERE a.depth <= 2 | a.node] AS rg3
                 MATCH (u)-[belongsTo:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization {id: $org_id})-[orgRgPerm:PERMISSION {type: "ORG"}]->(rg3)
-                WHERE u.id = $user_key
+                WHERE u:User
                 RETURN [x IN COLLECT(DISTINCT {type: "ORG_RECORD_GROUP", source: rg3, role: orgRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgRgAccess
             }
 
@@ -25540,10 +25540,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Path 9: User -> Org -> target
             CALL {{
-                // the organisation is the viewer's: a linked source account adds its own and its groups' grants only
-                WITH principal, target, {user_var}
+                // the viewer's and a linked user's organisation; a SourceAccount belongs to none (it adds its own and its groups' grants only)
+                WITH principal, target
                 MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
-                WHERE principal = {user_var} AND p9.role IS NOT NULL AND p9.role <> ''
+                WHERE principal:User AND p9.role IS NOT NULL AND p9.role <> ''
                 RETURN collect(DISTINCT p9.role) AS org_roles
             }}
 
@@ -25669,10 +25669,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Path 5: User -> Org -> target
             CALL {{
-                // the organisation is the viewer's: a linked source account adds its own and its groups' grants only
-                WITH principal, target, {user_var}
+                // the viewer's and a linked user's organisation; a SourceAccount belongs to none (it adds its own and its groups' grants only)
+                WITH principal, target
                 MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
-                WHERE principal = {user_var} AND p9.role IS NOT NULL AND p9.role <> ''
+                WHERE principal:User AND p9.role IS NOT NULL AND p9.role <> ''
                 RETURN collect(DISTINCT p9.role) AS org_roles
             }}
 

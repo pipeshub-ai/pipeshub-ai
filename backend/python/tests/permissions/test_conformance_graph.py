@@ -64,12 +64,12 @@ async def test_linked_source_accounts_equal_the_oracle(account_layers) -> None:
         assert not total.findings, f"{layer.name}\n{_describe(total)}"
 
 
-async def test_linked_accounts_add_no_organisation_to_roles_details_or_search(graph_layers, no_source_org_layers) -> None:
-    """The context role, the record access details and the search scope, in every world that links a user to a source account: the same with
-    the linked accounts' organisations removed, and no ability on a node `check_access` refuses."""
+async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_search(account_layers, no_source_org_layers) -> None:
+    """The context role, the record access details and the search scope, in every world that links a user to a source account stored as a
+    SourceAccount node: the same as with the linked accounts' organisations removed, and no ability on a node `check_access` refuses."""
     worlds = linked_worlds(4)
     found: list[str] = []
-    for plain, without in zip(graph_layers, no_source_org_layers, strict=True):
+    for plain, without in zip(account_layers, no_source_org_layers, strict=True):
         await plain.preload(w for _, w in worlds)
         await without.preload(w for _, w in worlds)
         for name, world in worlds:
@@ -80,3 +80,15 @@ async def test_linked_accounts_add_no_organisation_to_roles_details_or_search(gr
                                   await snapshot(plain._provider, world, viewer, ns, ns.org),
                                   await snapshot(without._provider, world, viewer, ns_without, ns_without.org), admitted)
     assert not found, "\n".join(found[:40])
+
+
+async def test_a_linked_user_account_still_gives_its_organisation_role(graph_layers) -> None:
+    """A source account stored as a User (as before SourceAccount nodes) keeps what its organisation gives in the context role, as it did:
+    in REGR-09, u reads f as OWNER through acct's organisation, while the access check still admits f and refuses g."""
+    world = next(s for s in load_all() if s.id == "REGR-09").final_world()
+    for layer in graph_layers:
+        await layer.preload([world])
+        ns = await layer._ns(world)
+        got = await snapshot(layer._provider, world, "u", ns, ns.org)
+        assert got[("context", "f")]["role"] == "OWNER", (layer.name, got)
+        assert await layer.admitted(world, "u", [n.id for n in world.nodes]) >= {"f"}

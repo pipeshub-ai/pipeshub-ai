@@ -171,9 +171,10 @@ async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
     assert not total.findings, _describe(total)
 
 
-async def test_linked_accounts_add_no_organisation_to_roles_details_or_search(layer: PgLayer, pg_provider, pg_db) -> None:
-    """The context role, the record access details and the search scope, in every world that links a user to a source account: the same with
-    the linked accounts' organisations removed, and no ability on a node ``check_access`` refuses."""
+async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_search(layer: PgLayer, pg_provider, pg_db) -> None:
+    """The context role, the record access details and the search scope, in every world that links a user to a source account stored as a
+    SourceAccount node: the same as with the linked accounts' organisations removed, and no ability on a node ``check_access`` refuses."""
+    layer.variant = "accounts"
     without = PgLayer(pg_provider, pg_db)
     without.variant = "no_source_org"
     worlds = linked_worlds(4)
@@ -193,3 +194,13 @@ async def test_linked_accounts_add_no_organisation_to_roles_details_or_search(la
     finally:
         await without.release(list(without._prefix))
     assert not found, "\n".join(found[:40])
+
+
+async def test_a_linked_user_account_still_gives_its_organisation_role(layer: PgLayer, pg_provider) -> None:
+    """A source account stored as a User keeps what its organisation gives in the context role, as it did (REGR-09: u reads f as OWNER)."""
+    world = next(s for s in load_all() if s.id == "REGR-09").final_world()
+    await layer.preload([world])
+    ns = await layer._ns(world)
+    with bind(OrgContext(_hex(ns.org), None, "job", "job:test", "t")):
+        got = await snapshot(pg_provider, world, "u", ns, _hex(ns.org))
+    assert got[("context", "f")]["role"] == "OWNER", got
