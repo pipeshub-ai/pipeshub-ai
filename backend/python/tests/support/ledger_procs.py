@@ -146,3 +146,15 @@ def hold_all_llm_slots_then_wait(directory: str, count: int, ready: Connection) 
     held = [budget.try_reserve(Demand(Family.LLM, 0)) for _ in range(count)]
     ready.send(all(held))
     time.sleep(600)
+
+
+def hold_then_leave_an_idle_child(directory: str, ready: Connection) -> None:
+    """Take tokens, fork a child that stays alive without touching the budget, then die without cleaning up."""
+    budget = open_budget(directory, "parent", cpu_tokens=16, mem=1 << 36)
+    held = [budget.try_reserve(Demand(Family.PARSE, 1, 0, "small")) for _ in range(4)]
+    pid = os.fork()
+    if pid == 0:
+        time.sleep(120)
+        os._exit(0)
+    ready.send((pid, all(held)))
+    os._exit(9)

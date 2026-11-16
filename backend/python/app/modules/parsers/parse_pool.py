@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from app.capacity.admission import reserve_or_adopt, reserve_or_adopt_blocking
 from app.capacity.budget_policy import Demand, Family
+from app.capacity.member_budget import AdmissionTimeout, Cancelled
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parse_engine import pools as class_pools
 from app.modules.parse_engine import wiring
@@ -448,6 +449,23 @@ def _lane_demand(kind: object | None = None) -> Demand:
     return Demand(Family.PARSE, 1)
 
 
+class _EventToken:
+    """A ``threading.Event`` seen as the ledger's cancel token."""
+
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+
+def _capacity_timeout(waited: float) -> Exception:
+    """The wait for the member budget ran out: the record queued, nothing failed, so it goes back uncounted."""
+    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout
+
+    return ParseAdmissionTimeout("parsing", waited)
+
+
 def _covered(kind: object | None) -> bool:
     """Whether a heavy parse permit held by the caller covers this job's memory (read at submit time)."""
     if kind is None or parse_lanes_mode() != "on":
@@ -485,7 +503,12 @@ async def submit(
     # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
     if permit is None and wiring.classes_enabled():
         permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
-    held = await reserve_or_adopt(permit, _lane_demand(kind), deadline_s=timeout or _LANE_WAIT_S)
+    wait_s = timeout or _LANE_WAIT_S
+    try:
+        held = await reserve_or_adopt(permit, _lane_demand(kind), deadline_s=wait_s)
+    except AdmissionTimeout as exc:
+        raise _capacity_timeout(wait_s) from exc
+    release_here = held is not None
     try:
         pool = _pool(interactive=interactive, kind=kind)
         if pool is not None:
@@ -493,9 +516,15 @@ async def submit(
                 return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
             except _PoolClosed:
                 pass
-        return await asyncio.to_thread(fn, *args)
-    finally:
+        # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
+        # ends, so the permit is released when the thread does, not when the caller goes away.
+        future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
         if held is not None:
+            future.add_done_callback(lambda _f, p=held: p.release())
+            release_here = False
+        return await asyncio.shield(future)
+    finally:
+        if release_here and held is not None:
             held.release()
 
 
@@ -536,7 +565,15 @@ def run_blocking(
         return fn(*args)
     if permit is None and wiring.classes_enabled():
         permit = class_pools.lane_permit(kind)
-    held = reserve_or_adopt_blocking(permit, _lane_demand(kind), deadline_s=timeout or _LANE_WAIT_S)
+    wait_s = timeout or _LANE_WAIT_S
+    try:
+        held = reserve_or_adopt_blocking(
+            permit, _lane_demand(kind), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
+        )
+    except AdmissionTimeout as exc:
+        raise _capacity_timeout(wait_s) from exc
+    except Cancelled as exc:
+        raise ParseAbandonedError("parse abandoned while it waited for capacity") from exc
     try:
         return _run_blocking(fn, args, label, size, timeout, cancelled, kind)
     finally:

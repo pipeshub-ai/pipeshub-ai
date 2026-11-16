@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.capacity import numa, runtime
+from app.capacity import cgroup, numa, runtime
 from app.services.resource_governor import probe
 
 if TYPE_CHECKING:
@@ -24,6 +24,9 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
     monkeypatch.setattr(probe, "_cgroup_v2_cpu_quota", lambda: None)
     monkeypatch.setattr(probe, "_cgroup_v1_cpu_quota", lambda: None)
+    monkeypatch.setattr(cgroup, "cpu_quota", lambda: (None, "none"))  # the plan reads this reader, not the probe's: no runner quota
+    for key in ("PIPESHUB_CPU_BUDGET", "PIPESHUB_MEMORY_BUDGET", "PIPESHUB_CAPACITY_FACTS"):
+        monkeypatch.delenv(key, raising=False)  # an exported budget or facts would bypass the simulated affinity
     probe._resolve_effective_cpus.cache_clear()
     yield
     probe._resolve_effective_cpus.cache_clear()

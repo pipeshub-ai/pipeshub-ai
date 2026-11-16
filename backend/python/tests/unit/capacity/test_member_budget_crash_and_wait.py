@@ -181,3 +181,23 @@ async def test_a_waiter_gets_the_slots_of_a_holder_that_is_killed_with_no_furthe
     permit = await asyncio.wait_for(task, 10)
     assert permit is not None
     permit.release()
+
+
+def test_an_idle_forked_child_does_not_keep_a_dead_parents_slot_alive(ledger: Path) -> None:
+    """The parent dies while its child (which never used the budget) lives: the parent's tokens must come back."""
+    import signal
+
+    ctx = mp.get_context("spawn")
+    reader, writer = ctx.Pipe(duplex=False)
+    parent = ctx.Process(target=lp.hold_then_leave_an_idle_child, args=(str(ledger), writer))
+    parent.start()
+    assert reader.poll(60)
+    child_pid, took = reader.recv()
+    parent.join(3)  # the idle child holds the parent's sentinel, so this waits out the timeout
+    try:
+        assert took and parent.exitcode == 9
+        observer = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36)
+        observer.elect_controller(1.0)  # reaps whatever is dead
+        assert observer.snapshot()["used"] == 0
+    finally:
+        os.kill(child_pid, signal.SIGKILL)

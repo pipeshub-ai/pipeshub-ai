@@ -12,8 +12,7 @@ def _headings(prefix: str) -> list[str]:
 
 
 def test_top_level_sections_appear_once_and_in_order() -> None:
-    top = _headings("##")
-    assert top == [str(i) for i in range(1, len(top) + 1)], top
+    assert _headings("##") == [str(i) for i in range(1, 8)]  # sections 1 to 7, each once
 
 
 def test_section_two_keeps_every_numbered_subsection_in_order() -> None:
