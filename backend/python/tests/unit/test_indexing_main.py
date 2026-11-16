@@ -3188,16 +3188,33 @@ class TestOrphanSweepWhileAnotherOrgHoldsTheVrid:
         assert "b-1" in world["vdb"].collections["records"]
 
     @pytest.mark.asyncio
-    async def test_the_mapping_is_released_once_the_other_org_lets_go(self, world) -> None:
+    async def test_the_mapping_is_released_once_the_other_org_lets_go(self, world, monkeypatch) -> None:
+        import time
+
         import app.indexing_main as m
+
+        class _Clock:
+            """The sweep's clock only; the event loop keeps the real one."""
+
+            now = 1000.0
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def __getattr__(self, name: str):  # noqa: ANN204 - the rest of the time module
+                return getattr(time, name)
+
+        clock = _Clock()
+        monkeypatch.setattr(m, "time", clock)
 
         assert await world["sweep"]() == 0
         del world["vdb"].collections["records"]["b-1"]
 
-        assert await world["sweep"]() == 0, "inside the back-off the row is not rechecked"
+        clock.now = 1000.0 + 3600 - 0.001
+        assert await world["sweep"]() == 0, "inside the hour's back-off the row is not rechecked"
         assert world["released"] == []
 
-        m._orphan_kept_until[("o1", "vr-shared")] = 0.0  # the back-off ran out
+        clock.now = 1000.0 + 3600
         assert await world["sweep"]() == 1
         assert world["released"] == ["vr-shared"]
         assert m._orphan_kept_until == {}
