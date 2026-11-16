@@ -129,6 +129,12 @@ class AdmissionGate:
         self._sample_holds: deque[float] = deque(maxlen=_MAX_HOLDS_PER_SAMPLE)
         self._holds_by_sample: deque[tuple[float, ...]] = deque(maxlen=_HOLD_SAMPLES_KEPT)
         self._last_change = clock()
+        # Why the most recent refused acquire was refused, for observability only:
+        # "none" (admitted, or nobody is waiting), "room" (in use plus cost exceeds the
+        # limit), "cap" (it exceeds the cap the caller passed) or "rate" (room was free
+        # and the start-rate limiter denied it). Written on this gate's loop, read as a
+        # single attribute.
+        self._head_block = "none"
 
     # -- loop binding ---------------------------------------------------
 
@@ -176,8 +182,10 @@ class AdmissionGate:
         # shrunk to 0) is still admitted alone rather than waiting forever.
         has_room = self._in_use == 0 or (self._in_use + cost <= limit)
         if not has_room:
+            self._head_block = "room" if cap is None else "cap"
             return False
         if self._rate_limiter is not None and not self._rate_limiter.try_consume():
+            self._head_block = "rate"
             # Distinct from "no room": capacity was free, this acquire was
             # denied purely by the start-rate limiter. Tracked separately so
             # operators can tell "throttled by the burst smoother" apart
@@ -188,6 +196,7 @@ class AdmissionGate:
         self._fold_permit_seconds(now)
         self._in_use += cost
         self._max_in_use = max(self._max_in_use, self._in_use)
+        self._head_block = "none"
         return True
 
     # -- public API ----------------------------------------------------
@@ -247,6 +256,8 @@ class AdmissionGate:
                 self._waiters.remove(waiter)
                 if priority:
                     self._priority_waiting -= 1
+            if not self._waiters:
+                self._head_block = "none"
             # Whether admitted or given up, the next in line gets its turn:
             # a limit that grew by several permits admits several waiters,
             # one wake at a time.
@@ -310,6 +321,16 @@ class AdmissionGate:
     @property
     def limit(self) -> int:
         return self._registry.get(self._pool)
+
+    @property
+    def waiting(self) -> int:
+        """Acquires queued on this gate right now."""
+        return len(self._waiters)
+
+    @property
+    def head_block(self) -> str:
+        """Why the last refused acquire was refused: ``none``, ``room``, ``cap`` or ``rate``."""
+        return self._head_block
 
     def close(self) -> None:
         """Unsubscribe from the registry. Call on shutdown to avoid leaking
