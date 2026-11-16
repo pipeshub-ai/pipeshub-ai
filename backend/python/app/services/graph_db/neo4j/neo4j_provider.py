@@ -10475,6 +10475,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 now = get_epoch_timestamp_in_ms()
                 app_data = {
                     "id": connector_id,
+                    "orgId": org_id,      # the sync-state reads take only an app of the org
                     "name": connector_id,
                     "type": users[0].app_name.value,
                     "appGroup": users[0].app_name.value,
