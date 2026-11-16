@@ -51149,6 +51149,7 @@ paths:
             with the whole organization: a personal connector is refused (`HTTP_BAD_REQUEST`,
             `Personal sources (...) can't be attached to an agent that runs as a service account.`),
             and so is a collection unless `serviceAccountUserId` binds the agent to a service account.
+            A knowledge source that is not one of the organization's is refused too.
           content:
             application/json:
               schema:
@@ -51364,8 +51365,9 @@ paths:
             a service-account agent back into a regular one
             (`isServiceAccount: false`), or giving a service-account agent a
             personal connector, or a collection while it is not bound to a
-            service account (the same rule as on create, checked when
-            `knowledge`, `isServiceAccount` or `serviceAccountUserId` changes).
+            service account, or a source that is not the organization's (the same
+            rule as on create, checked when `knowledge`, `isServiceAccount` or
+            `serviceAccountUserId` changes).
           content:
             application/json:
               schema:

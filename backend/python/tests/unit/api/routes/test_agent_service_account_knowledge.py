@@ -27,6 +27,9 @@ def graph() -> InMemoryGraph:
     ):
         g.add_node("apps", {"_key": key, "name": f"{key} name", "type": kind, "scope": scope, "orgId": "org-1",
                             "createdBy": owner})
+    for key, kind in (("drive-org2", "DRIVE"), ("kb-org2", "KB")):
+        g.add_node("apps", {"_key": key, "name": f"{key} name", "type": kind, "scope": "team", "orgId": "org-2",
+                            "createdBy": "u-mallory"})
     g.add_agent("private", "alice")
     g.add_agent("sa", "alice", share_with_org=True, isServiceAccount=True)
     g.add_agent("sa-bound", "alice", share_with_org=True, isServiceAccount=True, serviceAccountUserId="u-svc")
@@ -87,12 +90,23 @@ class TestCreate:
         assert response.status_code == 200
 
     def test_sources_that_cannot_be_checked_refuse_the_save(self, client, graph) -> None:
-        graph.fail("get_nodes_by_field_in")
+        graph.fail("get_org_apps")
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
             "name": "Helpdesk", "isServiceAccount": True, "knowledge": _knowledge("drive-team"),
         })
         assert response.status_code == 503
         assert "couldn't be checked" in response.json()["detail"]
+        assert not graph.calls_to("begin_transaction")
+
+
+    @pytest.mark.parametrize("source", ["drive-org2", "no-such-source"])
+    def test_a_source_outside_the_organization_is_refused(self, client, graph, source) -> None:
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helpdesk", "isServiceAccount": True, "knowledge": _knowledge("drive-team", source),
+        })
+        assert response.status_code == 400
+        assert "1 knowledge source(s) of this agent were not found in your organization" in response.json()["detail"]
+        assert source not in response.json()["detail"]
         assert not graph.calls_to("begin_transaction")
 
 
@@ -105,6 +119,12 @@ class TestUpdate:
     def test_a_bound_agent_may_be_given_a_collection(self, client) -> None:
         response = client.put("/api/v1/agent/sa-bound", headers=as_user("alice"), json={"knowledge": _knowledge("kb-1")})
         assert response.status_code == 200
+
+    def test_a_bound_agent_may_not_be_given_another_organizations_collection(self, client, graph) -> None:
+        response = client.put("/api/v1/agent/sa-bound", headers=as_user("alice"), json={"knowledge": _knowledge("kb-org2")})
+        assert response.status_code == 400
+        assert "not found in your organization" in response.json()["detail"]
+        assert not graph.calls_to("update_agent")
 
     def test_turning_an_agent_with_personal_sources_into_a_service_agent_is_refused(self, client, graph) -> None:
         _attach(graph, "private", "drive-alice")

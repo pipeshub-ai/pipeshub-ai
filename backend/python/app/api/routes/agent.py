@@ -1728,27 +1728,35 @@ def _assert_no_personal_toolsets(
 
 
 async def _assert_service_account_knowledge(
-    connector_ids: Iterable[str], graph_provider: IGraphDBProvider, user_id: str, *, bound: bool,
+    connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
 ) -> None:
     """A service-account agent is run by anyone in the organisation on one identity, so it may
     only be given sources shared with the whole organisation: no personal connector, and a
-    collection only when it runs as a bound service account. The run applies the same rule."""
+    collection only when it runs as a bound service account. A source that is not the
+    organisation's (or no longer exists) is refused too. The run applies the same rule."""
     ids = list(dict.fromkeys(connector_ids))
     if not ids:
         return
     try:
-        apps = await graph_provider.get_nodes_by_field_in(
-            CollectionNames.APPS.value, "id", ids, raise_on_error=True,
-        )
+        # shortcut: lists every app of the org to read a few; give get_org_apps an id filter
+        # if an org's collections reach the many thousands.
+        wanted = set(ids)
+        apps = [
+            a for a in await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True)
+            if str(a.get("_key") or a.get("id")) in wanted
+        ]
     except Exception as e:
         raise AgentError(
             "This agent's knowledge couldn't be checked, so it can't be saved right now. Please try again in a moment.",
             status_code=503,
         ) from e
+    missing = len(wanted) - len(apps)
+    if missing:
+        raise InvalidRequestError(f"{missing} knowledge source(s) of this agent were not found in your organization.")
     kb = Connectors.KNOWLEDGE_BASE.value
 
     def label(app: dict[str, Any]) -> str:
-        # The lookup is by the ids sent, in any organisation: only the editor's own source is named.
+        # Only the editor's own source is named.
         if app.get("createdBy") != user_id:
             return "one that someone else owns"
         return app.get("name") or str(app.get("_key") or app.get("id"))
@@ -2851,7 +2859,7 @@ async def create_agent(request: Request) -> JSONResponse:
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
         if is_service_account:
             await _assert_service_account_knowledge(
-                knowledge_sources, services["graph_provider"], user_context["userId"],
+                knowledge_sources, services["graph_provider"], org_key, user_context["userId"],
                 bound=bool(service_account_binding),
             )
         api_toolset_tools = await _checked_api_toolset_tools(
@@ -3599,6 +3607,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
                 else [k.get("connectorId") for k in agent.get("knowledge") or [] if k.get("connectorId")],
                 services["graph_provider"],
+                org_key,
                 user_context["userId"],
                 bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
             )

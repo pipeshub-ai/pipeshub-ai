@@ -80,13 +80,17 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
             bound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=True)
             # Saving: a personal source is refused, a collection too unless bound, the org's connectors pass.
             with pytest.raises(InvalidRequestError, match=f"Personal sources \\(Name {key['drive_mine']}\\)"):
-                await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, creator, bound=True)
+                await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, org, creator, bound=True)
             # Someone else's source is not named.
             with pytest.raises(InvalidRequestError, match=r"Personal sources \(one that someone else owns\)"):
-                await _assert_service_account_knowledge([key["drive_colleague"]], graph, creator, bound=True)
+                await _assert_service_account_knowledge([key["drive_colleague"]], graph, org, creator, bound=True)
             with pytest.raises(InvalidRequestError, match="Collections"):
-                await _assert_service_account_knowledge([key["collection"]], graph, creator, bound=False)
-            await _assert_service_account_knowledge([key["pg_team"], key["drive_team"], key["collection"]], graph, creator, bound=True)
+                await _assert_service_account_knowledge([key["collection"]], graph, org, creator, bound=False)
+            await _assert_service_account_knowledge([key["pg_team"], key["drive_team"], key["collection"]], graph, org, creator, bound=True)
+            # Another organisation's connector, or an id that names nothing, is refused.
+            for foreign in (key["other_org"], f"missing-{run}"):
+                with pytest.raises(InvalidRequestError, match="not found in your organization"):
+                    await _assert_service_account_knowledge([key["drive_team"], foreign], graph, org, creator, bound=True)
         # The creator reads their own sources when they run an agent themselves...
         assert {key["pg_mine"], key["drive_mine"]} <= {d.get("_key") or d.get("id") for d in own}
         # ...but an agent the whole org runs on their identity does not.
