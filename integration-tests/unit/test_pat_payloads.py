@@ -16,7 +16,7 @@ ALLOWED = {7, 30, 90, 365}
 # Any quoted value ("30", "never") is refused too: the server wants a number. A name is resolved to a number
 # assigned to it in the same file (``DAYS = 1``), when there is one.
 _VALUE = re.compile(
-    r"""expiry_?days["'\]]*\s*(?::\s*[\w\[\]| ]+?)?\s*[:=]\s*(?P<v>["'][^"']*["']|\d+|[A-Za-z_]\w*)""",
+    r"""expiry_?days["'\]]*\s*(?::\s*[\w\[\]| ]+?)?\s*[:=]\s*(?P<v>["'][^"']*["']|-?\d+(?:\.\d+)?|[A-Za-z_]\w*)""",
     re.IGNORECASE,
 )
 _ASSIGN = re.compile(r"^\s*(?P<n>[A-Za-z_]\w*)\s*(?::\s*\w+\s*)?=\s*(?P<v>\d+)\s*$", re.MULTILINE)
@@ -30,8 +30,9 @@ def _bad_values(text: str) -> list[str]:
         if raw[0] in "\"'":
             bad.append(raw)
             continue
-        value = raw if raw.isdigit() else constants.get(raw)
-        if value is not None and int(value) not in ALLOWED:
+        value = constants.get(raw) if raw[0].isalpha() or raw[0] == "_" else raw
+        # "7.5" and "-1" are refused: only a whole number in ALLOWED passes.
+        if value is not None and (not value.isdigit() or int(value) not in ALLOWED):
             bad.append(value)
     return bad
 
@@ -41,6 +42,8 @@ def test_the_guard_reads_every_spelling() -> None:
         '{"expiryDays": 1}',
         "dict(expiryDays=8)",
         'payload["expiryDays"] = "never"',
+        '{"expiryDays": 7.5}',
+        "dict(expiryDays=-1)",
         "body['expiryDays'] = 1",
         "expiry_days = 14",
         "def mint(expiry_days: int = 1): ...",
