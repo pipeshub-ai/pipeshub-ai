@@ -79,7 +79,7 @@ async def test_two_replicas_on_one_redis_pay_once(redis, org) -> None:  # type: 
 
     assert results == ["once", "once"]
     assert paid == 1
-    assert await redis.keys("pc:lock:*") == []              # released
+    assert await redis.keys(f"pc:lock:{{{org}:*") == []     # this test's locks are released
 
 
 async def test_the_lock_and_delete_marker_keys_carry_the_namespace_on_a_real_redis(redis: Redis) -> None:  # type: ignore[no-untyped-def]

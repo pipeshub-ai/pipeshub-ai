@@ -30,6 +30,7 @@ from app.config.constants.service import (
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.core.org_context import current_org_id
+from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
@@ -1856,6 +1857,10 @@ class RecordEventHandler(BaseEventService):
                         record_id, CollectionNames.RECORDS.value
                     )
                     org_id = (record_doc or {}).get("orgId")
+                if not org_id:
+                    # The verified envelope's org, when one is bound (the paid-result erasure below needs an org).
+                    bound = peek_org_context()
+                    org_id = bound.org_id if bound is not None else None
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=org_id
                 )
@@ -1948,14 +1953,6 @@ class RecordEventHandler(BaseEventService):
             # A retry repeats the original message, which still holds the id from
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
-
-            if paid_cache_run.refresh_requested(payload):
-                # An explicit request to pay for every model output again: the record's stored set goes
-                # first, and the run bypasses lookups. A storage failure raises and the event is retried.
-                refresh_org = payload.get("orgId") or record.get("orgId")
-                if refresh_org:
-                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(refresh_org, record_id)
-                    paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
 
             # A connector being deleted owns its records, and the delete may yet be put back, so its
             # record events are held before anything is written: a stage redrive's states, a vector
@@ -2200,6 +2197,15 @@ class RecordEventHandler(BaseEventService):
                 begin_run(ParseNowRun(store_only=store_only, content_rev=record.get("contentRev")))
                 # A marker left by an earlier attempt must not read as this one's outcome.
                 await self._mark_parse_now(record_id, record, ParseNowStatus.IN_PROGRESS)
+
+            # After the parse-now refusal above, which writes nothing: a refused event never purges.
+            if paid_cache_run.refresh_requested(payload):
+                # An explicit request to pay for every model output again: the record's stored set goes
+                # first, and the run bypasses lookups. A storage failure raises and the event is retried.
+                refresh_org = payload.get("orgId") or record.get("orgId")
+                if refresh_org:
+                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(refresh_org, record_id)
+                    paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:

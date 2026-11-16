@@ -6,6 +6,7 @@ that dies simply lapses. Redis holds nothing else for the cache: results live in
 """
 
 import secrets
+import threading
 import time
 from typing import TYPE_CHECKING, Protocol
 
@@ -151,41 +152,50 @@ class InProcessLocks:
     def __init__(self) -> None:
         self._held: dict[str, tuple[str, float]] = {}
         self._clock = time.monotonic
+        #: Event loops on several threads share one instance (the fallback of a Redis that cannot be reached).
+        self._mutex = threading.Lock()
 
     async def acquire(self, name: str, ttl_ms: int) -> str | None:
-        now = self._clock()
-        held = self._held.get(name)
-        if held is not None and held[1] > now:
-            return None
-        token = secrets.token_hex(16)
-        self._held[name] = (token, now + ttl_ms / 1000)
-        return token
+        with self._mutex:
+            now = self._clock()
+            held = self._held.get(name)
+            if held is not None and held[1] > now:
+                return None
+            token = secrets.token_hex(16)
+            self._held[name] = (token, now + ttl_ms / 1000)
+            return token
 
     async def renew(self, name: str, token: str, ttl_ms: int) -> bool:
-        held = self._held.get(name)
-        if held is None or held[0] != token:
-            return False
-        self._held[name] = (token, self._clock() + ttl_ms / 1000)
-        return True
+        with self._mutex:
+            held = self._held.get(name)
+            if held is None or held[0] != token:
+                return False
+            self._held[name] = (token, self._clock() + ttl_ms / 1000)
+            return True
 
     async def owns(self, name: str, token: str) -> bool:
-        held = self._held.get(name)
-        return held is not None and held[0] == token and held[1] > self._clock()
+        with self._mutex:
+            held = self._held.get(name)
+            return held is not None and held[0] == token and held[1] > self._clock()
 
     async def release(self, name: str, token: str) -> None:
-        held = self._held.get(name)
-        if held is not None and held[0] == token:
-            del self._held[name]
+        with self._mutex:
+            held = self._held.get(name)
+            if held is not None and held[0] == token:
+                del self._held[name]
 
     async def mark(self, name: str, ttl_ms: int) -> None:
-        self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
+        with self._mutex:
+            self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
 
     async def is_marked(self, name: str) -> bool:
-        held = self._held.get(name)
-        return held is not None and held[1] > self._clock()
+        with self._mutex:
+            held = self._held.get(name)
+            return held is not None and held[1] > self._clock()
 
     def expire_all(self) -> None:
         """Test hook: every held lock lapses, as a dead holder's does (markers stay)."""
-        self._held = {n: h for n, h in self._held.items() if h[0] == "marker"}
+        with self._mutex:
+            self._held = {n: h for n, h in self._held.items() if h[0] == "marker"}
 
 

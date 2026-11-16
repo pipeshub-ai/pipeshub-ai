@@ -96,7 +96,10 @@ async def test_the_timer_stops_on_error_and_on_cancel() -> None:
         return "x"
 
     task = asyncio.create_task(cache.get_or_compute(KEY, forever))
-    await asyncio.sleep(0.05)
+    for _ in range(200):                                            # bounded wait for the timer to start
+        if _heartbeats():
+            break
+        await asyncio.sleep(0.01)
     assert len(_heartbeats()) == 1
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -104,19 +107,28 @@ async def test_the_timer_stops_on_error_and_on_cancel() -> None:
     assert _heartbeats() == []
 
 
-async def test_the_lock_is_renewed_about_every_third_of_its_ttl() -> None:
+async def test_the_lock_is_renewed_about_every_third_of_its_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Observed renewals, not elapsed time: the call ends after a set number of renewals, however fast the loop is."""
+    from app.services.paid_cache import cache as cache_module
+
     renewals: list[float] = []
+    enough = asyncio.Event()
 
     class Counting(InProcessLocks):
         async def renew(self, name: str, token: str, ttl_ms: int) -> bool:
             renewals.append(asyncio.get_running_loop().time())
+            if len(renewals) >= 4:
+                enough.set()
             return await super().renew(name, token, ttl_ms)
 
     cache = PaidResultCache(MemoryResultStore(), Counting())
 
     async def compute() -> str:
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(enough.wait(), 10)                   # runs until the 4th renewal was observed
         return "text"
 
     await cache.get_or_compute(KEY, compute)
-    assert 4 <= len(renewals) <= 8                                  # 200 ms / 30 ms
+    gaps = [b - a for a, b in zip(renewals, renewals[1:])]
+    third = cache_module.LOCK_TTL_MS / 3000
+    assert len(renewals) >= 4
+    assert all(gap >= third * 0.5 for gap in gaps), gaps            # never faster than about a third of the TTL

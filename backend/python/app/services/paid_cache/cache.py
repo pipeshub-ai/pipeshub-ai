@@ -199,7 +199,9 @@ class PaidResultCache:
         if not (enabled() and PAID_RESULT_ROUTES.available):
             return _plain(await compute())
         path = key.relative_path()
-        flight = (id(asyncio.get_running_loop()), key.path())
+        # A refresh run does not share a normal run's in-flight work: that one may return the stored result the
+        # refresh exists to replace.
+        flight = (id(asyncio.get_running_loop()), key.path(), scope is not None and scope.refresh)
         while True:
             inflight = self._inflight.get(flight)
             if inflight is None:
@@ -341,12 +343,16 @@ class PaidResultCache:
         self, key: CacheKey, path: str, value: Any, held: "_Held | None", scope: RunScope | None,  # noqa: ANN401
         started: float, *, keep: bool, overwrite: bool,
     ) -> None:
-        """After a paid call: stop the lock's timer, then store the result if it is still worth and safe to."""
+        """After a paid call: store the result if it is still worth and safe to, then stop the lock's timer.
+
+        The timer keeps renewing the lease through the ownership check and the write (up to ``WRITE_DEADLINE_S``),
+        so the lease cannot lapse mid-write and let another replica pay for the key again.
+        """
         try:
+            await self._store_if_valid(key, path, value, held, scope, started, keep=keep, overwrite=overwrite)
+        finally:
             if held is not None:
                 await held.stop_heartbeat()
-        finally:
-            await self._store_if_valid(key, path, value, held, scope, started, keep=keep, overwrite=overwrite)
 
     async def _store_if_valid(
         self, key: CacheKey, path: str, value: Any, held: "_Held | None", scope: RunScope | None,  # noqa: ANN401

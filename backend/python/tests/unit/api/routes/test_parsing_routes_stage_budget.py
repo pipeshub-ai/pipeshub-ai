@@ -131,7 +131,10 @@ async def test_a_timeout_raised_inside_the_parser_also_holds_the_permit_while_it
     async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
         loop = asyncio.get_running_loop()
         loop.run_in_executor(None, lambda: (started.set(), release_thread.wait(20)))   # a conversion thread
-        await asyncio.sleep(0.05)
+        for _ in range(500):                                          # bounded wait until the thread really runs
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
         raise TimeoutError("the provider timed out")
 
     registry = MagicMock(spec=ParserRegistry)
@@ -188,7 +191,10 @@ async def test_a_conversion_that_never_returns_is_reported_with_its_age_and_on_t
         work.add(pool.submit(stop.wait, 20))                         # a conversion that does not return
         with caplog.at_level("WARNING"):
             parsing._release_when_work_ends(lambda: released.append(1), work, time_now(), "big.pdf")
-            await asyncio.sleep(0.3)
+            for _ in range(500):                                      # bounded wait for the monitor's observations
+                if any("still runs" in r.getMessage() for r in caplog.records) and len(count.values) >= 2:
+                    break
+                await asyncio.sleep(0.01)
         assert released == [], "the permit was freed while the conversion still runs"
         assert any("still runs" in r.getMessage() and "big.pdf" in r.getMessage() for r in caplog.records)
         assert count.values[-1] == 1 and oldest.values[-1] > 0

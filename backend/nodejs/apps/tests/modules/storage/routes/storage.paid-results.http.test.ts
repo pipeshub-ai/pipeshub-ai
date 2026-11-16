@@ -111,7 +111,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(new AuthMiddleware(Logger.getInstance(), tokens))
     container
       .bind<StorageController>('StorageController')
-      .toConstantValue(new StorageController(defaultConfig, Logger.getInstance(), kv as unknown as KeyValueStoreService))
+      .toConstantValue(new StorageController(defaultConfig, Logger.getInstance(), kv as unknown as KeyValueStoreService, SCOPED_JWT_SECRET))
 
     const app = express()
     // As in production (src/app.ts): a 1000-file presign body is larger than the 100kb default.

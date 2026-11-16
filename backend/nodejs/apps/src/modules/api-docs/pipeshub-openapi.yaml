@@ -37096,7 +37096,7 @@ paths:
           description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
           schema:
             type: string
-            pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
       responses:
         '200':
           description: How many documents were removed (0 if none were filed there).
@@ -37251,7 +37251,7 @@ paths:
           description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
           schema:
             type: string
-            pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
         - name: olderThanSeconds
           in: query
           required: false
@@ -37331,7 +37331,7 @@ paths:
                     properties:
                       virtualRecordId:
                         type: string
-                        pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
+                        pattern: '^[A-Za-z0-9_-]{1,128}$'
                       newPath:
                         type: string
                         description: Relative path under `records/`, without `..` segments.
@@ -37563,7 +37563,7 @@ paths:
                   description: Optional. If sent, it must be the storage token's organisation.
                 virtualRecordId:
                   type: string
-                  pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
+                  pattern: '^[A-Za-z0-9_-]{1,128}$'
                 rev:
                   type: string
                   pattern: '^[0-9a-f]{8,64}$'
@@ -37683,7 +37683,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
       responses:
         '200':
           description: The revisions.

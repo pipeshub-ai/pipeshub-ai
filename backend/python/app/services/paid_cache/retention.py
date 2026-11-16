@@ -132,7 +132,8 @@ async def sweep_record(
         # A run that reused one of these objects after the listing above has noted it in its manifest by now: the
         # manifests are read again and only what both reads leave unprotected is deleted.
         _, again = await snapshot()
-        doomed = [path for path in doomed if again is not None and path in set(again)]
+        still_unprotected = set(again or ())
+        doomed = [path for path in doomed if path in still_unprotected]
     if doomed:
         await store.delete_files(org_id, record_id, doomed)
     log.debug("Paid-result sweep of record %s: %d deleted, %d kept", record_id, len(doomed), len(files) - len(doomed))

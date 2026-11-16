@@ -11,6 +11,7 @@ describe('paid-result handlers: a parameter that is not a single value', () => {
     { storageType: 'local', endpoint: 'http://127.0.0.1:1' } as never,
     { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() } as never,
     {} as never,
+    'scoped-jwt-secret',
   )
 
   const run = async (

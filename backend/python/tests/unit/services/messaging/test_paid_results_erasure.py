@@ -219,3 +219,35 @@ async def test_force_reindex_alone_keeps_the_stored_set(store: MemoryResultStore
 
     assert store.paths(ORG, REC) != []
     assert current_run() is None
+
+
+async def test_a_delete_with_no_org_in_the_event_or_the_record_uses_the_bound_org(store: MemoryResultStore) -> None:
+    from app.core.org_context import OrgContext, bind
+
+    _seed(store)
+    handler = _handler()
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)      # the record is gone
+
+    with bind(OrgContext(ORG, None, "service", "envelope", "req-1")):
+        await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "virtualRecordId": "vr"})
+
+    assert store.paths(ORG, REC) == []                       # erased in the bound org
+    assert store.paths("org-2", REC) != []
+
+
+async def test_a_refresh_refused_for_a_user_without_access_purges_nothing(store: MemoryResultStore) -> None:
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    _seed(store)
+    handler = _handler()
+    handler._parse_now_refusal = AsyncMock(return_value=(record_module._PARSE_NOW_NO_ACCESS, False))
+
+    await _events(
+        handler,
+        EventTypes.REINDEX_RECORD.value,
+        {"recordId": REC, "orgId": ORG, "parseNow": True, "requestedByUserId": "u1", "refreshPaidOutputs": True},
+    )
+
+    assert handler._parse_now_refusal.await_count == 1
+    assert store.paths(ORG, REC) != []                       # the refused event wrote and erased nothing
+    assert current_run() is None

@@ -117,6 +117,8 @@ class RunScope:
             # write that waited behind another one finds nothing left to write.
             if self.finished or self.past_deadline() or (self._opened and self._unflushed == 0):
                 return
+            if not self._opened:
+                await self._adopt_failed_attempt(store)
             body, noted = self._body(), self._unflushed
             async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
                 await store.replace(
@@ -125,6 +127,27 @@ class RunScope:
             self._opened = True
             self._unflushed = max(self._unflushed - noted, 0)
             self._last_flush = self._clock()
+
+    async def _adopt_failed_attempt(self, store: _ManifestStore) -> None:
+        """A retry replaces the open manifest of the attempt that failed: its keys stay listed.
+
+        Both attempts work on the same revision and writer, so one path holds them; a retry that fails after noting
+        fewer keys would otherwise unlist results the first attempt paid for, and a sweep could delete them.
+        """
+        reader = getattr(store, "get", None)
+        if reader is None:
+            return
+        try:
+            async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                raw = await reader(self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer))
+            previous = json.loads(raw).get("keys", []) if raw else []
+        except Exception:
+            return
+        for path in previous if isinstance(previous, list) else []:
+            if isinstance(path, str) and path not in self._seen:
+                self._seen.add(path)
+                self._keys.append(path)
+                self._unflushed += 1
 
     async def flush(self, store: _ManifestStore) -> None:
         if self._opened and self._unflushed:
