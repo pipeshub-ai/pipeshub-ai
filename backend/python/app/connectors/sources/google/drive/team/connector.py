@@ -2254,19 +2254,40 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _drop_grants_the_drive_keeps_out(self, record: Record, drive_id: str | None) -> None:
         """An item whose sharing the reader cannot see keeps its stored grants, but its drive's limits still apply to
-        them: a person a members-only or domain-only drive keeps out loses their stored grant, whatever the item's
-        list says (see `_restriction_filter`)."""
+        them, as `_restriction_filter` applies them to a list read in full: a person the drive keeps out loses their
+        grant, and a group or audience it keeps out loses its grant, a group being replaced by grants for those of its
+        people who pass.
+
+        shortcut: the stored group edge's role is not read back, so the people a split group is replaced by get read
+        access; read the edge's role if a writer's split ever needs to keep write access."""
         if not drive_id or drive_id not in self._listed_shared_drive_ids:
             return
         if not any((await self._drive_restrictions_of(drive_id)).values()):
             return
-        may_stay = (await self._restriction_filter(drive_id, is_drive=False))[1]
+        restrict, may_stay = await self._restriction_filter(drive_id, is_drive=False)
         for holder in await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         ):
             if holder.email and not may_stay(holder.email):
                 await self.data_entities_processor.delete_permission_from_record(
                     record.id, holder.email, self.connector_id
+                )
+        held = [
+            Permission(external_id=g.source_user_group_id, email=g.source_user_group_id, type=PermissionType.READ,
+                       entity_type=EntityType.GROUP)
+            for g in await self.data_entities_processor.get_groups_with_permission_to_node(
+                record.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if g.source_user_group_id
+        ]
+        kept = await restrict(held)
+        kept_groups = {p.external_id for p in kept if p.entity_type == EntityType.GROUP}
+        if people := [p for p in kept if p.entity_type != EntityType.GROUP]:
+            await self.data_entities_processor.add_permission_to_record(record, people)
+        for group in held:
+            if group.external_id not in kept_groups:
+                await self.data_entities_processor.delete_group_permission_from_record(
+                    record.id, group.external_id, self.connector_id
                 )
 
     @staticmethod

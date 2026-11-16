@@ -2945,6 +2945,44 @@ async def test_a_person_who_leaves_a_members_only_drive_loses_their_share_when_o
     assert "f1" in ws.records.records, "the item stays for the drive's members"
 
 
+async def test_a_group_share_a_non_member_joins_goes_when_only_a_reader_reads_the_drive_again(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("kept@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "reader", "emailAddress": "kept@example.com"},
+    ])
+    await ws.sync()
+    assert "kept@example.com" in f1_people(ws)
+
+    # Alice, the only synced organizer, leaves: Bob, a reader, reads the drive again and sees an empty list.
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    join_group(ws, "kept@example.com", CAROL)
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0
+    assert "kept@example.com" not in f1_people(ws), "Carol, not a member, would reach it through the group"
+    assert CAROL not in f1_people(ws) and BOB in f1_people(ws)
+
+
+async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a_reader_reads_it_again(
+    ws: Workspace,
+) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    assert "domain-members:example.com" in f1_people(ws)
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    await ws.sync()
+
+    assert "domain-members:example.com" not in f1_people(ws), "a members-only drive is read by its members alone"
+    assert "f1" in ws.records.records
+
+
 async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_the_next_run(ws: Workspace) -> None:
     ws.world.add_user(CAROL)
     ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
