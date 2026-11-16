@@ -3,6 +3,7 @@ import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import { openFolderChildren, reloadOpenFoldersUnder, seedChildrenFromListing } from '../utils/folder-children';
 import { showCollectionsInSidebar } from '../utils/root-app-list';
+import { fetchAppDirectChildren } from '../utils/fetch-app-direct-children';
 import { collection, hubChildrenFake, hubNode, hubResponse } from './kb-page-harness';
 import type { KnowledgeHubNode, KnowledgeHubQueryParams } from '../types';
 
@@ -41,6 +42,40 @@ beforeEach(() => {
   kb().setAppNodes([ENGINEERING]);
   kb().setNodes([ENGINEERING]);
   kb().setCategorizedNodes({ shared: [], private: [] });
+});
+
+describe('a sidebar folder of a source still being prepared', () => {
+  const preparing = () => ({ ...hubResponse([]), preparing: true });
+
+  it('caches nothing when its first page is still being prepared, so the next open lists its children', async () => {
+    getNodeChildren.mockResolvedValueOnce(preparing()).mockResolvedValue(hubResponse([folder('f-a', 'Alpha')]));
+
+    await openFolderChildren('kb-eng', 'app');
+    expect(kb().nodeChildrenCache.has('kb-eng')).toBe(false);
+
+    await openFolderChildren('kb-eng', 'app');
+    expect(childIds('kb-eng')).toEqual(['f-a']);
+  });
+
+  it('caches no children of an app whose source is still being prepared, so the next open lists them', async () => {
+    getNodeChildren.mockResolvedValueOnce(preparing()).mockResolvedValue(hubResponse([folder('f-a', 'Alpha')]));
+
+    await fetchAppDirectChildren('kb-eng');
+    expect(kb().appChildrenCache.has('kb-eng')).toBe(false);
+
+    await fetchAppDirectChildren('kb-eng');
+    expect(kb().appChildrenCache.get('kb-eng')?.map((n) => n.id)).toEqual(['f-a']);
+  });
+
+  it('keeps the children read before when a reload finds the source being prepared again', async () => {
+    seed([folder('f-a', 'Alpha')]);
+    useKnowledgeBaseStore.setState((s) => ({ expandedFolders: { ...s.expandedFolders, 'kb-eng': true } }));
+    getNodeChildren.mockResolvedValue(preparing());
+
+    await reloadOpenFoldersUnder(['kb-eng']);
+
+    expect(childIds('kb-eng')).toEqual(['f-a']);
+  });
 });
 
 describe('seedChildrenFromListing', () => {

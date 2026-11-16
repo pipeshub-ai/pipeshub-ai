@@ -1360,7 +1360,8 @@ function KnowledgeBasePageContent() {
         sortBy: 'name',
         sortOrder: 'asc',
       });
-      if (!stillSignedIn()) return;
+      // A source still being prepared lists no children yet, not none: cache nothing, so a later open asks again.
+      if (!stillSignedIn() || response.preparing) return;
 
       const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();

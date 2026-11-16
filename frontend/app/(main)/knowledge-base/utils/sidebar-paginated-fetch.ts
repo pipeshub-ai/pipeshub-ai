@@ -101,7 +101,8 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
       sortBy: 'name',
       sortOrder: 'asc',
     });
-    if (!stillSignedIn()) return;
+    // A source still being prepared lists nothing yet: the pages read before stay.
+    if (!stillSignedIn() || response.preparing) return;
 
     const previous = useKnowledgeBaseStore.getState().appChildrenCache.get(appId) || [];
     const merged = mergeNodesById(previous, response.items);

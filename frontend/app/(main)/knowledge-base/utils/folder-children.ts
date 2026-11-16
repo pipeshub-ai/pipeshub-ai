@@ -88,6 +88,8 @@ async function loadFirstPage(id: string, nodeType: NodeType): Promise<void> {
   if (!stillSignedIn()) return;
   // A reload or another loader may have filled it while this was in flight.
   if (useKnowledgeBaseStore.getState().nodeChildrenCache.has(id)) return;
+  // A source still being prepared lists no children yet, not none: cache nothing, so the next open asks again.
+  if (response.preparing) return;
   storeChildrenList(
     id,
     response.items,
@@ -178,6 +180,8 @@ async function reloadChildren(id: string, fallbackNodeType: NodeType, keepVisibl
   let pageCursor: string | null = null;
   for (let page = 1; page <= pagesLoaded + (mustShow ? MAX_PAGES_PER_WALK : 0); page += 1) {
     const response = await fetchChildrenPage(id, nodeType, pageCursor);
+    // A source still being prepared lists nothing yet: the list read before stays.
+    if (response.preparing) return;
     for (const item of response.items) byId.set(item.id, item);
     next = sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType, page);
     if (!next.hasNext) break;
