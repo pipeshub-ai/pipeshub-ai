@@ -166,6 +166,21 @@ class InMemoryGraph:
                 out.append({f: view.get(f) for f in return_fields} if return_fields else view)
         return out
 
+    async def get_user_connector_instances(
+        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, **_: object,
+    ) -> list[dict]:
+        try:
+            self._enter("get_user_connector_instances", user_id, org_id)
+        except Exception:
+            return []  # like the real providers
+        return [
+            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
+            if doc.get("orgId") == org_id and (
+                doc.get("scope") == team_scope
+                or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id)
+            )
+        ]
+
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
         self._enter("check_agent_permission", agent_id, user_id, org_id)
         agent = self.nodes.get(AGENTS, {}).get(agent_id)
