@@ -2030,6 +2030,190 @@ status = "draft"
   tests = []
   manual = "Needs a real Zoom account and the repo has no simulator for it"
 
+[[feature]]
+id = "connectors.local-repos-api"
+title = "Local repositories API"
+flow = "connector-setup"
+what = "A client pushes a working tree to the server (register, manifest, upload, commit) and reads indexing status. A repository belongs to the person who pushed it and is named only by an opaque key."
+routes = ["* /api/v1/local-repos/**", "GET /api/v1/local-repos", "DELETE /api/v1/local-repos/{repoKey}"]
+code = [
+  "backend/nodejs/apps/src/modules/local_repos/**",
+  "backend/python/app/api/routes/local_repos.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.push-flow"
+  says = "A client registers a repository (201, then 200 when repeated), asks which files to send with a manifest, uploads them, commits (202) and reads a status that moves through syncing to ready."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py", "it:connectors/localrepository/localrepository_integration_test.py::TestLocalRepositoryPush::test_register_upload_commit_and_the_status_reaches_ready", "it:connectors/localrepository/localrepository_integration_test.py::TestLocalRepositoryPush::test_a_second_manifest_of_the_same_files_asks_for_nothing"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.scopes"
+  says = "Reads (list, status) need code:read or code:write. Register, manifest, upload, commit and delete need code:write. A token with other scopes gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py", "node:tests/modules/local_repos/local-repos.test.ts"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.owner-only"
+  says = "A repository is visible only to the user who pushed it. Another user gets 404 on status, commit, delete and manifest, sees an empty list, and the same key under their login is their own empty repository."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py", "it:connectors/localrepository/localrepository_integration_test.py::TestLocalRepositoryPush::test_another_user_cannot_see_or_change_the_repository", "it:connectors/localrepository/localrepository_integration_test.py::TestLocalRepositoryPush::test_the_same_key_under_another_login_is_a_separate_empty_repository"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.no-server-paths"
+  says = "The caller names a repository only by a key of 8 to 64 letters, digits, - or _ (else 400). A body that names a path or any unknown field is refused with 422, and a file path that leaves the repository is refused, not stored."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py", "py:tests/unit/connectors/sources/local_repo/test_store.py", "it:connectors/localrepository/localrepository_integration_test.py::TestLocalRepositoryPush::test_a_path_that_leaves_the_repository_is_refused_not_stored"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.limits"
+  says = "A body over 10 MiB, a batch over the file or byte limit and a manifest over the entry limit get 413. A user at the repository cap gets 409 on a new repository. An upload past the per-user byte quota gets 413 and still stores what fits."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.names"
+  says = "A repository name with markup characters, control characters or bidi and other format characters is refused."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.status"
+  says = "Status never says ready while the commit is not synced, while records are not visible, while a file failed to index (partial) or while the code graph is not built. A commit whose sync never starts is reported stuck, and files left out on purpose are counted by reason."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.delete"
+  says = "Delete answers 202, removes the connector and the stored files, and says so (500) when the files cannot be removed. A connector lookup that fails is a 503 that changes nothing."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/api/routes/test_local_repos.py", "it:connectors/localrepository/localrepository_integration_test.py::TestLocalRepositoryPush::test_delete_removes_the_repository"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repos-api.gateway"
+  says = "The Node API forwards the caller's token, the key and the body to the connectors service and drops every other client header, rejects a request with no signed-in user, and passes a 4xx body (such as a quota 413 with the stored files) on with its status."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/local_repos/local-repos.test.ts"]
+
+[[feature]]
+id = "connectors.local-repo"
+title = "Local repository sync"
+flow = "sync-indexing"
+what = "Indexes the files a client pushed to the server, as one personal repository. The connector is created by the push, hidden from the add-a-connector list, and its code files go to the code graph."
+connectors = ["local_repo"]
+code = ["backend/python/app/connectors/sources/local_repo/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.sync"
+  says = "A sync writes one record per committed file under a repository group owned by the pusher, rewrites only a changed file, and retires the record of a deleted or renamed file."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.owner-isolation"
+  says = "The root comes only from the org, the connector owner and the repository key. A second user with the same key gets an empty repository, and a root or key in the config cannot point at another directory."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.one-generation"
+  says = "A sync reads one committed generation from start to end, even when a commit lands during it. Files not yet committed, or replaced after the commit, are not indexed, and a failed commit indexes nothing."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_connector.py", "py:tests/unit/connectors/sources/local_repo/test_store.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.damaged-state"
+  says = "A damaged or unreadable state file fails the sync instead of retiring every record, and a repository with nothing pushed is refused."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_connector.py", "py:tests/unit/connectors/sources/local_repo/test_store.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.left-out"
+  says = "Generated files, sensitive files, images, SVG and tabular data are left out of indexing and counted by reason, and the commit and the sync agree on which files are code."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.store"
+  says = "The stored mirror refuses unsafe, oversize, binary and hash-mismatched files, honours per-repository and per-user byte limits, switches to a new generation with one atomic rename, and keeps the old one when a commit fails."
+  priority = "P1"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_store.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-repo.cleanup"
+  says = "Deleting the connector removes its stored files, and a failed removal is logged and reported, not ignored."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_repo/test_store.py", "py:tests/unit/api/routes/test_local_repos.py"]
+
+[[feature]]
+id = "connectors.local-folder"
+title = "Directory sync (base of the local repository connector)"
+flow = "sync-indexing"
+what = "Crawls one server-chosen root directory and keeps records in step with it using a stored manifest. It is not offered as a connector of its own: the local repository connector builds on it."
+connectors = ["local_folder"]
+code = ["backend/python/app/connectors/sources/local_folder/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "connectors.local-folder.first-sync"
+  says = "A first sync builds the folder hierarchy, file records with their language, and the owner group, and removes records an earlier instance left behind."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_folder/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-folder.incremental"
+  says = "An incremental sync touches only changed files and deletes records of files that are gone. A file that cannot be read is not deleted and the sync goes on, and a walk that could not read a folder fails and keeps every record."
+  priority = "P0"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_folder/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-folder.path-safety"
+  says = "The walk skips symlinks that leave the root, hard links, FIFOs and devices, and a file open refuses traversal and a directory swapped for a symlink. Reading a record outside the root is a 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/local_folder/test_scan.py", "py:tests/unit/connectors/sources/local_folder/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-folder.ignore-rules"
+  says = ".gitignore (with negation, anchors and nested files), default ignores and user patterns decide what is walked, a new ignore rule retires the matching records, and the size cap applies."
+  priority = "P1"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_folder/test_scan.py", "py:tests/unit/connectors/sources/local_folder/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-folder.content-types"
+  says = "PDF and Office files are indexed by mime type, true binaries are not, and a manual-index filter marks records as not auto-indexed."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_folder/test_connector.py"]
+
+  [[feature.behavior]]
+  id = "connectors.local-folder.names"
+  says = "A non-UTF-8 name is stored safely and still streams, and names with a literal percent sign do not collide."
+  priority = "P2"
+  kind = "function"
+  tests = ["py:tests/unit/connectors/sources/local_folder/test_connector.py"]
+
 [ignore]
 routes = []
 

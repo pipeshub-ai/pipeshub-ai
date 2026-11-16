@@ -1306,8 +1306,81 @@ status = "draft"
   kind = "function"
   tests = []
 
+[[feature]]
+id = "mcp.access-controls"
+title = "MCP access controls"
+flow = "agents-toolsets-mcp"
+what = "An admin turns the inbound /mcp endpoint on or off for the organization, turns tools that write off, and turns single tools off. Nothing saved means the defaults, which change nothing."
+routes = ["* /api/v1/configurationManager/mcp/access/**", "* /api/v1/configurationManager/mcp/access"]
+pages = ["frontend/app/(main)/workspace/mcp-access/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/mcp/access-policy.ts",
+  "backend/nodejs/apps/src/modules/mcp/tool-catalog.ts",
+  "backend/nodejs/apps/src/modules/mcp/routes/mcp-access.routes.ts",
+  "backend/nodejs/apps/src/modules/mcp/controller/mcp.controller.ts",
+  "frontend/app/(main)/workspace/mcp-access/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.admin-only"
+  says = "GET and PUT /configurationManager/mcp/access and GET .../access/tools are for admins: a member gets 403, and an OAuth token needs config:read to read and config:write to save."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp/routes/mcp-access.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.defaults-and-save"
+  says = "An organization with nothing saved reads enabled, writes allowed and no tool off. A saved policy is returned to its own organization only, and a body that is not a whole policy or names a tool outside a-z, 0-9 and _ is a 400 that saves nothing."
+  priority = "P0"
+  kind = "function"
+  tests = ["node:tests/modules/mcp/routes/mcp-access.routes.test.ts", "node:tests/modules/mcp/access-policy.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.endpoint-off"
+  says = "While the policy is off, POST and GET /mcp answer a JSON-RPC 403 for every caller of the organization, and a caller with no token is still challenged with 401."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp/routes/mcp.routes.test.ts", "node:tests/modules/mcp/access-policy.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.fail-closed"
+  says = "When the policy cannot be read, /mcp answers 503, never the defaults. A failed read keeps serving a policy last seen as off, but never a stale on, and an admin's change reaches every instance within 5 seconds."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp/access-policy.test.ts", "node:tests/modules/mcp/routes/mcp.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.write-tools-off"
+  says = "While write tools are off, /mcp lists only the read tools, refuses a call to a write tool with 403 before any scope step-up, and chat runs no connected actions."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp/controller/mcp.controller.test.ts", "node:tests/modules/mcp/access-policy.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.tool-off"
+  says = "A tool the admin turned off is not listed and a call to it, also inside a batch, is refused with 403 before any step-up. Turning off pipeshub_chat builds the server without chat and without pipeshub_agents."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/mcp/controller/mcp.controller.test.ts", "node:tests/modules/mcp/access-policy.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.tool-catalog"
+  says = "GET .../mcp/access/tools lists every tool /mcp can serve, including the code tools, with its title and whether it writes."
+  priority = "P1"
+  kind = "function"
+  tests = ["node:tests/modules/mcp/access-policy.test.ts", "node:tests/modules/mcp/routes/mcp-access.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "mcp.access-controls.page"
+  says = "The Workspace page (admins only) shows the endpoint switch, the write-tools switch and one switch per tool, all on by default. It saves a tool turned off, shows write tools as off and locked while writes are not allowed, and says so when the settings cannot be loaded."
+  priority = "P1"
+  kind = "function"
+  tests = ["fe:app/(main)/workspace/mcp-access/__tests__/page.test.tsx"]
+
 [ignore]
 pages = [
+  "frontend/app/(main)/@sidebar/workspace/mcp-access/page.tsx",
   "frontend/app/(main)/@sidebar/workspace/mcp-servers/page.tsx",
   "frontend/app/(main)/@sidebar/workspace/mcp-servers/personal/page.tsx",
   "frontend/app/(main)/@sidebar/workspace/mcp-servers/team/page.tsx",
