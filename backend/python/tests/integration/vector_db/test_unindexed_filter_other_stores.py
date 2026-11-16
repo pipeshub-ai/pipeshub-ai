@@ -55,7 +55,7 @@ POINTS = [
 
 
 @pytest.fixture(params=["qdrant", "opensearch"])
-def store(request):
+def store(request) -> tuple:
     """The param's own store only: each backend job starts one store and selects its params with -k, so the other is never requested."""
     return request.param, request.getfixturevalue(f"{request.param}_service")
 

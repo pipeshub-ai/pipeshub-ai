@@ -283,7 +283,7 @@ class TestBackfill:
 
     @pytest.mark.parametrize("raw", ["bad", "-5"])
     async def test_an_unusable_bound_falls_back_to_the_default_or_zero(self, raw, monkeypatch) -> None:
-        from app.services.vector_db.redis.redis_vector import _DEFAULT_BACKFILL_WAIT_SECONDS, _backfill_wait_seconds
+        from app.services.vector_db.redis.redis_vector import _backfill_wait_seconds, _DEFAULT_BACKFILL_WAIT_SECONDS
 
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", raw)
         assert _backfill_wait_seconds() == (_DEFAULT_BACKFILL_WAIT_SECONDS if raw == "bad" else 0.0)
