@@ -29,6 +29,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.base.data_processor.source_accounts import grant_fence
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -890,7 +891,6 @@ class SalesforceConnector(BaseConnector):
 
         self.connector_name = Connectors.SALESFORCE
         self.connector_id = connector_id
-        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         # Sync point for incremental user sync (time-based)
         self.user_sync_point = SyncPoint(
@@ -6549,14 +6549,13 @@ class SalesforceConnector(BaseConnector):
             if u.get("email") and (u.get("id") or u.get("_key"))
             and u.get("orgId") == (parent_org_id or org_id)
         }
-        # Only Salesforce users with a PipesHub account get edges, so only they are read.
+        # Only Salesforce users with a PipesHub account get edges, so only they are read. Of an address another account
+        # held before, only the account that holds it now is: these edges are written by email, outside the processor's
+        # grant check, so an earlier account's record access must never be read for that address's user.
         sf_users = [u for u in sf_users if u["Email"].lower() in email_to_user_id]
-        # A user's access follows the account that holds the address. These edges are written straight to the store,
-        # so the check the processor makes on other grants runs here, against the holder the user listing decided this
-        # run (it has already taken an earlier account's grants): only that account is read and written. Deciding it
-        # again here would let two active users on one address take turns removing each other's grants.
-        await self.source_accounts.ensure_loaded([u["Email"] for u in sf_users])
-        sf_users = [u for u in sf_users if self.source_accounts.admits(u["Email"], u["Id"])]
+        accounts = self.data_entities_processor.source_accounts(self.connector_id)
+        await accounts.ensure_loaded([u["Email"] for u in sf_users])
+        sf_users = [u for u in sf_users if accounts.admits(u["Email"], u.get("Id"))]
 
         await self._sync_product_readers(eligibility, sf_users)
 
@@ -6687,7 +6686,8 @@ class SalesforceConnector(BaseConnector):
                     await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
                 return record_edges, rg_edges
 
-            record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
+            async with grant_fence().shared():      # judged and written with no change of hands in between
+                record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
         finally:
             # Even when the write raised: on Neo4j without explicit transactions each
             # delete commits on its own, and a rerun finds nothing left to delete.
@@ -6760,6 +6760,7 @@ class SalesforceConnector(BaseConnector):
         if readers is None:
             return
         permissions = [
+            # The account id lets the processor tell a re-used address's current holder from the earlier account.
             Permission(email=u["Email"], external_id=u["Id"], type=PermissionType.READ, entity_type=EntityType.USER)
             for u in sf_users if u.get("Id") in readers
         ]

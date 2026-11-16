@@ -901,7 +901,12 @@ class BoxConnector(BaseConnector):
         """A stored user the complete list shows inactive (USABLE_USER_STATUSES), or no longer lists, loses the
         connector, as it is not linked either; a cut or empty list withdraws nobody. Made active again, it is linked
         on the next read. ``creator_`` links are the connector creator's stand-in, not a Box account."""
-        if not users or not self._user_list_complete:
+        if not users:
+            return
+        if not self._user_list_complete:
+            # A cut list still withdraws the users its pages reported inactive.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in users if not u.is_active})
             return
         active = {u.source_user_id for u in users if u.is_active}
         # A failed withdrawal must not stop the group sync after it, which already leaves these users out.
