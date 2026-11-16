@@ -245,6 +245,9 @@ MAX_FAILED_ITEMS = 500
 # unsettled: a list holds MAX_UNDECIDED_REMOVALS entries per key and goes on to "<key>_part<n>" keys, n from 1, their
 # count kept as UNDECIDED_PARTS on the first key. A run checks one part again, the parts in turn (UNDECIDED_NEXT_PART).
 UNDECIDED_REMOVALS_SYNC_POINT_PREFIX = "undecided_removals_"
+# Per user: items below a folder they lost whose check of their own access failed, asked again on later runs. Not an
+# undecided removal: nothing reported these items removed, so they are never settled as one.
+DESCENDANT_RECHECK_SYNC_POINT_PREFIX = "drive_descendant_recheck_"
 UNDECIDED_REMOVALS = "entries"
 MAX_UNDECIDED_REMOVALS = MAX_FAILED_ITEMS
 UNDECIDED_PARTS = "parts"
@@ -3003,9 +3006,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         drive, ... The change log records a separate entry for the modified item and for each affected descendant",
         https://developers.google.com/workspace/drive/api/guides/about-changes#syncing_permissions_and_capabilities).
         So for a My Drive item, and each stored item below a My Drive folder, this user is asked whether they can still
-        open it (`_drop_grants_of_people_who_cannot_open`). An item whose check fails is listed with this user's
-        undecided removals and checked again on later runs (`_recheck_undecided_removals`); the others, and the change,
-        go on."""
+        open it (`_drop_grants_of_people_who_cannot_open`). An item whose check fails is listed for this user and asked
+        again on later runs (`_recheck_parked_descendants`); the others, and the change, go on."""
         if user is None:
             return
         await self.data_entities_processor.delete_permission_from_record(
@@ -3031,7 +3033,37 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"Could not tell whether a user removed from {record.record_name} can still open "
                     f"{item.record_name} ({type(e).__name__}); it is checked again on later runs"
                 )
-                await self._park_undecided_removal(self._undecided_key(user), f"{item.external_record_id}:")
+                await self._park_descendant_recheck(user, item.external_record_id)
+
+    async def _park_descendant_recheck(self, user: AppUser, file_id: str) -> None:
+        """List an item below a folder the user lost whose check failed. A failed write raises, so the change that
+        found it is held and read again.
+
+        shortcut: one list per user, read and rewritten whole; split it if a single user ever parks many thousands."""
+        key = f"{DESCENDANT_RECHECK_SYNC_POINT_PREFIX}{user.source_user_id}"
+        items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(key) or {}).get("items") or [])]
+        if file_id not in items:
+            await self.drive_delta_sync_point.update_sync_point(key, {"items": sorted([*items, file_id])})
+
+    async def _recheck_parked_descendants(self, user: AppUser, source: GoogleDriveDataSource) -> None:
+        """Ask the user again about each item parked by `_drop_reporters_grant`, as the first try did: if they cannot
+        open it, their grant and their groups' grants on it go, and the item stays for everyone else. One whose check
+        fails again stays listed. Nothing here holds a checkpoint."""
+        key = f"{DESCENDANT_RECHECK_SYNC_POINT_PREFIX}{user.source_user_id}"
+        items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(key) or {}).get("items") or [])]
+        left: list[str] = []
+        for file_id in items:
+            try:
+                record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=file_id
+                )
+                if record is not None:
+                    await self._drop_grants_of_people_who_cannot_open(record, {user.email: source}, only=user)
+            except Exception as e:
+                self.logger.warning(f"Still not known whether a user can open item {file_id}: {type(e).__name__}")
+                left.append(file_id)
+        if left != items:
+            await self.drive_delta_sync_point.update_sync_point(key, {"items": left})
 
     async def _drop_grants_of_people_who_cannot_open(
         self,
@@ -3049,8 +3081,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         group" (https://developers.google.com/workspace/drive/api/guides/manage-sharing), so a member who cannot open
         the item shows the group no longer grants it. Members who can open it another way keep their own grants.
         With ``only`` the groups asked about are that user's; otherwise up to AUDIENCE_PROBES members of each group,
-        picked at random. A refusal or other error on a group member's check decides nothing. Any failure of the
-        user checks, and an undecided ``only`` check, raises, so the item or change is read again.
+        picked at random. A refusal or other error on a group member's check decides nothing; a group no asked member
+        decided raises once the others are done, as does any failure of the user checks, so the item, change or parked
+        item is read again rather than taken as kept.
 
         shortcut: a holder outside this deployment's synced users (an external collaborator) cannot be asked and keeps
         their grant; ask through another source if one appears. A group none of whose asked members is cut off keeps
@@ -3079,6 +3112,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         answers: dict[str, bool | None] = {}
+        undecided = False
         for group in groups:
             group_id = group.source_user_group_id
             if not group_id or _is_audience_group(group_id):
@@ -3092,14 +3126,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             for email in asked:
                 if email not in answers:
                     answers[email] = await self._audience_member_can_open(record, by_email[email], sources)
-                if answers[email] is None and only is not None:
-                    raise _RemovalUndecided(f"Whether a member of a group granted on {record.record_name} can open it is unknown")
                 if answers[email] is False:
                     self.logger.info(f"Removing a group's grant on {record.record_name}: a member can no longer open it")
                     await self.data_entities_processor.delete_group_permission_from_record(
                         record.id, group_id, record.connector_id
                     )
                     break
+            else:
+                undecided = undecided or any(answers[e] is None for e in asked)
+        if undecided:
+            # Retried, never taken as kept: the item fails (and is read again by id), or the change or parked item
+            # stays listed.
+            raise _RemovalUndecided(f"Whether a member of a group granted on {record.record_name} can open it is unknown")
 
     async def _decide_removed_change(
         self, record: Record, user: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource], drive_id: str | None
@@ -3436,8 +3474,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         part of the list per run, the parts in turn, until a clean answer settles each: the file is removed or kept
         as for any removed change, the user can open it again (their feed then reports what changed), or its record
         is gone (never by the stale-record cleanup, which spares these). One still undecided, or whose check fails,
-        stays listed. Nothing here holds a checkpoint. Without a source the user is not asked (they cannot sign in).
-        An item below a folder the user lost whose own check failed is listed here too (`_drop_reporters_grant`)."""
+        stays listed. Nothing here holds a checkpoint. Without a source the user is not asked (they cannot sign in)."""
         self._undecided_visited.add(undecided_key)
         part, parts = await self._read_undecided(undecided_key)
         part = next((n % len(parts) for n in range(part, part + len(parts)) if parts[n % len(parts)]), part)
@@ -3449,13 +3486,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=file_id
                 )
-                if record is None:
+                if record is None or (
+                    user is not None and source is not None and await self._user_can_open(record, user, {user.email: source})
+                ):
                     continue
-                if user is not None and source is not None:
-                    if await self._user_can_open(record, user, {user.email: source}):
-                        continue
-                    if not drive_id:  # a My Drive item: what it stored for this user, and their groups, goes too
-                        await self._drop_grants_of_people_who_cannot_open(record, {user.email: source}, only=user)
                 if await settle(file_id, drive_id or None) is _Settled.UNDECIDED:
                     left.append(entry)
             except Exception as e:
@@ -5033,6 +5067,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             return await self._settle_by_asking(file_id, user)
 
         await self._recheck_undecided_removals(self._undecided_key(user), user, user_drive_data_source, settle)
+        await self._recheck_parked_descendants(user, user_drive_data_source)
 
         failures_before = self._sync_ledger.item_failures
 

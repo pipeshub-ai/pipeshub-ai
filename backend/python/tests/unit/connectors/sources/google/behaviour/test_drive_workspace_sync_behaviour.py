@@ -768,6 +768,46 @@ async def test_a_full_read_removes_a_group_grant_nobody_can_read_the_sharing_of_
     assert BOB in ws.records.perm_emails("doc")
 
 
+async def test_a_parked_item_is_asked_again_for_the_user_only_and_never_settled_as_removed(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner(ws)
+    await ws.sync()
+    ws.world.unshare("dir", CAROL)
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != CAROL)
+    ws.http.fail("GET", "/drive/v3/files/doc", 403, "somethingNew",
+                 when=lambda r: r.identity == CAROL and r.query.get("fields") == "id, trashed")
+    await ws.sync()
+    assert CAROL in ws.records.perm_emails("doc"), "parked: her check failed"
+
+    ws.http.clear_faults()
+    # Now nobody's check opens the doc: the first try would only have dropped her grant, so the retry must too.
+    ws.http.fail("GET", "/drive/v3/files/doc", 404, "notFound", when=lambda r: r.query.get("fields") == "id, trashed")
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != CAROL)
+    await ws.sync()
+
+    assert "doc" in ws.records.records, "nothing reported the doc removed: it is not deleted"
+    assert CAROL not in ws.records.perm_emails("doc")
+
+
+async def test_a_group_member_check_that_errors_leaves_the_item_undecided_not_checked(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import _RemovalUndecided
+
+    _folder_of_a_suspended_owner_shared_with_a_group(ws)
+    await ws.sync()
+    ws.world.unshare("dir", ENG)
+    ws.http.fail("GET", "/drive/v3/files/doc", 500, "backendError",
+                 when=lambda r: r.identity == DANA and r.query.get("fields") == "id, trashed")
+    record = await ws.records.get_record_by_external_id(CONNECTOR_ID, "doc")
+    await ws.records.delete_permission_from_record(record.id, DANA)  # her own grant from listing it: the group's alone
+
+    with pytest.raises(_RemovalUndecided):
+        await ws.connector._drop_grants_of_people_who_cannot_open(record, {}, skip_email=BOB)
+
+    assert (ENG, "GROUP", "READ") in ws.grants("doc"), "Dana's answer failed: not taken as either"
+    ws.http.clear_faults()
+    await ws.connector._drop_grants_of_people_who_cannot_open(record, {}, skip_email=BOB)
+    assert (ENG, "GROUP", "READ") not in ws.grants("doc"), "asked again, Dana cannot open it"
+
+
 async def test_a_full_read_removes_a_grant_nobody_can_read_the_sharing_of_any_more(ws: Workspace) -> None:
     _folder_of_a_suspended_owner(ws)
     await ws.sync()
