@@ -247,7 +247,6 @@ MAX_FAILED_ITEMS = 500
 UNDECIDED_REMOVALS_SYNC_POINT_PREFIX = "undecided_removals_"
 # Per user: items below a folder they lost whose check of their own access failed, asked again on later runs. Not an
 # undecided removal: nothing reported these items removed, so they are never settled as one.
-DESCENDANT_RECHECK_SYNC_POINT_PREFIX = "drive_descendant_recheck_"
 # Items whose sharing nobody synced can read again and whose holders' check failed, asked again on later runs.
 HOLDER_RECHECK_SYNC_POINT_KEY = "drive_holder_recheck"
 UNDECIDED_REMOVALS = "entries"
@@ -3020,8 +3019,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         drive, ... The change log records a separate entry for the modified item and for each affected descendant",
         https://developers.google.com/workspace/drive/api/guides/about-changes#syncing_permissions_and_capabilities).
         So for a My Drive item, and each stored item below a My Drive folder, this user is asked whether they can still
-        open it (`_drop_grants_of_people_who_cannot_open`). An item whose check fails is listed for this user and asked
-        again on later runs (`_recheck_parked_descendants`); the others, and the change, go on."""
+        open it (`_drop_grants_of_people_who_cannot_open`). An item whose check fails is listed with the other parked
+        items and asked about again on later runs, for all its holders and groups (`_recheck_parked_holders`), so the
+        retry needs neither this user still synced nor still in the groups; the others, and the change, go on."""
         if user is None:
             return
         await self.data_entities_processor.delete_permission_from_record(
@@ -3050,21 +3050,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"Could not tell whether a user removed from {record.record_name} can still open "
                     f"{item.record_name} ({_failure_summary(e)}); it is checked again on later runs"
                 )
-                await self._park_descendant_recheck(user, item.external_record_id)
-
-    async def _park_descendant_recheck(self, user: AppUser, file_id: str) -> None:
-        """List an item below a folder the user lost whose check failed. A failed write raises, so the change that
-        found it is held and read again.
-
-        shortcut: one list per user, read and rewritten whole; split it if a single user ever parks many thousands."""
-        key = f"{DESCENDANT_RECHECK_SYNC_POINT_PREFIX}{user.source_user_id}"
-        items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(key) or {}).get("items") or [])]
-        if file_id not in items:
-            await self.drive_delta_sync_point.update_sync_point(key, {"items": sorted([*items, file_id])})
+                await self._park_holder_recheck(item.external_record_id, None)
 
     async def _park_holder_recheck(self, file_id: str, reader_email: str | None) -> None:
-        """List an item whose holders' check failed (see `_process_drive_item`), with the reader the check left out, so
-        the retry asks the same people. A failed write raises, so the item fails and is read again.
+        """List an item whose holders' check failed (see `_process_drive_item` and `_drop_reporters_grant`), with the
+        reader the check left out, so the retry asks the same people. A failed write raises, so the item or the change
+        that found it fails and is read again.
 
         shortcut: one list for the connector, read and rewritten whole; split it if it ever holds many thousands."""
         items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY) or {}).get("items") or [])]
@@ -3073,8 +3064,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": sorted([*items, entry])})
 
     async def _recheck_parked_holders(self) -> None:
-        """Ask again about each item `_park_holder_recheck` listed, as the first try did. One that is gone or answered
-        leaves the list; one whose check fails again stays. Nothing here holds a checkpoint."""
+        """Ask again about each item `_park_holder_recheck` listed: every holder and group but the reader the first
+        try left out (an item below a lost folder leaves out nobody). One that is gone or answered leaves the list; one
+        whose check fails again stays. Nothing here holds a checkpoint."""
         items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY) or {}).get("items") or [])]
         left: list[str] = []
         for entry in items:
@@ -3093,26 +3085,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         if left != items:
             await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": left})
 
-    async def _recheck_parked_descendants(self, user: AppUser, source: GoogleDriveDataSource) -> None:
-        """Ask the user again about each item parked by `_drop_reporters_grant`, as the first try did: if they cannot
-        open it, their grant and their groups' grants on it go, and the item stays for everyone else. One whose check
-        fails again stays listed. Nothing here holds a checkpoint."""
-        key = f"{DESCENDANT_RECHECK_SYNC_POINT_PREFIX}{user.source_user_id}"
-        items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(key) or {}).get("items") or [])]
-        left: list[str] = []
-        for file_id in items:
-            try:
-                record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id, external_record_id=file_id
-                )
-                if record is not None:
-                    await self._drop_grants_of_people_who_cannot_open(record, {user.email: source}, only=user)
-            except Exception as e:
-                self.logger.warning(f"Still not known whether a user can open item {file_id}: {_failure_summary(e)}")
-                left.append(file_id)
-        if left != items:
-            await self.drive_delta_sync_point.update_sync_point(key, {"items": left})
-
     async def _drop_grants_of_people_who_cannot_open(
         self,
         record: Record,
@@ -3123,7 +3095,9 @@ class GoogleDriveTeamConnector(BaseConnector):
     ) -> None:
         """Remove the grant of each synced user the graph says can open the record (``only``: that user) who Drive
         says cannot: files.get answers 404 notFound when "the user doesn't have read access to a file, or the file
-        doesn't exist" (https://developers.google.com/workspace/drive/api/guides/handle-errors#not-found).
+        doesn't exist" (https://developers.google.com/workspace/drive/api/guides/handle-errors#not-found). A file in
+        the trash still opens: "other users can still access the file in the owner's trash until it's permanently
+        deleted" (`trashed`, https://developers.google.com/workspace/drive/api/reference/rest/v3/files).
 
         A group's grant goes when one of its members gets that 404: a group permission grants "members of a specific
         group" (https://developers.google.com/workspace/drive/api/guides/manage-sharing), so a member who cannot open
@@ -3157,7 +3131,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             ):
                 continue
             try:
-                if not await self._user_can_open(record, by_email[email], sources):
+                if not await self._user_can_open(record, by_email[email], sources, trashed_opens=True):
                     self.logger.info(f"Removing a grant on {record.record_name}: its holder can no longer open it")
                     await self.data_entities_processor.delete_permission_from_record(
                         record_id=record.id, user_email=holder.email, connector_id=record.connector_id
@@ -3172,7 +3146,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         async def answer(email: str) -> bool | None:
             if email not in answers:
-                answers[email] = await self._audience_member_can_open(record, by_email[email], sources)
+                answers[email] = await self._audience_member_can_open(
+                    record, by_email[email], sources, trashed_opens=True
+                )
             return answers[email]
 
         for group in groups:
@@ -3885,10 +3861,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         return own, sorted(self._audience_members.get(group_id, set()) - set(own))
 
     async def _audience_member_can_open(
-        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
+        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource], *, trashed_opens: bool = False
     ) -> bool | None:
-        """Whether a person of an audience can open the file. Only "not found" (or the trash) is a no: a refusal can
-        come from the person's own settings, such as Drive turned off for them. None for that and any other error."""
+        """Whether a person of an audience can open the file. Only "not found" (or the trash, unless ``trashed_opens``)
+        is a no: a refusal can come from the person's own settings, such as Drive turned off for them. None for that
+        and any other error."""
         try:
             source = sources.get(user.email) or await self._build_user_drive_data_source(user)
             sources[user.email] = source
@@ -3901,10 +3878,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Could not ask a person of its audience whether they can open {record.record_name}: {e}")
             return None
-        return not metadata.get("trashed")
+        return trashed_opens or not metadata.get("trashed")
 
     async def _user_can_open(
-        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
+        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource], *, trashed_opens: bool = False
     ) -> bool:
         source = sources.get(user.email)
         if source is None:
@@ -3918,7 +3895,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
                 return False
             raise
-        return not metadata.get("trashed")
+        return trashed_opens or not metadata.get("trashed")
 
     async def _owner_reports_file_gone(
         self, record: Record, owner_sources: dict[str, GoogleDriveDataSource]
@@ -5160,7 +5137,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             return await self._settle_by_asking(file_id, user)
 
         await self._recheck_undecided_removals(self._undecided_key(user), user, user_drive_data_source, settle)
-        await self._recheck_parked_descendants(user, user_drive_data_source)
 
         failures_before = self._sync_ledger.item_failures
 
