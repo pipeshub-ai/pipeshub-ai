@@ -23,4 +23,4 @@
     verdicts:
       u: {f: admit, g: deny, S: deny}
   tags: [regression, linked-account]
-  comment: u is no member of the organisation; acct is. The organisation's OWNER grants must give u neither g nor more than READER on f.
+  comment: u is no member of the organisation; acct is. The access check gives u f and never g. Stored as a SourceAccount, acct adds no organisation to any reader; stored as a User, the context role keeps what acct's organisation gives (OWNER on f), as before.

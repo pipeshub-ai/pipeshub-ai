@@ -24473,7 +24473,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER userDoc._id == caller._id
+                FILTER IS_SAME_COLLECTION("users", userDoc)
                 FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER permEdge.type IN @org_share_types
                 FILTER record._key == @recordId
@@ -24486,7 +24486,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET orgRecordGroupAccess = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                    FILTER userDoc._id == caller._id
+                    FILTER IS_SAME_COLLECTION("users", userDoc)
                     FILTER belongsEdge.entityType == 'ORGANIZATION'
 
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
@@ -25168,8 +25168,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path9_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        // the organisation is the viewer's: a linked source account adds its own and its groups' grants only
-                        FILTER belongs_edge._from == {user_var}._id
+                        // the viewer's and a linked user's organisation; a SourceAccount belongs to none
+                        FILTER belongs_edge._from IN principal_ids AND IS_SAME_COLLECTION("users", belongs_edge._from)
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -25328,8 +25328,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path5_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        // the organisation is the viewer's: a linked source account adds its own and its groups' grants only
-                        FILTER belongs_edge._from == {user_var}._id
+                        // the viewer's and a linked user's organisation; a SourceAccount belongs to none
+                        FILTER belongs_edge._from IN principal_ids AND IS_SAME_COLLECTION("users", belongs_edge._from)
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -26291,8 +26291,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             LET orgGrants = (
-                // the viewer's organisation only: a linked source account adds its own and its groups' grants
-                FOR org IN 1..1 OUTBOUND userDoc._id {CollectionNames.BELONGS_TO.value}
+                // the viewer's and a linked user's organisation; a SourceAccount belongs to none
+                FOR principal_id IN principal_ids
+                FILTER IS_SAME_COLLECTION("users", principal_id)
+                FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
                     FOR granted, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER orgPerm.type IN @org_share_types
                         {granted_here}
