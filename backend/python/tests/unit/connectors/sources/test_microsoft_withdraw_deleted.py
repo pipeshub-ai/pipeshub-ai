@@ -259,10 +259,12 @@ def _sharepoint(stored_ids: list[str], listing: object, complete: bool = True, s
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_deleted_account_is_withdrawn_blocked_one_listed_stays() -> None:
+async def test_sharepoint_deleted_account_and_one_listed_disabled_are_withdrawn() -> None:
+    """Linked before it was disabled, the account keeps no grant, as in OneDrive; no direct read is needed."""
     c, stored = _sharepoint(["a", "gone", "blocked"], [_app_user("a"), _app_user("blocked", active=False)])
     await c._sync_users()
-    assert set(stored) == {"a", "blocked"}
+    assert set(stored) == {"a"}
+    c.msgraph_client.get_user_status.assert_awaited_once_with("gone")
 
 
 @pytest.mark.asyncio
@@ -313,11 +315,11 @@ async def test_sharepoint_restored_account_gets_access_back() -> None:
 
 @pytest.mark.asyncio
 async def test_sharepoint_incomplete_listing_syncs_but_withdraws_nobody() -> None:
-    c, stored = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    c, stored = _sharepoint(["a", "b", "off"], [_app_user("a"), _app_user("off", active=False)], complete=False)
     await c._sync_users()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-    assert set(stored) == {"a", "b"}
+    assert set(stored) == {"a", "b", "off"}
 
 
 @pytest.mark.asyncio

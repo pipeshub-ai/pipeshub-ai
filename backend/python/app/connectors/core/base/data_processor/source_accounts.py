@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+import uuid
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -73,6 +74,13 @@ def _lower(values: dict | None) -> dict[str, str]:
     return {e.lower(): sid for e, sid in (values or {}).items()}
 
 
+_SAVE_ATTEMPTS = 5
+
+
+class _Conflict(Exception):
+    """A bucket changed between this run's read and its save."""
+
+
 def _mapping(value: object, connector_id: str) -> dict:
     if not isinstance(value, dict):
         raise TypeError(f"the saved account state of connector {connector_id} is not a mapping")
@@ -92,7 +100,7 @@ class SourceAccounts:
 
     The value at the base key (the marker) says whether the stored links were noted once (``seeded``), whether the
     source's deleted accounts were read (``deletedChecked``, absent for a connector that reads none) and a
-    ``version`` that every change bumps, so a loaded copy older than STATE_MAX_AGE_SECONDS is read again only when
+    ``version`` that every change replaces, so a loaded copy older than STATE_MAX_AGE_SECONDS is read again only when
     something changed."""
 
     def __init__(
@@ -116,9 +124,9 @@ class SourceAccounts:
         self._reused: dict[int, dict[str, str]] = {}
         self._other: dict[int, dict[str, list[str]]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
-        # One read-update-save at a time per connector in this process: a connector may list users in parallel tasks,
-        # and two saves of one bucket would drop each other's entries. shortcut: two processes syncing one connector
-        # are not serialized (the config store offers no compare-and-set); one sync per connector at a time keeps it.
+        self._stored: dict[int, dict | None] = {}     # each bucket's value as read, for the compare-and-set
+        # One read-update-save at a time per connector in this process (a connector may list users in parallel tasks);
+        # across processes each bucket is saved by compare-and-set and the run starts over on a conflict.
         self._lock = asyncio.Lock()
 
     # Flat views, for reading and for tests that set a state directly.
@@ -152,7 +160,10 @@ class SourceAccounts:
         deleted: dict[int, dict[str, str]] = {}
 
         async def one(bucket: int) -> None:
-            stored = await self._get(source_accounts_key(self.connector_id, bucket))
+            raw = await self.config_service.get_config(
+                source_accounts_key(self.connector_id, bucket), use_cache=False, raise_on_error=True)
+            stored = _mapping(raw or {}, self.connector_id)
+            self._stored[bucket] = raw or None
             self._linked[bucket], self._reused[bucket] = _lower(stored.get("linked")), _lower(stored.get("reused"))
             self._other[bucket] = {e.lower(): ids for e, ids in (stored.get("other") or {}).items()}
             deleted[bucket] = _lower(stored.get("deleted"))
@@ -201,14 +212,18 @@ class SourceAccounts:
         return [p for p in permissions if id(p) not in refused]
 
     async def _save(self, buckets: Iterable[int], deleted: dict[int, dict[str, str]]) -> None:
+        """Save each bucket only if it still holds what this run read (another process may have saved it since)."""
         for bucket in sorted(set(buckets)):
-            value = {"linked": self._linked.get(bucket, {}), "reused": self._reused.get(bucket, {})}
+            value = {"linked": dict(self._linked.get(bucket, {})), "reused": dict(self._reused.get(bucket, {}))}
             if self._other.get(bucket):
-                value["other"] = self._other[bucket]
+                value["other"] = {email: list(ids) for email, ids in self._other[bucket].items()}
             if deleted.get(bucket):
-                value["deleted"] = deleted[bucket]
-            if not await self.config_service.set_config(source_accounts_key(self.connector_id, bucket), value):
-                raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
+                value["deleted"] = dict(deleted[bucket])
+            if not await self.config_service.compare_and_set_config(
+                source_accounts_key(self.connector_id, bucket), self._stored.get(bucket), value,
+            ):
+                raise _Conflict(bucket)
+            self._stored[bucket] = value
 
     async def _read_deleted(self) -> dict[str, str] | None:
         """The source's deleted accounts by address, or None when the read failed (tried again next run)."""
@@ -239,7 +254,15 @@ class SourceAccounts:
         to a different account than the one it was linked to before. False when the stored links could not be read:
         then nobody is linked and no grant is written this run (``ensure_loaded`` raises)."""
         async with self._lock:
-            return await self._before_link(users)
+            for _ in range(_SAVE_ATTEMPTS):
+                try:
+                    return await self._before_link(users)
+                except _Conflict as conflict:
+                    # Another process saved this bucket meanwhile: read it again and decide again (removing a
+                    # grant twice is harmless).
+                    self.logger.info("The account state of connector %s changed while it was saved (bucket %s); "
+                                     "reading it again", self.connector_id, conflict.args[0])
+            raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
     async def _before_link(self, users: list["AppUser"]) -> bool:
         try:
@@ -314,7 +337,8 @@ class SourceAccounts:
                 linked[email] = account
                 changed.add(bucket)
         await self._save(changed, deleted)
-        noted = {"seeded": True, "version": marker.get("version", 0) + (1 if changed else 0)}
+        # A token, not a counter: two processes bumping one counter would write the same number for different changes.
+        noted = {"seeded": True, "version": uuid.uuid4().hex if changed else marker.get("version")}
         if self.deleted_users is not None or "deletedChecked" in marker:
             noted["deletedChecked"] = bool(marker.get("deletedChecked")) or read_deleted is not None
         if noted != marker and not await self.config_service.set_config(source_accounts_key(self.connector_id), noted):
@@ -375,12 +399,18 @@ class SourceAccounts:
         ``holds`` only while ``account`` holds it, so it can never pass a grant of the earlier account."""
         wanted = {e.lower(): pair for e, pair in ids.items()}
         async with self._lock:
-            deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
-            changed: set[int] = set()
-            for email, (account, other_id) in wanted.items():
-                bucket = _bucket(email)
-                if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
-                    continue
-                self._other.setdefault(bucket, {})[email] = [account, other_id]
-                changed.add(bucket)
-            await self._save(changed, deleted)
+            for _ in range(_SAVE_ATTEMPTS):
+                deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
+                changed: set[int] = set()
+                for email, (account, other_id) in wanted.items():
+                    bucket = _bucket(email)
+                    if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
+                        continue
+                    self._other.setdefault(bucket, {})[email] = [account, other_id]
+                    changed.add(bucket)
+                try:
+                    await self._save(changed, deleted)
+                    return
+                except _Conflict:
+                    continue        # another process saved a bucket meanwhile: read it again and decide again
+            raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")

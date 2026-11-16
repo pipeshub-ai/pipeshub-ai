@@ -257,6 +257,11 @@ class FakeConfigService:
         self.saved[path] = value
         return True
 
+    async def compare_and_set_config(self, path: str, expected: object, new: object) -> bool:
+        if await self.get_config(path) != expected:
+            return False
+        return await self.set_config(path, new)
+
 
 class RecordingNotifications:
     def __init__(self) -> None:

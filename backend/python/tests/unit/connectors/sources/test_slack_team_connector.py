@@ -1829,6 +1829,8 @@ def _connector_pipeline_ready():
     c.data_entities_processor.on_new_user_groups = AsyncMock()
     c.data_entities_processor.on_new_record_groups = AsyncMock()
     c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+    c.data_entities_processor.withdraw_app_user_access = AsyncMock()
     c.data_entities_processor.on_record_content_update = AsyncMock()
     c.data_entities_processor.on_updated_record_permissions = AsyncMock()
     c.data_entities_processor.reindex_existing_records = AsyncMock()
@@ -2706,6 +2708,35 @@ class TestSyncUsersAndCaches:
         linked = c.data_entities_processor.on_new_app_users.call_args[0][0]
         assert [u.source_user_id for u in linked] == ["UOK"]
         assert [u.source_user_id for u in c._non_guest_app_users] == ["UOK"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("read_fails", [False, True])
+    async def test_a_linked_member_listed_deactivated_or_invited_is_withdrawn(self, read_fails: bool) -> None:
+        """Linked before it became unusable, it keeps no grant; a short list withdraws nobody."""
+        from types import SimpleNamespace
+
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        links = [SimpleNamespace(id=f"n-{sid}", source_user_id=sid, email=None) for sid in ("UOK", "UOLD", "UINV")]
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=links)
+        page = MagicMock(success=True, data={
+            "members": [
+                {"id": "UOK", "profile": {"email": "maya@x.com", "real_name": "Maya"}},
+                {"id": "UOLD", "deleted": True, "profile": {"real_name": "Old"}},
+                {"id": "UINV", "is_invited_user": True, "profile": {"email": "ivo@x.com", "real_name": "Ivo"}},
+            ],
+            "response_metadata": {"next_cursor": "next" if read_fails else ""},
+        })
+        ds = MagicMock()
+        ds.users_list = AsyncMock(side_effect=[page, MagicMock(success=False, error="ratelimited")])
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_users()
+        if read_fails:
+            c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        else:
+            gone = c.data_entities_processor.withdraw_app_user_access.call_args[0][1]
+            assert sorted(u.source_user_id for u in gone) == ["UINV", "UOLD"]
 
     @pytest.mark.asyncio
     async def test_sync_users_list_failure_breaks_loop(self):
