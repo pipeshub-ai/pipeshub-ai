@@ -1036,6 +1036,9 @@ _shared_row_kept: set[str] = set()
 
 
 async def _other_orgs_hold_points(vector_db, collections: Sequence[str], virtual_record_id: str, org_id: str) -> bool:  # noqa: ANN001
+    held = await vector_db.other_orgs_hold_virtual_record(virtual_record_id, org_id)
+    if held is not None:
+        return held
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}, must_not={"orgId": org_id}
     )
