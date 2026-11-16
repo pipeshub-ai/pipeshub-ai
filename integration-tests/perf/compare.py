@@ -123,6 +123,10 @@ COSTCLASS_COMPARABLE = (
     ("tier", lambda r: r["plan"]["tier"]),
     ("corpus", lambda r: r["plan"]["corpus_id"]),
     ("schedule seed", lambda r: r["plan"]["seed"]),
+    ("arrivals", lambda r: r["plan"].get("arrivals")),
+    ("arrival rate", lambda r: (r["plan"].get("notes") or {}).get("rate_per_s")),
+    ("load duration", lambda r: (r["plan"].get("notes") or {}).get("duration_s")),
+    ("burst size", lambda r: (r["plan"].get("notes") or {}).get("burst_count")),
 )
 COSTCLASS_KIND_BUDGET = 0.20
 

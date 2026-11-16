@@ -344,3 +344,58 @@ def test_a_record_indexed_long_before_it_was_created_is_a_skewed_clock() -> None
                        virtual_record_id="v9")
     accepted, rejected = bc.filter_samples([skewed], now_ms=1_100_000.0)
     assert accepted == [] and [s.seq for s in rejected["skewed_timestamp"]] == [9]
+
+
+# -- review follow-ups: background load, detail reads, and what counts as an unfinished probe -------------------------------
+
+
+def _load_plan(template: str, probes: int, kind: str = "small-text") -> bc.Plan:
+    arrivals = [bc.Arrival(0, kind, 0.0, "load", template)]
+    arrivals += [bc.Arrival(i, kind, i * 0.02, "probe", template) for i in range(1, probes + 1)]
+    return bc.Plan("t", arrivals, "cost-smoke")
+
+
+def test_background_load_still_indexing_neither_fails_nor_holds_the_run(corpus: tuple) -> None:
+    kb = KB(stuck=(f"00000-{_tpl(corpus)}",))  # the load file never finishes
+    result, wall = _go(corpus, kb, _load_plan(_tpl(corpus), 5), _args(timeout=6.0))
+    assert result["verdict"]["status"] == "pass", result["verdict"]
+    assert result["metrics"]["failures"]["timed_out"] == 0 and result["metrics"]["rejected"] == {}
+    assert wall < 3.0, wall  # the probes decide the end; the run does not wait for the load
+
+
+def test_background_load_that_ends_failed_or_fails_to_upload_still_fails_the_run(corpus: tuple) -> None:
+    failed, _ = _go(corpus, KB(failing=(f"00000-{_tpl(corpus)}",)), _load_plan(_tpl(corpus), 4), _args())
+    assert failed["verdict"]["status"] == "failed" and failed["metrics"]["failures"]["failed_status"] == 1
+    _out, _manifest, _by, entries = corpus
+    broken = {**entries}
+    broken[_tpl(corpus)] = None  # the harness cannot read the template: an upload error, on the load file too
+    result, _ = _go(corpus, KB(), _load_plan(_tpl(corpus), 2), _args(), entries=broken)
+    assert result["verdict"]["status"] == "failed"
+
+
+def test_a_probe_the_listing_calls_completed_but_the_record_calls_in_progress_is_a_timeout(corpus: tuple) -> None:
+    result, _ = _go(corpus, KB(detail_status="IN_PROGRESS"), _plan(_tpl(corpus), 3), _args(timeout=1.5))
+    assert result["verdict"]["status"] == "failed" and result["verdict"]["exit_code"] == 1
+    assert result["metrics"]["failures"]["timed_out"] == 3
+
+
+class FlakyDetailKB(KB):
+    """The first record read of every record raises; the next one answers."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: dict[str, int] = {}
+
+    def get_record(self, rid: str) -> dict:
+        self.reads[rid] = self.reads.get(rid, 0) + 1
+        if self.reads[rid] == 1:
+            raise RuntimeError("transient")
+        return super().get_record(rid)
+
+
+def test_a_failed_detail_read_is_retried_not_finalised_without_its_details(corpus: tuple) -> None:
+    kb = FlakyDetailKB()
+    result, _ = _go(corpus, kb, _plan(_tpl(corpus), 4), _args())
+    assert result["verdict"]["status"] == "pass", result["verdict"]
+    assert result["metrics"]["accepted"] == 4 and result["metrics"]["rejected"] == {}
+    assert all(n >= 2 for n in kb.reads.values())

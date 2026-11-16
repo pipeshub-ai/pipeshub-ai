@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import itertools
 import json
 import os
 import random
@@ -403,7 +404,9 @@ def test_proc_stat_family_pids_and_sampler() -> None:
         read_stat=lambda pid: f"{pid} (x) S " + " ".join(["0"] * 10 + [str(ticks[pid]), "0"]))
     sampler.tick = 100.0
     sampler.pids = bc.family_pids(top, "docling_main")[:2]
-    assert sampler._cpu_s() == pytest.approx(2.0)  # the tree's CPU, summed
+    assert sampler._cpu_s() == pytest.approx(0.0)  # the first reading of each pid is its baseline
+    ticks.update({10: 200, 11: 200})
+    assert sampler._cpu_s() == pytest.approx(2.0)  # then the tree's CPU since, summed
 
 
 def test_knee() -> None:
@@ -1683,9 +1686,12 @@ def test_the_kill_goes_into_the_container_and_never_to_pid_1(monkeypatch: pytest
     script = cmd[-1]
     assert "kill -9 $p" in script and "indexing_mai[n]" in script and "kill -9 1" not in script
     # the script must not match its own command line: run it for real against a stand-in process
-    p = subprocess.Popen(["sleep", "30"])
+    # The pattern is made unique to this process (the test's pid in the sleep argument), so the script run for
+    # real can reach no other process of the host, whatever else is running `sleep`.
+    uniq = str(os.getpid())
+    p = subprocess.Popen(["sleep", f"30.{uniq}"])
     try:
-        out = subprocess.run(["sh", "-c", script.replace("app[.]indexing_mai[n]", "sleep.30")],
+        out = subprocess.run(["sh", "-c", script.replace("app[.]indexing_mai[n]", f"sleep.30[.]{uniq}")],
                              capture_output=True, text=True, timeout=30, check=False).stdout
         assert str(p.pid) in out.split()
         assert p.wait(timeout=10) == -9
@@ -1802,3 +1808,122 @@ def test_the_guards_watch_every_workflow_file_the_guard_tests_read() -> None:
     read = sorted(set(re.findall(r'"(\.github/workflows/[\w.-]+\.yml)"', src)))
     assert ".github/workflows/perf-costclass.yml" in read
     assert [p for p in read if not watched.search(p)] == []
+
+
+# -- review follow-ups: the knee decision, compare's workload inputs, stale tier files, the tiers dispatch -------------------
+
+
+def test_a_knee_over_mixed_corpora_is_never_recorded_as_a_decision() -> None:
+    same = bc.knee_from_results([_knee_result(8, 10.0), _knee_result(12, 14.8), _knee_result(16, 19.0),
+                                 _knee_result(24, 20.0)])
+    assert same["confidence"] == "high" and same["record_as_decision"] is True
+    mixed = bc.knee_from_results([_knee_result(8, 10.0, corpus="a"), _knee_result(12, 14.8), _knee_result(16, 19.0),
+                                  _knee_result(24, 20.0)])
+    assert mixed["confidence"] == "low" and mixed["record_as_decision"] is False
+
+
+def test_compare_refuses_runs_with_a_different_offered_load() -> None:
+    def result(rate: float, duration: float = 600.0, burst: int | None = None, arrivals: int = 100) -> dict:
+        r = _result()
+        r["plan"] = {**r.get("plan", {}), "arrivals": arrivals,
+                     "notes": {"rate_per_s": rate, "duration_s": duration, "burst_count": burst}}
+        return r
+
+    assert not compare.compare(result(0.2), result(0.2))[1]
+    for other in (result(0.5), result(0.2, duration=300.0), result(0.2, burst=60), result(0.2, arrivals=90)):
+        assert compare.compare(result(0.2), other)[1], other
+
+
+def test_the_plan_records_the_workload_inputs_compare_checks() -> None:
+    assert bc.build_plan("b05", rate_per_s=0.3, duration_s=120).notes["duration_s"] == 120
+    assert bc.build_plan("b01", rate_per_s=0.3, duration_s=120).notes["duration_s"] == 120
+    assert bc.build_plan("b03", rate_per_s=0.3, duration_s=120).notes["duration_s"] == 120
+    assert bc.build_plan("b06", burst_count=7).notes["burst_count"] == 7
+
+
+def test_the_process_cpu_total_survives_children_that_exit_and_start(tmp_path: Path) -> None:
+    ticks: dict[int, int | None] = {10: 100}
+    top = "PID PPID COMMAND\n10 1 python -m app.docling_main\n"
+
+    def read(pid: int) -> str:
+        if ticks.get(pid) is None:
+            raise FileNotFoundError(pid)
+        return f"{pid} (x) S " + " ".join(["0"] * 10 + [str(ticks[pid]), "0"])
+
+    sampler = bc.ProcessCpuSampler("c", "docling_main", top=lambda: top, read_stat=read)
+    sampler.tick = 100.0
+    sampler.pids = [10]
+    sampler._read_once()  # baseline
+    ticks[10] = 200
+    sampler._read_once()  # +1 s
+    ticks.update({10: 250, 11: 5000})  # a child that already used 50 s when it was found
+    sampler.pids = [10, 11]
+    sampler._read_once()  # +0.5 s: the newcomer is a baseline, not a 50 s spike
+    ticks[11] = 5100
+    sampler._read_once()  # +1 s
+    ticks[10] = None  # the parent exits: its CPU stays counted, the total never falls
+    ticks[11] = 5100
+    sampler._read_once()
+    values = [v for _t, v in sampler.series]
+    assert values == pytest.approx([0.0, 1.0, 1.5, 2.5, 2.5])
+    assert all(b >= a for a, b in itertools.pairwise(values))
+
+
+def test_execute_removes_the_generated_corpus_whatever_the_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    seen: list[Path] = []
+
+    def fake(_args: argparse.Namespace, _run_id: str, tmp: Path) -> dict:
+        tmp.mkdir()
+        (tmp / "doc.pdf").write_bytes(b"x")
+        seen.append(tmp)
+        if _args.boom:
+            raise RuntimeError("boom")
+        return {"ok": True}
+
+    monkeypatch.setattr(bc, "_execute", fake)
+    assert bc.execute(argparse.Namespace(boom=False)) == {"ok": True}
+    with pytest.raises(RuntimeError):
+        bc.execute(argparse.Namespace(boom=True))
+    assert len(seen) == 2 and not any(p.exists() for p in seen) and list(tmp_path.iterdir()) == []
+
+
+def test_runner_never_reuses_a_result_or_summary_an_earlier_run_left(tmp_path: Path) -> None:
+    tree, log, env = _stub_tree(tmp_path, bench_rc=1)
+    out = Path(env["BENCH_OUT"])
+    out.mkdir()
+    (out / "costclass-local-T8.json").write_text('{"stale": true}')
+    (out / "summary-T8.md").write_text("STALE")
+    # a bench that dies before writing anything: the stub writes the result, so make it exit first
+    (tree / "integration-tests/perf/bench_costclass.py").write_text(
+        f"import sys\nopen({str(log)!r}, 'a').write('bench ' + ' '.join(sys.argv[1:]) + '\\n')\nsys.exit(2)\n")
+    env["BENCH_TIERS"] = "T8:8:32"
+    p = _runner(tree, env, "--scenario", "b06-knee")
+    assert p.returncode != 0
+    assert not (out / "costclass-local-T8.json").exists() and not (out / "summary-T8.md").exists()
+    assert "STALE" not in (out / "summary.md").read_text() if (out / "summary.md").exists() else True
+    assert not any("--knee-from" in ln for ln in log.read_text().splitlines())  # nothing valid to find a knee in
+
+
+def test_the_tiers_dispatch_needs_its_own_runner_and_fits_its_step() -> None:
+    wf = _perf_workflow()
+    job = wf["jobs"]["costclass"]
+    validate = {s.get("name", ""): s for s in job["steps"]}["Validate inputs"]["run"]
+    # the default 4-CPU runner cannot host any tier (tiers.fit), so a tiers dispatch must name another
+    assert tiers.fit(tiers.Tier("T4", 4, 16), 4, 16, tiers.SIBLINGS_STANDARD)[0] is False
+    assert 'SUITE" = tiers' in validate and "4cpu-linux-x64" in validate and "RUNNER_INPUT" in validate
+    # at most three tiers, and the step covers three tiers' worst case with the bench's own --timeout
+    pattern = re.search(r'\[\[ "\$TIERS_INPUT" =~ (\^.*\$) \]\]', validate).group(1)
+    ok = re.compile(pattern)
+    assert ok.match("T4:4:16 T8:8:32 T12:12:48") and not ok.match("T4:4:16 T8:8:32 T12:12:48 T16:16:64")
+    step = {s.get("name", ""): s for s in job["steps"]}["Tiers"]
+    bench_timeout = int(re.search(r"-- --timeout (\d+)", step["run"]).group(1))
+    per_tier = tiers_quiet_wait_s() + 600 + bench_timeout + 180
+    assert 3 * per_tier <= step["timeout-minutes"] * 60 <= job["timeout-minutes"] * 60 * _HEADROOM + 1
+
+
+def tiers_quiet_wait_s() -> int:
+    """The longest the runner waits for a quiet host before one tier: its default retries times its sleep."""
+    text = (_ROOT / "integration-tests/perf/run_tiers_e2e.sh").read_text()
+    return int(re.search(r"BENCH_QUIET_RETRIES:-(\d+)", text).group(1)) * int(
+        re.search(r"BENCH_QUIET_SLEEP:-(\d+)", text).group(1))

@@ -133,6 +133,7 @@ PY
   if [ "$tier_rc" = 0 ]; then
     ran=$((ran + 1))
     result="$out/costclass-$label-$name$rep_suffix.json"
+    rm -f "$result" "$out/summary-$name$rep_suffix.md"  # nothing of an earlier run may be mistaken for this one
     python3 "$here/bench_costclass.py" --scenario "$scenario" --label "$label-$name" \
       --base-url "$base" --tier-cpus "$cpus" --tier-mem-gb "${mem%g}" \
       --fake-ai-endpoint "http://fake-ai:8080/v1" --fake-ai-container "$proj-fake-ai-1" \

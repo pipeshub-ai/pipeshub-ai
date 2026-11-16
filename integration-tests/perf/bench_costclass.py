@@ -41,6 +41,7 @@ import os
 import platform
 import random
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -216,6 +217,7 @@ def build_plan(
         for n, at in enumerate(poisson_arrivals(rate_per_s, duration_s, seed, start_s=60.0)):
             add(small_kind(), at, "probe", n)
         notes["rate_per_s"] = rate_per_s
+        notes["duration_s"] = duration_s
     elif scenario == "b02":
         add("huge-pdf", 0.0, "probe", 0)
     elif scenario == "b03":
@@ -224,14 +226,17 @@ def build_plan(
         for n, at in enumerate(poisson_arrivals(rate_per_s, duration_s, seed, start_s=30.0)):
             add(small_kind(), at, "probe", n)
         notes["rate_per_s"] = rate_per_s
+        notes["duration_s"] = duration_s
     elif scenario == "b05":
         for n, at in enumerate(poisson_arrivals(rate_per_s, duration_s, seed)):
             add(small_kind(), at, "probe", n)
         notes["rate_per_s"] = rate_per_s
+        notes["duration_s"] = duration_s
     elif scenario in ("b06", "b06-knee"):
         for n in range(burst_count):
             add("small-pdf", 0.0, "probe", n)
         notes["saturation"] = True
+        notes["burst_count"] = burst_count
     elif scenario == "calibrate":
         at = 0.0  # the schedule is not time-based here
         for fam, kind in FAMILY_KIND.items():
@@ -853,11 +858,11 @@ def knee_from_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         out.update(cell_cpus=None, confidence=None, bound="docling", docling_bound_tiers=capped_tiers,
                    reason=f"Docling's process was busy at least {DOCLING_BOUND_BUSY:.0%} of the run at "
                           f"T{', T'.join(map(str, capped_tiers))}: the knee is Docling-bound, not the indexing process's")
-    # Only a high-confidence knee is recorded as a decision; anything else is a note.
-    out["record_as_decision"] = out.get("cell_cpus") is not None and out.get("confidence") == "high"
     if len(corpora) > 1:
         out["confidence"] = "low" if out.get("confidence") else None
         out["note"] = "the results do not share one corpus"
+    # Only a high-confidence knee is recorded as a decision (judged after every confidence change); anything else is a note.
+    out["record_as_decision"] = out.get("cell_cpus") is not None and out.get("confidence") == "high"
     return out
 
 
@@ -1280,6 +1285,16 @@ def poll_once(kb_client: Any, kb_id: str, run: Run) -> None:
 
 
 def execute(args: argparse.Namespace) -> dict[str, Any]:
+    """Run one benchmark. The generated corpus is removed when the run ends, whatever its outcome."""
+    run_id = uuid.uuid4().hex[:8]
+    tmp = Path(os.getenv("TMPDIR") or "/tmp") / f"costclass-{run_id}"
+    try:
+        return _execute(args, run_id, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _execute(args: argparse.Namespace, run_id: str, tmp: Path) -> dict[str, Any]:
     from pipeshub_client import PipeshubClient
 
     from helper.clients.kb_client import KBClient
@@ -1295,8 +1310,6 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     args.dropped_scopes = ensure_credentials(base_url)
     stack = check_stack(args)
 
-    run_id = uuid.uuid4().hex[:8]
-    tmp = Path(os.getenv("TMPDIR") or "/tmp") / f"costclass-{run_id}"
     profile = args.profile or build_plan(args.scenario).profile
     manifest = cc.generate(tmp, seed=args.seed, profile=profile, scale=args.corpus_scale, max_mb=args.max_mb)
     templates, entries = corpus_templates(manifest, tmp)
@@ -1635,17 +1648,18 @@ def account_unstarted(plan: Plan, run: Run, t0: float) -> list[Sample]:
     return added
 
 
-def _fetch_details(kb_client: Any, sample: Sample) -> None:
+def _fetch_details(kb_client: Any, sample: Sample) -> bool:
     try:
         fields = record_fields(kb_client.get_record(sample.record_id))
     except Exception:  # noqa: BLE001
-        return
+        return False
     sample.status = fields["status"] or sample.status
     sample.last_index_ms = fields["last_index_ms"]
     sample.created_ms = fields["created_ms"]
     sample.virtual_record_id = fields["virtual_record_id"]
     sample.gateway_calls, sample.cache_hits, sample.embed_wait_s = (
         fields["gateway_calls"], fields["cache_hits"], fields["embed_wait_s"])
+    return sample.status in FINAL_STATUSES
 
 
 def _upload_guarded(a: Arrival, kb_client: Any, kb_id: str, run: Run, tmp: Path, entries: dict[str, Any],
@@ -1701,11 +1715,13 @@ def _wait_all(kb_client: Any, kb_id: str, run: Run, futures: list[Any], deadline
             status = run.status_by_record.get(s.record_id or "")
             if status in FINAL_STATUSES:
                 s.status = status
-                _fetch_details(kb_client, s)
-                s.record_count = max(s.record_count, len(run.names_seen.get(s.name, [])) or s.record_count)
-                detailed.add(s.seq)
-                run.final_event(s.seq).set()
-            else:
+                # a failed or non-final detail read leaves the sample open: the next poll reads it again
+                if _fetch_details(kb_client, s):
+                    s.record_count = max(s.record_count, len(run.names_seen.get(s.name, [])) or s.record_count)
+                    detailed.add(s.seq)
+                    run.final_event(s.seq).set()
+                    continue
+            if s.role != "load":  # background load is never waited for: the probes decide when the run is over
                 pending += 1
         if uploads_done and pending == 0:
             return
@@ -1724,21 +1740,27 @@ class ProcessCpuSampler(threading.Thread):
         self._read_stat = read_stat or (lambda pid: Path(f"/proc/{pid}/stat").read_text())
         self._top = top or (lambda: docker("top", container, "-eo", "pid,ppid,args"))
         self.pids: list[int] = []
+        self._last: dict[int, int] = {}  # the last ticks read per pid
+        self._acc_ticks = 0.0  # CPU ticks used since each pid was first seen: never shrinks when a pid exits
+        self._seen = False
         self.series: list[tuple[float, float]] = []
         self.tick = float(os.sysconf("SC_CLK_TCK")) if hasattr(os, "sysconf") else 100.0
         self._halt = threading.Event()
 
     def _cpu_s(self) -> float | None:
-        total, seen = 0, False
         for pid in self.pids:
             try:
                 ticks = process_cpu_ticks(self._read_stat(pid))
             except OSError:
-                continue  # a pool child that has exited: its CPU is already in its parent's counters or lost
-            if ticks is not None:
-                total += ticks
-                seen = True
-        return total / self.tick if seen else None
+                continue  # a pool child that has exited: what it used so far stays in the total
+            if ticks is None:
+                continue
+            if pid in self._last:
+                self._acc_ticks += max(0, ticks - self._last[pid])
+            # else: a pid first seen now is a baseline, so CPU it used before it was found is not a spike
+            self._last[pid] = ticks
+            self._seen = True
+        return self._acc_ticks / self.tick if self._seen else None
 
     def run(self) -> None:
         self.pids = family_pids(self._top() or "", self.marker)
@@ -1838,10 +1860,13 @@ def build_result(
     knee_attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     samples = list(run.samples.values())
-    accepted, rejected = filter_samples(samples, now_ms=_now_ms())
     upload_failures = [s for s in samples if s.upload_error]
+    # Background load still indexing when the run ends is not a probe: it is neither a timeout nor a rejection.
+    inflight_load = [s for s in samples if s.role == "load" and not s.upload_error and s.status not in FINAL_STATUSES]
+    inflight_ids = {id(s) for s in inflight_load}
     not_final = [s for s in samples if not s.upload_error and not s.control and s.status not in FINAL_STATUSES
-                 and s.status is None]
+                 and id(s) not in inflight_ids]
+    accepted, rejected = filter_samples([s for s in samples if id(s) not in inflight_ids], now_ms=_now_ms())
     failed = [s for s in samples if s.status in FINAL_STATUSES and s.status != SUCCESS_STATUS and not s.control]
     probes = [s for s in accepted if s.role in ("probe", "load") or s.role.startswith("unit")]
     timed_out = [s for s in not_final if s.record_id]
