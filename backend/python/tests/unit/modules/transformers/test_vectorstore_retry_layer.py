@@ -90,3 +90,18 @@ async def test_the_wait_never_overruns_the_sleep_allowance() -> None:
     _result, sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
     waits = [c.args[0] for c in sleep.await_args_list]
     assert waits[0] == 59.0 and sum(waits) <= 60.0
+
+
+async def test_a_remote_500_is_retried_by_the_gateways_decision() -> None:
+    """The SDK no longer retries a 500; the batch loop must let the gateway classify it (twice sent, then vectors)."""
+    vs = _store(_error(500), [[0.2]])
+    result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
+    assert result == [[0.2]] and vs.dense_embeddings.aembed_documents.await_count == 2
+
+
+async def test_a_request_fault_is_raised_unchanged() -> None:
+    """A 400 is not wrapped in EmbeddingError and is sent once."""
+    fault = ValueError("input too long")
+    vs = _store(fault, [[0.2]])
+    result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
+    assert result is fault and vs.dense_embeddings.aembed_documents.await_count == 1

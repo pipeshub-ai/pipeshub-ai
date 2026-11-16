@@ -2172,7 +2172,12 @@ class VectorStore(Transformer):
                     service_name=service_name,
                     coordinator=get_default_backpressure_coordinator(),
                 )
-                if not is_retriable_embedding_error(e):
+                # A remote provider's failure is classified by the gateway (a 500 is transient there); the local
+                # server keeps the narrower filter.
+                retriable = (
+                    gateway.retry_kind(e) is not None if gateway is not None else is_retriable_embedding_error(e)
+                )
+                if not retriable:
                     raise
                 last_error = e
             finally:
