@@ -40,7 +40,6 @@ REPURGE_HOP_S = LOCK_TTL_MS // 1000 + WRITE_DEADLINE_S + REPURGE_MARGIN_S
 REPURGE_DELAY_S = REPURGE_HOP_S
 #: The figures below mirror the consumer's, the client's and the parsing route's (a test ties each to its source).
 PARSE_SLOT_WAITS = 2
-PARSE_READ_SHARE = 0.8
 PARSE_GATE_WAIT_S = 120
 PARSE_MEMORY_WAIT_S = 30
 
@@ -54,7 +53,7 @@ def _budgets() -> tuple[float, float]:
 def stage_deadline_s() -> float:
     """How long after its start a stage may still store results and write its manifests, and the most a parse may run.
 
-    The longest record budget configured: a parse the client allows (``PARSE_READ_SHARE`` of its record's budget) is
+    The longest record budget configured: a parse the client allows (at most 0.8 of its record's budget) is
     never cut by the route, and the index run that began before it, which holds the whole record's budget, can still
     store its own results. Read at every call, so an operator's raised budget is followed.
     """
@@ -65,12 +64,13 @@ def admission_window_s() -> float:
     """The latest a paid stage can begin after its record was deleted.
 
     The indexing consumer may queue for a parse slot twice (before the download and before the parse), each wait up
-    to ``RECORD_PROCESSING_TIMEOUT``, and the record's budget is paused meanwhile. The parse request is then sent
-    while the budget still holds a read (the share the client does not reserve for it), and the parsing route can hold
-    it for the admission gate and the memory wait before ``parse`` starts.
+    to ``RECORD_PROCESSING_TIMEOUT``, and the record's budget is paused meanwhile. Everything else the record does
+    before the request (the download, the retries of a full gate, a fall back to another source) spends the budget, so
+    the request is sent within the whole longest budget; the parsing route can then hold it for the admission gate and
+    the memory wait before ``parse`` starts.
     """
     record, longest = _budgets()
-    window = PARSE_SLOT_WAITS * record + longest * (1 - PARSE_READ_SHARE) + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
+    window = PARSE_SLOT_WAITS * record + longest + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
     return float(-(-window // REPURGE_MARGIN_S) * REPURGE_MARGIN_S)
 
 

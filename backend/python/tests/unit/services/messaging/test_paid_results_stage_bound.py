@@ -232,12 +232,10 @@ def test_the_admission_window_is_tied_to_the_consumer_and_the_route() -> None:
     """The constants the horizon mirrors are the ones the consumer, the client and the route really use."""
     from app.api.routes.parsing import PARSE_GATE_TIMEOUT_SECONDS
     from app.services.messaging.consumer_concurrency import parse_admission_wait_seconds
-    from app.services.parsing.client import PARSE_SHARE_OF_RECORD_BUDGET
     from app.services.resource_governor.kinds import EXCESS_WAIT_SECONDS
 
     assert locks_module.PARSE_GATE_WAIT_S == PARSE_GATE_TIMEOUT_SECONDS
     assert locks_module.PARSE_MEMORY_WAIT_S == EXCESS_WAIT_SECONDS
-    assert locks_module.PARSE_READ_SHARE == PARSE_SHARE_OF_RECORD_BUDGET
     assert locks_module.PARSE_SLOT_WAITS * locks_module._budgets()[0] == 2 * parse_admission_wait_seconds()
 
 
@@ -246,7 +244,7 @@ def test_the_horizon_follows_the_configured_budgets(monkeypatch: pytest.MonkeyPa
     """Computed at the hop from the live settings: a raised budget lengthens the chain, a fixed constant would not."""
     monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", str(pdf_budget))
     record = float(locks_module._budgets()[0])
-    latest_start = 2 * record + max(record, pdf_budget) * 0.2 + 120 + 30
+    latest_start = 2 * record + max(record, pdf_budget) + 120 + 30
     assert locks_module.admission_window_s() >= latest_start
     assert locks_module.stage_deadline_s() >= max(record, pdf_budget)
     assert repurge_horizon_s() >= latest_start + max(record, pdf_budget) + locks_module.WRITE_DEADLINE_S + 120
