@@ -131,6 +131,21 @@ async def test_compare_and_set_through_the_encrypted_store(store, key) -> None:
 
 
 @pytest.mark.parametrize("layer", ["inner", "encrypted"])
+@pytest.mark.parametrize("value", ["true", "12", "plain"])
+async def test_compare_and_set_compares_a_string_as_set_stores_it(store, layer, value) -> None:
+    """A string set by create_key, compared and swapped by compare_and_set, reads back as written: both encode alike."""
+    kv = store.store if layer == "inner" else store
+    key = f"/it/cas-string/{uuid.uuid4().hex}"
+    await kv.create_key(key, value)
+    expected = await kv.get_key(key)
+    if layer == "encrypted":       # what ConfigurationService uses: a string reads back as the string it set
+        assert expected == value
+    assert await kv.compare_and_set(key, expected, value) is True
+    assert await kv.get_key(key) == expected
+    assert await kv.compare_and_set(key, None, value) is False
+
+
+@pytest.mark.parametrize("layer", ["inner", "encrypted"])
 @pytest.mark.parametrize("expected", [{"n": 0}, None], ids=["present", "absent"])
 async def test_concurrent_compare_and_set_has_exactly_one_winner(store, layer, expected) -> None:
     kv = store.store if layer == "inner" else store

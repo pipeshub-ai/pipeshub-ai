@@ -2433,7 +2433,7 @@ class DropboxConnector(BaseConnector):
                 )
                 return False
             await self.source_accounts.ensure_loaded([user_email])
-            if not self.source_accounts.holds(user_email, member_id):
+            if not self.source_accounts.admits(user_email, member_id):
                 self.logger.info(
                     "Skipped a group role change for user %s: the event names an earlier account of the address", user.id
                 )
