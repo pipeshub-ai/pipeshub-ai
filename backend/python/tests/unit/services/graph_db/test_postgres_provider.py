@@ -151,7 +151,8 @@ def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
 HELPERS = ["_normalize_name", "_normalized_name_variants_lower", "_generate_upload_message", "_analyze_upload_structure", "_populate_file_destinations"]
 CALLER_METHODS = ["_get_kb_context_for_record", "_fetch_existing_file_names_in_parent", "_validate_upload_context", "get_user_app_ids",
                   "get_user_permission_app_ids", "_create_reindex_event_payload", "delete_inherit_permissions_relation_record_group", "get_user_apps",
-                  "delete_all_edges_for_node", "get_template", "clone_agent_template"]
+                  "delete_all_edges_for_node", "get_template", "clone_agent_template", "get_all_agent_templates", "update_agent_template",
+                  "delete_agent_template", "get_all_agents", "update_agent", "delete_agent"]
 
 
 def _providers() -> list[type]:
@@ -192,11 +193,6 @@ RAISING_DEFAULTS_NOT_ON_POSTGRES = {
     # only with ACL_SCOPE_FIELDS on or ACL_FILTER_MODE shadow/scopes (off by default); there a search fails at start and a vector point stays on the
     # legacy filter (marked stale). shortcut: the scope filter is not served on PostgreSQL, implement both views before it is
     "permission_hierarchy_view", "permission_stamp_graph",
-    # shortcut: get_ref_access (a knowledge-base push that inlines stored images) raises on PostgreSQL; "linked" is read across orgs, which needs
-    # a vetted cross-org read here. Implement it and drop this entry
-    "_ref_link_rows",
-    # implemented in the sibling fix
-    "get_hidden_app_ids",
 }
 
 

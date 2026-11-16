@@ -87,7 +87,7 @@ from app.models.entities import (
     WebpageRecord,
     substitute_user_email,
 )
-from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, best_record_access, read_role
 from app.models.source_dates import (
     DATED_ONLY_TIME_RANGE_KEY,
     SOURCE_TIMESTAMP_ORIGIN_FIELD,
@@ -252,6 +252,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    UNSUPPORTED_PAGE_FIELDS,
     AccessibleContainers,
     CodeFileInfo,
     FolderChangedDuringDelete,
@@ -476,7 +477,7 @@ def _aql_passes_vertex(v: str) -> str:
     """The hop rule without the inheritance probe: what a child needs whether
     or not it inherits."""
     return (f'({_aql_access_rule(v)} IN ["STRICT", "OPEN"]'
-            f' OR ({_aql_access_rule(v)} == "RESTRICTED" AND HAS(@granted, {v}._key)))')
+            f' OR ({_aql_access_rule(v)} IN ["RESTRICTED", "PARENT_AND_GRANT"] AND HAS(@granted, {v}._key)))')
 
 
 def _aql_inherits(child: str, parent: str, tag: str) -> str:
@@ -487,8 +488,8 @@ def _aql_inherits(child: str, parent: str, tag: str) -> str:
 
 def _aql_granted_hop(child: str, parent: str, tag: str, *, navigation: bool) -> str:
     """One hop of the v3 rule, as Neo4j's ``_kh_v3_granted_hop``; ``kh_opens``
-    and ``@granted`` must be in scope. RESTRICTED needs inheritance and its own
-    grant, STRICT or OPEN either, any other value nothing.
+    and ``@granted`` must be in scope. RESTRICTED and PARENT_AND_GRANT need
+    inheritance and their own grant, STRICT or OPEN either, any other value nothing.
     ``hideChildren`` is navigation only."""
     rule = _aql_access_rule(child)
     hide = f" AND {parent}.hideChildren != true" if navigation else ""
@@ -501,10 +502,17 @@ def _aql_granted_hop(child: str, parent: str, tag: str, *, navigation: bool) -> 
 _AQL_APP_OPENS = 'kh_app.permissionModel == "APP_LEVEL" OR kh_app.type == "KB"'
 
 
+def _aql_below_seed_vertex(v: str) -> str:
+    """The hop below a seed without the inheritance probe: OPEN, or PARENT_AND_GRANT and granted."""
+    rule = _aql_access_rule(v)
+    return f'({rule} == "OPEN" OR ({rule} == "PARENT_AND_GRANT" AND HAS(@granted, {v}._key)))'
+
+
 def _aql_open_hop(c: str, p: str, tag: str) -> str:
-    """A child below a seed: OPEN only, granted or inheriting."""
-    return (f'{c}.isDeleted != true AND {_aql_access_rule(c)} == "OPEN"'
-            f' AND (HAS(@granted, {c}._key) ? true : {_aql_inherits(c, p, tag)})')
+    """A child below a seed: a live OPEN node granted or inheriting, or a live PARENT_AND_GRANT node granted and
+    inheriting. STRICT and RESTRICTED never pass: something above the seed is not accessible."""
+    return (f'{c}.isDeleted != true AND ({_aql_access_rule(c)} == "OPEN" AND HAS(@granted, {c}._key) ? true'
+            f' : ({_aql_below_seed_vertex(c)} ? {_aql_inherits(c, p, tag)} : false))')
 
 
 def _aql_read_by_app(v: str) -> str:
@@ -561,7 +569,7 @@ def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false", a
 
 def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | None = None, *, hiding: bool = True) -> str:
     """Whether child ``c`` is listed under ``p`` when browsing: the hop where the walk from the App (or an
-    open App) reaches ``p``, OPEN nodes only below a seed, and the declared scope either way. Written once:
+    open App) reaches ``p``, the hop below a seed (``_aql_open_hop``) below one, and the declared scope either way. Written once:
     the expansion and a row's arrow both read it, so an arrow means the expansion lists something.
     ``kh_opens``, ``@granted`` and ``@kh_scope`` must be in scope."""
     # The check does not walk through a declared group of this App, whether or not the App opens everything: a
@@ -3266,6 +3274,61 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 expected, new_status, str(e),
             )
             raise
+
+    async def list_unsupported_page(
+        self,
+        org_id: str,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        # A range seek of the (orgId, connectorId, indexingStatus, _key) index; the sort is the index's.
+        rows = await self.http_client.execute_aql(
+            """
+            FOR r IN @@records
+                FILTER r.orgId == @org_id AND r.connectorId == @connector_id
+                    AND r.indexingStatus == @status AND r._key > @after AND r.isDeleted != true
+                SORT r._key
+                LIMIT @limit
+                RETURN KEEP(r, @fields)
+            """,
+            {
+                "@records": CollectionNames.RECORDS.value,
+                "org_id": org_id,
+                "connector_id": connector_id,
+                "status": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "after": after_key or "",
+                "limit": max(1, int(limit)),
+                "fields": ["_key", *UNSUPPORTED_PAGE_FIELDS],
+            },
+        )
+        return list(rows or [])
+
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not keys:
+            return []
+        bind_vars: dict[str, Any] = {
+            "@records": CollectionNames.RECORDS.value,
+            "keys": keys,
+            "expected": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            "to": to_status,
+        }
+        fields = "{ indexingStatus: @to, reason: null }"
+        if to_status == ProgressStatus.QUEUED.value:
+            fields = "{ indexingStatus: @to, reason: null, queuedAtTimestamp: @now }"
+            bind_vars["now"] = get_epoch_timestamp_in_ms()
+        # One statement: the status is read where it is written, so a record the indexer moved on is not taken back.
+        updated = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@records
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected AND doc.isDeleted != true
+                UPDATE doc WITH {fields} IN @@records
+                RETURN NEW._key
+            """,
+            bind_vars,
+        )
+        return [k for k in (updated or []) if isinstance(k, str)]
 
     # ==================== Pipeline stage states ====================
 
@@ -9885,6 +9948,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """
         Get organization apps.
@@ -9892,18 +9956,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             active_filter = "FILTER app.isActive == true" if active_only else ""
             type_filter = "FILTER app.type == @app_type" if app_type is not None else ""
+            ids_filter = "FILTER app._key IN @app_ids" if app_ids is not None else ""
             query = f"""
             FOR app IN OUTBOUND
                 '{CollectionNames.ORGS.value}/{org_id}'
                 {CollectionNames.ORG_APP_RELATION.value}
             {active_filter}
             {type_filter}
+            {ids_filter}
             RETURN app
             """
+            bind_vars: dict[str, Any] = {}
+            if app_type is not None:
+                bind_vars["app_type"] = app_type
+            if app_ids is not None:
+                bind_vars["app_ids"] = app_ids
 
-            results = await self.http_client.execute_aql(
-                query, bind_vars={"app_type": app_type} if app_type is not None else None,
-            )
+            results = await self.http_client.execute_aql(query, bind_vars=bind_vars or None)
             return results if results else []
         except Exception as e:
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
@@ -20394,21 +20463,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         walk_head, seed_head = head("v.orgId == @org_id AND "), head("")
 
-        # Below a seed only OPEN nodes pass (something above the seed is not
-        # accessible).
+        # Below a seed only the hop below a seed passes (`_aql_open_hop`).
         seeds = walk_head + f"""
             FOR kh_s, kh_se, kh_sp IN 1..50 INBOUND v {relations}
                 PRUNE kh_se != null AND (kh_se.relationshipType NOT IN {hierarchy}
-                    OR kh_s.isDeleted == true OR {rule("kh_s")} != "OPEN")
+                    OR kh_s.isDeleted == true OR NOT {_aql_below_seed_vertex("kh_s")})
                 OPTIONS {{uniqueVertices: "path", vertexCollections: ["{records}", "{groups}"]}}
                 FILTER {seed("kh_s")}
                 FILTER kh_sp.edges[*].relationshipType ALL IN {hierarchy}
                 FILTER LENGTH(
                     FOR kh_si IN 0..LENGTH(kh_sp.edges) - 1
                         LET kh_sc = kh_sp.vertices[kh_si]
-                        FILTER kh_sc.isDeleted == true OR {rule("kh_sc")} != "OPEN"
-                            OR NOT (HAS(@granted, kh_sc._key) ? true
-                                : {_aql_inherits("kh_sc", "kh_sp.vertices[kh_si + 1]", "s")})
+                        FILTER NOT ({_aql_open_hop("kh_sc", "kh_sp.vertices[kh_si + 1]", "s")})
                         LIMIT 1
                         RETURN 1) == 0
                 RETURN DISTINCT {{node: v._key, seed: kh_s._key}}
@@ -20562,7 +20628,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 app_id, org_id, access, transaction, only_group=None if start_is_app else start_id,
             )).get(app_id if start_is_app else start_id, [])]
         # What a row's arrow reads: App rows come from the App except chain-tops, the flatten cannot tell per
-        # node (so it takes the stricter OPEN-only rule), a scoped browse takes its start's.
+        # node (so it takes the stricter rule below a seed), a scoped browse takes its start's.
         browsing_app = start_is_app and not flatten
         row_ctx: dict[str, Any] = {
             "granted": bind["granted"], "kh_scope": {}, "kh_from_app": browsing_app,
@@ -21452,8 +21518,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN 1) > 0)
                 RETURN kh_s._id
             """,
-            # Below a seed only OPEN nodes pass: something above the seed is not
-            # accessible.
+            # Below a seed only the hop below a seed passes (`_aql_open_hop`).
             "step_open": children(open_parent, open_hop),
             # The hierarchy alone, for how far a node lies from the App: through any node, a deleted one too, as Neo4j's walk goes (a live record below a deleted folder
             # is that many hops down).
@@ -24615,14 +24680,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }
                     break
 
-            # The highest role among the access paths; a retired role reads as
-            # READER, as on Neo4j.
-            role_priority = {"OWNER": 3, "WRITER": 2, "READER": 1}
-
-            best_access = max(
-                access_result,
-                key=lambda a: role_priority.get(read_role(a.get("role", "")), 0)
-            )
+            best_access = best_record_access(access_result, record.get("accessRule"))
 
             permissions = [{
                 "id": record.get("id") or record.get("_key"),
@@ -24925,8 +24983,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET parent_rgs_all = APPEND(parent_rgs, belongs_kb_apps, true)
 
+
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
+            LET kh_needs_own = NOT_NULL({node_var}.accessRule, "OPEN") IN ["RESTRICTED", "PARENT_AND_GRANT"]
+
             // Build permission targets: [record] + ancestor RGs/Apps
-            LET permission_targets = APPEND([{node_var}._id], parent_rgs_all, true)
+            LET permission_targets = kh_needs_own ? [{node_var}._id] : APPEND([{node_var}._id], parent_rgs_all, true)
 
             // Step 2: Check all 10 permission paths across all targets
             // Note: All 10 paths are covered by checking paths 1,3,5,7,9 on all targets:
@@ -25096,7 +25159,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             // Build permission targets: [this RG] + ancestor RGs
-            LET permission_targets = APPEND([{node_var}._id], parent_rgs, true)
+
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
+            LET kh_needs_own = NOT_NULL({node_var}.accessRule, "OPEN") IN ["RESTRICTED", "PARENT_AND_GRANT"]
+            LET permission_targets = kh_needs_own ? [{node_var}._id] : APPEND([{node_var}._id], parent_rgs, true)
 
             // Step 2: Check all permission paths across all targets
             // Direct paths (1, 2, 3, 4, 5):
@@ -26959,6 +27026,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their _key (record IDs).
@@ -26999,6 +27068,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_virtual_record_holders(
@@ -28131,7 +28202,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     LET knowledge = DOCUMENT(edge._to)
                     FILTER knowledge != null
 
-                    LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    LET app_doc = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    // Only an app of the agent's organisation (through its org edge) is resolved; another org's reads as UNKNOWN.
+                    LET connector_instance = app_doc != null AND @org_id != null AND LENGTH(
+                        FOR oe IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER oe._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND oe._to == app_doc._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0 ? app_doc : null
                     LET is_kb = connector_instance != null AND connector_instance.type == @kb_type
 
                     LET kb_info = is_kb ? (
@@ -28256,7 +28334,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         try:
             query = f"""
@@ -28307,7 +28385,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
 
             bind_vars = {"agent_id": agent_id, "user_id": user_id, "org_id": org_id}
-            result = await self.execute_query(query, bind_vars=bind_vars)
+            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or result[0] is None:
                 return None
@@ -28637,7 +28715,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             LET knowledge = DOCUMENT(edge._to)
                             FILTER knowledge != null
 
-                            LET connector_instance2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            LET app_doc2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            // Only an app of the agent's organisation (through its org edge) is resolved; another org's reads as UNKNOWN.
+                            LET connector_instance2 = app_doc2 != null AND @org_id != null AND LENGTH(
+                                FOR oe IN {CollectionNames.ORG_APP_RELATION.value}
+                                    FILTER oe._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND oe._to == app_doc2._id
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0 ? app_doc2 : null
                             LET is_kb2 = connector_instance2 != null AND connector_instance2.type == @kb_type
 
                             LET kb_info = is_kb2 ? (
@@ -28749,7 +28834,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
         """
         try:
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -28844,7 +28929,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -29529,7 +29614,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
-            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -29614,7 +29699,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN perm._to
             )
 
-            // Get templates with individual access
+            // Get templates with individual access. Edit and delete need the user's own OWNER grant
+            // (update_agent_template, delete_agent_template), so can_edit/can_delete say so; a team's grant gives neither.
             LET individual_templates = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
@@ -29631,7 +29717,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_edit: perm.role == "OWNER",
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
@@ -29658,8 +29744,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
+                        can_edit: false,
+                        can_delete: false,
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
                     }})
@@ -29715,7 +29801,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_edit: perm.role == "OWNER",
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
@@ -29739,8 +29825,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
+                        can_edit: false,
+                        can_delete: false,
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
                     }})
@@ -29814,7 +29900,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
                 FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
+                LET template = DOCUMENT(perm._to)
+                // a template stored without isDeleted is live, as in the list and get_template
+                FILTER template != null AND template.isDeleted != true
                 LIMIT 1
                 RETURN perm
             """
@@ -29879,7 +29967,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
                 FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
+                LET template = DOCUMENT(perm._to)
+                // a template stored without isDeleted is live, as in the list and get_template
+                FILTER template != null AND template.isDeleted != true
                 LIMIT 1
                 RETURN perm
             """
