@@ -446,6 +446,13 @@ class _Flags:
         self.values[key] = value
         return True
 
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        await self.set_config(key, new)
+        return True
+
 
 async def test_the_start_up_migrations_run_with_no_org_bound(orgs, org_ctx, pg_provider) -> None:
     """Start-up binds no org: each migration binds its own scope (every org for the edge rename and the org listing, one org for its knowledge

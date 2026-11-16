@@ -1361,6 +1361,42 @@ class TestSyncUsers:
         linked = connector.data_entities_processor.on_new_app_users.call_args[0][0]
         assert [u.source_user_id for u in linked] == ["u1"]
 
+    @staticmethod
+    def _user_step(frozen_answers: list) -> SalesforceConnector:
+        """A connector whose user list has U (active), and whose frozen-user list gives ``frozen_answers`` in turn."""
+        connector = _make_connector()
+        connector.user_sync_point = MagicMock(read_sync_point=AsyncMock(return_value={}),
+                                              update_sync_point=AsyncMock())
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+
+        async def pages(api_version: str, q: str, **_: object) -> AsyncIterator[list[dict]]:
+            if "UserLogin" in q:
+                answer = frozen_answers.pop(0)
+                if isinstance(answer, Exception):
+                    raise answer
+                yield [{"UserId": uid} for uid in answer]
+            elif q.startswith("SELECT Id, FirstName"):
+                yield [{"Id": "U", "FirstName": "Una", "LastName": "F", "Email": "una@example.com", "IsActive": True}]
+
+        connector._soql_query_paginated = pages
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_a_user_unfrozen_during_the_run_stays_in_the_frozen_checkpoint(self) -> None:
+        """Skipped as frozen, U must be in the checkpoint, or its unfreezing is never seen and it is never linked."""
+        connector = self._user_step([{"U"}, set()])
+        await connector._sync_user_list("59.0", 1_000)
+        connector.data_entities_processor.on_new_app_users.assert_not_awaited()
+        connector.user_sync_point.update_sync_point.assert_any_await("frozen_users", {"userIds": ["U"]})
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_frozen_list_links_nobody_and_keeps_the_checkpoint(self) -> None:
+        connector = self._user_step([RuntimeError("HTTP 403"), RuntimeError("HTTP 403")])
+        await connector._sync_user_list("59.0", 1_000)
+        connector.data_entities_processor.on_new_app_users.assert_not_awaited()
+        assert not any(c.args[0] == "users" for c in connector.user_sync_point.update_sync_point.await_args_list)
+
     @pytest.mark.asyncio
     async def test_sync_users_skips_empty_list(self):
         connector = _make_connector()

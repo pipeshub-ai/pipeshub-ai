@@ -469,6 +469,8 @@ class TestUsersAndGroups:
     @pytest.mark.parametrize("second_page", [
         json_response({"message": "busy"}, status=503),
         {"oops": True},
+        # an empty page that still links a next one is not the end of the list
+        {"results": [], "size": 0, "_links": {"base": BASE, "next": f"{ACTIVE_USERS}?start=2"}},
     ])
     async def test_a_cut_active_list_withdraws_nobody(self, atlassian_api, db, store, second_page) -> None:
         connector = await make_connector(atlassian_api, db, store)

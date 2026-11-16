@@ -55,7 +55,7 @@ async def test_values_are_encrypted_in_the_table(monkeypatch, runtime, uid) -> N
 async def test_read_modify_write_from_two_services_loses_no_update(monkeypatch, runtime, uid) -> None:
     """Two processes append to one encrypted list at once; compare_and_set_config makes the loser re-read."""
     a, b = make(monkeypatch, runtime), make(monkeypatch, runtime)
-    key = f"/test/{uid}/accounts"
+    key = f"/services/connectors/test{uid}/sourceAccounts/00"     # a prefix the connectors service may write
     try:
         async def append(svc: ConfigurationService, item: str) -> None:
             for _ in range(50):

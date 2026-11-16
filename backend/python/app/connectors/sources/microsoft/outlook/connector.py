@@ -932,7 +932,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                         if member_email:
                             # Look up existing user from cache
                             user_id = self._user_cache.get(member_email.lower())
-                            if user_id and self.source_accounts.may_grant(member_email, getattr(member, "id", None)):
+                            # The cache may be refreshed meanwhile: write only the account the check judged.
+                            if user_id and user_id == getattr(member, "id", None) \
+                                    and self.source_accounts.may_grant(member_email, user_id):
                                 app_user = AppUser(
                                     app_name=Connectors.OUTLOOK,
                                     connector_id=self.connector_id,

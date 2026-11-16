@@ -66,6 +66,13 @@ class _Config:
         self.writes.append((key, _org()))
         return True
 
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        await self.set_config(key, new)
+        return True
+
 
 async def _detached(coro: Coroutine) -> Any:  # noqa: ANN401
     """As ``connectors_main`` runs a start-up job: an empty context, no org bound."""

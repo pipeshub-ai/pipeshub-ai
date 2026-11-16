@@ -449,19 +449,6 @@ def _email_of(user_by_id: dict[str, Any], identifier: str | None) -> str | None:
     return None
 
 
-def _user_ref(user: object) -> str | None:
-    """The id a Jira user object names its account by: the id the connectors list users with. Cloud's user
-    objects carry accountId ("`id` (for account ID) used instead of `name` for user fields, such as `reporter`
-    and `assignee`", https://developer.atlassian.com/cloud/jira/platform/deprecation-notice-user-privacy-api-migration-guide/);
-    Data Center's carry the user key (UserJsonBean `key`, in the 8.20, 9.12, 10.0 and 11.0 REST references,
-    https://docs.atlassian.com/software/jira/docs/api/REST/8.20.0/ and
-    https://developer.atlassian.com/server/jira/platform/jira_software_dc_11000_swagger.v3.json)."""
-    if not isinstance(user, dict):
-        return None
-    ref = user.get("accountId") or user.get("key") or user.get("name")
-    return str(ref) if ref else None
-
-
 def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool]:
     """Return ``(email, skip_because_inactive)``."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
@@ -500,7 +487,9 @@ def _permissions_for_holder(
     def add_user(email: str | None, account_id: str | None = None) -> None:
         if not email:
             return
-        key = f"user:{email.lower()}"
+        # By account: two accounts sharing an address (Data Center allows it) each keep their grant. An address-only
+        # grant to an address a grant also names by account is dropped (``_prefer_named``).
+        key = f"user:{account_id or email.lower()}"
         if key in seen:
             return
         seen.add(key)
@@ -535,8 +524,7 @@ def _permissions_for_holder(
         email, inactive = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        named = holder.get("user") if isinstance(holder.get("user"), dict) else {}
-        add_user(email, named.get("accountId") or named.get("key") or parameter)
+        add_user(email, _account_of(holder.get("user")) or parameter)
         # A person who resolves to no e-mail is unread, not outside the level.
         return grants, False, None if email else HOLDER_USER
 
@@ -550,11 +538,11 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email, _user_ref(fields.get("reporter")))
+        add_user(reporter_email, _account_of(fields.get("reporter")))
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email, _user_ref(fields.get("assignee")))
+        add_user(assignee_email, _account_of(fields.get("assignee")))
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -601,11 +589,32 @@ def _permissions_for_holder(
             else:
                 email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email, _user_ref(entry))
+                    add_user(email, _account_of(entry))
                     unresolved = unresolved or not email
         return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
+
+
+def _account_of(person: object) -> str | None:
+    """The id a Jira user object names its account by: the id the connectors list users with. Cloud's user
+    objects carry accountId ("`id` (for account ID) used instead of `name` for user fields, such as `reporter`
+    and `assignee`", https://developer.atlassian.com/cloud/jira/platform/deprecation-notice-user-privacy-api-migration-guide/);
+    Data Center's carry the user key (UserJsonBean `key`, in the 8.20, 9.12, 10.0 and 11.0 REST references,
+    https://docs.atlassian.com/software/jira/docs/api/REST/8.20.0/ and
+    https://developer.atlassian.com/server/jira/platform/jira_software_dc_11000_swagger.v3.json), and a legacy
+    user only its ``name``, which the Data Center user sync then lists it by."""
+    if not isinstance(person, dict):
+        return None
+    account = person.get("accountId") or person.get("key") or person.get("name")
+    return str(account) if account else None
+
+
+def _prefer_named(grants: list[Permission]) -> list[Permission]:
+    """Without the address-only user grants of an address another grant names by account: one grant per person."""
+    named = {p.email.lower() for p in grants if p.entity_type == EntityType.USER and p.email and p.external_id}
+    return [p for p in grants
+            if not (p.entity_type == EntityType.USER and p.email and not p.external_id and p.email.lower() in named)]
 
 
 def _field_entries(value: object) -> list[dict[str, Any]]:
@@ -632,7 +641,7 @@ def browse_holder_grants(
             reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
         )
         grants.extend(portion)
-    return grants
+    return _prefer_named(grants)
 
 
 def level_grants(
@@ -666,7 +675,7 @@ def level_grants(
         grants.extend(portion)
         if skipped_type and skipped_type not in skipped:
             skipped.append(skipped_type)
-    return grants, False, skipped
+    return _prefer_named(grants), False, skipped
 
 
 def apply_issue_access_settled(
@@ -797,7 +806,7 @@ def apply_issue_access(
 async def check_unlisted_holders(connector: Any, permissions: list[Permission], listed: dict[str, Any]) -> None:  # noqa: ANN401
     """A holder resolved from the issue payload, an account the user listing does not hold, goes through the account
     check before its grant is written, so its address passing to another account takes the earlier account's grants
-    away. It is named by accountId on Cloud and by the user key on Data Center (``_user_ref``). A listed person is never
+    away. It is named by accountId on Cloud and by the user key on Data Center (``_account_of``). A listed person is never
     passed: their account is checked by the listing, under the id it lists them by."""
     if connector.connector_name in NOT_SOURCE_ACCOUNTS:
         return      # a personal connector links the person who set it up: its addresses are not checked

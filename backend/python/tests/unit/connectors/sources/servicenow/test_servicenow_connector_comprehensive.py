@@ -83,6 +83,7 @@ def _sys_user_row(**fields: object) -> dict:
         "department": None,
         "location": None,
         "cost_center": None,
+        "locked_out": "false",
     }
     base.update(fields)
     return base
