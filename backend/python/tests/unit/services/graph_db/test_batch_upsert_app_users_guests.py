@@ -44,7 +44,15 @@ def _stored(email: str, *, is_active: bool) -> User:
 
 
 def _wire(provider, stored_users: list) -> None:
-    provider.get_user_by_email = AsyncMock(side_effect=stored_users)
+    answers = iter(stored_users)
+
+    async def by_email(email: str, transaction: str | None = None, *, org_id: str) -> User | None:
+        assert org_id == ORG, "every lookup names the batch's org"
+        stored = next(answers)
+        assert stored is None or stored.email == email
+        return stored
+
+    provider.get_user_by_email = AsyncMock(side_effect=by_email)
     provider.batch_upsert_nodes = AsyncMock()
     provider.batch_create_edges = AsyncMock()
     provider.delete_edge = AsyncMock()
