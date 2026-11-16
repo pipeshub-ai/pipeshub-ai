@@ -16,6 +16,7 @@ from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kh_listing_flat import (
@@ -525,8 +526,8 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 assert not seq, f"{at}: sequential scan of {seq}"
                 # once analyzed, every read of the org's rows and links is bounded by the nodes it asks about, never a walk of the org's index (with no statistics the planner may
                 # still pick a wider range of a small table: the plan without a scan above is what holds then)
-                loose = [n["Index Name"] for n in _nodes(plan) if analyzed and str(n.get("Index Name")).startswith(("records_", "links_")) and not NODE_COND.search(n.get("Index Cond") or "")]
-                assert not loose, f"{at}: reads {loose} without the node in its index condition: {[n.get('Index Cond') for n in _nodes(plan) if n.get('Index Name') in loose]}"
+                loose = plan_gate.unkeyed(plan, ("records", "links"), NODE_COND.pattern) if analyzed else []
+                assert not loose, f"{at}: reads without the node in its index condition: {loose}"
                 if name.startswith("wide"):      # the parent's children are read by an index on the parent (the children index, in its order, once the node is wide: the latency run's plans)
                     used = {n.get("Index Name") for n in _nodes(plan)}
                     assert any(str(u).startswith(("records_children_", "records_parent")) for u in used), f"{at}: {used}"
@@ -737,11 +738,9 @@ async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organ
             base.values[1], base.values[2] = g1, 51
             sql = kgl.page_sql(field, "ASC", "next", where, None, None, kgl.browse_scopes(base.add(linked)))
             plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *base.values))
-            scans = [n for n in _nodes(plan) if n.get("Relation Name") == "records" or str(n.get("Index Name")).startswith("records_")]
-            probes = [n for n in scans if n.get("Index Name") == "records_pkey" and re.search(r"\bsk = (?!ANY)", n.get("Index Cond") or "")]
-            ranges = [n for n in scans if str(n.get("Index Name")).startswith(("records_children_", "records_parent")) and "parent_sk = " in (n.get("Index Cond") or "")]
-            # a bitmap heap scan is as bounded as its bitmap index scans, which are checked themselves; any other read of records (a seq scan) is loose
-            loose = [(n["Node Type"], n.get("Index Name"), n.get("Index Cond")) for n in scans if n["Node Type"] != "Bitmap Heap Scan" and n not in probes and n not in ranges]
+            scans = plan_gate.scans(plan, "records")
+            probes = [n for n in scans if plan_gate.keyed(n, r"\bsk = (?!ANY)", "records_pkey")]
+            loose = [(n["Node Type"], plan_gate.bounds(n)) for n in scans if n not in probes and not plan_gate.keyed(n, r"parent_sk = ", r"records_(children_\w+|parent\w*)")]
             assert loose == [] and probes, (field, loose, plan)
             assert len(await con.fetch(sql, *base.values)) == 51
     finally:
@@ -784,18 +783,12 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
     granted = [f"chain{g}" for g in range(1, 4201, 7)]
     expected = sorted(f"chain{g}" for g in range(1, 4201, 7) if g % 10 not in (1, 2))
 
-    def unkeyed(node: dict) -> list[str]:
-        found = []
-        rel, index, cond = node.get("Relation Name") or "", node.get("Index Name") or "", node.get("Index Cond") or ""
-        if rel.startswith("nodes") or index.startswith("nodes"):
-            if node["Node Type"] != "Index Scan" or not re.fullmatch(r"nodes\w*_pkey", index) or not re.search(r"\bid = ", cond):
-                found.append(f"{node['Node Type']} {index} on {rel}: {cond}")
-            elif node["Actual Rows"] > 1:
-                found.append(f"{index}: {node['Actual Rows']} rows per probe")
+    def unkeyed(plan: dict) -> list[str]:
+        found = plan_gate.unkeyed(plan, "nodes", r"\bid = ", r"nodes\w*_pkey")
+        found += [f"{n['Node Type']} on {n['Relation Name']}: {n['Actual Rows']} rows per probe" for n in plan_gate.scans(plan, "nodes") if n["Actual Rows"] > 1]
         # kg.records and the connector's key are read once, by whatever plan the statistics pick (a few thousand rows are a sequential scan even when analysed), never per row
-        elif (rel in ("records", "node_keys") or index.startswith(("records_", "node_keys"))) and node.get("Actual Loops", 1) > 1:
-            found.append(f"{node['Node Type']} {index or rel} read {node['Actual Loops']} times")
-        return found + [x for child in node.get("Plans", []) for x in unkeyed(child)]
+        return found + [f"{n['Node Type']} on {n['Relation Name']} read {n['Actual Loops']} times" for n in plan_gate.scans(plan, ("records", "node_keys"))
+                        if n.get("Actual Loops", 1) > 1]
 
     for state in ("fresh", "analysed", "crowded"):
         if state == "crowded":
@@ -811,7 +804,7 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
         with ctx(org):
             plan, rows = await p._kq(go, None)
         assert rows == expected, (state, len(rows), len(expected))
-        assert not (bad := unkeyed(plan["Plan"])), f"{state}: {bad}"
+        assert not (bad := unkeyed(plan)), f"{state}: {bad}"
 
 
 async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:
