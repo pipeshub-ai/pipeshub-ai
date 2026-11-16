@@ -11,9 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from dropbox.exceptions import ApiError
-from fastapi import HTTPException
-from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata, ListFolderResult
+from dropbox.files import (
+    DeletedMetadata,
+    FileMetadata,
+    FolderMetadata,
+    ListFolderResult,
+)
 from dropbox.team_log import EventCategory
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -22,6 +27,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_processor.source_accounts import _bucket
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -45,7 +51,9 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import Permission, PermissionType
-from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1443,6 +1451,21 @@ class TestUpdateUserGroupPermission:
         connector.data_entities_processor.upsert_permission_edge = AsyncMock()
 
         for member, written in (("dbmid:old", False), (None, False), ("dbmid:new", True)):
+            assert await connector._update_user_group_permission(
+                "g1", "user@test.com", PermissionType.OWNER, member
+            ) is written
+        connector.data_entities_processor.upsert_permission_edge.assert_called_once()
+
+    async def test_a_role_change_for_a_deleted_accounts_address_is_written_only_for_the_linked_account(self, connector):
+        """The source still lists a deleted account with the address and no listing has shown it since: an event
+        naming the deleted account changes nothing, one naming the linked account does."""
+        connector.source_accounts._deleted = {_bucket("user@test.com"): {"user@test.com": "dbmid:gone"}}
+        connector.source_accounts._linked = {_bucket("user@test.com"): {"user@test.com": "dbmid:linked"}}
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="ug1"))
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
+
+        for member, written in (("dbmid:gone", False), ("dbmid:linked", True)):
             assert await connector._update_user_group_permission(
                 "g1", "user@test.com", PermissionType.OWNER, member
             ) is written
