@@ -148,9 +148,10 @@ class ConfigService(InMemoryConfigService):
         return await super().get_config(path, default, **kwargs)
 
     async def compare_and_set_config(self, key, expected, new) -> bool:
-        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts); nothing is
-        # kept here, as with every other key this fake answers.
-        return await self.get_config(key) == expected
+        # The connector processor keeps its per-connector account state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        return await self.set_config(key, new)
 
 
 class LogCapture(logging.Handler):

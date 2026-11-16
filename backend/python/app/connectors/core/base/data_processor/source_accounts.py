@@ -76,7 +76,7 @@ def account_node_id(org_id: str, connector_id: str, source_user_id: str) -> str:
 
 def _bucket(address: str) -> int:
     # hashlib, not hash(): the bucket must be the same in every process.
-    return hashlib.sha1(address.encode()).digest()[0] % BUCKETS
+    return hashlib.sha256(address.encode()).digest()[0] % BUCKETS
 
 
 def _legacy_reused(value: dict) -> dict[str, str]:
@@ -387,33 +387,40 @@ class SourceAccounts:
         """The connector's one read-update-save at a time in this process; the SourceAccount writer takes it too."""
         return self._lock
 
-    async def before_link(self, users: list["AppUser"], then: Callable[[], Awaitable[None]] | None = None) -> bool:
+    async def before_link(
+        self, users: list["AppUser"], write: "Callable[[], Awaitable[None]] | None" = None,
+    ) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
         to a different account than the one it was linked to before. False when the stored links could not be read:
-        then nobody is linked and no grant is written this run (``ensure_loaded`` raises). ``then`` (the link write)
+        then nobody is linked and no grant is written this run (``ensure_loaded`` raises). ``write`` (the link write)
         runs after a successful check under the same lock, so no other listing of the connector runs in between."""
         try:
-            return await self._admit(users, then, fenced=False)
+            return await self._admit(users, fenced=False, write=write)
         except _NeedsFence:
             # Taken before this connector's lock, as grant writes take them: a write holding the fence may be waiting
             # for the lock to load a bucket.
             async with grant_fence().exclusive():
-                return await self._admit(users, then, fenced=True)
+                return await self._admit(users, fenced=True, write=write)
 
-    async def _admit(self, users: list["AppUser"], then: Callable[[], Awaitable[None]] | None, *, fenced: bool) -> bool:
+    async def _admit(
+        self, users: list["AppUser"], *, fenced: bool, write: "Callable[[], Awaitable[None]] | None",
+    ) -> bool:
         async with self._lock:
             for _ in range(_SAVE_ATTEMPTS):
                 try:
-                    ok = await self._before_link(users, fenced=fenced)
+                    admitted = await self._before_link(users, fenced=fenced)
+                    # ``write`` (the link itself) runs under the same lock: another admission for one of these addresses
+                    # cannot link a different account between this check and that write.
+                    # shortcut: one process; across processes the later link write can still name the older account.
+                    if admitted and write is not None:
+                        await write()
+                    return admitted
                 except _Conflict as conflict:
                     # Another process saved this bucket meanwhile: read it again and decide again (removing a
                     # grant twice is harmless).
                     self.logger.info("The account state of connector %s changed while it was saved (bucket %s); "
                                      "reading it again", self.connector_id, conflict.args[0])
                     continue
-                if ok and then is not None:
-                    await then()
-                return ok
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
     async def _before_link(self, users: list["AppUser"], *, fenced: bool) -> bool:

@@ -331,11 +331,68 @@ async def test_a_connector_that_links_pipeshub_users_is_not_checked() -> None:
 
 
 @pytest.mark.asyncio
+async def test_accounts_reported_unusable_are_withdrawn_and_a_failure_does_not_raise() -> None:
+    """Only the stored links whose account the source reported unusable go; a failed read is logged, not raised, so
+    the rewrites after it still run."""
+    processor, _ = _processor(_Config())
+    links = [SimpleNamespace(id=f"n-{s}", source_user_id=s, email=f"{s}@x.com") for s in ("a", "b", "c")]
+    processor.get_app_user_links = AsyncMock(return_value=links)
+    processor.withdraw_app_user_access = AsyncMock()
+
+    await processor.withdraw_reported_unusable(CONNECTOR, {"b", "z"})
+
+    processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR, [links[1]])
+    processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
+    await processor.withdraw_reported_unusable(CONNECTOR, {"b"})
+    processor.withdraw_app_user_access.reset_mock()
+    await processor.withdraw_reported_unusable(CONNECTOR, set())
+    processor.withdraw_app_user_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_second_admission_for_an_address_waits_for_the_first_ones_link_write() -> None:
+    """A is admitted and its link write is slow; B, listed for the same address meanwhile, must be admitted after that
+    write, or A's late write leaves the stored link naming A while the saved holder is B."""
+    processor, tx = _processor(_Config())
+    links: dict[str, str] = {}
+    processor.get_app_user_links = AsyncMock(side_effect=lambda _c: [
+        SimpleNamespace(id="u-ana", source_user_id=sid, email="ana@x.com") for sid in links.values()])
+    processor.remove_user_access_to_connector = AsyncMock(return_value=0)
+    a_writing, release, order = asyncio.Event(), asyncio.Event(), []
+
+    async def upsert(users: list) -> None:
+        sid = users[0].source_user_id
+        if sid == "a":
+            a_writing.set()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(release.wait(), 0.2)
+        links["ana@x.com"] = sid
+        order.append(sid)
+
+    tx.batch_upsert_app_users = AsyncMock(side_effect=upsert)
+
+    async def b() -> None:
+        await a_writing.wait()
+        task = asyncio.ensure_future(processor.on_new_app_users([_user("ana@x.com", "b")]))
+        await asyncio.sleep(0.05)
+        release.set()
+        await task
+
+    await asyncio.gather(processor.on_new_app_users([_user("ana@x.com", "a")]), b())
+
+    assert order == ["a", "b"]
+    assert links["ana@x.com"] == "b"
+
+
+@pytest.mark.asyncio
 async def test_linking_waits_when_the_stored_links_cannot_be_read() -> None:
+    """Nobody is linked, and the call fails: a caller that took it as done would move its checkpoint past users
+    it never linked, and an unchanged user is not listed again."""
     processor, tx = _processor(_Config())
     processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
 
-    await processor.on_new_app_users([_user("ana@x.com", "a")])
+    with pytest.raises(RuntimeError, match="could not be read"):
+        await processor.on_new_app_users([_user("ana@x.com", "a")])
 
     tx.batch_upsert_app_users.assert_not_awaited()
 
@@ -642,10 +699,10 @@ async def test_the_link_write_runs_after_the_check_under_the_same_lock_and_not_a
     async def link() -> None:
         held.append(accounts.lock.locked())
 
-    assert await accounts.before_link([_user("ana@x.com", "a")], then=link)
+    assert await accounts.before_link([_user("ana@x.com", "a")], write=link)
     assert held == [True], "the SourceAccount write is serialized with the connector's other listings"
     directory.processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
-    assert await accounts.before_link([_user("ana@x.com", "a")], then=link) is False
+    assert await accounts.before_link([_user("ana@x.com", "a")], write=link) is False
     assert held == [True], "nobody is linked when the stored links could not be read"
 
 

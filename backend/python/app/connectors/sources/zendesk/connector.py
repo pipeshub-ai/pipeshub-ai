@@ -563,7 +563,11 @@ class ZendeskConnector(BaseConnector):
         if linkable:
             await self.data_entities_processor.on_new_app_users(linkable)
         kept = {u.source_user_id for u in linkable}
-        if users_complete and users:
+        if not users_complete:
+            # A cut export still withdraws the accounts its pages reported deleted or suspended.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in users} - kept)
+        elif users:
             # A failed withdrawal must not stop the group and role rewrites after it, which leave these users out.
             try:
                 gone = [

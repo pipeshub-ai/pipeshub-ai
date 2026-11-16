@@ -71,6 +71,7 @@ def mock_data_entities_processor(mock_tx_store):
     proc.on_new_app_users = AsyncMock()
     proc.get_app_user_links = AsyncMock(return_value=[])
     proc.withdraw_app_user_access = AsyncMock()
+    proc.withdraw_reported_unusable = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
@@ -1535,7 +1536,10 @@ class TestAllTicketsAccess:
         if complete:
             assert sorted(u.source_user_id for u in withdraw.await_args.args[1]) == ["2", "3", "4"]
         else:
+            # A cut export takes nobody for gone (4 stays), but withdraws whom its pages reported suspended or deleted.
             withdraw.assert_not_awaited()
+            mock_data_entities_processor.withdraw_reported_unusable.assert_awaited_once_with(
+                zendesk_connector.connector_id, {"2", "3"})
 
     async def test_record_groups_grant_all_tickets_group(self, zendesk_connector) -> None:
         datasource = _ready(zendesk_connector)

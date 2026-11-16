@@ -500,6 +500,11 @@ class FakeBoxRecordsDb:
         gone = {u.source_user_id for u in users}
         self.app_users = {e: u for e, u in self.app_users.items() if u.source_user_id not in gone}
 
+    async def withdraw_reported_unusable(self, connector_id: str, source_ids: set[str]) -> None:
+        gone = [u for u in await self.get_app_user_links(connector_id) if u.source_user_id in source_ids]
+        if gone:
+            await self.withdraw_app_user_access(connector_id, gone)
+
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> AppUser | None:
         return next((u for u in self.app_users.values() if u.source_user_id == source_user_id), None)
 

@@ -2304,6 +2304,8 @@ class ServiceNowConnector(BaseConnector):
                 if reconcile:
                     gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
                 stored = [u for u in stored_users if u.source_user_id in gone]
+                # Before the withdrawal: should it fail, the groups and grants this run writes still leave them out.
+                self._unusable_user_ids |= gone
                 if stored:
                     await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
             except Exception as e:
@@ -4076,8 +4078,9 @@ class ServiceNowConnector(BaseConnector):
 
     async def _users_to_permissions(self, users: set[str], permission_type: PermissionType) -> list[Permission]:
         email_by_id = await self._emails_by_source_id()
+        # The sys_id lets the processor tell a re-used address's current holder from the earlier account.
         return [
-            Permission(email=email_by_id[u], type=permission_type, entity_type=EntityType.USER)
+            Permission(email=email_by_id[u], external_id=u, type=permission_type, entity_type=EntityType.USER)
             for u in sorted(users) if u in email_by_id
         ]
 
