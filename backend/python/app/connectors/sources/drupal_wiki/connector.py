@@ -1462,9 +1462,14 @@ class DrupalWikiConnector(BaseConnector):
         _, permissions = self._page_access(page_id, home, listing)
         records: list[tuple[Record, list[Permission]]] = []
         if permissions is None and self._share_unconfirmed(page_id, home, listing):
-            # Written in the form it is stored in, its grants left as they are; the share
-            # pass decides it once the open spaces have been listed.
-            record.access_rule, record.inherit_permissions = AccessRule.OPEN, False
+            # Written in the form it is stored in, its grants and inherit edge left as they are
+            # (OPEN is also the record default, so it may read only through that edge); the
+            # share pass decides it once the open spaces have been listed.
+            stored = stored or await self._stored_page(page_id)
+            record.access_rule = AccessRule.OPEN
+            record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
+                CollectionNames.RECORDS.value, stored.id if stored is not None else None
+            )
             await self.data_entities_processor.on_record_content_update(record)
         else:
             listing.written_as[page_id] = _grants_digest(permissions)

@@ -122,6 +122,7 @@ def processor() -> MagicMock:
     proc.on_user_group_deleted = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
     proc.on_record_content_update = AsyncMock()
+    proc.inheritance_when_unreadable = AsyncMock(return_value=False)
     proc.note_kept_records = MagicMock()
     proc.get_nodes_by_filters = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2456,6 +2457,7 @@ class TestSharedPages:
             connector, processor, {12: [self.PAGE], 13: response(status=500), 14: [], 15: []},
             settled=(), stored_open=True,
         )
+        processor.inheritance_when_unreadable = AsyncMock(return_value=False)  # written shared: no inherit edge
 
         await connector._sync_pages(self.SPACES)
 
@@ -2464,6 +2466,27 @@ class TestSharedPages:
         [kept] = [c.args[0] for c in processor.on_record_content_update.await_args_list]
         assert (kept.external_record_id, kept.access_rule.value, kept.inherit_permissions) == ("page:1", "OPEN", False)
         assert [f for f in connector._failures if "page 1" in f]
+
+    @pytest.mark.asyncio
+    async def test_a_kept_page_keeps_the_inherit_edge_it_is_stored_with(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Home 12 is open and listed; the page is stored OPEN (the record default) and reads
+        # only through its inherit edge. Open space 13 cannot be listed: the page is kept,
+        # and keeping it must not drop that edge.
+        self.wiki(
+            connector, processor, {12: [self.PAGE], 13: response(status=500), 14: [], 15: []},
+            settled=(), stored_open=True,
+        )
+        connector._space_status[12] = "AUTHENTICATED"
+        processor.inheritance_when_unreadable = AsyncMock(return_value=True)
+
+        await connector._sync_pages(self.SPACES)
+
+        assert self.rewrites(processor) == []
+        [kept] = [c.args[0] for c in processor.on_record_content_update.await_args_list]
+        assert (kept.external_record_id, kept.access_rule.value, kept.inherit_permissions) == ("page:1", "OPEN", True)
+        processor.inheritance_when_unreadable.assert_awaited_once_with("records", stored_record(1).id)
 
     @pytest.mark.asyncio
     async def test_a_full_sync_that_lists_every_open_space_unshares_a_page_no_longer_shared(
