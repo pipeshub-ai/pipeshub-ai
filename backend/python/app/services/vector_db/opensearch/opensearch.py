@@ -941,6 +941,41 @@ class OpenSearchService(IVectorDBService):
 
         return ScrollResult(points=points, next_offset=next_offset)
 
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        """``scroll`` with ``dense_embedding`` kept in ``_source``. The text is searched server-side, so there is no sparse vector."""
+        await self._assert_connected()
+        body: dict[str, Any] = {
+            "query": OpenSearchUtils.filter_expression_to_bool_query(scroll_filter),
+            "size": min(limit, 10000),
+            "sort": [{"point_id": "asc"}],
+        }
+        if offset is not None:
+            try:
+                body["search_after"] = json.loads(offset)
+            except (ValueError, TypeError):
+                body["search_after"] = [offset]
+        result = await self.client.search(index=collection_name, body=body)  # type: ignore
+        hits = (result.get("hits", {}).get("hits", []))[:limit]
+        points = []
+        for hit in hits:
+            point = self._hit_to_point(hit)
+            dense = hit.get("_source", {}).get("dense_embedding")
+            point.dense_vector = list(dense) if dense is not None else None
+            points.append(point)
+        next_offset = None
+        if len(hits) == limit and hits:
+            last_sort = hits[-1].get("sort")
+            if not last_sort:
+                raise RuntimeError(f"Cannot page '{collection_name}': documents have no 'point_id' to sort on.")
+            next_offset = json.dumps(last_sort)
+        return ScrollResult(points=points, next_offset=next_offset)
+
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         await self._assert_connected()
         result = await self.client.count(  # type: ignore

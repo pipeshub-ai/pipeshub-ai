@@ -8,6 +8,9 @@ class ReconciliationContext(BaseModel):
     new_metadata: Dict[str, Any] = {}
     blocks_to_index_ids: Optional[Set[str]] = None  # None means index all
     block_ids_to_delete: Optional[Set[str]] = None  # None means delete none
+    # old block id -> new block id, for blocks whose content is unchanged but whose stored points carry ids of another
+    # scheme: their points are moved to the new id with the stored vectors, not embedded again
+    rekey_ids: dict[str, str] | None = None
 
 #: ``TransformContext.settings`` key: the record is handed to the pipeline
 #: stages once indexed, so the indexed write also marks extraction QUEUED (the

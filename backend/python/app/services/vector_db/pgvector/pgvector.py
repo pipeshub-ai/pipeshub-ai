@@ -24,6 +24,7 @@ from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     current_scope_generation,
 )
+from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -503,6 +504,11 @@ class PgVectorService(IVectorDBService):
         found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
+
+    async def scroll_with_vectors(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None) -> ScrollResult:
+        """Not served: the halfvec column and the postings are not read back through the provider yet, so a caller that wanted to move points
+        without embedding them again embeds them (``VectorsNotFetchable``)."""
+        raise VectorsNotFetchable("pgvector does not return stored vectors")
 
     async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
         """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""

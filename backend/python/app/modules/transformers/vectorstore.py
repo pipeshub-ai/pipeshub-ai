@@ -52,6 +52,7 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.models.entities import Record
+from app.modules.indexing import rekey_metrics
 from app.modules.indexing.embed_resume import (
     EMBED_DELIVERY_ID,
     EMBED_DIGEST,
@@ -93,6 +94,7 @@ from app.services.resource_governor.feedback import get_default_downstream_feedb
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
@@ -129,6 +131,9 @@ from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
 from app.utils.openai_hosts import is_openai_api_url
 
+# A record re-keyed from random block ids reads this many old blocks' points per query and this many points per page.
+_REKEY_BLOCKS_PER_READ = 100
+_REKEY_PAGE = 500
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
 
@@ -1233,8 +1238,9 @@ class VectorStore(Transformer):
             is_reconciliation = True
             blocks_to_index_ids = ctx.reconciliation_context.blocks_to_index_ids
             block_ids_to_delete = ctx.reconciliation_context.block_ids_to_delete or set()
+            rekey_ids = ctx.reconciliation_context.rekey_ids or {}
 
-            if not blocks_to_index_ids and not block_ids_to_delete:
+            if not blocks_to_index_ids and not block_ids_to_delete and not rekey_ids:
                 self.logger.info(
                     f"Reconciliation: No changes detected for record {record_id}"
                 )
@@ -1246,6 +1252,14 @@ class VectorStore(Transformer):
                 blocks_to_index_ids = _with_whole_tables(
                     block_containers.blocks, blocks_to_index_ids, any_deleted=bool(block_ids_to_delete)
                 )
+            if rekey_ids:
+                blocks_to_index_ids, block_ids_to_delete = await self._move_points_to_new_ids(
+                    record, rekey_ids, set(blocks_to_index_ids), set(block_ids_to_delete),
+                )
+                if not blocks_to_index_ids and not block_ids_to_delete:
+                    self.logger.info(f"Re-key: every block of record {record_id} moved, nothing to embed")
+                    await self._sweep_stray_points(record, record.block_containers)
+                    return True
             block_containers = BlocksContainer(
                 blocks=[b for b in block_containers.blocks if b.id in blocks_to_index_ids],
                 block_groups=[
@@ -1267,6 +1281,97 @@ class VectorStore(Transformer):
         )
         await self._sweep_stray_points(record, record.block_containers)
         return indexed
+
+    async def _move_points_to_new_ids(
+        self,
+        record: "Record",
+        rekey_ids: dict[str, str],
+        blocks_to_index_ids: set[str],
+        block_ids_to_delete: set[str],
+    ) -> tuple[set[str], set[str]]:
+        """Move the points of unchanged blocks from their old ids to their content-derived ids, with the stored vectors.
+
+        A record indexed before block ids followed content has its points under random block ids. Its blocks of unchanged content
+        keep their vectors: each stored point is read back whole (``scroll_with_vectors``), written under the new block id (and the
+        point id that follows from it), and the old id's points are deleted. Only a block whose points cannot be moved (the store
+        cannot return vectors, the read failed, a point lists rows that are not all moving) goes back into the set to embed, and is
+        counted. Returns the updated ``(blocks_to_index_ids, block_ids_to_delete)``.
+        """
+        vrid, org_id = record.virtual_record_id, org_for_filter(record.org_id, match_bound=True)
+        new_by_old = dict(rekey_ids)
+        # A block that is embedded anyway (a table that changed) is not moved: its old points are deleted.
+        for old, new in list(new_by_old.items()):
+            if new in blocks_to_index_ids:
+                block_ids_to_delete.add(old)
+                del new_by_old[old]
+        index_of = {b.id: b.index for b in record.block_containers.blocks}
+        index_of.update({g.id: g.index for g in record.block_containers.block_groups})
+        collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
+        old_ids = sorted(new_by_old)
+        moved: set[str] = set()
+        failed: dict[str, str] = {}  # old id -> reason
+        for start in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ):
+            batch = old_ids[start:start + _REKEY_BLOCKS_PER_READ]
+            try:
+                points = await self._read_points_whole(collection_name, org_id, vrid, batch)
+            except VectorsNotFetchable:
+                failed.update(dict.fromkeys(batch, "unsupported"))
+                continue
+            except Exception as e:  # falling back to embedding is always correct
+                self.logger.warning(f"Re-key read of {vrid} failed, embedding those blocks instead: {e}")
+                failed.update(dict.fromkeys(batch, "error"))
+                continue
+            writes: list[VectorPoint] = []
+            unmovable: set[str] = set()
+            for point in points:
+                payload = point.payload
+                meta = dict(payload.get("metadata") or {})
+                old_block = meta.get("blockId")
+                row_ids = meta.get("rowBlockIds")
+                if old_block not in new_by_old or point.dense_vector is None or (
+                        row_ids and any(r not in new_by_old for r in row_ids)):
+                    unmovable.add(old_block)
+                    continue
+                meta["blockId"] = new_by_old[old_block]
+                if new_by_old[old_block] in index_of:
+                    meta["blockIndex"] = index_of[new_by_old[old_block]]
+                if row_ids:
+                    meta["rowBlockIds"] = [new_by_old[r] for r in row_ids]
+                new_payload = {**payload, "metadata": meta}
+                writes.append(VectorPoint(
+                    id=deterministic_point_id(meta, payload.get("page_content", "")),
+                    dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload=new_payload,
+                ))
+            for old in batch:
+                if old in unmovable:
+                    failed[old] = "unmovable"
+            if writes:
+                await self.vector_db_service.upsert_points(collection_name, writes)
+            moved.update(old for old in batch if old not in failed)
+        for old, reason in failed.items():
+            rekey_metrics.REKEY_FALLBACK.inc(reason)
+            blocks_to_index_ids.add(new_by_old[old])
+            block_ids_to_delete.add(old)
+        gone = {old for old in moved if old not in failed}
+        if gone:
+            await self.delete_blocks_by_ids(gone, vrid, collection_name, org_id=org_id)
+            rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(gone)))
+        return blocks_to_index_ids, block_ids_to_delete
+
+    async def _read_points_whole(
+        self, collection_name: str, org_id: str, virtual_record_id: str, block_ids: list[str],
+    ) -> list[VectorPoint]:
+        scroll_filter = await self.vector_db_service.filter_collection(
+            must={"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": block_ids}
+        )
+        points: list[VectorPoint] = []
+        offset = None
+        while True:
+            page = await self.vector_db_service.scroll_with_vectors(collection_name, scroll_filter, _REKEY_PAGE, offset)
+            points.extend(page.points or [])
+            if not page.next_offset or page.next_offset == offset:
+                return points
+            offset = page.next_offset
 
     async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> None:
         """Drop the record's points that *revision* (its whole current container) does not reference.

@@ -285,7 +285,7 @@ class TestBuildReconciliationContext1to1:
 
     @pytest.mark.asyncio
     async def test_metadata_of_random_ids_is_rekeyed_once(self) -> None:
-        """A record indexed before ids followed content: its old ids go and the block is indexed under its new id."""
+        """A record indexed before ids followed content: the unchanged block is moved from its old id to its new one."""
         import hashlib
         import json as _json
 
@@ -305,8 +305,9 @@ class TestBuildReconciliationContext1to1:
         )
 
         assert block.id != "old-id-xyz"
-        assert result.blocks_to_index_ids == {block.id}
-        assert result.block_ids_to_delete == {"old-id-xyz"}
+        assert result.rekey_ids == {"old-id-xyz": block.id}
+        assert result.blocks_to_index_ids == set()
+        assert result.block_ids_to_delete == set()
         assert result.new_metadata["idScheme"] == "content-v1"
 
     @pytest.mark.asyncio

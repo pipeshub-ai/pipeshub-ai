@@ -97,6 +97,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.errors import classify_redis_search_error
 from app.services.vector_db.redis.utils import (
+    bytes_to_vector,
     coerce_payload_hash_value,
     decode_hash_doc,
     filter_expression_to_redis_query,
@@ -1142,6 +1143,27 @@ class RedisVectorService(IVectorDBService):
             return str(max(0, int(next_offset) - deleted))
         except (TypeError, ValueError):
             return next_offset
+
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: str | None = None,
+    ) -> ScrollResult:
+        """``scroll`` plus each point's stored ``dense_embedding`` (one pipelined ``HGET`` per point, decoded with the index's dtype)."""
+        page = await self.scroll(collection_name, scroll_filter, limit, offset)
+        if not page.points:
+            return page
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point in page.points:
+            pipeline.execute_command("HGET", self._key(collection_name, point.id), "dense_embedding")
+        replies = await pipeline.execute()
+        for point, reply in zip(page.points, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            point.dense_vector = bytes_to_vector(reply, self._dense_dtype) if reply else None
+        return page
 
     async def retrieve_points(
         self,

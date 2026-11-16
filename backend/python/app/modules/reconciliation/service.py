@@ -216,6 +216,27 @@ class ReconciliationService:
 
         return blocks_to_index_ids, block_ids_to_delete, unchanged_id_map
 
+    def compute_rekey(
+        self,
+        old_metadata: ReconciliationMetadata,
+        new_metadata: ReconciliationMetadata,
+    ) -> tuple[set[str], set[str], dict[str, str]]:
+        """The diff of a record whose stored ids are of another scheme than its new ones.
+
+        Blocks of unchanged content are paired as in ``compute_diff`` (equal hash, in order) but, as their ids differ, they are not
+        left alone: ``rekey`` maps each old id to the new one so the stored point can be moved to it. Returns
+        ``(blocks_to_index_ids, block_ids_to_delete, rekey)`` with the paired blocks in neither set.
+        """
+        same_scheme = ReconciliationMetadata(
+            hash_to_block_ids=old_metadata.hash_to_block_ids,
+            block_id_to_index=old_metadata.block_id_to_index,
+            block_group_ids=old_metadata.block_group_ids,
+        )
+        same_scheme.id_scheme = new_metadata.id_scheme
+        same_scheme.legacy_group_hashes = old_metadata.legacy_group_hashes
+        to_index, to_delete, paired = self.compute_diff(same_scheme, new_metadata)
+        return to_index, to_delete, {old: new for new, old in paired.items() if old != new}
+
     @staticmethod
     def _same_kind_pairs(
         content_hash: str,
