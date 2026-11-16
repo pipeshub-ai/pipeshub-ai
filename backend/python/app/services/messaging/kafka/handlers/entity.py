@@ -483,8 +483,9 @@ class EntityEventService(BaseEventService):
                 CollectionNames.BELONGS_TO.value,
             )
 
-            # A restored user gets back the source accounts its address holds, as a new one gets those already synced.
-            await self._relink_source_accounts(org_id, payload["email"])
+            # A restored user gets back the source accounts its address holds, as a new one gets those already synced. With its key, as
+            # on an address change: a user re-added under a new address must lose the directory links of its old one.
+            await self._relink_source_accounts(org_id, payload["email"], user_key=user_data["id"])
 
             # Adopt anything this email already accumulated as an external
             # collaborator. Never fatal: the account itself is what this event is for, and
@@ -696,9 +697,10 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
-            await self._unlink_source_accounts(existing_user_id)
-            # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
+            # At once, before any awaited cleanup: until it moves, a scope read before the delete is still served.
             await notify_principals_changed(org_id)
+            await self._unlink_source_accounts(existing_user_id)
+            await notify_principals_changed(org_id)      # again, for what the unlink changed
             self.logger.info("Soft-deleted graph user %s", existing_user_id)
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])

@@ -408,6 +408,24 @@ async def test_a_user_readded_under_a_new_address_keeps_their_one_node(key: str)
     svc._get_or_create_knowledge_base.assert_awaited_once_with(key, USER, ORG, name="Admin's Private")
 
 
+async def test_a_user_readded_under_a_new_address_has_the_links_of_its_old_one_relinked() -> None:
+    """Relinked with the user's key, as an address change is: a connector linked for the old address has no account at the new one,
+    so only the user's own links name it."""
+    graph = _Graph()
+    graph.users["older-random-key"] = {"id": "older-random-key", "userId": USER, "orgId": ORG, "email": "old@example.com", "isActive": False}
+    svc = _service(graph)
+    svc._adopt_existing_person = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_knowledge_base = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_all_team_and_add_user = AsyncMock()  # type: ignore[method-assign]
+    svc._relink_source_accounts = AsyncMock()  # type: ignore[method-assign]
+    event = {"orgId": ORG, "userId": USER, "email": "new@example.com", "fullName": "Admin", "syncAction": "none"}
+
+    with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        assert await svc.process_event("userAdded", event) is True
+
+    svc._relink_source_accounts.assert_awaited_once_with(ORG, "new@example.com", user_key="older-random-key")
+
+
 
 @pytest.mark.parametrize(
     "between",
