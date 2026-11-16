@@ -367,7 +367,7 @@ def _failures(failing: list[dict[str, Any]], quarantined: set[str], cap: int) ->
 
 
 # A run job lists the tests another job owns as not_run scope with one of these details.
-DEFERRED = re.compile(r"outside --scope (unit|stack)|runs in another stack shard|runs on the .+ stack variant")
+DEFERRED = re.compile(r"outside --scope (unit|stack)|runs in another (unit|stack) shard|runs on the .+ stack variant")
 
 
 def job_results(text: str | None) -> dict[str, str]:
@@ -404,7 +404,8 @@ def merge_results(parts: list[dict[str, Any]], planned: list[str] = (), jobs: Ma
     for test_id, t in by_id.items():
         m = DEFERRED.match(str(t.get("details") or "")) if jobs and t["outcome"] == "not_run" and t.get("kind") == "scope" else None
         if m:
-            owner = "unit" if m.group(1) == "stack" else "stack"
+            # "outside --scope unit" is the other job's test; "runs in another unit shard" is a sibling's.
+            owner = m.group(2) or ("unit" if m.group(1) == "stack" else "stack")
             ended = jobs.get(owner, "")
             by_id[test_id] = {**t, "kind": "cancelled" if ended == "cancelled" else "no_result",
                               "details": f"the {owner} test job {'was cancelled' if ended == 'cancelled' else 'did not report it'}"

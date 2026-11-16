@@ -1424,6 +1424,37 @@ class TestShard(RunCase):
             self.assertNotIn("another stack shard", by_id[i]["details"])
         self.assertIn("outside --scope stack", by_id["py:tests/unit/test_patch_only.py"]["details"])
 
+    def test_every_unit_test_lands_in_exactly_one_unit_shard_and_a_file_never_splits(self) -> None:
+        from qa import shard
+        plan = plan_for(list(self.rows))
+        unit = set(shard.unit_ids(self.cfg, plan, self.rows))
+        self.assertIn("py:tests/unit/test_patch_only.py", unit)
+        self.assertFalse(unit & set(shard.stack_ids(self.cfg, plan, self.rows)))
+        for n in range(1, 5):
+            parts = [shard.select_unit(self.cfg, plan, self.rows, k, n) for k in range(1, n + 1)]
+            self.assertEqual(set().union(*parts), unit, n)
+            self.assertEqual(sum(len(p) for p in parts), len(unit), n)
+            for path in {self.rows[i]["path"] for i in unit}:
+                self.assertEqual(sum(1 for p in parts if {i for i in p if self.rows[i]["path"] == path}), 1, path)
+
+    def test_a_unit_shard_run_leaves_the_other_unit_shards_tests_to_them(self) -> None:
+        from qa import shard
+        plan = plan_for(list(self.rows))
+        mine = shard.select_unit(self.cfg, plan, self.rows, 1, 2)
+        others = set(shard.unit_ids(self.cfg, plan, self.rows)) - mine
+        self.assertTrue(mine and others)
+        result = run.run(self.cfg, plan, self.rows, self.out, stack_mode="none", scope="unit", shard=(1, 2), dry_run=True)
+        ran = {t for inv in result["invocations"] for t in inv.ids}
+        self.assertEqual(ran & others, set())
+        for i in others:
+            self.assertEqual(result["not_run"][i][0], "scope")
+            self.assertIn("another unit shard (this is 1/2)", result["not_run"][i][1])
+        # The report hands a sibling shard's test to the unit job's result, not the stack job's.
+        kind, details = result["not_run"][sorted(others)[0]]
+        deferred = {"id": "x", "outcome": "not_run", "kind": kind, "details": details}
+        merged = report.merge_results([{"tests": [deferred]}], [], {"unit": "cancelled", "stack": "success"})
+        self.assertEqual(merged["tests"][0]["kind"], "cancelled")
+
     HEAVY = "it:heavy/test_heavy.py::test_heavy_path"
 
     def managed_plan(self, ids, graph=("neo4j",)):

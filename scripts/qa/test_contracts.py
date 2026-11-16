@@ -157,11 +157,13 @@ class TestStandInModel(unittest.TestCase):
             self.assertIn("github.event_name == 'pull_request' || inputs.mode == 'pr'", line, key)
             self.assertIn("secrets.TEST_AZURE_OPENAI_API_KEY == ''", line, key)
 
-    def test_the_unit_job_spreads_pytest_and_a_full_run_gets_more_time(self) -> None:
+    def test_the_unit_job_spreads_pytest_and_a_full_run_shards_it(self) -> None:
         text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
         job = text[text.index("\n  run-unit:"):text.index("\n  run-stack:")]
-        self.assertIn("timeout-minutes: ${{ inputs.mode == 'full' && 180 || 90 }}", job)
         self.assertIn("QA_PYTEST_ARGS: -n logical --dist loadfile --timeout=60", job)
+        self.assertIn("inputs.mode == 'full' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1]'", job)
+        self.assertIn('shard=(--shard "$SHARD/8")', job)
+        self.assertIn("qa-results-unit-${{ matrix.shard }}-${{ inputs.edition }}", job)
 
 
 class TestReportAndGate(unittest.TestCase):

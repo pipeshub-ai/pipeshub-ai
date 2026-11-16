@@ -72,3 +72,14 @@ def count(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], ca
 def select(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], k: int, n: int) -> set[str]:
     """The ids of shard k (1-based) of n."""
     return set(assign(_groups(cfg, plan, rows), n)[k - 1])
+
+
+def unit_ids(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]]) -> list[str]:
+    stack = set(stack_ids(cfg, plan, rows))
+    return [t["id"] for t in plan["tests"] if t["id"] in rows and t["id"] not in stack]
+
+
+def select_unit(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], k: int, n: int) -> set[str]:
+    """The unit test ids of shard k (1-based) of n: whole test files, spread evenly by count (a full run's
+    unit suites take hours on one runner)."""
+    return set(assign(groups(rows, unit_ids(cfg, plan, rows), {}), n)[k - 1])

@@ -228,8 +228,13 @@ jobs:
     # The QA agent runs the unit suites itself, in its stack job.
     if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && !inputs.agent && needs.plan.outputs.tests != '0'
     runs-on: ubuntu-latest
-    # A full run selects every unit suite; 90 minutes is enough for a PR's share only.
-    timeout-minutes: ${{ inputs.mode == 'full' && 180 || 90 }}
+    timeout-minutes: 90
+    # A full run selects every unit suite (about 78,000 Python tests alone): on one runner it outlived its
+    # time limit or its runner, so it runs as eight jobs of whole test files (qa run --scope unit --shard K/8).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.mode == 'full' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -270,13 +275,19 @@ jobs:
         # The same spread over the runner's cores as unit-test.yml (pytest-xdist comes with backend/python[dev]).
         env:
           QA_PYTEST_ARGS: -n logical --dist loadfile --timeout=60
-        run: python3 scripts/qa run --plan qa-out/plan.json --scope unit
+          FULL: ${{ inputs.mode == 'full' }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          shard=()
+          if [[ "$FULL" == true ]]; then shard=(--shard "$SHARD/8"); fi
+          python3 scripts/qa run --plan qa-out/plan.json --scope unit "${shard[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qa-results-unit-${{ inputs.edition }}
+          # Must end in -<edition>: the report and gate download qa-*-<edition>.
+          name: qa-results-unit-${{ matrix.shard }}-${{ inputs.edition }}
           path: |
-            qa-out/results-unit.json
+            qa-out/results-unit*.json
             qa-out/logs/
             qa-out/junit-*.xml
           retention-days: 14

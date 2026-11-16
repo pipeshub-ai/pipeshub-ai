@@ -1154,7 +1154,7 @@ def parser() -> argparse.ArgumentParser:
         sp.add_argument("--stack-variant", default=os.environ.get("QA_STACK_VARIANT", ""), metavar="NAME",
                         help="run only the tests that need this stack variant (default: the default stack)")
         sp.add_argument("--shard", type=_shard_arg, metavar="K/N",
-                        help="run only stack shard K of N (duration-balanced test groups)")
+                        help="run only shard K of N: of the stack tests (duration-balanced groups), or with --scope unit of the unit tests")
 
     def improve_args(sp):
         env = os.environ.get

@@ -563,7 +563,8 @@ def run(
     shard: tuple[int, int] | None = None, variant: str = "",
 ) -> dict[str, Any]:
     """scope: "all", "unit" (no stack needed) or "stack" (integration and e2e only).
-    shard (k, n): run only stack shard k of n; the other shards' stack tests are not_run scope.
+    shard (k, n): run only stack shard k of n; the other shards' stack tests are not_run scope. With scope "unit",
+    the unit tests are what is sharded.
     variant: run only the tests that need this stack variant ("" = the default stack)."""
     out.mkdir(parents=True, exist_ok=True)
     log_dir = out / "logs"
@@ -571,7 +572,10 @@ def run(
     full_plan = plan
     plan = {**plan, "tests": [t for t in plan["tests"] if t["id"] not in other_variant]}
     elsewhere: set[str] = set()
-    if shard:
+    kind = "unit" if scope == "unit" else "stack"
+    if shard and kind == "unit":
+        elsewhere = set(shard_mod.unit_ids(cfg, plan, rows)) - shard_mod.select_unit(cfg, plan, rows, *shard)
+    elif shard:
         elsewhere = set(shard_mod.stack_ids(cfg, plan, rows)) - shard_mod.select(cfg, plan, rows, *shard)
     # Resolve without them, so no runner command names another shard's files.
     invs, not_run = resolve(cfg, {**plan, "tests": [t for t in plan["tests"] if t["id"] not in elsewhere]}, rows, out)
@@ -579,7 +583,7 @@ def run(
         v = variant_of(rows[i])
         _mark(not_run, [i], "scope", f"runs on the {v or 'default'} stack variant")
     if shard:
-        _mark(not_run, sorted(elsewhere), "scope", f"runs in another stack shard (this is {shard[0]}/{shard[1]})")
+        _mark(not_run, sorted(elsewhere), "scope", f"runs in another {kind} shard (this is {shard[0]}/{shard[1]})")
     if scope != "all":
         keep = [i for i in invs if i.needs_stack == (scope == "stack")]
         kept_ids = {t for i in keep for t in i.ids}
