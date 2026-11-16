@@ -30,8 +30,8 @@ from app.services.paid_cache.cache import PaidResultCache
 from app.services.paid_cache.keys import CacheKey
 from app.services.paid_cache.locks import (
     REPURGE_HOP_S,
-    repurge_horizon_s,
     InProcessLocks,
+    repurge_horizon_s,
 )
 from app.services.paid_cache.repurge import (
     org_repurge_event_payload,

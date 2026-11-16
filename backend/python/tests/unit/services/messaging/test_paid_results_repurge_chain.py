@@ -19,9 +19,9 @@ from app.services.paid_cache.keys import CacheKey
 from app.services.paid_cache.locks import (
     LOCK_TTL_MS,
     REPURGE_HOP_S,
-    repurge_horizon_s,
     STAGE_DEADLINE_S,
     InProcessLocks,
+    repurge_horizon_s,
 )
 from app.services.paid_cache.repurge import (
     next_hop_payload,

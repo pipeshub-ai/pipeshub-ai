@@ -6,16 +6,18 @@ read timeout for a PDF, 0.8 of it, 1.8 s). A large filing parsed in page batches
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
-import pytest
 
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.registry import ParserRegistry
 from tests.unit.api.routes.test_parsing_routes import _build_app, _ok_result
+
+if TYPE_CHECKING:
+    import pytest
 
 SCALE = 1 / 2400
 
