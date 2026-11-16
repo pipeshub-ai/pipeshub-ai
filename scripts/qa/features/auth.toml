@@ -1,0 +1,840 @@
+# Feature map: sign-in, SSO and OpenID, password reset, sign-up and onboarding,
+# org auth settings, user account and profile.
+
+[[feature]]
+id = "auth.sign-in"
+title = "Sign in with password or email code"
+flow = "login"
+what = "A person starts a sign-in session, then proves who they are with a password or an emailed code, one step per the org policy. The last step returns an access token and a refresh token."
+routes = ["POST /api/v1/userAccount/initAuth", "POST /api/v1/userAccount/authenticate"]
+pages = ["frontend/app/(public)/login/**"]
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "backend/nodejs/apps/src/modules/auth/routes/userAccount.routes.ts",
+  "backend/nodejs/apps/src/modules/auth/middlewares/userAuthentication.middleware.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/authMethodGuard.ts",
+  "backend/nodejs/apps/src/modules/auth/services/session.service.ts",
+  "frontend/app/(public)/login/**",
+  "frontend/app/(public)/forms/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.sign-in.password"
+  says = "POST /api/v1/userAccount/initAuth returns an x-session-token and the methods the first step allows; POST /api/v1/userAccount/authenticate with method password and the right password returns accessToken and refreshToken."
+  priority = "P0"
+  tests = [
+    "it:response-validation/auth/integration_test_userAccount.py::TestInitAuth::test_init_auth_response_schema",
+    "it:response-validation/auth/integration_test_userAccount.py::TestAuthenticate::test_authenticate_response_schema",
+    "e2e:tests/e2e/auth/login.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.wrong-credentials"
+  says = "A wrong password, an unknown email and an account with no password all get the same refusal, so the answer does not show whether an account exists."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/auth/controller/userAccount.signInFlow.test.ts",
+    "node:tests/modules/auth/controller/userAccount.controller.test.ts",
+    "it:response-validation/auth/integration_test_userAccount.py::TestAuthenticate::test_authenticate_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.lockout"
+  says = "The tenth wrong password or sign-in code locks the account (the ninth does not); wrong codes and wrong passwords count together, and a locked account refuses even the right password until the lock ends or an admin unblocks it."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestLockoutThreshold::test_the_tenth_wrong_password_locks_and_the_ninth_does_not",
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestLockoutCountersShared::test_wrong_codes_and_wrong_passwords_count_together",
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestLockoutBySignInCodesAlone::test_ten_wrong_codes_lock_the_account_until_an_admin_unblocks_it",
+    "node:tests/modules/auth/controller/userAccount.signInFlow.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.policy-step"
+  says = "A method the org policy does not list for the current step is refused, and in a multi-step policy every step must prove the same account."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/auth/controller/userAccount.signInFlow.test.ts",
+    "node:tests/modules/auth/utils/authMethodGuard.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.rate-limit"
+  says = "More than ten sign-in attempts in a minute are refused, while loading the sign-in page does not spend attempts."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/auth/routes/userAccount.authenticate.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.captcha"
+  says = "When a Turnstile secret is configured, a password sign-in without a valid challenge is refused before the password is checked."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/auth/controller/userAccount.signInFlow.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.login-page"
+  says = "The login page shows the email and password fields, validates the email, shows an error for a wrong password, and sends a successful sign-in to /chat; if the server is unreachable it shows a retry, not a password form."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/auth/login.spec.ts",
+    "fe:app/(public)/login/__tests__/login-page.test.tsx",
+  ]
+
+[[feature]]
+id = "auth.sign-in-code"
+title = "Sign-in code by email"
+flow = "login"
+what = "A person asks for a one-time code by email and signs in with it. The code works once and for ten minutes."
+routes = ["POST /api/v1/userAccount/login/otp/generate"]
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/generateOtp.ts",
+  "backend/nodejs/apps/src/libs/middlewares/email-rate-limit.middleware.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.sign-in-code.sign-in"
+  says = "The right code signs in and a wrong code is refused."
+  priority = "P0"
+  tests = [
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestSignInCode::test_the_right_code_signs_in",
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestSignInCode::test_a_wrong_code_is_refused",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.sign-in-code.single-use"
+  says = "A code that already signed someone in is refused the second time, and an expired code is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/auth/controller/userAccount.signInFlow.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.sign-in-code.no-enumeration"
+  says = "A request for a code answers 200 with the same text for an unknown email, a locked account and a real account, and sends no code for the first two."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/auth/controller/userAccount.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.sign-in-code.address-limit"
+  says = "Repeated code requests for one address are answered like accepted ones but send nothing, and each address and each route is counted on its own."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/auth/routes/userAccount.address-limit.http.test.ts"]
+
+[[feature]]
+id = "auth.session"
+title = "Session refresh and sign-out"
+flow = "login"
+what = "A refresh token returns a new access token. Signing out records the sign-out, and tokens issued before a sign-out, password change, lock or account deletion stop working."
+routes = ["POST /api/v1/userAccount/refresh/token", "POST /api/v1/userAccount/logout/manual"]
+pages = []
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "backend/nodejs/apps/src/libs/middlewares/auth.middleware.ts",
+  "backend/nodejs/apps/src/libs/middlewares/require-session-auth.middleware.ts",
+  "frontend/lib/api/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.session.refresh"
+  says = "POST /api/v1/userAccount/refresh/token with a valid refresh token as Bearer returns a new accessToken; no token or a bad token gets an error."
+  priority = "P0"
+  tests = [
+    "it:response-validation/auth/integration_test_userAccount.py::TestRefreshToken::test_refresh_token_response_schema",
+    "it:response-validation/auth/integration_test_userAccount.py::TestRefreshToken::test_refresh_token_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.session.logout"
+  says = "POST /api/v1/userAccount/logout/manual returns 200 with an empty body, needs an interactive session, and the person can sign in again afterwards."
+  priority = "P1"
+  tests = [
+    "it:response-validation/auth/integration_test_userAccount.py::TestLogoutManual::test_logout_returns_200_empty_body",
+    "it:response-validation/auth/integration_test_userAccount.py::TestLogoutManual::test_logout_negative_tests",
+    "e2e:tests/e2e/auth/logout.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.session.revoked-after-credential-change"
+  says = "After a password change, a lock, an admin block or an account deletion, access tokens and refresh tokens issued before it are refused by the Node API and the Python services."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:security/test_session_revocation.py::TestPasswordChangeEndsEverySession::test_access_tokens_from_before_the_change_are_refused",
+    "it:security/test_session_revocation.py::TestPasswordChangeEndsEverySession::test_refresh_tokens_from_before_the_change_are_refused",
+    "it:security/test_session_revocation.py::TestLockedAccountEndsEverySession::test_access_tokens_from_before_the_lock_are_refused",
+    "it:security/test_session_revocation.py::TestDeletedUserEndsEverySession::test_refresh_tokens_from_before_the_deletion_are_refused",
+    "it:security/test_credential_change_invalidation.py::TestBlockingAnAccount::test_a_token_issued_before_the_block_is_rejected",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.session.expired"
+  says = "An expired access token or refresh token is refused by the public API and by the Python services."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:security/test_session_revocation.py::TestExpiredAccessToken::test_an_expired_access_token_is_refused_by_the_public_api",
+    "it:security/test_session_revocation.py::TestExpiredRefreshToken::test_an_expired_refresh_token_is_refused",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.session.logout-ui"
+  says = "Signing out in the app clears the local session and returns to the login page."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/auth/logout.spec.ts", "fe:lib/api/__tests__/session-store-resets.test.ts"]
+
+[[feature]]
+id = "auth.provider-sign-in"
+title = "Sign in with Google or Microsoft"
+flow = "login"
+what = "When the org policy lists Google or Microsoft, a person signs in with a provider token that the server verifies against the admin's client settings. An unknown person gets an account only when the admin turned just-in-time provisioning on."
+pages = ["frontend/app/(public)/auth/google/**", "frontend/app/(public)/auth/microsoft/**"]
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "backend/nodejs/apps/src/modules/auth/services/jit-provisioning.service.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/googleIdTokenValidation.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/azureAdTokenValidation.ts",
+  "frontend/app/(public)/auth/google/**",
+  "frontend/app/(public)/auth/microsoft/**",
+  "frontend/lib/auth/desktop-oauth.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.provider-sign-in.verified-identity"
+  says = "A Google token with no email, or a Microsoft token with no usable identity, is refused, and only the verified identity of an existing account signs in."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/auth/controller/userAccount.signInFlow.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.provider-sign-in.jit"
+  says = "An unknown Google or Microsoft identity is refused when just-in-time provisioning is off for that provider, and gets a new account on first sign-in when it is on."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/auth/controller/userAccount.signInFlow.test.ts",
+    "node:tests/modules/auth/services/jit-provisioning.service.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.provider-sign-in.token-validation"
+  says = "A Google ID token is checked against the configured client id, and a Microsoft token against the configured client and tenant."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/auth/utils/googleIdTokenValidation.test.ts",
+    "node:tests/modules/auth/utils/azureAdTokenValidation.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.provider-sign-in.callback-state"
+  says = "The Google and Microsoft callback pages check the state value stored by the sign-in button before they pass the token to the opener, and hand the result to the desktop app only for a desktop state."
+  priority = "P1"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "auth.provider-sign-in.live"
+  says = "A real Google or Microsoft sign-in works end to end in the browser."
+  priority = "P1"
+  tests = []
+  manual = "Needs a real Google or Microsoft account and registered client; the repo has no simulator for either provider."
+
+[[feature]]
+id = "auth.provider-config"
+title = "Google and Microsoft sign-in settings"
+flow = "login"
+what = "An admin saves the Google or Microsoft client settings used for sign-in. Secrets are stored encrypted and masked when read back."
+routes = [
+  "* /api/v1/configurationManager/authConfig/google",
+  "* /api/v1/configurationManager/authConfig/microsoft",
+  "POST /api/v1/userAccount/updateAppConfig",
+]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/routes/cm_routes.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/utils/maskConfigSecrets.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.provider-config.admin-only"
+  says = "Reading or saving the Google or Microsoft settings needs an admin and the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "auth.provider-config.masked"
+  says = "The admin routes return masked settings while masking is on, a reveal asked with an OAuth-app token is ignored, and saving the masked form back keeps the stored secret."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.authSecrets.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.provider-config.sign-in-reads-real-values"
+  says = "The internal route the sign-in service uses returns the stored values even while the admin routes mask them."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.authSecrets.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.provider-config.validation"
+  says = "A save with a missing or invalid client id, or a masked placeholder with nothing stored to restore, is refused."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/controller/cm_controller.authSecrets.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.provider-config.reload"
+  says = "POST /api/v1/userAccount/updateAppConfig needs a service token with the fetch-config scope and reloads the auth service's settings."
+  priority = "P1"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "auth.password-reset"
+title = "Forgotten password"
+flow = "login"
+what = "A person asks for a reset link by email and sets a new password from it. The link is single use and expires."
+routes = ["POST /api/v1/userAccount/password/forgot", "POST /api/v1/userAccount/password/reset/token"]
+pages = ["frontend/app/(public)/reset-password/**"]
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "backend/nodejs/apps/src/modules/auth/schema/usedPasswordResetLink.schema.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/passwordValidator.ts",
+  "frontend/app/(public)/reset-password/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.password-reset.link"
+  says = "The emailed link sets a new password, the old password stops working, and the new one signs in."
+  priority = "P0"
+  tests = [
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestForgotPasswordLink::test_the_link_sets_a_new_password",
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestForgotPasswordLink::test_the_old_password_stops_working",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.password-reset.single-use"
+  says = "A reset link used once is refused the second time, and of two simultaneous uses only one succeeds."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestForgotPasswordLink::test_the_same_link_is_refused_the_second_time",
+    "it:response-validation/auth/integration_test_emailed_sign_in.py::TestResetLinkUsedTwiceAtOnce::test_only_one_of_two_simultaneous_uses_succeeds",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.password-reset.expired"
+  says = "An expired reset link is refused."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:response-validation/auth/integration_test_emailed_sign_in.py::TestExpiredResetLink::test_an_expired_link_is_refused"]
+
+  [[feature.behavior]]
+  id = "auth.password-reset.no-enumeration"
+  says = "POST /api/v1/userAccount/password/forgot answers 200 with the same text whether or not the address has an account, and the mail is sent after the reply."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/auth/controller/userAccount.controller.test.ts", "node:tests/modules/auth/routes/userAccount.address-limit.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.password-reset.strength"
+  says = "A new password needs at least eight characters with an uppercase letter, a lowercase letter, a digit and a special character, and at most 72 bytes."
+  priority = "P1"
+  tests = ["node:tests/modules/auth/utils/passwordValidator.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.password-reset.end-sessions"
+  says = "Resetting a password ends every session that was open before it."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:security/test_credential_change_invalidation.py::TestPasswordChange::test_a_token_issued_before_the_change_is_rejected"]
+
+[[feature]]
+id = "auth.password-change"
+title = "Change or set a password"
+flow = "login"
+what = "A signed-in person changes their password with the current one. A person who signed in only through a provider and has no password asks for an emailed link to set one."
+routes = [
+  "POST /api/v1/userAccount/password/reset",
+  "GET /api/v1/userAccount/password/status",
+  "POST /api/v1/userAccount/password/setup/email",
+]
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/passwordValidator.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.password-change.change"
+  says = "POST /api/v1/userAccount/password/reset with the right current password changes it and returns a new accessToken; a wrong current password, an identical new password or a missing field is refused."
+  priority = "P0"
+  tests = [
+    "it:response-validation/auth/integration_test_userAccount.py::TestResetPassword::test_reset_password_response_schema",
+    "it:response-validation/auth/integration_test_userAccount.py::TestResetPassword::test_reset_password_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.password-change.ends-sessions"
+  says = "After a password change the old password stops working and tokens issued before the change are refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:security/test_credential_change_invalidation.py::TestPasswordChange::test_the_old_password_stops_working",
+    "it:security/test_session_revocation.py::TestPasswordChangeEndsEverySession::test_the_old_password_is_refused_and_the_new_one_works",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.password-change.session-only"
+  says = "The three routes refuse OAuth access tokens and personal access tokens with 403; only an interactive session may use them."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "auth.password-change.setup-email"
+  says = "POST /api/v1/userAccount/password/setup/email mails a link only to a person with no password and refuses one who already has a password."
+  priority = "P1"
+  tests = ["node:tests/modules/auth/controller/userAccount.controller.test.ts"]
+
+[[feature]]
+id = "auth.email-change"
+title = "Confirm an email change"
+flow = "login"
+what = "A person confirms a new email address from a link, and the account moves to it."
+routes = ["PUT /api/v1/userAccount/validateEmailChange"]
+pages = ["frontend/app/(public)/reset-email/**"]
+code = [
+  "backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts",
+  "frontend/app/(public)/reset-email/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.email-change.confirm"
+  says = "A valid link with the email-validation scope changes the account email and the login then returns to the sign-in page with a success message."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "auth.email-change.taken"
+  says = "An address another account already uses is refused with 400."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "auth.email-change.token-scope"
+  says = "A token without the email-validation scope is refused."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "auth.email-change.limit"
+  says = "Confirmations are limited by the new address inside the verified token, not by anything the client sends."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/auth/routes/userAccount.address-limit.http.test.ts"]
+
+[[feature]]
+id = "auth.policy"
+title = "Org sign-in policy"
+flow = "login"
+what = "An admin chooses which sign-in methods the org offers, in up to three steps, in Workspace settings. The page also tells the admin what the 1.0 upgrade turned off."
+routes = [
+  "GET /api/v1/orgAuthConfig/authMethods",
+  "GET /api/v1/orgAuthConfig/signInRemoval",
+  "POST /api/v1/orgAuthConfig/updateAuthMethod",
+  "POST /api/v1/orgAuthConfig",
+]
+pages = ["frontend/app/(main)/workspace/authentication/**", "frontend/app/(main)/@sidebar/workspace/authentication/**"]
+code = [
+  "backend/nodejs/apps/src/modules/auth/routes/orgAuthConfig.routes.ts",
+  "backend/nodejs/apps/src/modules/auth/services/signInRemoval.service.ts",
+  "backend/nodejs/apps/src/modules/auth/utils/removedSignInMethods.ts",
+  "backend/nodejs/apps/src/modules/auth/schema/orgAuthConfiguration.schema.ts",
+  "frontend/app/(main)/workspace/authentication/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.policy.admin-session-only"
+  says = "All four routes need an admin with an interactive session; a member, an OAuth token or a personal access token is refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/auth/routes/orgAuthConfig.routes.test.ts",
+    "it:response-validation/auth/integration_test_orgAuthConfig.py::TestGetAuthMethods::test_get_auth_methods_negative_tests",
+    "it:response-validation/auth/integration_test_orgAuthConfig.py::TestUpdateAuthMethod::test_update_auth_method_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.policy.read-update"
+  says = "GET authMethods returns the saved steps; POST updateAuthMethod saves a valid policy and a later sign-in uses it."
+  priority = "P0"
+  tests = [
+    "it:response-validation/auth/integration_test_orgAuthConfig.py::TestGetAuthMethods::test_get_auth_methods_response_schema",
+    "it:response-validation/auth/integration_test_orgAuthConfig.py::TestUpdateAuthMethod::test_update_auth_method_response_schema",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.policy.validation"
+  says = "A policy with no step, more than three steps, a repeated order, a method repeated in or across steps, or a removed or renamed method is refused with a message and saves nothing."
+  priority = "P0"
+  tests = ["node:tests/modules/auth/routes/orgAuthConfig.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.policy.removed-methods"
+  says = "A policy saved before 1.0 that names a removed method still signs in with the methods that remain, and password is added so nobody is locked out."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/auth/utils/removedSignInMethods.test.ts",
+    "node:tests/modules/auth/routes/userAccount.authenticate.http.test.ts",
+    "node:tests/modules/configuration_manager/services/migrations/sign_in_methods_removal.migration.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.policy.removal-notice"
+  says = "GET signInRemoval lists the methods the upgrade removed and the people who still have no password, and the page shows them."
+  priority = "P2"
+  tests = [
+    "node:tests/modules/auth/services/signInRemoval.service.test.ts",
+    "fe:app/(main)/workspace/authentication/__tests__/sign-in-removal-notice.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.policy.setup"
+  says = "POST /api/v1/orgAuthConfig creates the default policy once and answers 200 'Org config already done' when one exists."
+  priority = "P2"
+  tests = [
+    "it:response-validation/auth/integration_test_orgAuthConfig.py::TestSetUpAuthConfig::test_set_up_auth_config_response_schema",
+    "it:response-validation/auth/integration_test_orgAuthConfig.py::TestSetUpAuthConfig::test_set_up_auth_config_negative_tests",
+  ]
+
+[[feature]]
+id = "auth.oidc-discovery"
+title = "OpenID discovery and agent sign-in guide"
+flow = "login"
+what = "The server publishes its OpenID configuration, authorization-server metadata, signing keys, MCP resource metadata and a Markdown guide that tells an agent how to get a credential. They are public and need no sign-in."
+routes = [
+  "GET /api/v1/.well-known/openid-configuration",
+  "GET /api/v1/.well-known/oauth-authorization-server",
+  "GET /api/v1/.well-known/jwks.json",
+  "GET /api/v1/.well-known/oauth-protected-resource/mcp",
+  "GET /api/v1/auth.md",
+  "GET /api/v1/.well-known/auth.md",
+]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/routes/oid.provider.routes.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/oid.provider.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/utils/auth-md.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.oidc-discovery.configuration"
+  says = "The OpenID configuration lists the authorize, token, userinfo, revoke, introspect and jwks endpoints; the registration endpoint only when dynamic registration is on, and the device endpoint only when the device grant is on."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/controller/oid.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-discovery.jwks"
+  says = "The JWKS document lists a public key for asymmetric signing and an empty key list for a shared-secret signing setup, and never a private key or secret."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/controller/oid.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-discovery.resource-metadata"
+  says = "The protected-resource metadata for /mcp lists only the scopes the MCP tools use, and an unauthenticated MCP call points to it in its WWW-Authenticate header."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/controller/oid.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-discovery.auth-md"
+  says = "auth.md is served as Markdown at /auth.md and /.well-known/auth.md, and shows the device sign-in and registration steps only when this instance offers them."
+  priority = "P1"
+  tests = ["node:tests/modules/oauth_provider/controller/oid.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-discovery.paths"
+  says = "The discovery documents are reachable at the paths the published spec lists and at the paths the configuration itself advertises."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "auth.oidc-userinfo"
+title = "OpenID user info and consent page"
+flow = "login"
+what = "An OAuth client with the openid scope reads the signed-in person's claims, limited by the other scopes it holds. The consent page lets the person choose which requested scopes to grant."
+routes = ["GET /api/v1/oauth2/userinfo"]
+pages = ["frontend/app/(public)/auth/authorize/**"]
+code = [
+  "backend/nodejs/apps/src/modules/oauth_provider/controller/oid.provider.controller.ts",
+  "backend/nodejs/apps/src/modules/oauth_provider/middlewares/oauth.auth.middleware.ts",
+  "frontend/app/(public)/oauth/authorize/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.oidc-userinfo.scopes"
+  says = "GET /api/v1/oauth2/userinfo returns name claims only with the profile scope and email claims only with the email scope."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/controller/oid.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-userinfo.token-required"
+  says = "A call with no token, an invalid token or a token without the openid scope is refused with 401 or 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/middlewares/oauth.auth.middleware.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-userinfo.deleted-user"
+  says = "A token for a user that no longer exists gets 401 invalid_token."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/oauth_provider/controller/oid.provider.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.oidc-userinfo.consent"
+  says = "The consent page shows the requested scopes grouped by category, keeps openid ticked, disables Allow when nothing is ticked, and posts only the scopes the person kept."
+  priority = "P1"
+  tests = [
+    "fe:app/(public)/oauth/authorize/__tests__/oauth-authorize-view.workspace.test.tsx",
+    "fe:app/(public)/oauth/authorize/__tests__/oauth-authorize-view.test.tsx",
+  ]
+
+[[feature]]
+id = "auth.signup"
+title = "Create the workspace and first admin"
+flow = "signup-onboarding"
+what = "On a new install the first person creates the organization and its admin account from the sign-up page, then is signed in and sent to onboarding. Only one organization can exist."
+routes = ["GET /api/v1/org/exists", "POST /api/v1/org"]
+pages = ["frontend/app/(public)/sign-up/**"]
+code = [
+  "backend/nodejs/apps/src/modules/user_management/routes/org.routes.ts",
+  "backend/nodejs/apps/src/modules/user_management/controller/org.controller.ts",
+  "backend/nodejs/apps/src/modules/user_management/utils/org.utils.ts",
+  "frontend/app/(public)/sign-up/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.signup.create"
+  says = "POST /api/v1/org with a valid body creates the organization and its admin, and publishes the org-created and new-user events."
+  priority = "P0"
+  tests = ["node:tests/modules/user_management/controller/org.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.signup.single-org"
+  says = "POST /api/v1/org answers 400 'There is already an organization' once an organization exists, and GET /api/v1/org/exists reports whether one does without any sign-in."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestCreateOrganization::test_create_org_business_account_already_exists",
+    "it:response-validation/user_management/integration_test_org.py::TestCreateOrganization::test_create_org_individual_account_already_exists",
+    "it:response-validation/user_management/integration_test_org.py::TestCheckOrgExistence::test_check_org_existence_response_schema",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.signup.validation"
+  says = "A body with a weak password (under eight characters, or missing an uppercase letter, digit or special character, or over 72 bytes), a bad email or a business account without a registered name is refused with 400."
+  priority = "P0"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestCreateOrganization::test_create_org_validation_errors",
+    "node:tests/modules/user_management/routes/org.schema.test.ts",
+    "node:tests/modules/user_management/controller/org.controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.signup.page"
+  says = "The sign-up page signs the new admin in and opens onboarding; if the org was created but the sign-in fails it sends the person to the login page, and it does not try to sign in when creating the org fails."
+  priority = "P0"
+  tests = ["fe:app/(public)/sign-up/__tests__/sign-up-page.test.tsx"]
+
+  [[feature.behavior]]
+  id = "auth.signup.source"
+  says = "Where the sign-up came from is stored on the organization and its org-created event."
+  priority = "P2"
+  tests = [
+    "node:tests/modules/user_management/controller/org.controller.test.ts",
+    "fe:lib/utils/__tests__/signup-source.test.ts",
+  ]
+
+[[feature]]
+id = "auth.onboarding"
+title = "Onboarding"
+flow = "signup-onboarding"
+what = "After sign-up the admin is guided through the first setup steps (such as AI models and storage) until the org is marked configured or skipped. Members are sent back to the app."
+routes = ["GET /api/v1/org/onboarding-status", "PUT /api/v1/org/onboarding-status"]
+pages = ["frontend/app/(main)/onboarding/**", "frontend/app/(main)/@sidebar/onboarding/**"]
+code = [
+  "backend/nodejs/apps/src/modules/user_management/routes/org.routes.ts",
+  "backend/nodejs/apps/src/modules/user_management/controller/org.controller.ts",
+  "frontend/app/(main)/onboarding/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.onboarding.status"
+  says = "GET onboarding-status returns configured, notConfigured or skipped (notConfigured by default), and PUT saves one of those three values."
+  priority = "P0"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestGetOnboardingStatus::test_get_onboarding_status_response_schema",
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOnboardingStatus::test_update_onboarding_status_allowed_values_response_schema",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.onboarding.admin-write"
+  says = "PUT onboarding-status needs an admin with the org write scope and refuses any value outside the three; the GET needs sign-in."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOnboardingStatus::test_update_onboarding_status_negative_tests",
+    "it:response-validation/user_management/integration_test_org.py::TestGetOnboardingStatus::test_get_onboarding_status_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.onboarding.gate"
+  says = "An admin is sent to onboarding while the org is not configured, a member who opens it is sent back to the app, and a failed save lets the admin retry."
+  priority = "P1"
+  tests = ["fe:app/(main)/onboarding/__tests__/onboarding-gate.test.tsx"]
+
+  [[feature.behavior]]
+  id = "auth.onboarding.steps"
+  says = "The onboarding steps show as a full tab strip on large screens and as 'Step n of total' on phones."
+  priority = "P2"
+  tests = ["fe:app/(main)/onboarding/components/__tests__/onboarding-steps.test.tsx"]
+
+[[feature]]
+id = "auth.org-settings"
+title = "Organization settings and logo"
+flow = "signup-onboarding"
+what = "Any signed-in person reads the organization. An admin edits its name and address, uploads or removes its logo and, with the admin scope, deletes it. The General settings page is the screen for this."
+routes = [
+  "GET /api/v1/org",
+  "PUT /api/v1/org",
+  "DELETE /api/v1/org",
+  "PUT /api/v1/org/logo",
+  "GET /api/v1/org/logo",
+  "DELETE /api/v1/org/logo",
+]
+pages = ["frontend/app/(main)/workspace/general/**", "frontend/app/(main)/@sidebar/workspace/general/**"]
+code = [
+  "backend/nodejs/apps/src/modules/user_management/routes/org.routes.ts",
+  "backend/nodejs/apps/src/modules/user_management/controller/org.controller.ts",
+  "backend/nodejs/apps/src/modules/user_management/schema/org.schema.ts",
+  "frontend/app/(main)/workspace/general/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.org-settings.read-update"
+  says = "GET /api/v1/org returns the current organization, and PUT updates only the fields sent (a partial update); an invalid email is refused."
+  priority = "P0"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestGetOrganizationById::test_get_current_organization_response_schema",
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOrganizationDetails::test_update_org_single_field_response_schemas",
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOrganizationDetails::test_update_organization_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.org-settings.admin-only"
+  says = "A member gets 403 from PUT /api/v1/org, DELETE /api/v1/org and the logo upload and delete routes, and a call with no token gets 401."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestGetOrganizationById::test_get_current_organization_negative_tests",
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOrgLogo::test_upload_org_logo_negative_tests",
+    "it:response-validation/user_management/integration_test_org.py::TestRemoveOrgLogo::test_delete_org_logo_negative_tests",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.org-settings.logo"
+  says = "A PNG or SVG logo uploads and is served back with its type; with no logo GET returns 204 and an empty body; delete removes it."
+  priority = "P1"
+  tests = [
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOrgLogo::test_upload_org_logo_png_response_schemas",
+    "it:response-validation/user_management/integration_test_org.py::TestUpdateOrgLogo::test_upload_org_logo_svg_response_schemas",
+    "it:response-validation/user_management/integration_test_org.py::TestGetOrgLogo::test_get_org_logo_no_logo_returns_204",
+    "it:response-validation/user_management/integration_test_org.py::TestGetOrgLogo::test_get_org_logo_with_logo_returns_binary",
+    "it:response-validation/user_management/integration_test_org.py::TestRemoveOrgLogo::test_delete_org_logo_response_schemas",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.org-settings.svg-safety"
+  says = "An SVG logo with script, event handlers, javascript: links, embedded objects or frames, or over 10 MB, is refused; the logo is served so a SVG opened as a page cannot run script."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/controller/org.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.org-settings.delete"
+  says = "DELETE /api/v1/org needs the org admin scope, marks the organization deleted and publishes an org-deleted event."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/controller/org.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.org-settings.page"
+  says = "The General page loads the org, saves an edited name and shows the stored logo after an upload; a failed read shows one error and never offers Save over blank fields."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/workspace/general.spec.ts",
+    "fe:app/(main)/workspace/general/__tests__/general-page.test.tsx",
+  ]
+
+[[feature]]
+id = "auth.profile"
+title = "My profile"
+flow = "login"
+what = "A signed-in person edits their own name and designation and sets or removes their profile picture on the Profile page, and the change shows across the app."
+pages = ["frontend/app/(main)/workspace/profile/**", "frontend/app/(main)/@sidebar/workspace/profile/**"]
+code = ["frontend/app/(main)/workspace/profile/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "auth.profile.edit"
+  says = "The Profile page loads the person's details, saves an edited name and designation, and keeps the signed-in user in the app current."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/workspace/profile.spec.ts",
+    "fe:app/(main)/workspace/profile/__tests__/profile-api.test.ts",
+    "fe:app/(main)/workspace/profile/hooks/__tests__/use-profile-page.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "auth.profile.picture"
+  says = "Uploading a picture shows a preview and then the stored picture; a failed upload keeps the current picture and shows an error; deleting clears it."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/profile/hooks/__tests__/use-profile-page.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.profile.load-failure"
+  says = "If the profile read fails the page shows the error and never offers Save."
+  priority = "P2"
+  tests = ["fe:app/(main)/workspace/profile/hooks/__tests__/use-profile-page.test.ts"]
+
+[ignore]
+routes = ["GET /api/v1/org/health"]
+pages = [
+  "frontend/app/(main)/workspace/orgs/**",
+  "frontend/app/(main)/@sidebar/workspace/orgs/**",
+  "frontend/app/(main)/workspace/tenants/**",
+  "frontend/app/(main)/@sidebar/workspace/tenants/**",
+  "frontend/app/(public)/auth/github/callback/page.tsx",
+  "frontend/app/(public)/auth/oauth/callback/page.tsx",
+  "frontend/app/(public)/auth/sign-in/**",
+]
