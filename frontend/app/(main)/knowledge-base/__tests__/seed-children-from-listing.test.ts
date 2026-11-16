@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
-import { openFolderChildren, reloadOpenFoldersUnder, seedChildrenFromListing } from '../utils/folder-children';
+import { loadNextChildrenPage, openFolderChildren, reloadOpenFoldersUnder, seedChildrenFromListing, storeChildrenList } from '../utils/folder-children';
 import { showCollectionsInSidebar } from '../utils/root-app-list';
 import { fetchAppDirectChildren } from '../utils/fetch-app-direct-children';
 import { collection, hubChildrenFake, hubNode, hubResponse } from './kb-page-harness';
@@ -65,6 +65,21 @@ describe('a sidebar folder of a source still being prepared', () => {
 
     await fetchAppDirectChildren('kb-eng');
     expect(kb().appChildrenCache.get('kb-eng')?.map((n) => n.id)).toEqual(['f-a']);
+  });
+
+  it('keeps the children and the cursor when a next page is being prepared, and loads the rest once the source is ready', async () => {
+    storeChildrenList('kb-eng', [folder('f-a', 'Alpha')], { hasNext: true, nextCursor: 'p2', nodeType: 'app', pagesLoaded: 1 });      // a first page with more to come
+    const before = kb().nodeChildrenPagination.get('kb-eng');
+    expect(before?.hasNext).toBe(true);
+    getNodeChildren.mockResolvedValueOnce(preparing());
+
+    expect(await loadNextChildrenPage('kb-eng')).toBe(false);
+    expect(childIds('kb-eng')).toEqual(['f-a']);
+    expect(kb().nodeChildrenPagination.get('kb-eng')).toBe(before);
+
+    getNodeChildren.mockResolvedValue(hubResponse([folder('f-b', 'Beta')]));
+    expect(await loadNextChildrenPage('kb-eng')).toBe(true);
+    expect(childIds('kb-eng')).toEqual(['f-a', 'f-b']);
   });
 
   it('keeps the children read before when a reload finds the source being prepared again', async () => {
