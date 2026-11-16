@@ -6756,9 +6756,11 @@ class DataSourceEntitiesProcessor:
 
         # Get all permission edges FROM the group
         group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
+        # raise_on_error: an unread list is not an empty one, and "nothing to move" lets the caller delete the group
         permission_edges = await tx_store.get_edges_from_node(
             from_node_id=group_node_id,
-            edge_collection=CollectionNames.PERMISSION.value
+            edge_collection=CollectionNames.PERMISSION.value,
+            raise_on_error=True,
         )
 
         if not permission_edges:
