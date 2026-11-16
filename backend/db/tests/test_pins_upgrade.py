@@ -249,7 +249,7 @@ def test_the_kernel_does_not_go_back_while_a_pin_exists(db, tmp_path):
     assert r.returncode != 0 and ("per-org vetted policy" in r.stdout + r.stderr), r.stdout + r.stderr       # kernel_0017 goes first; kernel_0016 then refuses on the pins
     r = run_migrate(url, "downgrade", "kernel_0016", PG_MIGRATE_ALLOW_DOWNGRADE="1", **env)
     assert r.returncode != 0 and "per-org vetted policy" in r.stdout + r.stderr, r.stdout + r.stderr
-    assert epochs(cluster, name)["kernel"] == (17, 11)        # kernel_0018 (and platform_0006, platform_0007 and platform_0008 above it) went down first, each in its own transaction
+    assert epochs(cluster, name)["kernel"] == (17, 11)        # kernel_0018 (and platform_0006, platform_0007, platform_0008 and platform_0009 above it) went down first, each in its own transaction
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kx.%'").fetchone()[0] == 2
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []

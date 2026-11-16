@@ -13,6 +13,7 @@ from app.services.pg_runtime import RuntimeDb
 from tests.support.require_service import missing
 
 URL = os.environ.get("PG_RUNTIME_TEST_URL", "")
+INDEXING_URL = os.environ.get("PG_TEST_INDEXING_URL", "")
 
 
 @pytest.fixture
@@ -22,6 +23,19 @@ async def runtime(monkeypatch) -> RuntimeDb:
     monkeypatch.setenv("PG_CORE_URL", URL)
     monkeypatch.setenv("PG_POOLER", "none")
     monkeypatch.setenv("PG_RUNTIME_SERVICE", "connectors")
+    monkeypatch.delenv("PG_LISTEN_URL", raising=False)
+    return RuntimeDb()
+
+
+@pytest.fixture
+async def indexing_runtime(monkeypatch) -> RuntimeDb:
+    """The database runtime as the indexing service: it writes the precision pins (with the epoch keys around them), and under
+    ``PG_KV_ACCESS=enforce`` only its role may write ``/services/vectordb/embedding_pin/``. ``PG_TEST_INDEXING_URL`` is its login DSN."""
+    if not INDEXING_URL:
+        missing("PG_TEST_INDEXING_URL is not set")
+    monkeypatch.setenv("PG_CORE_URL", INDEXING_URL)
+    monkeypatch.setenv("PG_POOLER", "none")
+    monkeypatch.setenv("PG_RUNTIME_SERVICE", "indexing")
     monkeypatch.delenv("PG_LISTEN_URL", raising=False)
     return RuntimeDb()
 
