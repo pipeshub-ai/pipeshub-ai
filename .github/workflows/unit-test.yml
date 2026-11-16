@@ -458,12 +458,77 @@ jobs:
             --ignore=tests/integration/db \
             --ignore=tests/integration/graph_db/postgres \
             --ignore=tests/integration/skills/test_npm_import_live.py \
+            --ignore=tests/integration/spend \
             -v --timeout=300 --session-timeout=900
+
+  # The spend-safety suites (the fleet breaker's Lua, the pause budget, the wire contract of every model wrapper)
+  # against a real Redis, the same tests the unit tier runs on fakeredis's Lua engine. They fail, never skip, when
+  # Redis is missing: SPEND_IT_REDIS_URL is set, so the fixtures connect to it. No external network: the model
+  # providers are local sockets and a black-holed address that is never routed.
+  python-spend-redis:
+    needs: changes
+    if: needs.changes.outputs.python_unit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7.4-bookworm
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the spend-safety suites on a real Redis
+        working-directory: backend/python
+        env:
+          SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
+          # A test that needs the real Redis fails here, never skips, if the variable goes missing.
+          SPEND_IT_REQUIRE_REDIS: "1"
+        run: |
+          pytest tests/integration/spend \
+            tests/unit/services/llm_gateway/test_fleet_breaker.py \
+            tests/unit/modules/pipeline/test_hold_ledger.py \
+            tests/unit/modules/pipeline/test_pause_budget_simulation.py \
+            tests/unit/services/messaging/test_fleet_state_startup.py \
+            -m "not live_smoke" \
+            -v --timeout=900 --session-timeout=1500 --junitxml="$RUNNER_TEMP/spend.xml"
+
+      # A store that is down must fail these tests, never skip them.
+      - name: Fail on skipped tests
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/spend.xml" --min-tests 200
 
   # One check for everything the single python-unit-tests job used to run, so a
   # required status check keeps one name however the shards change.
   python-unit-tests:
-    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline]
+    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline, python-spend-redis]
     if: ${{ always() && needs.changes.outputs.python_unit == 'true' }}
     runs-on: ubuntu-latest
 
