@@ -223,7 +223,7 @@ def test_the_container_controller_ramps_against_the_whole_fleet_not_one_services
     assert g._container.fleet == whole  # the shared ramp is sized from the whole container
 
 
-def test_the_container_link_uses_the_plans_fleet_and_cells_for_any_cell_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_container_link_uses_the_plans_fleet_and_the_running_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """At 128 CPUs the plan's fleet is not what one cell resolves on its own (light, index): the shared ramp
     must use the plan's, shared by the plan's cells, whichever service holds the role."""
     _governor(tmp_path, monkeypatch, auto=True, cpus=128.0, workers=8)
@@ -234,4 +234,13 @@ def test_the_container_link_uses_the_plans_fleet_and_cells_for_any_cell_count(tm
     assert plan is not None and plan.fleet_ceilings is not None and plan.cells > 1
     assert g._container is not None
     assert dataclasses.astuple(g._container.fleet) == tuple(plan.fleet_ceilings)
-    assert g._container.cells == plan.cells
+    assert g._container.cells == 1  # one Docling process: shared by the processes that run, not the plan's proposal
+
+
+def test_an_indexing_process_alone_applies_its_own_cells_cap_not_the_plans_cell_share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One indexing process at 128 CPUs (the plan proposes 8 cells): its share of the container limits is the
+    whole, bounded by its own cells=1 ceilings, not 1/8 of them."""
+    g = _governor(tmp_path, monkeypatch, auto=True, cpus=128.0, workers=1)
+    plan = runtime.current_plan()
+    assert plan is not None and plan.cells > 1 and g._container is not None
+    assert g._container.cells == 1
