@@ -140,6 +140,7 @@ class ResourceGovernor:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: Callable[[], float] = random.random,
         heavy_working_set_gb: float | None = None,
+        remote_parse_slots: int | None = None,
     ) -> None:
         self._logger = logger
         # The Docling service's own working set; the other services leave it unset.
@@ -171,6 +172,10 @@ class ResourceGovernor:
             env_index,
             reserve_embedding_cpus=reserve_embedding_cpus,
         )
+        if remote_parse_slots:
+            from app.services.parsing.remote_concurrency import lift_ceilings
+            # Parsing runs in another pod: the ceilings hold that many parses, not this CPU's share.
+            self._fleet_ceilings = lift_ceilings(self._fleet_ceilings, remote_parse_slots, env_index)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
         # Only shared when there are workers to share with: one process's
         # heavy gate already holds it to free memory.
