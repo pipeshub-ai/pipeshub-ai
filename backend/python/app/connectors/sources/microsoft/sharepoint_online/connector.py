@@ -3886,7 +3886,8 @@ class SharePointConnector(BaseConnector):
                 # A warning about the app's permissions must not stop the sync it is about.
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
-            if self._disabled_set_unknown:
+            # While the deleted accounts are unread, a SharePoint principal (no Entra id) is withheld too (may_grant).
+            if self._disabled_set_unknown or self.source_accounts.deleted_pending:
                 # A grant may be withheld this run (_user_may_be_granted), and an item's grants and the drives' delta
                 # tokens are saved as the run goes. Mark every item for reading again before any of that, so a run
                 # that stops anywhere after this point still leaves the next run to write what was withheld. If this
