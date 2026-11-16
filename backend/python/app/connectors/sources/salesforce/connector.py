@@ -6590,7 +6590,7 @@ class SalesforceConnector(BaseConnector):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_permission_tuples: List[Tuple[str, str, str, bool]] = []
-        account_of: List[Optional[str]] = []     # the Salesforce user each tuple was read for, index by index
+        account_of: list[str | None] = []     # the Salesforce user each tuple was read for, index by index
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 self.logger.error(
