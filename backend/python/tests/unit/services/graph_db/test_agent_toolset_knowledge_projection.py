@@ -97,7 +97,7 @@ def _make_projection_client(toolset_rows, knowledge_rows, doc_store):
 
     - ``agent_ids`` param + 'AS toolset' in query → toolset rows
     - ``agent_ids`` param otherwise               → knowledge rows
-    - ``ids`` param                               → docs from doc_store
+    - ``app_ids`` param (the org's apps)          → docs from doc_store
     Records call counts so tests can assert batching.
     """
     calls = {"toolsets": 0, "knowledge": 0, "docs": 0}
@@ -110,10 +110,10 @@ def _make_projection_client(toolset_rows, knowledge_rows, doc_store):
                 return toolset_rows
             calls["knowledge"] += 1
             return knowledge_rows
-        if "ids" in parameters:
+        if "app_ids" in parameters:
             calls["docs"] += 1
             return [
-                {"n": doc_store[i]} for i in parameters["ids"] if i in doc_store
+                {"app": doc_store[i]} for i in parameters["app_ids"] if i in doc_store
             ]
         return []
 
@@ -150,7 +150,7 @@ class TestNeo4jProjectAgents:
         neo4j_provider.client.execute_query = client
 
         # a3 is requested but has neither toolsets nor knowledge.
-        result = await neo4j_provider._project_agents_toolsets_and_knowledge(["a1", "a2", "a3"])
+        result = await neo4j_provider._project_agents_toolsets_and_knowledge(["a1", "a2", "a3"], org_id="org-1")
 
         # Every requested id present with the consistent default shape.
         assert set(result.keys()) == {"a1", "a2", "a3"}
@@ -178,6 +178,16 @@ class TestNeo4jProjectAgents:
         # page regardless of agent count (no per-agent N+1).
         assert calls["toolsets"] == 1
         assert calls["knowledge"] == 1
+
+    @pytest.mark.asyncio
+    async def test_without_the_agents_org_no_app_is_resolved(self, neo4j_provider) -> None:
+        knowledge_rows = [{"agent_id": "a1", "_key": "k1", "connectorId": "app1", "filters": "{}"}]
+        client, calls = _make_projection_client([], knowledge_rows, {"app1": {"id": "app1", "name": "Slack", "type": "SLACK"}})
+        neo4j_provider.client.execute_query = client
+        result = await neo4j_provider._project_agents_toolsets_and_knowledge(["a1"])
+        (k1,) = result["a1"]["knowledge"]
+        assert (k1["type"], k1["name"]) == ("UNKNOWN", "app1")
+        assert calls["docs"] == 0
         # KB + app doc lookups are batched into at most one query per collection.
         assert calls["docs"] <= 2
 

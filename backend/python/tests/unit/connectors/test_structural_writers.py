@@ -129,7 +129,7 @@ ARGS = {
     "delete_records_and_relations": ("r1",),
     "upsert_record_under_parent": (SimpleNamespace(id="r1"), "r0"),
     "batch_upsert_record_permissions": ("r1", []),
-    "batch_upsert_record_group_permissions": ("g1", [], "c1"),
+    "batch_upsert_record_group_permissions": ("g1", [], "c1", "o1"),
     "delete_user_group_by_id": ("ug1",),
 }
 

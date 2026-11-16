@@ -112,7 +112,7 @@ async def test_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(provider
     provider.batch_create_edges = AsyncMock()
     provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))
 
-    await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
+    await provider.batch_upsert_app_users([_app_user()], transaction="txn-1", org_id="org-1")
 
     _assert_adoption_failure_logged_by_id(caplog)
 
@@ -128,7 +128,7 @@ async def test_batch_upsert_app_users_logs_an_active_guest_by_graph_key(provider
     provider.batch_create_edges = AsyncMock()
     provider.delete_edge = AsyncMock()
 
-    await provider.batch_upsert_app_users([_app_user(is_guest=True)], transaction="txn-1")
+    await provider.batch_upsert_app_users([_app_user(is_guest=True)], transaction="txn-1", org_id="org-1")
 
     messages = _messages(caplog)
     assert not any(EMAIL in m or "Alice Liddell" in m for m in messages)
@@ -151,6 +151,6 @@ async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_by_user_id
     provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))
 
     with bind(OrgContext("org-1", "user-1", "job", "job:test", "t")):
-        await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
+        await provider.batch_upsert_app_users([_app_user()], transaction="txn-1", org_id="org-1")
 
     _assert_adoption_failure_logged_by_id(caplog)
