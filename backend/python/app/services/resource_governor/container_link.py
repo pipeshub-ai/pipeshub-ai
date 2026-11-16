@@ -122,6 +122,11 @@ class ContainerLink:
             p: max(1, min(_share(shared[0].get(p), self.cells), _cap(p, ceilings))) if shared[0].get(p) > 0 else 0
             for p in Pool
         })
+        # A local memory incident (the heavy pool halved, with a cooldown) outlasts the shared ramp, which does not see
+        # it: while a pool's cooldown runs, this process keeps the lower of its own and the shared limit.
+        held = {p: min(limits.get(p), own[0].get(p)) for p in Pool if own[1].get(p).cooldown_until > now}
+        if held:
+            limits = Limits(values={p: held.get(p, limits.get(p)) for p in Pool})
         return limits, own[1]
 
     def stats(self) -> dict[str, Any]:

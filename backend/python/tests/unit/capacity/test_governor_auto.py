@@ -258,3 +258,35 @@ def test_the_shared_ramp_is_the_same_whichever_service_is_controller(tmp_path: P
         assert g._container is not None
         fleets[service] = g._container.fleet
     assert fleets["indexing"] == fleets["docling"]
+
+
+def test_a_local_memory_incident_outlasts_the_shared_ramp(tmp_path: Path) -> None:
+    """The heavy pool was halved by an incident and is cooling down: a healthy shared ramp must not lift it early."""
+    import dataclasses
+
+    from app.capacity.budget_policy import AdmissionPolicy, plan_floors
+    from app.capacity.controller import ElectedController
+    from app.capacity.member_budget import MemberBudget
+    from app.services.resource_governor.models import Ceilings
+
+    d = tmp_path / "ledger"
+    d.mkdir(mode=0o700)
+    b = MemberBudget(d, cpu_tokens=160, mem_bytes=256 << 30, floors=plan_floors(128, 160, None, 1.0, AdmissionPolicy()))
+    link = cl.ContainerLink(b, ElectedController(b, 15), Ceilings(112, 544, 224, 544), 1)
+    container = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 40, Pool.INDEX_LIGHT: 40})
+    epoch = b.elect_controller(15)
+    b.controller_beat(epoch, cl.encode_state(container, ControllerState.initial()))
+    state = ControllerState.initial().with_update(
+        Pool.HEAVY_PARSE, dataclasses.replace(ControllerState.initial().get(Pool.HEAVY_PARSE), cooldown_until=500.0)
+    )
+    own = (Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 40, Pool.INDEX_LIGHT: 40}), state)
+
+    def run(now: float) -> int:
+        limits, _ = link.step(
+            own=own, snap=snap(128), ceilings=Ceilings(112, 544, 224, 544), demand={}, now=now, interval=15.0,
+            feedback=None, heavy_working_set_gb=1.5,
+        )
+        return limits.get(Pool.HEAVY_PARSE)
+
+    assert run(100.0) <= 4  # cooling down: the incident's halved limit holds
+    assert run(600.0) > 4  # cooldown over: the shared ramp applies again

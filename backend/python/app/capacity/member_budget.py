@@ -28,6 +28,7 @@ import struct
 import tempfile
 import threading
 import time
+import weakref
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -340,6 +341,25 @@ class _Watcher:
             last = cur
 
 
+_HANDLES: weakref.WeakSet[MemberBudget] = weakref.WeakSet()
+
+
+def _close_inherited_descriptors() -> None:
+    """In a forked child, drop what the parent's handles opened, at once.
+
+    The parent's lifetime lock lives in an open file description both processes now share; it is released only when
+    every copy is closed. A child that stays alive without using the budget would otherwise keep a dead parent's slot
+    looking alive. Closing a copy does not unlock the parent's lock. A child that needs the budget takes a slot of its
+    own on first use (``_after_fork``).
+    """
+    for handle in list(_HANDLES):
+        handle._drop_inherited()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_close_inherited_descriptors)
+
+
 class MemberBudget:
     """One process's handle on its container's ledger."""
 
@@ -379,6 +399,7 @@ class MemberBudget:
         self._demand_flat: list[Any] = [0.0, 0, 0, 0] * len(DEMAND_POOLS)
         self._live: set[Permit] = set()
         self._watcher = _Watcher(self)
+        _HANDLES.add(self)
         self._open_files()
         self._init_file()
         self._attach()
@@ -481,6 +502,16 @@ class MemberBudget:
                 self._write_slot()
                 return
         raise RuntimeError("the process table is full")
+
+    def _drop_inherited(self) -> None:
+        """Close the descriptors a fork copied (the process id stays, so the next use sees the fork and re-attaches)."""
+        if os.getpid() == self._pid:
+            return
+        for fd in (self._fd, self._lockfd, self._slot_fd):
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        self._fd = self._lockfd = self._slot_fd = -1
 
     def _after_fork(self) -> None:
         """A forked child shares the parent's open files; it must hold nothing of the parent's and take its own slot.
