@@ -798,7 +798,8 @@
       "folderSeparator": "文件夹名称不能包含“/”或“\\”。",
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
     },
-    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。"
+    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。",
+    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4511,6 +4512,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "会话和用户元数据"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "会话和用户元数据"
         },
         "messageBroker": {

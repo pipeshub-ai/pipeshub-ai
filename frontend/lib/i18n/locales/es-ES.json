@@ -721,7 +721,8 @@
       "folderSeparator": "Los nombres de carpeta no pueden contener \"/\" ni \"\\\".",
       "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
     },
-    "sourcesNotReady": "Algunas fuentes aún se están preparando y todavía no aparecen ({{count}}). Inténtalo de nuevo en un momento."
+    "sourcesNotReady": "Algunas fuentes aún se están preparando y todavía no aparecen ({{count}}). Inténtalo de nuevo en un momento.",
+    "sourcePreparing": "Preparando esta fuente… Sus elementos aparecerán aquí en un momento."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4261,6 +4262,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "Sesiones y metadatos de usuario"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "Sesiones y metadatos de usuario"
         },
         "messageBroker": {

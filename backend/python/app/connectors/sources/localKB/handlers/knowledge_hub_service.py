@@ -836,6 +836,7 @@ class KnowledgeHubService:
                 permissions_task = asyncio.create_task(self._get_permissions(
                     user_key, org_id, parent_id, parent_type, is_org_admin=is_org_admin,
                 ))
+            preparing = False
             try:
                 page_result, scope = await self._v2_nodes(
                     user_id=user_id,
@@ -862,8 +863,11 @@ class KnowledgeHubService:
                 raise BrowseRequestError(str(too_large), 422) from too_large
             except KnowledgeHubListingBusy as busy:
                 raise BrowseRequestError(str(busy), 503) from busy
-            except KnowledgeHubListingNotReady as not_ready:
-                raise BrowseRequestError(str(not_ready), 503) from not_ready
+            except KnowledgeHubListingNotReady:
+                # The source holds nodes its copy has not reached yet (the provider refuses only a start the user may open): an empty page that says so, no cursor
+                # to page on with. Nothing is listed, so nothing is shown that the user may not read.
+                preparing = True
+                page_result, scope = SearchPage(rows=[], total=0, counts_by_type={}, start_index=0, end_index=0, next_cursor=None, prev_cursor=None), None
 
             # The start node's own admission decides this, and the 404 body is
             # constant: naming the node, or its type, would confirm it exists
@@ -946,6 +950,8 @@ class KnowledgeHubService:
             # Fetch typed records if requested (for LLM context enrichment)
             if page_result.not_ready:
                 response.notReady = page_result.not_ready
+            if preparing:
+                response.preparing = True
 
             if include_typed_records and items:
                 record_ids = [

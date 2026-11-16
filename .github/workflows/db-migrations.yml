@@ -31,7 +31,7 @@ jobs:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
           - shard: integration
-            files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
+            files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py tests/test_kv_access_map.py
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
           - shard: vetted
@@ -45,7 +45,7 @@ jobs:
           - shard: upgrade
             files: tests/test_pins_upgrade.py
           - shard: kg
-            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
+            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py tests/test_kg_stats.py
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

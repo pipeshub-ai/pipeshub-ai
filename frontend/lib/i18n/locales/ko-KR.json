@@ -798,7 +798,8 @@
       "folderSeparator": "폴더 이름에는 \"/\" 또는 \"\\\"를 사용할 수 없습니다.",
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     },
-    "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요."
+    "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요.",
+    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4511,6 +4512,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "세션 및 사용자 메타데이터"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "세션 및 사용자 메타데이터"
         },
         "messageBroker": {

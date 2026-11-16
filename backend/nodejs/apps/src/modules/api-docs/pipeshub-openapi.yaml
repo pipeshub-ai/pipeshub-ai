@@ -8478,6 +8478,12 @@ components:
           items:
             type: string
           description: Ids of the sources left out of this listing because their copy is not made yet (just connected, or right after an upgrade); the others are listed. Ask again in a moment. Absent when none.
+        preparing:
+          type: boolean
+          description: |
+            `true` when nothing could be listed because the source is still being prepared (its copy is not finished yet):
+            `items` is empty, the totals are 0 and there is no cursor to page on with. Ask again in a moment; the rows are
+            listed once the copy is done. Absent otherwise.
         success:
           type: boolean
           enum: [true]
@@ -24021,7 +24027,7 @@ components:
               example: qdrant
             redisMode:
               type: string
-              description: Value of the `REDIS_MODE` environment variable of the Node.js process (`standalone` when unset)
+              description: Cache mode of the Node.js process, lower-cased. The `REDIS_MODE` environment variable when set; otherwise `postgres` when `KV_STORE_TYPE` and `MESSAGE_BROKER` are both `postgres`, else `standalone`
               example: standalone
         warnings:
           type: array
