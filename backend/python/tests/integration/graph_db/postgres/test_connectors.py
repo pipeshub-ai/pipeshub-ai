@@ -400,7 +400,7 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
 
     - the other connector's groups nest (200 under 4), so a recursive step is estimated at 50 groups a hop: as a join against the groups, a scan of every record edge
       of the organisation came out cheaper where the organisation fills its partition;
-    - the organisation is kept out of its partition's most common values (statistics target 1, a larger decoy org) and put at the average of many one-row orgs, as on
+    - the organisation is kept out of its partition's most common values (statistics target 1, a larger decoy org placed in it) and put at the average of many one-row orgs, as on
       a shared database: the record and stage state reads then tied with a scan of a partial index (nodes_stage_page, _revision) bounded by the org alone."""
     admin_url = os.environ.get("PG_ADMIN_URL")
     assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
@@ -425,13 +425,14 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
                                              "WHERE c.oid = (SELECT tableoid FROM graph.nodes WHERE org_id = $1 LIMIT 1)", w.org)
     mod, rem = re.findall(r"\d+", bound)
     same = f"satisfies_hash_partition({parent}, {mod}, {rem}, o)"            # an org id that lands in the organisation's partition
-    decoy = f"(SELECT o FROM (SELECT left(md5('decoy' || $1 || h), 24) o FROM generate_series(1, 64) h) c WHERE {same} LIMIT 1)"
+    # 2,000 draws into one of 16 remainders cannot all miss ((15/16)^2000), and ORDER BY picks the same one every time
+    decoy = await con.fetchval(f"SELECT o FROM (SELECT left(md5('decoy' || $1 || h), 24) o FROM generate_series(1, 2000) h) c WHERE {same} ORDER BY o LIMIT 1", w.org)
+    assert decoy, "no decoy org id lands in the organisation's partition"
     tiny = f"(SELECT o FROM (SELECT left(md5('tiny' || $1 || h), 24) o FROM generate_series(1, 400000) h) c WHERE {same})"
     try:
-        async with con.transaction():
-            await con.execute("SET LOCAL session_replication_role = replica")      # rows for the statistics only, not changes for the kg projection
-            await con.execute(f"INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT {decoy}, 'records', 'd' || g, '{{}}'::jsonb FROM generate_series(1, 50000) g", w.org)
-            await con.execute(f"INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT o, 'stageStates', 't', '{{}}'::jsonb FROM {tiny} t", w.org)
+        # collections the kg capture does not record (kg.coll_code is NULL for them), so the rows leave nothing in kg.graph_changes
+        await con.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'blocks', 'd' || g, '{}'::jsonb FROM generate_series(1, 50000) g", decoy)
+        await con.execute(f"INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT o, 'stageStates', 't', '{{}}'::jsonb FROM {tiny} t", w.org)
         await con.execute(f"ALTER TABLE {leaf} ALTER COLUMN org_id SET STATISTICS 1")
         await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")
         sent: list[tuple[str, tuple]] = []
@@ -458,13 +459,14 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
             touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
             assert touched < 200, (touched, plan)
     finally:
-        async with con.transaction():
-            await con.execute("SET LOCAL session_replication_role = replica")
-            await con.execute(f"DELETE FROM graph.nodes WHERE org_id = {decoy} AND coll = 'records'", w.org)
-            await con.execute(f"DELETE FROM graph.nodes x USING {tiny} t WHERE x.org_id = t.o AND x.coll = 'stageStates' AND x.id = 't'", w.org)
+        await con.execute("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'blocks'", decoy)
+        await con.execute(f"DELETE FROM graph.nodes x USING {tiny} t WHERE x.org_id = t.o AND x.coll = 'stageStates' AND x.id = 't'", w.org)
         await con.execute(f"ALTER TABLE {leaf} ALTER COLUMN org_id SET STATISTICS -1")
         await con.execute(f"ANALYZE {leaf}")                                       # the next tests plan with ordinary statistics
-        await con.close()
+        try:
+            assert await con.fetchval(f"SELECT count(*) FROM kg.graph_changes WHERE org_id = $2 OR org_id IN {tiny}", w.org, decoy) == 0
+        finally:
+            await con.close()
 
 
 async def test_the_stats_count_the_live_records_of_the_connector_once(w: World) -> None:
