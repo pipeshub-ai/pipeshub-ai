@@ -484,28 +484,24 @@ class TestGate:
             await large
 
     async def test_event_loop_keeps_running_during_a_large_decode(self) -> None:
-        storage = _bs()
+        # Counted, not timed: the decode does not finish until the loop has run ten turns of its own, which it
+        # can do only while the decode is off the loop. On the loop, the decode never sees the release.
+        storage, fake = _bs(), _Blocking()
+        turns = 0
 
-        def slow(data: dict) -> bytes:
-            time.sleep(0.3)
-            return msgspec.msgpack.encode({"ok": True})
+        async def heartbeat() -> None:
+            nonlocal turns
+            assert await asyncio.to_thread(fake.entered.wait, 30)
+            while turns < 10:
+                await asyncio.sleep(0.001)
+                turns += 1
+            fake.release.set()
 
-        lags: list[float] = []
-
-        async def ticker(stop: asyncio.Event) -> None:
-            while not stop.is_set():
-                t = time.perf_counter()
-                await asyncio.sleep(0.01)
-                lags.append(time.perf_counter() - t - 0.01)
-
-        stop = asyncio.Event()
-        tick = asyncio.create_task(ticker(stop))
-        with patch.object(storage, "_decompressed_payload", side_effect=slow):
-            await storage._decode_record(_envelope(_record(5000)))
-        stop.set()
-        await tick
-        assert len(lags) > 10
-        assert max(lags) < 0.15
+        beat = asyncio.create_task(heartbeat())
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
+            assert await storage._decode_record(_envelope(_record(5000))) == {"ok": True}
+        await beat
+        assert turns == 10
 
 
 class TestPerLoopSlots:
