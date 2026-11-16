@@ -308,10 +308,15 @@ class SourceAccountGraph:
         if node is None:
             return None
         if node not in self._known:
-            if await tx_store.get_document(node, ACCOUNTS) is None:
+            if not await self.stored(tx_store, [node]):
                 return None
             self._known.add(node)
         return node, ACCOUNTS
+
+    @staticmethod
+    async def stored(tx_store: "TransactionStore", nodes: list[str]) -> list[dict]:
+        """The stored account documents among ``nodes``. A failed read raises."""
+        return await tx_store.get_nodes_by_field_in(ACCOUNTS, "_key", nodes, raise_on_error=True)
 
     async def upsert(self, tx_store: "TransactionStore", users: list["AppUser"], *, state: str = "listed") -> None:
         """Write the accounts of ``users`` (an id and an address each) in ``state``, keeping each one's earlier addresses,
@@ -324,8 +329,7 @@ class SourceAccountGraph:
                 wanted[node] = u
         if not wanted:
             return
-        stored = {d.get("_key") or d.get("id"): d for d in await tx_store.get_nodes_by_field_in(
-            ACCOUNTS, "_key", list(wanted), raise_on_error=True)}
+        stored = {d.get("_key") or d.get("id"): d for d in await self.stored(tx_store, list(wanted))}
         docs, addresses = [], set()
         for node, u in wanted.items():
             old = stored.get(node) or {}
@@ -385,7 +389,7 @@ class SourceAccountGraph:
         nodes = [n for n in (self.node_id(u.source_user_id) for u in users) if n]
         if not nodes:
             return
-        stored = await tx_store.get_nodes_by_field_in(ACCOUNTS, "_key", nodes, raise_on_error=True)
+        stored = await self.stored(tx_store, nodes)
         if not stored:
             return
         now = get_epoch_timestamp_in_ms()

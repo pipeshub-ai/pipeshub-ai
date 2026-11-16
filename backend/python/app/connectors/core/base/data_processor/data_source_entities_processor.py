@@ -5644,7 +5644,7 @@ class DataSourceEntitiesProcessor:
             elif account:
                 # Signing the connector in as the account shows the user holds it, whatever the address says: linked even
                 # where two accounts share the address and the directory links neither.
-                if await tx_store.get_document(account, ACCOUNTS) is None:
+                if not await graph.stored(tx_store, [account]):
                     await graph.upsert(tx_store, [AppUser(
                         app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
                         email=email, full_name=email, org_id=self.org_id,

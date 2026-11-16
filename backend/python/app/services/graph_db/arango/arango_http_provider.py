@@ -7722,9 +7722,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER edge._to == vertex._id
                                 AND edge.role == 'OWNER'
                                 AND edge.type == 'USER'
-                            LET user_key = SPLIT(edge._from, '/')[1]
-                            LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
-                            FILTER user.userId == @user_id
+                            // the owner is the user, or a source account the user is linked to in this connector
+                            LET holder = DOCUMENT(edge._from)
+                            FILTER holder != null AND (
+                                (IS_SAME_COLLECTION('{CollectionNames.USERS.value}', holder) AND holder.userId == @user_id)
+                                OR (IS_SAME_COLLECTION('{CollectionNames.SOURCE_ACCOUNTS.value}', holder) AND LENGTH(
+                                    FOR l IN {CollectionNames.AUTHENTICATED_AS.value}
+                                        FILTER l._to == holder._id AND l.connectorId == @connector_id
+                                        LET me = DOCUMENT(l._from)
+                                        FILTER me != null AND me.userId == @user_id
+                                        LIMIT 1
+                                        RETURN 1) > 0))
                             LIMIT 1
                         RETURN record
             """
@@ -10737,15 +10745,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR vertex IN 0..8 OUTBOUND @node_key @@inherit_collection
                 FOR edge IN @@edge_collection
                     FILTER edge._to == vertex._id
-                    FOR user IN @@user_collection
-                        FILTER user._id == edge._from
-                        LIMIT 1
-                        RETURN user
+                    // a source account the connector acts as holds a grant like a synced user
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR IS_SAME_COLLECTION("sourceAccounts", user))
+                    LIMIT 1
+                    RETURN user
             """
             bind_vars = {
                 "@inherit_collection": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@edge_collection": CollectionNames.PERMISSION.value,
-                "@user_collection": CollectionNames.USERS.value,
                 "node_key": node_key
             }
 
@@ -10786,14 +10794,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR vertex IN 0..8 OUTBOUND @node_key @@inherit_collection
                 FOR edge IN @@edge_collection
                     FILTER edge._to == vertex._id
-                    FOR user IN @@user_collection
-                        FILTER user._id == edge._from
-                        RETURN DISTINCT user
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR IS_SAME_COLLECTION("sourceAccounts", user))
+                    RETURN DISTINCT user
             """
             bind_vars = {
                 "@inherit_collection": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@edge_collection": CollectionNames.PERMISSION.value,
-                "@user_collection": CollectionNames.USERS.value,
                 "node_key": node_key
             }
 
@@ -10856,8 +10863,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER edge._to == vertex._id
                     FILTER edge.role == 'OWNER'
                     FILTER edge.type == 'USER'
-                    LET user_key = SPLIT(edge._from, '/')[1]
-                    LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null AND (IS_SAME_COLLECTION('{CollectionNames.USERS.value}', user)
+                        OR IS_SAME_COLLECTION('{CollectionNames.SOURCE_ACCOUNTS.value}', user))
                     LIMIT 1
                     RETURN user.email
             """

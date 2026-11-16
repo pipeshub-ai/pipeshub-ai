@@ -140,7 +140,7 @@ class LookupsMixin(PgBase):
                   SELECT m.id, 'records'::text, m.id, 0 FROM m
                   UNION
                   SELECT up.rid, i.to_coll, i.to_id, up.d + 1 FROM up JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                    AND i.from_coll = up.cur_coll AND i.from_id = up.cur WHERE up.d < 8)
+                    AND i.from_coll = up.cur_coll AND i.from_id = up.cur WHERE up.d < 8),
                 me AS (SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.doc->>'userId' = $6),
                 holders(coll, id) AS (SELECT 'users'::text, me.id FROM me
                   UNION SELECT l.to_coll, l.to_id FROM me JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = me.id

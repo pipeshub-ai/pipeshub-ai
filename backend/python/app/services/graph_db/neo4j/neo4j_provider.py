@@ -6020,8 +6020,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (r:Record {connectorId: $connector_id, orgId: $org_id})
             MATCH (r)-[:IS_OF_TYPE]->(m:Mail {conversationIndex: $conversation_index, threadId: $thread_id})
             MATCH (r)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
-            MATCH (u:User)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
+            MATCH (u:User|SourceAccount)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
+            // the owner is the user, or a source account the user is linked to in this connector
             WHERE u.userId = $user_id
+               OR EXISTS { (me:User {userId: $user_id})-[l:AUTHENTICATED_AS {connectorId: $connector_id}]->(u) WHERE u:SourceAccount }
             RETURN r
             LIMIT 1
             """
@@ -10127,7 +10129,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (start)
             WHERE start.id = $node_key
             MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
-            MATCH (u:User)-[:PERMISSION]->(ancestor)
+            MATCH (u:User|SourceAccount)-[:PERMISSION]->(ancestor)
             RETURN u
             LIMIT 1
             """
@@ -10168,7 +10170,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (start)
             WHERE start.id = $node_key
             MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
-            MATCH (u:User)-[:PERMISSION]->(ancestor)
+            MATCH (u:User|SourceAccount)-[:PERMISSION]->(ancestor)
             RETURN DISTINCT u
             """
 
@@ -10247,7 +10249,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (start:Record {id: $record_id})
             MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
-            MATCH (u:User)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
+            MATCH (u:User|SourceAccount)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
             RETURN u.email AS email
             LIMIT 1
             """
