@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import random
 import signal
@@ -129,10 +130,8 @@ def llm_waiters(directory: str, count: int, seconds: float, out: Connection) -> 
 
     async def run() -> None:
         async def one() -> None:
-            try:
+            with contextlib.suppress(AdmissionTimeout):
                 await budget.reserve(Demand(Family.LLM, 0), deadline_s=seconds)
-            except AdmissionTimeout:
-                pass
 
         await asyncio.gather(*(one() for _ in range(count)))
 

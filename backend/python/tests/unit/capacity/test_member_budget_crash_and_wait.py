@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.capacity.budget_policy import AdmissionPolicy, Demand, Family, plan_floors
+from app.capacity.budget_policy import Demand, Family
 from app.capacity.member_budget import MemberBudget
 from tests.support import ledger_procs as lp
 
