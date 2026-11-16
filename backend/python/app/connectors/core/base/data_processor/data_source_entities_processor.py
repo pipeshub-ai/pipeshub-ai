@@ -5566,7 +5566,9 @@ class DataSourceEntitiesProcessor:
             if users[0].app_name not in NOT_SOURCE_ACCOUNTS and not await self.source_accounts(
                 users[0].connector_id
             ).before_link(users):
-                return
+                # Raised, not returned: a caller taking the call as done would move its checkpoint past these users.
+                raise RuntimeError(
+                    f"the stored users of connector {users[0].connector_id} could not be read; nobody is linked")
 
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_upsert_app_users(users)

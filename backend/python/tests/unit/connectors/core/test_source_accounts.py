@@ -332,10 +332,13 @@ async def test_a_connector_that_links_pipeshub_users_is_not_checked() -> None:
 
 @pytest.mark.asyncio
 async def test_linking_waits_when_the_stored_links_cannot_be_read() -> None:
+    """Nobody is linked, and the call fails: a caller that took it as done would move its checkpoint past users
+    it never linked, and an unchanged user is not listed again."""
     processor, tx = _processor(_Config())
     processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
 
-    await processor.on_new_app_users([_user("ana@x.com", "a")])
+    with pytest.raises(RuntimeError, match="could not be read"):
+        await processor.on_new_app_users([_user("ana@x.com", "a")])
 
     tx.batch_upsert_app_users.assert_not_awaited()
 
