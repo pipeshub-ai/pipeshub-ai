@@ -414,7 +414,7 @@ class DeleteMixin(PgBase):
                         "code": 404,
                         "reason": f"Knowledge base context not found for record {record_id}",
                     }
-                user = await self.get_user_by_user_id(user_id)
+                user = await self.get_user_by_user_id(user_id, org_id=org_id)
                 if not user:
                     return {
                         "success": False,
@@ -469,7 +469,7 @@ class DeleteMixin(PgBase):
             if soft_delete:
                 deleted_by = None
                 if DeleteSource(delete_source) is DeleteSource.USER:
-                    deleter = await self.get_user_by_user_id(user_id) or {}
+                    deleter = await self.get_user_by_user_id(user_id, org_id=org_id) or {}
                     deleted_by = deleter.get("id") or deleter.get("_key")
                 # What the hard delete removes: the record and its direct attachments, as on
                 # ArangoDB. One statement marks them all with one batch, so a restore of the

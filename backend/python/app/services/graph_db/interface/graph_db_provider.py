@@ -3697,6 +3697,7 @@ class IGraphDBProvider(ABC):
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
         """
         Get a user by their internal user ID.
@@ -3705,6 +3706,7 @@ class IGraphDBProvider(ABC):
             user_id (str): Internal user ID
             raise_on_error: raise when the lookup fails. Without it a failed
                 lookup returns None, the same as a user that does not exist.
+            org_id: when given, only a user of this organisation matches.
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
@@ -7954,7 +7956,7 @@ class IGraphDBProvider(ABC):
         if not ids:
             return RefAccess()
         try:
-            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
             user_key = (user or {}).get("id") or (user or {}).get("_key") or ""
             rows = await self._ref_link_rows(ids)
         except NotImplementedError:
@@ -8718,7 +8720,7 @@ class IGraphDBProvider(ABC):
         if not asked:
             return set()
         try:
-            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
         except Exception as exc:
             raise PermissionVerificationUnavailableError() from exc
         user_key = (user or {}).get("id") or (user or {}).get("_key")
@@ -8774,7 +8776,7 @@ class IGraphDBProvider(ABC):
         if not asked:
             return {}
         try:
-            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
         except Exception as exc:
             raise PermissionVerificationUnavailableError() from exc
         user_key = (user or {}).get("id") or (user or {}).get("_key")

@@ -486,7 +486,7 @@ class PermissionsMixin(PgBase):
         if org_id != org:
             return AccessibleContainers(scope_connector_ids=scope_set)
         try:
-            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             if not user_key:
                 return AccessibleContainers(fallback_reason="user_not_found")
@@ -510,7 +510,7 @@ class PermissionsMixin(PgBase):
     async def get_accessible_connector_types(self, user_id: str, org_id: str) -> list[str]:
         """Types of the apps the user passes the gate for. A failed read widens the search (an empty list), it never narrows it."""
         try:
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             return _distinct_connector_types(await self.get_gated_apps(user_key, org_id)) if user_key else []
         except Exception as e:
@@ -740,7 +740,7 @@ class PermissionsMixin(PgBase):
         cannot read. A failed read raises, never an answer of None."""
         if org_id != current_org_id():
             return None
-        user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+        user = await self.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id)
         user_key = (user or {}).get("id") or (user or {}).get("_key")
         if not user_key:
             return None
@@ -799,7 +799,7 @@ class PermissionsMixin(PgBase):
             org = current_org_id()
             if org_id != org:
                 return {}
-            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error, org_id=org_id)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             if not user_key:
                 return {}
