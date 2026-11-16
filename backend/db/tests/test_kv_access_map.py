@@ -63,7 +63,7 @@ READS = {
         "/services/storage": ("app/modules/transformers/blob_storage.py:963", "STORAGE"),
         "/services/arangodb": ("app/health/health.py:267", "ARANGODB"),
         "/services/kafka": ("app/services/messaging/utils.py:113", "KAFKA"),
-        "/services/redis": ("app/config/configuration_service.py:577", "REDIS"),
+        "/services/redis": ("app/config/configuration_service.py:597", "REDIS"),
         "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py:379", "QDRANT"),
         "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:160", "PGVECTOR"),
         "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py:324", "OPENSEARCH"),
