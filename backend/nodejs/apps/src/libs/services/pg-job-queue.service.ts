@@ -5,6 +5,7 @@ import { Logger } from './logger.service';
 import { ensurePgRuntime } from '../db/runtime-boot';
 import { PgListener, listenUrl } from '../db/listen';
 import type { Tx } from '../db/uow';
+import { registerLockKey } from '../db/lock-keys';
 
 /**
  * A job queue and scheduler on PostgreSQL, with the slice of the BullMQ `Queue` / `Worker` / `Job` surface the crawl scheduler uses,
@@ -133,6 +134,10 @@ const SQL = {
   nextDue: `/* pipeshub:sched.nextdue */ SELECT extract(epoch FROM min(CASE WHEN state = 'active' THEN locked_until ELSE run_at END) - now())::float8 AS secs
     FROM platform.sched_jobs WHERE queue = $1 AND state IN ('waiting', 'delayed', 'active')`,
 };
+
+// Two runs finishing at once each trim under READ COMMITTED without seeing the other's new row, and both keep it: one trim per
+// (queue, state) at a time, so the second sees the first's committed row (BullMQ applies removeOnComplete atomically)
+const TRIM_LOCK = registerLockKey('sched_trim', 7402);
 
 const unit = <R>(write: boolean, fn: (tx: Tx) => Promise<R>): Promise<R> =>
   ensurePgRuntime().withUow({ preOrg: true, write }, fn);
@@ -677,9 +682,16 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
     keep: number | boolean | undefined,
     jobId: string,
   ): Promise<void> {
-    if (typeof keep === 'number')
+    if (typeof keep === 'number') {
+      await tx.advisoryXactLock(
+        TRIM_LOCK,
+        createHash('md5')
+          .update(`${this.queueName}/${state}`)
+          .digest()
+          .readInt32BE(0),
+      );
       await tx.query(SQL.trim, [this.queueName, state, keep]);
-    else if (keep === true)
+    } else if (keep === true)
       // BullMQ's removeOnComplete: true drops this job only, not the ones that finished before it
       await tx.query(SQL.dropOne, [this.queueName, jobId, state]);
   }

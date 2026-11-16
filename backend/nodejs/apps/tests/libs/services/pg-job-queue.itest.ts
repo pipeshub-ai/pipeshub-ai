@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { PgJob, PgJobQueue, PgJobWorker } from '../../../src/libs/services/pg-job-queue.service'
 import { ensurePgRuntime } from '../../../src/libs/db/runtime-boot'
 import { configurePg } from '../../../src/libs/db'
+import type { Tx } from '../../../src/libs/db/uow'
 import { pgReconcilePending } from '../../../src/modules/crawling_manager/services/crawling_pg'
 import sinon from 'sinon'
 import { ConnectorScheduleSweepService, SWEEP_QUEUE_NAME } from '../../../src/modules/crawling_manager/services/connector_schedule_sweep'
@@ -57,6 +58,62 @@ type D = { n?: number; tag?: string }
     await sleep(200)
     expect((await queue.getCompleted()).length).to.be.at.most(2)             // removeOnComplete: 2
   })
+
+  for (const [state, opt, finishing] of [
+    ['completed', 'removeOnComplete', '/* pipeshub:sched.complete */'],
+    ['failed', 'removeOnFail', '/* pipeshub:sched.fail */'],
+  ] as const) {
+    it(`two runs finishing at once keep at most ${opt} ${state} runs, even when both trim before either commits`, async () => {
+      const queue = new PgJobQueue<D>(q, { [opt]: 1, attempts: 1 })
+      const rt = ensurePgRuntime()
+      const real = rt.withUow.bind(rt)
+      let trimmed = 0
+      let bothTrimmed = () => {}
+      const both = new Promise<void>((r) => { bothTrimmed = r })
+      // each finishing transaction stays open after its trim until the other has trimmed too, or 1 s when the other waits on it
+      // (under the node role's 2 s lock_timeout)
+      sinon.stub(rt, 'withUow').callsFake(((opts: never, fn: (tx: Tx) => Promise<unknown>) => real(opts, async (tx: Tx) => {
+        let finishes = false
+        const query = tx.query.bind(tx)
+        tx.query = ((text: string, values?: unknown[]) => {
+          if (text.startsWith(finishing)) finishes = true
+          return query(text, values)
+        }) as typeof tx.query
+        const out = await fn(tx)
+        if (finishes) {
+          if (++trimmed === 2) bothTrimmed()
+          await Promise.race([both, sleep(1000)])
+        }
+        return out
+      })) as never)
+      try {
+        let go = () => {}
+        const gate = new Promise<void>((r) => { go = r })
+        const started: string[] = []
+        const done: string[] = []
+        const errors: unknown[] = []
+        const w = worker(async (j) => {
+          started.push(j.id)
+          await gate
+          if (state === 'failed') throw new Error('fails')
+        }, 2)
+        w.on(state, (j: PgJob<D>) => done.push(j.id))
+        w.on('error', (e: unknown) => errors.push(e))
+        await queue.add('a', { n: 1 }, { jobId: 'a' })
+        await queue.add('b', { n: 2 }, { jobId: 'b' })
+        await until(() => started.length === 2)
+        go()
+        await until(() => done.length === 2)
+        expect(errors).to.deep.equal([])                                       // both finishing writes committed
+        expect(started).to.have.length(2)                                      // neither run went back to the queue
+        expect(trimmed).to.equal(2)
+        const kept = state === 'completed' ? await queue.getCompleted() : await queue.getFailed()
+        expect(kept.length).to.equal(1)
+      } finally {
+        sinon.restore()
+      }
+    })
+  }
 
   it('removeOnComplete: true drops the finished job only, not the ones that finished before it', async () => {
     const queue = new PgJobQueue<D>(q, { attempts: 1 })
