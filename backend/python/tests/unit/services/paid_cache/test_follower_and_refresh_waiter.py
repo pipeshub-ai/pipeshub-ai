@@ -172,7 +172,7 @@ async def test_the_lease_keeps_renewing_while_the_result_is_being_written(monkey
             await asyncio.sleep(0.1)
             held = [n for n in locks._held if n.startswith("pc:lock:")]
             for name in held:                                       # another replica asks for the key
-                stolen.append(await locks.acquire(name, 300))
+                stolen += [await locks.acquire(name, 300)]
         return await real_put(*a)
 
     store.put = slow_put  # type: ignore[method-assign]
