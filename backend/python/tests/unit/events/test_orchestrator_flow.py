@@ -31,6 +31,7 @@ from app.services.messaging.error_classifier import (
     is_expected_outcome,
 )
 from app.services.parsing.interface import ParseResult, ParserProvider
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Factories
@@ -93,6 +94,7 @@ def _make_event_processor(
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         graph_provider.update_node = AsyncMock(return_value=True)
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         graph_provider.find_duplicate_records = AsyncMock(return_value=[])
 
     if stage_ingress is None:
@@ -322,6 +324,8 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
 
     graph_provider.update_node = AsyncMock(side_effect=_capture_update)
 
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
+
     ep = _make_event_processor(
         parsing_client=parsing_client,
         extraction_client=extraction_client,
@@ -424,6 +428,7 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
     graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     graph_provider.find_duplicate_records = AsyncMock(return_value=[{
         "_key": "rec-2",
         "virtualRecordId": "vr-existing",

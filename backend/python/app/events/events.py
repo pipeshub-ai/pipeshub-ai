@@ -60,6 +60,8 @@ from app.modules.indexing.parse_now_marker import (
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.record_diagnostics import PAGE_COUNT, WriteKind, page_count_of
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parse_engine.inspection import (
     InspectedFacts,
@@ -308,6 +310,52 @@ class EventProcessor:
                         virtual_record_id, max_attempts, e,
                     )
 
+    async def _write_page_count(
+        self,
+        record_id: str,
+        content_rev: str | None,
+        pages: object,
+        stored_pages: tuple[Any, Any] | None = None,
+    ) -> None:
+        """Record the page count of the PDF revision being parsed, only while the record is still on that revision.
+
+        Not an attempt's business: a failure here is logged and never fails the record. A parse-now store-only run
+        writes no status, so it is matched on the revision alone."""
+        count = page_count_of(pages)
+        if count is None or content_rev is None:
+            return
+        if stored_pages is not None and stored_pages == (content_rev, count):
+            return
+        match: dict[str, Any] = {"contentRev": content_rev}
+        if not store_only_active():
+            match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+        try:
+            await self.graph_provider.update_node_fields_if_match(
+                record_id, CollectionNames.RECORDS.value, {PAGE_COUNT: count}, match
+            )
+        except Exception as error:  # diagnostic only
+            self.logger.warning("Could not record the page count of %s: %s", record_id, error)
+
+    async def _persist_parsing_completed(self, record_doc: dict[str, Any], pages: object) -> None:
+        """``parsingStatus=COMPLETED``, with the page count the parsing service reported in the same conditional write
+        while the record is still on this revision and attempt. When nothing matches, the plain status write runs, as
+        before, without a count."""
+        fields = {"parsingStatus": ProgressStatus.COMPLETED.value}
+        count = page_count_of(pages)
+        record_id = _record_key(record_doc)
+        if count is not None and record_id and record_doc.get("contentRev") is not None:
+            match: dict[str, Any] = {"contentRev": record_doc["contentRev"]}
+            if not store_only_active():
+                match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+            shaped = shape_status_write({**fields, PAGE_COUNT: count})
+            try:
+                if await self.graph_provider.update_node_if_unchanged(record_id, CollectionNames.RECORDS.value, shaped, record_doc, match):
+                    record_doc.update(shaped)
+                    return
+            except Exception as error:  # fall back to the plain write
+                self.logger.warning("Could not record the page count of %s with its status: %s", record_id, error)
+        await self.update_record_fields(record_doc, fields)
+
     async def _dispatch_pdf_binary(
         self,
         record_name: str,
@@ -319,12 +367,16 @@ class EventProcessor:
         virtual_record_id: str,
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
+        content_rev: str | None = None,
+        stored_pages: tuple[Any, Any] | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
         inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        # The count of the bytes that are parsed (the pdfium rewrite when the file was repaired), written once per revision.
+        await self._write_page_count(record_id, content_rev, inspected.page_count, stored_pages)
         # Every parser below reads the bytes that passed inspection.
         pdf_binary = inspected.content
         needs_ocr = inspected.needs_ocr
@@ -554,10 +606,7 @@ class EventProcessor:
         if record_doc is None:
             raise RecordDeletedError(record_id)
 
-        await self.update_record_fields(
-            record_doc,
-            {"parsingStatus": ProgressStatus.COMPLETED.value},
-        )
+        await self._persist_parsing_completed(record_doc, (parse_result.metadata or {}).get("page_count"))
 
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -683,13 +732,16 @@ class EventProcessor:
             current = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value, raise_on_error=True
             ) or {}
+            now = get_epoch_timestamp_in_ms()
             updates: dict[str, Any] = {
                 "indexingStatus": ProgressStatus.QUEUED.value,
-                "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "queuedAtTimestamp": now,
                 "processingStartedAt": None,
                 "reason": RETRY_SCHEDULED,
                 EMBED_SECONDS: embed_seconds,
                 EMBED_UNCOUNTED: uncounted,
+                # a cut hands the record back to its queue inside the run it is in
+                **run_reference(current, WriteKind.QUEUE, now),
             }
             if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
@@ -718,8 +770,13 @@ class EventProcessor:
 
         return write
 
-    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
-        """Persist a partial record update or fail the current attempt."""
+    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any], *, attempt_start: bool = False) -> bool:
+        """Persist a partial record update or fail the current attempt.
+
+        ``attempt_start``: the write is the start of an indexing attempt (the status becomes IN_PROGRESS for a new
+        attempt). The store then decides, from the stored record, whether this continues the run or starts one,
+        and counts the attempt, in the same statement. A parse-now store-only run writes no status, so it is not
+        an attempt."""
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
@@ -732,11 +789,14 @@ class EventProcessor:
         success = False
         try:
             async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
-                success = await self.graph_provider.update_node(
-                    record_id,
-                    CollectionNames.RECORDS.value,
-                    fields,
-                )
+                if attempt_start and "indexingStatus" in fields:
+                    success = await self.graph_provider.write_attempt_start(record_id, fields)
+                else:
+                    success = await self.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        fields,
+                    )
         except Exception as e:
             if not success:
                 raise
@@ -845,7 +905,7 @@ class EventProcessor:
             fields["parsingStatus"] = ProgressStatus.IN_PROGRESS.value
         if content_rev is not None:
             fields["contentRev"] = content_rev
-        success = await self.update_record_fields(doc, fields)
+        success = await self.update_record_fields(doc, fields, attempt_start=status == ProgressStatus.IN_PROGRESS)
         self._require_persisted(
             success, f"Failed to persist status {status.value} for record", doc
         )
@@ -1112,10 +1172,16 @@ class EventProcessor:
         if before_reusing_status is not None:
             await before_reusing_status()
             before_reusing_status = None
+        # The record is in its run already (its attempt began it): this continues it. Read again, because `doc` does not
+        # carry what the attempt's own write stamped.
+        current = await self.graph_provider.get_document(_record_key(doc), CollectionNames.RECORDS.value) or doc
         self._require_persisted(
             await self.update_record_fields(
                 doc,
-                {"indexingStatus": ProgressStatus.QUEUED.value},
+                {
+                    "indexingStatus": ProgressStatus.QUEUED.value,
+                    **run_reference(current, WriteKind.QUEUE, get_epoch_timestamp_in_ms()),
+                },
             ),
             "Failed to persist QUEUED status for duplicate record",
             doc,
@@ -1550,6 +1616,8 @@ class EventProcessor:
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
             doc: dict[str, Any] = dict(record)
+            # What the record held before this attempt's first write, which drops a count taken from other content.
+            stored_pages = (doc.get("contentRev"), doc.get("pageCount"))
             # Read here, from the node as it was before this event wrote anything: `doc` is rewritten
             # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
             embed_marker = marker_of(record)
@@ -1757,6 +1825,7 @@ class EventProcessor:
                         "processingStartedAt": processing_started_at,
                         "contentRev": content_rev,
                     },
+                    attempt_start=True,
                 )
             else:
                 # Legacy inline pipeline: parse+index run in-process without a
@@ -2218,6 +2287,8 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
+                    content_rev=content_rev,
+                    stored_pages=stored_pages,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None

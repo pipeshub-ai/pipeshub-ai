@@ -22,6 +22,7 @@ from app.modules.indexing.parse_now_marker import (
 )
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.transformers.transformer import PARSE_NOW, STORE_ONLY
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.events.test_events import (
     DedupDecision,
     _drain,
@@ -199,6 +200,7 @@ class TestLegacyProcessorWrites:
         processor.graph_provider = AsyncMock()
         processor.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1", "parsingStatus": "IN_PROGRESS"})
         processor.graph_provider.update_node = AsyncMock(return_value=True)
+        processor.graph_provider.write_attempt_start = attempt_start_via(processor.graph_provider)
 
         await processor._mark_record("rec-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason="Too large")
 

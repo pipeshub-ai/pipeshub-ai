@@ -60,6 +60,13 @@ on:
       - 'backend/python/app/connectors/sources/localKB/**'
       - 'backend/python/app/services/storage_documents.py'
       - 'backend/python/app/modules/indexing/record_republish.py'
+      # The record diagnostics writes: the run rule, the contract script, the exception the widening raises, and the writers it
+      # drives in the flows tests (tests/integration/graph_db/test_record_diagnostics_*).
+      - 'backend/python/app/modules/indexing/record_diagnostics.py'
+      - 'backend/python/app/modules/indexing/rate_limit_deferral.py'
+      - 'backend/python/app/scripts/record_diagnostics_contract.py'
+      - 'backend/python/app/exceptions/graph_db_exceptions.py'
+      - 'backend/python/app/services/messaging/kafka/handlers/entity.py'
       # Entity search and named-entity linking: graph_db/test_permitted_entity_records_* reads through them.
       - 'backend/python/app/modules/retrieval/**'
       - 'backend/python/app/modules/named_entities/**'

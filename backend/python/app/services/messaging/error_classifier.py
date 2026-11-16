@@ -17,6 +17,7 @@ import asyncio
 import json
 from typing import Optional
 
+from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
@@ -331,6 +332,11 @@ class MessageErrorClassifier:
         # document, whatever the store answered (a 4xx root would otherwise
         # mark an already searchable record FAILED on its first delivery).
         if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
+
+        # 0a3. The records schema was narrower than this process's and the transaction was aborted with nothing kept:
+        # the next delivery finds the schema wide. Its root is the store's 400, which would otherwise read as terminal.
+        if any(isinstance(chain_exc, RecordSchemaNarrowError) for chain_exc in chain):
             return MessageErrorType.TRANSIENT
 
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.

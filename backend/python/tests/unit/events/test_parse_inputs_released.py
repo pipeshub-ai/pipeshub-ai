@@ -25,6 +25,7 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from tests.unit.attempt_start import attempt_start_via
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -77,6 +78,7 @@ async def _index(extension: str, refs: dict[str, weakref.ref], processor: Proces
     graph = AsyncMock()
     graph.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
     graph.update_node = AsyncMock(return_value=True)
+    graph.write_attempt_start = attempt_start_via(graph)
     events = EventProcessor(MagicMock(), processor, graph, MagicMock())
     content = Bytes(b"%PDF-1.7 a file")
     refs["file"] = weakref.ref(content)

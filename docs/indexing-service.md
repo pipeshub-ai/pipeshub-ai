@@ -368,7 +368,38 @@ A stored record may carry four optional facts about how its processing went. The
 
 The record endpoint, the record update response, the search response and the Node API's saved searches (when saved and when returned) leave out `INTERNAL_RECORD_FIELDS` (`api_record` / `api_records` in Python, `apiRecord` / `apiStoredRecords` in `enterprise_search/utils/internal-record-fields.ts`; a test compares the two name lists).
 
-In this version nothing writes them (`tests/unit/schema/test_record_diagnostics_schema.py` fails if application code starts to).
+#### 2.6.1 What writes them
+
+The values are decided **inside the statement that writes the record's status**, from the stored record, so a read that goes stale between the read and the write cannot start a run twice. `app/modules/indexing/record_diagnostics.py` holds the rule once, as a Python reference (`reference`) and as a fragment for each store (`aql_parts`, `cypher_parts`, `sql_patch`); `tests/integration/graph_db/test_record_diagnostics_conformance.py` runs the fragments against the reference on 5,000 generated stored records per write kind on ArangoDB, Neo4j and PostgreSQL.
+
+- A **run** is the time from the first entry in line after an outcome to that outcome. A queue write (`NOT_STARTED` or `QUEUED`) continues an open run (keeps `firstQueuedAt`) or starts one (`firstQueuedAt = now`, `indexingAttempts = 0`). A run is open when the stored status is `QUEUED` or `IN_PROGRESS` with no numeric `firstQueuedAt` (a record that was mid-run before the field existed continues from its `queuedAtTimestamp`), or `NOT_STARTED`, `QUEUED` or `IN_PROGRESS` with a numeric `firstQueuedAt` newer than the record's last outcome stamp (`failedAt`, `lastIndexTimestamp`, `restoredAtTimestamp`). A value that is not a number is treated as absent, on both sides of every comparison.
+- The write that starts an attempt (`IGraphDBProvider.write_attempt_start`) applies the status fields it is given, continues or starts the run, adds one to `indexingAttempts` (1 for a new run) and drops a stored `pageCount` when it carries a `contentRev` the record does not hold, in one statement on every store.
+- `failedAt` is stamped by every write that sets `FAILED`. The sink-only end (`NOT_STARTED` as an outcome) clears `firstQueuedAt`. A restore from the trash starts a run whatever the stored status was.
+- A parse-now run that only stores the content writes none of the run fields and is not an attempt.
+- `pageCount` is the number of pages of the PDF bytes that were parsed (pdfplumber's `len(pdf.pages)`, the one counter both paths use): the in-process path writes it once per content revision, right after inspection, and the parsing service reports it in `ParseResult.metadata["page_count"]`, which is written with the parse-complete status. Both writes are conditional on the record still holding that `contentRev` (and, outside a parse-now run, on the attempt).
+
+The status-writing call sites and who runs a transaction again when the records schema refuses a write are listed in `tests/unit/modules/indexing/status_writer_sites.py`; a new writer fails `test_status_writer_sites.py` until it is listed.
+
+#### 2.6.2 The records schema on ArangoDB: generation, widening, older images
+
+ArangoDB checks every records write against the collection's schema. A process older than the release that added the fields applies its own schema when it starts, which does not list them, and a record that holds one is then refused on every write (errorNum 1620).
+
+- The schema carries a generation (`RECORD_SCHEMA_GENERATION`, in the rule's `$comment`). A process applies its own schema only while the live generation is **lower**; it never replaces a higher one. A change to `record_schema` raises the number (`tests/unit/schema/test_record_schema_generation.py` pins a hash of the rule to it).
+- A refused write **outside** a transaction widens the schema and is sent once more. A refused write **inside** a stream transaction aborts the transaction before any caller code runs, and `RecordSchemaNarrowError` (a transient error, classified as a conflict, kept by the handlers that log and go on) is raised: the owner of the transaction runs it again. The next transaction waits up to 5 s for the schema to be wide.
+- The schema is widened only outside transactions (a schema change waits for every open stream transaction that wrote `records`, and later writes queue behind it), under a Redis lock so that one process issues it, at a moment with no running stream transaction when one comes within 5 s, with a 5 s client timeout. Every process also reads the live generation every 10 s (one request).
+- Metrics: `pipeshub_record_schema_rewiden_total{trigger}` (above zero in steady state means an older image is running), `pipeshub_record_schema_rewiden_contended_total{trigger}` (issued while a transaction was still open), `pipeshub_record_schema_rewiden_wait_seconds`.
+- An older image keeps failing for at most one poll interval after it narrows the schema. That is a misconfiguration window, not a supported state: after upgrading, run no role older than this release; to go lower, stop every role of this release or later and run the contract script first.
+
+#### 2.6.3 Going back below this release
+
+Rolling back to the release that added the fields needs nothing. Going lower needs the fields removed first:
+
+```bash
+python -m app.scripts.record_diagnostics_contract --org ORG --check   # counts records that carry a field
+python -m app.scripts.record_diagnostics_contract --org ORG --apply   # batched, resumable, ends with a check; exits 1 if any are left
+```
+
+Stop every role that runs this release or a later one, run `--apply` for each organisation, then start the older image.
 
 ## 3. Light and heavy documents
 
