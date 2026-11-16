@@ -26,7 +26,7 @@ def read_role(role: str | None) -> str | None:
 RECORD_OWN_ACCESS_TYPES = frozenset({"DIRECT", "GROUP", "ORGANIZATION"})
 
 
-def best_record_access(access: List[dict], access_rule: Optional[str]) -> dict:
+def best_record_access(access: list[dict], access_rule: str | None) -> dict:
     """The access path whose role a record's details show: the highest. A record whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes
     it from its own grants alone, as the role reads do: a grant on what it inherits from never sets it (READER, read access, when none is listed)."""
     if access_rule in ("RESTRICTED", "PARENT_AND_GRANT"):
