@@ -3741,6 +3741,10 @@ class SharePointConnector(BaseConnector):
         if enabled:
             await self.data_entities_processor.on_new_app_users(enabled)
         self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
+        if not getattr(users, "complete", True):
+            # A cut listing takes nobody for gone, but an account it lists disabled is withdrawn.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in users if u.is_active is False})
         trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
         stored_emails = set((stored or {}).get("emails") or [])

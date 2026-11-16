@@ -27,6 +27,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import run_sync_task
 from tests.support.data_store import runs_in_its_transaction
+from tests.support.in_memory_config import InMemoryConfigService
 
 _LOG = logging.getLogger("test")
 _OWED = ConnectorStateKeys.PENDING_FULL_SYNC
@@ -324,7 +325,7 @@ class TestWhatTheProcessorNotes:
     def _processor(self, transaction) -> DataSourceEntitiesProcessor:
         store = runs_in_its_transaction(MagicMock())
         store.transaction = transaction
-        return DataSourceEntitiesProcessor(_LOG, store, MagicMock())
+        return DataSourceEntitiesProcessor(_LOG, store, InMemoryConfigService())
 
     @staticmethod
     def _transaction(fail: bool = False) -> Callable[[], AbstractAsyncContextManager[MagicMock]]:
@@ -441,6 +442,28 @@ class TestWhatTheProcessorNotes:
         )
         assert len(edges) == 2
         assert run.has(CollectionNames.GROUPS.value, "g1")
+
+    @pytest.mark.asyncio
+    async def test_a_member_whose_address_changed_hands_during_the_sync_is_not_restored(self) -> None:
+        """u1 was recorded as a member earlier in the sync; its address then passed to another account (whose admission
+        removed u1's memberships). The final replace must not write u1's membership back."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            _bucket,
+            source_accounts_key,
+        )
+
+        tx = self._membership_store(True, True)
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.create_user_group_membership("u1", "dept-1", "c1")
+        await processor.create_user_group_membership("u2", "dept-1", "c1")
+        await processor.config_service.set_config(
+            source_accounts_key("c1", _bucket("u1@x")), {"linked": {"u1@x": "u9"}, "reused": {"u1@x": "u9"}})
+
+        await processor.finish_full_sync_memberships("c1", run)
+
+        edges = tx.replace_edges_to.await_args.args[2]
+        assert [e["from_id"] if "from_id" in e else e["_from"] for e in edges] in (["user-u2"], ["users/user-u2"])
 
     @pytest.mark.asyncio
     async def test_a_membership_that_did_not_land_keeps_the_groups_members(self) -> None:

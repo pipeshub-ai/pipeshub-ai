@@ -5563,17 +5563,34 @@ class DataSourceEntitiesProcessor:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
-            if users[0].app_name not in NOT_SOURCE_ACCOUNTS and not await self.source_accounts(
-                users[0].connector_id
-            ).before_link(users):
-                return
+            async def link() -> None:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.batch_upsert_app_users(users)
 
-            async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_upsert_app_users(users)
+            if users[0].app_name in NOT_SOURCE_ACCOUNTS:
+                await link()
+            elif not await self.source_accounts(users[0].connector_id).before_link(users, write=link):
+                # Raised, not returned: a caller taking the call as done would move its checkpoint past these users.
+                raise RuntimeError(
+                    f"the stored users of connector {users[0].connector_id} could not be read; nobody is linked")
 
         except Exception as e:
             self._log_failure(f"Transaction on_new_users failed: {str(e)}", e)
             raise e
+
+    async def withdraw_reported_unusable(self, connector_id: str, source_ids: set[str]) -> None:
+        """Withdraw the stored links of the accounts the source reported unusable (disabled, suspended, invited) on the
+        rows it returned. That is stated, not inferred from absence, so it holds when the listing was cut short too. A
+        failure is logged and tried again next sync, as it must not stop the rewrites that follow."""
+        if not source_ids:
+            return
+        try:
+            gone = [u for u in await self.get_app_user_links(connector_id) if u.source_user_id in source_ids]
+            if gone:
+                await self.withdraw_app_user_access(connector_id, gone)
+        except Exception as e:
+            self.logger.error(f"Withdrawing accounts connector {connector_id} reported unusable failed; tried again "
+                              f"next sync: {e}", exc_info=True)
 
     @retry_on_deadlock()
     async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
@@ -6614,6 +6631,12 @@ class DataSourceEntitiesProcessor:
                 if external_id in run.groups_members_unsure:
                     await self._give_every_copy_all_stored_members(tx_store, group_ids, pending)
                     pending = []
+                # Recorded earlier in the sync: an address that changed hands since keeps no membership of its earlier
+                # account (the change of hands already removed it), so each member is judged again now.
+                accounts = self.source_accounts(connector_id)
+                await accounts.ensure_loaded([email for _, email in members.values() if email])
+                members = {user_id: (sid, email) for user_id, (sid, email) in members.items()
+                           if not email or accounts.admits(email, sid)}
                 for group_id in pending:
                     edges = [
                         Permission(
@@ -6627,7 +6650,8 @@ class DataSourceEntitiesProcessor:
                     await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
                 return group_ids
 
-            group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
+            async with grant_fence().shared():      # judged and written with no change of hands in between
+                group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
             for group_id in group_ids:
                 run.add(groups, group_id)
         await self._access_changed([connector_id])

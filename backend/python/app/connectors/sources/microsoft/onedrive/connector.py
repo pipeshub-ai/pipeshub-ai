@@ -2836,7 +2836,10 @@ class OneDriveConnector(BaseConnector):
             if getattr(users, "complete", True):
                 await self._withdraw_unlisted_app_users(users)
             else:
-                self.logger.warning("User listing is incomplete; no user loses access this run")
+                # Nobody is taken for gone, but an account the read pages showed disabled is withdrawn.
+                self.logger.warning("User listing is incomplete; only accounts it lists disabled lose access this run")
+                await self.data_entities_processor.withdraw_reported_unusable(
+                    self.connector_id, {u.source_user_id for u in users if u.is_active is False})
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:

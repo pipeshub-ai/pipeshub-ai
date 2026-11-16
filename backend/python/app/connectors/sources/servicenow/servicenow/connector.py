@@ -4078,6 +4078,7 @@ class ServiceNowConnector(BaseConnector):
 
     async def _users_to_permissions(self, users: set[str], permission_type: PermissionType) -> list[Permission]:
         email_by_id = await self._emails_by_source_id()
+        # The sys_id lets the processor tell a re-used address's current holder from the earlier account.
         return [
             Permission(email=email_by_id[u], external_id=u, type=permission_type, entity_type=EntityType.USER)
             for u in sorted(users) if u in email_by_id

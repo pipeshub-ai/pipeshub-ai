@@ -69,6 +69,11 @@ def _make_mock_deps():
 
     dep = MagicMock()
     dep.org_id = "org-sf-1"
+    # A real account state over an in-memory config: grants are judged as in production (empty: everyone holds).
+    from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+    from tests.support.in_memory_config import InMemoryConfigService
+    dep.account_config = InMemoryConfigService()
+    dep.source_accounts = MagicMock(return_value=SourceAccounts(dep, "conn-sf-1", dep.account_config, logger))
     dep.on_new_app_users = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
@@ -3783,6 +3788,36 @@ class TestSyncPermissionsEdges:
         mock_tx.batch_create_edges.assert_awaited()
 
 
+class TestSyncPermissionsEdgesReusedAddress:
+
+    @pytest.mark.asyncio
+    async def test_an_earlier_account_at_a_reused_address_is_not_read_for(self) -> None:
+        """alice@ belongs to another account now: the earlier account's record access must not be read and written
+        onto alice's PipesHub user (these edges are written by email, not through the processor's grant check)."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            _bucket,
+            source_accounts_key,
+        )
+
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        dep = connector.data_entities_processor
+        await dep.account_config.set_config(source_accounts_key("conn-sf-1", _bucket("alice@example.com")),
+                                            {"linked": {"alice@example.com": "sf-new"},
+                                             "reused": {"alice@example.com": "sf-new"}})
+        mock_tx = dep.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}], [],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
+        ])
+        connector._sync_permissions_for_user = AsyncMock(return_value=[("alice@example.com", "opp-1", "READER", False)])
+        connector._sync_product_readers = AsyncMock()
+
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        connector._sync_permissions_for_user.assert_not_awaited()
+
+
 class TestSyncPermissionsEdgesFrozenUnreadable:
 
     @pytest.mark.asyncio
@@ -3795,6 +3830,20 @@ class TestSyncPermissionsEdgesFrozenUnreadable:
         await connector._sync_permissions_edges(api_version="59.0")
         connector._sync_permissions_for_user.assert_not_awaited()
         connector.data_entities_processor.data_store_provider.transaction.assert_not_called()
+
+
+class TestProductReaderGrants:
+
+    @pytest.mark.asyncio
+    async def test_a_product_reader_grant_names_its_account(self) -> None:
+        """Address-only, it would be refused at a re-used address, and the current holder would lose Products."""
+        connector = _make_connector()
+        connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        eligibility = MagicMock(product_reader_ids=AsyncMock(return_value={"sf-1"}))
+        await connector._sync_product_readers(eligibility, [{"Id": "sf-1", "Email": "a@x.com"},
+                                                            {"Id": "sf-2", "Email": "b@x.com"}])
+        (_group, permissions), = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        assert [(p.email, p.external_id) for p in permissions] == [("a@x.com", "sf-1")]
 
 
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:
