@@ -113,6 +113,18 @@ class FeatureMapTest(unittest.TestCase):
         self.assertEqual(f["routes"][-1], "GET /api/v1/search/plus")
         self.assertEqual(f["behavior"][-1]["id"], "search.query.plus")
 
+    def test_two_overlay_files_may_extend_one_feature_but_not_add_it_twice(self) -> None:
+        ext = '[[feature]]\nid = "search.query"\nroutes = ["GET /api/v1/search/{n}"]\n'
+        testing.write(self.root, "scripts/plus/qa/features/a.toml", ext.replace("{n}", "a"))
+        testing.write(self.root, "scripts/plus/qa/features/b.toml", ext.replace("{n}", "b"))
+        self.assertEqual(self.load()["features"][0]["routes"][-2:], ["GET /api/v1/search/a", "GET /api/v1/search/b"])
+        new = '[[feature]]\nid = "plus.x"\ntitle = "t"\nflow = "search"\nwhat = "w"\n'
+        testing.write(self.root, "scripts/plus/qa/features/a.toml", new)
+        testing.write(self.root, "scripts/plus/qa/features/b.toml", new)
+        with self.assertRaises(ValueError) as ctx:
+            self.load()
+        self.assertIn("plus.x", str(ctx.exception))
+
     def test_overlay_cannot_change_a_scalar(self) -> None:
         testing.write(self.root, "scripts/plus/qa/features/search.toml", '[[feature]]\nid = "search.query"\ntitle = "Other"\n')
         with self.assertRaises(ValueError) as ctx:

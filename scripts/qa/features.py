@@ -51,6 +51,7 @@ def load(root: Path) -> dict[str, Any]:
     """The merged map: {"features": [...], "ignore": {kind: [...]}}. An overlay may only extend list keys."""
     features: list[dict[str, Any]] = []
     ignore: dict[str, list[str]] = {k: [] for k in SURFACE_KINDS}
+    base: set[str] = set()
     for i, d in enumerate(_dirs(root)):
         seen: set[str] = set()
         for f in sorted(d.glob("*.toml")) if d.is_dir() else []:
@@ -62,10 +63,11 @@ def load(root: Path) -> dict[str, Any]:
                 ignore[kind] += list(values)
             for entry in doc.get("feature", []):
                 fid = entry.get("id")
-                if fid in seen:
+                # several overlay files may extend one base feature; any other repeat is a mistake
+                if fid in seen and not (i and fid in base):
                     raise ValueError(f"{f.name}: duplicate feature id {fid!r}")
                 seen.add(fid)
-                match = next((x for x in features if x["id"] == fid), None) if i else None
+                match = next((x for x in features if x["id"] == fid), None) if i and fid in base else None
                 if match is None:
                     features.append({**entry, "source": str(f.relative_to(root))})
                     continue
@@ -75,6 +77,8 @@ def load(root: Path) -> dict[str, Any]:
                     if key not in LIST_KEYS or not isinstance(value, list):
                         raise ValueError(f"feature {fid}: an overlay may only extend the lists {', '.join(LIST_KEYS)}, not {key}")
                     match[key] = [*match.get(key, []), *value]
+        if not i:
+            base = {x["id"] for x in features}
     return {"features": features, "ignore": ignore}
 
 
