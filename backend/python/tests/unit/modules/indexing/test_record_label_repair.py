@@ -50,6 +50,9 @@ class RepairGraph(FakeGraph):
         self.apps: dict[str, dict[str, Any]] = {}
         self.link_calls: list[list[str]] = []
 
+    async def get_all_orgs(self, **_kw) -> list[dict[str, Any]]:
+        return [{"_key": ORG}]
+
     async def get_all_documents(self, collection, transaction=None) -> list[dict[str, Any]]:
         assert collection == APPS
         return [copy.deepcopy(doc) for doc in self.apps.values()]

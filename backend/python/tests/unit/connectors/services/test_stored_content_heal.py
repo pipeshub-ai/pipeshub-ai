@@ -38,6 +38,9 @@ class HealGraph:
         self.records: dict[str, dict[str, Any]] = {}
         self.unreadable: set[str] = set()
 
+    async def get_all_orgs(self, **_kw) -> list[dict[str, Any]]:
+        return [{"_key": ORG}, {"_key": OTHER_ORG}]
+
     async def get_all_documents(self, collection, transaction=None) -> list[dict[str, Any]]:
         assert collection == APPS
         return [copy.deepcopy(doc) for doc in self.apps.values()]
