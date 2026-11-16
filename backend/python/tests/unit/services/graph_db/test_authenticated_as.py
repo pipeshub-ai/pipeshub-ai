@@ -83,10 +83,11 @@ class TestRetrievalCountsTheLinkedAccount:
         provider.execute_query.assert_awaited_once()
         query = provider.execute_query.await_args.args[0]
         assert "linked._from == userDoc._id AND linked.connectorId == @connectorId" in query
-        # own grants, group membership, group grants; the organisation's grants are the caller's alone
-        assert query.count("FOR principal_id IN principal_ids") == 3
-        assert "FOR org IN 1..1 OUTBOUND userDoc._id" in query
+        # own grants, group membership, group grants and the organisation's grants: each walks every principal
+        assert query.count("FOR principal_id IN principal_ids") == 4
         assert " ANY userDoc._id " not in query
+        # a User principal's organisation counts (the viewer's, a linked user's); a SourceAccount belongs to none
+        assert 'FILTER IS_SAME_COLLECTION("users", principal_id)\n                FOR org IN 1..1 ANY principal_id' in query
         # the only userId lookup is the caller's own
         assert query.count("user.userId == @userId") == 1
         assert provider.execute_query.await_args.kwargs["bind_vars"]["userId"] == CREATOR_ID
@@ -150,9 +151,11 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_every_arango_permission_path_checks_all_principals(self) -> None:
         for name in ("arango record", "arango recordGroup"):
             query = _role_queries()[name]
-            assert query.count("._from IN principal_ids") == 4, name
-            # the single-user anchors: the link lookup, and the organisation step (the viewer's alone)
-            assert query.count("._from == u._id") == 2, name
+            assert query.count("._from IN principal_ids") == 5, name
+            # the one single-user anchor is the link lookup
+            assert query.count("._from == u._id") == 1, name
+            # the organisation step reads the User principals only: a SourceAccount belongs to no organisation
+            assert 'belongs_edge._from IN principal_ids AND IS_SAME_COLLECTION("users", belongs_edge._from)' in query, name
 
     def test_every_neo4j_permission_path_checks_all_principals(self) -> None:
         for name in ("neo4j record", "neo4j recordGroup"):
