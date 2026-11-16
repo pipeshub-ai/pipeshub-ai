@@ -4140,7 +4140,7 @@ async def test_a_shared_drive_item_read_again_by_id_then_trashed_in_the_same_run
     assert "s" not in ws.records.records, "the flush does not write an item the drive's feed reported in the trash"
 
 
-def _new_file_record(ext: str, parent: str):
+def _new_file_record(ext: str, parent: str) -> object:
     from app.config.constants.arangodb import Connectors
     from app.models.entities import FileRecord, OriginTypes, RecordType
 
@@ -4155,7 +4155,9 @@ async def test_a_shared_drive_file_kept_for_another_member_is_lost_to_the_report
     from functools import partial
 
     from app.connectors.sources.google.drive.team import connector as drive_connector
-    from app.connectors.sources.google.drive.utils.folder_filter_utils import FolderFailureRuns
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        FolderFailureRuns,
+    )
 
     erin = "erin@example.com"
     ws.world.add_user(erin)
@@ -4185,7 +4187,9 @@ async def test_a_shared_drive_file_kept_for_another_member_is_lost_to_the_report
 
 async def test_an_undecided_shared_drive_removal_is_lost_to_the_reporter(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.team import connector as drive_connector
-    from app.connectors.sources.google.drive.utils.folder_filter_utils import FolderFailureRuns
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        FolderFailureRuns,
+    )
 
     await ws.sync()
     connector = ws.connector
