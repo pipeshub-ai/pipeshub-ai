@@ -80,7 +80,7 @@ class GraphCheckLayer:
         fresh = [w for w in dict.fromkeys(worlds) if w not in self._prefix]
         for w in fresh:
             # the layers of one store share it in a module: a prefix of each variant's own keeps the copies of a world apart
-            self._prefix[w] = f"{self._variant[:1] or 'w'}{_RUN}{next(self._counter)}"
+            self._prefix[w] = f"{self._variant[:2] or 'w'}{_RUN}{next(self._counter)}"
         nodes = [n for w in fresh for n in self._compiled(w)["nodes"]]
         edges = [e for w in fresh for e in self._compiled(w)["edges"]]
         if nodes:

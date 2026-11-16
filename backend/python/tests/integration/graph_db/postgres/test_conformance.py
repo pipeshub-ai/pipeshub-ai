@@ -152,10 +152,12 @@ async def test_generated_worlds_equal_the_oracle(layer: PgLayer, kind: str) -> N
             await layer.release(chunk)
 
 
-async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
+@pytest.mark.parametrize("variant", ["accounts", "withdrawn"])
+async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer, variant: str) -> None:
     """Every world that links a user to a source account, with the account stored as a SourceAccount node instead of a User: the walk must still
-    answer as the oracle does (the account's grants and badges reach the user inside the link's connector only, and nothing else)."""
-    layer.variant = "accounts"
+    answer as the oracle does (the account's grants and badges reach the user inside the link's connector only, and nothing else; a withdrawn
+    account gives nothing)."""
+    layer.variant = variant
     scenarios = [s for s in load_all() if s.final_world().links]
     generated = gen.linked(25)
     assert scenarios and generated
@@ -171,12 +173,15 @@ async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
     assert not total.findings, _describe(total)
 
 
-async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_search(layer: PgLayer, pg_provider, pg_db) -> None:
+@pytest.mark.parametrize(("variant", "variant_without"), [("accounts", "no_source_org"), ("withdrawn", "unlinked")])
+async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_search(layer: PgLayer, pg_provider, pg_db, variant: str,
+                                                                                    variant_without: str) -> None:
     """The context role, the record access details and the search scope, in every world that links a user to a source account stored as a
-    SourceAccount node: the same as with the linked accounts' organisations removed, and no ability on a node ``check_access`` refuses."""
-    layer.variant = "accounts"
+    SourceAccount node: the same as with the linked accounts' organisations removed (with the accounts withdrawn: as with the links removed),
+    and no ability on a node ``check_access`` refuses."""
+    layer.variant = variant
     without = PgLayer(pg_provider, pg_db)
-    without.variant = "no_source_org"
+    without.variant = variant_without
     worlds = linked_worlds(4)
     found: list[str] = []
     try:

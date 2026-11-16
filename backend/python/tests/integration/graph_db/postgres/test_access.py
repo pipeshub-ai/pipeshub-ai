@@ -276,6 +276,31 @@ async def test_a_linked_source_account_holds_only_its_own_grants_and_not_those_o
     assert await w.allowed("u", "viaAccount", "viaNamesake") == {"viaAccount"}
 
 
+async def test_a_source_account_that_shares_a_users_id_gives_that_user_nothing_without_a_link(w: World) -> None:
+    """The user's own grants are read by bare id: a SourceAccount with the user's id is not the user, and grants only through a link."""
+    await w.nodes("sourceAccounts", {"_key": "u", "connectorId": APP, "sourceUserId": "s1", "state": "listed",
+                                      "createdAtTimestamp": 1, "updatedAtTimestamp": 1})
+    await w.nodes("records", rec("viaNamesake"))
+    await w.edge("permission", ("sourceAccounts", "u"), ("records", "viaNamesake"), type="USER", role="READER")
+    access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+    assert "viaNamesake" not in access["by_connector"].get(APP, [])
+    assert await w.allowed("u", "viaNamesake") == set()
+
+
+async def test_a_withdrawn_source_account_gives_the_linked_user_nothing(w: World) -> None:
+    """Withdrawal keeps the account, its grants and the sign-in link (for when it is listed again), but a withdrawn account links nobody."""
+    await w.nodes("apps", {"_key": "app2", "type": "CONNECTOR", "isActive": True})
+    await w.nodes("sourceAccounts", {"_key": "acct", "connectorId": "app2", "sourceUserId": "s1", "state": "withdrawn",
+                                      "createdAtTimestamp": 1, "updatedAtTimestamp": 1})
+    await w.nodes("records", {"_key": "viaAccount", "connectorId": "app2", "recordName": "viaAccount"})
+    await w.edge("authenticatedAs", ("users", "u"), ("sourceAccounts", "acct"), connectorId="app2", via="authenticator")
+    await w.edge("permission", ("sourceAccounts", "acct"), ("records", "viaAccount"), type="USER", role="READER")
+    access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+    assert access["gated_app_ids"] == [APP] and "app2" not in access["by_connector"]
+    assert await w.allowed("u", "viaAccount") == set()
+    assert "app2" not in await w.p.get_user_app_ids("u")
+
+
 async def test_only_principals_can_be_grantees_of_the_gate(w: World) -> None:
     """An edge out of a node of another collection that shares a grantee's id is not the grantee's."""
     await w.nodes("apps", {"_key": "gated2", "type": "CONNECTOR"})

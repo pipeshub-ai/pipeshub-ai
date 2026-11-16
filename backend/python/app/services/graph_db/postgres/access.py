@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 PAG = "PARENT_AND_GRANT"
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
-PRINCIPALS = ["users", "sourceAccounts", "groups", "roles", "teams", "organizations"]
+# A SourceAccount's edge grants only through a link, so it is read by collection and id (``granted_targets(nodes=...)``), never by a bare id.
+PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 # What an authenticatedAs link may point at: a User (the account a connector was authenticated as) or a SourceAccount (one account of a source
 # directory). Either one's grants and badges reach the linked user inside the link's connector only.
 SOURCE_ACCOUNT_COLLS = ("users", "sourceAccounts")
@@ -81,7 +82,7 @@ async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list
     targets: set[tuple[str, str]] = set()
     for r in await tx.fetch("""/* pipeshub:graph.access_grant_edges */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e WHERE e.org_id = $1
         AND e.coll = 'permission' AND e.from_id = ANY($2::text[]) AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups')""",
-                              org, from_ids, PRINCIPALS):
+                              org, from_ids, PRINCIPALS if nodes is None else [*PRINCIPALS, "sourceAccounts"]):
         if wanted is not None and (r["from_coll"], r["from_id"]) not in wanted:
             continue
         if r["from_coll"] != "organizations" or r["t"] in org_types:

@@ -198,7 +198,7 @@ class EntityAccessMixin(PgBase):
 
         async def go(tx: Tx) -> dict[str, Any]:
             linked = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_principals */ SELECT e.to_coll, e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
-                JOIN graph.nodes s ON s.org_id = e.org_id AND s.coll = e.to_coll AND s.id = e.to_id
+                JOIN graph.nodes s ON s.org_id = e.org_id AND s.coll = e.to_coll AND s.id = e.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn'
                 WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll IN ('users', 'sourceAccounts')""", org, uk)
             principals = [("users", uk, None), *((r["to_coll"], r["to_id"], r["cid"]) for r in linked)]
             rows = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_apps */ SELECT DISTINCT a.id, a.doc FROM graph.nodes a WHERE a.org_id = $1 AND $1 = $3 AND a.coll = 'apps' AND a.id IN (

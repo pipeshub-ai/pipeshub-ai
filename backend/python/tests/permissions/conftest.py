@@ -42,3 +42,21 @@ def no_source_org_layers(
     """The same stores, with the linked accounts' organisation memberships removed (`graph.without_link_source_orgs`)."""
     return [neo4j_layer(neo4j_provider, neo4j_settings, variant="no_source_org"),
             arango_layer(arango_provider, arango_settings, variant="no_source_org")]
+
+
+@pytest.fixture(scope="module")
+def withdrawn_layers(
+    neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
+) -> list[GraphCheckLayer]:
+    """The same stores, with every linked source account stored as a withdrawn SourceAccount node, the links kept."""
+    return [neo4j_layer(neo4j_provider, neo4j_settings, variant="withdrawn"),
+            arango_layer(arango_provider, arango_settings, variant="withdrawn")]
+
+
+@pytest.fixture(scope="module")
+def unlinked_layers(
+    neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
+) -> list[GraphCheckLayer]:
+    """The same stores, with the linked accounts withdrawn and the links removed (`graph.unlinked_withdrawn`)."""
+    return [neo4j_layer(neo4j_provider, neo4j_settings, variant="unlinked"),
+            arango_layer(arango_provider, arango_settings, variant="unlinked")]
