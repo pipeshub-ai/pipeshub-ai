@@ -21,11 +21,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
+from app.api.routes.parsing import parse_admission_stats
 from app.api.routes.parsing import router as parsing_router
 from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
@@ -106,6 +108,9 @@ def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
 
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ParsingAppContainer.init("parsing_service")
 container_lock = asyncio.Lock()
@@ -418,6 +423,15 @@ async def health_check() -> JSONResponse:
             # service itself is still healthy.
             container.logger().warning("Resource governor stats failed: %s", stats_error)
             content["resource_governor"] = {"error": "unavailable"}
+    try:
+        # Why the pools admit what they admit, and which requests were refused and why.
+        content["admission"] = {
+            "governor": governor.admission_explain() if governor is not None else None,
+            "parse": parse_admission_stats(),
+        }
+    except Exception as stats_error:
+        container.logger().warning("Admission stats failed: %s", stats_error)
+        content["admission"] = {"error": "unavailable"}
     try:
         # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
         content["llm_gateway"] = get_llm_gateway().stats()

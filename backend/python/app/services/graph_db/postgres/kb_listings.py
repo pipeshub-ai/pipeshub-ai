@@ -211,15 +211,15 @@ class KbListingsMixin(PgBase):
 
         async def go(tx: Tx) -> tuple[list[dict], int, dict]:
             rows = await tx.fetch("""/* pipeshub:graph.list_kb_records */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[]) AND ($5::text IS NULL OR f.id = $5)),
+                folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2 AND ($5::text IS NULL OR b.from_id = $5)
+                    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) f WHERE f.doc->>'mimeType' = ANY($3::text[])),
                 cand AS (
                   SELECT r.id, r.doc, f.id AS fid, f.doc->>'recordName' AS fname FROM folders f
-                    JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records'
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
+                    JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = f.id
+                    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE e.to_coll = 'records' AND n.org_id = $1 AND n.coll = 'records' AND n.id = e.to_id LIMIT 1) r
                   UNION ALL
-                  SELECT r.id, r.doc, NULL, NULL FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
+                  SELECT r.id, r.doc, NULL, NULL FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) r
                   WHERE $5::text IS NULL AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                                                           AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
                 live AS (SELECT c.* FROM cand c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $6 AND NOT (c.doc->>'mimeType' = ANY($3::text[]))),
@@ -264,14 +264,14 @@ class KbListingsMixin(PgBase):
                 combos, folders_json, live_n = _doc_list(rows[0]["facets"]), rows[0]["folders"], rows[0]["live_n"]
             else:                           # one folder's page: the facets still describe the whole collection
                 filt = await tx.fetch("""/* pipeshub:graph.list_kb_records_filters */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                    folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                        JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[])),
+                    folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) f WHERE f.doc->>'mimeType' = ANY($3::text[])),
                     recs AS (
                       SELECT r.id, r.doc FROM folders f JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD'
-                          AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records' JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
+                          AND e.from_coll = 'records' AND e.from_id = f.id CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE e.to_coll = 'records' AND n.org_id = $1 AND n.coll = 'records' AND n.id = e.to_id LIMIT 1) r
                       UNION ALL
-                      SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                        JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
+                      SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) r
                       WHERE NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                                         AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
                     live AS (SELECT c.* FROM recs c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $5 AND NOT (c.doc->>'mimeType' = ANY($3::text[])))
@@ -379,12 +379,74 @@ class KbListingsMixin(PgBase):
         except Exception as e:
             self.logger.error("❌ Failed to get template access: %s", e)
             return None
-        if not r:
-            return None
-        role = r["role"]
-        return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
-                "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
-                "can_delete": role == "OWNER", "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
+        return _with_access(r) if r else None
+
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
+        """The live templates the user holds a grant on (``access_type`` USER) or reaches through a team they are in (TEAM, the highest team role), once each,
+        their own grants first; a failed read is an empty list."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_all_agent_templates */ SELECT * FROM (
+                  SELECT DISTINCT ON (t.id) t.id, t.doc, gr.access, gr.role, gr.pid, gr.created, gr.updated, gr.ord FROM (
+                      SELECT p.to_id AS tid, 'USER' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created,
+                             p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
+                        FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
+                          AND p.to_coll = 'agentTemplates' AND p.doc->>'type' = 'USER' AND p.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
+                      UNION ALL
+                      SELECT g.to_id, 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
+                             CASE g.doc->>'role' WHEN 'OWNER' THEN 4 WHEN 'ORGANIZER' THEN 3 WHEN 'WRITER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END
+                        FROM graph.nodes u JOIN graph.edges m ON m.org_id = u.org_id AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = u.id
+                          AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
+                          JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
+                          JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
+                          AND g.to_coll = 'agentTemplates' AND g.doc->>'type' = 'TEAM' AND g.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2) gr
+                  JOIN graph.nodes t ON t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = gr.tid AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+                  ORDER BY t.id, gr.ord, gr.rk DESC, gr.pid) x
+                ORDER BY x.ord, x.id""", org, user_id, _TEMPLATE_ROLES), transaction)
+        except Exception as e:
+            self.logger.error("Failed to get all agent templates: %s", e)
+            return []
+        return [_with_access(r) for r in rows]
+
+    async def _template_owned(self, template_id: str, user_id: str, transaction: str | None) -> bool:
+        """Whether the user's own grant on the live template is OWNER (a team's is not enough, as on the other stores)."""
+        org = current_org_id()
+        return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.template_owned */ SELECT 1 FROM graph.nodes u
+            JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentTemplates'
+              AND p.to_id = $3 AND p.doc->>'role' = 'OWNER'
+            JOIN graph.nodes t ON t.org_id = u.org_id AND t.coll = 'agentTemplates' AND t.id = p.to_id AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 LIMIT 1""", org, user_id, template_id), transaction))
+
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None = None) -> bool | None:
+        """Write the allowed fields of the update when the user owns the live template; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            data = {"updatedAtTimestamp": get_epoch_timestamp_in_ms(), "updatedByUserId": user_id,
+                    **{f: template_updates[f] for f in ("name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags") if f in template_updates}}
+            return await self.update_node(template_id, _TEMPLATES, data, transaction=transaction)
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            self.logger.error("Failed to update agent template: %s", e)
+            return False
+
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
+        """Mark the live template deleted when the user owns it; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            return await self.update_node(template_id, _TEMPLATES, {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
+                                          transaction=transaction)
+        except Exception as e:
+            self.logger.error("Failed to delete agent template: %s", e)
+            return False
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         """A copy of the template under a new key, active and not deleted, with no owner and no grants; None for a missing template."""
@@ -426,6 +488,16 @@ class KbListingsMixin(PgBase):
 
 def _scalar(v: Any) -> Any:  # noqa: ANN401
     return json.loads(v) if isinstance(v, str) else v
+
+
+def _with_access(r: Any) -> dict:  # noqa: ANN401
+    """A template row with the user's access to it: how they reach it, the grant and what it lets them do. Edit and delete need the user's own OWNER
+    grant (``_template_owned``), so a team's grant or a direct writer's says no to both."""
+    role = r["role"]
+    owner = r["access"] in ("USER", "INDIVIDUAL") and role == "OWNER"
+    return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
+            "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": owner,
+            "can_delete": owner, "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
 
 
 def _doc_list(v: Any) -> list:  # noqa: ANN401

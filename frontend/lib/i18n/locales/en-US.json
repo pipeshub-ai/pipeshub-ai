@@ -799,7 +799,8 @@
       "folderSeparator": "Folder names cannot contain \"/\" or \"\\\".",
       "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
     },
-    "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment."
+    "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment.",
+    "sourcePreparing": "Preparing this source… Its items will show here in a moment."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4533,6 +4534,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "Sessions and user metadata"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "Sessions and user metadata"
         },
         "messageBroker": {

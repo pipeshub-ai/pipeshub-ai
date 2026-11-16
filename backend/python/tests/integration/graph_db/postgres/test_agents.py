@@ -203,3 +203,174 @@ async def test_a_failed_agent_read_is_none_and_comes_back(w: World, monkeypatch:
     assert await w.p.get_agent("ag", w.org) is None
     monkeypatch.setattr(w.p, "_q", real)
     assert (await w.p.get_agent("ag", w.org))["name"] == "Full"
+
+
+# ---- the agent list, edit and delete ----------------------------------------------------------------------------------------------------------
+
+async def listing_world(w: World) -> None:
+    """boss owns ``mine`` and ``old``, reads ``read``, writes ``both`` (also shared with the org) and owned ``gone`` (deleted); ann owns ``private`` and
+    ``shared`` (shared with the org). ``dom`` is the org's under another grant type, ``far`` another organization's share, and another org holds its own
+    agents under the same ids and user key."""
+    await w.nodes("organizations", {"_key": w.org}, {"_key": "elsewhere"})
+    await w.nodes("users", {"_key": "boss"}, {"_key": "ann"})
+    await w.nodes("agentInstances",
+                  {"_key": "mine", "name": "Sales Helper", "description": "Answers pipeline questions", "tags": ["crm", 42], "updatedAtTimestamp": 50},
+                  {"_key": "old", "name": "Archive 100%_done", "updatedAtTimestamp": 10},
+                  {"_key": "read", "name": "Reader", "updatedAtTimestamp": 40},
+                  {"_key": "both", "name": "Both", "description": "HR policies", "updatedAtTimestamp": 30},
+                  {"_key": "gone", "name": "Gone", "isDeleted": True, "updatedAtTimestamp": 60},
+                  {"_key": "private", "name": "Ann private", "updatedAtTimestamp": 70},
+                  {"_key": "shared", "name": "Ann shared", "tags": ["Finance"], "updatedAtTimestamp": 20},
+                  {"_key": "dom", "name": "Domain", "updatedAtTimestamp": 80}, {"_key": "far", "name": "Far", "updatedAtTimestamp": 90})
+    for user, agent, role in (("boss", "mine", "OWNER"), ("boss", "old", "OWNER"), ("boss", "read", "READER"), ("boss", "both", "WRITER"),
+                              ("boss", "gone", "OWNER"), ("ann", "private", "OWNER"), ("ann", "shared", "OWNER")):
+        await w.edge("permission", ("users", user), ("agentInstances", agent), type="USER", role=role)
+    for agent in ("both", "shared"):
+        await w.edge("permission", ("organizations", w.org), ("agentInstances", agent), type="ORG", role="READER")
+    await w.edge("permission", ("organizations", w.org), ("agentInstances", "dom"), type="DOMAIN", role="READER")
+    await w.edge("permission", ("organizations", "elsewhere"), ("agentInstances", "far"), type="ORG", role="READER")
+    await w.nodes("agentToolsets", {"_key": "ts", "name": "slack"})
+    await w.edge("agentHasToolset", ("agentInstances", "mine"), ("agentToolsets", "ts"))
+
+
+def access(agents: list[dict]) -> dict[str, tuple]:
+    return {a["_key"]: (a["access_type"], a["user_role"], a["can_edit"], a["can_delete"], a["can_share"], a["can_view"], a["shareWithOrg"]) for a in agents}
+
+
+async def test_a_user_lists_their_own_agents_and_the_orgs_shared_ones_and_nothing_else(w: World) -> None:
+    await listing_world(w)
+    other = _org()
+    with in_org(other):
+        ow = World(w.p, other)
+        await ow.nodes("organizations", {"_key": other})
+        await ow.nodes("users", {"_key": "boss"})
+        await ow.nodes("agentInstances", {"_key": "theirs", "name": "Theirs"}, {"_key": "mine", "name": "Not yours"})
+        for agent in ("theirs", "mine"):
+            await ow.edge("permission", ("users", "boss"), ("agentInstances", agent), type="USER", role="OWNER")
+        await ow.edge("permission", ("organizations", other), ("agentInstances", "theirs"), type="ORG", role="READER")
+    p = w.p
+    got = await p.get_all_agents("boss", w.org)
+    assert [a["_key"] for a in got] == ["mine", "read", "both", "shared", "old"]                       # newest first by default
+    assert access(got) == {
+        "mine": ("INDIVIDUAL", "OWNER", True, True, True, True, False),
+        "read": ("INDIVIDUAL", "READER", False, False, False, True, False),
+        "both": ("INDIVIDUAL", "WRITER", True, False, False, True, True),             # the user's own grant wins over the org's, and the org share shows
+        "shared": ("ORG", "READER", False, False, False, True, True),
+        "old": ("INDIVIDUAL", "OWNER", True, True, True, True, False)}
+    assert next(a for a in got if a["_key"] == "mine")["name"] == "Sales Helper"                # this org's agent, not the other org's of the same id
+    assert [a["_key"] for a in await p.get_all_agents("ann", w.org)] == ["private", "both", "shared"]       # ann: hers and the org's, not boss's private ones
+    assert [a["_key"] for a in await p.get_all_agents("u", w.org)] == ["both", "shared"]              # a member with no grant of their own: the org's
+    assert [a["_key"] for a in await p.get_all_agents("nobody", w.org)] == ["both", "shared"]             # no user node: the org's share only, as on Neo4j
+    assert await p.get_all_agents("boss", other) == []                                                # an org that is not the ambient one reads nothing
+    with in_org(other):
+        assert [(a["_key"], a["name"]) for a in await p.get_all_agents("boss", other)] == [("mine", "Not yours"), ("theirs", "Theirs")]
+        assert await p.get_all_agents("boss", w.org) == []
+
+
+async def test_the_list_takes_deleted_agents_search_sort_and_a_page(w: World) -> None:
+    await listing_world(w)
+    p = w.p
+    assert [a["_key"] for a in await p.get_all_agents("boss", w.org, is_deleted=True)] == ["gone"]       # only the deleted ones, and only those the user reaches
+    assert [a["_key"] for a in await p.get_all_agents("ann", w.org, is_deleted=True)] == []
+    keys = lambda agents: [a["_key"] for a in agents]  # noqa: E731
+    assert keys(await p.get_all_agents("boss", w.org, search="  SALES ")) == ["mine"]                    # name, without case or surrounding space
+    assert keys(await p.get_all_agents("boss", w.org, search="pipeline")) == ["mine"]                    # description
+    assert keys(await p.get_all_agents("boss", w.org, search="finance")) == ["shared"]                   # a tag
+    assert keys(await p.get_all_agents("boss", w.org, search="42")) == ["mine"]                          # a tag that is not a string
+    assert keys(await p.get_all_agents("boss", w.org, search="%_")) == ["old"]                           # literal text, not a pattern
+    assert keys(await p.get_all_agents("boss", w.org, search="a%e")) == []
+    assert keys(await p.get_all_agents("boss", w.org, search="ann")) == ["shared"]                       # ann's private agent is not searched
+    assert len(await p.get_all_agents("boss", w.org, search="   ")) == 5                                 # blank: no filter
+    assert keys(await p.get_all_agents("boss", w.org, sort_by="name", sort_order="asc")) == ["shared", "old", "both", "read", "mine"]
+    assert keys(await p.get_all_agents("boss", w.org, sort_by="updatedAtTimestamp", sort_order="asc")) == ["old", "shared", "both", "read", "mine"]
+    page = await p.get_all_agents("boss", w.org, page=2, limit=2)
+    assert keys(page["agents"]) == ["both", "shared"] and page["totalItems"] == 5
+    assert keys((await p.get_all_agents("boss", w.org, page=3, limit=2))["agents"]) == ["old"]
+    assert await p.get_all_agents("boss", w.org, page=9, limit=2) == {"agents": [], "totalItems": 5}       # past the end: no agents, the same total
+    assert await p.get_all_agents("boss", w.org, page=1, limit=2, search="nothing like it") == {"agents": [], "totalItems": 0}
+    first = (await p.get_all_agents("boss", w.org, page=1, limit=2))["agents"]
+    assert [(a["_key"], [t["_key"] for t in a["toolsets"]], a["knowledge"], a["mcpServers"]) for a in first] == [("mine", ["ts"], [], []), ("read", [], [], [])]
+    assert "mcpServersUnavailable" not in first[0]
+
+
+async def test_a_failed_list_is_empty_and_a_failed_enrichment_keeps_the_agents(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await listing_world(w)
+
+    async def broken(*a: object, **k: object) -> dict:
+        raise RuntimeError("store down")
+    monkeypatch.setattr(w.p, "_project_agents_mcp_servers", broken)
+    got = await w.p.get_all_agents("boss", w.org)
+    assert len(got) == 5 and all(a["mcpServers"] == [] and a["mcpServersUnavailable"] is True for a in got)
+    assert [t["_key"] for t in got[0]["toolsets"]] == ["ts"]
+    monkeypatch.setattr(w.p, "_project_agents_toolsets_and_knowledge", broken)
+    assert all(a["toolsets"] == [] and a["knowledge"] == [] for a in await w.p.get_all_agents("boss", w.org))
+    monkeypatch.undo()
+    real = w.p._q
+    monkeypatch.setattr(w.p, "_q", failing)
+    assert await w.p.get_all_agents("boss", w.org) == []
+    monkeypatch.setattr(w.p, "_q", real)
+    assert len(await w.p.get_all_agents("boss", w.org)) == 5
+
+
+async def test_an_agent_is_edited_only_by_an_owner_writer_or_organizer_and_only_in_its_allowed_fields(w: World) -> None:
+    await listing_world(w)
+    await w.nodes("users", {"_key": "org_writer"})
+    p = w.p
+    doc = lambda k: p.get_document(k, "agentInstances")  # noqa: E731
+    assert await p.update_agent("mine", {"name": "Renamed", "createdBy": "mallory", "orgId": "x", "isDeleted": True, "systemPrompt": "s",
+                                         "serviceAccountUserId": "sa", "models": [{"modelKey": "m1", "modelName": "gpt"}, "m1_gpt", "m2", {"modelKey": None}, 7, "_x"]},
+                                "boss", w.org) is True
+    d = await doc("mine")
+    assert (d["name"], d["systemPrompt"], d["serviceAccountUserId"], d["models"], d["updatedBy"]) == ("Renamed", "s", "sa", ["m1_gpt", "m2"], "boss")
+    assert d.get("createdBy") is None and d["orgId"] == w.org and not d.get("isDeleted") and d["updatedAtTimestamp"] > 50       # fields outside the list are not written
+    assert await p.update_agent("mine", {"models": "m3"}, "boss", w.org) is True and (await doc("mine"))["models"] == ["m1_gpt", "m2"]       # not a list: left alone
+    assert await p.update_agent("mine", {"models": None}, "boss", w.org) is True and (await doc("mine"))["models"] == []
+    assert await p.update_agent("both", {"name": "W"}, "boss", w.org) is True                                    # a writer edits
+    for agent, user in (("read", "boss"), ("shared", "boss"), ("private", "boss"), ("gone", "boss"), ("missing", "boss"), ("mine", "ann"), ("mine", "nobody")):
+        assert await p.update_agent(agent, {"name": "x"}, user, w.org) is False, (agent, user)       # a reader, the org's reader grant, no grant, deleted, missing
+    assert (await doc("read"))["name"] == "Reader" and (await doc("shared"))["name"] == "Ann shared" and (await doc("private"))["name"] == "Ann private"
+    assert await p.update_agent("mine", {"name": "x"}, "boss", _org()) is False                     # another org named
+    with in_org(_org()):
+        assert await p.update_agent("mine", {"name": "x"}, "boss", w.org) is False
+    assert (await doc("mine"))["name"] == "Renamed"
+
+
+async def test_an_agent_is_deleted_only_by_its_owner_and_the_delete_is_soft(w: World) -> None:
+    await listing_world(w)
+    p = w.p
+    for agent, user in (("both", "boss"), ("read", "boss"), ("shared", "boss"), ("private", "boss"), ("missing", "boss")):
+        assert await p.delete_agent(agent, user, w.org) is False, (agent, user)                     # a writer, a reader, the org's grant, no grant, missing
+    assert await p.delete_agent("mine", "boss", _org()) is False
+    with in_org(_org()):
+        assert await p.delete_agent("mine", "boss", w.org) is False
+    assert not (await p.get_document("both", "agentInstances")).get("isDeleted")
+    t = await p.begin_transaction([], [])
+    assert await p.delete_agent("mine", "boss", w.org, transaction=t) is True
+    await p.commit_transaction(t)
+    d = await p.get_document("mine", "agentInstances")
+    assert d["isDeleted"] is True and d["deletedByUserId"] == "boss" and d["deletedAtTimestamp"] > 0 and d["name"] == "Sales Helper"       # kept, marked
+    assert "mine" not in [a["_key"] for a in await p.get_all_agents("boss", w.org)]
+    assert sorted(a["_key"] for a in await p.get_all_agents("boss", w.org, is_deleted=True)) == ["gone", "mine"]
+    assert await p.delete_agent("mine", "boss", w.org) is False                                      # already deleted
+
+
+async def test_an_agents_permission_check_reads_through_the_callers_transaction(w: World) -> None:
+    """A grant written earlier in the caller's transaction counts for an edit in it; one removed in it no longer allows a delete."""
+    await listing_world(w)
+    p = w.p
+    t = await p.begin_transaction([], [])
+    try:
+        assert await p.check_agent_permission("private", "boss", w.org, transaction=t) is None
+        await p.batch_create_edges([{"from_collection": "users", "from_id": "boss", "to_collection": "agentInstances", "to_id": "private", "type": "USER", "role": "OWNER"}],
+                                   "permission", transaction=t)
+        assert (await p.check_agent_permission("private", "boss", w.org, transaction=t))["user_role"] == "OWNER"
+        assert await p.check_agent_permission("private", "boss", w.org) is None                     # outside it, not yet
+        assert await p.update_agent("private", {"name": "Renamed"}, "boss", w.org, transaction=t) is True
+        assert await p.delete_edge("boss", "users", "mine", "agentInstances", "permission", transaction=t)
+        assert await p.check_agent_permission("mine", "boss", w.org, transaction=t) is None
+        assert await p.delete_agent("mine", "boss", w.org, transaction=t) is False
+        assert (await p.check_agent_permission("mine", "boss", w.org))["user_role"] == "OWNER"         # outside it, still there
+    finally:
+        await p.rollback_transaction(t)
+    assert (await p.get_document("private", "agentInstances"))["name"] == "Ann private" and not (await p.get_document("mine", "agentInstances")).get("isDeleted")
+

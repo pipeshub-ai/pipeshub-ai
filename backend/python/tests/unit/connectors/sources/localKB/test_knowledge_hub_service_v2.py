@@ -26,6 +26,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
 )
 from app.utils.kh_cursor import (
@@ -438,6 +439,29 @@ async def test_a_busy_listing_is_a_503(service, provider) -> None:
     result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
 
     assert (result.success, result.errorCode) == (False, 503)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent", [("app1", "app"), ("f1", "folder"), (None, None)], ids=["browse", "folder", "all_records"])
+async def test_a_source_still_being_prepared_is_an_empty_page_that_says_so_not_a_503(service, provider, parent) -> None:
+    """The source holds nodes its copy has not reached yet: a successful, empty page marked ``preparing``, with nothing to page on to."""
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingNotReady()
+    parent_id, parent_type = parent
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id=parent_id, parent_type=parent_type, flattened=parent_id is None, include=["counts"])
+
+    assert (result.success, result.errorCode, result.preparing, result.items) == (True, None, True, [])
+    assert (result.pagination.totalItems, result.pagination.hasNext, result.pagination.hasPrev) == (0, False, False)
+    assert result.pagination.nextCursor is None and result.pagination.prevCursor is None
+    assert (result.counts.total, result.counts.items) == (0, [])
+    assert "preparing" in result.model_dump(exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_a_listing_with_rows_is_not_marked_preparing(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([], scope=admitted_scope(node_type="app"))
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert result.success is True and result.preparing is None
 
 
 @pytest.mark.asyncio

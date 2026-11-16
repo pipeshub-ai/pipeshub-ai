@@ -61,6 +61,7 @@ async def _dispatch(ext: str | None, mime: str, content: bytes, *, record_type: 
         ("log", samples.make_log("s"), "process_plain_text_document"),
         ("cfg", samples.make_cfg("s"), "process_plain_text_document"),
     ],
+    ids=["docm", "dotx", "potx", "xlsm", "msg", "odt", "rtf", "log", "cfg"],  # the sample bytes hold a timestamp
 )
 @pytest.mark.parametrize("mime", ["application/octet-stream", "text/plain"])
 @pytest.mark.parametrize("record_type", ["FILE", "CODE_FILE"])
@@ -165,6 +166,7 @@ async def test_an_encrypted_odt_is_password_protected_before_conversion() -> Non
         ("log", samples.make_log("s"), "log", "text/plain"),
         ("xlsm", samples.make_xlsm("s"), "xlsm", "text/plain"),
     ],
+    ids=["docm", "dotx", "potx", "msg", "log", "xlsm"],
 )
 async def test_the_parsing_service_gets_the_prepared_file(
     ext: str, content: bytes, service_ext: str, service_mime: str
