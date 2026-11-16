@@ -6,6 +6,8 @@ would call it again too early and dead-letter the record after three such tries.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from app.services.llm_gateway.embedding_gateway import EmbeddingRateLimited
@@ -55,3 +57,30 @@ async def test_the_handed_back_record_is_queued_so_stale_recovery_does_not_repub
     queued = [w for w in harness.writes() if w.get("indexingStatus") == "QUEUED"]
     assert queued and queued[-1]["processingStartedAt"] is None
     assert all(w.get("indexingStatus") != "FAILED" for w in harness.writes())
+
+
+async def test_a_parse_now_run_is_handed_back_for_the_wait() -> None:
+    """A reader waiting on a parse-now run still gets the provider's wait, not a 15 s retry that dead-letters it."""
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=True, is_final_failure=True))
+    assert raised.value.delay_s == 300.0
+    assert all(write.get("parseNowStatus") != "FAILED" for write in harness.writes())
+
+
+async def test_an_enrichment_resume_is_handed_back_and_kept_off_the_stale_scan_for_the_wait() -> None:
+    """An enrichment resume stays COMPLETED with its enrichment running. Its start time is dated at the end of the wait, so the
+    stale scan (one lease after ``processingStartedAt``) cannot pick it before the delay."""
+    started = 1_000  # an attempt far older than any lease
+    harness = Harness(
+        _record(indexingStatus="COMPLETED", extractionStatus="IN_PROGRESS", processingStartedAt=started, origin="UPLOAD")
+    )
+    harness.fail_with = EmbeddingRateLimited("embeddings busy", retry_after=300.0)
+    before = int(time.time() * 1000)
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=True))
+    assert raised.value.delay_s == 300.0
+    dated = [w["processingStartedAt"] for w in harness.writes() if w.get("processingStartedAt")]
+    assert dated and dated[-1] >= before + 300_000
+    assert all(w.get("indexingStatus") != "FAILED" and w.get("extractionStatus") != "FAILED" for w in harness.writes())

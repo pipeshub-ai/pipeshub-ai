@@ -1606,6 +1606,7 @@ class RecordEventHandler(BaseEventService):
         cancelled = False
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
+        handback_delay_s = 0.0
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         record = None
@@ -2423,8 +2424,9 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
-            if (wait := provider_rate_limit_wait(ie)) is not None and not (resuming_enrichment or parse_now):
+            if (wait := provider_rate_limit_wait(ie)) is not None:
                 handed_back = True
+                handback_delay_s = wait
                 raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
@@ -2435,9 +2437,10 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(e)
             last_exception = e
-            if (wait := provider_rate_limit_wait(e)) is not None and not (resuming_enrichment or parse_now):
+            if (wait := provider_rate_limit_wait(e)) is not None:
                 # The provider said when it can serve again: come back then, with no attempt spent on the wait.
                 handed_back = True
+                handback_delay_s = wait
                 raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
@@ -2495,6 +2498,18 @@ class RecordEventHandler(BaseEventService):
                     # like a transient failure (QUEUED, no processing start), so the broker's delay is the only wake-up and
                     # the stale-record scan does not mistake the wait for a crash and call the provider again.
                     is_final = False
+                    if resuming_enrichment:
+                        # The record stays COMPLETED with its enrichment running, which the stale scan selects once a
+                        # lease has passed since ``processingStartedAt``. Dating the start at the end of the wait keeps it
+                        # out of the scan until then; the broker's delayed message is the wake-up.
+                        try:
+                            await self.event_processor.graph_provider.update_node(
+                                record_id,
+                                CollectionNames.RECORDS.value,
+                                {"processingStartedAt": get_epoch_timestamp_in_ms() + int(handback_delay_s * 1000)},
+                            )
+                        except Exception as wait_exc:
+                            self.logger.warning(f"Could not date the rate-limit wait of record {record_id}: {wait_exc}")
 
                 if cancelled:
                     # Checked before is_final: a cancellation is not a verdict
