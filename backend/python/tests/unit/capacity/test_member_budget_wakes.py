@@ -202,3 +202,27 @@ def test_a_forked_child_that_only_closes_does_not_keep_the_parents_lock_alive(le
     finally:
         os.kill(pid, 9)
         os.waitpid(pid, 0)
+
+
+def test_a_forked_child_can_wait_for_a_slot_the_parent_frees(ledger: Path) -> None:
+    """The child's first call is a wait: it must reattach before it reads the change counters."""
+    b = MemberBudget(ledger, cpu_tokens=8, mem_bytes=1 << 34, llm_cap=1)
+    held = b.try_reserve(_llm())
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        code = 1
+        try:
+            permit = b.reserve_blocking(_llm(), deadline_s=3)
+            permit.release()
+            code = 0
+        except BaseException:
+            code = 2
+        finally:
+            os.write(w, bytes([code]))
+            os._exit(code)
+    time.sleep(0.1)
+    held.release()  # the parent frees the only slot while the child waits
+    outcome = os.read(r, 1)
+    os.waitpid(pid, 0)
+    assert outcome == b"\x00"
