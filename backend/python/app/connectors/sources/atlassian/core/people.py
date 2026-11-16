@@ -6,6 +6,7 @@ or ``key``/``name`` (Jira), the same ids the connectors store as
 """
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from app.models.entities import SourcePerson
@@ -13,6 +14,7 @@ from app.models.entities import SourcePerson
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from app.connectors.core.base.sync_point.sync_point import SyncPoint
     from app.models.entities import AppUser
 
 
@@ -90,3 +92,38 @@ def confluence_people(content: Any) -> dict[str, SourcePerson | None]:  # noqa: 
 
 def _by_id(account_id: Any) -> SourcePerson | None:  # noqa: ANN401
     return SourcePerson(source_id=account_id) if isinstance(account_id, str) and account_id else None
+
+
+# Accounts a complete user list no longer shows go at once up to this share of the linked accounts (or
+# WITHDRAW_FLOOR of them when that is more). More wait until WITHDRAW_CONFIRMATIONS complete reads show the same
+# accounts gone, counted in the connector's WITHDRAW_HOLD_KEY sync point.
+WITHDRAW_SHARE: float = 0.1
+WITHDRAW_FLOOR: int = 10
+WITHDRAW_CONFIRMATIONS: int = 3
+WITHDRAW_HOLD_KEY: str = "withdrawals_held"
+
+
+def withdrawals_held(withdrawing: int, linked: int) -> bool:
+    return withdrawing > max(WITHDRAW_FLOOR, int(linked * WITHDRAW_SHARE))
+
+
+async def absent_accounts_due(sync_point: SyncPoint, absent: set[str], linked: int, now: int) -> tuple[bool, bool]:
+    """Whether the linked accounts a complete user list no longer shows lose the connector now, and whether they were
+    just held (the connector's owner is told once). Absence is the only evidence for them, and the user list's end is
+    not promised by the docs (Cloud's /users/search answers a bare array with no end marker; Data Center's /user/list
+    promises only that "the same user will not be returned twice"). So many at once wait until the same accounts are
+    gone from WITHDRAW_CONFIRMATIONS complete reads in a row; a different set starts the count again, and a read with
+    few or none gone ends it. Call it on every complete read, absent accounts or not, and only on one."""
+    stored = (await sync_point.read_sync_point(WITHDRAW_HOLD_KEY)) or {}
+    if not withdrawals_held(len(absent), linked):
+        if stored.get("seen"):
+            await sync_point.update_sync_point(WITHDRAW_HOLD_KEY, {"accounts": "[]", "seen": 0, "since": 0})
+        return True, False
+    accounts = json.dumps(sorted(absent))
+    seen = int(stored.get("seen") or 0) + 1 if stored.get("accounts") == accounts else 1
+    if seen >= WITHDRAW_CONFIRMATIONS:
+        await sync_point.update_sync_point(WITHDRAW_HOLD_KEY, {"accounts": "[]", "seen": 0, "since": 0})
+        return True, False
+    since = int(stored.get("since") or now) if seen > 1 else now
+    await sync_point.update_sync_point(WITHDRAW_HOLD_KEY, {"accounts": accounts, "seen": seen, "since": since})
+    return False, seen == 1

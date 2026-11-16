@@ -126,6 +126,30 @@ class TestNormalizeList:
 # _render_flat_text
 # ---------------------------------------------------------------------------
 
+class TestPageInsideBounds:
+    async def test_a_source_still_being_prepared_says_so_through_a_bounded_listing(self) -> None:
+        """A selection search or a partial bound reads its rows a batch at a time and rebuilds the page: a source still being prepared
+        answers an empty first page with no cursor, and the rebuilt page still says it is being prepared, not that nothing matched."""
+        from app.agents.actions.knowledge_graph.ops.listing import _page_inside_bounds
+        from app.connectors.sources.localKB.api.knowledge_hub_models import (
+            KnowledgeHubNodesResponse,
+            PaginationInfo,
+        )
+
+        preparing = KnowledgeHubNodesResponse(success=True, items=[], preparing=True,
+                                              pagination=PaginationInfo(limit=50, totalItems=0, hasNext=False, hasPrev=False))
+
+        async def fetch(_position: object, **_: object) -> KnowledgeHubNodesResponse:
+            return preparing
+
+        async def inside(ids: list[str]) -> set[str]:
+            return set(ids)
+        response, hint = await _page_inside_bounds(fetch, inside, page=1, limit=10)
+
+        assert response.preparing is True and response.items == [] and hint is None
+        assert "still being prepared" in _render_flat_text(response, "budget")
+
+
 class TestRenderFlatText:
     def test_failure_with_error(self) -> None:
         resp = _response(success=False, error="boom")
@@ -142,6 +166,11 @@ class TestRenderFlatText:
     def test_empty_items_with_query(self) -> None:
         resp = _response(items=[])
         assert _render_flat_text(resp, "test") == 'No items found matching "test".'
+
+    def test_a_source_still_being_prepared_says_so_instead_of_no_items(self) -> None:
+        resp = _response(items=[])
+        resp.preparing = True
+        assert "still being prepared" in _render_flat_text(resp, None)
 
     def test_none_items_no_query(self) -> None:
         resp = _response(items=None)

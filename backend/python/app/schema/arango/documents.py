@@ -95,6 +95,9 @@ user_schema = {
             # survive one. Absent means not disabled, so a node that predates
             # this field, or a person, reads as usable.
             "isDisabled": {"type": "boolean"},
+            # The user's default knowledge base. Claimed here, in one conditional write, before the knowledge base is
+            # written, so two writers of one user's default agree on its key and a key is never used twice.
+            "defaultKnowledgeBaseId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -377,6 +380,13 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # Record processing diagnostics (internal; never returned by the API):
+            # when the record first went in line for the current run, when its
+            # last run failed, how many attempts it has had, and the PDF page count.
+            "firstQueuedAt": {"type": ["number", "null"]},
+            "failedAt": {"type": ["number", "null"]},
+            "indexingAttempts": {"type": ["integer", "null"], "minimum": 0},
+            "pageCount": {"type": ["integer", "null"], "minimum": 1},
             # A record whose source rate-limited its content fetch: when it may
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).

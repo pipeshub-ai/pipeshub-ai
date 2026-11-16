@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
+PAG = "PARENT_AND_GRANT"
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
@@ -88,13 +89,14 @@ def _walk_app(*, opens: bool, granted: set[str]) -> Callable[[str, bool, dict[st
     def ok(cid: str, inh: bool, info: dict[str, Any]) -> bool:
         rule = info["rule"]
         return not info["deleted"] and (opens or (inh and rule in ("STRICT", "OPEN"))
-                                        or (cid in granted and ((inh and rule == "RESTRICTED") or rule in ("STRICT", "OPEN"))))
+                                        or (cid in granted and ((inh and rule in ("RESTRICTED", PAG)) or rule in ("STRICT", "OPEN"))))
     return ok
 
 
 def _walk_seed(granted: set[str]) -> Callable[[str, bool, dict[str, Any]], bool]:
     def ok(cid: str, inh: bool, info: dict[str, Any]) -> bool:
-        return not info["deleted"] and info["rule"] == "OPEN" and (inh or cid in granted)
+        rule = info["rule"]
+        return not info["deleted"] and ((rule == "OPEN" and (inh or cid in granted)) or (rule == PAG and inh and cid in granted))
     return ok
 
 
@@ -207,7 +209,7 @@ async def declared_groups(tx: Tx, org: str, ids: list[str], colls: list[str], ap
 
 
 async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids: list[str], granted_l: list[str]) -> list[dict[str, str]]:
-    """(start, seed): a granted open record or group of the start's connector above it, every hop open and inheriting (or granted)."""
+    """(start, seed): a granted open record or group of the start's connector above it, every hop taken by ``_walk_seed``."""
     granted = set(granted_l)
     app_of = dict(zip(ids, appids, strict=True))
     reached: set[tuple[str, Node]] = set()
@@ -253,9 +255,10 @@ async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list
                     WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($6::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
                       AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
                       AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN'))
-                                    OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') = 'RESTRICTED')
+                                    OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT'))
                                                                      OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
-                                  WHEN 'seed' THEN coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[]))
+                                  WHEN 'seed' THEN (coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[])))
+                                    OR (n.doc->>'accessRule' = 'PARENT_AND_GRANT' AND i.from_id IS NOT NULL AND n.id = ANY($5::text[]))
                                   ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier}))
             found += [((r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"]), r["model"], r["cid"]) for r in rows]
         frontier = []

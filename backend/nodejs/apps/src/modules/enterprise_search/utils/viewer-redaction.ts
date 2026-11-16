@@ -6,7 +6,9 @@
  * and for shared viewers alike: a blended answer cannot be cut sentence by
  * sentence. The user's own question stays. If the access check cannot answer,
  * the answers that name records are hidden with a different reason, so an
- * outage reads as temporary. Answers that name no record are left as stored.
+ * outage reads as temporary. Answers that name no record are left as stored,
+ * except another user's answers while the check cannot answer: those are hidden
+ * as unconfirmed too, since free text can quote a record it never cited.
  * Known limit: a record an answer used but did not cite is not detected.
  *
  * A shared conversation or search is also rendered for the person looking at
@@ -20,6 +22,7 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
+import { apiStoredRecords } from './internal-record-fields';
 import type { AppConfig } from '../../tokens_manager/config/config';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 
@@ -469,7 +472,11 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     if (!isAnswer(m)) return null;
     const t = turnOf[i] ?? 0;
     const v = verdictOf(m, t);
-    return v === null && unreadTurn(t) ? ANSWER_UNCONFIRMED : v;
+    if (v !== null) return v;
+    const unconfirmed =
+      unreadTurn(t) ||
+      (readable.failed === true && isOthers(m) && fresh?.(m) !== true);
+    return unconfirmed ? ANSWER_UNCONFIRMED : null;
   });
   const turnVerdict = new Map<number, HiddenMarker>();
   answerVerdict.forEach((v, i) => {
@@ -627,8 +634,10 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
           readable.ids.has(id ?? '') ? h : { ...(others ? REDACTED : verdict) },
         ];
       }),
-      records: Object.fromEntries(
-        recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
+      records: apiStoredRecords(
+        Object.fromEntries(
+          recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
+        ),
       ),
     };
     return view as S;

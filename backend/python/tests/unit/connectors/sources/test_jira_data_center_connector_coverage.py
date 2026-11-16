@@ -920,8 +920,12 @@ async def test_fetch_project_permission_scheme_dc_branches():
     app_map = {
         "jira-software": [{"groupId": "expanded-g", "name": "E"}],
     }
+    user_by_key = {"acc": AppUser(
+        app_name=Connectors.JIRA_DATA_CENTER, connector_id="conn-dc-cov", source_user_id="acc",
+        org_id="org-dc-cov", email="u@example.com", full_name="U", is_active=True,
+    )}
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("PROJ", app_map, {"acc": MagicMock(email="u@example.com")})
+        perms = await conn._fetch_project_permission_scheme("PROJ", app_map, user_by_key)
     ds.get_permission_scheme_grants_v2.assert_awaited_once()
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
@@ -937,13 +941,15 @@ async def test_fetch_project_permission_scheme_dc_branches():
     ("parameter", "unfinished", "licensed", "granted"),
     [
         pytest.param("acc", False, None, False, id="not in a complete user list"),
-        pytest.param("acc", True, None, True, id="user list cut short"),
+        # The grants read does not expand holders, so the email on one is never read: on a list cut short the
+        # project's stored access is kept instead.
+        pytest.param("acc", True, None, False, id="user list cut short"),
         pytest.param("acc", True, {"other"}, False, id="user list cut short, no product access"),
-        pytest.param("acc", True, {"acc"}, True, id="user list cut short, product access"),
+        pytest.param("acc", True, {"acc"}, False, id="user list cut short, product access"),
         pytest.param("ann", False, None, False, id="a username is never read as a key"),
     ],
 )
-async def test_a_user_holder_outside_the_synced_users_is_granted_only_while_they_may_be_unread(
+async def test_a_user_holder_outside_the_synced_users_is_never_granted_by_the_email_on_the_holder(
     parameter: str, unfinished: bool, licensed: set[str] | None, granted: bool,
 ) -> None:
     conn = _make_connector()
@@ -1038,6 +1044,29 @@ async def test_fetch_project_permission_scheme_user_resolved_via_user_by_key():
     assert len(perms) == 1
     assert perms[0].entity_type == EntityType.USER
     assert perms[0].email == "darshan@example.com"
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_inline_email_alone_grants_nothing() -> None:
+    """A user holder outside the synced directory (an account withdrawn this sync, say) gets no project grant,
+    even when the holder carries its email inline."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 10000})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(return_value={"permissions": [{
+        "permission": "BROWSE_PROJECTS",
+        "holder": {"type": "user", "parameter": "bob-key", "user": {"key": "bob-key", "emailAddress": "bob@x.com"}},
+    }]})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("TEST", {}, {})
+    assert perms == []
 
 
 @pytest.mark.asyncio

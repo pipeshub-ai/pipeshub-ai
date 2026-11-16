@@ -295,7 +295,9 @@ class TestFetchUsers:
             {"accountId": "u2", "accountType": "atlassian", "emailAddress": "user2@example.com", "displayName": "User 2", "active": True},
             {"accountId": "u3", "accountType": "atlassian", "active": False, "emailAddress": "inactive@example.com", "displayName": "Inactive"},
         ]
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        empty = _make_mock_response(200)
+        empty.json = MagicMock(return_value=[])  # only an empty page ends the list
+        mock_ds.get_all_users = AsyncMock(side_effect=[_make_mock_response(200, users_data), empty])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         users = await connector._fetch_users()
@@ -313,7 +315,9 @@ class TestFetchUsers:
         users_data = [
             {"accountId": "u1", "accountType": "atlassian", "displayName": "No Email", "active": True},
         ]
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        empty = _make_mock_response(200)
+        empty.json = MagicMock(return_value=[])  # only an empty page ends the list
+        mock_ds.get_all_users = AsyncMock(side_effect=[_make_mock_response(200, users_data), empty])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         users = await connector._fetch_users()

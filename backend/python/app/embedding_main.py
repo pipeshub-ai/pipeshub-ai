@@ -45,12 +45,16 @@ from app.config.constants.ai_models import (
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
+from app.edition import check_runtime_settings
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import env_positive_int
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
