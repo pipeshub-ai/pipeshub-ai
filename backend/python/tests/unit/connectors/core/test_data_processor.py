@@ -2452,7 +2452,7 @@ class TestMigrateGroupPermissionsToUser:
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_failed_grant_read_is_not_an_empty_group(self):
+    async def test_a_failed_grant_read_is_not_an_empty_group(self) -> None:
         """The providers answer a failed read with [] unless asked to raise; that must not report every grant moved."""
         proc = _make_processor()
         tx_store = _make_tx_store()
@@ -2460,7 +2460,7 @@ class TestMigrateGroupPermissionsToUser:
         mock_user.id = "u1"
         tx_store.get_user_by_email.return_value = mock_user
 
-        async def read(*, from_node_id, edge_collection, raise_on_error=False):
+        async def read(*, from_node_id: str, edge_collection: str, raise_on_error: bool = False) -> list[dict]:
             if raise_on_error:
                 raise ConnectionError("graph read failed")
             return []
