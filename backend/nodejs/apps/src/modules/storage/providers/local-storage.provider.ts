@@ -626,12 +626,19 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
       throw error;
     }
-    const listed: { key: string; size: number; lastModifiedMs: number }[] = [];
+    // Keys first, sorted, so only the requested page (and one more, to know whether there is a next) is statted.
+    const candidates: { key: string; full: string }[] = [];
     for (const entry of entries) {
       if (path.basename(entry).startsWith('.')) continue;
       const full = path.join(folder, entry);
       const key = path.relative(root, full).split(path.sep).join('/');
       if (options.after !== undefined && key <= options.after) continue;
+      candidates.push({ key, full });
+    }
+    candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const listed: { key: string; size: number; lastModifiedMs: number }[] = [];
+    for (const { key, full } of candidates) {
+      if (listed.length > options.limit) break;
       let stat;
       try {
         stat = await fs.lstat(full);
@@ -648,7 +655,6 @@ class LocalStorageAdapter implements StorageServiceInterface {
         lastModifiedMs: Math.floor(stat.mtimeMs),
       });
     }
-    listed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     const objects = listed.slice(0, options.limit);
     const last = objects[objects.length - 1];
     return last !== undefined && listed.length > options.limit

@@ -213,3 +213,32 @@ async def test_a_hop_older_than_the_window_is_still_rejected(world: Any, clock: 
     topic, signed, _published, signed_at = wire.sent[0]
     with pytest.raises(envelope.EnvelopeRejected):
         await _consume(_handler(AsyncMock()), topic, signed, age_s=901, signed_at=signed_at)
+
+
+def test_a_chain_keeps_the_horizon_it_started_with_when_the_budget_is_lowered_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.paid_cache.locks import repurge_horizon_s
+
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "21600")
+    long_horizon = repurge_horizon_s()
+    first = repurge_event_payload(ORG, REC, now=0.0)
+    assert first["horizonS"] == long_horizon
+
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "900")           # lowered while the chain runs
+    assert repurge_horizon_s() < long_horizon
+    assert next_hop_payload(ORG, first, now=long_horizon - 1) is not None
+    carried = next_hop_payload(ORG, first, now=1000.0)
+    assert carried is not None and carried["horizonS"] == long_horizon  # carried by every later hop
+    assert next_hop_payload(ORG, first, now=long_horizon + 1) is None
+
+
+def test_a_carried_horizon_that_is_not_a_sane_duration_is_ignored_or_capped() -> None:
+    from app.services.paid_cache.locks import repurge_horizon_s
+    from app.services.paid_cache.repurge import MAX_CARRIED_HORIZON_S
+
+    past = repurge_horizon_s() + 1
+    for bad in (float("inf"), float("nan"), -5, "9999999", True):
+        payload = {**repurge_event_payload(ORG, REC, now=0.0), "horizonS": bad}
+        assert next_hop_payload(ORG, payload, now=past) is None, bad          # the live horizon applies
+    huge = {**repurge_event_payload(ORG, REC, now=0.0), "horizonS": 10**12}
+    assert next_hop_payload(ORG, huge, now=MAX_CARRIED_HORIZON_S - 1) is not None
+    assert next_hop_payload(ORG, huge, now=MAX_CARRIED_HORIZON_S + 1) is None   # capped

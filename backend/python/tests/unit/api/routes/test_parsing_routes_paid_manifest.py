@@ -48,7 +48,7 @@ def store(monkeypatch: pytest.MonkeyPatch) -> Iterator[MemoryResultStore]:
     clear_run()
 
 
-def _post(parser_parse: Any) -> Any:  # noqa: ANN401
+def _post(parser_parse: Any, **extra_form: str) -> Any:  # noqa: ANN401
     registry = MagicMock(spec=ParserRegistry)
     parser = MagicMock()
     parser.parse = parser_parse
@@ -57,7 +57,7 @@ def _post(parser_parse: Any) -> Any:  # noqa: ANN401
     return client.post(
         "/api/v1/parse",
         files={"file": ("s.pdf", BODY, "application/pdf")},
-        data={"record_name": "s.pdf", "mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+        data={"record_name": "s.pdf", "mime_type": "application/pdf", "extension": "pdf", "provider": "default", **extra_form},
     )
 
 
@@ -118,3 +118,18 @@ def test_a_timeout_raised_inside_the_parser_is_not_answered_as_the_stage_deadlin
 
     assert response.status_code == 500
     assert response.json()["error"]["message"] == "Unexpected error while parsing the document"
+
+
+def test_a_parse_the_indexing_side_marked_as_a_refresh_opens_a_bypassing_run(store: MemoryResultStore) -> None:
+    from app.services.paid_cache.run import current_run
+
+    seen: list[bool] = []
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        run = current_run()
+        seen.append(run is not None and run.refresh)
+        return _ok_result()
+
+    assert _post(parse, refresh_paid_outputs="true").status_code == 200
+    assert _post(parse).status_code == 200
+    assert seen == [True, False]

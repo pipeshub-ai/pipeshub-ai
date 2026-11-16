@@ -203,17 +203,18 @@ def template_text_of(template: object) -> str:
     return template_text(template)
 
 
-def start_run(content_rev: str | None, writer: str) -> RunScope | None:
+def start_run(content_rev: str | None, writer: str, *, refresh: bool = False) -> RunScope | None:
     """Opens the retention manifest of this writer's work on the record in flight.
 
     A ``refreshPaidOutputs`` run opened earlier for the same record keeps its flag. None when no record is in
-    flight or the cache is off.
+    flight or the cache is off. ``refresh`` is a caller's own request (the parsing service is told by the indexing
+    side that its run is a refresh).
     """
     identity = ambient_identity()
     if identity is None or not enabled():
         return None
     prior = current_run()
-    refresh = prior is not None and prior.matches(*identity) and prior.refresh
+    refresh = refresh or (prior is not None and prior.matches(*identity) and prior.refresh)
     return begin_run(identity[0], identity[1], content_rev, writer, refresh=refresh)
 
 

@@ -76,14 +76,16 @@ async def sweep_record(
         #: Per revision, when it completed: (the writer's ``completedMs``, its ``seq``). The storage write time is
         #: only the fallback for a manifest that has none: S3 and Azure report it in whole seconds.
         final_at: dict[str, tuple[int, int]] = {}
-        open_started: dict[str, int] = {}
-        open_keys: dict[str, set[str]] = {}
+        open_started: dict[tuple[str, str], int] = {}
+        open_keys: dict[tuple[str, str], set[str]] = {}
+        #: The writers that completed per revision: one writer's completion is not another's.
+        final_writers: dict[str, set[str]] = {}
         manifest_files: list[tuple[str, str, bool]] = []  # (path, rev, is_open)
         for m in manifests:
             parsed = _split(m.path)
             if parsed is None:
                 continue
-            rev, _, is_open = parsed
+            rev, writer, is_open = parsed
             manifest_files.append((m.path, rev, is_open))
             body = await _read(store, org_id, record_id, m.path)
             if body is None:
@@ -91,9 +93,10 @@ async def sweep_record(
             if is_open:
                 started = body.get("startedMs")
                 started = started if isinstance(started, int) else m.last_modified_ms
-                open_started[rev] = max(open_started.get(rev, 0), started)
-                open_keys.setdefault(rev, set()).update(_keys(body))
+                open_started[rev, writer] = max(open_started.get((rev, writer), 0), started)
+                open_keys.setdefault((rev, writer), set()).update(_keys(body))
             else:
+                final_writers.setdefault(rev, set()).add(writer)
                 final_keys.setdefault(rev, set()).update(_keys(body))
                 completed, seq = body.get("completedMs"), body.get("seq")
                 at = (
@@ -111,12 +114,19 @@ async def sweep_record(
             protected.update(final_keys[rev])
         kept_manifest_files: set[str] = {path for path, rev, _ in manifest_files if rev in kept_revs}
 
-        for rev, started in open_started.items():
+        for (rev, writer), started in open_started.items():
             young = sweep_start - started < OPEN_PROTECTS_MS
             newer_completed = sum(1 for r in final_at if final_at[r][0] > started)
-            if young or (rev not in final_keys and newer_completed < KEEP_REVISIONS):
-                protected.update(open_keys.get(rev, set()))
-                kept_manifest_files.update(path for path, r, is_open in manifest_files if r == rev and is_open)
+            unfinished = writer not in final_writers.get(rev, set())
+            # A writer that never completed keeps its references while its revision is still retained (another
+            # writer of the same revision may have completed), or while fewer than the kept number of newer
+            # revisions completed.
+            if young or (unfinished and (rev in kept_revs or newer_completed < KEEP_REVISIONS)):
+                protected.update(open_keys.get((rev, writer), set()))
+                kept_manifest_files.update(
+                    path for path, r, is_open in manifest_files
+                    if r == rev and is_open and _split(path) is not None and _split(path)[1] == writer  # type: ignore[index]
+                )
 
         doomed = [
             f.path for f in files

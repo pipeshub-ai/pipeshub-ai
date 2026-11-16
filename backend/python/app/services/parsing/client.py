@@ -32,6 +32,7 @@ from app.services.base_client import (
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.config import messaging_env
+from app.services.paid_cache.run import current_run
 from app.services.parsing.interface import (
     ParseErrorCode,
     ParseResult,
@@ -175,6 +176,10 @@ class ParsingClient(BaseServiceClient):
             form_data["provider"] = provider.value
         if file_path:
             form_data["file_path"] = file_path
+        run = current_run()
+        if run is not None and run.refresh:
+            # A refreshPaidOutputs run bypasses the stored outputs in the parsing service too.
+            form_data["refresh_paid_outputs"] = "true"
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:

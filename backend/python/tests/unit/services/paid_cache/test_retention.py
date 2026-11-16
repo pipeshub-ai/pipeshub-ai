@@ -354,3 +354,19 @@ async def test_an_object_a_run_reuses_while_the_sweep_runs_is_not_deleted() -> N
     await sweep_record(store, ORG, REC, now_ms=clock.now)
 
     assert _obj(99) in store.results(ORG, REC), "the sweep deleted an object a concurrent run had just listed"
+
+
+async def test_a_failed_writers_references_survive_while_its_revision_is_retained() -> None:
+    """R1: the parser completed, the image writer failed. R1 is still one of the two retained revisions."""
+    store = MemoryResultStore()
+    clock = Clock(store)
+    await _revision(store, "r1", [1], writer="parse")
+    store.files[(ORG, REC, _obj(77))] = (b"{}", store.now_ms)            # an image the failed writer paid for
+    failed = RunScope(ORG, REC, "r1", "index", clock=lambda: store.now_ms / 1000)
+    await failed.note(store, _obj(77), opens=True)                      # its open manifest stays
+    clock.advance(2 * DAY)                                              # long past OPEN_PROTECTS_MS? no: past the grace
+    clock.advance(OPEN_PROTECTS_MS)
+
+    await sweep_record(store, ORG, REC, now_ms=clock.now)
+
+    assert _obj(77) in store.results(ORG, REC), "an object a retained revision's failed writer paid for was deleted"

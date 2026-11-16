@@ -27,18 +27,26 @@ from app.utils.loop_bridge import run_on_loop
 
 #: ``scope`` of a purge event that covers an org rather than one record.
 ORG_SCOPE = "org"
+#: The most a carried horizon can extend a chain: a body is a verified envelope's, but a figure it carries is bounded.
+MAX_CARRIED_HORIZON_S = 7 * 24 * 3600.0
 
 
 def repurge_event_payload(org_id: str, record_id: str, *, now: float | None = None) -> dict[str, Any]:
     """The first hop for a record: the org and record, when it was deleted, and when the hop is due."""
     now = time.time() if now is None else now
-    return {"orgId": org_id, "recordId": record_id, "deletedAt": now, "hop": 1, "_retry_not_before": now + REPURGE_HOP_S}
+    return {
+        "orgId": org_id, "recordId": record_id, "deletedAt": now, "hop": 1, "horizonS": repurge_horizon_s(),
+        "_retry_not_before": now + REPURGE_HOP_S,
+    }
 
 
 def org_repurge_event_payload(org_id: str, *, now: float | None = None) -> dict[str, Any]:
     """The first hop for a whole org: no record, ``scope`` says so."""
     now = time.time() if now is None else now
-    return {"orgId": org_id, "scope": ORG_SCOPE, "deletedAt": now, "hop": 1, "_retry_not_before": now + REPURGE_HOP_S}
+    return {
+        "orgId": org_id, "scope": ORG_SCOPE, "deletedAt": now, "hop": 1, "horizonS": repurge_horizon_s(),
+        "_retry_not_before": now + REPURGE_HOP_S,
+    }
 
 
 def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None = None) -> dict[str, Any] | None:
@@ -54,7 +62,12 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
     if isinstance(deleted_at, bool) or not isinstance(deleted_at, int | float) or not math.isfinite(deleted_at):
         return None
     deleted_at = min(float(deleted_at), now)
-    if now - deleted_at > repurge_horizon_s():
+    # The horizon the chain was started with is kept: lowering a record budget later (or a mixed rollout) must not
+    # shorten a chain already running. A figure that is not a sane duration is ignored.
+    carried = payload.get("horizonS")
+    carried_s = float(carried) if isinstance(carried, int | float) and not isinstance(carried, bool) and math.isfinite(carried) else 0.0
+    horizon = max(repurge_horizon_s(), min(max(carried_s, 0.0), MAX_CARRIED_HORIZON_S))
+    if now - deleted_at > horizon:
         return None
     return {
         "orgId": org_id,
@@ -62,6 +75,7 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
         **({"scope": payload["scope"]} if payload.get("scope") else {}),
         "deletedAt": deleted_at,
         "hop": (hop if isinstance(hop, int) and not isinstance(hop, bool) else 1) + 1,
+        "horizonS": horizon,
         "_retry_not_before": now + REPURGE_HOP_S,
     }
 

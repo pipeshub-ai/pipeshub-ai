@@ -200,3 +200,85 @@ async def test_a_malformed_presign_reply_is_an_error_without_the_signed_url(stor
     with pytest.raises(PaidResultStoreError) as raised:
         await store.presign("org-1", "rec-1", [(PATH, "get")])
     assert SIGNATURE not in str(raised.value)
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: bytes = b"") -> None:
+        self.status = status
+        self._body = body
+
+    async def read(self) -> bytes:
+        return self._body
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self
+
+    async def __aexit__(self, *_a: object) -> None:
+        return None
+
+
+class _ScriptedSession:
+    """put() answers the scripted responses in turn."""
+
+    def __init__(self, *responses: object) -> None:
+        self.responses = list(responses)
+        self.calls = 0
+
+    def put(self, *_a: object, **_k: object) -> object:
+        self.calls += 1
+        reply = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    get = put
+
+
+def _entry(method: str = "PUT") -> object:
+    from app.modules.artifacts.models import SignedFileUrl
+
+    return SignedFileUrl(url="https://signed.test/o?X-Amz-Signature=secret", method=method, headers={})
+
+
+@pytest.fixture
+def _fast_conflicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(store_module, "_CONFLICT_PAUSE_S", 0.0)
+
+
+async def test_an_s3_conditional_conflict_is_retried_and_stores_when_the_key_is_free_again(
+    storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch, _fast_conflicts: None,
+) -> None:
+    conflict = _FakeResponse(409, b"<Error><Code>ConditionalRequestConflict</Code></Error>")
+    session = _ScriptedSession(conflict, _FakeResponse(200))
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+
+    assert await _store(storage).put_to(_entry(), b"x") is True       # type: ignore[arg-type]
+    assert session.calls == 2
+
+
+async def test_any_other_409_is_a_lost_race_and_is_not_retried(
+    storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch, _fast_conflicts: None,
+) -> None:
+    session = _ScriptedSession(_FakeResponse(409, b"<Error><Code>BlobAlreadyExists</Code></Error>"))
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+
+    assert await _store(storage).put_to(_entry(), b"x") is False      # type: ignore[arg-type]
+    assert session.calls == 1
+
+
+@pytest.mark.parametrize("direction", ["put", "get"])
+async def test_a_malformed_signed_url_never_reaches_the_error_text(
+    storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch, direction: str,
+) -> None:
+    import aiohttp
+
+    session = _ScriptedSession(aiohttp.InvalidURL("https://signed.test/o?X-Amz-Signature=secret"))
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+    store = _store(storage)
+
+    with pytest.raises(PaidResultStoreError) as raised:
+        if direction == "put":
+            await store.put_to(_entry(), b"x")                        # type: ignore[arg-type]
+        else:
+            await store.get_if_present(_entry("GET"))                 # type: ignore[arg-type]
+    assert "secret" not in str(raised.value) and "secret" not in repr(raised.value.__cause__)

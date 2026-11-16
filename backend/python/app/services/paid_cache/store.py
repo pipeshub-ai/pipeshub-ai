@@ -7,6 +7,7 @@ A storage service without the routes (404/405, e.g. mid-upgrade) turns the cache
 with one warning; indexing is unaffected.
 """
 
+import asyncio
 import logging
 import threading
 import time
@@ -14,6 +15,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from yarl import URL
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -33,6 +35,11 @@ MAX_FILES_PER_CALL = 1000
 OFF_SECONDS = 600.0
 
 #: S3 answers a lost conditional PUT with 412, or with 409 while another write of the key is in flight.
+#: S3 answers a conditional write that raced a delete or another write of the key with 409 and this code; Azure's 409
+#: for an existing blob is a plain lost race.
+_S3_CONDITIONAL_CONFLICT = b"ConditionalRequestConflict"
+_CONFLICT_ATTEMPTS = 3
+_CONFLICT_PAUSE_S = 0.05
 _LOST_RACE = frozenset({HttpStatusCode.PRECONDITION_FAILED.value, HttpStatusCode.CONFLICT.value})
 #: A signed GET of a missing key is 403 when the signer may not list the bucket.
 _ABSENT = frozenset({HttpStatusCode.NOT_FOUND.value, HttpStatusCode.FORBIDDEN.value})
@@ -216,16 +223,30 @@ class NodePaidResultStore:
         headers = dict(entry.headers)
 
         async def attempt() -> bool:
-            async with get_shared_session().put(
-                # encoded=True: re-quoting the query would break the signature.
-                URL(entry.url, encoded=True), data=data, headers=headers, skip_auto_headers={"Content-Type"},
-            ) as response:
-                await response.read()
-                if response.status in _LOST_RACE:
+            for conflict in range(_CONFLICT_ATTEMPTS):
+                try:
+                    async with get_shared_session().put(
+                        # encoded=True: re-quoting the query would break the signature.
+                        URL(entry.url, encoded=True), data=data, headers=headers, skip_auto_headers={"Content-Type"},
+                    ) as response:
+                        body = await response.read()
+                        status = response.status
+                except aiohttp.InvalidURL:
+                    # The exception text carries the whole signed URL.
+                    raise PaidResultStoreError("paid-result upload URL is malformed") from None
+                if status == HttpStatusCode.CONFLICT.value and _S3_CONDITIONAL_CONFLICT in body:
+                    # S3: a concurrent delete or write of the key is in progress; the object is not the first
+                    # writer's. The request is retried, and after the last attempt reads as a lost race.
+                    if conflict + 1 < _CONFLICT_ATTEMPTS:
+                        await asyncio.sleep(_CONFLICT_PAUSE_S * (conflict + 1))
+                        continue
                     return False
-                if not 200 <= response.status < 300:
-                    raise _storage_status_error(response.status, f"paid-result upload failed (HTTP {response.status})")
+                if status in _LOST_RACE:
+                    return False
+                if not 200 <= status < 300:
+                    raise _storage_status_error(status, f"paid-result upload failed (HTTP {status})")
                 return True
+            return False
 
         return bool(await self._blob_storage._with_storage_retry("paid-result upload", attempt))
 
@@ -234,14 +255,17 @@ class NodePaidResultStore:
             raise ValueError("not a download URL")
 
         async def attempt() -> bytes | None:
-            async with get_shared_session().get(URL(entry.url, encoded=True), headers=dict(entry.headers)) as response:
-                if response.status in _ABSENT:
-                    await response.read()
-                    return None
-                if not 200 <= response.status < 300:
-                    await response.read()
-                    raise _storage_status_error(response.status, f"paid-result download failed (HTTP {response.status})")
-                return await response.read()
+            try:
+                async with get_shared_session().get(URL(entry.url, encoded=True), headers=dict(entry.headers)) as response:
+                    if response.status in _ABSENT:
+                        await response.read()
+                        return None
+                    if not 200 <= response.status < 300:
+                        await response.read()
+                        raise _storage_status_error(response.status, f"paid-result download failed (HTTP {response.status})")
+                    return await response.read()
+            except aiohttp.InvalidURL:
+                raise PaidResultStoreError("paid-result download URL is malformed") from None
 
         result: Awaitable[Any] = self._blob_storage._with_storage_retry("paid-result download", attempt)
         return await result  # type: ignore[no-any-return]

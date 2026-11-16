@@ -302,3 +302,24 @@ async def test_a_failure_after_parsing_complete_leaves_no_final_manifest_and_que
     assert (ORG, REC, f"manifests/{rev}/index.json") not in store.files
     assert (ORG, REC, f"manifests/{rev}/index.open.json") in store.files
     assert store.spawned == []
+
+
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_a_document_that_parses_to_nothing_still_completes_its_run(store: MemoryResultStore) -> None:
+    """A scan whose pages were paid for but yielded no blocks ends EMPTY: its manifest is final, not left open."""
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "i")
+    ep = _processor(MagicMock())
+
+    async def parse(**_k: object) -> ParseResult:
+        await access.paid_cache_for(MagicMock()).get_or_compute(key, AsyncMock(return_value="page"))
+        return ParseResult(block_container=BlocksContainer(blocks=[], block_groups=[]), provider_used=ParserProvider.DEFAULT, metadata={})
+
+    ep.parsing_client.parse = AsyncMock(side_effect=parse)
+
+    with record_in_flight(ORG, REC):
+        events = [e async for e in ep.on_event(_event())]
+
+    assert IndexingEvent.INDEXING_COMPLETE in [e.event for e in events]
+    rev = content_revision(BODY)
+    assert (ORG, REC, f"manifests/{rev}/index.json") in store.files
+    assert (ORG, REC, f"manifests/{rev}/index.open.json") not in store.files

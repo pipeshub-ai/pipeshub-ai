@@ -103,6 +103,16 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       }
     })
 
+    it('listObjects reads the metadata of one page and one file more, not of every file', async () => {
+      const a = adapter()
+      for (let n = 1; n <= 12; n++) await a.writeObjectIfAbsent(key(n), Buffer.from('x'))
+      const stat = sinon.spy(fsp, 'lstat')
+      const page = await a.listObjects(`${ROOT}/`, { limit: 3 })
+      expect(page.objects).to.have.length(3)
+      expect(page.next).to.equal(page.objects[2]!.key)
+      expect(stat.callCount).to.be.at.most(4)
+    })
+
     it('listObjects of an exact page boundary reports no next page', async () => {
       const a = adapter()
       for (const n of [1, 2]) await a.writeObjectIfAbsent(key(n), Buffer.from('x'))

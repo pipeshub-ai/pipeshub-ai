@@ -241,6 +241,7 @@ async def parse_file(
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+    refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -250,7 +251,7 @@ async def parse_file(
     try:
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
-            provider, skip_table_enrichment, file_path,
+            provider, skip_table_enrichment, file_path, refresh_paid_outputs,
         )
     finally:
         load.leave()
@@ -271,6 +272,7 @@ async def _parse_file(
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+    refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -429,7 +431,7 @@ async def _parse_file(
                     content, extension=extension, mime_type=mime_type
                 )
                 # The paid calls this parse makes (page OCR, table summaries) go into the revision's manifest.
-                paid_run = start_run(content_revision(content), "parse")
+                paid_run = start_run(content_revision(content), "parse", refresh=refresh_paid_outputs)
                 # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
                 # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
                 # configured (never shorter than the client's own read timeout for the record), and only this
