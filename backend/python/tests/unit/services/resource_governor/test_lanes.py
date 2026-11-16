@@ -592,8 +592,9 @@ class TestClose:
         budget.close()
         for t in threads:
             t.join(timeout=30)  # bounds a hang only
-        # Woken by the close, not timed: a waiter the close missed would end at its own 10 s timeout with a timeout
-        # error instead of LaneBudgetClosed. (It was "closed within 1 s", which a busy runner can stretch.)
+        # Ended by the close, not timed: close() only marks the budget closed, and each waiter raises LaneBudgetClosed
+        # at its next poll (try_acquire checks it first). A budget left open would keep them polling to their own 10 s
+        # timeout and LaneWaitTimeout. (It was "closed within 1 s", which a busy runner can stretch.)
         assert len(outcome) == 4
         assert all(isinstance(o, LaneBudgetClosed) for o in outcome), outcome
         held.release()  # after close: no EBADF
