@@ -922,7 +922,9 @@ async def test_a_full_read_removes_an_audience_grant_nobody_can_read_the_sharing
 
 
 async def test_a_parked_holder_check_is_asked_again_without_the_reader_it_left_out(ws: Workspace) -> None:
-    from app.connectors.sources.google.drive.team.connector import HOLDER_RECHECK_SYNC_POINT_KEY
+    from app.connectors.sources.google.drive.team.connector import (
+        HOLDER_RECHECK_SYNC_POINT_KEY,
+    )
 
     _folder_of_a_suspended_owner_shared_with_a_group(ws)
     ws.world.groups[ENG]["members"].append(BOB)
