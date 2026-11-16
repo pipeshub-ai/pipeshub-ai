@@ -50,6 +50,8 @@ READS = {
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),  # every ConfigurationService
+        # created if absent, then read back: parsing_main.py:344 and extraction_main.py:106 through bind_service_fleet (fleet_redis.py:88)
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),
     },
     "indexing": {
         "state:*": ("app/services/pg_state.py:24", "state:lock:"),
@@ -77,6 +79,9 @@ READS = {
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
         _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
+        "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py:346", "SPEND_GUARD_KEY"),  # PauseJudge's limits, built at runtime.py:186
+        # created if absent, then read back: _bind_fleet_state (indexing_main.py:2699)
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),
     },
 }
 
@@ -111,6 +116,7 @@ NOT_READ = {
            "/services/vectordb/*": "vector collection settings: indexing and query",
            "/services/platform/*": "feature flags and rollout membership: read by the indexing pipeline, query and the connectors service",
            "/services/entityCleanup/*": "cleanup intents: the connectors service and indexing",
+           "/services/indexing/spendGuard": "the pause limits: read by the stage runtime's PauseJudge (runtime.py:186), which only the indexing container builds",
            "/services/endpoints": "service URLs: read by query, indexing and the connectors service (caller_role.py is not mounted here)",
            "/services/storage": "storage settings: the Node API and indexing's blob reads",
            "/services/namedEntities": "named-entity settings: indexing and query",

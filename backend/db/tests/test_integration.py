@@ -69,10 +69,10 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (18, 11), "platform": (6, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+HEADS = {"kernel": (18, 11), "platform": (7, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
          "graph": (13, 0), "kg": (17, 17), "retrieval": (3, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0006", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0017", "retrieval_0003", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0007", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0017", "retrieval_0003", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
@@ -725,7 +725,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0006", min_code=None):
+def _as_newer_build(cluster, name, revision="platform_0007", min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
@@ -774,7 +774,7 @@ def test_an_install_with_such_helpers_upgrades_to_the_pinned_writes_revision(db)
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
 
 
-# ---- key-value access by prefix (kernel_0018, platform_0006) ------------------------------------------------------------------------
+# ---- key-value access by prefix (kernel_0018, platform_0006, platform_0007) ------------------------------------------------------------------------
 
 def test_a_policy_on_an_internal_table_is_refused_unless_registered_and_kept_as_registered(db):
     cluster, name = db
@@ -860,6 +860,12 @@ KV_MATRIX = [
     ("indexing", "/services/file_types/config", True, False), ("kv", "/services/file_types/config", False, False),
     *[("indexing", k, False, False) for k in ("/services/deployment", "/services/aiGateway/other", "/migrations/node_relation_v1",
                                               "/services/platform/other", "/services/someNewProvider")],
+    ("indexing", "/services/indexing/spendGuard/hmacKey", True, True), ("indexing", "/services/indexing/spendGuard", True, False),
+    ("indexing", "/services/indexing/spendGuardx", False, False), ("indexing", "/services/indexing/spendGuard/other", False, False),
+    ("kv", "/services/indexing/spendGuard/hmacKey", True, True), ("kv", "/services/indexing/spendGuard", False, False),
+    ("kv", "/services/indexing/spendGuard/other", False, False),
+    ("connectors", "/services/indexing/spendGuard/hmacKey", True, False), ("connectors", "/services/indexing/spendGuard", True, False),
+    ("query", "/services/indexing/spendGuard/hmacKey", True, False), ("query", "/services/indexing/spendGuard", True, False),
     ("kv", "/services/aiModels", True, False), ("kv", "/services/secretKeys", True, False),
     ("kv", "/services/aiGateway/identityPolicy", True, False), ("kv", "/services/metricsCollection", True, False),
     ("kv", "/migrations/etcd_to_redis", True, False),
@@ -917,6 +923,35 @@ def test_in_enforce_each_service_role_reads_and_writes_only_its_prefixes(kv_db):
     assert wrong == []
 
 
+def test_in_enforce_create_if_absent_of_the_install_secret_works_for_indexing_and_kv_and_the_spend_limits_are_read_only(kv_db):
+    """The store's create-if-absent (SET NX) is an upsert whose update branch is gated by an expiry test: on a key that already exists
+    PostgreSQL still checks the update policy on the existing row first, so the roles that create the secret need the write grant."""
+    cluster, name = kv_db
+    _set_mode(cluster, name, True)
+    setnx = ("INSERT INTO platform.kv_entries (key, value, expires_at) VALUES (%s, 'n', NULL) "
+             "ON CONFLICT (key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at "
+             "WHERE platform.kv_entries.expires_at <= now() RETURNING true")
+    secret, limits = "/services/indexing/spendGuard/hmacKey", "/services/indexing/spendGuard"
+    for role in ("indexing", "kv"):
+        with _as(cluster, name, role) as c:
+            assert c.execute(setnx, (secret,)).fetchone() is None                # exists and live: nothing replaced, and no refusal
+            assert c.execute("SELECT value FROM platform.kv_entries WHERE key = %s", (secret,)).fetchone() == ("secret-value",)
+            c.execute("DELETE FROM platform.kv_entries WHERE key = %s", (secret,))
+            assert c.execute(setnx, (secret,)).fetchone() == (True,)             # absent: created
+            c.rollback()
+    with _as(cluster, name, "indexing") as c:
+        assert c.execute("SELECT value FROM platform.kv_entries WHERE key = %s", (limits,)).fetchone() == ("secret-value",)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, (limits,))
+    with _as(cluster, name, "kv") as c:
+        assert c.execute("SELECT value FROM platform.kv_entries WHERE key = %s", (limits,)).fetchone() is None
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, (limits,))
+    with _as(cluster, name, "kv") as c:                                         # a new key beside the secret is still refused
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("INSERT INTO platform.kv_entries (key, value) VALUES ('/services/indexing/spendGuard/other', 'x')")
+
+
 def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_purged_only_where_the_writer_can_read(kv_db):
     cluster, name = kv_db
     _set_mode(cluster, name, True)
@@ -965,6 +1000,27 @@ def test_a_service_role_cannot_create_anything_a_policy_function_could_resolve_t
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM pg_namespace n, (VALUES ('pipeshub_node'), ('pipeshub_connectors'), ('pipeshub_indexing'), "
                          "('pipeshub_query'), ('pipeshub_kv')) r(role) WHERE has_schema_privilege(r.role, n.oid, 'CREATE')").fetchone()[0] == 0
+
+
+def test_platform_0007_downgrades_to_the_platform_0006_matrix_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    secret = "/services/indexing/spendGuard/hmacKey"
+
+    def grants():
+        out = []
+        for role in ("indexing", "kv"):
+            with _as(cluster, name, role) as c:
+                out += [c.execute("SELECT platform.kv_may(%s, %s)", (secret, w)).fetchone()[0] for w in (False, True)]
+        return out
+
+    assert grants() == [True, True, True, True]
+    assert run_migrate(url, "downgrade", "platform_0006", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    assert grants() == [False] * 4                                              # platform_0006's matrix: the key is in no allow-list
+    with connect(cluster, name) as c:
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    assert run_migrate(url).returncode == 0
+    assert grants() == [True, True, True, True]
 
 
 def test_platform_0006_downgrades_and_upgrades_again(kv_db):
