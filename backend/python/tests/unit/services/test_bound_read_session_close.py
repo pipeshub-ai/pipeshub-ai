@@ -165,8 +165,24 @@ async def test_open_bound_closes_its_session_when_cancelled(monkeypatch: pytest.
             monkeypatch.setattr(kb, "StorageDocuments", lambda *_a, **_k: docs)
             record = SimpleNamespace(origin=kb.OriginTypes.UPLOAD, external_record_id="d1", org_id="o1", id="r1", mime_type="application/pdf")
             response = await conn.stream_record_bound(record, info)  # type: ignore[arg-type]
-            assert response.background is not None, "a bound read that may never be streamed needs a background close"
-            await response.background()
+            # Serve it the way the server does when the client is already gone: the disconnect arrives while the
+            # response is still waiting to send its headers, so the body generator never runs and only the
+            # response's background task can close the read.
+            sent: list[dict] = []
+
+            async def receive() -> dict:
+                return {"type": "http.disconnect"}
+
+            async def send(message: dict) -> None:
+                sent.append(message)
+                await asyncio.sleep(30)  # the transport is not accepting writes
+
+            scope = {"type": "http", "asgi": {"spec_version": "2.3"}, "method": "GET", "path": "/s", "headers": []}
+            try:
+                await response(scope, receive, send)
+            except Exception:  # noqa: BLE001  a disconnect may surface as an error; the read must be closed either way
+                pass
+            assert not any(m["type"] == "http.response.body" for m in sent), "the body must not have started"
         await asyncio.sleep(0.2)
         gc.collect()
         assert created, "open_bound made no session"

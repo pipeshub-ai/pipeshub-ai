@@ -143,7 +143,8 @@ describe('OwnedPdfLoader releases its pdf.js worker', () => {
       out.transport.destroy();
     }
     expect(live.created - before).toBe(CYCLES);
-    expect(live.workers.size).toBe(0);
+    // Each worker goes once its task has torn down, or after the grace period when a range never answers.
+    await vi.waitFor(() => expect(live.workers.size).toBe(0), { timeout: 10_000 });
     expect(live.tasks.slice(-CYCLES).every((t) => t.destroyed)).toBe(true);
   }, 60_000);
 
@@ -167,7 +168,7 @@ describe('OwnedPdfLoader releases its pdf.js worker', () => {
     expect(onError).toHaveBeenCalled();
     cleanup();
     expect(live.created - made).toBe(1);
-    expect(live.workers.size).toBe(0);
+    await vi.waitFor(() => expect(live.workers.size).toBe(0), { timeout: 10_000 });
   }, 20_000);
 
   it('a new url closes the previous load before it opens the next, and leaves exactly one worker while mounted', async () => {
@@ -188,7 +189,7 @@ describe('OwnedPdfLoader releases its pdf.js worker', () => {
     });
     expect(live.workers.size).toBe(1);
     view.unmount();
-    expect(live.workers.size).toBe(0);
+    await vi.waitFor(() => expect(live.workers.size).toBe(0), { timeout: 10_000 });
   }, 20_000);
 
   it('sanity: the real pdf.js is in use (the control pdf loads)', () => {

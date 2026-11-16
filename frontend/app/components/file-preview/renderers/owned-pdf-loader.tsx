@@ -24,7 +24,33 @@ export interface OwnedPdfLoaderProps {
   [option: string]: unknown;
 }
 
-type State = { doc: PDFDocumentProxy | null; error: Error | null };
+/** How long a closing task may take to tear down before its worker is terminated anyway. */
+export const WORKER_GRACE_MS = 1000;
+
+/** Catches a render error below the loader and shows the loader's own error view, as the library loader did. */
+class ChildrenBoundary extends React.Component<
+  { errorMessage?: React.ReactElement; onError?: (error: Error) => void; children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError?.(error);
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const { errorMessage } = this.props;
+    return errorMessage ? React.cloneElement(errorMessage as React.ReactElement<{ error?: Error }>, { error }) : null;
+  }
+}
+
+type State = { doc: PDFDocumentProxy | null; error: Error | null; loadId: number };
 
 export function OwnedPdfLoader({
   url,
@@ -35,7 +61,7 @@ export function OwnedPdfLoader({
   children,
   ...options
 }: OwnedPdfLoaderProps) {
-  const [state, setState] = useState<State>({ doc: null, error: null });
+  const [state, setState] = useState<State>({ doc: null, error: null, loadId: 0 });
   // The options object is rebuilt every render; a new document is a new url or a new transport.
   const range = options.range;
   const optionsRef = React.useRef(options);
@@ -47,7 +73,7 @@ export function OwnedPdfLoader({
   });
 
   useEffect(() => {
-    setState({ doc: null, error: null });
+    setState((prev) => ({ doc: null, error: null, loadId: prev.loadId + 1 }));
     if (!url) return;
     if (typeof workerSrc === 'string') GlobalWorkerOptions.workerSrc = workerSrc;
     let closed = false;
@@ -55,26 +81,38 @@ export function OwnedPdfLoader({
     const task = getDocument({ ...optionsRef.current, url, worker } as Parameters<typeof getDocument>[0]);
     task.promise.then(
       (doc) => {
-        if (!closed) setState({ doc, error: null });
+        if (!closed) setState((prev) => ({ doc, error: null, loadId: prev.loadId }));
       },
       (error: unknown) => {
         if (closed) return;
         const err = error instanceof Error ? error : new Error(String(error));
         onErrorRef.current?.(err);
-        setState({ doc: null, error: err });
+        setState((prev) => ({ doc: null, error: err, loadId: prev.loadId }));
       },
     );
     return () => {
       closed = true;
-      // `destroy()` can stay pending while a page waits on an unanswered range (pdf.js itself), so it is not
-      // awaited; the worker is terminated at once, which is what frees the thread.
-      task.destroy().catch(() => undefined);
-      worker.destroy();
+      // The task goes first and is awaited: pdf.js cancels its own download only once the worker has answered the
+      // task's teardown, so a worker destroyed first would leave the request open. `destroy()` can stay pending
+      // while a page waits on an unanswered range, so the worker is destroyed after a short grace period at most.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const grace = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, WORKER_GRACE_MS);
+      });
+      Promise.race([task.destroy().catch(() => undefined), grace]).finally(() => {
+        clearTimeout(timer);
+        worker.destroy();
+      });
     };
   }, [url, range, workerSrc]);
 
   if (state.error) {
     return errorMessage ? React.cloneElement(errorMessage as React.ReactElement<{ error?: Error }>, { error: state.error }) : null;
   }
-  return <>{state.doc ? children(state.doc) : beforeLoad}</>;
+  if (!state.doc) return <>{beforeLoad}</>;
+  return (
+    <ChildrenBoundary key={state.loadId} errorMessage={errorMessage} onError={onError}>
+      {children(state.doc)}
+    </ChildrenBoundary>
+  );
 }
