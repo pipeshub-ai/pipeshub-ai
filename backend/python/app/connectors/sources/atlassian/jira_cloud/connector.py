@@ -2856,9 +2856,13 @@ class JiraConnector(BaseConnector):
         if self._listed_emails[0] is not user_by_account_id:
             self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
         listed = self._listed_emails[1]
+        accounts = set(user_by_account_id)
         if linked := self._linked_not_read():
             listed = listed | {u.email.lower() for u in linked if u.email}
-        return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
+            accounts |= {u.source_user_id for u in linked if u.source_user_id}
+        # A grant core named an account on (its email came from the payload) is kept when that account is listed.
+        return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed
+                or (p.external_id and p.external_id in accounts)]
 
     async def _admit_everyone_to_public_projects(
         self, projects: list[tuple[RecordGroup, list[Permission]]], *, written_in_full: bool,

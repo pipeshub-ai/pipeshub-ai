@@ -4838,8 +4838,12 @@ class JiraDataCenterConnector(BaseConnector):
         """An issue's own grants (reporter, assignee, level members) name only accounts in the synced
         directory. When it was not read in full, the linked accounts it did not show (the last complete state)
         count too, but never one the issue payload alone names, such as an account withdrawn earlier."""
-        listed = {u.email.lower() for u in [*users.values(), *self._linked_not_read()] if u.email}
-        return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
+        linked = self._linked_not_read()
+        listed = {u.email.lower() for u in [*users.values(), *linked] if u.email}
+        # A grant core named an account on (its email came from the payload) is kept when that account is listed.
+        accounts = set(users) | {u.source_user_id for u in linked if u.source_user_id}
+        return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed
+                or (p.external_id and p.external_id in accounts)]
 
     def _secure_ancestor_stub(
         self, record: Record, issue: dict[str, Any], level_users: dict[str, AppUser],
