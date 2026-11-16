@@ -46,6 +46,7 @@ def _make_deps():
     dep.get_all_app_users = AsyncMock(return_value=[])
 
     dsp = MagicMock()
+    dsp.transaction.return_value.__aenter__.return_value.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return logger, dep, dsp, cs

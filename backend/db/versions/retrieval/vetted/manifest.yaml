@@ -350,6 +350,57 @@ functions:
       checks: [privileges, catalog, shadowing, plan, timing]
       max_ms: 500
 
+  # Whether an org other than the caller's still holds a live point of this vrid, in any live collection: true or false, never which
+  # org. A delete asks it after removing the caller's own points, to keep the one mapping row (and the stored content) another org's
+  # points of a shared vrid still need. Class write only to bind the one role that may call it (the indexing service, where every
+  # delete of points runs); it changes nothing. The orgs come from org_spaces whatever the space's role: the points foreign key
+  # (org_id, space_id, embedding_dim) -> org_spaces (org_id, space_id, dim) gives every point a row there, and nothing makes it an
+  # active one. One probe of the (org, collection, vrid) index per space row and collection, stopping at the first.
+  - name: retrieval.vrid_held_elsewhere
+    class: write
+    scope: org
+    writer: pipeshub_indexing
+    custom_plan: true
+    args:
+      - {name: p_vrid, type: text, length: [1, 2000]}
+    returns: boolean
+    no_org: "true"
+    reads: [retrieval.points, retrieval.org_spaces, retrieval.collections, retrieval.point_tombstones]
+    body: |
+      -- the LATERAL ... LIMIT 1 keeps the points side a probe per (org, collection): a semi-join may scan every point for the vrid instead
+      RETURN EXISTS (SELECT 1 FROM retrieval.org_spaces s CROSS JOIN retrieval.collections c
+        CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.vrid = p_vrid
+                              AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = p.org_id AND x.point_sk = p.point_sk)
+                              LIMIT 1) hit
+        WHERE s.org_id <> v_org AND c.status <> 'deleting');
+    test:
+      needle: >-
+        DELETE FROM retrieval.points WHERE vrid = 'vr-held';
+        DELETE FROM retrieval.postings WHERE org_id = '{org}';
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.collection_stats WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.collections (collection_id, name, sparse_enabled, sparse_idf, lexical_version) OVERRIDING SYSTEM VALUE VALUES (29997, 'needle-held', true, true, 'v-needle') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active');
+        INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim)
+          VALUES ('{org}', 29997, 30001, gen_random_uuid(), 'vr-held', 'vr-held', '[1,0,0,0]'::ext.halfvec, 4)
+      args: ["vr-held"]
+      own_result: [[false]]
+      other_result: [[true]]
+      no_org_result: [[true]]
+      bad_args: [[""], [null]]
+      volume: >-
+        DELETE FROM retrieval.postings WHERE org_id = '{org}';
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.collection_stats WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active');
+        INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim)
+          SELECT '{org}', 29997, 30001, gen_random_uuid(), 'vr-' || g, 'vr-' || g, '[1,0,0,0]'::ext.halfvec, 4 FROM generate_series(1, 6000) g
+      max_ms: 100
+
   # ---- the lexical leg ---------------------------------------------------------------------------------------
   # Sparse (term id, weight) query against the bound org's active space, exact BM25 as Qdrant's IDF modifier computes it:
   # sum over query terms of ln((n - df + 0.5) / (df + 0.5) + 1) * query weight * stored weight, written ln(n + 1) - ln(df + 0.5)
