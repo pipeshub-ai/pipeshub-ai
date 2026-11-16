@@ -21,7 +21,7 @@ from app.agents.tools.factories.base import ToolsetAuthError
 from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import toolsets as routes
 from app.connectors.core.base.token_service import oauth_service
-from app.containers.connector import ConnectorAppContainer
+from app.edition_containers import ConnectorAppContainer
 from app.utils.logger import log_record_fields
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.refusing_token_endpoint import RefusingTokenEndpoint

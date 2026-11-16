@@ -24,6 +24,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphTransactionStore,
     UnclassifiedProviderWrite,
 )
+from tests.support.edition_defaults import structural_writer_exemptions_extra
 from tests.unit.connectors import graph_provider_classes as classes
 
 if TYPE_CHECKING:
@@ -639,6 +640,7 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     # example scripts of a connector family, never run by the service
     ("app/connectors/sources/google/drive/team/example.py", "batch_create_edges"): "an example script, not run by the service",
     ("app/connectors/sources/google/gmail/team/example.py", "batch_create_edges"): "an example script, not run by the service",
+    **structural_writer_exemptions_extra(),
 }
 
 

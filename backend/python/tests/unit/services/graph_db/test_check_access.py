@@ -250,7 +250,7 @@ class TestReadableContentExcludesStubs:
             {"id": "real", "isPlaceholder": False, "isInternal": False},
         ])
 
-        async def _user(user_id: str, raise_on_error: bool = False) -> dict[str, str]:
+        async def _user(user_id: str, raise_on_error: bool = False, org_id: str | None = None) -> dict[str, str]:
             return {"id": "user-key"}
 
         provider.get_user_by_user_id = _user
