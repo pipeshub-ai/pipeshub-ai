@@ -8,6 +8,7 @@
 # mirror   where the unit test for a source file is expected to live
 # stack    needs the docker-compose platform stack
 # marker_needs   pytest marker -> need added to every row carrying that marker
+# path_needs     file glob -> need added to every row in a matching file
 # fixture_needs  helper function -> need; a test reaching a fixture that calls
 #          the helper inherits the need. In `env:` needs, `A|B+C` means A, or B and C.
 #
@@ -41,6 +42,11 @@ cwd = "backend/python"
 grain = "file"
 tests = ["backend/python/tests/integration/**/test_*.py"]
 import_graph = "python"
+
+# Folders that need a migrated PostgreSQL the QA stack does not start; the pg-runtime workflow runs them.
+[suite.path_needs]
+"backend/python/tests/integration/pg_runtime/**" = "env:PG_RUNTIME_TEST_URL"
+"backend/python/tests/integration/graph_db/postgres/**" = "env:PG_CORE_URL"
 
 [[suite]]
 id = "py-evals"

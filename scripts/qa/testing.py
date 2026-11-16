@@ -53,6 +53,9 @@ tests = ["backend/python/tests/unit/**/test_*.py"]
 mirror = [{ src = "backend/python/app/", test = "backend/python/tests/unit/", style = "py" }]
 import_graph = "python"
 
+[suite.path_needs]
+"backend/python/tests/unit/db/**" = "env:DB_URL"
+
 [[suite]]
 id = "node-unit"
 family = "mocha"

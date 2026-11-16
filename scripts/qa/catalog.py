@@ -427,6 +427,7 @@ def _row(
     rel = rel_to(path, suite.get("cwd", "."))
     ident = f"{PREFIX[suite['family']]}:{rel}" + (f"::{name}" if name else "")
     by_marker = {n for m in markers if (n := suite.get("marker_needs", {}).get(m))}
+    by_marker |= {n for g, n in suite.get("path_needs", {}).items() if globs.match_any(path, [g])}
     needs = sorted(set(spec.needs) | set(extra_needs) | by_marker | ({"service:stack"} if suite.get("stack") else set()))
     row = {
         "id": ident,

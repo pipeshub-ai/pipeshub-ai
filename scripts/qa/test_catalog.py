@@ -140,6 +140,13 @@ class TestBuild(unittest.TestCase):
         self.assertIn("service:stack", marked)
         self.assertNotIn("env:REAL_KEY", rows["it:search/test_live.py::test_plain"]["needs"])
 
+    def test_path_needs_add_to_the_rows_of_matching_files(self) -> None:
+        testing.write(self.root, "backend/python/tests/unit/db/test_pool.py", "def test_pool():\n    pass\n")
+        config.clear_cache()
+        rows = catalog.index(catalog.build(self.cfg))
+        self.assertIn("env:DB_URL", rows["py:tests/unit/db/test_pool.py"]["needs"])
+        self.assertNotIn("env:DB_URL", rows["py:tests/unit/services/test_retrieval.py"]["needs"])
+
     def test_unit_tests_are_listed_per_file(self) -> None:
         self.assertIn("py:tests/unit/services/test_retrieval.py", self.rows)
         self.assertIn("node:tests/modules/auth/auth.controller.test.ts", self.rows)
