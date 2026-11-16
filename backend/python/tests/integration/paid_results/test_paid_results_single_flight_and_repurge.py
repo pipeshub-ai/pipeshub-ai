@@ -21,6 +21,7 @@ from app.core.org_context import OrgContext, bind
 from app.services.messaging.config import IndexingEvent
 from app.services.paid_cache import access, repurge
 from app.services.paid_cache import cache as cache_module
+from app.services.paid_cache import run as run_module
 from app.services.paid_cache.cache import PaidResultCache
 from app.services.paid_cache.keys import CacheKey
 from app.services.paid_cache.locks import RedisLocks, lock_name
@@ -146,10 +147,15 @@ async def test_after_a_delete_the_fence_refuses_late_writes_on_real_redis(store:
     await store.purge_org(org)
 
 
-async def test_an_orphaned_parse_paying_for_2400_s_after_a_delete_with_redis_flushed_leaves_nothing_on_the_real_store(
-    store: NodePaidResultStore, redis: Redis, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("runs_for_s", [2400, 3000, 3600])
+async def test_an_orphaned_parse_paying_after_a_delete_with_redis_flushed_leaves_nothing_on_the_real_store(
+    store: NodePaidResultStore, redis: Redis, monkeypatch: pytest.MonkeyPatch, runs_for_s: int,
 ) -> None:
-    """The delete, a flushed Redis, a parse that keeps paying pages for 2400 s, and the chain of hops."""
+    """The delete, a flushed Redis, a parse that keeps paying pages for ``runs_for_s``, and the chain of hops.
+
+    The write bound runs from the stage's start, so a page paid after the deadline is not stored and the run's
+    manifests are not written either: nothing lands after the chain's last purge.
+    """
     now = [1_000_000.0]
     monkeypatch.setattr(repurge, "time", SimpleNamespace(time=lambda: now[0]))
     ns = f"s7it-{uuid.uuid4().hex[:8]}"
@@ -177,16 +183,17 @@ async def test_an_orphaned_parse_paying_for_2400_s_after_a_delete_with_redis_flu
         for name in [k async for k in redis.scan_iter(match=f"{ns}:*")]:
             await redis.delete(name)                                # Redis restarted: marker and locks are gone
         parsing = PaidResultCache(store, RedisLocks(redis, ns))
-        scope = RunScope(org, rec, "rev1", "parse")
+        scope = RunScope(org, rec, "rev1", "parse", clock=lambda: now[0])
+        run_module._run.set(scope)
         page, hops = 0, 0
-        while now[0] - start < 2400 or pending:
-            if now[0] - start < 2400:
+        while now[0] - start < runs_for_s or pending:
+            if now[0] - start < runs_for_s:
                 now[0] += 200
                 key = CacheKey(org, rec, "ocr_page", 1, "m", "p", "q", f"p{page}")
                 await scope.note(parsing.store, key.relative_path(), opens=True)
                 await parsing.get_or_compute(key, compute)
                 page += 1
-                if now[0] - start >= 2400:
+                if now[0] - start >= runs_for_s:
                     await scope.finish(parsing.store)
             else:
                 now[0] = max(now[0], pending[0]["_retry_not_before"])

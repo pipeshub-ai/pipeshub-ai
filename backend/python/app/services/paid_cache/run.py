@@ -23,6 +23,8 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any, Protocol
 
+from app.services.paid_cache import locks as lock_limits
+
 FLUSH_KEYS = 50
 FLUSH_SECONDS = 30.0
 #: How long an open manifest keeps its objects out of the sweep.
@@ -71,6 +73,14 @@ class RunScope:
         #: One open-manifest write at a time, so a later snapshot is never overtaken by an older one.
         self._write_lock = asyncio.Lock()
 
+    def past_deadline(self) -> bool:
+        """True once the stage has run longer than ``STAGE_DEADLINE_S``: nothing more is written for the record.
+
+        Measured from the stage's start, not from the paid call's: the delayed re-purge after a delete ends a
+        bounded time after that stage began, so a write later than this could land after the last purge.
+        """
+        return self._clock() * 1000 - self.started_ms > lock_limits.STAGE_DEADLINE_S * 1000
+
     def matches(self, org_id: str, record_id: str) -> bool:
         return self.org_id == org_id and self.record_id == record_id
 
@@ -94,6 +104,8 @@ class RunScope:
             self._seen.add(path)
             self._keys.append(path)
             self._unflushed += 1
+        if self.past_deadline():
+            return
         if not self._opened:
             await self._write_open(store)
         elif self._unflushed >= FLUSH_KEYS or self._clock() - self._last_flush >= FLUSH_SECONDS:
@@ -103,10 +115,13 @@ class RunScope:
         async with self._write_lock:
             # The body is taken inside the lock: it lists every key noted by the time this write starts, and the
             # write that waited behind another one finds nothing left to write.
-            if self.finished or (self._opened and self._unflushed == 0):
+            if self.finished or self.past_deadline() or (self._opened and self._unflushed == 0):
                 return
             body, noted = self._body(), self._unflushed
-            await store.replace(self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer), body)
+            async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                await store.replace(
+                    self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer), body,
+                )
             self._opened = True
             self._unflushed = max(self._unflushed - noted, 0)
             self._last_flush = self._clock()
@@ -118,16 +133,19 @@ class RunScope:
     async def finish(self, store: _ManifestStore) -> None:
         """The run completed: the final manifest replaces the open one."""
         async with self._write_lock:
-            if self.finished or (not self._keys and not self._opened):
+            if self.finished or self.past_deadline() or (not self._keys and not self._opened):
                 return
-            await store.replace(
-                self.org_id, self.record_id, final_manifest_path(self.content_rev, self.writer), self._body(final=True),
-            )
+            async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                await store.replace(
+                    self.org_id, self.record_id, final_manifest_path(self.content_rev, self.writer),
+                    self._body(final=True),
+                )
             self.finished = True
             if self._opened:
-                await store.delete_files(
-                    self.org_id, self.record_id, [open_manifest_path(self.content_rev, self.writer)],
-                )
+                async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                    await store.delete_files(
+                        self.org_id, self.record_id, [open_manifest_path(self.content_rev, self.writer)],
+                    )
                 self._opened = False
 
 

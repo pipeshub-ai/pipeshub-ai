@@ -271,19 +271,20 @@ export const DocumentIdParamsWithVersion = z.object({
   }),
   headers: Headers,
   query: z.object({
-    version: z.string()
+    version: z
+      .string()
       .optional()
       .transform((val) => (val ? Number(val) : undefined))
       .refine((num) => num === undefined || num >= 0, {
-        message: "version must be greater than or equal to zero",
+        message: 'version must be greater than or equal to zero',
       }),
-    expirationTimeInSeconds: z.string()
+    expirationTimeInSeconds: z
+      .string()
       .optional()
       .transform((val) => (val ? Number(val) : undefined))
       .refine(
         (num) =>
-          num === undefined ||
-          (num > 0 && num <= MAX_SIGNED_URL_TTL_SECONDS),
+          num === undefined || (num > 0 && num <= MAX_SIGNED_URL_TTL_SECONDS),
         {
           message: `expirationTimeInSeconds must be between 1 and ${MAX_SIGNED_URL_TTL_SECONDS} (7 days)`,
         },
@@ -382,7 +383,7 @@ export const CreateDocumentSchema = z.object({
       .array(z.object({ key: z.string(), value: z.any().optional() }))
       .optional(),
     isVersionedFile: z.boolean().optional(),
-    extension : z.string(),
+    extension: z.string(),
   }),
   query: z.object({}),
   params: z.object({}),
@@ -417,20 +418,22 @@ export const PresignPaidResultsSchema = z.object({
     recordId: paidResultRecordIdSchema,
     files: z
       .array(
-        z.object({
-          path: paidResultPathSchema,
-          // `replace` is for a writer's own manifest, which it rewrites as it goes; `refresh` overwrites one
-          // result object (a refresh run's, or one found unreadable). `put` never overwrites.
-          mode: z.enum(['put', 'get', 'replace', 'refresh']),
-        }).refine(
-          (f) =>
-            f.mode === 'replace'
-              ? isPaidResultManifestPath(f.path)
-              : f.mode === 'refresh'
-                ? isPaidResultObjectPath(f.path)
-                : true,
-          { message: 'This mode does not apply to this path' },
-        ),
+        z
+          .object({
+            path: paidResultPathSchema,
+            // `replace` is for a writer's own manifest, which it rewrites as it goes; `refresh` overwrites one
+            // result object (a refresh run's, or one found unreadable). `put` never overwrites.
+            mode: z.enum(['put', 'get', 'replace', 'refresh']),
+          })
+          .refine(
+            (f) =>
+              f.mode === 'replace'
+                ? isPaidResultManifestPath(f.path)
+                : f.mode === 'refresh'
+                  ? isPaidResultObjectPath(f.path)
+                  : true,
+            { message: 'This mode does not apply to this path' },
+          ),
       )
       .min(1)
       .max(PAID_RESULT_MAX_FILES_PER_CALL)

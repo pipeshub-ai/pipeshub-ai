@@ -668,7 +668,11 @@ class AmazonS3Adapter implements StorageServiceInterface {
       if (error instanceof StorageError) throw error;
       // A cursor this service did not issue: S3 rejects it with 400 InvalidArgument, MinIO with 501 or a 500
       // whose message names the token. The caller's mistake, not an outage.
-      const { statusCode: status, code, message } = error as {
+      const {
+        statusCode: status,
+        code,
+        message,
+      } = error as {
         statusCode?: number;
         code?: string;
         message?: string;

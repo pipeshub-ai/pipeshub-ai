@@ -350,8 +350,11 @@ class PaidResultCache:
             # handed back to the caller (counted once) and not stored.
             self._count(key, "lock_lost")
             self.logger.warning("Paid-result lock for %s was lost during the call; the result is not stored", key.kind)
-        elif time.monotonic() - started > lock_limits.STAGE_DEADLINE_S:
-            # A call that ran past the stage's deadline is no longer inside what the delayed re-purge covers.
+        elif (scope.past_deadline() if scope is not None else False) or (
+            time.monotonic() - started > lock_limits.STAGE_DEADLINE_S
+        ):
+            # Past the stage's deadline (measured from the stage's start; from the call's start when there is no
+            # run): no longer inside what the delayed re-purge covers.
             self._count(key, "deadline_exceeded")
             self.logger.warning(
                 "Paid-result for %s took longer than the stage deadline (%s s); the result is not stored",

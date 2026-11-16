@@ -115,7 +115,9 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     app.use(express.json({ limit: '10mb' }))
     app.use('/api/v1/document', createStorageRouter(container))
     app.use(ErrorMiddleware.handleError())
-    server = http.createServer(app)
+    server = http.createServer((req, res) => {
+      void app(req, res)
+    })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     baseUrl = `${origin}/api/v1/document`

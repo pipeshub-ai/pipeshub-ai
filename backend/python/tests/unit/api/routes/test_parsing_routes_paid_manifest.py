@@ -83,3 +83,26 @@ def test_a_parse_that_fails_keeps_its_open_manifest(store: MemoryResultStore) ->
     rev = content_revision(BODY)
     assert (ORG, REC, f"manifests/{rev}/parse.open.json") in store.files
     assert (ORG, REC, f"manifests/{rev}/parse.json") not in store.files
+
+
+def test_a_parse_that_outlives_the_stage_deadline_is_stopped_and_pays_for_nothing_more(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The client giving up does not stop a parse, so the server does: nothing is paid for after the deadline."""
+    from app.services.paid_cache import locks
+
+    monkeypatch.setattr(locks, "STAGE_DEADLINE_S", 0.1)
+    paid_after: list[str] = []
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        import asyncio
+
+        await asyncio.sleep(10)
+        paid_after.append("a call made after the deadline")
+        return _ok_result()
+
+    response = _post(parse)
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "PARSE_FAILED"
+    assert paid_after == []

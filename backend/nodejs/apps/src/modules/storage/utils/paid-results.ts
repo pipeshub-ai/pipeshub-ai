@@ -30,7 +30,8 @@ const LIST_PREFIX = new RegExp(
 export const RECORD_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** A result object: the only thing a `refresh` write may overwrite. */
-export const isPaidResultObjectPath = (p: string): boolean => RESULT_PATH.test(p);
+export const isPaidResultObjectPath = (p: string): boolean =>
+  RESULT_PATH.test(p);
 
 /** A manifest: the only thing a `replace` write may overwrite. */
 export const isPaidResultManifestPath = (p: string): boolean =>

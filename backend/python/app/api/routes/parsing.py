@@ -16,6 +16,7 @@ GET  /health
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -40,6 +41,7 @@ from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.services.paid_cache import locks as lock_limits
 from app.services.paid_cache.access import complete_run, start_run
 from app.services.parsing.interface import (
     ParseError,
@@ -310,7 +312,10 @@ async def parse_file(
                 )
                 # The paid calls this parse makes (page OCR, table summaries) go into the revision's manifest.
                 paid_run = start_run(content_revision(content), "parse")
-                result = await parser.parse(content, record_name, config)
+                # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
+                # outlive what the delayed re-purge after a delete covers.
+                async with asyncio.timeout(lock_limits.STAGE_DEADLINE_S):
+                    result = await parser.parse(content, record_name, config)
                 await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
             logger.warning(
@@ -375,6 +380,22 @@ async def parse_file(
                         "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
                         "message": "Parsing service is at capacity; retry later.",
                         "details": {"tier": tier.value, "reason": "cpu_lane"},
+                    },
+                },
+            )
+        except TimeoutError:
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s ran longer than %s s",
+                record_name, provider_enum.value, lock_limits.STAGE_DEADLINE_S,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing took longer than the service allows",
+                        "details": {"requestId": message_id},
                     },
                 },
             )
