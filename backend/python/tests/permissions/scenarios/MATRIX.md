@@ -15,7 +15,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
 | `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
 | `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1692` | writer read |
-| `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1067` | writer read |
+| `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1071` | writer read |
 | `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
 | `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
 | `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py:1190` | writer read |
@@ -51,7 +51,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
 | `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:528` | grep, to confirm |
 | `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:115` | grep, to confirm |
-| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3755` | grep, to confirm |
+| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3766` | grep, to confirm |
 | `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3778` | grep, to confirm |
 | `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2074` | grep, to confirm |
 | `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py:2003` | grep, to confirm |
