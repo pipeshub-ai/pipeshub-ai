@@ -125,8 +125,9 @@ class PermissionsMixin(PgBase):
         async def exist(coll: str, ids: list[str]) -> set[str]:
             if not ids:
                 return set()
-            return {r["id"] for r in await tx.fetch("/* pipeshub:graph.access_exist */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])",
-                                                    org, coll, ids)}
+            # a withdrawn SourceAccount links nobody (its links are kept for when it is listed again)
+            return {r["id"] for r in await tx.fetch("/* pipeshub:graph.access_exist */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])"
+                                                    " AND coalesce(doc->>'state', '') <> 'withdrawn'", org, coll, ids)}
 
         via = await tx.fetch("""/* pipeshub:graph.access_grantee_edges */ SELECT e.coll, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e WHERE e.org_id = $1
             AND e.coll IN ('permission', 'belongsTo') AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll IN ('groups', 'roles', 'teams', 'organizations')""", org, user_key)
@@ -505,7 +506,7 @@ class PermissionsMixin(PgBase):
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
             principals AS (
               SELECT u.coll, u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
-              UNION SELECT l.to_coll, l.to_id FROM graph.edges l JOIN graph.nodes s ON s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id
+              UNION SELECT l.to_coll, l.to_id FROM graph.edges l JOIN graph.nodes s ON s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn'
                 WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll IN ('users', 'sourceAccounts')
                   AND l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = $3))
             SELECT 'direct' AS kind, t.coll AS tcoll, t.id AS tid, p.doc->>'role' AS role, NULL::text AS member_role, k.doc->>'type' AS app_type
@@ -555,7 +556,7 @@ class PermissionsMixin(PgBase):
               SELECT o.origin, u.coll, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4
               UNION SELECT o.origin, l.to_coll, l.to_id FROM o JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4
                 AND l.to_coll IN ('users', 'sourceAccounts')
-                JOIN graph.nodes s ON s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id
+                JOIN graph.nodes s ON s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn'
                 WHERE l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = o.origin))
             SELECT t.origin, 'direct' AS kind, t.coll AS tcoll, t.id AS tid, p.doc->>'role' AS role, NULL::text AS member_role, k.doc->>'type' AS app_type
               FROM targets t JOIN principals pr ON pr.origin = t.origin
@@ -597,6 +598,7 @@ class PermissionsMixin(PgBase):
               WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps' AND e.to_id = $3
             UNION ALL SELECT 'own', NULL, NULL FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2
               AND e.to_coll IN ('users', 'sourceAccounts') AND e.doc->>'connectorId' = $3
+              AND NOT EXISTS (SELECT 1 FROM graph.nodes s WHERE s.org_id = e.org_id AND s.coll = e.to_coll AND s.id = e.to_id AND s.doc->>'state' = 'withdrawn')
             UNION ALL SELECT 'team_rel', NULL, NULL FROM graph.edges m JOIN graph.nodes t ON t.org_id = m.org_id AND t.coll = 'teams' AND t.id = m.to_id
               JOIN graph.edges e ON e.org_id = m.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'teams' AND e.from_id = t.id AND e.to_coll = 'apps' AND e.to_id = $3
               WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'

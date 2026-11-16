@@ -45,13 +45,15 @@ async def test_layer_equals_oracle(graph_layers, tier: str) -> None:
         assert not total.findings, f"{layer.name}\n{_describe(total)}"
 
 
-async def test_linked_source_accounts_equal_the_oracle(account_layers) -> None:
+@pytest.mark.parametrize("withdrawn", [False, True], ids=["listed", "withdrawn"])
+async def test_linked_source_accounts_equal_the_oracle(account_layers, withdrawn_layers, withdrawn: bool) -> None:
     """Every world that links a user to a source account, with the account stored as a SourceAccount node instead of a User: each store must
-    still answer as the oracle does (the account's grants and badges reach the user inside the link's connector only, and nothing else)."""
+    still answer as the oracle does (the account's grants and badges reach the user inside the link's connector only, and nothing else; a
+    withdrawn account gives nothing)."""
     scenarios = [s for s in load_all() if s.final_world().links]
     generated = gen.linked(25)
     assert scenarios and generated
-    for layer in account_layers:
+    for layer in withdrawn_layers if withdrawn else account_layers:
         runner = ConformanceRunner(layer)
         total = Report()
         await layer.preload([*(s.final_world() for s in scenarios), *(w for _, w in generated)])
@@ -64,12 +66,16 @@ async def test_linked_source_accounts_equal_the_oracle(account_layers) -> None:
         assert not total.findings, f"{layer.name}\n{_describe(total)}"
 
 
-async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_search(account_layers, no_source_org_layers) -> None:
+@pytest.mark.parametrize("withdrawn", [False, True], ids=["listed", "withdrawn"])
+async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_search(account_layers, no_source_org_layers, withdrawn_layers,
+                                                                                    unlinked_layers, withdrawn: bool) -> None:
     """The context role, the record access details and the search scope, in every world that links a user to a source account stored as a
-    SourceAccount node: the same as with the linked accounts' organisations removed, and no ability on a node `check_access` refuses."""
+    SourceAccount node: the same as with the linked accounts' organisations removed (with the accounts withdrawn: as with the links removed),
+    and no ability on a node `check_access` refuses."""
     worlds = linked_worlds(4)
     found: list[str] = []
-    for plain, without in zip(account_layers, no_source_org_layers, strict=True):
+    pairs = (withdrawn_layers, unlinked_layers) if withdrawn else (account_layers, no_source_org_layers)
+    for plain, without in zip(*pairs, strict=True):
         await plain.preload(w for _, w in worlds)
         await without.preload(w for _, w in worlds)
         for name, world in worlds:

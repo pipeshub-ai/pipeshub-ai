@@ -8913,6 +8913,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET linked = caller == null ? [] : (
             FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER link._from == caller._id
+                FILTER DOCUMENT(link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 FOR g, edge IN 1..1 OUTBOUND link._to {CollectionNames.PERMISSION.value}
                     FILTER edge.type == 'USER'
                     FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", g)
@@ -20094,6 +20095,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET kh_linked_apps = (
             FOR kh_link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER kh_link._from == u._id
+                FILTER DOCUMENT(kh_link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 LET linked = DOCUMENT("{CollectionNames.APPS.value}", kh_link.connectorId)
                 FILTER linked != null AND linked.orgId == {org}
                 RETURN linked._key
@@ -20193,6 +20195,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET linked_grants = (
             FOR kh_link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER kh_link._from == u._id
+                FILTER DOCUMENT(kh_link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 LET src_grantees = APPEND([kh_link._to], (
                     FOR p IN {CollectionNames.PERMISSION.value}
                         FILTER p._from == kh_link._to AND p.type == "USER"
@@ -23678,6 +23681,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LET linked = (
                     FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
                         FILTER link._from == @user_from
+                        FILTER DOCUMENT(link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                         LET app = DOCUMENT("{CollectionNames.APPS.value}", link.connectorId)
                         FILTER app != null
                         RETURN app
@@ -24292,6 +24296,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principals = APPEND([caller], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER caller != null AND linked._from == caller._id
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     FILTER linked.connectorId == recordDoc.connectorId
                     RETURN DOCUMENT(linked._to)
             ))
@@ -24959,6 +24964,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principal_ids = APPEND([{user_var}._id], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}.connectorId
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked._to
             ), true)
 
@@ -25153,6 +25159,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principal_ids = APPEND([{user_var}._id], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}.connectorId
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked._to
             ), true)
 
@@ -25325,6 +25332,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET linked_app_rel = FIRST(
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}._key
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked
             )
             LET user_app_rel = own_app_rel != null ? own_app_rel : linked_app_rel
@@ -26177,6 +26185,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principal_ids = APPEND([userDoc._id], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == userDoc._id AND linked.connectorId == @connectorId
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked._to
             ))
 
@@ -26867,6 +26876,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET links = (
             FOR linked IN {authenticated_as}
                 FILTER linked._from == user_from
+                FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 RETURN {{ from: linked._to, connectorId: linked.connectorId }}
         )
         LET principals = APPEND([{{ from: user_from, connectorId: null }}], links, true)

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .graph import compile_world, without_link_source_orgs
+from .graph import VARIANTS, compile_world, without_link_source_orgs
 from .model import Gate, Grant, Link, Membership, Node, Parent, Principal, World
 from .runner import ConformanceRunner, OracleLayer
 
@@ -145,3 +145,10 @@ def _linked_world() -> World:
 def test_without_link_source_orgs_removes_only_the_linked_accounts_organisation_edge() -> None:
     graph = without_link_source_orgs(compile_world(_linked_world(), "t"))
     assert {(e["from"], e["to"]) for e in graph["edges"] if e["type"] == "BELONGS_TO"} == {("t-u", "t-orgnode"), ("t-acct", "t-grp")}
+
+
+async def test_a_withdrawn_source_account_gives_the_linked_user_nothing() -> None:
+    world = _linked_world()
+    assert await OracleLayer(VARIANTS["accounts"]).admitted(world, "u", ["r"]) == {"r"}
+    assert await OracleLayer(VARIANTS["withdrawn"]).admitted(world, "u", ["r"]) == set()
+    assert await OracleLayer(VARIANTS["unlinked"]).admitted(world, "u", ["r"]) == set()
