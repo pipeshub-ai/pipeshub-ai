@@ -140,11 +140,12 @@ def test_downgrading_the_listing_writer_removes_only_its_own_objects(db):
         assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_listing_set'").fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%")],
-                         ids=["kg_0010-long-names", "kg_0012-long-roles"])
+@pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%"),
+                                                     ("kg_0016", "w_records_upsert", "%'RESTRICTED')%")],
+                         ids=["kg_0010-long-names", "kg_0012-long-roles", "kg_0017-parent-and-grant"])
 def test_downgrading_a_revision_that_relaxes_a_writer_keeps_the_writer_and_an_upgrade_replaces_it(db, down, writer, old_check):
-    """kg_0010 and kg_0012 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file), and an
-    upgrade from there replaces it again with nothing left over."""
+    """kg_0010, kg_0012 and kg_0017 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file),
+    and an upgrade from there replaces it again with nothing left over."""
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
     sig = f"'kg.{writer}'::regproc::regprocedure"
@@ -283,7 +284,7 @@ def test_the_parent_child_links_revision_moves_the_floor_and_the_kinds_and_its_d
     import psycopg
 
     from .rls_fixture import ORG_A as org
-    from .test_kg_writers import call
+    from .test_kg_writers import EPOCH, call
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
 
@@ -298,7 +299,7 @@ def test_the_parent_child_links_revision_moves_the_floor_and_the_kinds_and_its_d
         return True
 
     def state(c) -> tuple[bool, bool, bool]:
-        return (accepts(c, "kg.w_links_set", ([1], [3], [2])), accepts(c, "kg.w_changes_ack", (), 5), accepts(c, "kg.w_changes_ack", (), 6))
+        return (accepts(c, "kg.w_links_set", ([1], [3], [2])), accepts(c, "kg.w_changes_ack", (), 5), accepts(c, "kg.w_changes_ack", (), EPOCH))
 
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
@@ -315,4 +316,43 @@ def test_the_parent_child_links_revision_moves_the_floor_and_the_kinds_and_its_d
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert state(c) == (True, False, True)
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 29
+
+
+def test_the_parent_and_grant_revision_moves_the_floor_and_its_downgrade_takes_it_back(db):
+    """kg_0017: the projection writers refuse epoch 6 (code that read PARENT_AND_GRANT as an unknown rule) and the records writer takes the rule; down to kg_0016,
+    the writers take epoch 6 again and the records writer keeps the rule (older code never writes it), the catalog is clean; an upgrade takes the floor back."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_kg_writers import EPOCH, call
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def state(c) -> tuple[bool, bool, int]:
+        took = []
+        for epoch in (6, EPOCH):
+            try:
+                call(c, "kg.w_changes_ack", org, (), epoch=epoch)
+                took.append(True)
+            except psycopg.errors.InvalidParameterValue:
+                took.append(False)
+        rule = c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_records_upsert' AND prosrc LIKE %s",
+                         ("%'PARENT_AND_GRANT')%",)).fetchone()[0]
+        return (*took, rule)
+
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (False, True, 1)
+    r = run_migrate(url, "downgrade", "kg_0016", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (True, True, 1)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (False, True, 1)
         assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 29
