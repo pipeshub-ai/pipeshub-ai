@@ -632,7 +632,7 @@ components:
       description: The record the cached results belong to.
       schema:
         type: string
-        pattern: '^[A-Za-z0-9_-]{1,128}$'
+        pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
     ApiToolsetInstanceId:
       name: instanceId
       in: path
@@ -37096,7 +37096,7 @@ paths:
           description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9_-]{1,128}$'
+            pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
       responses:
         '200':
           description: How many documents were removed (0 if none were filed there).
@@ -37251,7 +37251,7 @@ paths:
           description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
           schema:
             type: string
-            pattern: '^[A-Za-z0-9_-]{1,128}$'
+            pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
         - name: olderThanSeconds
           in: query
           required: false
@@ -37331,7 +37331,7 @@ paths:
                     properties:
                       virtualRecordId:
                         type: string
-                        pattern: '^[A-Za-z0-9_-]{1,128}$'
+                        pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
                       newPath:
                         type: string
                         description: Relative path under `records/`, without `..` segments.
@@ -37563,7 +37563,7 @@ paths:
                   description: Optional. If sent, it must be the storage token's organisation.
                 virtualRecordId:
                   type: string
-                  pattern: '^[A-Za-z0-9_-]{1,128}$'
+                  pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
                 rev:
                   type: string
                   pattern: '^[0-9a-f]{8,64}$'
@@ -37683,7 +37683,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^[A-Za-z0-9_-]{1,128}$'
+            pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
       responses:
         '200':
           description: The revisions.
@@ -38184,7 +38184,7 @@ paths:
                   description: Optional. If sent, it must be the storage token's organisation.
                 recordId:
                   type: string
-                  pattern: '^[A-Za-z0-9_-]{1,128}$'
+                  pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
                   description: The record the results belong to. `org` is not a record id.
                 files:
                   type: array
@@ -38509,8 +38509,8 @@ paths:
       description: |
         The local-storage counterpart of a signed `put` URL, as returned by presign. Stores the
         file only if nothing is stored at the path: a second write is answered `412` and the
-        first file is kept. With `replace=1` (the URL a `replace` presign returns) it stores over
-        the file instead. Only answered when storage is local.
+        first file is kept. With `replace=1` (a manifest) or `refresh=1` (a result object), the URLs the
+        `replace` and `refresh` presign modes return, it stores over the file instead. Only answered when storage is local.
       operationId: internalPutPaidResultFile
       security:
         - scopedToken: []
@@ -38518,6 +38518,15 @@ paths:
         - name: replace
           in: query
           required: false
+          description: Store over an existing manifest (`manifests/...` paths only). Cannot be combined with `refresh`.
+          schema:
+            type: string
+            enum:
+              - '1'
+        - name: refresh
+          in: query
+          required: false
+          description: Store over an existing result object (a cache kind's `<kind>/<digest>.json` path only). Cannot be combined with `replace`; any other path is answered `400`.
           schema:
             type: string
             enum:

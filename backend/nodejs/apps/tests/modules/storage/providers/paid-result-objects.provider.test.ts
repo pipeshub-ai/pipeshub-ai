@@ -72,7 +72,7 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       const a = adapter()
       expect(await a.listObjects(`${ROOT}/`, { limit: 10 })).to.deep.equal({ objects: [] })
       await a.writeObjectIfAbsent(key(1), Buffer.from('x'))
-      const dir = path.dirname(path.join(fs.realpathSync(home), '.local', 'PipesHub', key(1)))
+      const dir = path.dirname(path.join((a as any).mountPath, key(1)))
       fs.writeFileSync(path.join(dir, '.partial.tmp'), 'half')
       expect((await a.listObjects(`${ROOT}/`, { limit: 10 })).objects).to.have.length(1)
     })
@@ -91,7 +91,7 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       await a.deleteObjects([key(1), key(9)])
       expect((await a.listObjects(`${ROOT}/`, { limit: 10 })).objects.map((o) => o.key)).to.deep.equal([key(2)])
       await a.deleteObjects([key(2)])
-      expect(fs.existsSync(path.join(fs.realpathSync(home), '.local', 'PipesHub', ROOT))).to.equal(false)
+      expect(fs.existsSync(path.join((a as any).mountPath, ROOT))).to.equal(false)
     })
 
     it('refuses a key that leaves the mount', async () => {

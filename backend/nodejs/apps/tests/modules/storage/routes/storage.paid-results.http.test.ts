@@ -31,6 +31,9 @@ const REC_2 = 'rec-2'
 const digest = (c: string): string => c.repeat(64)
 const page = (c: string): string => `ocr_page/${digest(c)}.json`
 
+// Where the local adapter mounts under the home directory on this platform.
+const PLATFORM_DIR = process.platform === 'darwin' ? 'Library' : process.platform === 'win32' ? 'AppData' : '.local'
+
 describe('Paid-result cache routes over HTTP: the local disk path', () => {
   let backend: FakeBackend
   let kv: FakeKeyValueStore
@@ -79,7 +82,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
   }
 
   const filesOnDisk = (): string[] => {
-    const root = path.join(home, '.local', MOUNT)
+    const root = path.join(home, PLATFORM_DIR, MOUNT)
     if (!fs.existsSync(root)) return []
     return (fs.readdirSync(root, { recursive: true }) as string[])
       .filter((p) => fs.statSync(path.join(root, p)).isFile())
@@ -218,11 +221,18 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     })
 
     it('a purge never reaches the org\'s other storage (documents, artifacts)', async () => {
-      const other = path.join(home, '.local', MOUNT, ORG_A, 'PipesHub', 'record-revisions', 'vr', 'rev', 'manifest.json')
+      const other = path.join(home, PLATFORM_DIR, MOUNT, ORG_A, 'PipesHub', 'record-revisions', 'vr', 'rev', 'manifest.json')
       fs.mkdirSync(path.dirname(other), { recursive: true })
       fs.writeFileSync(other, '{}')
       await call('DELETE', '/internal/paid-results/org')
       expect(fs.existsSync(other)).to.equal(true)
+    })
+
+    it('a purge of "Org" or "ORG" is a record purge of that id, never the whole-org purge (paths are matched case-insensitively)', async () => {
+      for (const spelling of ['Org', 'ORG', 'oRg']) {
+        expect((await call('DELETE', `/internal/paid-results/${spelling}`)).status, spelling).to.equal(200)
+        expect(filesOnDisk(), spelling).to.have.length(5)
+      }
     })
 
     it('a record purge takes the folder only: "org" is not a record id', async () => {
@@ -304,7 +314,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     it('leaves no temporary file behind after a refused put', async () => {
       await store(page('a'), 'first')
       await store(page('a'), 'second')
-      const dir = path.join(home, '.local', MOUNT, ORG_A, 'PipesHub', 'paid-results', REC, 'ocr_page')
+      const dir = path.join(home, PLATFORM_DIR, MOUNT, ORG_A, 'PipesHub', 'paid-results', REC, 'ocr_page')
       expect(fs.readdirSync(dir)).to.deep.equal([`${digest('a')}.json`])
     })
 

@@ -53,6 +53,8 @@ on:
       - 'backend/python/app/modules/transformers/**'
       # The paid-result cache: its retention, erasure and isolation tests run against the real storage service.
       - 'backend/python/app/services/paid_cache/**'
+      # The re-purge tests bind the org context the handlers run under.
+      - 'backend/python/app/core/org_context.py'
       - 'backend/python/app/utils/is_truncated.py'
       # Knowledge-base push: its real-graph tests (graph_db/test_kb_push_*) drive the push service itself.
       - 'backend/python/app/connectors/sources/localKB/**'

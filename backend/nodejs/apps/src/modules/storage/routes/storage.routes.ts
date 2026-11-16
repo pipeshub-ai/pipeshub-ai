@@ -267,6 +267,15 @@ export function createStorageRouter(container: Container): Router {
 
   router.delete(
     '/internal/paid-results/org',
+    // Express matches paths case-insensitively: `/Org` is a record id, never the whole-org purge, so only the exact
+    // spelling reaches this route and any other falls through to the record route.
+    (req: Request, _res: Response, next: NextFunction): void => {
+      if (req.path.replace(/\/$/, '') === '/internal/paid-results/org') {
+        next();
+      } else {
+        next('route');
+      }
+    },
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     ValidationMiddleware.validate(PurgeOrgPaidResultsSchema),
     async (

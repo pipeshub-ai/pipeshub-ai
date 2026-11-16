@@ -114,3 +114,41 @@ async def test_after_a_504_the_permit_is_held_until_the_conversion_thread_return
                 break
             await asyncio.sleep(0.02)
         assert gate.in_use == 0, "the permit was freed more than once or not at all"
+
+
+async def test_a_timeout_raised_inside_the_parser_also_holds_the_permit_while_its_thread_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not only the deadline: any exit that leaves a conversion thread running keeps the permit until it returns."""
+    import threading
+
+    from app.api.routes import parsing
+    from app.services.resource_governor.tiers import gate_pool
+
+    release_thread = threading.Event()
+    started = threading.Event()
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, lambda: (started.set(), release_thread.wait(20)))   # a conversion thread
+        await asyncio.sleep(0.05)
+        raise TimeoutError("the provider timed out")
+
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=MagicMock(parse=parse))
+    app = _build_app(registry, heavy_limit=1, light_limit=1)
+    gate = app.state.governor.gate(gate_pool(parsing.classify("pdf", "application/pdf")))
+    post_args = {
+        "files": {"file": ("s.pdf", b"%PDF-1.4 x", "application/pdf")},
+        "data": {"record_name": "s.pdf", "mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://p.test") as client:
+        response = await client.post("/api/v1/parse", **post_args)
+        assert response.status_code == 500
+        assert started.is_set() and gate.in_use == 1, "the permit was freed while a conversion thread still runs"
+        release_thread.set()
+        for _ in range(100):
+            if gate.in_use == 0:
+                break
+            await asyncio.sleep(0.02)
+        assert gate.in_use == 0

@@ -67,60 +67,72 @@ async def sweep_record(
     """Applies the retention rule once. Raises on a storage failure; the next completed revision retries it."""
     log = logger or logging.getLogger(__name__)
     sweep_start = now_ms if now_ms is not None else int(time.time() * 1000)
-    files = await store.list_files(org_id, record_id)
-    manifests = [f for f in files if f.path.startswith(_MANIFESTS)]
+    async def snapshot() -> tuple[list[Any], list[str] | None]:
+        """(files, the paths the rule would delete now), or (files, None) when there is no completed revision."""
+        files = await store.list_files(org_id, record_id)
+        manifests = [f for f in files if f.path.startswith(_MANIFESTS)]
 
-    final_keys: dict[str, set[str]] = {}
-    #: Per revision, when it completed: (the writer's ``completedMs``, its ``seq``). The storage write time is
-    #: only the fallback for a manifest that has none: S3 and Azure report it in whole seconds.
-    final_at: dict[str, tuple[int, int]] = {}
-    open_started: dict[str, int] = {}
-    open_keys: dict[str, set[str]] = {}
-    manifest_files: list[tuple[str, str, bool]] = []  # (path, rev, is_open)
-    for m in manifests:
-        parsed = _split(m.path)
-        if parsed is None:
-            continue
-        rev, _, is_open = parsed
-        manifest_files.append((m.path, rev, is_open))
-        body = await _read(store, org_id, record_id, m.path)
-        if body is None:
-            continue
-        if is_open:
-            started = body.get("startedMs")
-            started = started if isinstance(started, int) else m.last_modified_ms
-            open_started[rev] = max(open_started.get(rev, 0), started)
-            open_keys.setdefault(rev, set()).update(_keys(body))
-        else:
-            final_keys.setdefault(rev, set()).update(_keys(body))
-            completed, seq = body.get("completedMs"), body.get("seq")
-            at = (
-                completed if isinstance(completed, int) and not isinstance(completed, bool) else m.last_modified_ms,
-                seq if isinstance(seq, int) and not isinstance(seq, bool) else 0,
-            )
-            final_at[rev] = max(final_at.get(rev, (0, 0)), at)
-    if not final_keys:
+        final_keys: dict[str, set[str]] = {}
+        #: Per revision, when it completed: (the writer's ``completedMs``, its ``seq``). The storage write time is
+        #: only the fallback for a manifest that has none: S3 and Azure report it in whole seconds.
+        final_at: dict[str, tuple[int, int]] = {}
+        open_started: dict[str, int] = {}
+        open_keys: dict[str, set[str]] = {}
+        manifest_files: list[tuple[str, str, bool]] = []  # (path, rev, is_open)
+        for m in manifests:
+            parsed = _split(m.path)
+            if parsed is None:
+                continue
+            rev, _, is_open = parsed
+            manifest_files.append((m.path, rev, is_open))
+            body = await _read(store, org_id, record_id, m.path)
+            if body is None:
+                continue
+            if is_open:
+                started = body.get("startedMs")
+                started = started if isinstance(started, int) else m.last_modified_ms
+                open_started[rev] = max(open_started.get(rev, 0), started)
+                open_keys.setdefault(rev, set()).update(_keys(body))
+            else:
+                final_keys.setdefault(rev, set()).update(_keys(body))
+                completed, seq = body.get("completedMs"), body.get("seq")
+                at = (
+                    completed if isinstance(completed, int) and not isinstance(completed, bool) else m.last_modified_ms,
+                    seq if isinstance(seq, int) and not isinstance(seq, bool) else 0,
+                )
+                final_at[rev] = max(final_at.get(rev, (0, 0)), at)
+        if not final_keys:
+            return files, None
+
+        newest = sorted(final_at, key=lambda r: (final_at[r], r), reverse=True)
+        kept_revs = set(newest[:KEEP_REVISIONS])
+        protected: set[str] = set()
+        for rev in kept_revs:
+            protected.update(final_keys[rev])
+        kept_manifest_files: set[str] = {path for path, rev, _ in manifest_files if rev in kept_revs}
+
+        for rev, started in open_started.items():
+            young = sweep_start - started < OPEN_PROTECTS_MS
+            newer_completed = sum(1 for r in final_at if final_at[r][0] > started)
+            if young or (rev not in final_keys and newer_completed < KEEP_REVISIONS):
+                protected.update(open_keys.get(rev, set()))
+                kept_manifest_files.update(path for path, r, is_open in manifest_files if r == rev and is_open)
+
+        doomed = [
+            f.path for f in files
+            if f.path not in protected and f.path not in kept_manifest_files
+            and f.last_modified_ms < sweep_start - GRACE_MS
+        ]
+        return files, doomed
+
+    files, doomed = await snapshot()
+    if doomed is None:
         return SweepResult(0, len(files), "no completed revision")
-
-    newest = sorted(final_at, key=lambda r: (final_at[r], r), reverse=True)
-    kept_revs = set(newest[:KEEP_REVISIONS])
-    protected: set[str] = set()
-    for rev in kept_revs:
-        protected.update(final_keys[rev])
-    kept_manifest_files: set[str] = {path for path, rev, _ in manifest_files if rev in kept_revs}
-
-    for rev, started in open_started.items():
-        young = sweep_start - started < OPEN_PROTECTS_MS
-        newer_completed = sum(1 for r in final_at if final_at[r][0] > started)
-        if young or (rev not in final_keys and newer_completed < KEEP_REVISIONS):
-            protected.update(open_keys.get(rev, set()))
-            kept_manifest_files.update(path for path, r, is_open in manifest_files if r == rev and is_open)
-
-    doomed = [
-        f.path for f in files
-        if f.path not in protected and f.path not in kept_manifest_files
-        and f.last_modified_ms < sweep_start - GRACE_MS
-    ]
+    if doomed:
+        # A run that reused one of these objects after the listing above has noted it in its manifest by now: the
+        # manifests are read again and only what both reads leave unprotected is deleted.
+        _, again = await snapshot()
+        doomed = [path for path in doomed if again is not None and path in set(again)]
     if doomed:
         await store.delete_files(org_id, record_id, doomed)
     log.debug("Paid-result sweep of record %s: %d deleted, %d kept", record_id, len(doomed), len(files) - len(doomed))

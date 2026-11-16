@@ -1679,6 +1679,25 @@ describe('AzureBlobStorageAdapter - additional coverage', () => {
       }
     })
 
+    it('checks a container again once its verification has expired, so a deleted container is recreated', async () => {
+      const { ContainerClient } = require('@azure/storage-blob')
+      const create = sinon.stub(ContainerClient.prototype, 'createIfNotExists').resolves({ succeeded: true })
+      const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] })
+      try {
+        newAdapter()
+        await new Promise((resolve) => setImmediate(resolve))
+        newAdapter()                                           // within the verification: no second check
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(create.callCount).to.equal(1)
+        clock.tick(6 * 60 * 1000)
+        newAdapter()                                           // expired: the container is asked about again
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(create.callCount).to.equal(2)
+      } finally {
+        clock.restore()
+      }
+    })
+
     it('recovers when the container check fails at start-up and succeeds on retry', async () => {
       const { ContainerClient, BlockBlobClient } = require('@azure/storage-blob')
       sinon.stub(ContainerClient.prototype, 'createIfNotExists')

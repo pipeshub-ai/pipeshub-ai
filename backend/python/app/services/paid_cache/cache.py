@@ -205,7 +205,10 @@ class PaidResultCache:
             if inflight is None:
                 break
             try:
-                return await asyncio.shield(inflight)  # type: ignore[no-any-return]
+                shared = await asyncio.shield(inflight)
+                # The follower's run used this result too: its manifest lists the key, so retention keeps it.
+                await self._note(scope, key, path, stored=False)
+                return shared  # type: ignore[no-any-return]
             except asyncio.CancelledError:
                 if inflight.cancelled():
                     continue
@@ -298,7 +301,13 @@ class PaidResultCache:
             # Another process is computing it: wait for its object. A waiter that finds the lock lapsed takes it
             # (it is returned held, never released and re-asked for), so the one that computes is always the one
             # holding the lock. ``None`` is the counted fallback when no lock can be had at all (Redis unreachable).
-            found, value, lock = await self._wait_for(key, path, validate, scope)
+            # A refresh run bypasses the stored result, so what is stored while it waits is accepted only if it
+            # is not the object this run is meant to replace: the holder's replacement.
+            stale: tuple[bool, Any] = (False, None)
+            if refresh:
+                before, old, _ = await self._lookup(key, path, validate, report=False)
+                stale = (before, old)
+            found, value, lock = await self._wait_for(key, path, validate, scope, stale=stale)
             if found:
                 return value
         try:
@@ -437,6 +446,7 @@ class PaidResultCache:
 
     async def _wait_for(
         self, key: CacheKey, path: str, validate: Callable[[Any], object] | None, scope: RunScope | None,
+        stale: tuple[bool, Any] = (False, None),
     ) -> "tuple[bool, Any, _Held | None]":
         """Poll for the holder's object while its lock lives.
 
@@ -449,7 +459,7 @@ class PaidResultCache:
         while time.monotonic() < deadline:
             await asyncio.sleep(delay)
             found, value, _ = await self._lookup(key, path, validate, report=False)
-            if found:
+            if found and not (stale[0] and value == stale[1]):
                 self._count(key, "hit")
                 await self._note(scope, key, path, stored=False)
                 return True, value, None

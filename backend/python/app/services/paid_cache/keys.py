@@ -35,9 +35,13 @@ KINDS = frozenset({
 _RECORD_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
+#: Routed to the whole-org purge by the storage routes (``DELETE .../paid-results/org``), so never a record id.
+RESERVED_RECORD_ID = "org"
+
+
 def valid_record_id(record_id: str) -> bool:
     """False for an id the storage routes refuse: nothing can be stored under it, so a delete has nothing to do."""
-    return bool(_RECORD_ID.fullmatch(record_id))
+    return bool(_RECORD_ID.fullmatch(record_id)) and record_id != RESERVED_RECORD_ID
 
 
 def sha256_hex(data: bytes | str) -> str:

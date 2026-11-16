@@ -137,7 +137,7 @@ def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, 
     loop = asyncio.get_running_loop()
     done = threading.Event()
     logger.warning(
-        "Parse stopped at its deadline with %d conversion(s) still running; the permit is held until they return",
+        "Parse ended with %d conversion(s) still running in threads; the permit is held until they return",
         work.running(),
     )
 
@@ -147,7 +147,7 @@ def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, 
         done.set()
         over = time.monotonic() - deadline_at
         if over > THREAD_OVERRUN_WARN_SECONDS:
-            logger.warning("A conversion for '%s' ended %.0f s after the parse deadline", record_name, over)
+            logger.warning("A conversion for '%s' ended %.0f s after its parse", record_name, over)
         release()
 
     work.when_idle(lambda: loop.call_soon_threadsafe(free))
@@ -310,8 +310,7 @@ async def parse_file(
 
     parse_start = time.monotonic()
     excess_held = 0
-    deadline_work: ThreadWork | None = None
-    deadline_at = 0.0
+    thread_work = ThreadWork()
     covers = set_permit_covers() if tier is ParseTier.HEAVY else None
     try:
         # The permit's base covers the parent's fixed part for the PdfPlumber parse only; a kind
@@ -359,16 +358,12 @@ async def parse_file(
                 stage_limit = lock_limits.stage_deadline_s()
                 stage_timer = asyncio.timeout(stage_limit)
                 try:
-                    with track() as thread_work:
+                    with track(thread_work):
                         async with stage_timer:
                             result = await parser.parse(content, record_name, config)
                 except TimeoutError as exc:
                     if not stage_timer.expired():
                         raise
-                    # The cancel does not stop a conversion running in a thread: the permit and the memory it
-                    # holds are kept until that thread returns (see the ``finally``).
-                    deadline_work = thread_work
-                    deadline_at = time.monotonic()
                     raise _StageDeadlineExceeded(stage_limit) from exc
                 await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
@@ -484,8 +479,10 @@ async def parse_file(
                 f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
             )
 
-        if deadline_work is not None and deadline_work.running():
-            _release_when_work_ends(release_admission, deadline_work, deadline_at, record_name)
+        # Whatever way the parse ended (deadline, a timeout raised inside it, a cancel, any other error), a conversion
+        # still running in a thread keeps its memory: the permit and the reservation are held until it returns.
+        if thread_work.running():
+            _release_when_work_ends(release_admission, thread_work, time.monotonic(), record_name)
         else:
             release_admission()
 

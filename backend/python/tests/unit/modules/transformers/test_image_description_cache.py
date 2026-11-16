@@ -121,3 +121,19 @@ async def test_a_storage_outage_never_fails_the_description(store: MemoryResultS
 
 def test_the_module_still_exports_the_describer() -> None:
     assert image_description.ImageDescriber is ImageDescriber
+
+
+async def test_a_remote_image_url_is_described_again_not_reused(store: MemoryResultStore) -> None:
+    """The bytes behind a URL can change, so a stored description of the earlier image is never handed back."""
+    model = CountingModel("vision")
+
+    def remote() -> BlocksContainer:
+        block = Block(index=0, type=BlockType.IMAGE, format=DataFormat.BASE64, data={"uri": "https://cdn.test/a.png"})
+        return BlocksContainer(blocks=[block], block_groups=[])
+
+    with record_in_flight(ORG, REC):
+        await _annotate(model, remote())
+        await _annotate(model, remote())
+
+    assert model.total == 2
+    assert store.paths(ORG, REC) == []

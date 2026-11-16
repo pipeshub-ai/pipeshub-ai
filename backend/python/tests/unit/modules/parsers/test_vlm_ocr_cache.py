@@ -198,13 +198,17 @@ async def test_a_refresh_run_bypasses_lookups_even_when_the_objects_are_there(st
 
 
 async def test_the_pages_a_run_used_are_listed_in_its_manifest(store: MemoryResultStore) -> None:
+    import json
+
     model = CountingModel("vlm")
     with record_in_flight(ORG, REC):
-        begin_run(ORG, REC, "rev1", "parse")
+        scope = begin_run(ORG, REC, "rev1", "parse")
         await _strategy(model)._preprocess_document()
+        await scope.finish(store)                                # the run completes: the final manifest replaces the open one
 
-    open_manifest = store.files[(ORG, REC, "manifests/rev1/parse.open.json")][0]
-    assert open_manifest.count(b"ocr_page/") >= PAGES - 50
+    listed = json.loads(store.files[(ORG, REC, "manifests/rev1/parse.json")][0])["keys"]
+    stored = {path for path in store.paths(ORG, REC) if path.startswith("ocr_page/")}
+    assert len(stored) == PAGES and set(listed) == stored        # every stored page is protected by the manifest
 
 
 @pytest.mark.parametrize("batch", range(8))

@@ -280,7 +280,9 @@ class ImageDescriber:
         key = cache_key(
             KIND_IMAGE_DESCRIPTION, llm=vlm, prompt=prompt_for_image_description, input_digest=sha256_hex(uri),
         )
-        if key is None:
+        if key is None or not uri.startswith("data:"):
+            # A remote image can change behind the same URL while the provider fetches the current bytes, so only
+            # an image whose bytes are in the key (a data URI) has its description reused.
             result = await describe()
             return result.value if isinstance(result, NotCached) else result
         return await paid_cache_for(self.config_service, self.logger).get_or_compute(key, describe)

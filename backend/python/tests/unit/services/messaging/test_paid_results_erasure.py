@@ -138,11 +138,26 @@ async def test_an_org_delete_whose_purge_fails_is_redelivered(store: MemoryResul
 
 
 async def _reindex(handler, payload: dict) -> None:
-    """Runs a reindex event as far as it goes; what follows the refresh step is not under test."""
-    import contextlib
+    """Runs a reindex event as far as it goes; what follows the refresh step is not under test.
 
-    with contextlib.suppress(Exception):
+    Only a failure after the refresh decision is tolerated: the decision (``refresh_requested``) must have been
+    taken, so an error raised before it cannot hide behind the suppression.
+    """
+    import contextlib
+    from unittest.mock import patch
+
+    from app.services.paid_cache import run as paid_run
+
+    decided: list[object] = []
+    real = paid_run.refresh_requested
+
+    def spy(event_payload):
+        decided.append(event_payload)
+        return real(event_payload)
+
+    with patch.object(paid_run, "refresh_requested", spy), contextlib.suppress(Exception):
         await _events(handler, EventTypes.REINDEX_RECORD.value, payload)
+    assert decided, "the reindex failed before it decided whether to refresh"
 
 
 async def test_refresh_paid_outputs_purges_the_set_first_and_binds_a_bypassing_run(store: MemoryResultStore) -> None:

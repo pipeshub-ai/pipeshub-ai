@@ -45,16 +45,30 @@ def test_key_layout_golden() -> None:
 
 
 def test_the_digest_is_stable_across_processes() -> None:
+    """Three interpreters with three different hash seeds (not isolated mode, which would ignore the seed)."""
+    import os
+    from pathlib import Path
+
     code = (
-        "from app.services.paid_cache.keys import CacheKey;"
-        "print(CacheKey('org-1','rec-1','ocr_page',1,'m','p','q','i').digest())"
+        "import sys;from app.services.paid_cache.keys import CacheKey;"
+        "print(sys.flags.hash_randomization, CacheKey('org-1','rec-1','ocr_page',1,'m','p','q','i').digest())"
     )
-    outputs = {
-        subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True,
-                       env={"PYTHONPATH": ".", "PYTHONHASHSEED": seed}).stdout.strip()
-        for seed in ("1", "2", "random")
-    }
-    assert outputs == {CacheKey("org-1", "rec-1", "ocr_page", 1, "m", "p", "q", "i").digest()}
+    root = str(Path(__file__).resolve().parents[4])
+    outputs = {}
+    for seed in ("1", "2", "random"):
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": root}
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env, cwd=root,
+        ).stdout.split()
+        outputs[seed] = out[1]
+    assert set(outputs.values()) == {CacheKey("org-1", "rec-1", "ocr_page", 1, "m", "p", "q", "i").digest()}
+
+
+def test_the_org_purge_route_name_is_not_a_record_id() -> None:
+    from app.services.paid_cache.keys import valid_record_id
+
+    assert not valid_record_id("org")
+    assert valid_record_id("Org") and valid_record_id("org-1") and valid_record_id("rec_1")
 
 
 @pytest.mark.parametrize(

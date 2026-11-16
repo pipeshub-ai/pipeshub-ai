@@ -326,3 +326,30 @@ async def test_a_manifest_carries_its_completion_time_and_sequence() -> None:
     one, two = (json.loads(store.files[(ORG, REC, f"manifests/{r}/parse.json")][0]) for r in ("r1", "r2"))
     assert one["completedMs"] == two["completedMs"] and two["seq"] > one["seq"]
     assert one["completedMs"] >= one["startedMs"]
+
+
+async def test_an_object_a_run_reuses_while_the_sweep_runs_is_not_deleted() -> None:
+    """A run notes an old object in its manifest after the sweep listed the folder: the second read protects it."""
+    store = MemoryResultStore()
+    clock = Clock(store)
+    for i, rev in enumerate(("r1", "r2", "r3"), start=1):
+        await _revision(store, rev, [10 + i])
+        clock.advance(2 * HOUR)
+    store.files[(ORG, REC, _obj(99))] = (b"{}", store.now_ms - 3 * DAY)      # old, referenced by no kept manifest
+
+    real_list = store.list_files
+    calls = 0
+
+    async def list_files(org: str, rec: str, *a, **k):
+        nonlocal calls
+        calls += 1
+        result = await real_list(org, rec, *a, **k)
+        if calls == 1:                                                      # after the first listing: a run reuses it
+            run = RunScope(ORG, REC, "r4", "parse", clock=lambda: store.now_ms / 1000)
+            await run.note(store, _obj(99), opens=True)
+        return result
+
+    store.list_files = list_files  # type: ignore[method-assign]
+    await sweep_record(store, ORG, REC, now_ms=clock.now)
+
+    assert _obj(99) in store.results(ORG, REC), "the sweep deleted an object a concurrent run had just listed"

@@ -101,10 +101,10 @@ def install(loop: asyncio.AbstractEventLoop) -> None:
 
 
 @contextlib.contextmanager
-def track() -> Iterator[ThreadWork]:
-    """Collect the executor jobs submitted inside the block."""
+def track(work: ThreadWork | None = None) -> Iterator[ThreadWork]:
+    """Collect the executor jobs submitted inside the block (into ``work``, when the caller keeps one)."""
     install(asyncio.get_running_loop())
-    work = ThreadWork()
+    work = work if work is not None else ThreadWork()
     token = _current.set(work)
     try:
         yield work

@@ -635,8 +635,11 @@ class LocalStorageAdapter implements StorageServiceInterface {
       let stat;
       try {
         stat = await fs.lstat(full);
-      } catch {
-        continue;
+      } catch (error) {
+        // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
+        // works from a reference set with a manifest silently missing.
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
       }
       if (!stat.isFile()) continue;
       listed.push({

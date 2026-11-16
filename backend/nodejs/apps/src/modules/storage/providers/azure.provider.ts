@@ -31,8 +31,13 @@ import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
 import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 
-/** Containers (by URL) that a check in this process has seen to exist. */
-const verifiedContainers = new Set<string>();
+/**
+ * Containers (by URL) that a check in this process has seen to exist, and until when. The verification expires, so a
+ * container deleted after a successful check is created again by a later adapter instead of failing every upload
+ * with ContainerNotFound until the process restarts.
+ */
+const verifiedContainers = new Map<string, number>();
+const VERIFIED_CONTAINER_TTL_MS = 5 * 60 * 1000;
 
 /** Containers (by URL) whose adapter creation this process has already logged. */
 const announcedAdapters = new Set<string>();
@@ -140,11 +145,11 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     const ready = this.containerClient.url;
     // A container seen to exist is not asked about again by the adapters built later in this process
     // (the controller builds one per request): a cache lookup is a request, and the check is a round trip.
-    if (verifiedContainers.has(ready)) {
+    if ((verifiedContainers.get(ready) ?? 0) > Date.now()) {
       return Promise.resolve();
     }
     const check = this.ensureContainerExists().then(() => {
-      verifiedContainers.add(ready);
+      verifiedContainers.set(ready, Date.now() + VERIFIED_CONTAINER_TTL_MS);
     });
     check.catch(() => undefined);
     return check;
