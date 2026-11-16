@@ -313,6 +313,7 @@ class SourceAccounts:
 
     async def _update_marker(
         self, *, changed: bool, deleted_checked: bool | None, fresh: Iterable[int], saving: bool = False,
+        seeded: bool = True,
     ) -> None:
         """Merge this run into the marker by compare-and-set against what is stored now, not what the run read at its
         start: another replica may have written a newer version meanwhile, and writing an older one back would stop
@@ -329,7 +330,9 @@ class SourceAccounts:
             else:
                 # shortcut: another run's final save clears a flag set by a run still saving; that run's own final save
                 # then publishes, so only both failing at once is missed. Key the flag by run if that shows up.
-                noted = {"seeded": True,
+                # Not ``seeded``: an earlier version's single-value fields stay until a listing moves them to buckets.
+                kept = {"seeded": True} if seeded else {k: v for k, v in stored.items() if k != "saving"}
+                noted = {**kept,
                          "version": uuid.uuid4().hex if changed or stored.get("saving") else stored.get("version")}
                 if deleted_checked is not None or "deletedChecked" in stored:
                     noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
@@ -366,7 +369,7 @@ class SourceAccounts:
                 except _Conflict:
                     continue
                 if changed:
-                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets)
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets, seeded=False)
                 return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
