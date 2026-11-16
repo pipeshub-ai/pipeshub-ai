@@ -652,6 +652,36 @@ async def test_an_other_id_noted_for_the_new_holder_passes_its_grants_and_never_
 
 
 @pytest.mark.asyncio
+async def test_an_other_id_noted_while_a_user_sync_saves_the_same_bucket_keeps_both(world) -> None:
+    directory, accounts, config = world
+    ana = "a0@x.com"
+    bo = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(ana))
+    await _admit(directory, accounts, [_user(ana, "old-oid")])
+    await _admit(directory, accounts, [_user(ana, "new-oid")])
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(ana))
+    real_set = config.set_config
+    saving, noted = asyncio.Event(), asyncio.Event()
+
+    async def slow_set(key: str, value: object, **kw: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(noted.wait(), 0.2)
+        return await real_set(key, value, **kw)
+
+    async def note() -> None:
+        await saving.wait()
+        await accounts.note_other_ids({ana: ("new-oid", "perm-new")})
+        noted.set()
+
+    config.set_config = slow_set
+    await asyncio.gather(accounts.before_link([_user(ana, "new-oid"), _user(bo, "bo-oid")]), note())
+
+    assert _saved(config)["linked"][bo] == "bo-oid"
+    assert _saved(config)["other"] == {ana: ["new-oid", "perm-new"]}
+
+
+@pytest.mark.asyncio
 async def test_an_other_id_stops_passing_once_the_address_changes_hands_again(world) -> None:
     directory, accounts, _ = world
     await _admit(directory, accounts, [_user("ana@x.com", "a1")])

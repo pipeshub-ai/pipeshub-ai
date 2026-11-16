@@ -374,12 +374,13 @@ class SourceAccounts:
         permissionId, not its Directory id). Kept only for a re-used address held by ``account``, and taken by
         ``holds`` only while ``account`` holds it, so it can never pass a grant of the earlier account."""
         wanted = {e.lower(): pair for e, pair in ids.items()}
-        deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
-        changed: set[int] = set()
-        for email, (account, other_id) in wanted.items():
-            bucket = _bucket(email)
-            if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
-                continue
-            self._other.setdefault(bucket, {})[email] = [account, other_id]
-            changed.add(bucket)
-        await self._save(changed, deleted)
+        async with self._lock:
+            deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
+            changed: set[int] = set()
+            for email, (account, other_id) in wanted.items():
+                bucket = _bucket(email)
+                if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
+                    continue
+                self._other.setdefault(bucket, {})[email] = [account, other_id]
+                changed.add(bucket)
+            await self._save(changed, deleted)
