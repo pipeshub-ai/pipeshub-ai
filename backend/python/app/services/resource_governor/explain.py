@@ -238,10 +238,20 @@ def project(
                 "heavy": _num(publish.get("heavy")),
             },
         },
-        "downstream": _downstream(_dict(stats.get("downstream_feedback"))),
+        "downstream": _downstream(_downstream_window(stats, admission)),
     }
     out.update(_clean_identity(identity))
     return out
+
+
+def _downstream_window(stats: Mapping[str, Any], admission: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The downstream window of the sample the pools came from.
+
+    ``stats()`` copies ``downstream_feedback`` and builds the admission block under separate lock holds, so a
+    sample can land between them; the admission block's own window is from the same hold as its pools.
+    """
+    window = _dict(_dict(admission.get("feedback")).get("window"))
+    return window if window else _dict(stats.get("downstream_feedback"))
 
 
 def _bool(value: object) -> bool | None:

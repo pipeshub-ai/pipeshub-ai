@@ -318,3 +318,17 @@ def test_the_alias_table_follows_the_names_the_clients_use(source: str, literal:
     assert literal in text
     name = literal.split('"')[1]
     assert explain.normalise_dependency(name) != "other"
+
+
+def test_downstream_comes_from_the_window_of_the_sample_the_pools_came_from() -> None:
+    """stats() copies downstream_feedback and builds the admission block under separate lock holds, so a sample
+    can land between them: the admission block's own window is the one that belongs with its pools."""
+    stats = {
+        "cpu_utilisation": 0.4, "mem_pressure_raw": 0.5, "worker_count": 2,
+        "downstream_feedback": {"throttles": {"qdrant": 7}},  # the previous window
+        "admission": {"sampleSeq": 9, "pools": {}, "feedback": {"window": {"seq": 9, "throttles": {"qdrant": 2}}, "totals": {}}},
+    }
+    body = explain.project(stats)
+    assert body["downstream"]["qdrant"]["throttles"] == 2
+    del stats["admission"]["feedback"]
+    assert explain.project(stats)["downstream"]["qdrant"]["throttles"] == 7  # no window in the block: the old source

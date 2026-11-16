@@ -298,5 +298,7 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
 
     p99, idle_p99 = p99_of(busy), p99_of(idle)
     bound = max(2 * idle_p99, 25.0)  # a 25 ms floor keeps a 1 ms idle p99 from making the bound a noise test
-    assert p99 <= bound and busy[-1] * 1000 <= 1000, (
-        f"event loop lag under a scrape flood: p99 {p99:.1f} ms (idle {idle_p99:.1f}), max {busy[-1] * 1000:.1f} ms")
+    stalled = sum(1 for lag_s in busy if lag_s > 0.25)  # a single host hiccup is allowed (one sample); repeated stalls fail here or in the p99
+    assert p99 <= bound and stalled <= max(1, len(busy) // 100), (
+        f"event loop lag under a scrape flood: p99 {p99:.1f} ms (idle {idle_p99:.1f}), "
+        f"{stalled} of {len(busy)} samples over 250 ms, max {busy[-1] * 1000:.1f} ms")
