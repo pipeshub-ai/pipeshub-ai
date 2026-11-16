@@ -702,6 +702,23 @@ async def test_an_address_with_unreconciled_deleted_evidence_takes_only_its_link
 
 
 @pytest.mark.asyncio
+async def test_an_address_still_linked_to_its_deleted_account_takes_no_grant_until_listed_again(world) -> None:
+    """The link and the deleted evidence name the same account (another listing read the deleted accounts before this
+    address was listed again): its grants are refused, by the gate and by recheck, until a listing shows it, which
+    clears the evidence for a restored account."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ not in this listing
+    await accounts.ensure_loaded()
+    assert not accounts.admits("ana@x.com", "old-oid")
+    assert await accounts.recheck([_grant("ana@x.com", "old-oid")]) == []
+
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])   # restored
+    assert accounts.admits("ana@x.com", "old-oid")
+
+
+@pytest.mark.asyncio
 async def test_the_processor_gate_applies_the_deleted_evidence_too(world) -> None:
     """ana@ is linked to new-oid and the deleted accounts still list old-oid with it, with no re-used entry: a grant
     naming old-oid must not reach the PipesHub user linked to new-oid through the gate every connector's grants use."""

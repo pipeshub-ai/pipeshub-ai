@@ -1041,7 +1041,8 @@ class TestUnfinishedUserRead:
         assert after["devs"] == ["ana@acme.com"]
         assert after["developers"] == []
         assert after["lead"] == []
-        assert ("EntityType.USER", "acc-bo", "bo@acme.com") not in after["project"]
+        # No user grant may name Bo, by account or by address alone.
+        assert not [g for g in after["project"] if g[0] == "EntityType.USER" and (g[1] == "acc-bo" or g[2] == "bo@acme.com")]
 
     async def test_a_user_list_refused_from_the_first_page_fails_closed(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
