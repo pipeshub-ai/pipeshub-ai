@@ -315,14 +315,34 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 # or the UI. Anything else is refused rather than guessed at.
 PIPESHUB_ROLE=${PIPESHUB_ROLE:-all}
 
+# SIGTERM on a parse pod: stop the parsing process first and wait for it to
+# finish its in-flight requests (it drains on SIGTERM), and only then stop
+# Docling, which those requests call. The orchestrator's grace period bounds
+# the wait.
+cleanup_parsing_role() {
+    log "Parsing role: draining in-flight parses..."
+    [ -n "$TICK_PID" ] && kill "$TICK_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && wait "$PARSING_PID" 2>/dev/null || true
+    [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
+    [ -n "$DOCLING_PID" ] && wait "$DOCLING_PID" 2>/dev/null || true
+    log "All services stopped."
+    exit 0
+}
+
 run_parsing_role() {
     log "=== Parsing role starting ==="
+    trap cleanup_parsing_role SIGTERM SIGINT SIGQUIT
     start_docling
     spawn_parsing
     await_services "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" || exit 1
     log "Parsing role started. Monitoring (checking every ${CHECK_INTERVAL}s)..."
     while true; do
-        sleep "$CHECK_INTERVAL"
+        # Sleep in the background so a signal is handled at once, not after
+        # the interval.
+        sleep "$CHECK_INTERVAL" &
+        TICK_PID=$!
+        wait "$TICK_PID" || true
         if ! check_process "$DOCLING_PID" "Docling"; then
             start_docling
         fi

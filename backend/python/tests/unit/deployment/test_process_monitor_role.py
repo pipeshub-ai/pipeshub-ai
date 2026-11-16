@@ -98,3 +98,38 @@ def test_unknown_role_is_refused_and_starts_nothing(tmp_path: pathlib.Path, role
 def test_parsing_role_listens_on_the_configured_port(tmp_path: pathlib.Path) -> None:
     _, _, _, out = _run(tmp_path, {"PIPESHUB_ROLE": "parsing", "PARSING_SERVICE_PORT": "9999"})
     assert "port 9999" in out
+
+
+def test_parsing_role_drains_in_flight_parses_before_stopping_docling(tmp_path: pathlib.Path) -> None:
+    """SIGTERM reaches the parsing process first; Docling stays up until it has exited."""
+    app = tmp_path / "app"
+    (app / "python").mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    events = tmp_path / "events"
+    python = bin_dir / "python"
+    python.write_text(
+        "#!/bin/bash\n"
+        'case "$*" in\n'
+        f'  *parsing_main*) trap \'sleep 2; echo parsing-exit >> {events}; exit 0\' TERM ;;\n'
+        f'  *) trap \'echo docling-term >> {events}; exit 0\' TERM ;;\n'
+        "esac\n"
+        "while true; do sleep 0.1; done\n"
+    )
+    python.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text("#!/bin/bash\nexit 0\n")
+    curl.chmod(0o755)
+    script = tmp_path / "process_monitor.sh"
+    script.write_text(SCRIPT.read_text().replace("/app/", f"{app}/"))
+    proc = subprocess.Popen(
+        ["bash", str(script)],
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "CHECK_INTERVAL": "30", "STARTUP_POLL_SECONDS": "1",
+             "PIPESHUB_ROLE": "parsing"},
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    time.sleep(3)
+    proc.terminate()
+    out, _ = proc.communicate(timeout=20)
+    assert proc.returncode == 0, out
+    assert events.read_text().split() == ["parsing-exit", "docling-term"], out

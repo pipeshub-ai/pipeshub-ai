@@ -116,8 +116,11 @@ spec:
             timeoutSeconds: {{ .Values.parsing.healthCheck.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.parsing.healthCheck.livenessProbe.failureThreshold }}
       {{- with .Values.parsing.nodeSelector }}
+      {{- $selector := include "pipeshub-ai.compactMap" . }}
+      {{- if $selector }}
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
+        {{- $selector | nindent 8 }}
+      {{- end }}
       {{- end }}
       {{- if .Values.parsing.affinity }}
       affinity:

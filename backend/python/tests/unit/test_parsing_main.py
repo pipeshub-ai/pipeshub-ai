@@ -35,7 +35,7 @@ class TestHealthCheck:
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
-        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes", "admission"}
+        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes", "admission", "load"}
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error

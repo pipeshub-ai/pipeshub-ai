@@ -66,6 +66,7 @@ VARIANTS=(
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-parsing|-f values-eks.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-single-az-parsing|-f values-eks.yaml -f values-eks-single-az.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
   "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
 )
 
@@ -197,6 +198,11 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'topologyKey: topology.kubernetes.io/zone' absent
   expect eks-single-az 'app.kubernetes.io/component: redis' absent
   expect eks-single-az 'internet-facing' absent
+  # A preset that clears the parsing node pin must not render the cleared key (a null label value is refused by the API).
+  expect eks-single-az-parsing 'name: ci-pipeshub-ai-parsing' present
+  expect eks-single-az-parsing 'pipeshub/role: null' absent
+  expect eks-single-az-parsing 'pipeshub/role: parse' absent
+  expect eks-single-az-parsing 'key: pipeshub/role' present 'name: ci-pipeshub-ai-parsing'
   # The release here is "ci"; a selector naming another release matches no pods.
   expect eks-single-az 'topologyKey: kubernetes.io/hostname' present 'kind: Deployment'
   expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent

@@ -291,7 +291,7 @@ kubectl get pods -n "$NAMESPACE" -l pipeshub.ai/workload=parsing -o wide
 kubectl get nodes -l pipeshub/role=parsing
 ```
 
-With `--existing-cluster` the preset does not pin parsing pods to a node group, so they run wherever the other pods do. To add the node group to a cluster created from an earlier `cluster.yaml`, run `eksctl create nodegroup --config-file deployment/helm/aws/cluster.yaml --include parsing`.
+With `--existing-cluster` the preset does not pin parsing pods to a node group, so they run on any node with room (each requests 2 CPU and 4 GiB). They keep the toleration for the parsing group's taint, so after you add that group they can run there too; to dedicate it to parsing, set `parsing.nodeSelector` to `pipeshub/role: parsing`. To add the node group to a cluster created from an earlier `cluster.yaml`, run `eksctl create nodegroup --config-file deployment/helm/aws/cluster.yaml --include parsing`.
 
 ## 3. Storage class and the load balancer controller
 

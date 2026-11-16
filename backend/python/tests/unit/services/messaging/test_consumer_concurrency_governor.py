@@ -79,6 +79,21 @@ class TestIndexAndParseCeiling:
         assert concurrency.parse_lease_pool(None) == "parsing"
         assert concurrency.parse_lease_pool(ParseTier.LIGHT) == "parsing:light"
 
+    def test_remote_parsing_shares_one_lease_between_tiers(self, monkeypatch) -> None:
+        """With a remote parsing service the fleet-wide cap is PARSING_SERVICE_CONCURRENCY, not one
+        pool of it per tier: light and heavy parses take the same lease pool and limit."""
+        monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+        monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "6")
+        governor = _make_governor()
+        host = _host(governor=governor)
+        assert concurrency.parse_lease_pool(ParseTier.LIGHT) == concurrency.parse_lease_pool(ParseTier.HEAVY) == "parsing"
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == concurrency.parse_ceiling(host, ParseTier.HEAVY) == governor.heavy_parse_lease_limit
+
+    def test_local_parsing_keeps_the_tier_split_whatever_the_concurrency_setting(self, monkeypatch) -> None:
+        monkeypatch.delenv("USE_PARSING_SERVICE", raising=False)
+        monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "6")
+        assert concurrency.parse_lease_pool(ParseTier.LIGHT) == "parsing:light"
+
     def test_light_parse_ceiling_is_not_the_heavy_ceiling(self) -> None:
         """The bug this guards: parse_ceiling used to return ceilings.heavy
         for every tier, so a cluster-wide Redis lease of 4 (Docling-sized)

@@ -915,7 +915,12 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     RSS, and a Jira/Slack/Markdown parse waiting on it will never occupy
     more than a handful of local LIGHT_PARSE slots, so the node-local
     gate never sees demand and stays on its floor.
+
+    With a remote parsing service the two tiers share one cluster lease (the heavy one), so the
+    fleet-wide cap on parses in flight is ``PARSING_SERVICE_CONCURRENCY``, not twice that.
     """
+    if remote_parse_concurrency() is not None:
+        tier = ParseTier.HEAVY
     if (lane := _lane(host)) is not None:
         return lane.parse_lease_limit(tier)
     governor = host.governor
@@ -931,8 +936,11 @@ def parse_lease_pool(tier: ParseTier | None, host: "ConcurrencyHost | None" = No
 
     Split by tier because the two ceilings differ: a light record must not
     consume one of the few heavy-parse leases a Docling PDF holds for
-    minutes. The priority lane's parses count against pools of their own.
+    minutes. The priority lane's parses count against pools of their own. With a remote parsing
+    service both tiers take the one heavy pool, so ``PARSING_SERVICE_CONCURRENCY`` caps the fleet.
     """
+    if remote_parse_concurrency() is not None:
+        tier = ParseTier.HEAVY
     lane = _lane(host) if host is not None else None
     if lane is not None:
         return lane.parse_lease_pool(tier)
