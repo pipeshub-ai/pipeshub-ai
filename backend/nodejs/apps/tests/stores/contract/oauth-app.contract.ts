@@ -5,6 +5,7 @@
 import { expect } from 'chai';
 import { UniqueConstraintError } from '../../../src/libs/repositories/errors';
 import {
+  APP_OWNER_FORMAT,
   NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
@@ -19,6 +20,8 @@ export interface OAuthAppFixture {
   rawKeys(id: string): Promise<string[]>;
   /** Makes a row older, so ordering does not depend on the clock. */
   setCreatedAt(id: string, at: Date): Promise<void>;
+  /** Makes a row look stored by an older release (no owner format). */
+  clearOwnerFormat(id: string): Promise<void>;
 }
 
 export function describeOAuthAppContract(fx: OAuthAppFixture): void {
@@ -49,6 +52,8 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
     expect(dto.orgId).to.equal(org);
     expect(dto.createdBy).to.equal(user);
     expect(dto.status).to.equal(OAuthAppStatus.ACTIVE);
+    // Every app this code stores says so; the repair looks only at apps without it.
+    expect(dto.ownerFormat).to.equal(APP_OWNER_FORMAT);
     expect(dto).to.include({
       isDeleted: false,
       accessTokenLifetime: 3600,
@@ -124,32 +129,30 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       expect((await repo.listInOrg(org, { skip: 0, limit: 10 })).total).to.equal(0);
     });
 
-    it('disownInstanceApps: only the instance apps of that org stored before the bound lose their creator, once', async () => {
+    it('disownInstanceApps: only instance apps an older release stored lose their creator, once', async () => {
       const org = fx.newId();
       const other = fx.newId();
       const borrowed = fx.newId();
       // The first-party device app's client id is one per store on MongoDB: each store's own suite covers it.
-      const dynamic = await repo.create(mk(org, borrowed, { isDynamic: true }));
+      const legacy = await repo.create(mk(org, borrowed, { isDynamic: true }));
       const second = await repo.create(mk(org, borrowed, { isDynamic: true, isConfidential: false }));
       const own = await repo.create(mk(org, borrowed));
       const elsewhere = await repo.create(mk(other, borrowed, { isDynamic: true }));
-      const done = await repo.create(mk(org, NO_APP_CREATOR, { isDynamic: true }));
-      const old = new Date(Date.now() - 120_000);
-      for (const a of [dynamic, second, own, elsewhere, done]) await fx.setCreatedAt(a._id, old);
-      const bound = new Date(Date.now() - 60_000);
-      // Stored by the current code after the bound: a metadata client keeps the person who consented.
+      for (const a of [legacy, second, own, elsewhere]) await fx.clearOwnerFormat(a._id);
+      // Stored by this release: a metadata client keeps the person who consented, whenever the repair runs.
       const consented = await repo.create(mk(org, borrowed, { isDynamic: true }));
+      expect(consented.ownerFormat).to.equal(APP_OWNER_FORMAT);
 
-      expect(await repo.disownInstanceApps(org, org, bound)).to.equal(2);
+      expect(await repo.disownInstanceApps(org, org)).to.equal(2);
 
-      for (const a of [dynamic, second, done]) {
-        expect((await repo.findByClientId(a.clientId))?.createdBy, a.clientId).to.equal(NO_APP_CREATOR);
-        expect((await repo.findByClientId(a.clientId))?.orgId, a.clientId).to.equal(org);
+      for (const a of [legacy, second]) {
+        const stored = await repo.findByClientId(a.clientId);
+        expect(stored, a.clientId).to.include({ createdBy: NO_APP_CREATOR, orgId: org, ownerFormat: APP_OWNER_FORMAT });
       }
       expect((await repo.findByClientId(own.clientId))?.createdBy).to.equal(borrowed);
       expect((await repo.findByClientId(elsewhere.clientId))?.createdBy).to.equal(borrowed);
       expect((await repo.findByClientId(consented.clientId))?.createdBy).to.equal(borrowed);
-      expect(await repo.disownInstanceApps(org, org, bound)).to.equal(0);
+      expect(await repo.disownInstanceApps(org, org)).to.equal(0);
     });
 
     it('listOwned: newest first, skip and limit, total, status filter, search', async () => {

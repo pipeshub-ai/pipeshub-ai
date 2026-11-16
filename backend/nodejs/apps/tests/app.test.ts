@@ -1070,29 +1070,6 @@ describe('Application', () => {
       expect(listenStub.firstCall.args[0]).to.equal(3000);
     });
 
-    // The one-time repair of instance apps changes only apps older than this bound, so it must precede every request.
-    it('records the instance app repair bound before it listens, and starts when that fails', async () => {
-      for (const fails of [false, true]) {
-        const app = new Application();
-        (app as any).logger = mockLogger;
-        const mark = fails ? sandbox.stub().rejects(new Error('kv down')) : sandbox.stub().resolves();
-        (app as any).configurationManagerContainer = { get: () => ({ markInstanceAppOwnerBound: mark }) };
-        const server = (app as any).server as http.Server;
-        const listenStub = sandbox.stub(server, 'listen').callsFake(
-          (_port: number, callback: () => void) => {
-            callback();
-            return server;
-          },
-        );
-
-        await app.start();
-
-        expect(mark.calledOnce, String(fails)).to.be.true;
-        expect(mark.calledBefore(listenStub), String(fails)).to.be.true;
-        expect(listenStub.calledOnce, String(fails)).to.be.true;
-      }
-    });
-
     it('should start on custom port from environment', async () => {
       const original = process.env.PORT;
       process.env.PORT = '5555';

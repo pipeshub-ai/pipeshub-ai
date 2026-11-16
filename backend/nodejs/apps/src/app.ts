@@ -934,7 +934,6 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await this.markMigrationBounds();
       await new Promise<void>((resolve) => {
         this.server.listen(this.port, () => {
           this.logger.info(`Server started on port ${this.port}`);
@@ -947,22 +946,6 @@ export class Application {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
-    }
-  }
-
-  /**
-   * Before the first request: an app stored from now on is newer than the bound the one-time
-   * repair of instance apps stops at. Never fails the start; without a bound that repair waits.
-   */
-  private async markMigrationBounds(): Promise<void> {
-    try {
-      await this.configurationManagerContainer
-        .get(MigrationService)
-        .markInstanceAppOwnerBound();
-    } catch (error) {
-      this.logger.warn('Could not record the instance app repair bound', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
     }
   }
 

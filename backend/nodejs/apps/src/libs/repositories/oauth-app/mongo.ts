@@ -11,6 +11,7 @@ import { storedKnowledgeLimitFilter } from '../../../modules/oauth_provider/type
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
+  APP_OWNER_FORMAT,
   NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
@@ -63,6 +64,7 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     try {
       const app = await OAuthApp.create({
         ...input,
+        ownerFormat: APP_OWNER_FORMAT,
         orgId: oid(input.orgId),
         createdBy: oid(input.createdBy),
         ...(input.tokenIdentityUserId !== undefined && {
@@ -226,39 +228,26 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
   async disownInstanceApps(
     orgId: string,
     dynamicClientOrgId: string,
-    createdBefore: Date,
   ): Promise<number> {
-    const move = dynamicClientOrgId !== orgId;
     const ids = await OAuthApp.distinct('_id', {
       orgId: oid(orgId),
-      createdAt: { $lt: createdBefore },
-      $and: [
-        {
-          $or: [
-            { isDynamic: true },
-            { clientId: FIRST_PARTY_DEVICE_CLIENT_ID },
-          ],
-        },
-        {
-          $or: [
-            { createdBy: { $ne: oid(NO_APP_CREATOR) } },
-            ...(move ? [{ isDynamic: true }] : []),
-          ],
-        },
-      ],
+      ownerFormat: null,
+      $or: [{ isDynamic: true }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }],
     });
     if (ids.length === 0) return 0;
     await OAuthApp.updateMany(
       { _id: { $in: ids } },
-      { $set: { createdBy: oid(NO_APP_CREATOR) } },
+      {
+        $set: { createdBy: oid(NO_APP_CREATOR), ownerFormat: APP_OWNER_FORMAT },
+      },
     );
-    if (move) {
+    if (dynamicClientOrgId !== orgId) {
       await OAuthApp.updateMany(
         { _id: { $in: ids }, isDynamic: true },
         { $set: { orgId: oid(dynamicClientOrgId) } },
       );
     }
-    // Each app once, whichever of the two writes it needed, as PostgreSQL's one UPDATE counts.
+    // Each app once, as PostgreSQL's one UPDATE counts.
     return ids.length;
   }
 

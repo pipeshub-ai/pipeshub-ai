@@ -57,7 +57,7 @@ export class MigrationService {
     // after a wait that the connector service itself has to finish would
     // always miss the boot that introduced it.
     await this.serviceAccountKindBackfillMigration();
-    // First of the rest: a metadata document client consented to before it runs would lose its creator.
+    // Every start: repairs the instance apps an older release stored (and an older process during a rolling upgrade).
     await this.instanceAppOwnerMigration(deps.dynamicClientOrg);
     // Until it runs, a policy may still name a removed sign-in method.
     await this.signInMethodsRemovalMigration();
@@ -96,23 +96,11 @@ export class MigrationService {
     }
   }
 
-  /** Before the process accepts requests (`Application.start`): see InstanceAppOwnerMigration.markBound. */
-  async markInstanceAppOwnerBound(): Promise<void> {
-    await InstanceAppOwnerMigration.markBound(this.keyValueStoreService);
-  }
-
   async instanceAppOwnerMigration(
     dynamicClientOrg: () => Promise<string | null>,
   ): Promise<void> {
     try {
-      const result = await new InstanceAppOwnerMigration(
-        this.logger,
-        this.keyValueStoreService,
-        dynamicClientOrg,
-      ).run();
-      if (!result.skipped) {
-        this.logger.info('✅ Instance OAuth apps repaired', result);
-      }
+      await new InstanceAppOwnerMigration(this.logger, dynamicClientOrg).run();
     } catch (error) {
       this.logger.error(
         'Instance OAuth app repair failed; retried at the next start',

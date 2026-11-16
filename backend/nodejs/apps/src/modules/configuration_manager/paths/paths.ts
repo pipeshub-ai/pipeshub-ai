@@ -53,9 +53,6 @@ export const configPaths = {
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
   adminRoleMigration: '/migrations/admin_role_v1',
   documentOrgIdMigration: '/migrations/document_orgid_v1',
-  instanceAppOwnerMigration: '/migrations/instance_app_owner_v1',
-  // ISO time before which the repair above may change an app (set before the first request).
-  instanceAppOwnerBound: '/migrations/instance_app_owner_v1_bound',
   signInMethodsRemovalMigration: '/migrations/sign_in_methods_removal_v1',
   webSearchDuckDuckGoDefaultMigration:
     '/migrations/web_search_duckduckgo_default_v1',

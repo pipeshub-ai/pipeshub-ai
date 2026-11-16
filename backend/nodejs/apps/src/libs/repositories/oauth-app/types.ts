@@ -28,6 +28,13 @@ export enum OAuthGrantType {
  */
 export const NO_APP_CREATOR = '000000000000000000000000';
 
+/**
+ * `ownerFormat` of every app this code stores: its owner fields follow the rules above (no borrowed
+ * creator). An app without it was stored by an older release, which is what the one-time repair
+ * (`disownInstanceApps`) looks for; the repair sets it on what it fixes.
+ */
+export const APP_OWNER_FORMAT = 1;
+
 /** A stored OAuth app with every id as a string; same keys as the stored row. */
 export interface OAuthAppDto {
   _id: string;
@@ -50,6 +57,8 @@ export interface OAuthAppDto {
   termsOfServiceUrl?: string;
   isConfidential: boolean;
   isDynamic?: boolean;
+  /** `APP_OWNER_FORMAT` on an app stored or repaired by this code; absent on one an older release stored. */
+  ownerFormat?: number;
   /** What every token of this app may reach; absent means everything the connecting user can see. */
   knowledgeLimit?: KnowledgeLimit;
   accessTokenLifetime: number;
@@ -198,18 +207,18 @@ export interface OAuthAppRepository {
     grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
   ): Promise<void>;
   /**
-   * One-time repair of the instance apps of `orgId` created before `createdBefore` (dynamically
-   * registered clients and the first-party device app, deleted or not), which were once stored with
-   * a borrowed user as their creator: sets `createdBy` to `NO_APP_CREATOR`, and stores each dynamic
-   * client under `dynamicClientOrgId` when that is another org. An app created from
-   * `createdBefore` on is left as it is (a metadata client keeps the person who consented).
-   * Returns how many apps changed, each counted once; a second call changes none. PostgreSQL
-   * keeps every row in its org, so there a different org is refused.
+   * Repair of the instance apps of `orgId` (dynamically registered clients and the first-party
+   * device app, deleted or not) that an older release stored, with a borrowed user as their
+   * creator: every such app without `ownerFormat`. Sets `createdBy` to `NO_APP_CREATOR` and
+   * `ownerFormat`, and stores each dynamic client under `dynamicClientOrgId` when that is another
+   * org. An app this code stored (a metadata client keeps the person who consented) has
+   * `ownerFormat` and is left alone, so it is safe to run at every start. Returns how many apps
+   * changed, each counted once. PostgreSQL keeps every row in its org, so there a different org
+   * is refused.
    */
   disownInstanceApps(
     orgId: string,
     dynamicClientOrgId: string,
-    createdBefore: Date,
   ): Promise<number>;
   /** Client ids of live apps whose tokens act as the given user (a service account). */
   listClientIdsActingAs(userId: string): Promise<string[]>;
