@@ -854,19 +854,37 @@ async def test_pg_the_statements_per_delivery_are_counted(pg) -> None:
     """One claim, one admit, one ack: the admission adds exactly one statement per opened message (throughput on this host is not measured)."""
     await pg.queue.ensure_group(pg.topic, "g", from_start=True)
     await _publish_raw(pg, "{}")
+    import contextlib
+
     seen: list[str] = []
     original = pg.queue._write
 
+    class _Counting:
+        """The transaction, recording the name of every statement it runs."""
+
+        def __init__(self, tx) -> None:
+            self._tx = tx
+
+        def __getattr__(self, name):  # noqa: ANN204
+            attr = getattr(self._tx, name)
+            if name not in ("execute", "fetch", "fetchrow", "fetchval"):
+                return attr
+
+            async def run(sql, *a, **k):  # noqa: ANN202
+                seen.append(sql.split("*/")[0].split(":")[-1].strip())
+                return await attr(sql, *a, **k)
+
+            return run
+
     async def counting():  # noqa: ANN202
-        tx = await original()
-        inner = tx.execute
+        unit = await original()  # a context manager that yields the transaction
 
-        async def execute(sql, *a):  # noqa: ANN202
-            seen.append(sql.split("*/")[0].split(":")[-1].strip())
-            return await inner(sql, *a)
+        @contextlib.asynccontextmanager
+        async def wrapped():  # noqa: ANN202
+            async with unit as tx:
+                yield _Counting(tx)
 
-        tx.execute = execute
-        return tx
+        return wrapped()
 
     pg.queue._write = counting
     (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
