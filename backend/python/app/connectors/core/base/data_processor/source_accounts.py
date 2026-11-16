@@ -184,10 +184,10 @@ class SourceAccounts:
         the grants are written. Only pairs this process has not seen as they are go through, so a page of grants
         repeating known accounts costs nothing. False as ``before_link``: the stored links could not be read."""
         fresh = []
-        for email, source_id in accounts:
-            if not email or not (account := _account_id(source_id)):
+        for address, source_id in accounts:
+            if not address or not (account := _account_id(source_id)):
                 continue
-            email = email.lower()
+            email = address.lower()
             bucket = _bucket(email)
             if bucket in self._read and self._linked.get(bucket, {}).get(email) == account:
                 continue
