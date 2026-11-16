@@ -1370,7 +1370,7 @@ class TestSyncUsers:
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
         connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
 
-        async def pages(api_version: str, q: str, **_: object):
+        async def pages(api_version: str, q: str, **_: object) -> AsyncIterator[list[dict]]:
             if "UserLogin" in q:
                 answer = frozen_answers.pop(0)
                 if isinstance(answer, Exception):

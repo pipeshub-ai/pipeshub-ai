@@ -2015,7 +2015,7 @@ class TestSyncUserGroupsDeepFlow:
         connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_member_is_written_with_the_account_id_it_was_checked_as(self):
+    async def test_a_member_is_written_with_the_account_id_it_was_checked_as(self) -> None:
         """A reindex may refresh the user cache while the members are read; if the address now names another
         account there, the member is not written under that other account's id."""
         connector = _make_connector()
