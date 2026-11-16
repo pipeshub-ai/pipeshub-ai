@@ -2736,6 +2736,12 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         user_context = _get_user_context(request)
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
+        if not template:
+            raise AgentTemplateNotFoundError(template_id)
+        if not template.get("can_delete", False):
+            raise PermissionDeniedError("delete this template (only owner can delete)")
+
         result = await services["graph_provider"].delete_agent_template(template_id, user_doc["_key"])
 
         if not result:
@@ -2763,6 +2769,12 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
         if "memory" in body and body["memory"] is None:
             body["memory"] = {"type": []}
+
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
+        if not template:
+            raise AgentTemplateNotFoundError(template_id)
+        if not template.get("can_edit", False):
+            raise PermissionDeniedError("edit this template (only owner can edit)")
 
         result = await services["graph_provider"].update_agent_template(template_id, body, user_doc["_key"])
         if not result:

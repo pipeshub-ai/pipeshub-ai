@@ -68,7 +68,7 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import spawn_in_request
+from app.core.org_context import MissingOrgContext, spawn_in_request
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphMemoryLimitError,
@@ -6343,16 +6343,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> User | None:
-        """Get user by email; with ``org_id``, only a user of that organisation."""
+        """Get the user of org ``org_id`` with this email."""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
-            scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
-            query = f"""
+            parameters = {"email": email, "org_id": org_id}
+            query = """
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email) {org_filter}
+            WHERE toLower(u.email) = toLower($email) AND u.orgId = $org_id
             RETURN u
             LIMIT 1
             """
@@ -10443,18 +10443,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_app_users(
         self,
         users: list[AppUser],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> None:
         """Batch upsert app users with org and app relations"""
         try:
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs(transaction=transaction)
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0].get("id") or orgs[0].get("_key")
+            if not org_id:
+                raise MissingOrgContext("batch_upsert_app_users needs the org of the connector the users come from")
             connector_id = users[0].connector_id
 
             # Get or create app
@@ -10464,6 +10463,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 now = get_epoch_timestamp_in_ms()
                 app_data = {
                     "id": connector_id,
+                    "orgId": org_id,      # the sync-state reads take only an app of the org
                     "name": connector_id,
                     "type": users[0].app_name.value,
                     "appGroup": users[0].app_name.value,
@@ -10480,7 +10480,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             for user in users:
                 # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -10495,7 +10495,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -10929,21 +10929,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
-        """Get entity ID (user or group) by email"""
+        """Get the ID of the user, group or person of the org with this email"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) = toLower($email)
+            AND toLower(n.email) = toLower($email) AND n.orgId = $org_id
             RETURN n.id AS id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -10956,9 +10960,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """Bulk get entity IDs for multiple emails"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             if not emails:
                 return {}
@@ -10968,13 +10976,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) IN [e IN $emails | toLower(e)]
+            AND toLower(n.email) IN [e IN $emails | toLower(e)] AND n.orgId = $org_id
             RETURN n.email AS email, n.id AS id, labels(n) AS labels
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"emails": unique_emails},
+                parameters={"emails": unique_emails, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -11384,10 +11392,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles."""
         query = """
         MATCH (u:User {id: $user_id})-[p:PERMISSION]->(n)
-        WHERE (n:Record OR n:RecordGroup OR n:Group) AND n.connectorId = $connector_id
+        WHERE (n:Record OR n:RecordGroup OR n:Group OR n:Role) AND n.connectorId = $connector_id
         DELETE p
         RETURN count(p) AS removed
         """
@@ -14121,19 +14129,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_email: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """Get user's sync state for a specific service"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
+            # properties(): the client's result.data() turns a relationship into a (start, type, end) tuple, not its fields
             query = """
-            MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
-            RETURN rel, u.id AS from_id, app.id AS to_id
+            MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            // the org's app: by orgId, or one written without it that the org links
+            WHERE app.orgId = $org_id OR ((app.orgId IS NULL OR app.orgId = "") AND EXISTS { (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app) })
+            RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"user_email": user_email, "service_type": service_type},
+                parameters={"user_email": user_email, "service_type": service_type, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -14157,9 +14172,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_email: str,
         state: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """Update user's sync state for a specific service"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             updated_timestamp = get_epoch_timestamp_in_ms()
             self.validator.validate_edge_update(
@@ -14167,15 +14186,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             query = """
-            MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            // the org's app: by orgId, or one written without it that the org links
+            WHERE app.orgId = $org_id OR ((app.orgId IS NULL OR app.orgId = "") AND EXISTS { (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app) })
             SET rel.syncState = $state, rel.lastSyncUpdate = $updated_timestamp
-            RETURN rel, u.id AS from_id, app.id AS to_id
+            RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             """
 
             results = await self.client.execute_query(
                 query,
                 parameters={
                     "user_email": user_email,
+                    "org_id": org_id,
                     "service_type": service_type,
                     "state": state,
                     "updated_timestamp": updated_timestamp

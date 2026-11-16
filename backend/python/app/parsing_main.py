@@ -8,9 +8,6 @@ returns a ``BlocksContainer`` JSON.  All parser implementations live in
 import asyncio
 import logging
 import os
-import signal
-import sys
-import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -18,7 +15,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
 from app.api.routes.parsing import parse_admission_stats
@@ -38,7 +35,6 @@ from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.json.json_parser import JSONParser
@@ -77,6 +73,7 @@ from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
+from app.services.parsing.load import parse_load, render_metrics
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
 from app.services.parsing.providers.local_docling_parser import LocalDoclingParser
 from app.services.parsing.providers.ocr_parser import OCRParser
@@ -103,13 +100,9 @@ logger = logging.getLogger("parsing_main")
 PARSE_THREAD_POOL_HEADROOM = 4
 
 
-def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
-    logger.info("Received signal %s; shutting down gracefully", signum)
-    sys.exit(0)
-
-
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGINT, handle_sigterm)
+# No SIGTERM/SIGINT handler is installed here. uvicorn installs its own while it serves and drains
+# in-flight requests before it exits; this module is imported again behind uvicorn's import string
+# (``app.parsing_main:app``), so a handler set at import would be a second owner of those signals.
 
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
@@ -404,6 +397,17 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(parsing_router)
 
 
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> PlainTextResponse:
+    """In-flight and saturation counters in Prometheus text format, for a dashboard or an alert to read."""
+    governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+    default_capacity = governor.ceilings.heavy if governor is not None else None
+    return PlainTextResponse(
+        render_metrics(default_capacity=default_capacity),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 @app.get("/health")
 async def health_check() -> JSONResponse:
     registry: ParserRegistry = app.state.parser_registry
@@ -411,6 +415,7 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
+        "load": parse_load().snapshot(),
         "cpu": {
             "effective_cpus": effective_cpu_count(),
             "source": effective_cpu_source(),
@@ -449,6 +454,31 @@ async def health_check() -> JSONResponse:
         container.logger().warning("LLM gateway stats failed: %s", stats_error)
         content["llm_gateway"] = {"error": "unavailable"}
     return JSONResponse(content=content)
+
+
+DOCLING_READY_TIMEOUT_SECONDS = 2.0
+
+
+@app.get("/health/ready")
+async def readiness() -> JSONResponse:
+    """Ready to take parses: this process is up and the Docling service it calls on localhost answers.
+
+    ``/health`` stays the liveness signal and does not look at Docling, so a busy Docling cannot get a
+    pod restarted; this one is for readiness probes, which only take the pod out of rotation.
+    """
+    import httpx
+
+    url = os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081").rstrip("/") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=DOCLING_READY_TIMEOUT_SECONDS) as client:
+            response = await client.get(url)
+        ready = response.status_code == 200
+    except httpx.HTTPError:
+        ready = False
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "unavailable", "docling": "ok" if ready else "unavailable"},
+    )
 
 
 def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:

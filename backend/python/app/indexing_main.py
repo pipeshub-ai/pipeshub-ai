@@ -135,6 +135,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
@@ -2829,6 +2830,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
+        remote_parse_slots=remote_parse_concurrency(),
     )
     app.state.governor = governor
     app_container.resource_governor = governor
