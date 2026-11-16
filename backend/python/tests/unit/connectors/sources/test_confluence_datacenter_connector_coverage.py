@@ -1838,7 +1838,8 @@ class TestSyncUsers:
     async def test_no_response(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=None)
+        c._server_version = (10, 2, 0)
+        ds.get_active_users_v1 = AsyncMock(return_value=None)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -1846,7 +1847,8 @@ class TestSyncUsers:
     async def test_error_response(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(500))
+        c._server_version = (10, 2, 0)
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -1854,7 +1856,8 @@ class TestSyncUsers:
     async def test_empty_results(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
+        c._server_version = (10, 2, 0)
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 

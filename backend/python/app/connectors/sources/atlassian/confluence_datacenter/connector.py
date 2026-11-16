@@ -164,6 +164,11 @@ SUPER_GROUP = "confluence-administrators"
 # The groups that hold "Can use" by default (https://confluence.atlassian.com/doc/confluence-groups-139478.html).
 CAN_USE_GROUPS = ("confluence-users", SUPER_GROUP)
 
+# (major, minor) releases whose published REST docs have GET /rest/api/admin/users/list/active: from 9.3.0
+# (absent from 9.1.0-9.2.1) to 11.1.0, the newest published. Raise the upper bound after checking a newer
+# release's docs (https://developer.atlassian.com/server/confluence/rest/v<version>/api-group-admin-users/).
+ACTIVE_USER_LIST_VERSIONS = ((9, 3), (11, 1))
+
 
 @ConnectorBuilder("Confluence Data Center")\
     .in_group("Atlassian")\
@@ -645,13 +650,34 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         """
         Sync users from Confluence using offset-based pagination.
 
-        DC (USE_DATA_CENTER_APIS = True):  GET /rest/api/user/list
+        DC (USE_DATA_CENTER_APIS = True):  GET /rest/api/admin/users/list/active
         Cloud (USE_DATA_CENTER_APIS = False): GET /rest/api/search/user?cql=type=user
 
         Filters out users without email addresses.
         """
         try:
             self.logger.info("Starting user synchronization...")
+
+            if USE_DATA_CENTER_APIS:
+                # /rest/api/user/list returns "Disabled users" too, and its Person entries carry no documented status
+                # (https://developer.atlassian.com/server/confluence/rest/v1110/api-group-user/). Data Center allows
+                # duplicate emails, so a linked disabled account would read as its address changing hands and take
+                # the active account's grants. The active list "will exclude users that are: anonymous, deactivated,
+                # externally deleted, shadowed, unlicensed"
+                # (https://developer.atlassian.com/server/confluence/rest/v1110/api-group-admin-users/).
+                # shortcut: 9.1-9.2 document neither that list nor a user status, so they link no user (fail closed)
+                # and their users get no grants until the server is upgraded to 9.3 or later. The list "relies on
+                # search index and might not be accurate when site reindex is in progress"; a sync during a reindex
+                # can still see a just-disabled account, until the next sync after the reindex.
+                server_version = await self._get_server_version()
+                low, high = ACTIVE_USER_LIST_VERSIONS
+                if not low <= server_version[:2] <= high:
+                    self.logger.error(
+                        "Confluence Data Center %s documents no way to tell active users from disabled ones "
+                        "(supported: %s.%s to %s.%s); no user is linked, so users get no grants",
+                        ".".join(map(str, server_version)) or "unknown", *low, *high,
+                    )
+                    return
 
             # Pagination variables
             batch_size = 200 if USE_DATA_CENTER_APIS else 100
@@ -664,11 +690,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 datasource = await self._get_fresh_datasource()
 
                 if USE_DATA_CENTER_APIS:
-                    # DC: Use reliable /user/list endpoint (avoids truncation bug in /search/user)
-                    response = await datasource.get_user_list_v1(
-                        start=start,
-                        limit=batch_size
-                    )
+                    response = await datasource.get_active_users_v1(start=start, limit=batch_size)
                 else:
                     # Cloud: Use CQL search
                     response = await datasource.search_users(
@@ -692,9 +714,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # Transform users (skip users without email)
                 app_users = []
                 for user_result in users_data:
-                    # DC /user/list returns flat user objects; Cloud /search/user wraps in 'user' key
+                    # DC returns flat user objects; Cloud /search/user wraps in 'user' key
                     if USE_DATA_CENTER_APIS:
                         user_data = user_result
+                        # "`type`: The type of user (e.g., `known`, `anonymous`)" (same page as above); any other
+                        # or missing value is not a user we can vouch for, so it is not linked.
+                        if user_data.get("type") != "known":
+                            total_skipped += 1
+                            continue
                     else:
                         # Flatten: merge nested 'user' dict with top-level fields
                         user_data = {**user_result.get("user", {}), **{k: v for k, v in user_result.items() if k != "user"}}
@@ -733,14 +760,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 )
                                 continue
 
-                # Move to next page
-                start += batch_size
-
-                # Check if we've reached the end
-                if len(users_data) < batch_size:
+                # The active list documents no maximum page size, so a page shorter than asked for may not be the last.
+                next_start = v1_next_start(response_data, start, len(users_data), batch_size, use_link_offset=False)
+                if next_start is None:
                     break
+                start = next_start
 
-            self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
+            self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email or not a known user): {total_skipped}")
 
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
