@@ -447,13 +447,12 @@ class ConfigurationService:
         would read as "lost the race" forever.
         """
         swapped = await self.store.compare_and_set(key, expected, new)
+        # Evicted either way. On a win, ``new`` is not cached: a later writer's invalidation can arrive while the
+        # store call is still returning, and caching after it would serve ``new`` over that writer's value.
+        # On a loss, the value is not what the caller last read, so the cached one may be stale too.
+        self._evict(key)
         if swapped:
-            with self._cache_lock:
-                self._remember(key, new)
             await self._publish_cache_invalidation(key)
-        else:
-            # The value is not what the caller last read, so whatever is cached here may be stale too.
-            self._evict(key)
         return swapped
 
     async def update_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
