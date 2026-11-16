@@ -101,8 +101,8 @@ PARSE_THREAD_POOL_HEADROOM = 4
 
 
 # No SIGTERM/SIGINT handler is installed here. uvicorn installs its own while it serves and drains
-# in-flight requests before it exits, but it imports this module again (``app.parsing_main:app``)
-# after that, so a handler set at import would replace it and drop the requests in flight.
+# in-flight requests before it exits; this module is imported again behind uvicorn's import string
+# (``app.parsing_main:app``), so a handler set at import would be a second owner of those signals.
 
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
