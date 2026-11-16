@@ -163,7 +163,7 @@ class KafkaUtils:
             graph_provider=graph_provider,
             app_container=app_container
         )
-        register_caller_node_ensurer(entity_event_service.ensure_caller_user)
+        register_caller_node_ensurer(entity_event_service.ensure_user)
 
         async def handle_entity_message(message: StreamMessage) -> bool:
             if not message.eventType:

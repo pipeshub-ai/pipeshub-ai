@@ -35,6 +35,7 @@ from app.modules.agents.qna.chat_state import (
     _extract_knowledge_connector_ids,
 )
 from app.modules.retrieval.selection_scope import SERVER_SET_FILTER_KEYS, has_selection
+from app.utils.user_lookup import get_caller_user
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -228,7 +229,7 @@ async def admit_caller_project_collections(
     if not candidates or not caller_user_id:
         return []
     try:
-        caller = await graph_provider.get_user_by_user_id(caller_user_id)
+        caller = await get_caller_user(graph_provider, caller_user_id)
         caller_key = (caller or {}).get("_key") or (caller or {}).get("id")
         if not caller_key:
             return []

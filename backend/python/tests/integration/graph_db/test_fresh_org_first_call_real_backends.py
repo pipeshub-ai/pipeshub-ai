@@ -20,6 +20,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from tests.integration.graph_db.fresh_org_support import (
+    a_new_users_writers_race,
     first_calls_after_signup,
     logger,
 )
@@ -68,3 +69,7 @@ async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
 async def test_the_first_creates_after_signup_succeed(graph: tuple[Any, str]) -> None:
     await first_calls_after_signup(*graph)
+
+
+async def test_any_number_of_writers_of_a_new_user_write_one_user_and_one_default(graph: tuple[Any, str]) -> None:
+    await a_new_users_writers_race(*graph)

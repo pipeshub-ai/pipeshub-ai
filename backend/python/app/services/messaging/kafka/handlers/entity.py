@@ -1,10 +1,9 @@
 import asyncio
 import logging
 import time
-import weakref
 from typing import TYPE_CHECKING
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 from app.api.middlewares.caller_role import fetch_own_identity
 from app.config.constants.arangodb import (
@@ -20,6 +19,7 @@ from app.config.constants.arangodb import (
 from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
 )
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -77,19 +77,18 @@ PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEna
 _DISABLE_WRITE_ATTEMPTS = 5
 
 
-# shortcut: per-process lock, so two writers of one new user (its userAdded event and the caller's own first request,
-# ensure_caller_user) cannot each mint a node; enough while one process consumes entity events and serves the routes
-# that call ensure_caller_user. A deployment that splits them needs a store-side unique key on the user instead.
-_USER_ADD_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+# A new login user's graph node and default knowledge base are keyed by (org, userId), not by a random id, so every
+# writer of one user (the userAdded event, a redelivery of it, the user's own first requests, any number of workers)
+# upserts the same node and the same knowledge base: the store's unique key on the id makes them converge.
+_LOGIN_USER_NAMESPACE = UUID("6f1c1d2e-5a0b-4f7e-9c3d-2b8e4a6f0c11")
 
 
-def _user_add_lock(email: object) -> asyncio.Lock:
-    key = str(email or "").lower()
-    lock = _USER_ADD_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _USER_ADD_LOCKS[key] = lock
-    return lock
+def _login_user_key(org_id: str, user_id: str) -> str:
+    return str(uuid5(_LOGIN_USER_NAMESPACE, f"{org_id}:{user_id}"))
+
+
+def _default_kb_key(org_id: str, user_id: str) -> str:
+    return str(uuid5(_LOGIN_USER_NAMESPACE, f"{org_id}:{user_id}:default-knowledge-base"))
 
 
 def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
@@ -320,18 +319,17 @@ class EntityEventService(BaseEventService):
             raise
 
     # USER EVENTS
-    async def ensure_caller_user(self, user_id: str) -> bool:
-        """Write the request's own caller into the graph when the events announcing them have not been consumed yet.
+    async def ensure_user(self, org_id: str, user_id: str) -> bool:
+        """Write a user of ``org_id`` into the graph when the events announcing them have not been consumed yet.
 
-        A brand-new organisation's admin calls before its orgCreated and userAdded events reach this service. Only
-        the caller the verified token names, in that token's org, and only from Node's live records of that user and
-        org: a deleted or disabled account, or a record of another org, writes nothing. The writes are the events'
-        own handlers, so the events, when they arrive, find everything in place.
+        A brand-new organisation's admin calls before its orgCreated and userAdded events reach this service. Callers
+        pass only the request's own verified caller and org (app.utils.user_lookup.get_caller_user). The data is
+        Node's live records of exactly that user and org: a deleted or disabled account, or a record of another org,
+        writes nothing. The writes are the events' own handlers, so the events, when they arrive, find everything in
+        place.
         """
-        ctx = org_context.peek()
-        if ctx is None or ctx.kind != "user" or not ctx.org_id or not user_id or ctx.user_id != user_id:
+        if not org_id or not user_id:
             return False
-        org_id = ctx.org_id
         try:
             config_service = self.app_container.config_service()
             user = await fetch_own_identity(
@@ -357,14 +355,10 @@ class EntityEventService(BaseEventService):
             self.logger.info("Wrote the graph user of %s ahead of its userAdded event (written=%s)", user_id, written)
             return written
         except Exception as e:
-            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="ensure_caller_user")
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="ensure_user")
             return False
 
     async def _handle_user_added(self, payload: dict) -> bool:
-        async with _user_add_lock(payload.get("email")):
-            return await self._add_user(payload)
-
-    async def _add_user(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
@@ -400,7 +394,7 @@ class EntityEventService(BaseEventService):
                 if payload.get("isDisabled") is not None:
                     user_data["isDisabled"] = bool(payload["isDisabled"])
             else:
-                user_key = str(uuid4())
+                user_key = _login_user_key(payload["orgId"], payload["userId"])
                 user_data = {
                     "id": user_key,
                     "userId": payload["userId"],
@@ -1159,7 +1153,7 @@ class EntityEventService(BaseEventService):
 
         # raise_on_error: the providers answer [] to a failed lookup too, and "no
         # knowledge base" here would mint a second App under a new id.
-        existing_kbs = await self.graph_provider.get_nodes_by_filters(
+        all_kbs = await self.graph_provider.get_nodes_by_filters(
             collection=CollectionNames.APPS.value,
             filters={
                 "createdBy": userId,
@@ -1168,7 +1162,15 @@ class EntityEventService(BaseEventService):
             },
             raise_on_error=True,
         )
-        existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
+        default_key = _default_kb_key(orgId, userId)
+        default = next((kb for kb in all_kbs if (kb.get("id") or kb.get("_key")) == default_key), None)
+        if user_key == _login_user_key(orgId, userId) and not (default or {}).get("isDeleted", False):
+            # A user written under the (org, userId) key has the default under its key too. Any other knowledge base
+            # of theirs is one they made themselves, possibly in the moment between their user and this default
+            # being written, and must not stand in for it.
+            existing_kbs = [default] if default else []
+        else:
+            existing_kbs = [kb for kb in all_kbs if not kb.get("isDeleted", False)]
 
         if existing_kbs:
             self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
@@ -1186,7 +1188,8 @@ class EntityEventService(BaseEventService):
             return existing_kbs[0]
 
         current_timestamp = get_epoch_timestamp_in_ms()
-        kb_key = str(uuid4())
+        # A deleted default stays deleted; a new one gets a key of its own.
+        kb_key = default_key if default is None else str(uuid4())
 
         kb_data = {
             "id": kb_key,
@@ -1225,21 +1228,24 @@ class EntityEventService(BaseEventService):
             data_store_provider = await self.app_container.data_store()
             if not hasattr(self.app_container, 'connectors_map'):
                 self.app_container.connectors_map = {}
-            connector = await ConnectorFactory.create_and_start_sync(
-                name="kb",
-                logger=self.logger,
-                data_store_provider=data_store_provider,
-                config_service=config_service,
-                connector_id=kb_key,
-                scope=ConnectorScopes.PERSONAL.value,
-                created_by=userId,
-                org_id=orgId,
-                data_entities_processor_cls=get_data_entities_processor_cls(),
-                notification_service=self.app_container.connector_notification_service(),
-            )
-            if connector:
-                self.app_container.connectors_map[kb_key] = connector
-                self.logger.info(f"KB connector instance registered for kb_key={kb_key}")
+            # Two writers of one user both reach here with the same kb_key: one instance is built.
+            async with connector_init_lock(kb_key):
+                if kb_key not in self.app_container.connectors_map:
+                    connector = await ConnectorFactory.create_and_start_sync(
+                        name="kb",
+                        logger=self.logger,
+                        data_store_provider=data_store_provider,
+                        config_service=config_service,
+                        connector_id=kb_key,
+                        scope=ConnectorScopes.PERSONAL.value,
+                        created_by=userId,
+                        org_id=orgId,
+                        data_entities_processor_cls=get_data_entities_processor_cls(),
+                        notification_service=self.app_container.connector_notification_service(),
+                    )
+                    if connector:
+                        self.app_container.connectors_map[kb_key] = connector
+                        self.logger.info(f"KB connector instance registered for kb_key={kb_key}")
         except Exception as reg_err:
             error_class.log_failure(self.logger, "entity_event.step_failed", reg_err, step="register_kb_connector")
 

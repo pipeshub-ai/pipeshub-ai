@@ -106,7 +106,7 @@ from app.utils.attachment_utils import (
 from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import get_caller_user, get_org_or_503, get_user_or_503
 from app.utils.user_messages import action_failed
 from app.web.config import resolve_web_search
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
@@ -5136,7 +5136,7 @@ async def get_assistant_agent(
 
     try:
         # Get active connector instances accessible to the user
-        user = user_doc or await graph_provider.get_user_by_user_id(user_id=user_id)
+        user = user_doc or await get_caller_user(graph_provider, user_id)
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}, toolset_auth_by_instance

@@ -129,6 +129,7 @@ from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
+from app.utils.user_lookup import get_caller_user
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -2647,7 +2648,7 @@ class RetrievalService:
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
         try:
-            user_data = await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+            user_data = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
         if user_data is None:

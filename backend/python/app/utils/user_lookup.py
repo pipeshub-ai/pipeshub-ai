@@ -4,24 +4,44 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
+from app.core import org_context
+from app.utils.jwt import mint_service_token
+from app.utils.logger import create_logger
 from app.utils.user_messages import DATABASE_UNREACHABLE
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from app.config.configuration_service import ConfigurationService
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-# Set by the service that consumes userAdded (EntityEventService.ensure_caller_user): writes the request's own caller
-# into the graph from their live identity record. Unset elsewhere, where a missing user stays missing.
-_ensurer: dict[str, Callable[[str], Awaitable[bool]]] = {}
+_logger = create_logger(__name__)
+
+# How a missing caller is written: in the connectors service, which consumes userAdded, its own
+# EntityEventService.ensure_user; in the query service, a call to that service (connectors_user_node_ensurer). Unset
+# elsewhere, where a missing user stays missing. Takes (org id, user id); answers whether the user was written.
+_ensurer: dict[str, Callable[[str, str], Awaitable[bool]]] = {}
+
+USER_NODE_ENSURE_PATH = "/api/v1/entity/internal/user-node"
+_ENSURE_TIMEOUT_SECONDS = 30.0
 
 
-def register_caller_node_ensurer(ensure: Callable[[str], Awaitable[bool]]) -> None:
+def register_caller_node_ensurer(ensure: Callable[[str, str], Awaitable[bool]]) -> None:
     _ensurer["caller_node"] = ensure
+
+
+def caller_node_ensurer() -> Callable[[str, str], Awaitable[bool]] | None:
+    return _ensurer.get("caller_node")
 
 
 async def get_caller_user(
@@ -29,15 +49,51 @@ async def get_caller_user(
 ) -> dict[str, Any] | None:
     """The user's graph record, read once more after the caller's own record is written when it is missing.
 
-    A brand-new account calls before the userAdded event that writes its graph user has been consumed. The ensurer
-    writes only the request's own caller, from their live identity record; anyone else, or an account that is
-    deleted or disabled, stays None.
+    A brand-new account calls before the userAdded event that writes its graph user has been consumed. Only the user
+    the request's verified token names, in that token's org, is written, from their live identity record; anyone
+    else, a service or job, or an account that is deleted or disabled, stays None.
     """
-    user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
-    ensure = _ensurer.get("caller_node")
-    if user or not user_id or ensure is None or not await ensure(user_id):
+    # Passed only when asked for, so each call site keeps the call it made before.
+    read = {"raise_on_error": True} if raise_on_error else {}
+    user = await graph_provider.get_user_by_user_id(user_id, **read)
+    if user or not user_id:
         return user
-    return await graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+    ctx = org_context.peek()
+    ensure = _ensurer.get("caller_node")
+    if ensure is None or ctx is None or ctx.kind != "user" or not ctx.org_id or ctx.user_id != user_id:
+        return user
+    # Read again whatever it answered: another writer of this user (the event, another worker) may have won the write.
+    await ensure(ctx.org_id, user_id)
+    return await graph_provider.get_user_by_user_id(user_id, **read)
+
+
+def connectors_user_node_ensurer(config_service: ConfigurationService) -> Callable[[str, str], Awaitable[bool]]:
+    """The query service's ensurer: asks the connectors service, which registers the user's private knowledge base
+    connector along with the user, to write them. The service token names exactly that user and org."""
+
+    async def ensure(org_id: str, user_id: str) -> bool:
+        try:
+            secret = ((await config_service.get_config(config_node_constants.SECRET_KEYS.value)) or {}).get(
+                "scopedJwtSecret"
+            )
+            if not secret:
+                raise RuntimeError("the scoped JWT secret is not configured")
+            token = mint_service_token(
+                secret, {"orgId": org_id, "userId": user_id, "scopes": [TokenScopes.USER_NODE_ENSURE.value]}
+            )
+            endpoints = (await config_service.get_config(config_node_constants.ENDPOINTS.value)) or {}
+            base = (endpoints.get("connectors") or {}).get("endpoint") or DefaultEndpoints.CONNECTOR_ENDPOINT.value
+            async with httpx.AsyncClient(timeout=_ENSURE_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    f"{base.rstrip('/')}{USER_NODE_ENSURE_PATH}", headers={"Authorization": f"Bearer {token}"}
+                )
+            response.raise_for_status()
+            return bool(response.json().get("written"))
+        except Exception as e:
+            _logger.warning("Could not have the connectors service write user %s (%s)", user_id, type(e).__name__)
+            return False
+
+    return ensure
 
 
 async def get_user_or_503(graph_provider: IGraphDBProvider, user_id: str | None) -> dict[str, Any] | None:

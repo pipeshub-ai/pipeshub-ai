@@ -31,33 +31,37 @@ async def first_calls_after_signup(graph: Any, org_id: str) -> None:  # noqa: AN
         assert (asked_org, asked_user) == (org_id, user_id)
         return live.get(path)
 
-    container = MagicMock()
-    container.connectors_map = {}
-    container.data_store = AsyncMock()
-    events = EntityEventService(logger, graph, container)
+    def worker() -> EntityEventService:
+        """One connectors-service process; two of them write at once, as two replicas would."""
+        container = MagicMock()
+        container.connectors_map = {}
+        container.data_store = AsyncMock()
+        return EntityEventService(logger, graph, container)
+
+    first, second = worker(), worker()
     kb = KnowledgeBaseService(logger, graph, MagicMock(), processor_for_kb=AsyncMock())
+    org_event = {"orgId": org_id, "accountType": "business", "registeredName": f"Fresh {run}"}
+    user_event = {"orgId": org_id, "userId": user_id, "email": email, "fullName": "Fresh Admin", "syncAction": "none"}
+
+    async def events_arrive(events: EntityEventService) -> None:
+        assert await events.process_event("orgCreated", dict(org_event))
+        assert await events.process_event("userAdded", dict(user_event))
 
     with (
         patch("app.services.messaging.kafka.handlers.entity.fetch_own_identity", AsyncMock(side_effect=node)),
         patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()),
-        patch.dict(user_lookup._ensurer, {"caller_node": events.ensure_caller_user}),
+        patch.dict(user_lookup._ensurer, {"caller_node": first.ensure_user}),
         bind(OrgContext(org_id, user_id, "user", "jwt", "t")),
     ):
         assert await graph.get_user_by_user_id(user_id=user_id, raise_on_error=True) is None
         assert await graph.get_document(org_id, CollectionNames.ORGS.value) is None
 
-        results = await asyncio.gather(*(
-            kb.create_knowledge_base(user_id=user_id, org_id=org_id, name=f"First {i}") for i in range(2)
-        ))
+        # The admin's first two creates, the sign-up events on the other worker and a redelivery on this one, at once.
+        *results, _, _ = await asyncio.gather(
+            *(kb.create_knowledge_base(user_id=user_id, org_id=org_id, name=f"First {i}") for i in range(2)),
+            events_arrive(second), events_arrive(first),
+        )
         assert all(r.get("success") for r in results), results
-
-        # The queued events reach the consumer afterwards and find everything in place.
-        assert await events.process_event(
-            "orgCreated", {"orgId": org_id, "accountType": "business", "registeredName": f"Fresh {run}"},
-        )
-        assert await events.process_event(
-            "userAdded", {"orgId": org_id, "userId": user_id, "email": email, "fullName": "Fresh Admin", "syncAction": "none"},
-        )
 
         users = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
         assert len(users) == 1, users
@@ -69,4 +73,34 @@ async def first_calls_after_signup(graph: Any, org_id: str) -> None:  # noqa: AN
         )
         assert sorted(a["name"] for a in apps) == ["First 0", "First 1", "Fresh Admin's Private"], apps
         listed = await kb.list_user_knowledge_bases(user_id=user_id, org_id=org_id, page=1, limit=100)
-        assert {k["name"] for k in listed["knowledgeBases"]} >= {"First 0", "First 1"}, listed
+        assert {k["name"] for k in listed["knowledgeBases"]} == {"First 0", "First 1", "Fresh Admin's Private"}, listed
+
+
+async def a_new_users_writers_race(graph: Any, org_id: str) -> None:  # noqa: ANN401
+    """Four writers of one new user (two workers' events and redeliveries) at once, after the org exists: one user,
+    one default knowledge base, reachable by that user."""
+    run = uuid.uuid4().hex[:10]
+    user_id, email = f"uid-race-{run}", f"race-{run}@example.com"
+    workers = []
+    for _ in range(2):
+        container = MagicMock()
+        container.connectors_map = {}
+        container.data_store = AsyncMock()
+        workers.append(EntityEventService(logger, graph, container))
+    event = {"orgId": org_id, "userId": user_id, "email": email, "fullName": "Race", "syncAction": "none"}
+    with (
+        patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()),
+        bind(OrgContext(org_id, None, "job", "job:test", "t")),
+    ):
+        assert await workers[0].process_event("orgCreated", {"orgId": org_id, "accountType": "business", "registeredName": "Race"})
+        assert await asyncio.gather(*(w.process_event("userAdded", dict(event)) for w in workers + workers)) == [True] * 4
+        users = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        assert len(users) == 1, users
+        apps = await graph.get_nodes_by_filters(
+            CollectionNames.APPS.value,
+            {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            raise_on_error=True,
+        )
+        assert [a["name"] for a in apps] == ["Race's Private"], apps
+        user_key = users[0].get("id") or users[0].get("_key")
+        assert await graph.get_user_kb_permission(apps[0].get("id") or apps[0].get("_key"), user_key) == "OWNER"
