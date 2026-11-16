@@ -233,6 +233,24 @@ class SourceAccounts:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
 
+    async def _update_marker(self, *, changed: bool, deleted_checked: bool | None) -> None:
+        """Merge this run into the marker by compare-and-set against what is stored now, not what the run read at its
+        start: another replica may have written a newer version meanwhile, and writing an older one back would stop
+        other processes from reloading. A change writes a new version; otherwise the stored one stands. The flags
+        only ever turn on."""
+        key = source_accounts_key(self.connector_id)
+        for _ in range(_SAVE_ATTEMPTS):
+            raw = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
+            stored = _mapping(raw or {}, self.connector_id)
+            # A token, not a counter: two processes bumping one counter would write one number for different changes.
+            noted = {"seeded": True, "version": uuid.uuid4().hex if changed else stored.get("version")}
+            if deleted_checked is not None or "deletedChecked" in stored:
+                noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
+            if noted == stored or await self.config_service.compare_and_set_config(key, raw or None, noted):
+                self._take_marker(noted)
+                return
+        raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
+
     async def note_withdrawn(self, users: list) -> None:
         """Before ``users`` are withdrawn, note the account each one is linked to by its address, for a run that
         withdraws without listing first (an incremental delete, a listing with nobody active): a new account taking
@@ -255,9 +273,11 @@ class SourceAccounts:
                         changed.add(_bucket(email))
                 try:
                     await self._save(changed, deleted)
-                    return
                 except _Conflict:
                     continue
+                if changed:
+                    await self._update_marker(changed=True, deleted_checked=None)
+                return
             raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
     async def before_link(self, users: list["AppUser"]) -> bool:
@@ -343,13 +363,10 @@ class SourceAccounts:
                 linked[email] = account
                 changed.add(bucket)
         await self._save(changed, deleted)
-        # A token, not a counter: two processes bumping one counter would write the same number for different changes.
-        noted = {"seeded": True, "version": uuid.uuid4().hex if changed else marker.get("version")}
-        if self.deleted_users is not None or "deletedChecked" in marker:
-            noted["deletedChecked"] = bool(marker.get("deletedChecked")) or read_deleted is not None
-        if noted != marker and not await self.config_service.set_config(source_accounts_key(self.connector_id), noted):
-            raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
-        self._take_marker(noted)
+        await self._update_marker(
+            changed=bool(changed),
+            deleted_checked=None if self.deleted_users is None else read_deleted is not None,
+        )
         return True
 
     def may_grant(self, email: str, object_id: str | None) -> bool:

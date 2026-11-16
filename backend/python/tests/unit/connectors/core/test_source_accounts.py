@@ -721,3 +721,34 @@ async def test_a_replacement_whose_link_failed_is_reconciled_when_the_first_acco
     await _admit(directory, accounts, [_user("ana@x.com", "a-oid")])
     await accounts.ensure_loaded()
     assert accounts.may_grant("ana@x.com", "a-oid") and not accounts.may_grant("ana@x.com", "b-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_replica_with_nothing_to_change_never_writes_an_older_marker_version_back(world) -> None:
+    """Replica B reads the marker; replica A then saves a change of hands and a new version; B reads the links and the
+    bucket after A, so it has nothing to change, but it notes its first deleted-account read. It must keep A's version
+    (other processes reload on it) and still record the flag."""
+    directory, _, config = world
+    accounts = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))   # replica A: no deleted read
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    replica_a_done = asyncio.Event()
+
+    async def links_after_a(connector_id: str) -> list[SimpleNamespace]:
+        await replica_a_done.wait()
+        return await directory._links(connector_id)
+
+    processor_b = MagicMock(get_app_user_links=AsyncMock(side_effect=links_after_a),
+                            remove_user_access_to_connector=directory.processor.remove_user_access_to_connector)
+    replica_b = SourceAccounts(processor_b, CONNECTOR, config, logging.getLogger("t"),
+                               deleted_users=AsyncMock(return_value={}))
+
+    async def replica_a() -> None:
+        await asyncio.sleep(0)       # replica B has read the marker by now
+        await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+        replica_a_done.set()
+
+    await asyncio.gather(replica_b.before_link([_user("ana@x.com", "new-oid")]), replica_a())
+
+    marker = config.saved[source_accounts_key(CONNECTOR)]
+    assert marker["version"] == accounts._version, "replica A's version stands"
+    assert marker["deletedChecked"] is True
