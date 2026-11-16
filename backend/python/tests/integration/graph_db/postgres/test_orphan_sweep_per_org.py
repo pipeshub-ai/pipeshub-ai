@@ -6,7 +6,8 @@ row from being swept, or keep it waiting after its own back-off runs out. Once t
 released on its own sweep after its own back-off.
 
 The graph is the real PostgreSQL provider. The vector store is the in-memory one, which answers the hold check the way the scroll does
-on Qdrant, OpenSearch and Redis; pgvector refuses that check's scroll, which carries no org.
+on Qdrant, OpenSearch and Redis. The same case on the pgvector store, which answers it with ``retrieval.vrid_held_elsewhere``, is
+``test_the_orphan_sweep_keeps_and_releases_each_orgs_mapping_row`` in ``tests/integration/vector_db/test_pgvector_provider_core.py``.
 
 Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
 """
