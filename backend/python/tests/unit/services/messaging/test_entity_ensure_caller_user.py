@@ -131,6 +131,11 @@ class _Graph:
     def __init__(self) -> None:
         self.users: dict[str, dict] = {}
 
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+        found = next((u for u in self.users.values() if u.get("userId") == user_id), None)
+        await asyncio.sleep(0.01)
+        return found
+
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         found = next((u for u in self.users.values() if u["email"].lower() == email.lower()), None)
         await asyncio.sleep(0.01)
@@ -238,3 +243,21 @@ class TestDefaultKnowledgeBase:
         result = await svc._get_or_create_knowledge_base("older-random-key", USER, ORG)
         assert result["id"] == "their-default"
         svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("key", ["older-random-key", _login_user_key(ORG, USER)], ids=["older-random-key", "derived-key"])
+async def test_a_user_readded_under_a_new_address_keeps_their_one_node(key: str) -> None:
+    graph = _Graph()
+    graph.users[key] = {"id": key, "userId": USER, "orgId": ORG, "email": "old@example.com", "isActive": False}
+    svc = _service(graph)
+    svc._adopt_existing_person = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_knowledge_base = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_all_team_and_add_user = AsyncMock()  # type: ignore[method-assign]
+    event = {"orgId": ORG, "userId": USER, "email": "new@example.com", "fullName": "Admin", "syncAction": "none"}
+
+    with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        assert await svc.process_event("userAdded", event) is True
+
+    assert list(graph.users) == [key]
+    assert (graph.users[key]["email"], graph.users[key]["isActive"]) == ("new@example.com", True)
+    svc._get_or_create_knowledge_base.assert_awaited_once_with(key, USER, ORG, name="Admin's Private")

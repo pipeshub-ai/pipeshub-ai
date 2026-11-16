@@ -10,6 +10,7 @@ import pytest
 
 from tests.integration.graph_db.fresh_org_support import (
     a_new_users_writers_race,
+    a_readded_user_keeps_one_node,
     first_calls_after_signup,
 )
 from tests.integration.graph_db.postgres.pg_support import new_org
@@ -25,3 +26,11 @@ async def test_the_first_creates_after_signup_succeed(pg_provider, monkeypatch: 
 async def test_any_number_of_writers_of_a_new_user_write_one_user_and_one_default(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")
     await a_new_users_writers_race(pg_provider, new_org())
+
+
+@pytest.mark.parametrize("older_random_key", [True, False], ids=["older-random-key", "derived-key"])
+async def test_a_user_readded_under_a_new_address_keeps_their_one_node(
+    pg_provider, monkeypatch: pytest.MonkeyPatch, older_random_key: bool,
+) -> None:
+    monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")
+    await a_readded_user_keeps_one_node(pg_provider, new_org(), older_random_key=older_random_key)

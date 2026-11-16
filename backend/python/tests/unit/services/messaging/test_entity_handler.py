@@ -360,6 +360,7 @@ class TestUserAdded:
         existing_user.id = "existing-key"
 
         graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
         graph_provider.get_user_by_email = AsyncMock(return_value=existing_user)
         graph_provider.get_document = AsyncMock(
             return_value={"_key": "org-1", "accountType": "enterprise"}
@@ -1011,6 +1012,13 @@ class _KbGraph:
         self._snapshots: dict[str, tuple[dict, dict, dict]] = {}
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
+
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+        if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return None
+        return next((u for u in self.users.values() if u.get("userId") == user_id), None)
 
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".

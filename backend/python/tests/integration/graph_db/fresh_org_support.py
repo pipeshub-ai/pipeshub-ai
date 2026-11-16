@@ -104,3 +104,46 @@ async def a_new_users_writers_race(graph: Any, org_id: str) -> None:  # noqa: AN
         assert [a["name"] for a in apps] == ["Race's Private"], apps
         user_key = users[0].get("id") or users[0].get("_key")
         assert await graph.get_user_kb_permission(apps[0].get("id") or apps[0].get("_key"), user_key) == "OWNER"
+
+
+async def a_readded_user_keeps_one_node(graph: Any, org_id: str, *, older_random_key: bool) -> None:  # noqa: ANN401
+    """A user whose address changed while they were away is re-added: the same node, under whatever key it has, with
+    the new address and the knowledge base it already owned; no second node."""
+    run = uuid.uuid4().hex[:10]
+    user_id = f"uid-readd-{run}"
+    old_email, new_email = f"old-{run}@example.com", f"new-{run}@example.com"
+    container = MagicMock()
+    container.connectors_map = {}
+    container.data_store = AsyncMock()
+    events = EntityEventService(logger, graph, container)
+    event = {"orgId": org_id, "userId": user_id, "email": old_email, "fullName": "Readd", "syncAction": "none"}
+    with (
+        patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()),
+        bind(OrgContext(org_id, None, "job", "job:test", "t")),
+    ):
+        assert await events.process_event("orgCreated", {"orgId": org_id, "accountType": "business", "registeredName": "Readd"})
+        if older_random_key:  # a user written before keys were derived from (org, userId)
+            key = f"older-{run}"
+            now = 1
+            assert await graph.batch_upsert_nodes([{
+                "id": key, "userId": user_id, "orgId": org_id, "email": old_email, "fullName": "Readd", "firstName": "",
+                "middleName": "", "lastName": "", "designation": "", "businessPhones": [], "isActive": True, "kind": "human",
+                "createdAtTimestamp": now, "updatedAtTimestamp": now,
+            }], CollectionNames.USERS.value)
+            await events._get_or_create_knowledge_base(key, user_id, org_id, name="Readd's Private")
+        else:
+            assert await events.process_event("userAdded", dict(event))
+        (before,) = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        key = before.get("id") or before.get("_key")
+
+        assert await events.process_event("userAdded", {**event, "email": new_email})
+
+        users = await graph.get_nodes_by_filters(CollectionNames.USERS.value, {"userId": user_id}, raise_on_error=True)
+        assert [(u.get("id") or u.get("_key"), u["email"]) for u in users] == [(key, new_email)], users
+        apps = await graph.get_nodes_by_filters(
+            CollectionNames.APPS.value,
+            {"createdBy": user_id, "orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            raise_on_error=True,
+        )
+        assert [a["name"] for a in apps] == ["Readd's Private"], apps
+        assert await graph.get_user_kb_permission(apps[0].get("id") or apps[0].get("_key"), key) == "OWNER"

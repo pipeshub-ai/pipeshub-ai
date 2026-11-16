@@ -362,21 +362,25 @@ class EntityEventService(BaseEventService):
         """Handle user creation event"""
         try:
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
-            # raise_on_error: the providers answer None to a failed read too, and
-            # "nobody" here would mint a second user for someone who is there.
-            existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"], raise_on_error=True
-            )
+            # The login user first, whatever its key (an address that changed must not leave it beside a new one);
+            # then a connector's user of this address, which has no userId yet. raise_on_error: the providers
+            # answer None to a failed read too, and "nobody" here would mint a second user for someone who is there.
+            by_user_id = await self.graph_provider.get_user_by_user_id(payload["userId"], raise_on_error=True)
+            user_key = (by_user_id.get("id") or by_user_id.get("_key")) if by_user_id else None
+            if not user_key:
+                existing_user = await self.graph_provider.get_user_by_email(
+                    payload["email"], raise_on_error=True
+                )
+                user_key = existing_user.id if existing_user else None
 
             current_timestamp = get_epoch_timestamp_in_ms()
 
-            if existing_user:
-                # existing_user is a User object, get id from it
-                user_key = existing_user.id
+            if user_key:
                 user_data = {
                     "id": user_key,
                     "userId": payload["userId"],
                     "orgId": payload["orgId"],
+                    "email": payload["email"],
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }

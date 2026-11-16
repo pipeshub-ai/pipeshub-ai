@@ -21,6 +21,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from tests.integration.graph_db.fresh_org_support import (
     a_new_users_writers_race,
+    a_readded_user_keeps_one_node,
     first_calls_after_signup,
     logger,
 )
@@ -73,3 +74,8 @@ async def test_the_first_creates_after_signup_succeed(graph: tuple[Any, str]) ->
 
 async def test_any_number_of_writers_of_a_new_user_write_one_user_and_one_default(graph: tuple[Any, str]) -> None:
     await a_new_users_writers_race(*graph)
+
+
+@pytest.mark.parametrize("older_random_key", [True, False], ids=["older-random-key", "derived-key"])
+async def test_a_user_readded_under_a_new_address_keeps_their_one_node(graph: tuple[Any, str], older_random_key: bool) -> None:
+    await a_readded_user_keeps_one_node(*graph, older_random_key=older_random_key)
