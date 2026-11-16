@@ -676,7 +676,7 @@ class EntityEventService(BaseEventService):
                 existing_user_id, email = by_user_id.get("id") or by_user_id.get("_key"), by_user_id.get("email") or payload["email"]
             else:
                 existing_user = await self.graph_provider.get_user_by_email(payload["email"], raise_on_error=True, org_id=org_id)
-                if existing_user is not None and existing_user.user_id not in (None, "", user_id):
+                if existing_user is not None and user_id and existing_user.user_id not in (None, "", user_id):
                     existing_user = None
                 existing_user_id, email = (existing_user.id if existing_user else None), payload["email"]
             if not existing_user_id:
