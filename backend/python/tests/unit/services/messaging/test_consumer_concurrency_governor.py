@@ -43,9 +43,10 @@ def _close_shared_slots(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         slots.close()
 
 
-def _make_governor(*, env_parse: int | None = None, env_index: int = 8) -> ResourceGovernor:
+def _make_governor(*, env_parse: int | None = None, env_index: int = 8, cpu_quota: float = 4.0) -> ResourceGovernor:
     return make_test_governor(
         env_parse=env_parse, env_index=env_index, logger_name="test.consumer_concurrency.governor",
+        cpu_quota=cpu_quota,
     )
 
 
@@ -87,7 +88,28 @@ class TestIndexAndParseCeiling:
         governor = _make_governor()
         host = _host(governor=governor)
         assert concurrency.parse_lease_pool(ParseTier.LIGHT) == concurrency.parse_lease_pool(ParseTier.HEAVY) == "parsing"
-        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == concurrency.parse_ceiling(host, ParseTier.HEAVY) == governor.heavy_parse_lease_limit
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == concurrency.parse_ceiling(host, ParseTier.HEAVY) == 6
+
+    def test_remote_fleet_lease_is_the_configured_number_not_the_local_ceiling(self, monkeypatch) -> None:
+        """A local heavy ceiling above PARSING_SERVICE_CONCURRENCY must not widen the fleet lease."""
+        monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+        monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "2")
+        governor = _make_governor(cpu_quota=16.0)
+        assert governor.heavy_parse_lease_limit > 2
+        host = _host(governor=governor)
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == concurrency.parse_ceiling(host, ParseTier.LIGHT) == 2
+
+    def test_remote_priority_lane_keeps_its_own_tier_pools(self, monkeypatch) -> None:
+        """Two interactive parses (a PDF and a markdown file) must not queue on one lease: the lane keeps
+        its heavy and light pools and limits, and the light pool is wider than one."""
+        monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+        monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "6")
+        host = _host(governor=_make_governor())
+        host.priority_lane = concurrency.PriorityLane(heavy_limit=1, light_limit=3)
+        assert concurrency.parse_lease_pool(ParseTier.HEAVY, host) == "parsing:priority"
+        assert concurrency.parse_lease_pool(ParseTier.LIGHT, host) == "parsing:light:priority"
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == 3
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 1
 
     def test_local_parsing_keeps_the_tier_split_whatever_the_concurrency_setting(self, monkeypatch) -> None:
         monkeypatch.delenv("USE_PARSING_SERVICE", raising=False)

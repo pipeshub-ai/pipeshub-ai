@@ -916,13 +916,15 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     more than a handful of local LIGHT_PARSE slots, so the node-local
     gate never sees demand and stays on its floor.
 
-    With a remote parsing service the two tiers share one cluster lease (the heavy one), so the
-    fleet-wide cap on parses in flight is ``PARSING_SERVICE_CONCURRENCY``, not twice that.
+    With a remote parsing service the two tiers share one cluster lease (the non-lane ``parsing``
+    pool) sized to ``PARSING_SERVICE_CONCURRENCY`` itself, whatever the local CPU ceilings are, so
+    the fleet-wide cap on parses in flight is that number, not twice it. The priority lane keeps its
+    own tier pools and limits: an interactive parse never queues behind another tier's lease.
     """
-    if remote_parse_concurrency() is not None:
-        tier = ParseTier.HEAVY
     if (lane := _lane(host)) is not None:
         return lane.parse_lease_limit(tier)
+    if (remote := remote_parse_concurrency()) is not None:
+        return remote
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
@@ -936,14 +938,15 @@ def parse_lease_pool(tier: ParseTier | None, host: "ConcurrencyHost | None" = No
 
     Split by tier because the two ceilings differ: a light record must not
     consume one of the few heavy-parse leases a Docling PDF holds for
-    minutes. The priority lane's parses count against pools of their own. With a remote parsing
-    service both tiers take the one heavy pool, so ``PARSING_SERVICE_CONCURRENCY`` caps the fleet.
+    minutes. The priority lane's parses count against pools of their own and keep their tier split.
+    With a remote parsing service the other parses take the one ``parsing`` pool, so
+    ``PARSING_SERVICE_CONCURRENCY`` caps the fleet.
     """
-    if remote_parse_concurrency() is not None:
-        tier = ParseTier.HEAVY
     lane = _lane(host) if host is not None else None
     if lane is not None:
         return lane.parse_lease_pool(tier)
+    if remote_parse_concurrency() is not None:
+        tier = ParseTier.HEAVY
     return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
 
 

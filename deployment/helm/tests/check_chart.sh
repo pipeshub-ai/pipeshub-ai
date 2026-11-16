@@ -54,7 +54,7 @@ LOCAL=(-f values-local.yaml)
 # variant can override one of them.
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
-  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists"
+  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
@@ -141,6 +141,9 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-parsing 'http://ci-pipeshub-ai-parsing:8092' present 'name: PARSING_SERVICE_URL'
   expect local-parsing 'value: "2"' present 'name: PARSING_MAX_CONCURRENT'
   expect local-parsing 'value: "8"' present 'name: PARSING_SERVICE_CONCURRENCY'
+  expect local-parsing 'name: PARSING_UVICORN_WORKERS' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'value: "4"' absent 'name: PARSING_UVICORN_WORKERS'
+  expect local-parsing 'extra-marker' present 'name: PIPESHUB_ROLE'
   expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent
   expect local-neo4j-kafka 'PARSING_SERVICE_CONCURRENCY' absent
 fi
@@ -201,7 +204,7 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   # A preset that clears the parsing node pin must not render the cleared key (a null label value is refused by the API).
   expect eks-single-az-parsing 'name: ci-pipeshub-ai-parsing' present
   expect eks-single-az-parsing 'pipeshub/role: null' absent
-  expect eks-single-az-parsing 'pipeshub/role: parse' absent
+  expect eks-single-az-parsing 'pipeshub/role: parsing' absent
   expect eks-single-az-parsing 'key: pipeshub/role' present 'name: ci-pipeshub-ai-parsing'
   # The release here is "ci"; a selector naming another release matches no pods.
   expect eks-single-az 'topologyKey: kubernetes.io/hostname' present 'kind: Deployment'

@@ -13,7 +13,11 @@ import math
 import os
 
 from app.services.resource_governor.models import Ceilings
-from app.services.resource_governor.policy import INDEX_HEADROOM
+from app.services.resource_governor.policy import (
+    INDEX_HEADROOM,
+    INDEX_HEAVY_MAX_SHARE,
+    INDEX_MIN_PER_TIER,
+)
 
 PARSING_SERVICE_CONCURRENCY_ENV = "PARSING_SERVICE_CONCURRENCY"
 
@@ -29,15 +33,29 @@ def remote_parse_concurrency() -> int | None:
     return value if value > 0 else None
 
 
-def lift_ceilings(ceilings: Ceilings, concurrency: int) -> Ceilings:
-    """*ceilings* raised (never lowered) to hold *concurrency* remote parses and the records around them."""
+def lift_ceilings(ceilings: Ceilings, concurrency: int, env_index: int | None = None) -> Ceilings:
+    """*ceilings* raised (never lowered) to hold *concurrency* remote parses and the records around them.
+
+    An explicit ``MAX_CONCURRENT_INDEXING`` (*env_index*) is the operator's total in-flight budget and
+    still holds after the raise, split between the tiers as ``resolve_ceilings`` splits it; a parse
+    ceiling is never above its index tier. The cluster parse lease is not taken from these ceilings:
+    ``parse_ceiling`` sizes it to *concurrency* itself.
+    """
     index = math.ceil(concurrency * INDEX_HEADROOM)
-    return Ceilings(
-        heavy=max(ceilings.heavy, concurrency),
-        light=max(ceilings.light, concurrency),
-        index_heavy=max(ceilings.index_heavy, index),
-        index_light=max(ceilings.index_light, index),
-    )
+    index_heavy = max(ceilings.index_heavy, index)
+    index_light = max(ceilings.index_light, index)
+    heavy = max(ceilings.heavy, concurrency)
+    light = max(ceilings.light, concurrency)
+    if env_index is not None:
+        allowed = max(1, env_index)
+        if index_heavy + index_light > allowed:
+            light_reserve = min(INDEX_MIN_PER_TIER, index_light, allowed // 2)
+            heavy_cap = max(1, int(allowed * INDEX_HEAVY_MAX_SHARE))
+            index_heavy = min(index_heavy, allowed - light_reserve, heavy_cap)
+            index_light = min(index_light, allowed - index_heavy)
+        heavy = max(1, min(heavy, index_heavy))
+        light = max(1, min(light, index_light)) if index_light else 1
+    return Ceilings(heavy=heavy, light=light, index_heavy=index_heavy, index_light=index_light)
 
 
 class RemoteParseSlots:

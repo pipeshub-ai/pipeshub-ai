@@ -126,6 +126,16 @@ def test_index_permits_follow_the_remote_concurrency() -> None:
     assert lifted.fleet_ceilings.heavy == lifted.heavy_parse_lease_limit >= 16
 
 
+def test_an_explicit_index_cap_still_holds_after_the_lift() -> None:
+    """MAX_CONCURRENT_INDEXING is the operator's total in-flight budget; remote capacity must not exceed it."""
+    for cap in (1, 5, 24):
+        c = _governor(remote_parse_slots=16, env_index=cap).ceilings
+        assert c.index_heavy + c.index_light <= cap, (cap, c)
+        assert c.heavy <= max(1, c.index_heavy)
+    one = _governor(remote_parse_slots=16, env_index=1).ceilings
+    assert (one.index_heavy, one.index_light) == (1, 0)
+
+
 def test_default_governor_ceilings_are_unchanged() -> None:
     assert _governor(remote_parse_slots=None).ceilings == _governor().ceilings
     c = _governor().ceilings

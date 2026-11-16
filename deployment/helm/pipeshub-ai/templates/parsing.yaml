@@ -66,8 +66,14 @@ spec:
             - name: PARSING_MAX_CONCURRENT
               value: {{ .Values.parsing.maxConcurrent | quote }}
             {{- end }}
-            {{- with .Values.parsing.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            # One worker per pod: the admission count behind PARSING_MAX_CONCURRENT and the
+            # saturation metrics is per process, so more workers would admit that many each.
+            - name: PARSING_UVICORN_WORKERS
+              value: "1"
+            {{- range .Values.parsing.extraEnv }}
+            {{- if ne .name "PARSING_UVICORN_WORKERS" }}
+            {{- list . | toYaml | nindent 12 }}
+            {{- end }}
             {{- end }}
           {{- with .Values.extraEnvFrom }}
           envFrom:

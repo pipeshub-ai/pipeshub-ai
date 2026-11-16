@@ -17,6 +17,10 @@ services:
   parsing:
     image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
     restart: always
+    # On stop the parsing process finishes its in-flight parses, then Docling stops;
+    # Compose's default 10 s would kill a parse that needs longer. Matches the Helm
+    # chart's parsing.terminationGracePeriodSeconds.
+    stop_grace_period: ${PARSING_STOP_GRACE_PERIOD:-120s}
     environment:
       - PIPESHUB_ROLE=parsing
       - PARSING_SERVICE_PORT=8092
@@ -26,6 +30,9 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Where the app keeps its configuration in Redis: the same key space and database.
+      - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
+      - REDIS_DB=${REDIS_DB:-0}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
