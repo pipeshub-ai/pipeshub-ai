@@ -27,6 +27,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "batch_upsert_nodes": (PROJECTED, ""),
     "batch_upsert_records": (PROJECTED, ""),
     "compare_and_set_indexing_status": (NO_PROJECTION, _STATUS),
+    "transition_unsupported": (NO_PROJECTION, _STATUS),
     "compare_and_set_record_fields": (PROJECTED, ""),
     "copy_document_relationships": (NO_PROJECTION, _ENTITY),
     "create_edges_if_absent": (PROJECTED, ""),

@@ -60,6 +60,7 @@ from app.connectors.sources.localKB.push.service import KbPushService
 from app.containers.connector import ConnectorAppContainer
 from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from app.services.graph_db.common.utils import api_record
 from app.services.storage_documents import StorageDocuments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -130,6 +131,10 @@ async def get_kafka_service(request: Request) -> KafkaService:
 HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
+
+# `UpdateRecordResponseSchema.record` documents these although they are internal elsewhere: a
+# record in the trash can still be renamed, and the answer carries its trash state.
+UPDATE_RESPONSE_DOCUMENTED_FIELDS = frozenset({"deletedAtTimestamp", "deleteBatchId", "deleteSource"})
 
 kb_router = APIRouter(
     prefix="/api/v1/kb",
@@ -1450,6 +1455,10 @@ async def update_record(
                 logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
             except Exception as e:
                 logger.error(f"❌ Failed to publish update event: {str(e)}")
+
+        # The stored document, as the record endpoint returns it.
+        if isinstance(result.get("updatedRecord"), dict):
+            result = {**result, "updatedRecord": api_record(result["updatedRecord"], keep=UPDATE_RESPONSE_DOCUMENTED_FIELDS)}
 
         # Enrich response with required fields for UpdateRecordResponse
         graph_provider = request.app.state.graph_provider
