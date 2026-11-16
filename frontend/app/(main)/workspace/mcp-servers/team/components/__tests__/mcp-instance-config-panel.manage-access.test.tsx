@@ -37,12 +37,25 @@ vi.mock('../../../api', () => ({
 }));
 vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
-  WorkspaceRightPanel: ({ open, children, onPrimaryClick }: { open: boolean; children: React.ReactNode; onPrimaryClick: () => void }) =>
+  WorkspaceRightPanel: ({
+    open,
+    children,
+    onPrimaryClick,
+    onOpenChange,
+  }: {
+    open: boolean;
+    children: React.ReactNode;
+    onPrimaryClick: () => void;
+    onOpenChange: (open: boolean) => void;
+  }) =>
     open ? (
       <div>
         {children}
         <button type="button" onClick={onPrimaryClick}>
           save
+        </button>
+        <button type="button" onClick={() => onOpenChange(false)}>
+          close
         </button>
       </div>
     ) : null,
@@ -61,11 +74,11 @@ vi.mock('../../../../components', () => ({
 
 import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';
 
-function panel(scope: 'org' | 'personal', onSaved = vi.fn(), onOpenChange = vi.fn()) {
+function panel(scope: 'org' | 'personal', onSaved = vi.fn(), onOpenChange = vi.fn(), open = true) {
   return (
     <Theme>
       <McpInstanceConfigPanel
-        state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: null }}
+        state={{ open, mode: 'create', editingInstance: null, prefillTemplate: null }}
         templates={[]}
         instances={[]}
         customStdioAllowed={false}
@@ -161,6 +174,52 @@ describe('McpInstanceConfigPanel Manage Access', () => {
     expect(mocks.updateInstance).toHaveBeenCalledTimes(1);
     expect(mocks.updateInstance.mock.calls[0]?.[0]).toBe('new-1');
     expect(mocks.saveAccess.mock.calls).toEqual([['new-1'], ['new-1']]);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('cannot be closed while a save is in flight', async () => {
+    let finishCreate: (value: { _id: string }) => void = () => undefined;
+    mocks.createInstance.mockReturnValue(new Promise((resolve) => (finishCreate = resolve)));
+    mocks.saveAccess.mockResolvedValue(undefined);
+    const onOpenChange = vi.fn();
+    render(panel('org', vi.fn(), onOpenChange));
+    fillAndSave();
+    await waitFor(() => expect(mocks.createInstance).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('close'));
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    finishCreate({ _id: 'new-1' });
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it('a save that resolves after the panel was closed and reopened leaves the new session alone', async () => {
+    let finishOld: (value: { _id: string }) => void = () => undefined;
+    mocks.createInstance
+      .mockReturnValueOnce(new Promise((resolve) => (finishOld = resolve)))
+      .mockResolvedValueOnce({ _id: 'new-2' });
+    mocks.saveAccess.mockResolvedValue(undefined);
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    const { rerender } = render(panel('org', onSaved, onOpenChange));
+    fillAndSave();
+    await waitFor(() => expect(mocks.createInstance).toHaveBeenCalledTimes(1));
+
+    // Closed and reopened by the page, as when another server is opened for editing.
+    rerender(panel('org', onSaved, onOpenChange, false));
+    rerender(panel('org', onSaved, onOpenChange, true));
+    finishOld({ _id: 'old-1' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(mocks.saveAccess).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    fillAndSave();
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(mocks.createInstance).toHaveBeenCalledTimes(2);
+    expect(mocks.updateInstance).not.toHaveBeenCalled();
+    expect(mocks.saveAccess.mock.calls).toEqual([['new-2']]);
     expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
