@@ -502,6 +502,12 @@ class UsersSync:
                         _gitlab_timeout=120.0,
                     )
                     if user_res.success and user_res.data is not None:
+                        # The profile has no membership: keep the member row's state, or an awaiting membership
+                        # ("one of awaiting or active", https://docs.gitlab.com/api/members/) would read as active.
+                        full = getattr(user_res.data, "attributes", None)
+                        if isinstance(full, dict):
+                            membership = attributes.get("membership_state") if isinstance(attributes, dict) else None
+                            return member_id, SimpleNamespace(**full, membership_state=membership)
                         return member_id, user_res.data
                     self.logger.warning(
                         "Could not fetch full GitLab user id=%s (%s); using member payload.",

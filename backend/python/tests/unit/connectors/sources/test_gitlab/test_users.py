@@ -284,6 +284,18 @@ class TestEnrichMembersWithFullUser:
 
         assert enriched[7] is profile
 
+    async def test_a_profile_read_keeps_the_membership_state_of_the_member_row(self) -> None:
+        """The profile (GET /users/:id) has no membership: an awaiting membership must not read as active after it."""
+        c = make_mock_connector()
+        users = UsersSync(c)
+        member = SimpleNamespace(id=7, attributes={"public_email": None, "membership_state": "awaiting"})
+        profile = SimpleNamespace(id=7, attributes={"id": 7, "email": "private@example.com", "state": "active"})
+        c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(success=True, data=profile))
+
+        enriched = await users._enrich_members_with_full_user({7: member})
+
+        assert enriched[7].membership_state == "awaiting" and enriched[7].email == "private@example.com"
+
     async def test_a_member_listed_with_its_email_is_not_looked_up(self) -> None:
         c = make_mock_connector()
         users = UsersSync(c)
