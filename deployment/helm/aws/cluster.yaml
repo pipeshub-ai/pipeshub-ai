@@ -113,3 +113,29 @@ managedNodeGroups:
         effect: NoSchedule
     updateConfig:
       maxUnavailable: 1
+  # Parsing pods (Docling layout analysis) are CPU-bound, so this group is
+  # compute optimised: c7i.2xlarge is 8 vCPU / 16 GiB, 2 GiB per vCPU against 4
+  # on m7i. It always keeps one node, so a parsing pod has somewhere to run when
+  # parsing.enabled is turned on. The node group's cost is paid whether or not
+  # it is. maxSize is the most nodes the group can hold; keep it in step with
+  # parsing.replicas and parsing.resources in values-eks.yaml (3 pods per node).
+  - name: parsing
+    instanceType: c7i.2xlarge
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 4
+    volumeSize: 100
+    volumeType: gp3
+    volumeEncrypted: true
+    privateNetworking: true
+    disableIMDSv1: true
+    disablePodIMDS: true
+    availabilityZones: ["us-east-1a", "us-east-1b", "us-east-1c"]
+    labels:
+      pipeshub/role: parsing
+    taints:
+      - key: pipeshub/role
+        value: parsing
+        effect: NoSchedule
+    updateConfig:
+      maxUnavailable: 1

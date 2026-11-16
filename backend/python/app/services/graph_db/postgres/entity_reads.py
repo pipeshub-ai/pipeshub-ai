@@ -270,8 +270,8 @@ class EntityReadsMixin(PgBase):
                 CASE WHEN jsonb_typeof(v.doc->'amountFloat') = 'number' THEN (v.doc->>'amountFloat')::float8 END AS a,
                 CASE WHEN jsonb_typeof(v.doc->'amountHighFloat') = 'number' THEN (v.doc->>'amountHighFloat')::float8 END AS ah,
                 CASE WHEN jsonb_typeof(v.doc->'siValue') = 'number' THEN (v.doc->>'siValue')::float8 END AS si,
-                CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv) f
-              JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = v.doc->>'recordId'      -- only live records count toward the cap
+                CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv, v.doc->>'recordId' AS record_id OFFSET 0) f
+              JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = f.record_id      -- only live records count toward the cap
                 AND r.doc->>'orgId' = $2 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
               WHERE v.doc->>'orgId' = $2 AND v.doc->>'recordId' IS NOT NULL
                 AND (cardinality($3::text[]) = 0 OR v.doc->>'kind' = ANY($3::text[]))
@@ -288,8 +288,8 @@ class EntityReadsMixin(PgBase):
                 CASE WHEN jsonb_typeof(v.doc->'amountFloat') = 'number' THEN (v.doc->>'amountFloat')::float8 END AS a,
                 CASE WHEN jsonb_typeof(v.doc->'amountHighFloat') = 'number' THEN (v.doc->>'amountHighFloat')::float8 END AS ah,
                 CASE WHEN jsonb_typeof(v.doc->'siValue') = 'number' THEN (v.doc->>'siValue')::float8 END AS si,
-                CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv) f
-              JOIN graph.nodes r ON r.org_id = v.org_id AND r.coll = 'records' AND r.id = v.doc->>'recordId'      -- only live records count toward the cap
+                CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv, v.doc->>'recordId' AS record_id OFFSET 0) f
+              JOIN graph.nodes r ON r.org_id = v.org_id AND r.coll = 'records' AND r.id = f.record_id      -- only live records count toward the cap
                 AND r.doc->>'orgId' = $2 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
               WHERE v.org_id = $1 AND v.coll = 'valueMentions' AND v.doc->>'orgId' = $2 AND v.doc->>'recordId' IS NOT NULL
                 AND ($14::text[] IS NULL OR v.doc->>'recordId' = ANY($14::text[]))

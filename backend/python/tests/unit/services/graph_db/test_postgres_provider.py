@@ -238,9 +238,10 @@ async def test_ping_runs_one_constant_select_through_the_service_role() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("org_id", "found"), [(None, True), ("o1", True), ("o2", False)])
+@pytest.mark.parametrize(("org_id", "found"), [("o1", True), ("o2", False)])
 async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, found: bool) -> None:
-    """An ``org_id`` is checked against the bound org, never put into the query: a different org reads as no user."""
+    """An ``org_id`` is checked against the bound org, never put into the query: a different org reads as no user. (None is refused:
+    test_an_org_argument_of_none_is_refused_even_inside_an_org.)"""
     from app.core.org_context import for_org
     from app.services.graph_db.postgres import identity
 

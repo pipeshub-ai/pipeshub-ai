@@ -43,6 +43,10 @@ from app.services.messaging.distributed_concurrency import (
     lease_kind,
 )
 from app.services.messaging.redis_errors import report_redis_error
+from app.services.parsing.remote_concurrency import (
+    remote_parse_concurrency,
+    remote_parse_slots,
+)
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
 from app.services.resource_governor.kinds import (
     EXCESS_WAIT_SECONDS,
@@ -911,9 +915,16 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     RSS, and a Jira/Slack/Markdown parse waiting on it will never occupy
     more than a handful of local LIGHT_PARSE slots, so the node-local
     gate never sees demand and stays on its floor.
+
+    With a remote parsing service the two tiers share one cluster lease (the non-lane ``parsing``
+    pool) sized to ``PARSING_SERVICE_CONCURRENCY`` itself, whatever the local CPU ceilings are, so
+    the fleet-wide cap on parses in flight is that number, not twice it. The priority lane keeps its
+    own tier pools and limits: an interactive parse never queues behind another tier's lease.
     """
     if (lane := _lane(host)) is not None:
         return lane.parse_lease_limit(tier)
+    if (remote := remote_parse_concurrency()) is not None:
+        return remote
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
@@ -927,11 +938,15 @@ def parse_lease_pool(tier: ParseTier | None, host: "ConcurrencyHost | None" = No
 
     Split by tier because the two ceilings differ: a light record must not
     consume one of the few heavy-parse leases a Docling PDF holds for
-    minutes. The priority lane's parses count against pools of their own.
+    minutes. The priority lane's parses count against pools of their own and keep their tier split.
+    With a remote parsing service the other parses take the one ``parsing`` pool, so
+    ``PARSING_SERVICE_CONCURRENCY`` caps the fleet.
     """
     lane = _lane(host) if host is not None else None
     if lane is not None:
         return lane.parse_lease_pool(tier)
+    if remote_parse_concurrency() is not None:
+        tier = ParseTier.HEAVY
     return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
 
 
@@ -1696,6 +1711,16 @@ async def acquire_parsing_slot(
     part of the kind's excess still missing is reserved here, but a permit holder never waits for
     memory longer than ``EXCESS_WAIT_SECONDS``: it gives the permit back and the caller queues again.
     """
+    remote = remote_parse_concurrency()
+    if remote is not None:
+        # The parse runs in the parsing service, so this process's CPUs do not bound it: the
+        # configured concurrency does. Memory reserved for the record and the download gates
+        # were taken before this call and still apply.
+        slots = remote_parse_slots(remote)
+        if not await slots.acquire(timeout, priority=_lane(host) is not None):
+            raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
+        return Admission(tier=tier, cost=1, _release=slots.release)
+
     governor = host.governor
     if governor is not None:
         resolved_tier = tier if tier is not None else ParseTier.HEAVY

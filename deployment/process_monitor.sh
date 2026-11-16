@@ -328,6 +328,62 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT SIGQUIT
 
+# PIPESHUB_ROLE picks what this container runs. "all" (the default) is the full
+# application below. "parsing" runs only the stateless Parsing service and the
+# Docling service it calls on localhost, so a parse pod can be sized on its own: it
+# never starts Node.js, the connectors, query, indexing, the embedding server
+# or the UI. Anything else is refused rather than guessed at.
+PIPESHUB_ROLE=${PIPESHUB_ROLE:-all}
+
+# SIGTERM on a parse pod: stop the parsing process first and wait for it to
+# finish its in-flight requests (it drains on SIGTERM), and only then stop
+# Docling, which those requests call. The orchestrator's grace period bounds
+# the wait.
+cleanup_parsing_role() {
+    log "Parsing role: draining in-flight parses..."
+    [ -n "$TICK_PID" ] && kill "$TICK_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && wait "$PARSING_PID" 2>/dev/null || true
+    [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
+    [ -n "$DOCLING_PID" ] && wait "$DOCLING_PID" 2>/dev/null || true
+    log "All services stopped."
+    exit 0
+}
+
+run_parsing_role() {
+    log "=== Parsing role starting ==="
+    trap cleanup_parsing_role SIGTERM SIGINT SIGQUIT
+    start_docling
+    spawn_parsing
+    # Docling is waited for too: a parse pod that cannot reach it would take parses and fail them.
+    await_services \
+        "Docling" "$DOCLING_PID" "http://localhost:8081/health" \
+        "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" || exit 1
+    log "Parsing role started. Monitoring (checking every ${CHECK_INTERVAL}s)..."
+    while true; do
+        # Sleep in the background so a signal is handled at once, not after
+        # the interval.
+        sleep "$CHECK_INTERVAL" &
+        TICK_PID=$!
+        wait "$TICK_PID" || true
+        if ! check_process "$DOCLING_PID" "Docling"; then
+            start_docling
+        fi
+        if ! check_process "$PARSING_PID" "Parsing"; then
+            start_parsing
+        fi
+    done
+}
+
+case "$PIPESHUB_ROLE" in
+    all) ;;
+    parsing) run_parsing_role ;;
+    *)
+        log "ERROR: unknown PIPESHUB_ROLE='${PIPESHUB_ROLE}' (expected all or parsing)"
+        exit 1
+        ;;
+esac
+
 log "=== Process Monitor Starting ==="
 start_nodejs
 if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
@@ -347,25 +403,62 @@ start_docling
 # recovers in-progress records immediately and, when USE_PARSING_SERVICE=true,
 # routes them through the Parsing service — if that service isn't up yet those
 # recovery calls fail with connection errors / 503s.
+# When PARSING_SERVICE_URL names another host (a separate parsing deployment), the
+# local Parsing service would only sit idle, so it is not started; Extraction still is.
+RUN_LOCAL_PARSING=true
+case "${PARSING_SERVICE_URL:-}" in
+    ""|http://localhost[:/]*|http://localhost|http://127.0.0.1[:/]*|http://127.0.0.1) ;;
+    *) RUN_LOCAL_PARSING=false ;;
+esac
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
-    spawn_parsing
+    if [ "$RUN_LOCAL_PARSING" = "true" ]; then
+        spawn_parsing
+    else
+        log "PARSING_SERVICE_URL is remote — not starting a local Parsing service"
+    fi
     spawn_extraction
 else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
 fi
+
+# A remote Parsing service has no PID here, so it is polled by URL under the same overall bound. Indexing
+# recovers in-progress records the moment it starts, and a recovery call to an unready service would use up
+# a delivery attempt of each record.
+wait_url_ready() {
+    local name=$1 url=$2 began=$SECONDS limit
+    log "Waiting for $name health check..."
+    while true; do
+        limit=$((STARTUP_MAX_SECONDS - (SECONDS - began)))
+        [ "$limit" -le "$STARTUP_STALL_SECONDS" ] || limit=$STARTUP_STALL_SECONDS
+        [ "$limit" -ge 1 ] || limit=1
+        if curl -s -f --max-time "$limit" "$url" > /dev/null 2>&1; then
+            log "$name health check passed after $((SECONDS - began))s!"
+            return 0
+        fi
+        if [ $((SECONDS - began)) -ge "$STARTUP_MAX_SECONDS" ]; then
+            log "ERROR: $name did not become healthy within ${STARTUP_MAX_SECONDS}s"
+            return 1
+        fi
+        sleep "${STARTUP_POLL_SECONDS:-2}"
+    done
+}
 
 # The first failed wait ends the monitor, as it did when the waits were serial.
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     await_services \
         "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
         "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" \
-        "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" \
+        ${PARSING_PID:+"Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health"} \
         "Extraction service" "$EXTRACTION_PID" "http://localhost:${EXTRACTION_PORT}/health" || exit 1
 else
     await_services \
         "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
         "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" || exit 1
+fi
+
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ] && [ "$RUN_LOCAL_PARSING" != "true" ]; then
+    wait_url_ready "Remote Parsing service" "${PARSING_SERVICE_URL%/}/health/ready" || exit 1
 fi
 
 start_indexing
@@ -405,7 +498,7 @@ while true; do
     fi
 
     if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
-        if ! check_process "$PARSING_PID" "Parsing"; then
+        if [ "$RUN_LOCAL_PARSING" = "true" ] && ! check_process "$PARSING_PID" "Parsing"; then
             start_parsing
         fi
         if ! check_process "$EXTRACTION_PID" "Extraction"; then
