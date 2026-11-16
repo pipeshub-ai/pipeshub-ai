@@ -1990,7 +1990,7 @@ class TestCacheSideloads:
         return connector.source_accounts
 
     @staticmethod
-    def _end_user(user_id: int, email: str = "end@customer.com", **extra: object) -> dict:
+    def _end_user(user_id: int, email: str = "end@example.com", **extra: object) -> dict:
         return {"users": [{"id": user_id, "email": email, "role": "end-user", **extra}]}
 
     async def test_an_end_user_who_takes_an_end_users_address_takes_only_its_own_grants(
@@ -2004,12 +2004,12 @@ class TestCacheSideloads:
         await zendesk_connector._cache_sideloads(self._end_user(950))       # the address passed to another end user
 
         mock_data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(
-            "zd-conn-1", "end@customer.com"
+            "zd-conn-1", "end@example.com"
         )
-        assert accounts.holds("end@customer.com", "950") and not accounts.holds("end@customer.com", "900")
+        assert accounts.holds("end@example.com", "950") and not accounts.holds("end@example.com", "900")
         await zendesk_connector._cache_sideloads(self._end_user(900, active=False))   # deleted: never takes it back
         await zendesk_connector._cache_sideloads(self._end_user(900, suspended=True))
-        assert accounts.holds("end@customer.com", "950") and not accounts.holds("end@customer.com", "900")
+        assert accounts.holds("end@example.com", "950") and not accounts.holds("end@example.com", "900")
 
     async def test_an_end_user_who_takes_an_agents_address_gets_its_own_grants(
         self, zendesk_connector, mock_data_entities_processor
@@ -4637,7 +4637,7 @@ class TestEndUsersComeFromTheTicketPages:
         datasource = self._page(
             zendesk_connector,
             [self._ticket()],
-            users=[{"id": 900, "email": "end@customer.com", "name": "End",
+            users=[{"id": 900, "email": "end@example.com", "name": "End",
                     "role": "end-user"}],
         )
         # The requester is granted only once the ticket has a public comment.
@@ -4650,8 +4650,8 @@ class TestEndUsersComeFromTheTicketPages:
         record, permissions = mock_data_entities_processor.on_new_records.await_args_list[
             0
         ].args[0][0]
-        assert record.reporter_email == "end@customer.com"
-        assert "end@customer.com" in {p.email for p in permissions}
+        assert record.reporter_email == "end@example.com"
+        assert "end@example.com" in {p.email for p in permissions}
         # Not written as a user, and not held where the all-tickets group is built from.
         mock_data_entities_processor.on_new_app_users.assert_not_awaited()
         assert zendesk_connector._user_id_to_data == {}
@@ -4798,14 +4798,14 @@ class TestEndUsersComeFromTheTicketPages:
         datasource = _ready(zendesk_connector)
         datasource.show_ticket = AsyncMock(return_value=_make_response(data={
             "ticket": {"id": 23, "group_id": 7, "requester_id": 900},
-            "users": [{"id": 900, "email": "end@customer.com", "role": "end-user"}],
+            "users": [{"id": 900, "email": "end@example.com", "role": "end-user"}],
         }))
         assert zendesk_connector._user_data(900) == {}
 
         permissions = await zendesk_connector._fetch_ticket_permissions("23")
 
         assert datasource.show_ticket.await_args.kwargs["include"] == "users"
-        assert "end@customer.com" in {p.email for p in permissions}
+        assert "end@example.com" in {p.email for p in permissions}
 
     async def test_sideload_cache_is_bounded(self, zendesk_connector) -> None:
         with patch("app.connectors.sources.zendesk.connector.SIDELOADED_USER_CACHE_SIZE", 3):
@@ -5179,7 +5179,7 @@ class TestFolderReaders:
             "1": {"id": 1, "role": "agent", "email": "agent@acme.com"},
         }
         await connector._cache_sideloads({"users": [
-            {"id": 900, "email": "end@customer.com", "role": "end-user"},
+            {"id": 900, "email": "end@example.com", "role": "end-user"},
             {"id": 901, "email": "cc@customer.com", "role": "end-user"},
         ]})
 
@@ -5272,7 +5272,7 @@ class TestFolderReaders:
         assert [
             (group.source_user_group_id, [member.email for member in members])
             for group, members in call.args[0]
-        ] == [(customer_group, ["end@customer.com", "cc@customer.com"])]
+        ] == [(customer_group, ["end@example.com", "cc@customer.com"])]
         assert call.kwargs == {"replace_members": False}
 
     async def test_customers_the_ticket_does_not_grant_stay_out(
