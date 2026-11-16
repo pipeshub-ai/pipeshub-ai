@@ -21,6 +21,7 @@ from app.modules.parsers.excel.limits import excel_document_memory_bytes
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Limits,
     Pool,
     PoolDemand,
@@ -853,6 +854,54 @@ def _reset_for_shrink(state: PoolState, *, cooldown_until: float) -> PoolState:
     )
 
 
+_SHRINK_CAUSE: dict[LimitRule, str] = {
+    LimitRule.MEM_HARD: "memory",
+    LimitRule.MEM_SOFT: "memory",
+    LimitRule.MEM_TARGET: "memory",
+    LimitRule.CPU: "cpu",
+    LimitRule.DOWNSTREAM: "downstream",
+}
+# Hold rules that say nothing once the pool sits at its ceiling.
+_GROWTH_HOLDS = frozenset(
+    {LimitRule.GROW, LimitRule.NO_DEMAND, LimitRule.CONFIRMING, LimitRule.RESOURCE_DELTA, LimitRule.GROW_BAND}
+)
+
+
+def _with_rule(
+    state: PoolState,
+    rule: LimitRule,
+    now: float,
+    *,
+    limit: int,
+    ceiling: int,
+    cause: str | None = None,
+    services: tuple[str, ...] | None = None,
+) -> PoolState:
+    """*state* tagged with the rule that produced *limit* (observability only).
+
+    A pool with no room at all reads ``collapsed``, and one at its ceiling reads ``at_ceiling``
+    where the rule is only a growth hold, so a reader never sees "confirming" on a pool that
+    has nothing left to grow into.
+    """
+    if ceiling <= 0:
+        rule = LimitRule.COLLAPSED
+    elif limit >= ceiling and rule in _GROWTH_HOLDS:
+        rule = LimitRule.AT_CEILING
+    return replace(
+        state,
+        rule=rule,
+        rule_since=state.rule_since if state.rule is rule and state.rule_since is not None else now,
+        cooldown_cause=state.cooldown_cause if cause is None else cause,
+        rule_services=state.rule_services if services is None else services,
+    )
+
+
+def _feedback_services(feedback: FeedbackWindow) -> tuple[str, ...]:
+    return tuple(
+        sorted({*feedback.throttles, *feedback.pool_exhaustions, *feedback.unavailable, *feedback.timeouts})
+    )
+
+
 def _target_shrink_step(pool: Pool, current: int, target: int) -> int:
     """How fast a pool walks down to a memory-derived target below it.
 
@@ -1032,14 +1081,18 @@ def _next_pool_limit(
     # still resets the grow state and starts the cooldown. Rules that fire together are describing one shortage from
     # different angles, so honouring only the gentler one would leave the
     # container over-committed for another whole interval.
-    shrink_to: int | None = None
+    # Each candidate carries the rule that asked for it, so the binding one (the
+    # smallest target; the first listed on a tie) is what the pool reports.
+    candidates: list[tuple[int, LimitRule]] = []
     incident = False
 
     if brake_pressure is not None and brake_pressure >= MEM_HARD:
-        shrink_to = min(current, max(floor, current // 2))
+        candidates.append((min(current, max(floor, current // 2)), LimitRule.MEM_HARD))
         incident = True
-    elif (brake_pressure is not None and brake_pressure >= MEM_SOFT) or cpu_brake:
-        shrink_to = min(current, max(floor, current - shrink_step))
+    elif brake_pressure is not None and brake_pressure >= MEM_SOFT:
+        candidates.append((min(current, max(floor, current - shrink_step)), LimitRule.MEM_SOFT))
+    elif cpu_brake:
+        candidates.append((min(current, max(floor, current - shrink_step)), LimitRule.CPU))
 
     downstream_shrink = False
     if downstream is not None:
@@ -1047,7 +1100,7 @@ def _next_pool_limit(
         if wanted is not None:
             downstream_shrink = True
             incident = incident or downstream_incident
-            shrink_to = wanted if shrink_to is None else min(shrink_to, wanted)
+            candidates.append((wanted, LimitRule.DOWNSTREAM))
 
     # Heavy and index both have a target that live free memory can pull below
     # the ceiling (_target_for). Overall pressure can sit well under MEM_SOFT
@@ -1058,9 +1111,10 @@ def _next_pool_limit(
     # always the ceiling, so this can never fire for it.
     if current > target:
         walked = max(target, current - _target_shrink_step(pool, current, target))
-        shrink_to = walked if shrink_to is None else min(shrink_to, walked)
+        candidates.append((walked, LimitRule.MEM_TARGET))
 
-    if shrink_to is not None:
+    if candidates:
+        shrink_to, binding = min(candidates, key=lambda c: c[0])
         # An incident cooldown is assigned outright rather than max()'d: it is
         # the longer of the two windows, and it starts from this sample.
         cooldown_until = (
@@ -1071,12 +1125,18 @@ def _next_pool_limit(
         next_state = _reset_for_shrink(state, cooldown_until=cooldown_until)
         if downstream_shrink:
             next_state = replace(next_state, downstream_holdoff=DOWNSTREAM_GROW_CONFIRM_SAMPLES)
-        return shrink_to, next_state
+        return shrink_to, _with_rule(
+            next_state, binding, now, limit=shrink_to, ceiling=ceiling,
+            cause=_SHRINK_CAUSE[binding],
+            services=_feedback_services(downstream) if binding is LimitRule.DOWNSTREAM and downstream else (),
+        )
 
     if pressure is None:
         # Cannot prove there is memory headroom to grow into — freeze.
         # (The CPU brake above still applies independently of this branch.)
-        return current, replace(state, healthy_streak=0)
+        return current, _with_rule(
+            replace(state, healthy_streak=0), LimitRule.PRESSURE_UNKNOWN, now, limit=current, ceiling=ceiling
+        )
 
     # Every tier grows up to MEM_SOFT. GROW_BAND (default 0) is an optional
     # extra margin on heavy only. The cheap count pools (light, index) also
@@ -1101,12 +1161,33 @@ def _next_pool_limit(
             if grow_step <= 0:
                 # Large resource impact from the last grow — hold this
                 # round without abandoning slow start.
-                return current, grow_state
-            return min(target, current + grow_step), _record_grow(grow_state, snap)
-        return current, replace(state, healthy_streak=healthy_streak)
+                return current, _with_rule(grow_state, LimitRule.RESOURCE_DELTA, now, limit=current, ceiling=ceiling)
+            wanted = current + grow_step
+            grown = min(target, wanted)
+            # A grow that free memory clips short of the ceiling is a memory hold, not growth.
+            clipped = wanted > target and target < ceiling
+            return grown, _with_rule(
+                _record_grow(grow_state, snap), LimitRule.MEM_TARGET if clipped else LimitRule.GROW,
+                now, limit=grown, ceiling=ceiling,
+            )
+        if healthy_streak < confirm_samples:
+            held = LimitRule.CONFIRMING
+        elif downstream_hold:
+            held = LimitRule.DOWNSTREAM_HOLDOFF if downstream_holdoff > 0 else LimitRule.LATENCY_HOLD
+        else:
+            held = LimitRule.NO_DEMAND
+        return current, _with_rule(
+            replace(state, healthy_streak=healthy_streak), held, now, limit=current, ceiling=ceiling
+        )
 
     # Pressure is fine but not yet confirmed-healthy, or still cooling down.
-    return current, replace(state, healthy_streak=0 if cooling_down else state.healthy_streak)
+    return current, _with_rule(
+        replace(state, healthy_streak=0 if cooling_down else state.healthy_streak),
+        LimitRule.COOLDOWN if cooling_down else LimitRule.GROW_BAND,
+        now,
+        limit=current,
+        ceiling=ceiling,
+    )
 
 
 def next_limits(

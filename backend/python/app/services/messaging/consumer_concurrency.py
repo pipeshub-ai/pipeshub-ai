@@ -60,7 +60,7 @@ from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import reset_admitted_in, set_admitted_in
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
     from logging import Logger
 
     from app.modules.indexing.record_progress import RecordProgress
@@ -189,6 +189,125 @@ class PriorityLane:
 
     def parse_lease_limit(self, tier: ParseTier | None) -> int:
         return self.tier_limit(ParseTier.LIGHT if tier is ParseTier.LIGHT else ParseTier.HEAVY) * self.workers
+
+
+# -- admission backlog (read-only observability) -------------------------------
+
+# Where a spawned record can be waiting, in the order it meets them. A record is counted from the
+# moment it starts waiting on one until that wait ends, so retry backoff is never counted.
+PHASE_GATE = "atGate"
+PHASE_LEASE = "atLease"
+PHASE_DOWNLOAD = "atDownload"
+PHASE_PARSE = "atParse"
+_PHASES = (PHASE_GATE, PHASE_LEASE, PHASE_DOWNLOAD, PHASE_PARSE)
+# One slot per tier and phase, heavy first.
+_SLOT = {
+    (tier, phase): index * len(_PHASES) + offset
+    for index, tier in enumerate((ParseTier.HEAVY, ParseTier.LIGHT))
+    for offset, phase in enumerate(_PHASES)
+}
+_SUM = 8
+
+
+class AdmissionBacklog:
+    """Live counts of records waiting at each admission stage, per tier, and of waiters per lease pool.
+
+    ``add``/``remove`` are O(1) and take one short lock. An optional *observer* is told about every entry and exit
+    with the message concerned, so a deployment can keep a breakdown of its own; with none, the cost is one
+    attribute test. An observer that raises is ignored (and reported once): it can neither lose a count nor fail
+    the record that is waiting.
+    """
+
+    __slots__ = ("_lock", "_totals", "_lease_waiting", "observer", "_observer_reported")
+
+    def __init__(self, observer: Any = None) -> None:  # noqa: ANN401 - any object with entered/left
+        self._lock = threading.Lock()
+        self._totals = [0] * _SUM
+        self._lease_waiting: dict[str, int] = {}
+        self.observer = observer
+        self._observer_reported = False
+
+    def _observed(self, call: str, tier: ParseTier, phase: str, message: Any) -> None:  # noqa: ANN401
+        try:
+            getattr(self.observer, call)(tier, phase, message)
+        except Exception:
+            if not self._observer_reported:
+                self._observer_reported = True
+                logging.getLogger(__name__).exception("admission backlog observer failed; its errors are ignored")
+
+    def add(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        with self._lock:
+            self._totals[_SLOT[tier, phase]] += 1
+            if pool is not None:
+                self._lease_waiting[pool] = self._lease_waiting.get(pool, 0) + 1
+        if self.observer is not None:
+            self._observed("entered", tier, phase, message)
+
+    def remove(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        with self._lock:
+            self._totals[_SLOT[tier, phase]] -= 1
+            if pool is not None:
+                left = self._lease_waiting.get(pool, 0) - 1
+                if left > 0:
+                    self._lease_waiting[pool] = left
+                else:
+                    self._lease_waiting.pop(pool, None)
+        if self.observer is not None:
+            self._observed("left", tier, phase, message)
+
+    def totals(self) -> dict[ParseTier, dict[str, int]]:
+        with self._lock:
+            counts = list(self._totals)
+        return {
+            tier: {phase: counts[_SLOT[tier, phase]] for phase in _PHASES} for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
+        }
+
+    def lease_waiting(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._lease_waiting)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._totals = [0] * _SUM
+            self._lease_waiting.clear()
+
+
+async def in_phase(
+    host: object,
+    phase: str,
+    tier: "ParseTier | None",
+    message: "StreamMessage | None",
+    awaitable: "Awaitable[T]",
+    *,
+    pool: str | None = None,
+) -> T:
+    """Await *awaitable* counted as waiting at *phase*; the count ends when the wait does,
+    however it ends (granted, timed out or cancelled)."""
+    backlog = getattr(host, "admission_backlog", None)
+    if not isinstance(backlog, AdmissionBacklog):
+        return await awaitable
+    resolved = tier if tier is not None else ParseTier.HEAVY
+    backlog.add(resolved, phase, pool, message)
+    try:
+        return await awaitable
+    finally:
+        backlog.remove(resolved, phase, pool, message)
+
+
+class LocalPermits:
+    """Holders and waiters of a governor-less consumer's local index semaphore.
+
+    Counted around the acquire and release rather than read from ``Semaphore._value``, which
+    a cancelled waiter leaves wrong.
+    """
+
+    __slots__ = ("name", "in_use", "waiting")
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.in_use = 0
+        self.waiting = 0
+
 
 
 def _lane(host: object) -> "PriorityLane | None":
@@ -828,14 +947,36 @@ class GateWaiterToken:
     waiter against one gate while it queues on the other.
     """
 
-    __slots__ = ("_host", "_tier", "_admitted", "_released")
+    __slots__ = ("_host", "_tier", "_message", "_admitted", "_released", "_in_gate")
 
-    def __init__(self, host: ConcurrencyHost, tier: ParseTier) -> None:
+    def __init__(self, host: ConcurrencyHost, tier: ParseTier, message: "StreamMessage | None" = None) -> None:
         self._host = host
         self._tier = tier
+        self._message = message
         self._admitted = False
         self._released = False
+        self._in_gate = False
         host.gate_waiters.add(tier)
+
+    def _backlog(self) -> "AdmissionBacklog | None":
+        backlog = getattr(self._host, "admission_backlog", None)
+        return backlog if isinstance(backlog, AdmissionBacklog) else None
+
+    def enter_gate(self) -> None:
+        """Call just before awaiting the index permit: the record counts as waiting at the gate."""
+        if self._in_gate or self._admitted or self._released:
+            return
+        backlog = self._backlog()
+        if backlog is not None:
+            backlog.add(self._tier, PHASE_GATE, None, self._message)
+            self._in_gate = True
+
+    def _leave_gate(self) -> None:
+        if self._in_gate:
+            self._in_gate = False
+            backlog = self._backlog()
+            if backlog is not None:
+                backlog.remove(self._tier, PHASE_GATE, None, self._message)
 
     @property
     def tier(self) -> ParseTier:
@@ -845,6 +986,7 @@ class GateWaiterToken:
         """Call once the local indexing gate/semaphore has been acquired."""
         if self._admitted or self._released:
             return
+        self._leave_gate()
         if _lane(self._host) is not None:
             # The lane's cap is on records in flight, not on records waiting, so it counts
             # a record until the task ends.
@@ -859,6 +1001,7 @@ class GateWaiterToken:
         if self._released:
             return
         self._released = True
+        self._leave_gate()
         if not self._admitted:
             self._host.gate_waiters.remove(self._tier)
 
@@ -1141,8 +1284,23 @@ async def acquire_index_slot(
     legacy_semaphore = host.indexing_semaphore
     if legacy_semaphore is None:
         raise RuntimeError("No indexing concurrency primitive configured")
-    await legacy_semaphore.acquire()
-    return Admission(tier=resolved_tier, _release=legacy_semaphore.release)
+    permits = getattr(host, "local_permits", None)
+    if not isinstance(permits, LocalPermits):
+        permits = LocalPermits(_local_permits_name(host))
+        with contextlib.suppress(AttributeError):
+            host.local_permits = permits  # type: ignore[attr-defined]
+    permits.waiting += 1
+    try:
+        await legacy_semaphore.acquire()
+    finally:
+        permits.waiting -= 1
+    permits.in_use += 1
+
+    def _release_local() -> None:
+        permits.in_use -= 1
+        legacy_semaphore.release()
+
+    return Admission(tier=resolved_tier, _release=_release_local)
 
 
 def release_admission(admission: "Admission | None") -> bool:
@@ -1324,17 +1482,22 @@ async def _wait_for_heavy_parse_slots(
     """The heavy-parse slots shared by this container's workers, or ``None``
     once *timeout* has passed without room."""
     deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
-    while True:
-        slots = governor.try_acquire_heavy_parse_slots(cost)
-        if slots is not None:
-            return slots
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
-        else:
-            await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
+    slots = governor.try_acquire_heavy_parse_slots(cost)
+    if slots is not None:
+        return slots
+    # Only a caller that has to wait is counted as waiting.
+    with getattr(governor, "slot_wait", contextlib.nullcontext)():
+        while True:
+            slots = governor.try_acquire_heavy_parse_slots(cost)
+            if slots is not None:
+                return slots
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
+            else:
+                await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
 
 
 async def reserve_record_memory(
@@ -1524,3 +1687,102 @@ def record_parse_kind(payload: "dict[str, Any] | None") -> ParseKind:
     """The kind of a record from its own ``extension`` and ``mimeType``; anything else is ``UNKNOWN``."""
     data = payload or {}
     return classify_kind(data.get("extension"), data.get("mimeType"))
+
+
+def _local_permits_name(host: ConcurrencyHost) -> str:
+    return host.stage_admission.stage if host.stage_admission is not None else "legacy"
+
+
+def _read_paused_for_admission(host: object) -> bool:
+    probe = getattr(host, "read_paused_for_admission", None)
+    return bool(probe()) if callable(probe) else False
+
+
+def consumer_id(host: object) -> str | None:
+    """The prefix of this consumer's lease owners (``<id>:<message id>:<uuid>``)."""
+    value = getattr(host, "consumer_name", None) or getattr(host, "_consumer_instance_id", None)
+    return value if isinstance(value, str) else None
+
+
+def _lease_pools(host: ConcurrencyHost) -> dict[str, int]:
+    """Every cluster lease pool this consumer takes, with the limit it asks for."""
+    if host.concurrency_manager is None:
+        return {}
+    pools: dict[str, int] = {}
+    if host.stage_admission is not None:
+        pools[host.stage_admission.lease_pool] = host.stage_admission.lease_limit
+        return pools
+    for tier in ParseTier:
+        pools[admission_lease_pool(host, tier)] = index_ceiling(host, tier)
+        pools[parse_lease_pool(tier, host)] = parse_ceiling(host, tier)
+    return pools
+
+
+def admission_explain(host: ConcurrencyHost) -> dict[str, Any]:
+    """Why this consumer is, or is not, admitting records: read-only, no I/O, never awaits.
+
+    Safe from any thread. It carries counts only: nothing that identifies a message or who sent it.
+    """
+    backlog = getattr(host, "admission_backlog", None)
+    if isinstance(backlog, AdmissionBacklog):
+        totals = backlog.totals()
+        lease_waiting = backlog.lease_waiting()
+    else:
+        totals = {tier: dict.fromkeys(_PHASES, 0) for tier in (ParseTier.HEAVY, ParseTier.LIGHT)}
+        lease_waiting = {}
+    waiters = host.gate_waiters.snapshot()
+    tiers = {
+        tier.value: {
+            **totals[tier],
+            "buffered": max(0, waiters.get(tier, 0) - totals[tier][PHASE_GATE]),
+        }
+        for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
+    }
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    paused: list[str] = []
+    remaining = 0.0
+    if coordinator is not None:
+        remaining = coordinator.pause_remaining()
+        paused = sorted(coordinator.paused_services)
+    explain: dict[str, Any] = {
+        "v": 2,
+        "consumerId": consumer_id(host),
+        "readPause": {
+            "admission": _read_paused_for_admission(host),
+            "downstream": remaining > 0.0,
+            "pauseRemainingSec": remaining,
+            "pausedServices": paused,
+        },
+        "leases": {
+            pool: {"limit": limit, "waiting": lease_waiting.get(pool, 0)}
+            for pool, limit in _lease_pools(host).items()
+        },
+        "suspectsWaiting": int(getattr(host, "_suspects_waiting", 0)),
+        "backlog": {"tiers": tiers},
+    }
+    dispatch = getattr(host, "dispatch_stats", None)
+    if callable(dispatch):
+        explain["dispatch"] = dispatch()
+    lane = _lane(host)
+    if lane is not None:
+        explain["priority"] = {
+            tier.value: {
+                "inFlight": waiters.get(tier, 0),
+                "limit": lane.tier_limit(tier),
+                # Records of this tier waiting for an index permit. Records the cap holds back are not read yet, so not counted.
+                "gateWaiting": totals[tier][PHASE_GATE],
+            }
+            for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
+        }
+    permits = getattr(host, "local_permits", None)
+    if host.governor is None and not isinstance(permits, LocalPermits):
+        # Nothing has waited yet; a governor-less consumer still admits through its local permits.
+        permits = LocalPermits(_local_permits_name(host))
+    if isinstance(permits, LocalPermits):
+        explain["localPermits"] = {
+            "name": permits.name,
+            "limit": local_index_permits(host),
+            "inUse": permits.in_use,
+            "waiting": permits.waiting,
+        }
+    return explain

@@ -31,6 +31,32 @@ class Pool(StrEnum):
     LIGHT_PARSE = "light_parse"
 
 
+class LimitRule(StrEnum):
+    """Which rule last set, or held, a pool's adaptive limit (policy._next_pool_limit).
+
+    Read-only observability: nothing in the control law reads it back.
+    """
+
+    START = "start"
+    MEM_HARD = "mem_hard"
+    MEM_SOFT = "mem_soft"
+    CPU = "cpu"
+    DOWNSTREAM = "downstream"
+    MEM_TARGET = "mem_target"
+    MEM_INCIDENT = "mem_incident"
+    COOLDOWN = "cooldown"
+    PRESSURE_UNKNOWN = "pressure_unknown"
+    GROW_BAND = "grow_band"
+    CONFIRMING = "confirming"
+    DOWNSTREAM_HOLDOFF = "downstream_holdoff"
+    LATENCY_HOLD = "latency_hold"
+    NO_DEMAND = "no_demand"
+    RESOURCE_DELTA = "resource_delta"
+    GROW = "grow"
+    AT_CEILING = "at_ceiling"
+    COLLAPSED = "collapsed"
+
+
 class ParseTier(StrEnum):
     """Which parse pool a document's format routes to."""
 
@@ -261,6 +287,13 @@ class PoolState:
     hold_ewma: float | None = None
     hold_baseline: float | None = None
     downstream_holdoff: int = 0
+    # Observability only (see LimitRule): the rule that produced or held the
+    # current limit, since when (the controller clock), and, for a cooldown or a
+    # downstream rule, what started it and which services reported.
+    rule: LimitRule = LimitRule.START
+    rule_since: float | None = None
+    cooldown_cause: str | None = None
+    rule_services: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
