@@ -249,7 +249,7 @@ def test_only_the_two_headers_ask_for_validators() -> None:
     assert not router_mod.wants_validators({})
 
 
-# --- ranges and the streamed 200 (S12c) ---------------------------------------------------------------------
+# --- ranges and the streamed 200 ---------------------------------------------------------------------
 
 def _bound_kb(world: World, *, total: int = 5, changes: int = 0) -> list[tuple[Any, ByteRange | None]]:
     """Give the fake connector the bound read; it raises BoundReadChanged ``changes`` times first. Returns its call log."""

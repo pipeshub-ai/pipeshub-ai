@@ -1,8 +1,8 @@
 /**
  * OwnedPdfLoader against the real pdf.js: every document load gets its own PDFWorker, and every one is destroyed on
  * close, with a range left unanswered, while the document is still loading, on an error, on a new document and on
- * unmount. The shared default worker used to survive each of those (QA measured 50 live workers and +686 MiB after
- * 50 open/close cycles in Chromium). The browser measurement is documented in the S12 notes; this is its CI form.
+ * unmount. The shared default worker used to survive each of those (50 live workers and +686 MiB after
+ * 50 open/close cycles in Chromium). This is the CI form of that browser measurement.
  */
 import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
