@@ -189,7 +189,7 @@ async def test_a_short_retry_after_repeated_fails_the_record_after_the_wall_time
         real = harness.graph.update_node.side_effect
 
         async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:
-            _stored.update({k: v for k, v in fields.items()})
+            _stored.update(fields)
             return await _real(doc_id, collection, fields) if _real else True
 
         harness.graph.update_node = AsyncMock(side_effect=update)
