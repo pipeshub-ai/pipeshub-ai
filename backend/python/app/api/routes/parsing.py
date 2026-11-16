@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Mapping
 from typing import Annotated, Any
@@ -100,6 +101,25 @@ PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 SLOW_PARSE_WARN_SECONDS = 300.0
 # Per pool, one org holds at most this share while another org wants the pool (S-4).
 _ORG_SHARE = OrgShare(max_org_share())
+
+# Why parse requests were refused with a 429, cumulative since start, per tier. No caller is
+# recorded. Counted on the request path, read from the health endpoint's thread.
+_REJECTION_REASONS = ("gate_timeout", "over_share", "memory_excess", "lane_timeout")
+_rejected_lock = threading.Lock()
+_rejected: dict[str, dict[str, int]] = {
+    tier.value: dict.fromkeys(_REJECTION_REASONS, 0) for tier in ParseTier
+}
+
+
+def _count_rejection(tier: ParseTier, reason: str) -> None:
+    with _rejected_lock:
+        _rejected[tier.value][reason] += 1
+
+
+def parse_admission_stats() -> dict[str, Any]:
+    """Parse requests refused with a 429, by tier and reason, for the health endpoint."""
+    with _rejected_lock:
+        return {"rejected": {tier: dict(reasons) for tier, reasons in _rejected.items()}}
 
 
 def _config_service(request: Request) -> Any:  # noqa: ANN401
@@ -206,11 +226,13 @@ async def parse_file(
     gate = governor.gate(gate_pool(tier))
     cap = parse_admission_cap(governor, gate_pool(tier))
     org_key = org_id or ""
+    reject_reason = "gate_timeout"
 
     _ORG_SHARE.arrive(pool, org_key)
     try:
         if _ORG_SHARE.over_share(pool, org_key, cost, gate.limit if cap is None else cap):
             admitted = False
+            reject_reason = "over_share"
         else:
             admitted = await acquire_gate_with_backpressure(
                 gate, cost, tier, message_id,
@@ -225,6 +247,7 @@ async def parse_file(
         raise
     if not admitted:
         _ORG_SHARE.leave(pool, org_key)
+        _count_rejection(tier, reject_reason)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -258,6 +281,7 @@ async def parse_file(
         if excess:
             if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
                 logger.warning("Parse deferred: record='%s' waited too long for memory", record_name)
+                _count_rejection(tier, "memory_excess")
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -336,6 +360,7 @@ async def parse_file(
         except LaneWaitTimeout:
             # A local conversion found no CPU lane in time: retryable, like a full gate.
             logger.warning("Parse deferred: record='%s' waited too long for a CPU lane", record_name)
+            _count_rejection(tier, "lane_timeout")
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},

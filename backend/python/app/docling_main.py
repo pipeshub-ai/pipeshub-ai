@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from app.api.validation_errors import input_free_422
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.modules.parsers.pdf.docling_processor import (
     shutdown_docling_pool,
     set_resource_governor as set_docling_processor_governor,
@@ -42,6 +43,9 @@ from app.utils.logger import install_log_redaction
 from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 
 # Only for development/debugging
