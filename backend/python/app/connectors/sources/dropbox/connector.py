@@ -1650,7 +1650,13 @@ class DropboxConnector(BaseConnector):
             self._health.skipped("team member list", members.error)
         app_users = self.get_app_users(members.raw)
         self._team_emails = {u.email.lower() for u in app_users if u.email}
-        await self.data_entities_processor.on_new_app_users(app_users)
+        # Only an active member is linked. An invited one "has not joined the team yet" and a suspended one "is no
+        # longer a member of the team" (TeamMemberStatus, https://github.com/dropbox/dropbox-api-spec team.stone);
+        # linked, one sharing an active member's address reads as that address changing hands. Withdrawn below,
+        # and linked again once Dropbox lists it active.
+        active = [u for u in app_users if u.is_active]
+        if active:
+            await self.data_entities_processor.on_new_app_users(active)
         if members.complete:
             stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
             gone = withdrawn(stored, members)

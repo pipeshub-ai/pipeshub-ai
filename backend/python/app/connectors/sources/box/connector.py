@@ -235,6 +235,12 @@ class BoxConnector(BaseConnector):
 
     # Box only retains admin_logs_streaming events for 2 weeks. If last sync was longer ago, do full sync.
     BOX_EVENT_STREAM_RETENTION_DAYS = 14
+    # User `status` is one of "active", "inactive", "cannot_delete_edit", "cannot_delete_edit_upload"
+    # (https://developer.box.com/reference/resources/user/). Box says inactive "will freeze the user's account"
+    # (https://support.box.com/hc/en-us/articles/360043693014-Best-Practice-Terminating-Employees) and documents
+    # no more, so an inactive user, or a status Box does not list, is not linked: linked, one sharing an active
+    # user's login would read as that address changing hands. The other two name edit limits, not a lock-out.
+    USABLE_USER_STATUSES = frozenset({"active", "cannot_delete_edit", "cannot_delete_edit_upload"})
 
     # Cleared when part of Box could not be read, so the stream position is not moved past it:
     # a full sync then skips saving its anchor, and an incremental batch is held and retried.
@@ -778,7 +784,7 @@ class BoxConnector(BaseConnector):
                         org_id=self.data_entities_processor.org_id,
                         email=user.get('login', ''),
                         full_name=user.get('name', ''),
-                        is_active=user.get('status') == 'active',
+                        is_active=user.get('status') in self.USABLE_USER_STATUSES,
                         title=user.get('job_title')
                     )
                     app_users.append(app_user)
@@ -1393,7 +1399,7 @@ class BoxConnector(BaseConnector):
             self._read_complete = True
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
-            await self.data_entities_processor.on_new_app_users(users)
+            await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active])
 
             self.logger.info("📦 [Full Sync] Creating virtual groups...")
             await self._ensure_virtual_groups()
@@ -1521,7 +1527,7 @@ class BoxConnector(BaseConnector):
             users = await self._sync_users()
 
             # Update the in-memory or DB map of users so we can link files to them later
-            await self.data_entities_processor.on_new_app_users(users)
+            await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active])
             users_complete = self._read_complete
 
             # Box user IDs that belong to our org (for distinguishing external vs internal shares)

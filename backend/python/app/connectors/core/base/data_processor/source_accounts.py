@@ -116,6 +116,10 @@ class SourceAccounts:
         self._reused: dict[int, dict[str, str]] = {}
         self._other: dict[int, dict[str, list[str]]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
+        # One read-update-save at a time per connector in this process: a connector may list users in parallel tasks,
+        # and two saves of one bucket would drop each other's entries. shortcut: two processes syncing one connector
+        # are not serialized (the config store offers no compare-and-set); one sync per connector at a time keeps it.
+        self._lock = asyncio.Lock()
 
     # Flat views, for reading and for tests that set a state directly.
     @property
@@ -178,7 +182,10 @@ class SourceAccounts:
             self._take_marker(marker)
         if self.loaded and not stale:
             return
-        await self._load((wanted - self._read) | stale)
+        missing = (wanted - self._read) | stale
+        if missing:
+            async with self._lock:
+                await self._load(missing)
         self.loaded = len(self._read) == BUCKETS
 
     async def recheck(self, permissions: list["Permission"]) -> list["Permission"]:
@@ -187,8 +194,9 @@ class SourceAccounts:
         if self.admission_failed:
             raise RuntimeError(f"the stored users of connector {self.connector_id} could not be read this run")
         users = [p for p in permissions if getattr(p.entity_type, "value", p.entity_type) == "USER" and p.email]
-        self._take_marker(await self._get(source_accounts_key(self.connector_id)))
-        await self._load({_bucket(p.email.lower()) for p in users})
+        async with self._lock:
+            self._take_marker(await self._get(source_accounts_key(self.connector_id)))
+            await self._load({_bucket(p.email.lower()) for p in users})
         refused = {id(p) for p in users if not self.may_grant(p.email, p.external_id)}
         return [p for p in permissions if id(p) not in refused]
 
@@ -230,6 +238,10 @@ class SourceAccounts:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
         to a different account than the one it was linked to before. False when the stored links could not be read:
         then nobody is linked and no grant is written this run (``ensure_loaded`` raises)."""
+        async with self._lock:
+            return await self._before_link(users)
+
+    async def _before_link(self, users: list["AppUser"]) -> bool:
         try:
             marker = await self._get(source_accounts_key(self.connector_id))
             links = await self.processor.get_app_user_links(self.connector_id)
@@ -362,12 +374,13 @@ class SourceAccounts:
         permissionId, not its Directory id). Kept only for a re-used address held by ``account``, and taken by
         ``holds`` only while ``account`` holds it, so it can never pass a grant of the earlier account."""
         wanted = {e.lower(): pair for e, pair in ids.items()}
-        deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
-        changed: set[int] = set()
-        for email, (account, other_id) in wanted.items():
-            bucket = _bucket(email)
-            if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
-                continue
-            self._other.setdefault(bucket, {})[email] = [account, other_id]
-            changed.add(bucket)
-        await self._save(changed, deleted)
+        async with self._lock:
+            deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
+            changed: set[int] = set()
+            for email, (account, other_id) in wanted.items():
+                bucket = _bucket(email)
+                if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
+                    continue
+                self._other.setdefault(bucket, {})[email] = [account, other_id]
+                changed.add(bucket)
+            await self._save(changed, deleted)
