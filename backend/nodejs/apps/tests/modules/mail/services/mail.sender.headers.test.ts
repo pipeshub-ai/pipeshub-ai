@@ -53,6 +53,26 @@ describe('MailSenderService custom headers', () => {
     expect(message).to.not.have.property('headers');
   });
 
+  it('treats an allow-listed header left undefined as omitted, and still sends', async () => {
+    const result = await sender.send(body, smtp, undefined, {
+      'Message-ID': messageId,
+      'List-Unsubscribe': undefined,
+    });
+    expect(result.status).to.equal('sent');
+    const message = sendMail.firstCall.args[0];
+    expect(message.messageId).to.equal(messageId);
+    expect(message).to.not.have.property('headers');
+  });
+
+  it('still refuses null and an empty value', async () => {
+    for (const value of [null, '']) {
+      sendMail.resetHistory();
+      const result = await sender.send(body, smtp, undefined, { 'List-Unsubscribe': value } as any);
+      expect(result.status).to.equal('permanent');
+      expect(sendMail.called).to.equal(false);
+    }
+  });
+
   it('refuses a header that is not on the list, and sends nothing', async () => {
     const result = await sender.send(body, smtp, undefined, { Bcc: 'x@example.com' } as any);
     expect(result.status).to.equal('permanent');

@@ -88,6 +88,10 @@ export function buildMailHeaders(
     if (!(ALLOWED_MAIL_HEADERS as readonly string[]).includes(name)) {
       return { error: 'Mail header is not allowed' };
     }
+    if (value === undefined) {
+      // An optional header left unset is an omitted header, not an invalid one.
+      continue;
+    }
     if (
       typeof value !== 'string' ||
       value.length === 0 ||
