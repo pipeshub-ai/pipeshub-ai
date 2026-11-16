@@ -93,7 +93,7 @@ GROUPS: dict[str, Group] = {
 
 SRC = "app/connectors/sources/"
 CONNECTORS: tuple[Connector, ...] = (
-    Connector("atlassian/confluence_cloud", "confluence", INTERSECTION, "atlassian/confluence_cloud/connector.py:4848",
+    Connector("atlassian/confluence_cloud", "confluence", INTERSECTION, "atlassian/confluence_cloud/connector.py:4853",
               "space RESTRICTED + inherit; page STRICT or RESTRICTED (:1786)"),
     Connector("atlassian/confluence_datacenter", "confluence", INTERSECTION, "atlassian/confluence_datacenter/connector.py:1140",
               "same writer shape as Cloud"),
