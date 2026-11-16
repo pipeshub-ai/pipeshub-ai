@@ -6590,6 +6590,7 @@ class SalesforceConnector(BaseConnector):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_permission_tuples: List[Tuple[str, str, str, bool]] = []
+        account_of: list[str | None] = []     # the Salesforce user each tuple was read for, index by index
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 self.logger.error(
@@ -6599,6 +6600,7 @@ class SalesforceConnector(BaseConnector):
                 unknown_users.add(sf_users[i]["Email"].lower())
             else:
                 all_permission_tuples.extend(result)  # type: ignore[arg-type]
+                account_of.extend([sf_users[i].get("Id")] * len(result))  # type: ignore[arg-type]
 
         self.logger.info("Collected %d permission tuples total.", len(all_permission_tuples))
 
@@ -6687,6 +6689,12 @@ class SalesforceConnector(BaseConnector):
                 return record_edges, rg_edges
 
             async with grant_fence().shared():      # judged and written with no change of hands in between
+                # Judged again now, not only before the crawl: another process may have given an address to a new
+                # account meanwhile, and these edges are written by email. A tuple of an account that no longer holds
+                # its address is dropped. shortcut: across processes the window is the transaction below.
+                await accounts.ensure_loaded(list({email for email, *_ in all_permission_tuples}))
+                kept = [t for t, sid in zip(all_permission_tuples, account_of) if accounts.admits(t[0], sid)]
+                all_permission_tuples[:] = kept
                 record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
         finally:
             # Even when the write raised: on Neo4j without explicit transactions each
