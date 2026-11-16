@@ -5404,6 +5404,7 @@
     "mcpServerNeedsToolsTooltip": "请为每个 MCP 服务器选择工具，或开启“全部工具”。",
     "mcpServerNeedsToolsBanner": "请为 {{names}} 至少选择一个工具，或开启“全部工具”。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的个人 MCP 服务器，不能添加到与组织共享或以服务账号运行的智能体中。",
+    "serviceAgentCollectionsNeedBinding": "将此服务智能体绑定到服务账号后，才能添加集合。",
     "mcpAgentApprovalsEnterprise": "按智能体设置的工具审批属于企业版。在这里，适用每个人自己的工具审批设置。",
     "mcpAgentApprovals": "按智能体设置工具审批",
     "limitSource": "选择 {{name}} 的搜索范围",

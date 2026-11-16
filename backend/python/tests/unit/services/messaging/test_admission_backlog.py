@@ -564,22 +564,39 @@ class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
         assert host.gate_waiters.snapshot() == {H: 0, L: 0}
 
     def test_the_counter_operations_stay_within_the_hot_path_budget(self) -> None:
-        import time
+        # Counted, not timed: one round (a construction and three calls) takes 2 us, 11 us under the CI unit job's
+        # branch coverage and about 30 us with its workers on every core, so a microsecond bound measured the
+        # runner. The calls a round makes are the same everywhere, coverage or not.
+        import sys
 
-        host = self._host()
-        rounds = 20000
-        best = float("inf")
-        for _ in range(5):
-            started = time.perf_counter()
-            for _ in range(rounds):
+        def calls_per_round(live: int) -> tuple[int, int]:
+            host = self._host()
+            held = [GateWaiterToken(host, H) for _ in range(live)]
+            for token in held:
+                token.enter_gate()
+            calls = {"call": 0, "c_call": 0}
+
+            def count(_frame: object, event: str, _arg: object) -> None:
+                if event in calls:
+                    calls[event] += 1
+
+            previous = sys.getprofile()
+            sys.setprofile(count)
+            try:
                 token = GateWaiterToken(host, H)
                 token.enter_gate()
                 token.admit()
                 token.release()
-            best = min(best, (time.perf_counter() - started) / rounds)
-        # four calls and one construction per round; each operation well under the 1 microsecond budget
-        # on a quiet host, so the bound here only has to catch an order-of-magnitude regression
-        assert best / 5 < 5e-6, best
+            finally:
+                sys.setprofile(previous)
+            return calls["call"], calls["c_call"]
+
+        python_calls, builtin_calls = calls_per_round(0)
+        # No more calls with 10,000 records at the gate: the hot path does not grow with the records waiting.
+        assert calls_per_round(10_000) == (python_calls, builtin_calls)
+        # 13 and 14 today; the bound leaves room for a small change and catches the order-of-magnitude
+        # regression the old timing bound was for (a log line, a lookup through other objects).
+        assert python_calls <= 20 and builtin_calls <= 20, (python_calls, builtin_calls)
 
 
 class TestBufferedIsNotCountedTwiceForTheLane:
