@@ -144,7 +144,7 @@ def test_two_hundred_llm_waiters_do_not_burn_cpu_or_collapse_the_ledger(ledger: 
     cpu = sum(r.recv() for r, _ in pipes)
     for h in held:
         h.release()  # type: ignore[union-attr]
-    print(f"ledger pairs/s: idle {idle:.0f}, with 200 LLM waiters {loaded:.0f}; waiters used {cpu:.1f} CPU-s")  # noqa: T201
+    print(f"ledger pairs/s: idle {idle:.0f}, with 200 LLM waiters {loaded:.0f}; waiters used {cpu:.1f} CPU-s")
     assert loaded >= 0.3 * idle, (idle, loaded)  # polling took it to 5 %
     assert cpu <= 0.1 * 6.0 * len(procs) + 2.0, cpu
 
