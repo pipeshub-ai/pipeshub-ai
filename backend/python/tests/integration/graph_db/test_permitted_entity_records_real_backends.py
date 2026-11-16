@@ -717,3 +717,18 @@ async def test_a_record_that_needs_its_own_grant_takes_its_role_from_its_own_gra
     await _grant_owner_on_group(provider, org_id)
     perms = await provider.get_knowledge_hub_context_permissions(keys["user"], org_id, inherited, parent_type="record")
     assert perms["role"] == ("OWNER" if rule == "OPEN" else "READER")
+
+
+@pytest.mark.parametrize("rule", ["PARENT_AND_GRANT", "RESTRICTED", "OPEN"])
+async def test_a_record_that_needs_its_own_grant_shows_the_role_of_its_own_grants_in_its_details(backend, rule: str) -> None:
+    """The record's details name the role its own grants give: READER on the record and OWNER on the record group it inherits from read READER for a
+    record that needs its own grant, as the role reads do; an OPEN one reads OWNER."""
+    provider, org_id = backend
+    keys = _keys(org_id)
+    inherited = keys["records"]["inherited"]
+    await _set_rule(provider, inherited, rule)
+    await _grant_user(provider, org_id, inherited)
+    await _grant_owner_on_group(provider, org_id)
+    details = await provider.check_record_access_with_details(keys["user"], org_id, inherited)
+    assert details is not None
+    assert details["permissions"][0]["relationship"] == ("OWNER" if rule == "OPEN" else "READER")
