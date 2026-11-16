@@ -5621,16 +5621,20 @@ class IGraphDBProvider(ABC):
     async def batch_upsert_app_users(
         self,
         users: list,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> None:
         """
         Batch upsert app users with org and app relations.
 
-        Creates users if they don't exist, creates org relation and user-app relation.
+        Creates users if they don't exist, creates org relation and user-app relation. The users are looked up and
+        created in ``org_id``, the connector's org: a user belongs to the org whose connector lists it.
 
         Args:
             users (List[AppUser]): List of AppUser objects
             transaction (Optional[Any]): Optional transaction context
+            org_id (str): The org of the connector the users come from
         """
         pass
 

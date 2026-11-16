@@ -170,7 +170,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_user_groups(self, user_groups):
         pass
 
-    async def batch_upsert_app_users(self, users):
+    async def batch_upsert_app_users(self, users, org_id):
         pass
 
     async def batch_upsert_orgs(self, orgs):

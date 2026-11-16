@@ -181,7 +181,7 @@ async def test_synced_users_are_created_inactive_members_unless_guests_and_reuse
     await w.nodes("users", {"_key": "healme", "email": "healed@x.com", "isActive": False})
     await w.edge("belongsTo", ("users", "healme"), ("organizations", w.org), entityType="ORGANIZATION")        # an earlier sync made a guest a member
     await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2"), app_user("NEW@x.com", "n3"),
-                                      app_user("guest@x.com", "n4", guest=True), app_user("healed@x.com", "n5", guest=True)])
+                                      app_user("guest@x.com", "n4", guest=True), app_user("healed@x.com", "n5", guest=True)], org_id=w.org)
     users = {u["email"].lower(): u for u in await w.p.get_all_documents("users")}
     assert set(users) == {"old@x.com", "new@x.com", "guest@x.com", "healed@x.com"}       # case-insensitive: no second node for an address
     assert users["new@x.com"]["isActive"] is False and users["new@x.com"]["orgId"] == w.org
@@ -191,18 +191,18 @@ async def test_synced_users_are_created_inactive_members_unless_guests_and_reuse
     linked = {u["_key"]: u["sourceUserId"] for u in await w.p.get_app_users(w.org, APP)}
     assert linked == {"existing": "src-n1", "n2": "src-n3"}                                  # the members; a guest is linked to the app but is no member
     assert {e["from_id"] for e in await w.p.get_edges_to_node(f"apps/{APP}", "userAppRelation")} == {"existing", "n2", "n4", "healme"}
-    await w.p.batch_upsert_app_users([])                                                 # nothing to do
+    await w.p.batch_upsert_app_users([], org_id=w.org)                                                 # nothing to do
 
 
 async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_statement_for_an_address_out_of_its_bounds(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     from .test_kg_lookups import spy
     await member(w, "existing", userId="ue", email="Old@X.com", isActive=True)
     sent = spy(monkeypatch)
-    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2")])
+    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2")], org_id=w.org)
     assert "users_by_email_vetted" in sent and "users_by_email" not in sent
     assert {u["email"].lower(): u["_key"] for u in await w.p.get_all_documents("users")}["old@x.com"] == "existing"          # found, not duplicated
     sent.clear()
-    await w.p.batch_upsert_app_users([app_user("e" * 1001 + "@x.com", "n3")])
+    await w.p.batch_upsert_app_users([app_user("e" * 1001 + "@x.com", "n3")], org_id=w.org)
     assert "users_by_email" in sent and "users_by_email_vetted" not in sent
     sent.clear()
     many = [f"u{i}@x.com" for i in range(1000)] + ["old@x.com"]          # past the function's bound: one statement, one snapshot, not two chunks
@@ -218,10 +218,10 @@ async def test_a_source_account_already_linked_to_one_of_two_users_sharing_an_ad
     await member(w, "a-dup", userId="ua", email="dup@x.com", isActive=True)
     await member(w, "b-dup", userId="ub", email="Dup@X.com", isActive=True)
     await w.edge("userAppRelation", ("users", "b-dup"), ("apps", APP), sourceUserId="src-linked")
-    await w.p.batch_upsert_app_users([app_user("dup@x.com", "linked")])          # source account src-linked, already linked to b-dup
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "linked")], org_id=w.org)          # source account src-linked, already linked to b-dup
     links = {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
     assert ("b-dup", "src-linked") in links and not any(i == "a-dup" for i, _ in links)          # kept, and never linked to a second user
-    await w.p.batch_upsert_app_users([app_user("dup@x.com", "fresh")])           # an account with no link takes the first by id
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "fresh")], org_id=w.org)           # an account with no link takes the first by id
     assert ("a-dup", "src-fresh") in {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
 
 
@@ -230,7 +230,7 @@ async def test_a_guest_linked_to_one_of_two_users_sharing_an_address_loses_only_
         await w.nodes("users", {"_key": key, "email": "g@x.com", "isActive": False})
         await w.edge("belongsTo", ("users", key), ("organizations", w.org), entityType="ORGANIZATION")
     await w.edge("userAppRelation", ("users", "b-g"), ("apps", APP), sourceUserId="src-gst")
-    await w.p.batch_upsert_app_users([app_user("g@x.com", "gst", guest=True)])          # the guest's source account is linked to b-g
+    await w.p.batch_upsert_app_users([app_user("g@x.com", "gst", guest=True)], org_id=w.org)          # the guest's source account is linked to b-g
     members = {e["from_id"] for e in await w.p.get_edges_to_node(f"organizations/{w.org}", "belongsTo")}
     assert "a-g" in members and "b-g" not in members                                     # the linked user lost it, not the first by id
 
@@ -341,7 +341,7 @@ CALLS = [
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str, args: tuple) -> None:
     kwargs = ({"is_external": False} if name == "ensure_app_membership" else {"chunk_size": 10} if name == "get_graph_user_keys_by_mongo_user_ids"
-              else {"org_id": "o"} if name == "get_user_by_email" else {})
+              else {"org_id": "o"} if name in ("get_user_by_email", "batch_upsert_app_users") else {})
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, name)(*args, **kwargs)
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
@@ -378,7 +378,7 @@ async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the
     """Python's lower() and the database's can differ on non-ASCII letters (and the database's on its locale): one node per address, whichever agrees."""
     a, b = "\u00c9L\u00c8VE@X.com", "\u00e9l\u00e8ve@x.COM"
     same = await w.p._q(lambda tx: tx.fetchval("SELECT lower($1::text) = lower($2::text)", a, b), None)
-    await w.p.batch_upsert_app_users([app_user(a, "n1"), app_user(b, "n2")])
+    await w.p.batch_upsert_app_users([app_user(a, "n1"), app_user(b, "n2")], org_id=w.org)
     nodes = await w.p.get_all_documents("users")
     assert (len(nodes) == 1) is bool(same)
     assert (await w.p.get_user_by_email(b, org_id=w.org)).id == ("n1" if same else "n2")            # the lookup by address resolves as the batch did

@@ -2802,7 +2802,7 @@ class TestOnNewAppUsers:
 
         await proc.on_new_app_users([user])
 
-        tx_store.batch_upsert_app_users.assert_awaited_once_with([user])
+        tx_store.batch_upsert_app_users.assert_awaited_once_with([user], proc.org_id)
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):

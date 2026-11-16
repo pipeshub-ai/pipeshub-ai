@@ -1141,13 +1141,13 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_app_roles(app_roles, transaction=self.txn)
 
-    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser], org_id: str) -> None:
         """
         Batch upsert app users.
 
         Delegates to graph_provider for implementation.
         """
-        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn)
+        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn, org_id=org_id)
 
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         """

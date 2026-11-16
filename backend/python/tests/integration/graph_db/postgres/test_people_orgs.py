@@ -251,7 +251,7 @@ async def test_a_new_app_user_takes_over_the_person_with_their_address(w: World)
     await person(w, "pat", "pat@x.io")
     await w.nodes("records", rec("shared"))
     await w.edge("permission", ("person", "pat"), ("records", "shared"), type="USER", role="READER")
-    await w.p.batch_upsert_app_users([AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id=APP, id="upat", source_user_id="s-pat", email="pat@x.io", full_name="Pat")])
+    await w.p.batch_upsert_app_users([AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id=APP, id="upat", source_user_id="s-pat", email="pat@x.io", full_name="Pat")], org_id=w.org)
     assert await w.p.get_document("pat", "person") is None
     assert [e[1] for e in await edges(w, "permission", frm=("users", "upat"))] == ["records/shared"]
 

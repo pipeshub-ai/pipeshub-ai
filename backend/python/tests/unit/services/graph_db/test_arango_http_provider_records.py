@@ -2006,21 +2006,20 @@ class TestDeleteKbHubApp:
 
 class TestBatchUpsertAppUsers:
     async def test_empty_list(self, connected_provider):
-        await connected_provider.batch_upsert_app_users([])
+        await connected_provider.batch_upsert_app_users([], org_id="org1")
 
-    async def test_no_orgs_raises(self, connected_provider):
+    async def test_no_org_raises(self, connected_provider):
         user = MagicMock()
         user.connector_id = "conn1"
-        connected_provider.http_client.execute_aql.return_value = []  # no orgs
-        with pytest.raises(Exception, match="No organizations"):
-            await connected_provider.batch_upsert_app_users([user])
+        with pytest.raises(ValueError, match="needs the org"):
+            await connected_provider.batch_upsert_app_users([user], org_id="")
 
     async def test_exception_raises(self, connected_provider):
         user = MagicMock()
         user.connector_id = "conn1"
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
         with pytest.raises(Exception):
-            await connected_provider.batch_upsert_app_users([user])
+            await connected_provider.batch_upsert_app_users([user], org_id="org1")
 
 
 # ===================================================================

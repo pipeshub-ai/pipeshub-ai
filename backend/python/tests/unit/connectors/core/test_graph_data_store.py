@@ -824,8 +824,8 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_app_users(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.batch_upsert_app_users([])
-        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123")
+        await tx_store.batch_upsert_app_users([], "org-1")
+        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123", org_id="org-1")
 
     @pytest.mark.asyncio
     async def test_get_first_user_with_permission_to_node(self, tx_store, mock_graph_provider) -> None:

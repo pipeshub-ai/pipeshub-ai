@@ -5772,7 +5772,7 @@ class TestAppUserMembershipClearsExternalFlag:
                 email="member@corp.com",
                 full_name="Member",
             )
-        ])
+        ], org_id="org-1")
 
         app_edges = [
             c for c in mocked.batch_create_edges.await_args_list

@@ -379,7 +379,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser], org_id: str) -> None:
         pass
 
     @abstractmethod

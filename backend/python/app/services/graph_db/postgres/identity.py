@@ -439,9 +439,10 @@ class IdentityMixin(PgBase):
               AND r.doc->>'sourceUserId' IS NOT NULL""", [current_org_id(), connector_id], transaction)
         return [{"id": r["id"], "sourceUserId": r["sid"]} for r in rows]
 
-    async def batch_upsert_app_users(self, users: list, transaction: str | None = None) -> None:
+    async def batch_upsert_app_users(self, users: list, transaction: str | None = None, *, org_id: str) -> None:
         if not users:
             return
+        self._require_org(org_id)       # the connector's org is the ambient one
         org = current_org_id()
         connector_id = users[0].connector_id
         now = get_epoch_timestamp_in_ms()

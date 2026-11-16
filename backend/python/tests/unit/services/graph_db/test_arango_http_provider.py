@@ -5151,18 +5151,14 @@ class TestBatchUpsertAppUsersMissingInputs:
     @pytest.mark.asyncio
     async def test_empty(self, connected_provider):
         # Should return early without calling anything
-        await connected_provider.batch_upsert_app_users([])
+        await connected_provider.batch_upsert_app_users([], org_id="org1")
 
     @pytest.mark.asyncio
-    async def test_no_orgs(self, connected_provider):
+    async def test_no_org(self, connected_provider):
         mock_user = MagicMock()
         mock_user.connector_id = "c1"
-        with patch.object(
-            connected_provider, "get_all_orgs",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            with pytest.raises(Exception, match="No organizations"):
-                await connected_provider.batch_upsert_app_users([mock_user])
+        with pytest.raises(ValueError, match="needs the org"):
+            await connected_provider.batch_upsert_app_users([mock_user], org_id="")
 
     @pytest.mark.asyncio
     async def test_app_not_found(self, connected_provider):
@@ -5177,7 +5173,7 @@ class TestBatchUpsertAppUsersMissingInputs:
             new_callable=AsyncMock, return_value=None
         ):
             with pytest.raises(Exception, match="Failed to get/create app"):
-                await connected_provider.batch_upsert_app_users([mock_user])
+                await connected_provider.batch_upsert_app_users([mock_user], org_id="org1")
 
 
 # ---------------------------------------------------------------------------
@@ -14659,7 +14655,7 @@ class TestBatchUpsertAppUsers:
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
 
-        await connected_provider.batch_upsert_app_users([mock_user])
+        await connected_provider.batch_upsert_app_users([mock_user], org_id="org1")
         # Should have created user-app relation edge
         connected_provider.batch_create_edges.assert_called()
 
@@ -14685,7 +14681,7 @@ class TestBatchUpsertAppUsers:
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
 
-        await connected_provider.batch_upsert_app_users([mock_user])
+        await connected_provider.batch_upsert_app_users([mock_user], org_id="org1")
         # Should have created user, org relation, and user-app relation
         assert connected_provider.batch_upsert_nodes.call_count >= 1
         assert connected_provider.batch_create_edges.call_count >= 2
@@ -14697,7 +14693,7 @@ class TestBatchUpsertAppUsers:
         connected_provider.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
         connected_provider.get_document = AsyncMock(return_value=None)
         with pytest.raises(Exception, match="Failed to get/create app"):
-            await connected_provider.batch_upsert_app_users([mock_user])
+            await connected_provider.batch_upsert_app_users([mock_user], org_id="org1")
 
 
 # ---------------------------------------------------------------------------
