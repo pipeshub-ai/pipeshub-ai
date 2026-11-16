@@ -508,6 +508,37 @@ describe('Knowledge base page — inside a collection', () => {
       expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
     });
 
+    it('a retry the user has moved on from opens no more of its path in the sidebar', async () => {
+      const X = { id: 'folder-x', name: 'Drafts', nodeType: 'folder' as const };
+      const D = { id: 'folder-designs', name: 'Designs', nodeType: 'folder' as const };
+      let answers = 0;
+      let releaseCollection: (value: unknown) => void = () => {};
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) => {
+        if (id !== 'folder-x') return salesContents();
+        answers += 1;
+        return answers <= 2      // both loads of the opening answer that the folder is being prepared; the retry gets it ready
+          ? { ...folderResponse(X, [], []), breadcrumbs: [], preparing: true }
+          : folderResponse(X, [...ENGINEERING_TRAIL, D, X], [SPEC]);
+      });
+      api.hub.getNodeChildren.mockImplementation((_type: string, id: string) =>
+        id === 'kb-eng' && answers >= 3
+          ? new Promise((resolve) => { releaseCollection = resolve; })      // the retry's walk waits on the collection's children
+          : Promise.resolve(hubResponse([])),
+      );
+      openAt('/knowledge-base?nodeType=folder&nodeId=folder-x');
+      await screen.findByText(/Preparing this source/);
+      await waitFor(() => expect(answers).toBeGreaterThanOrEqual(3), { timeout: 8_000 });      // the retry has its answer and walks its path
+      await waitFor(() => expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'kb-eng')).toBe(true));
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+
+      await act(async () => releaseCollection(hubResponse([hubNode({ ...D, parentId: 'kb-eng', hasChildren: true })])));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+
+      expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'folder-designs')).toBe(false);
+      expect(useKnowledgeBaseStore.getState().expandedFolders['folder-designs']).toBeFalsy();
+    });
+
     it('asks nothing more for All records once the user leaves it', async () => {
       api.hub.getAllRootItems.mockResolvedValue(hubResponse([], { preparing: true }));
       openAt('/knowledge-base?view=all-records');

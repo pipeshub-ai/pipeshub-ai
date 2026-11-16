@@ -950,7 +950,8 @@ function KnowledgeBasePageContent() {
             ];
 
             for (let i = 0; i < path.length; i += 1) {
-              if (controller.signal.aborted || !stillSignedIn()) return;
+              // A retry has its own request, which the user's next request does not abort: it stops here once it is stale too.
+              if (controller.signal.aborted || !stillSignedIn() || stale()) return;
               const { id, nodeType: pathNodeType } = path[i];
               const nextId = path[i + 1]?.id ?? (nodeId !== id ? nodeId : undefined);
               expandFolderExclusive(id);
@@ -967,7 +968,7 @@ function KnowledgeBasePageContent() {
           }
         }
 
-        if (!controller.signal.aborted && stillSignedIn()) restoreOpenFoldersInSidebar();
+        if (!controller.signal.aborted && stillSignedIn() && !stale()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
         if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn() || stale()) return;
