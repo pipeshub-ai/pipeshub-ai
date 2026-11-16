@@ -216,7 +216,8 @@ class RecordsMixin(PgBase):
             return None
 
     # ---- lookups by id -----------------------------------------------------------------------------------------
-    async def get_existing_record_keys(self, record_ids: list[str], transaction: str | None = None) -> set[str]:
+    async def get_existing_record_keys(self, record_ids: list[str], transaction: str | None = None, *,
+                                       raise_on_error: bool = False) -> set[str]:
         org = current_org_id()
         ids = _uniq(record_ids)
         if not ids:
@@ -226,6 +227,8 @@ class RecordsMixin(PgBase):
                 WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])""", org, ids), transaction)
             return {r["id"] for r in rows}
         except Exception as e:
+            if raise_on_error:
+                raise
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="get_existing_record_keys")
             return set()
