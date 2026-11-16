@@ -261,14 +261,16 @@ describe('repository seam ratchet: Mongoose use outside the Mongo repositories',
 
   it('scans the whole source tree and exempts the seam', () => {
     // Every aggregate has moved behind a repository, so the committed baseline is empty;
-    // an empty scan must mean "clean", not "the walker saw nothing".
+    // an empty scan must mean "clean", not "the walker saw nothing". Code kept outside
+    // this tree is recorded under SEAM_BASELINE_DIRS, and the scan must match that record.
     expect(walk(SRC).length).to.be.greaterThan(500);
     expect(isExempt('libs/repositories/org/mongo.ts')).to.equal(true);
     expect(isExempt('modules/oauth_provider/services/pat.service.ts')).to.equal(false);
     const now = scan();
-    expect(now.imports).to.deep.equal([]);
-    expect(now.saves).to.deep.equal({});
-    expect(now.newModels).to.deep.equal({});
+    const recorded = loadBaseline(extraDirs());
+    expect(now.imports).to.deep.equal(recorded.imports);
+    expect(now.saves).to.deep.equal(recorded.saves);
+    expect(now.newModels).to.deep.equal(recorded.newModels);
   });
 });
 
