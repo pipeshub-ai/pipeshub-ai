@@ -3772,6 +3772,23 @@ async def test_a_failed_read_does_not_stop_an_audience_that_opens_a_new_record_f
     assert [r.external_record_id for r, _ in written] == ["a"], "Dave, of the domain, still opens it"
 
 
+async def test_a_not_found_from_someone_an_audience_only_may_reach_does_not_drop_a_new_record(ws: Workspace) -> None:
+    erin = "erin@labs.example.org"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    await ws.sync()
+    # Nobody synced is on partner.org; Erin is only someone a share with it may reach.
+    ws.connector._audience_members["domain-members:partner.org"] = {erin}
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:partner.org", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("p", "root-bob"), grants, unsettled="p")
+
+    assert [r.external_record_id for r, _ in written] == ["p"], "Erin's not found says nothing of the share's own people"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (

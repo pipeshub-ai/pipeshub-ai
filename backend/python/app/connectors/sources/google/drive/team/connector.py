@@ -2991,7 +2991,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         - a directory group share: each of its active synced members is asked; a group the directory will not list,
           or with nobody synced to ask, is unknown;
         - an audience share (a discoverable domain or "anyone" share, stored as a group grant): up to AUDIENCE_PROBES
-          people of it are asked, as for a stored record (`_another_synced_user_can_open`).
+          people of it are asked, those it always holds first, as for a stored record (`_another_synced_user_can_open`);
+          a "not found" counts against the share only from those.
         True when any share is still open to someone. False when a read finds the file in the trash (for everyone),
         or when every share answered a definite "cannot open" (not found, a known refusal). Otherwise None: a share
         could not be decided (a failed read, an unlistable group, an audience nobody answered for), which is never
@@ -3019,11 +3020,16 @@ class GoogleDriveTeamConnector(BaseConnector):
                 people = [email] if email in by_email else []
             elif p.entity_type == EntityType.GROUP and (group_id := p.email or p.external_id):
                 if _is_audience_group(group_id):
-                    pool = [e for part in self._audience_people(group_id) for e in part]
-                    pool = [e for e in dict.fromkeys(pool) if e in synced and e in by_email and e != reporter]
-                    asked = secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES, len(pool)))
-                    answers = [await self._audience_member_can_open(record, by_email[e], sources) for e in asked]
-                    verdicts.append(True if any(answers) else (False if asked and all(a is False for a in answers) else None))
+                    # As for a stored record: the people the share always holds first, then those it may reach;
+                    # only a "not found" from the first is a no for the share.
+                    found: list[list[bool | None]] = []
+                    left = AUDIENCE_PROBES
+                    for people in self._audience_people(group_id):
+                        pool = [e for e in people if e in synced and e in by_email and e != reporter]
+                        asked = secrets.SystemRandom().sample(pool, min(left, len(pool)))
+                        left -= len(asked)
+                        found.append([await self._audience_member_can_open(record, by_email[e], sources) for e in asked])
+                    verdicts.append(True if any(a for part in found for a in part) else (False if False in found[0] else None))
                     continue
                 members = await self._synced_group_members(group_id)
                 people = sorted(e for e in members or () if e in by_email and e != reporter)
