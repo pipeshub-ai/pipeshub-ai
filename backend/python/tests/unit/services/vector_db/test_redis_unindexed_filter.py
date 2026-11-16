@@ -13,7 +13,11 @@ from app.exceptions.non_retryable import NonRetryableError
 from app.services.vector_db.models import FieldCondition, FilterExpression
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.errors import FilterFieldNotIndexed, IndexBackfilling
-from app.services.vector_db.redis.redis_vector import RedisVectorService
+from app.services.vector_db.redis.redis_vector import (
+    _DEFAULT_BACKFILL_WAIT_SECONDS,
+    RedisVectorService,
+    _backfill_wait_seconds,
+)
 from app.services.vector_db.redis.utils import (
     escape_tag_value,
     field_conditions_to_redis_query,
@@ -283,8 +287,6 @@ class TestBackfill:
 
     @pytest.mark.parametrize("raw", ["bad", "-5"])
     async def test_an_unusable_bound_falls_back_to_the_default_or_zero(self, raw, monkeypatch) -> None:
-        from app.services.vector_db.redis.redis_vector import _backfill_wait_seconds, _DEFAULT_BACKFILL_WAIT_SECONDS
-
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", raw)
         assert _backfill_wait_seconds() == (_DEFAULT_BACKFILL_WAIT_SECONDS if raw == "bad" else 0.0)
 
