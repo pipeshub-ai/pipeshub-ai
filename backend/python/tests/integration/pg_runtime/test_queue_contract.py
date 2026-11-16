@@ -24,7 +24,7 @@ from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
-from app.services.messaging.postgres.queue import PgQueue
+from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.services.redis.config import RedisConnectionConfig
@@ -722,3 +722,155 @@ async def test_pg_a_message_handed_back_for_ever_is_never_dead_lettered(pg) -> N
         (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
         assert d.attempts == 1
         assert await pg.queue.nack("g", d, 0.0, "waiting for the embedding precision", refund=True)
+
+
+# -- queue admissions: a delivery a consumer already opened is not judged by its age again, and nobody without the key can say so --------
+
+
+def _admission_keys():  # noqa: ANN202
+    from app.core.envelope import derive_key
+
+    return derive_key("admission-contract-secret")
+
+
+def _old_signed(topic: str, issued_at: int, record: str = "r1") -> str:
+    from app.core.envelope import sign
+    from app.core.org_context import OrgContext
+
+    return json.dumps(sign(_admission_keys(), topic, {"orgId": "org-a", "recordId": record}, OrgContext("org-a", "u", "user", "jwt", "req"),
+                           event_type="newRecord", issued_at=issued_at))
+
+
+async def _publish_raw(pg: Backend, value: str) -> None:
+    await pg.queue.publish(pg.topic, [(None, value)])
+
+
+async def test_pg_admit_is_stored_and_returned_by_the_plain_and_the_ordered_claim(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 0.0)
+    assert d.admission_ms is None and d.admission_mac is None
+    assert await pg.queue.admit("g", d, 1234, "mac")
+    await asyncio.sleep(0)  # visibility 0: the claim has lapsed and the row is handed out again
+    (again,) = await pg.queue.claim("g", [pg.topic], "c", 1, 0.0)
+    assert (again.admission_ms, again.admission_mac) == (1234, "mac")
+    (ordered,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0, ordered=True)
+    assert (ordered.admission_ms, ordered.admission_mac) == (1234, "mac")
+
+
+async def test_pg_admit_writes_nothing_for_a_claim_that_no_longer_stands(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (first,) = await pg.queue.claim("g", [pg.topic], "c1", 1, 0.0)
+    (second,) = await pg.queue.claim("g", [pg.topic], "c2", 1, 30.0)  # the first lease lapsed; attempts moved on
+    assert not await pg.queue.admit("g", first, 1, "late")
+    assert await pg.queue.nack("g", second, 0.0, "x")
+    (third,) = await pg.queue.claim("g", [pg.topic], "c3", 1, 30.0)
+    assert third.admission_ms is None
+
+
+async def test_pg_a_nack_renews_the_admission_in_its_own_statement_and_a_plain_nack_leaves_it(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert await pg.queue.nack("g", d, 0.0, "x", admission=(10, "m1"))
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert (d.admission_ms, d.admission_mac) == (10, "m1")
+    assert await pg.queue.nack("g", d, 0.0, "y")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert (d.admission_ms, d.admission_mac) == (10, "m1")
+
+
+async def test_pg_an_admission_is_per_delivery_not_per_message(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await pg.queue.ensure_group(pg.topic, "h", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert await pg.queue.admit("g", d, 5, "mac")
+    (other,) = await pg.queue.claim("h", [pg.topic], "c", 1, 30.0)
+    assert other.admission_ms is None and other.admission_mac is None
+
+
+async def test_pg_a_forged_row_is_not_admitted(pg, monkeypatch) -> None:
+    """A writer with SQL access and no key: swap the stored value under a good admission, insert a row with the columns set, copy to another group."""
+    import time
+
+    from app.core import envelope
+
+    key = _admission_keys()
+
+    async def keys():  # noqa: ANN202
+        return (key,)
+
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
+    envelope.configure(keys, None, key)
+    try:
+        old_a = _old_signed(pg.topic, int(time.time()) - 10 * 900, "a")
+        old_b = _old_signed(pg.topic, int(time.time()) - 10 * 900, "b")
+        await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+        await pg.queue.ensure_group(pg.topic, "h", from_start=True)
+        await _publish_raw(pg, old_a)
+        (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 0.0)
+        stamp = await envelope.new_admission(pg.topic, "g", d.message_id, json.loads(old_a))
+        assert stamp and await pg.queue.admit("g", d, *stamp)
+
+        async def admitted(delivery, group: str) -> bool:
+            return await envelope.configured_admission_valid(
+                pg.topic, group, delivery.message_id, json.loads(delivery.value), delivery.admission_ms, delivery.admission_mac
+            )
+
+        (genuine,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+        assert await admitted(genuine, "g")  # control: the real admission verifies on the real row
+
+        db = await pg.runtime.db()
+        async with db.runtime_uow(write=True) as tx:  # 1. another old message under the same admission
+            await tx.execute("UPDATE platform.queue_messages SET value = $2 WHERE id = $1", genuine.message_id, old_b)
+        swapped = Delivery(genuine.topic, genuine.message_id, genuine.attempts, old_b, None, genuine.admission_ms, genuine.admission_mac)
+        assert not await admitted(swapped, "g")
+
+        async with db.runtime_uow(write=True) as tx:  # 2. a row inserted with the columns set to made-up values
+            await tx.execute("UPDATE platform.queue_messages SET value = $2 WHERE id = $1", genuine.message_id, old_a)
+        await _publish_raw(pg, old_a)
+        async with db.runtime_uow(write=True) as tx:
+            await tx.execute(
+                "UPDATE platform.queue_deliveries SET admission_ms = $3, admission_mac = 'forged' WHERE group_id = 'g' AND topic = $1 AND message_id > $2",
+                pg.topic, genuine.message_id, int(time.time() * 1000),
+            )
+        (forged,) = [x for x in await pg.queue.claim("g", [pg.topic], "c", 5, 30.0) if x.message_id > genuine.message_id]
+        assert forged.admission_mac == "forged" and not await admitted(forged, "g")
+
+        async with db.runtime_uow(write=True) as tx:  # 3. the genuine columns copied onto another group's delivery of the same message
+            await tx.execute(
+                "UPDATE platform.queue_deliveries SET admission_ms = $3, admission_mac = $4 WHERE group_id = 'h' AND topic = $1 AND message_id = $2",
+                pg.topic, genuine.message_id, genuine.admission_ms, genuine.admission_mac,
+            )
+        (copied,) = [x for x in await pg.queue.claim("h", [pg.topic], "c", 5, 30.0) if x.message_id == genuine.message_id]
+        assert copied.admission_mac == genuine.admission_mac and not await admitted(copied, "h")
+    finally:
+        envelope.configure(None, None, None)
+
+
+async def test_pg_the_statements_per_delivery_are_counted(pg) -> None:
+    """One claim, one admit, one ack: the admission adds exactly one statement per opened message (throughput on this host is not measured)."""
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    seen: list[str] = []
+    original = pg.queue._write
+
+    async def counting():  # noqa: ANN202
+        tx = await original()
+        inner = tx.execute
+
+        async def execute(sql, *a):  # noqa: ANN202
+            seen.append(sql.split("*/")[0].split(":")[-1].strip())
+            return await inner(sql, *a)
+
+        tx.execute = execute
+        return tx
+
+    pg.queue._write = counting
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    await pg.queue.admit("g", d, 1, "m")
+    await pg.queue.ack("g", d)
+    assert [x for x in seen if x in ("queue.admit", "queue.ack")] == ["queue.admit", "queue.ack"]
+    assert seen.count("queue.admit") == 1

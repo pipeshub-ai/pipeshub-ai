@@ -22,12 +22,15 @@ from typing import TYPE_CHECKING, Any, override
 from app.core.envelope import (
     DuplicateEnvelope,
     EnvelopeRejected,
+    configured_admission_valid,
     ctx_of,
     decode_message,
     max_age_seconds,
+    new_admission,
     open_configured,
     open_stream_message,
     refresh_envelope,
+    within_lifetime,
 )
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
@@ -74,6 +77,10 @@ _INDEX_POOL = "pg-queue-indexing"
 _SAFETY_NET_S = 300.0  # longest an idle consumer with a LISTEN connection sleeps
 _HANDBACK_CAP_S = 60.0   # longest the per-message back-off of hand-backs grows to
 _HANDBACK_TABLE_MAX = 10_000   # hand-back counts kept in memory
+
+
+class AdmissionWriteError(Exception):
+    """The record that a delivery's message was opened could not be written; the delivery fails transiently and is retried."""
 
 
 def _within_lifetime(delay: float) -> float:
@@ -159,6 +166,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         self._paused_until = 0.0         # a stage that asked for hand-backs is not claimed from until then (monotonic seconds)
         self._handbacks: dict[tuple[str, int], int] = {}      # hand-backs per message, for the back-off and the backstop
         self._handback_log: dict[str, int] = {}               # reason -> count since the last summary line
+        # Deliveries this process opened, by (topic, message id, attempts): "aged" when the message passed the age check itself,
+        # "stored" when only a stored admission let it past. Dropped when the delivery settles.
+        self._opened: dict[tuple[str, int, int], str] = {}
 
     @property
     def _visibility_s(self) -> float:
@@ -399,6 +409,12 @@ class PgMessagingConsumer(IMessagingConsumer):
                 self._wake.set()
 
     async def _settle(self, d: Delivery) -> None:
+        try:
+            await self._settle_one(d)
+        finally:
+            self._opened.pop((d.topic, d.message_id, d.attempts), None)
+
+    async def _settle_one(self, d: Delivery) -> None:
         group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts
         if (
             d.attempts > max_attempts
@@ -434,9 +450,9 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await self._abandon(d, await self._parse_for_sink(d), backstop_give_up_reason(e, n, _handback_limit()))
                     return
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
-                await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
+                await self._nack(d, delay, f"handed back {n} times: {e}"[:500])
                 return
-            await self.queue.nack(group, d, delay, str(e), refund=True, **await self._reissued(d))
+            await self._nack(d, delay, str(e), refund=True, reissue=True)
             return
         self._handbacks.pop((d.topic, d.message_id), None)
         if success:
@@ -451,7 +467,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 if self.indexing
                 else min(_retry_base_s() * d.attempts, 30.0)
             )
-            await self.queue.nack(group, d, delay, err)
+            await self._nack(d, delay, err)
             self.logger.warning(
                 "Transient failure on %s (%d/%d), retrying in %.0fs",
                 d.message_id,
@@ -476,7 +492,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not self.indexing or self.precision_filter is None:
             return False
         try:
-            message = await self._parse_for_sink(d)
+            message = await self._parse_for_sink(d, record=True)
             delays = self.precision_filter.hand_back([message]) if message is not None else {}
         except Exception:
             self.logger.warning("Could not check %s against the embedding precision; it takes the normal path", d.message_id, exc_info=True)
@@ -488,32 +504,77 @@ class PgMessagingConsumer(IMessagingConsumer):
         delay = delays[0] if n == 1 else delays[0] * 10
         delay = _within_lifetime(delay)
         self._handback_log["precision"] = self._handback_log.get("precision", 0) + 1
-        await self.queue.nack(
-            self.config.group_id, d, delay, "waiting for the embedding precision", refund=True, **await self._reissued(d)
-        )
+        await self._nack(d, delay, "waiting for the embedding precision", refund=True, reissue=True)
         return True
 
-    async def _reissued(self, d: Delivery) -> dict[str, str]:
-        """``nack`` keywords that store the message signed again, for a delivery being handed back without an attempt.
+    async def _nack(self, d: Delivery, delay: float, error: str, *, refund: bool = False, reissue: bool = False) -> bool:
+        """Send a delivery back. A delivery this process opened renews its admission in the same statement.
 
-        Such a message can wait far longer than an envelope lives, and its age counts from the signature. It is verified
-        first, so a tampered or already stale message is stored as it was and refused when next read.
+        ``reissue``: store the message signed again, for a delivery handed back without an attempt, so an older consumer that
+        claims it later still finds a fresh signature. Only a message that passed the age check itself is signed again; one that
+        was admitted by a stored admission alone keeps the value it has (an admission must never turn into a fresh signature).
         """
-        try:
-            raw = decode_message(d.value)
-            fresh = await refresh_envelope(d.topic, raw) if isinstance(raw, dict) else None
-        except Exception as e:
-            self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
-            return {}
-        return {} if fresh is None else {"value": json.dumps(fresh)}
+        mode = self._opened.get((d.topic, d.message_id, d.attempts))
+        kwargs: dict[str, Any] = {}
+        raw: Any = None
+        if mode is not None or reissue:
+            try:
+                raw = decode_message(d.value)
+            except Exception:
+                raw = None
+        message: Any = raw
+        if reissue and isinstance(raw, dict) and mode != "stored":
+            try:
+                fresh = await refresh_envelope(d.topic, raw, admitted=mode == "aged")
+            except Exception as e:
+                self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
+                fresh = None
+            if fresh is not None:
+                kwargs["value"] = json.dumps(fresh)
+                message = fresh
+        if mode is not None and isinstance(message, dict):
+            stamp = await new_admission(d.topic, self.config.group_id, d.message_id, message)
+            if stamp is not None:
+                kwargs["admission"] = stamp
+        return await self.queue.nack(self.config.group_id, d, delay, error, refund=refund, **kwargs)
 
-    async def _parse_for_sink(self, d: Delivery) -> StreamMessage | None:
+    async def _open[T](self, d: Delivery, raw: dict, opener: "Callable[[bool], Coroutine[Any, Any, T]]", *, record: bool = True) -> T:
+        """Open a delivery's message, judging its age only if no admission covers it, and record the admission before anything runs.
+
+        A delivery this process already opened is admitted for every later open (the precision check, then the handler). Otherwise
+        a stored admission (a MAC made with the envelope key over this message, group and row) admits it. The admission is written
+        at once, so a handler that dies, a lapsed lease or a failed nack redelivers a message already known to have verified.
+        A write that fails raises ``AdmissionWriteError``: the handler must not run without it.
+        """
+        key = (d.topic, d.message_id, d.attempts)
+        mode = self._opened.get(key)
+        admitted = mode is not None or await configured_admission_valid(
+            d.topic, self.config.group_id, d.message_id, raw, d.admission_ms, d.admission_mac
+        )
+        result = await opener(admitted)
+        if mode is not None or not record:
+            return result
+        self._opened[key] = "aged" if within_lifetime(raw) else "stored"
+        try:
+            stamp = await new_admission(d.topic, self.config.group_id, d.message_id, raw)
+            if stamp is not None:
+                await self.queue.admit(self.config.group_id, d, *stamp)
+        except Exception as e:
+            self._opened.pop(key, None)
+            raise AdmissionWriteError(type(e).__name__) from e
+        return result
+
+    async def _parse_for_sink(self, d: Delivery, *, record: bool = False) -> StreamMessage | None:
         """The message of a delivery that will not be processed, for the disposition sink; None when it cannot be read."""
         if not self.indexing:
             return None
         try:
             raw = decode_message(d.value)
-            return await open_stream_message(d.topic, raw, StreamMessage) if isinstance(raw, dict) else None
+            if not isinstance(raw, dict):
+                return None
+            return await self._open(
+                d, raw, lambda admitted: open_stream_message(d.topic, raw, StreamMessage, admitted=admitted), record=record
+            )
         except Exception as e:
             self.logger.warning("Could not read the exhausted message %s for its record: %s", d.message_id, e)
             return None
@@ -550,7 +611,11 @@ class PgMessagingConsumer(IMessagingConsumer):
         try:
             if self.indexing:
                 try:
-                    parsed = await open_stream_message(d.topic, raw, StreamMessage)
+                    parsed = await self._open(
+                        d, raw, lambda admitted: open_stream_message(d.topic, raw, StreamMessage, admitted=admitted)
+                    )
+                except AdmissionWriteError as e:
+                    return False, False, None, f"admission could not be recorded: {e}"
                 except DuplicateEnvelope:
                     return True, False, None, ""
                 except EnvelopeRejected as e:
@@ -563,7 +628,9 @@ class PgMessagingConsumer(IMessagingConsumer):
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:
-                opened = await open_configured(d.topic, raw)
+                opened = await self._open(d, raw, lambda admitted: open_configured(d.topic, raw, admitted=admitted))
+            except AdmissionWriteError as e:
+                return False, False, None, f"admission could not be recorded: {e}"
             except DuplicateEnvelope:
                 return True, False, None, ""
             except EnvelopeRejected as e:

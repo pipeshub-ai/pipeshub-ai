@@ -54,8 +54,8 @@ upd AS (
   UPDATE platform.queue_deliveries d
   SET status = 'claimed', attempts = d.attempts + 1, locked_until = now() + make_interval(secs => $4::double precision), consumer = $5
   FROM picked p WHERE d.group_id = p.group_id AND d.topic = p.topic AND d.message_id = p.message_id
-  RETURNING d.topic, d.message_id, d.attempts)
-SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key
+  RETURNING d.topic, d.message_id, d.attempts, d.admission_ms, d.admission_mac)
+SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key, u.admission_ms, u.admission_mac
 FROM upd u JOIN platform.queue_messages m ON m.id = u.message_id ORDER BY u.message_id"""
 # Per-key order. Serialised per group by a transaction-scoped advisory lock, so a claimer sees what the previous one claimed and
 # committed. A delivery is handed out only when no other delivery of its key (same group and topic) is open AND earlier, and none is
@@ -80,8 +80,8 @@ upd AS (
   UPDATE platform.queue_deliveries d
   SET status = 'claimed', attempts = d.attempts + 1, locked_until = now() + make_interval(secs => $4::double precision), consumer = $5
   FROM picked p WHERE d.group_id = p.group_id AND d.topic = p.topic AND d.message_id = p.message_id
-  RETURNING d.topic, d.message_id, d.attempts)
-SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key
+  RETURNING d.topic, d.message_id, d.attempts, d.admission_ms, d.admission_mac)
+SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key, u.admission_ms, u.admission_mac
 FROM upd u JOIN platform.queue_messages m ON m.id = u.message_id ORDER BY u.message_id"""
 # Seconds until the next delivery of this group becomes claimable (a retry backoff ending, or a claim expiring); NULL when none is open.
 _NEXT_DUE = """/* pipeshub:queue.nextdue */
@@ -92,7 +92,11 @@ DELETE FROM platform.queue_deliveries WHERE group_id = $1 AND topic = $2 AND mes
 _NACK = """/* pipeshub:queue.nack */
 UPDATE platform.queue_deliveries SET status = 'ready', locked_until = NULL, consumer = NULL, last_error = $5,
   attempts = attempts - $7::int,
-  visible_at = now() + make_interval(secs => $6::double precision)
+  visible_at = now() + make_interval(secs => $6::double precision),
+  admission_ms = COALESCE($8::bigint, admission_ms), admission_mac = COALESCE($9::text, admission_mac)
+WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
+_ADMIT = """/* pipeshub:queue.admit */
+UPDATE platform.queue_deliveries SET admission_ms = $5, admission_mac = $6
 WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
 _REISSUE = """/* pipeshub:queue.reissue */
 UPDATE platform.queue_messages SET value = $2 WHERE id = $1"""
@@ -137,6 +141,8 @@ class Delivery:
     attempts: int
     value: str
     key: str | None
+    admission_ms: int | None = None   # when a consumer admitted this delivery's message, and the MAC that proves it (see app.core.envelope)
+    admission_mac: str | None = None
 
 
 class PgQueue:
@@ -230,7 +236,7 @@ class PgQueue:
             )
         return [
             Delivery(
-                r["topic"], r["message_id"], r["attempts"], r["value"], r["msg_key"]
+                r["topic"], r["message_id"], r["attempts"], r["value"], r["msg_key"], r["admission_ms"], r["admission_mac"]
             )
             for r in rows
         ]
@@ -245,13 +251,22 @@ class PgQueue:
                 await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)
             ).endswith(" 1")
 
+    async def admit(self, group_id: str, d: Delivery, admission_ms: int, admission_mac: str) -> bool:
+        """Record that this claim opened its message. Applied only while the claim still stands, so a consumer that lost the row writes nothing."""
+        async with await self._write() as tx:
+            return (
+                await tx.execute(_ADMIT, group_id, d.topic, d.message_id, d.attempts, admission_ms, admission_mac)
+            ).endswith(" 1")
+
     async def nack(
-        self, group_id: str, d: Delivery, delay_s: float, error: str = "", *, refund: bool = False, value: str | None = None
+        self, group_id: str, d: Delivery, delay_s: float, error: str = "", *, refund: bool = False, value: str | None = None,
+        admission: tuple[int, str] | None = None,
     ) -> bool:
         """Make the delivery visible again after ``delay_s``. ``refund`` gives back the attempt the claim counted (queue time, not failure).
 
         ``value`` replaces the stored message in the same transaction: the same event, signed again, so a message that waits
         through many hand-backs does not outlive its envelope. It is applied only when this nack took effect.
+        ``admission`` (stamp, MAC) renews the delivery's admission in the same statement; None leaves it as it was.
         """
         async with await self._write() as tx:
             nacked = (
@@ -264,6 +279,8 @@ class PgQueue:
                     stored_error(error),
                     delay_s,
                     1 if refund else 0,
+                    admission[0] if admission else None,
+                    admission[1] if admission else None,
                 )
             ).endswith(" 1")
             if nacked and value is not None:

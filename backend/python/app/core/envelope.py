@@ -39,6 +39,7 @@ from app.utils.request_context import sanitize_root_id
 
 DEFAULT_MAX_AGE_SECONDS = 900  # beyond normal consumer lag plus a retry backoff (<= 300 s); see docs/org-context.md
 MAX_FUTURE_SKEW_SECONDS = 300
+DEFAULT_ADMITTED_MAX_AGE_SECONDS = 86400  # how long an admission of a delivery counts; re-stamped each time the delivery moves
 
 CTX_MISSING = METRICS_BACKEND.counter(
     "pipeshub_envelope_ctx_missing_total",
@@ -55,6 +56,11 @@ UNVERIFIED = METRICS_BACKEND.counter(
 STALE = METRICS_BACKEND.counter(
     "pipeshub_envelope_stale_total",
     "Validly signed broker messages older than the accepted signature age",
+    ["topic"],
+)
+ADMISSION_REFUSED = METRICS_BACKEND.counter(
+    "pipeshub_envelope_admission_refused_total",
+    "Stored admissions of a queue delivery that did not verify (forged, copied, edited, expired or made with a key no longer configured)",
     ["topic"],
 )
 STRIPPED = METRICS_BACKEND.counter(
@@ -111,6 +117,19 @@ def max_age_seconds() -> float:
         value = 0.0
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"ENVELOPE_MAX_AGE_SECONDS must be a positive number, got {raw!r}")
+    return value
+
+
+def admitted_max_age_seconds() -> float:
+    raw = os.getenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_ADMITTED_MAX_AGE_SECONDS)
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"ENVELOPE_ADMITTED_MAX_AGE_SECONDS must be a positive number, got {raw!r}")
     return value
 
 
@@ -226,8 +245,13 @@ async def open_envelope(
     required: bool | None = None,
     inbox: Inbox | None = None,
     now: Callable[[], float] | None = None,
+    admitted: bool = False,
 ) -> Opened:
-    """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected / DuplicateEnvelope."""
+    """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected / DuplicateEnvelope.
+
+    ``admitted``: a consumer already opened this delivery with every check passed, and can prove it (see
+    :func:`admission_valid`), so the age comparison is skipped. The signature, shape, org and future-skew checks always run.
+    """
     required = ctx_required() if required is None else required
     c = message.get("ctx")
     if c is None:
@@ -266,7 +290,7 @@ async def open_envelope(
     except (KeyError, TypeError, UnicodeEncodeError) as e:  # a lone surrogate cannot be encoded for the HMAC
         raise EnvelopeRejected("malformed") from e
     age = (now or time.time)() - c["issuedAt"]
-    if age > max_age_seconds():
+    if age > max_age_seconds() and not admitted:
         STALE.inc(topic)
         if enforcing():
             raise EnvelopeRejected("stale")
@@ -321,6 +345,7 @@ async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
 
     validate_mode()
     max_age_seconds()
+    admitted_max_age_seconds()
     for task in _retry_task:
         task.cancel()
     _retry_task.clear()
@@ -362,10 +387,10 @@ async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
     _retry_task.append(spawn_detached(retry(), name="envelope-key-retry"))
 
 
-async def open_configured(topic: str, message: dict[str, Any], *, claim: bool = True) -> Opened:
-    """``claim=False`` for parse paths that may run more than once per delivery (no inbox claim)."""
+async def open_configured(topic: str, message: dict[str, Any], *, claim: bool = True, admitted: bool = False) -> Opened:
+    """``claim=False`` for parse paths that may run more than once per delivery (no inbox claim). ``admitted``: see :func:`open_envelope`."""
     keys = await _keys() if _keys else ()
-    return await open_envelope(topic, message, keys=keys, inbox=_inbox if claim else None)
+    return await open_envelope(topic, message, keys=keys, inbox=_inbox if claim else None, admitted=admitted)
 
 
 def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
@@ -375,7 +400,84 @@ def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
     return {**message, "eventId": str(uuid.uuid4())}
 
 
-async def refresh_envelope(topic: str, message: dict[str, Any]) -> dict[str, Any] | None:
+def _admission_canon(topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int) -> bytes | None:
+    """What an admission binds: the message's identity (not its timestamp or signature, so a re-signed copy keeps it), the row and the stamp."""
+    c, payload = message.get("ctx"), message.get("payload")
+    if not (isinstance(c, dict) and isinstance(payload, str) and isinstance(c.get("eventId"), str) and isinstance(c.get("orgId"), str)):
+        return None
+    event_type = message.get("eventType")
+    parts = [
+        "admit1", topic, group_id, str(message_id), c["eventId"], c["orgId"], event_type if isinstance(event_type, str) else "",
+        hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest(), str(admission_ms),
+    ]
+    return "\x00".join(parts).encode("utf-8", "surrogatepass")
+
+
+def admission_mac(key: bytes, topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int) -> str | None:
+    canon = _admission_canon(topic, group_id, message_id, message, admission_ms)
+    if canon is None:
+        return None
+    return base64.urlsafe_b64encode(hmac.new(key, canon, hashlib.sha256).digest()).decode().rstrip("=")
+
+
+def admission_valid(
+    keys: Sequence[bytes], topic: str, group_id: str, message_id: int, message: dict[str, Any],
+    admission_ms: int | None, mac: str | None, *, now: float | None = None,
+) -> bool:
+    """Whether a stored admission proves a consumer opened this very message for this very row, recently enough.
+
+    False for anything absent, edited, copied to another group, message or topic, made for another message, made with a key that is
+    no longer configured, older than ``ENVELOPE_ADMITTED_MAX_AGE_SECONDS`` or stamped in the future. A False answer only means the
+    age check applies as it would to a message never seen.
+    """
+    if admission_ms is None or not mac or not keys:
+        return False
+    at = (now if now is not None else time.time())
+    stamp = admission_ms / 1000.0
+    if at - stamp > admitted_max_age_seconds() or stamp - at > MAX_FUTURE_SKEW_SECONDS:
+        return False
+    try:
+        return any(
+            (expected := admission_mac(k, topic, group_id, message_id, message, admission_ms)) is not None
+            and hmac.compare_digest(expected, mac)
+            for k in keys
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+async def configured_admission_valid(
+    topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int | None, mac: str | None
+) -> bool:
+    """:func:`admission_valid` with the configured keys; counts a stored admission that does not verify."""
+    if admission_ms is None and mac is None:
+        return False
+    keys = await _keys() if _keys else ()
+    ok = admission_valid(keys, topic, group_id, message_id, message, admission_ms, mac)
+    if not ok and keys:
+        ADMISSION_REFUSED.inc(topic)
+        _log_loud(f"admission:{topic}", "a stored queue admission did not verify topic=%s: the message is judged by its age", topic)
+    return ok
+
+
+async def new_admission(topic: str, group_id: str, message_id: int, message: dict[str, Any]) -> tuple[int, str] | None:
+    """(stamp, MAC) for a message this process just opened, made with the current key; None without a key or an envelope to bind."""
+    keys = await _keys() if _keys else ()
+    if not keys or not isinstance(message.get("ctx"), dict):
+        return None
+    ms = int(time.time() * 1000)
+    mac = admission_mac(keys[0], topic, group_id, message_id, message, ms)
+    return None if mac is None else (ms, mac)
+
+
+def within_lifetime(message: dict[str, Any], now: float | None = None) -> bool:
+    """Whether the message's own timestamp is inside the envelope lifetime now (the age check on its own, without any admission)."""
+    c = message.get("ctx")
+    issued = c.get("issuedAt") if isinstance(c, dict) else None
+    return isinstance(issued, int) and ((now if now is not None else time.time()) - issued) <= max_age_seconds()
+
+
+async def refresh_envelope(topic: str, message: dict[str, Any], *, admitted: bool = False) -> dict[str, Any] | None:
     """The same signed message issued again now, for a consumer that keeps it waiting past its lifetime.
 
     A delivery that is handed back repeatedly keeps its stored envelope, so the time it has waited counts as its age and
@@ -389,7 +491,7 @@ async def refresh_envelope(topic: str, message: dict[str, Any]) -> dict[str, Any
     keys = await _keys()
     if not keys:
         return None
-    await open_envelope(topic, message, keys=keys, required=True)
+    await open_envelope(topic, message, keys=keys, required=True, admitted=admitted)
     c = {**message["ctx"], "issuedAt": int(time.time())}
     event_type = message.get("eventType")
     c["sig"] = compute_sig(_sign_key, topic, c, message["payload"], event_type if isinstance(event_type, str) else "")
@@ -436,7 +538,7 @@ def ctx_of(message: Any) -> OrgContext | None:  # noqa: ANN401
     return message.org_ctx or legacy_ctx({"payload": message.payload, "requestId": message.requestId})
 
 
-async def open_stream_message(topic: str, raw: Any, model: type) -> Any:  # noqa: ANN401
+async def open_stream_message(topic: str, raw: Any, model: type, *, admitted: bool = False) -> Any:  # noqa: ANN401
     """Parse helper for consumers that build the message model themselves (indexing consumers).
 
     Verifies like :func:`open_configured` (no inbox claim: parsing may run more than once per
@@ -444,5 +546,5 @@ async def open_stream_message(topic: str, raw: Any, model: type) -> Any:  # noqa
     """
     if not isinstance(raw, dict):
         return model(**raw)
-    opened = await open_configured(topic, raw, claim=False)
+    opened = await open_configured(topic, raw, claim=False, admitted=admitted)
     return model(**opened.message, org_ctx=opened.ctx)

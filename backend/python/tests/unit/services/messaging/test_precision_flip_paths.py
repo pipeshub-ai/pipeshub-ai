@@ -185,10 +185,11 @@ async def test_postgres_a_flip_is_nacked_with_a_refund_and_never_dead_lettered()
     consumer._paused_until = 0.0
     consumer._handbacks = {}
     consumer._handback_log = {}
+    consumer._opened = {}
     consumer.queue = MagicMock(nack=AsyncMock(), ack=AsyncMock())
     consumer._process = AsyncMock(side_effect=raised)
     consumer._abandon = AsyncMock()
-    await consumer._settle(SimpleNamespace(topic="t", message_id=5, attempts=1))
+    await consumer._settle(SimpleNamespace(topic="t", message_id=5, attempts=1, value="{}"))
     consumer._abandon.assert_not_awaited()
     args, kwargs = consumer.queue.nack.await_args
     assert args[2] >= 60.0 and kwargs["refund"] is True

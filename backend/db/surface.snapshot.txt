@@ -746,6 +746,8 @@ column platform.outbox.topic type=text notnull=true identity= generated= default
 column platform.outbox.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column platform.outbox.value type=text notnull=true identity= generated= default=-
 column platform.outbox.version type=integer notnull=true identity= generated= default=0
+column platform.queue_deliveries.admission_mac type=text notnull=false identity= generated= default=-
+column platform.queue_deliveries.admission_ms type=bigint notnull=false identity= generated= default=-
 column platform.queue_deliveries.attempts type=integer notnull=true identity= generated= default=0
 column platform.queue_deliveries.consumer type=text notnull=false identity= generated= default=-
 column platform.queue_deliveries.group_id type=text notnull=true identity= generated= default=-

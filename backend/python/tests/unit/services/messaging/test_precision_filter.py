@@ -137,13 +137,14 @@ class TestPostgres:
         consumer.queue = MagicMock(nack=AsyncMock())
         consumer._handbacks = {}
         consumer._handback_log = {}
+        consumer._opened = {}
         consumer._parse_for_sink = AsyncMock(return_value=_message() if message else None)
         return consumer
 
     @pytest.mark.asyncio
     async def test_a_vector_writing_event_is_nacked_with_a_refund_before_anything_runs(self) -> None:
         consumer = self._consumer({0: 60.0})
-        d = SimpleNamespace(topic="t", message_id=5)
+        d = SimpleNamespace(topic="t", message_id=5, attempts=1, value="{}")
         assert await consumer._hand_back_for_precision(d) is True
         consumer.queue.nack.assert_awaited_once()
         args, kwargs = consumer.queue.nack.await_args
@@ -152,7 +153,7 @@ class TestPostgres:
     @pytest.mark.asyncio
     async def test_the_second_hand_back_of_a_message_waits_ten_times_as_long(self) -> None:
         consumer = self._consumer({0: 60.0})
-        d = SimpleNamespace(topic="t", message_id=5)
+        d = SimpleNamespace(topic="t", message_id=5, attempts=1, value="{}")
         await consumer._hand_back_for_precision(d)
         await consumer._hand_back_for_precision(d)
         assert [c.args[2] for c in consumer.queue.nack.await_args_list] == [60.0, 600.0]
@@ -160,9 +161,9 @@ class TestPostgres:
     @pytest.mark.asyncio
     async def test_other_events_and_non_indexing_consumers_take_the_normal_path(self) -> None:
         consumer = self._consumer({})
-        assert await consumer._hand_back_for_precision(SimpleNamespace(topic="t", message_id=1)) is False
+        assert await consumer._hand_back_for_precision(SimpleNamespace(topic="t", message_id=1, attempts=1, value="{}")) is False
         consumer.indexing = False
-        assert await consumer._hand_back_for_precision(SimpleNamespace(topic="t", message_id=1)) is False
+        assert await consumer._hand_back_for_precision(SimpleNamespace(topic="t", message_id=1, attempts=1, value="{}")) is False
         consumer.queue.nack.assert_not_awaited()
 
 
@@ -180,10 +181,11 @@ class TestPostgresFlipHandBack:
         consumer._paused_until = 0.0
         consumer._handbacks = {}
         consumer._handback_log = {}
+        consumer._opened = {}
         consumer.queue = MagicMock(nack=AsyncMock(), ack=AsyncMock())
         consumer._process = AsyncMock(side_effect=PrecisionFlip("the index holds int8-w", delay_s=60.0))
         consumer._abandon = AsyncMock()
-        d = SimpleNamespace(topic="t", message_id=5, attempts=1)
+        d = SimpleNamespace(topic="t", message_id=5, attempts=1, value="{}")
         await consumer._settle(d)
         consumer._abandon.assert_not_awaited()
         args, kwargs = consumer.queue.nack.await_args
