@@ -479,6 +479,32 @@ def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tu
     return (raw if len(holders) == 1 else None), False
 
 
+def _tag_payload_emails(grants: list[Permission], people: list[Any], user_by_id: dict[str, Any]) -> list[Permission]:
+    """Name the account on a grant made with the email the payload gives for a synced account whose directory entry
+    has no email: a directory filter matching emails would drop it, though the account is in the directory."""
+    owner: dict[str, str] = {}
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        account = person.get("accountId") or person.get("key") or person.get("name")
+        raw = person.get("emailAddress")
+        if account and isinstance(raw, str) and raw.strip() and str(account) in user_by_id \
+                and not _email_of(user_by_id, str(account)):
+            owner[raw.strip().lower()] = str(account)
+    for grant in grants:
+        if grant.entity_type == EntityType.USER and not grant.external_id and (grant.email or "").lower() in owner:
+            grant.external_id = owner[(grant.email or "").lower()]
+    return grants
+
+
+def _payload_people(fields: dict[str, Any] | None, holders: list[Any]) -> list[Any]:
+    """Every user object an issue payload and its holders carry: reporter, assignee, user fields, holders' users."""
+    people: list[Any] = [h.get("user") for h in holders if isinstance(h, dict)]
+    for value in (fields or {}).values():
+        people.extend(value if isinstance(value, list) else [value])
+    return people
+
+
 def _permissions_for_holder(
     holder: dict[str, Any],
     *,
@@ -731,10 +757,10 @@ def apply_issue_access_settled(
             record.access_rule = AccessRule.OPEN
             record.rewrite_permissions = False
             return [], [], True
-        grants = browse_holder_grants(
+        grants = _tag_payload_emails(browse_holder_grants(
             context.browse_holders or [], project_key=project_key, fields=fields or {},
             user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
-        ) if top_level else []
+        ), _payload_people(fields, context.browse_holders or []), users) if top_level else []
         record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
         return grants, [], True
@@ -776,7 +802,7 @@ def apply_issue_access_settled(
         return close()
     record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
-    return grants, skipped, True
+    return _tag_payload_emails(grants, _payload_people(fields, holders), users), skipped, True
 
 
 def apply_issue_access(

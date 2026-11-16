@@ -1769,6 +1769,18 @@ class TestIssueGrantsNameListedAccountsOnly:
         _, perms, _ = await _build(_connector(), issue, _present(holders))
         assert {p.email for p in perms} == {"asg@x.com"}
 
+    @pytest.mark.asyncio
+    async def test_a_synced_account_whose_directory_entry_has_no_email_keeps_the_grant_the_payload_names(self) -> None:
+        """acc-9 is synced but stored without an email (as a stored user missing one is read back); the level names it
+        with its email in the payload. Its grant must survive the directory filter, or a write would drop it."""
+        c = _connector()
+        c._issue_security[PROJECT_ID] = _present({"10102": [
+            {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9", "emailAddress": "mia@x.com"}}]})
+        users = [*_users()[:2], AppUser(app_name="JIRA", connector_id="conn-sec", source_user_id="acc-9", org_id="org-1",
+                                         email="", full_name="Mia", is_active=True)]
+        records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, users)
+        assert {p.email for p in records[0][1]} == {"mia@x.com"}
+
     @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
     def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:
         c = _connector()
