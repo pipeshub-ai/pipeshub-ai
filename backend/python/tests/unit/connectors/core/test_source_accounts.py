@@ -702,6 +702,23 @@ async def test_an_address_with_unreconciled_deleted_evidence_takes_only_its_link
 
 
 @pytest.mark.asyncio
+async def test_the_processor_gate_applies_the_deleted_evidence_too(world) -> None:
+    """ana@ is linked to new-oid and the deleted accounts still list old-oid with it, with no re-used entry: a grant
+    naming old-oid must not reach the PipesHub user linked to new-oid through the gate every connector's grants use."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ not in this listing
+    processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
+    processor.logger = logging.getLogger("t")
+    processor.source_accounts = lambda _connector_id: accounts
+
+    assert not await processor._holds_address(CONNECTOR, "ana@x.com", "old-oid", "node-ana")
+    assert not await processor._holds_address(CONNECTOR, "ana@x.com", None, "node-ana")
+    assert await processor._holds_address(CONNECTOR, "ana@x.com", "new-oid", "node-ana")
+
+
+@pytest.mark.asyncio
 async def test_recheck_does_not_refuse_a_site_principal_id_at_an_address_nobody_else_held(world) -> None:
     """A SharePoint principal's grant carries its site user id, not the Entra object id: recheck refuses it only where
     the address passed to another account, not because the ids differ in kind."""
