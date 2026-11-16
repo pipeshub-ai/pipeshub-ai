@@ -68,7 +68,7 @@ def test_an_in_flight_request_finishes_when_the_service_gets_sigterm(tmp_path) -
         def call() -> None:
             try:
                 result["body"] = urllib.request.urlopen(f"http://127.0.0.1:{port}/slow", timeout=20).read()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 result["error"] = exc
 
         thread = threading.Thread(target=call)
