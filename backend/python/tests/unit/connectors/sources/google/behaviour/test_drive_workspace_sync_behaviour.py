@@ -2980,10 +2980,12 @@ async def test_a_writer_group_split_on_a_relist_with_an_empty_list_keeps_its_pas
     await ws.sync()
     assert ("kept@example.com", "GROUP", "WRITE") in ws.grants("f1")
 
-    # Alice leaves, Carol, not a member, joins the group, and the relist only ever sees an empty list.
+    # Alice leaves, Carol, not a member, joins the group, and the relist only ever sees an empty list: the drive
+    # does not let its writers share, so Bob, writing through the group, reads no sharing.
     del ws.world.drives["sd-1"]["members"][ALICE]
     join_group(ws, "kept@example.com", CAROL)
     ws.world.files["f1"].perm_access = "empty"
+    ws.world.files["f1"].meta["capabilities"] = {"canShare": False, "canListChildren": False}
     await ws.sync()
 
     assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws)
