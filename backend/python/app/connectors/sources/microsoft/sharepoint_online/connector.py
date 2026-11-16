@@ -3890,6 +3890,9 @@ class SharePointConnector(BaseConnector):
                 # A warning about the app's permissions must not stop the sync it is about.
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
+            # The saved marker, read now: a listing that admits and withdraws nobody never reads it, and deleted_pending
+            # would stay at its default while the items still withhold grants.
+            await self.source_accounts.ensure_loaded([])
             # While the deleted accounts are unread, a SharePoint principal (no Entra id) is withheld too (may_grant).
             # Taken once: a later ensure_loaded may clear deleted_pending after earlier items already withheld grants.
             withheld = self._disabled_set_unknown or self.source_accounts.deleted_pending
