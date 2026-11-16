@@ -358,6 +358,20 @@ def parse_gate(governor: ResourceGovernor, budget: Any | None) -> ClassGate:  # 
     )
 
 
+def remote_gate(size: int) -> ClassGate:
+    """Orders parses that run in a remote parsing service, by class: the same admission rules as the local parse
+    gate, over the configured remote concurrency. With classes on it replaces the FIFO remote slot pool (a parse
+    takes a place here or there, never both), so a small parse is not queued behind large ones."""
+    from app.services.parsing.remote_concurrency import remote_parse_concurrency
+
+    return _gate(
+        "remote_parse",
+        lambda: ClassGate(
+            "remote_parse", numbers=_numbers, capacity=lambda: PoolCapacity(max(1, remote_parse_concurrency() or size))
+        ),
+    )
+
+
 def download_ahead(level: CostClass) -> Any:  # noqa: ANN401
     """Places among records that hold downloaded bytes without a parse permit: one set per class."""
     from app.services.resource_governor.download_ahead import DownloadAhead

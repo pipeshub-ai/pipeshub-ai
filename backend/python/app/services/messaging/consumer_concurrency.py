@@ -1829,6 +1829,13 @@ async def acquire_parsing_slot(
         # The parse runs in the parsing service, so this process's CPUs do not bound it: the
         # configured concurrency does. Memory reserved for the record and the download gates
         # were taken before this call and still apply.
+        if ctx is not None and (tier is None or tier is ParseTier.HEAVY):
+            est = wiring.estimate_for(ctx.extension, ctx.mime_type, size_bytes, **ctx.facts())
+            if est is not None:
+                # PARSE_ADMISSION=classes: the remote places are ordered by class (small first, large keeps its share
+                # and ages up, the priority lane ahead). This is the parse step's one place: the FIFO pool below is
+                # not entered, so nothing is held while waiting for the other.
+                return await _acquire_remote_by_class(host, tier, est, ctx, remote, timeout)
         slots = remote_parse_slots(remote)
         if not await slots.acquire(timeout, priority=_lane(host) is not None):
             raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
@@ -1914,6 +1921,39 @@ async def acquire_parsing_slot(
     return Admission(cost=1, _release=legacy_semaphore.release)
 
 
+
+
+async def _acquire_remote_by_class(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    est: "CostEstimate",
+    ctx: "wiring.ClassContext",
+    remote: int,
+    timeout: float | None,
+) -> "Admission":
+    """A remote parse's place, ordered by class over ``PARSING_SERVICE_CONCURRENCY`` places."""
+    from app.modules.parse_engine.budget_port import AdmissionTimeout
+
+    await wiring.refresh_numbers()
+    gate = wiring.remote_gate(remote)
+    request = wiring.request_for(ctx, est, family=Family.PARSE, cpu=1, tokens=1)
+    request = dataclasses.replace(request, mem_bytes=0, priority=request.priority or _lane(host) is not None)
+    started = time.monotonic()
+    big = est.cls in BIG_CLASSES
+    if big:
+        bound = wiring.big_wait_seconds()
+        timeout = bound if timeout is None else min(timeout, bound)
+    try:
+        ticket = await gate.acquire(request, deadline_s=timeout, cancel=wiring.NEVER)
+    except AdmissionTimeout:
+        waited = time.monotonic() - started
+        if big:
+            raise BigAdmissionTimeout(
+                "remote_parsing", waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
+            ) from None
+        raise ParseAdmissionTimeout("remote_parsing", waited) from None
+    class_pools.set_class(est.cls, est.est_seconds)  # the embedding request reads it; it ends with the task
+    return Admission(tier=tier, cost=1, _release=ticket.release)
 
 
 async def _acquire_parsing_slot_by_class(

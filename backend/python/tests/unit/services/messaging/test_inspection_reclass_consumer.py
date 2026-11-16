@@ -153,15 +153,54 @@ async def test_an_xlsx_without_a_cell_area_stays_on_its_prior() -> None:
     assert fleet.seen == [(1, 0, 0)]
 
 
-@pytest.mark.parametrize("module", [
-    "app.services.messaging.redis_streams.indexing_consumer",
-    "app.services.messaging.kafka.consumer.indexing_consumer",
-])
-def test_both_consumers_fold_every_inspected_fact_into_the_class_context(module: str) -> None:
-    """The Kafka consumer's loop is too heavy to drive here; this pins that it passes pages, the scan flag and the
-    cell area on, exactly as the Redis consumer does (the behavioural tests above)."""
-    import importlib
-    import inspect
+def _kafka_consumer():  # noqa: ANN202
+    from unittest.mock import MagicMock
 
-    source = inspect.getsource(importlib.import_module(module))
-    assert "class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)" in source
+    from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+    from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
+
+    cfg = KafkaConsumerConfig(
+        topics=["record-events"], client_id="c", group_id="g", auto_offset_reset="earliest", enable_auto_commit=False,
+        bootstrap_servers=["broker:9092"],
+    )
+    c = IndexingKafkaConsumer(LOGGER, cfg, governor=make_test_governor(logger_name="test-kafka-reclass", env_parse=2))
+    c.governor._registry.set(Pool.HEAVY_PARSE, 2)
+    c.governor._registry.set(Pool.INDEX_HEAVY, 8)
+    c.consumer = MagicMock()
+    c.consumer.commit = AsyncMock()
+    c.running = True
+    return c
+
+
+async def _kafka_run(cells: int | None) -> list[tuple[int, int, int]]:
+    from unittest.mock import MagicMock
+
+    consumer = _kafka_consumer()
+    seen: list[tuple[int, int, int]] = []
+
+    async def handler(message):  # noqa: ANN001, ANN202
+        rid = message.payload["recordId"]
+        yield PipelineEvent(event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id=rid))
+        yield PipelineEvent(event=IndexingEvent.START_INSPECT, data=PipelineEventData(record_id=rid, size_bytes=80 * MIB))
+        extra = {} if cells is None else {"cells": cells}
+        yield PipelineEvent(
+            event=IndexingEvent.START_PARSING,
+            data=PipelineEventData(record_id=rid, tier=ParseTier.HEAVY, size_bytes=80 * MIB, **extra),
+        )
+        gate = wiring.index_gate(consumer.governor)
+        seen.append(tuple(gate.running(k) for k in (CostClass.SMALL, CostClass.LARGE, CostClass.HUGE)))  # type: ignore[arg-type]
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=rid))
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=rid))
+
+    consumer.message_handler = handler
+    payload = {"recordId": "r1", "extension": "xlsx", "mimeType": "", "orgId": "o1"}
+    message = MagicMock()
+    message.topic, message.partition, message.offset = "record-events", 0, 3
+    message.value = json.dumps({"eventType": "newRecord", "payload": payload}).encode()
+    await consumer._IndexingKafkaConsumer__process_message_wrapper(message)
+    return seen
+
+
+async def test_the_kafka_consumer_folds_an_xlsx_cell_area_into_the_class_too() -> None:
+    assert await _kafka_run(26 * 400_000) == [(0, 1, 0)]  # moved out of small in place
+    assert await _kafka_run(None) == [(1, 0, 0)]  # no cell area: it stays on its prior

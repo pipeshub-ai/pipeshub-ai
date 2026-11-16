@@ -60,11 +60,16 @@ def test_a_member_that_does_not_inflate_is_no_facts_and_never_raises() -> None:
 def test_the_member_cap_is_applied_from_the_directory_record_before_any_entry_is_parsed(monkeypatch) -> None:
     import zipfile as zf
 
-    def explode(*_a: object, **_k: object) -> None:
-        raise AssertionError("the central directory was parsed")
+    parsed: list[bool] = []
+    real = zf.ZipFile._RealGetContents
 
-    monkeypatch.setattr(zf.ZipFile, "_RealGetContents", explode)
+    def spy(self: zf.ZipFile) -> None:
+        parsed.append(True)  # recorded, not raised: office_facts swallows every exception by design
+        real(self)
+
+    monkeypatch.setattr(zf.ZipFile, "_RealGetContents", spy)
     assert office_facts(_zip({f"m{i}": b"" for i in range(5001)})) == OfficeFacts()
+    assert parsed == []
 
 
 def test_a_package_with_too_many_members_is_not_inspected() -> None:
@@ -136,13 +141,18 @@ def test_a_directory_that_declares_one_entry_but_is_huge_is_refused_before_it_is
     data[eocd + 8:eocd + 10] = (1).to_bytes(2, "little")
     assert int.from_bytes(data[eocd + 12:eocd + 16], "little") > (1 << 20) // 4  # a real directory of tens of thousands of entries
 
-    def explode(*_a: object, **_k: object) -> None:
-        raise AssertionError("the central directory was parsed")
+    parsed: list[bool] = []
+    real = zf.ZipFile._RealGetContents
 
-    monkeypatch.setattr(zf.ZipFile, "_RealGetContents", explode)
+    def spy(self: zf.ZipFile) -> None:
+        parsed.append(True)  # recorded, not raised: office_facts swallows every exception by design
+        real(self)
+
+    monkeypatch.setattr(zf.ZipFile, "_RealGetContents", spy)
     # the size bound is 1 MiB: pad the directory size field to exceed it the way a crafted package does
     data[eocd + 12:eocd + 16] = ((1 << 20) + 1).to_bytes(4, "little")
     assert office_facts(bytes(data)) == OfficeFacts()
+    assert parsed == []  # refused by the directory-size bound, before one entry was parsed
 
 
 def test_an_xlsx_cell_area_reaches_the_class_through_the_event_and_the_consumers_context() -> None:
