@@ -2835,8 +2835,8 @@ class JiraDataCenterConnector(BaseConnector):
                 if not batch_members:
                     break
 
-                for member in batch_members:
-                    member = member if isinstance(member, dict) else {}
+                for raw_member in batch_members:
+                    member = raw_member if isinstance(raw_member, dict) else {}
                     if not (member.get("accountId") or member.get("key") or member.get("name")):
                         # A member we cannot name: skipping it would read the list as complete without them.
                         self.logger.warning("Group %s answered a member without a key or name", group_name)
