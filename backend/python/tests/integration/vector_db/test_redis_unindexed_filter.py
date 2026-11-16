@@ -24,6 +24,7 @@ from app.services.vector_db.redis.errors import FilterFieldNotIndexed
 from app.services.vector_db.redis.redis_vector import RedisVectorService
 from tests.integration.vector_db.conftest import make_collection
 from tests.integration.vector_db.helpers import (
+    DIM,
     make_collection_config,
     make_dense,
     point_id,
@@ -296,3 +297,119 @@ class TestDialect:
         assert dialect_1[0] == len(POINTS)  # the clause on the unknown field was dropped
         with pytest.raises(ResponseError, match="Unknown field"):
             await run("FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", "DIALECT", "2")
+
+
+BACKFILL_DIM = 256
+BACKFILL_DOCS = 30000
+
+
+class TestBackfill:
+    """``FT.ALTER`` returns at once and indexes the stored documents in the background (minutes on a big collection)."""
+
+    async def _big_collection(self, svc, collection: str) -> None:
+        from app.services.vector_db.models import CollectionConfig, DistanceMetric
+
+        await svc.create_collection(collection, CollectionConfig(embedding_size=BACKFILL_DIM, distance_metric=DistanceMetric.COSINE))
+        for field_name, schema in PAYLOAD_KEYWORD_INDEXES:
+            if field_name != "metadata.blockId":
+                await svc.create_index(collection, field_name, schema)
+        vec = [0.01 * (i % 7 + 1) for i in range(BACKFILL_DIM)]
+        for start in range(0, BACKFILL_DOCS, 2000):
+            await svc.upsert_points(collection, [
+                VectorPoint(
+                    id=point_id(f"bf{n}"), dense_vector=[v + n * 1e-6 for v in vec],
+                    payload={"page_content": f"chunk {n}", "metadata": {
+                        "orgId": ORG, "virtualRecordId": TARGET if n < 3 else f"vr-{n}", "blockId": f"blk{n}"}},
+                )
+                for n in range(start, start + 2000)
+            ])
+        await _settle(svc, collection, BACKFILL_DOCS)
+
+    async def test_a_delete_is_refused_until_the_field_is_indexed_then_removes_exactly_the_block(self, redis_service, collection) -> None:
+        from app.services.vector_db.redis.errors import IndexBackfilling
+
+        await self._big_collection(redis_service, collection)
+        await redis_service.create_index(collection, "metadata.blockId", {"type": "keyword"})
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": TARGET, "blockId": [f"blk{BACKFILL_DOCS - 1}", "blk2"]})
+
+        # Straight after FT.ALTER: the index has not reached every document, so a delete would "succeed" and leave some.
+        with pytest.raises(IndexBackfilling):
+            await redis_service.delete_points(collection, flt)
+        assert await redis_service.count_points(collection, await redis_service.filter_collection(must={"orgId": ORG})) == BACKFILL_DOCS
+
+        await _alter_settled(redis_service, collection)
+        await redis_service.delete_points(collection, flt)  # blk2 is the one of TARGET that exists
+        assert await _count(redis_service, collection, virtualRecordId=TARGET) == 2
+        assert await _count(redis_service, collection, blockId=["blk2"]) == 0
+        assert await _count(redis_service, collection) == BACKFILL_DOCS - 1
+
+    async def test_a_payload_write_is_refused_during_the_backfill_too(self, redis_service, collection) -> None:
+        from app.services.vector_db.redis.errors import IndexBackfilling
+
+        await self._big_collection(redis_service, collection)
+        await redis_service.create_index(collection, "metadata.blockId", {"type": "keyword"})
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "blockId": ["blk1"]})
+        with pytest.raises(IndexBackfilling):
+            await redis_service.set_payload(collection, {"metadata.touched": "yes"}, flt)
+        await _alter_settled(redis_service, collection)
+
+
+class TestOlderIndex:
+    """An index made by an earlier release holds fewer fields; the query service ensures them when it starts."""
+
+    async def _old_index(self, svc, collection: str) -> None:
+        idx = svc._index_name(collection)
+        await svc.client.execute_command(
+            "FT.CREATE", idx, "ON", "HASH", "PREFIX", "1", f"{collection}:", "SCHEMA",
+            "page_content", "TEXT", "dense_embedding", "VECTOR", "HNSW", "6", "TYPE", "FLOAT16", "DIM", "8", "DISTANCE_METRIC", "COSINE",
+            "metadata_orgId", "TAG", "metadata_virtualRecordId", "TAG",
+        )
+        await svc.upsert_points(collection, [
+            VectorPoint(id=point_id("o1"), dense_vector=make_dense([1.0]), payload={
+                "page_content": "alpha", "metadata": {"orgId": ORG, "virtualRecordId": "a"}, "connectorIds": ["c1"]}),
+            VectorPoint(id=point_id("o2"), dense_vector=make_dense([0.0, 1.0]), payload={
+                "page_content": "alpha", "metadata": {"orgId": ORG, "virtualRecordId": "b"}, "connectorIds": ["c2"]}),
+        ])
+        await _settle(svc, collection, 2)
+
+    async def test_text_search_by_connector_works_after_the_startup_reconcile(self, redis_service, collection) -> None:
+        from unittest.mock import MagicMock
+
+        from app.services.vector_db.collection_registry import CollectionRegistry
+        from app.services.vector_db.models import CollectionConfig
+        from app.services.vector_db.strategies.single import SingleCollectionStrategy
+        from tests.support.vector_db import make_manifest_store
+
+        await self._old_index(redis_service, collection)
+        flt = await redis_service.filter_collection(must={"orgId": ORG}, should={"connectorIds": ["c1"]})
+        req = HybridSearchRequest(dense_query=None, text_query="alpha", filter=flt, limit=5)
+        with pytest.raises(FilterFieldNotIndexed):  # refused, not answered with both points
+            await redis_service.query_nearest_points(collection, [req])
+
+        registry = CollectionRegistry(
+            vector_db_service=redis_service, strategy=SingleCollectionStrategy(),
+            collection_config_factory=lambda size: CollectionConfig(embedding_size=size),
+            manifest_store=make_manifest_store([collection], dimension=DIM), logger=MagicMock(),
+        )
+        assert await registry.reconcile_payload_indexes() == [collection]
+        await _alter_settled(redis_service, collection)
+
+        hits = (await redis_service.query_nearest_points(collection, [req]))[0]
+        assert [h.id for h in hits] == [point_id("o1")]
+
+
+class TestServerRefusalHealsTheCache:
+    async def test_an_index_rebuilt_without_the_field_gives_the_typed_error_and_a_fresh_schema(self, redis_service, second_service, collection) -> None:
+        await _seed(redis_service, collection, product_indexes=True)
+        assert await _count(redis_service, collection, blockId=["b1"]) == 2  # cached: the field is there
+
+        # Another process (an older release, or a model-change rebuild) drops the index and recreates it without the field.
+        await second_service.delete_collection(collection)
+        await second_service.create_collection(collection, make_collection_config())
+        await second_service.upsert_points(collection, POINTS)
+        await _settle(second_service, collection, len(POINTS))
+
+        with pytest.raises(FilterFieldNotIndexed) as raised:
+            await _count(redis_service, collection, blockId=["b1"])
+        assert raised.value.fields == {"metadata_blockId"}
+        assert "metadata_blockId" not in redis_service._schema_fields[redis_service._index_name(collection)]

@@ -97,6 +97,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.errors import (
     FilterFieldNotIndexed,
+    IndexBackfilling,
     classify_redis_search_error,
 )
 from app.services.vector_db.redis.utils import (
@@ -118,6 +119,7 @@ from app.services.vector_db.redis.utils import (
 )
 from app.utils.logger import create_logger
 from app.utils.loop_local import LoopLocal
+from redis.exceptions import ResponseError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -712,6 +714,7 @@ class RedisVectorService(IVectorDBService):
         query = filter_expression_to_redis_query(base_filter)
         # Before the first page is read: a clause on a field the index lacks must stop the delete, not shrink it.
         await self._require_indexed(idx, query)
+        await self._require_settled(idx)
         # Redis hash fields cannot contain dots, so a canonical key like
         # "metadata.x" is stored and echoed back as "metadata_x". Normalise once:
         # looking the value up under the canonical name misses, and a miss reads
@@ -1325,7 +1328,11 @@ class RedisVectorService(IVectorDBService):
         ]
 
         # FT.HYBRID errors propagate — do NOT silently fall back to text-only.
-        raw = await self.client.execute_command(*cmd)  # type: ignore
+        try:
+            raw = await self.client.execute_command(*cmd)  # type: ignore
+        except ResponseError as e:
+            await self._refuse_if_unknown_field(idx, e, search_query, filter_query)
+            raise
         key_score_pairs = parse_ft_hybrid_reply(raw)
 
         if not key_score_pairs:
@@ -1462,6 +1469,7 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
         await self._require_indexed(idx, query)
+        await self._require_settled(idx)
 
         found: dict[bytes, None] = {}
         total = 0
@@ -1521,33 +1529,58 @@ class RedisVectorService(IVectorDBService):
         """index name → the fields of its schema (FT.INFO), dropped when this process creates, alters or drops the index."""
         return self.__dict__.setdefault("_schema_cache", {})
 
-    async def _indexed_fields(self, idx: str, *, refresh: bool = False) -> frozenset[str] | None:
-        """The fields of the index's schema, or None when the index does not exist.
+    async def _read_index(self, idx: str) -> tuple[frozenset[str], float | None, bool] | None:
+        """``FT.INFO`` of the index as (schema fields, percent indexed, still back-filling); None when the index does not exist.
 
-        Kept until this process creates, alters or drops the index. Another process can alter it too, so a
-        field missing from the kept copy is looked up again before it is refused (`_require_indexed`).
-        A reply that names no field is an error, never "no fields": the caller would refuse everything, or
-        trust nothing it can see.
+        A reply with no schema attribute, or with no way to tell whether it is still indexing, is an error: the caller would
+        refuse everything, or trust a search that may be missing documents.
         """
-        known = None if refresh else self._schema_fields.get(idx)
-        if known is not None:
-            return known
         try:
             raw = await self.client.execute_command("FT.INFO", idx)  # type: ignore
         except Exception as e:
             if _is_unknown_index_error(e):
                 return None
             raise
+        info = _parse_ft_info(raw)
         names: set[str] = set()
-        for attribute in _parse_ft_info(raw).get("attributes") or []:
+        for attribute in info.get("attributes") or []:
             tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
             for key in ("attribute", "identifier"):
                 if key in tokens[:-1]:
                     names.add(tokens[tokens.index(key) + 1])
         if not names:
             raise RuntimeError(f"Redis index '{idx}': FT.INFO reply carries no schema attributes")
-        self._schema_fields[idx] = frozenset(names)
-        return self._schema_fields[idx]
+        try:
+            percent = float(info["percent_indexed"])
+            indexing = int(info["indexing"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise RuntimeError(f"Redis index '{idx}': FT.INFO reply does not say whether the index is still indexing") from e
+        fields = frozenset(names)
+        self._schema_fields[idx] = fields
+        return fields, percent, bool(indexing) or percent < 1.0
+
+    async def _indexed_fields(self, idx: str, *, refresh: bool = False) -> frozenset[str] | None:
+        """The fields of the index's schema, or None when the index does not exist.
+
+        Kept until this process creates, alters or drops the index. Another process can alter it too, so a
+        field missing from the kept copy is looked up again before it is refused (`_require_indexed`).
+        """
+        known = None if refresh else self._schema_fields.get(idx)
+        if known is not None:
+            return known
+        read = await self._read_index(idx)
+        return None if read is None else read[0]
+
+    async def _require_settled(self, idx: str) -> None:
+        """Refuse (:class:`IndexBackfilling`) while the index has not yet read every document that was already stored.
+
+        For what acts on "every match": a delete or a payload write. An ``FT.ALTER`` that adds a field returns at once and indexes the
+        existing documents in the background (minutes on a large collection); until then the field matches only the documents reached so far.
+        Read on every call, not kept: the state changes by itself.
+        """
+        read = await self._read_index(idx)
+        if read is not None and read[2]:
+            raise IndexBackfilling(idx, read[1])
 
     async def _require_indexed(self, idx: str, *queries: str) -> None:
         """Refuse a query that names a field the index does not hold (:class:`FilterFieldNotIndexed`)."""
@@ -1566,7 +1599,22 @@ class RedisVectorService(IVectorDBService):
     async def _ft_query(self, command: str, idx: str, query: str, *args: Any) -> Any:  # noqa: ANN401
         """``FT.SEARCH`` / ``FT.AGGREGATE`` with the query checked against the schema and the dialect pinned."""
         await self._require_indexed(idx, query)
-        return await self.client.execute_command(command, idx, query, *_DIALECT, *args)  # type: ignore
+        try:
+            return await self.client.execute_command(command, idx, query, *_DIALECT, *args)  # type: ignore
+        except ResponseError as e:
+            await self._refuse_if_unknown_field(idx, e, query)
+            raise
+
+    async def _refuse_if_unknown_field(self, idx: str, error: ResponseError, *queries: str) -> None:
+        """The server answered "Unknown field": the kept schema is out of date (the index was dropped and rebuilt without the field).
+        Forget it, read the live one and raise the typed refusal; any other error is left to the caller."""
+        if "unknown field" not in str(error).lower():
+            return
+        self._schema_fields.pop(idx, None)
+        known = await self._indexed_fields(idx, refresh=True) or frozenset()
+        missing = frozenset().union(*(query_fields(q) for q in queries)) - known
+        if missing:
+            raise FilterFieldNotIndexed(idx, missing) from error
 
     # ------------------------------------------------------------------
     # Internal guards

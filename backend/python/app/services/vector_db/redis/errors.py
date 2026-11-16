@@ -39,3 +39,17 @@ class FilterFieldNotIndexed(NonRetryableError):
             f"Redis index '{index}' has no field(s) {sorted(self.fields)} in its schema; "
             "a filter on them cannot be honoured. Add the field with create_index() first."
         )
+
+
+class IndexBackfilling(RuntimeError):
+    """The index is still reading documents that were already in Redis (after ``FT.CREATE`` or ``FT.ALTER``, or while loading a dump).
+
+    A search over it sees only some of them, so a delete or a payload write built on one would report success and leave the rest.
+    Retry once ``FT.INFO`` reports ``indexing`` 0; nothing was changed.
+    """
+
+    def __init__(self, index: str, percent_indexed: float | None) -> None:
+        self.index = index
+        self.percent_indexed = percent_indexed
+        done = "unknown" if percent_indexed is None else f"{percent_indexed:.1%}"
+        super().__init__(f"Redis index '{index}' is still indexing existing documents ({done} done); retry later")

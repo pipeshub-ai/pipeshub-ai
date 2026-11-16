@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from redis.exceptions import ResponseError
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.vector_db.models import FieldCondition, FilterExpression
 from app.services.vector_db.redis.config import RedisVectorConfig
-from app.services.vector_db.redis.errors import FilterFieldNotIndexed
+from app.services.vector_db.redis.errors import FilterFieldNotIndexed, IndexBackfilling
 from app.services.vector_db.redis.redis_vector import RedisVectorService
 from app.services.vector_db.redis.utils import (
     escape_tag_value,
@@ -23,10 +24,11 @@ from app.services.vector_db.redis.utils import (
 ORG = "o1"
 
 
-def _info(*names: str) -> list:
+def _info(*names: str, indexing: int = 0, percent: str = "1") -> list:
     """An FT.INFO reply shaped like Redis 8's (RESP2): the schema is the nested ``attributes`` lists."""
     attributes = [[b"identifier", n.encode(), b"attribute", n.encode(), b"type", b"TAG"] for n in names]
-    return [b"index_name", b"col_idx", b"attributes", attributes, b"num_docs", b"3"]
+    return [b"index_name", b"col_idx", b"attributes", attributes, b"num_docs", b"3",
+            b"indexing", str(indexing).encode(), b"percent_indexed", percent.encode()]
 
 
 def _service(*replies) -> tuple[RedisVectorService, AsyncMock]:
@@ -198,7 +200,7 @@ class TestNothingRunsOnARefusedFilter:
 class TestDialectIsPinned:
     async def test_every_search_and_aggregate_carries_dialect_2(self) -> None:
         schema = _info("metadata_orgId", "metadata_virtualRecordId")
-        svc, execute = _service(schema, [1], [1], [1, b"k"], [1, b"k", [b"__key", b"k"]], [[1, [b"__key", b"k"]], 0], [0])
+        svc, execute = _service(schema, [1], [1], schema, [1, b"k"], [0])
         flt = FilterExpression(must=[
             FieldCondition(key="metadata.orgId", value=ORG),
             FieldCondition(key="metadata.virtualRecordId", value="v"),
@@ -211,3 +213,88 @@ class TestDialectIsPinned:
         for args in queries:
             assert args[args.index("DIALECT") + 1] == "2", args
             assert args.index("DIALECT") == 3  # straight after the query, ahead of every option that has its own arguments
+
+
+class TestBackfill:
+    """``FT.ALTER`` returns at once and indexes the stored documents in the background: a delete in between would find only some of them."""
+
+    @staticmethod
+    def _filter() -> FilterExpression:
+        return FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=ORG),
+            FieldCondition(key="metadata.blockId", values=["b1"]),
+        ])
+
+    @pytest.mark.parametrize(("indexing", "percent"), [(1, "0.4"), (1, "1"), (0, "0.9")])
+    async def test_a_delete_is_refused_while_the_index_is_still_reading_documents(self, indexing, percent) -> None:
+        names = ("metadata_orgId", "metadata_blockId")
+        svc, execute = _service(_info(*names), _info(*names, indexing=indexing, percent=percent))
+        with pytest.raises(IndexBackfilling) as raised:
+            await svc.delete_points("col", self._filter())
+        assert raised.value.index == "col_idx"
+        assert not isinstance(raised.value, NonRetryableError)
+        assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")
+        svc.client.delete.assert_not_awaited()
+
+    async def test_a_payload_write_is_refused_too(self) -> None:
+        names = ("metadata_orgId", "metadata_blockId")
+        svc, execute = _service(_info(*names), _info(*names, indexing=1, percent="0.2"))
+        with pytest.raises(IndexBackfilling):
+            await svc.set_payload("col", {"metadata.x": "1"}, self._filter())
+        assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")
+
+    async def test_a_delete_goes_ahead_once_the_index_has_caught_up(self) -> None:
+        names = ("metadata_orgId", "metadata_blockId")
+        svc, execute = _service(_info(*names), _info(*names), [0])
+        await svc.delete_points("col", self._filter())
+        assert len(_calls(execute, "FT.SEARCH")) == 1
+
+    async def test_a_read_is_not_held_back(self) -> None:
+        names = ("metadata_orgId", "metadata_blockId")
+        svc, execute = _service(_info(*names, indexing=1, percent="0.1"), [2])
+        assert await svc.count_points("col", self._filter()) == 2
+
+    async def test_a_reply_that_does_not_say_is_an_error_not_a_green_light(self) -> None:
+        reply = _info("metadata_orgId", "metadata_blockId")
+        del reply[-4:]
+        svc, _ = _service(reply, reply)
+        with pytest.raises(RuntimeError, match="still indexing"):
+            await svc.delete_points("col", self._filter())
+
+
+class TestStaleSchemaCache:
+    """The index was dropped and rebuilt without a field this process had cached: the server says "Unknown field"."""
+
+    @staticmethod
+    def _filter() -> FilterExpression:
+        return FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=ORG),
+            FieldCondition(key="metadata.blockId", values=["b1"]),
+        ])
+
+    async def test_the_server_refusal_becomes_the_typed_error_and_the_cache_heals(self) -> None:
+        svc, execute = _service(
+            _info("metadata_orgId", "metadata_blockId"),
+            ResponseError("Unknown field at offset 7 near metadata_blockId"),
+            _info("metadata_orgId"),
+        )
+        with pytest.raises(FilterFieldNotIndexed) as raised:
+            await svc.count_points("col", self._filter())
+        assert raised.value.fields == {"metadata_blockId"}
+        assert isinstance(raised.value.__cause__, ResponseError)
+        assert svc._schema_fields["col_idx"] == {"metadata_orgId"}
+
+    async def test_a_field_that_is_back_in_the_schema_is_not_blamed(self) -> None:
+        svc, _ = _service(
+            _info("metadata_orgId", "metadata_blockId"),
+            ResponseError("Unknown field at offset 7 near metadata_blockId"),
+            _info("metadata_orgId", "metadata_blockId"),
+        )
+        with pytest.raises(ResponseError):
+            await svc.count_points("col", self._filter())
+
+    async def test_another_server_error_is_left_alone(self) -> None:
+        svc, execute = _service(_info("metadata_orgId", "metadata_blockId"), ResponseError("Syntax error"))
+        with pytest.raises(ResponseError, match="Syntax"):
+            await svc.count_points("col", self._filter())
+        assert len(_calls(execute, "FT.INFO")) == 1
