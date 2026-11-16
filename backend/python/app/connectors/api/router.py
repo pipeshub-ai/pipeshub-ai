@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple, cast
+from typing import Annotated, Any, Literal, NamedTuple, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
@@ -22,6 +22,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -178,6 +179,9 @@ from app.services.featureflag.platform_settings import (
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.permissions import access_status
+from app.services.storage_documents import BoundReadChanged, BoundReadOutOfRange, StorageDocumentInfo
+from app.utils.byte_range import ByteRange, resolve_range
+from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS, content_tag, if_none_match_matches, preview_pdf_pipeline
 from app.services.permissions.structure_generation import note_structure_change, store_now
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -563,12 +567,43 @@ async def _invoke_connector_stream(
         raise to_stream_error(e, connector=connector_display) from e
 
 
+_NOT_MODIFIED = 304
+
+
 def _refuse_placeholder_content(record: Record) -> None:
     """A placeholder is a navigation stub with no content of its own."""
     if getattr(record, "is_placeholder", False) is True:
         raise not_downloadable(
             "This item is a placeholder and has no content to open.",
             connector=getattr(record.connector_name, "value", None),
+        )
+
+
+def refuse_connector_state(connector_instance: dict[str, Any] | None, *, loaded: bool = False) -> None:
+    """Refuse a record whose connector is gone (404) or disabled (409).
+
+    The stream route runs this when the connector is not in memory (``loaded`` False); a loaded
+    connector is served as it always was. The details call of a content open runs it for every
+    connector record whether the connector is loaded or not, so an open the stream would refuse is
+    refused there first.
+    """
+    if not connector_instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+        )
+    if loaded:
+        return
+    name = connector_instance.get("name", "connector")
+    if not connector_instance.get("isActive", False):
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=f"The connector '{name}' is currently disabled. Enable it from Connector Settings and try again.",
+        )
+    if not connector_instance.get("type", ""):
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
         )
 
 
@@ -583,6 +618,10 @@ async def _resolve_record_content_response(
     request: Request,
     config_service: ConfigurationService,
     graph_provider: IGraphDBProvider,
+    emit_validators: bool = False,
+    if_none_match: str | None = None,
+    range_header: str | None = None,
+    if_range: str | None = None,
 ) -> Response | StreamingResponse:
     """Shared dispatch: UPLOAD/ARTIFACT/ATTACHMENTS → blob storage;
     CONNECTOR → lazy-init connector + stream_record.
@@ -607,11 +646,7 @@ async def _resolve_record_content_response(
 
     connector_id = record.connector_id
     connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-    if not connector_instance:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
-        )
+    refuse_connector_state(connector_instance, loaded=True)
 
     container: ConnectorAppContainer = request.app.container
     connector_registry: ConnectorRegistry = request.app.state.connector_registry
@@ -628,13 +663,135 @@ async def _resolve_record_content_response(
         logger=logger,
     )
 
+    if not emit_validators:
+        return await _serve_record_bytes(connector_obj, record, user_id, convert_to)
+
+    # The validator is read where a 200 would start its byte read, after every refusal above, so a 304
+    # is only ever an answer to a caller who could have had the bytes.
+    wants_pdf = convert_to == MimeTypes.PDF.value and get_pdf_conversion_info(record)[0]
+    variant: Literal["original", "pdf"] = "pdf" if wants_pdf else "original"
+    pipeline = await asyncio.to_thread(preview_pdf_pipeline) if variant == "pdf" else None
+    info1 = await _served_info(connector_obj, record)
+    etag = content_tag(record.id, info1, variant, pipeline=pipeline)
+    # Bound reads (whole or partial) need the original bytes of a stored object whose size and version were verified.
+    bound = (
+        variant == "original"
+        and etag is not None
+        and info1 is not None
+        and info1.object_size is not None
+        and callable(getattr(connector_obj, "stream_record_bound", None))
+    )
+    if if_none_match_matches(if_none_match, etag):
+        return Response(status_code=_NOT_MODIFIED, headers=_validator_headers(etag, ranges=bound))
+
+    if bound:
+        # A Range is honoured only against the representation the caller holds: an If-Range that is not the
+        # current strong tag (RFC 9110 section 13.1.5) gets the whole body.
+        wanted = range_header if if_range is None or if_range.strip() == etag else None
+        plan = resolve_range(wanted, info1.object_size)
+        if plan == "unsatisfiable":
+            raise HTTPException(
+                status_code=HttpStatusCode.RANGE_NOT_SATISFIABLE.value,
+                detail="Requested range not satisfiable",
+                headers={"Content-Range": f"bytes */{info1.object_size}"},
+            )
+        streamed = await _serve_bound(connector_obj, record, info1, etag, plan)
+        if streamed is not None:
+            return streamed
+        # The object changed twice while it was being read: the bytes answer as they always did, with no tag.
+        response = await _serve_record_bytes(connector_obj, record, user_id, convert_to)
+        response.headers.update(_validator_headers(None))
+        return response
+
+    response = await _serve_record_bytes(connector_obj, record, user_id, convert_to)
+    if etag is not None:
+        # The tag names the bytes only if the stored object did not change while they were read.
+        info2 = await _served_info(connector_obj, record)
+        if not (info2 is not None and info2.trusted and info2.fingerprint == info1.fingerprint):
+            etag = None
+    if isinstance(response, Response):
+        response.headers.update(_validator_headers(etag))
+    return response
+
+
+async def _serve_bound(
+    connector_obj: BaseConnector,
+    record: Record,
+    info: StorageDocumentInfo,
+    etag: str,
+    plan: ByteRange | None,
+) -> StreamingResponse | None:
+    """Stream the verified object, whole or one range, bound to its version: the tag names exactly the bytes sent.
+
+    If the object changed after it was verified (412 or 416 from the bound read), it is verified again and the
+    new bytes are sent whole under their own tag, because the caller's range was against the old ones. A second
+    change returns None and the caller serves the bytes untagged.
+    """
+    for attempt in range(2):
+        try:
+            response = await connector_obj.stream_record_bound(record, info, plan)  # type: ignore[attr-defined]
+        except (BoundReadChanged, BoundReadOutOfRange):
+            if attempt:
+                return None
+            fresh = await _served_info(connector_obj, record)
+            fresh_tag = content_tag(record.id, fresh, "original")
+            if fresh is None or fresh_tag is None:
+                return None
+            info, etag, plan = fresh, fresh_tag, None
+            continue
+        response.headers.update(_validator_headers(etag, ranges=True))
+        return response
+    return None
+
+
+def wants_validators(headers: Mapping[str, str]) -> bool:
+    """True when the caller sent ``If-None-Match`` or ``X-Record-Content-Open: 1``: only then is the stored version read."""
+    return headers.get("if-none-match") is not None or headers.get("x-record-content-open") == "1"
+
+
+def _without_validators(error: HTTPException) -> HTTPException:
+    """A refusal or failure is never cached and never carries a validator, so tags cannot be probed."""
+    headers = {k: v for k, v in (error.headers or {}).items() if k.lower() != "etag"}
+    headers["Cache-Control"] = "no-store"
+    error.headers = headers
+    return error
+
+
+async def _served_info(connector_obj: BaseConnector, record: Record) -> StorageDocumentInfo | None:
+    """The connector's verified version of the bytes it would serve; None when it has none, on any failure."""
+    served = getattr(connector_obj, "served_version", None)
+    if not callable(served):
+        return None
+    try:
+        info = await asyncio.wait_for(served(record), timeout=SERVED_VERSION_TIMEOUT_SECONDS)
+    except Exception as e:  # total on purpose: the validator is an optimisation
+        logger.debug("served_version unavailable (%s)", type(e).__name__)
+        return None
+    return info if isinstance(info, StorageDocumentInfo) else None
+
+
+def _validator_headers(etag: str | None, *, ranges: bool = False) -> dict[str, str]:
+    headers = {"Cache-Control": "private, no-store", "Accept-Ranges": "bytes" if ranges else "none"}
+    if etag is not None:
+        headers["ETag"] = etag
+    return headers
+
+
+async def _serve_record_bytes(
+    connector_obj: BaseConnector,
+    record: Record,
+    user_id: str,
+    convert_to: str | None,
+) -> Response | StreamingResponse:
     buffer = await _invoke_connector_stream(connector_obj, record, user_id)
 
     if convert_to == MimeTypes.PDF.value:
         needs_conversion, record_name, file_extension = get_pdf_conversion_info(record)
         if needs_conversion:
             try:
-                return await convert_buffer_to_pdf_stream(buffer, record_name, file_extension)
+                return await convert_buffer_to_pdf_stream(
+                    buffer, record_name, file_extension, record_id=record.id,
+                )
             except HTTPException:
                 raise
             except Exception as e:
@@ -1660,13 +1817,20 @@ async def stream_record(
             request=request,
             config_service=config_service,
             graph_provider=graph_provider,
+            # A request that neither carries a validator nor says it wants one is served as it always was:
+            # no storage version reads, no validator headers.
+            emit_validators=wants_validators(request.headers),
+            if_none_match=request.headers.get("if-none-match"),
+            range_header=request.headers.get("range"),
+            if_range=request.headers.get("if-range"),
         )
 
     except HTTPException as e:
-        raise e
+        _without_validators(e)
+        raise
     except Exception as e:
         logger.error("Error streaming record: %s", str(e), exc_info=True)
-        raise to_stream_error(e) from e
+        raise _without_validators(to_stream_error(e)) from e
 
 
 CONVERTIBLE_UPLOAD_EXTENSIONS = frozenset(
@@ -1781,7 +1945,9 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 async def convert_buffer_to_pdf_stream(
     buffer: StreamingResponse | Response | bytes | io.IOBase,
     record_name: str,
-    file_extension: str | None = None
+    file_extension: str | None = None,
+    *,
+    record_id: str | None = None,
 ) -> StreamingResponse:
     """
     Convert a file buffer to PDF and return as a streaming response.
@@ -1844,8 +2010,13 @@ async def convert_buffer_to_pdf_stream(
                     detail=f"Unsupported buffer type for conversion: {type(buffer)}"
                 )
 
-        # Convert to PDF
-        pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+        # Convert to PDF. One event per converter run: the server-side count of conversions.
+        try:
+            pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+        except Exception:
+            logger.info("record_preview_conversion record_id=%s variant=pdf outcome=failed", record_id)
+            raise
+        logger.info("record_preview_conversion record_id=%s variant=pdf outcome=ok", record_id)
 
         # Handle case where LibreOffice may have renamed the file
         if not os.path.exists(pdf_path):
@@ -1894,12 +2065,29 @@ async def _stage_states_of(graph_provider: IGraphDBProvider, record: object) -> 
     return [s.model_dump(mode="json", by_alias=True) for s in summaries]
 
 
+async def _refuse_connector_state_for_open(graph_provider: IGraphDBProvider, doc: dict[str, Any] | None) -> None:
+    """The details call of a content open: the stream route's connector refusals, loaded or not.
+
+    Only connector-sourced records are checked. Artifacts and storage-backed records are served
+    from blob storage and have no connector state to refuse.
+    """
+    if not doc or doc.get("origin") != "CONNECTOR":
+        return
+    if doc.get("recordType") == RecordType.ARTIFACT.value or doc.get("connectorName") in (
+        Connectors.ATTACHMENTS.value, Connectors.CODING_SANDBOX.value,
+    ):
+        return
+    connector_instance = await graph_provider.get_document(doc.get("connectorId"), CollectionNames.APPS.value)
+    refuse_connector_state(connector_instance)
+
+
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    x_record_content_open: str | None = Header(None, alias="X-Record-Content-Open"),
 ) -> dict | None:
     """
     Check if the current user has access to a specific record
@@ -1922,6 +2110,8 @@ async def get_record_by_id(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
             await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+            if x_record_content_open == "1":
+                await _refuse_connector_state_for_open(graph_provider, doc)
             await hide_record_parents_outside_connection(
                 request, graph_provider, org_id, user_id, has_access, containers=("knowledgeBase", "folder"),
             )
@@ -7967,24 +8157,8 @@ async def _get_streaming_connector(
         _tag_instance_name(connector_obj, connector_display_name)
         return connector_obj
 
-    if not connector_instance.get("isActive", False):
-        raise HTTPException(
-            status_code=HttpStatusCode.CONFLICT.value,
-            detail=(
-                f"The connector '{connector_display_name}' is currently disabled. "
-                "Enable it from Connector Settings and try again."
-            ),
-        )
-
+    refuse_connector_state(connector_instance)
     connector_type = connector_instance.get("type", "")
-    if not connector_type:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail=(
-                "The connector for this record no longer exists or was deleted. "
-                "The record cannot be streamed."
-            ),
-        )
 
     logger.info(
         "Connector %s not in memory — lazy-initializing for streaming",

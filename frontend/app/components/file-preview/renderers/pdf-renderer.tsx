@@ -12,6 +12,7 @@ import {
 } from 'react-pdf-highlighter';
 import type { IHighlight } from 'react-pdf-highlighter';
 import type { PDFRendererProps, PreviewCitation } from '../types';
+import { RECORD_RANGE_LOADER_OPTIONS } from '@/lib/record-content/range-options';
 
 // Constants matching the demo (scaled "paper" space for citation rects)
 const PDF_PAGE_WIDTH = 967;
@@ -28,6 +29,9 @@ const PDF_LOADER_SAFE_OPTIONS = { isEvalSupported: false };
 
 // The worker ships with the app. PdfLoader's default is a CDN copy of another pdf.js
 // version, which pdf.js refuses, the CSP's worker-src blocks, and an offline install can't reach.
+// PdfLoader only loads when it has a url, and pdf.js ignores the url once it has a range transport.
+const RANGE_MODE_URL = 'record-range:';
+
 const PDF_WORKER_SRC = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
 type PdfJsViewer = {
@@ -145,6 +149,7 @@ function citationToHighlight(citation: PreviewCitation): IHighlight | null {
 export function PDFRenderer({
   fileUrl,
   fileName,
+  rangeTransport,
   pagination,
   citations,
   activeCitationId,
@@ -374,7 +379,7 @@ export function PDFRenderer({
     }
     setViewerReady(false);
     setViewerReadyEpoch((n) => n + 1);
-  }, [fileUrl]);
+  }, [fileUrl, rangeTransport]);
 
   // When toolbar prev/next (or any host-driven page change) updates `currentPage`,
   // use pdf.js `currentPageNumber` so navigation works for pages that are not yet
@@ -422,7 +427,7 @@ export function PDFRenderer({
     } catch {
       // Ignore transient pdf.js layout errors while the viewer is mounting/unmounting.
     }
-  }, [scale, fileUrl, getPdfJsViewer]);
+  }, [scale, fileUrl, rangeTransport, getPdfJsViewer]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
@@ -448,7 +453,7 @@ export function PDFRenderer({
 
     return () => clearTimeout(timer);
     // fileUrl: a new document re-parks its own matching citation after the reset above.
-  }, [fileUrl, activeCitationId, highlights, navigateToHighlightSafely]);
+  }, [fileUrl, rangeTransport, activeCitationId, highlights, navigateToHighlightSafely]);
 
   // Detect page count for pagination
   const handleDocumentLoaded = useCallback(
@@ -458,7 +463,7 @@ export function PDFRenderer({
     [pagination],
   );
 
-  if (!fileUrl) {
+  if (!fileUrl && !rangeTransport) {
     return (
       <Flex
         align="center"
@@ -494,9 +499,12 @@ export function PDFRenderer({
       }}
     >
       <PdfLoader
-        url={fileUrl}
+        url={rangeTransport ? RANGE_MODE_URL : fileUrl}
         workerSrc={PDF_WORKER_SRC}
         {...PDF_LOADER_SAFE_OPTIONS}
+        {...(rangeTransport
+          ? { range: rangeTransport, length: rangeTransport.length, ...RECORD_RANGE_LOADER_OPTIONS }
+          : {})}
         beforeLoad={
           <Flex
             align="center"
