@@ -18,12 +18,17 @@ LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien
 # The bytes of name_sort the name indexes key on (kg_0009): a name is unbounded and a btree entry is not. Ordering by (prefix, name_sort) is ordering by name_sort.
 NAME_PREFIX = 1024
 COLS = "r.sk, r.coll, r.id, r.kind, r.folder, r.placeholder, r.hide_children, r.parent_sk, r.group_sk, r.name_key, r.name_sort, r.updated_ms, r.created_ms, r.size_bytes, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk, r.deleted, r.alien"
+ROWS = "kg.records r"
 
-# The copy state of a connector: its node key and the mode of its projection ('legacy' is a connector kg has never copied).
+# The copy state of a connector: its node key, the code epoch of its copy and the copy's cursor ('done' once every node is copied).
 # One row, with the connector's document (``app_doc``) beside it; ``sk`` is NULL when kg holds no key for the connector.
-STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, coalesce(s.mode, 'legacy') AS mode, s.code_epoch, s.verified_at, n.doc AS app_doc FROM (SELECT $1::text AS org_id, $2::text AS id) q
+STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, s.code_epoch, s.backfill_cursor, n.doc AS app_doc FROM (SELECT $1::text AS org_id, $2::text AS id) q
     LEFT JOIN kg.node_keys k ON k.org_id = q.org_id AND k.coll = 1 AND k.id = q.id LEFT JOIN kg.projection_state s ON s.org_id = k.org_id AND s.app_sk = k.sk
     LEFT JOIN graph.nodes n ON n.org_id = q.org_id AND n.coll = 'apps' AND n.id = q.id"""
+# Whether the connector has a record or a record group in the graph, live or deleted (what its copy would hold besides the connector itself). Read only for a connector kg has not
+# finished copying: the records by their index on the connector, the groups (no such index) by the org's groups, which are few beside its records.
+HOLDS = """/* pipeshub:kg.listing_holds */ SELECT EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND doc->>'connectorId' = $2)
+    OR EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups' AND doc->>'connectorId' = $2)"""
 
 # Rows a group that hides its children hides from a listing: what lies below it by the hierarchy (the primary parent and the non-primary links), and the members of it or of a group below it.
 # The hider itself is listed. Empty when no group of the connector hides.
@@ -143,13 +148,13 @@ def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> 
     return "".join(f" AND {c}" for c in out)
 
 
-def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None, scopes: list[str] | None = None) -> str:
+def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None, scopes: list[tuple[str, str]] | None = None) -> str:
     """The window of the sort order past the boundary, ``$3`` rows; ``where`` is the connector's conditions and the filters (``$1`` the org, ``$2`` the connector). ``admit``, when given, is a condition
     on the rows of the window (alias ``w``: what the viewer's classes open), answered as the column ``ok`` of every row of the window, in the window's order. ``scopes`` replaces the connector's live
-    rows with other row sets (each a condition on ``r``, read in its own range of the sort index): a browse's children."""
+    rows with other row sets (each the rows and a condition on ``r``, read in its own range: :func:`browse_scopes`): a browse's children."""
     o = order(field_, sort_dir, direction)
-    base = [f"r.app_sk = $2 AND {LIVE}"] if scopes is None else scopes
-    reads = [f"(SELECT {COLS} FROM kg.records r WHERE r.org_id = $1 AND {sc}{where}{f' AND ({b})' if b else ''} ORDER BY {o} LIMIT $3)" for sc in base for b in (branches or [None])]
+    base = [(ROWS, f"r.app_sk = $2 AND {LIVE}")] if scopes is None else scopes
+    reads = [f"(SELECT {COLS} FROM {rows} WHERE r.org_id = $1 AND {sc}{where}{f' AND ({b})' if b else ''} ORDER BY {o} LIMIT $3)" for rows, sc in base for b in (branches or [None])]
     if len(reads) == 1 and admit is None:
         return "/* pipeshub:kg.listing_page */ " + reads[0][1:-1]
     inner = reads[0] if len(reads) == 1 else f"SELECT * FROM ({' UNION ALL '.join(reads)}) r ORDER BY {o} LIMIT $3"
@@ -240,18 +245,21 @@ LINKED_CHILDREN = ("/* pipeshub:kg.browse_linked */ SELECT c.sk AS child_sk FROM
                    + _linked("$2", "SELECT c.sk FROM kg.records c", "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($4::bigint[])", _limit("$3")) + " c")
 
 
-def browse_scopes(links: str | None) -> list[str]:
-    """The children of the start ``$2`` as ranges of the children indexes: by the primary parent, and, when it has linked children (``links``: the parameter that carries their
-    keys), those by their keys (never the primary parent again, so no child is read twice)."""
-    scopes = [f"r.parent_sk = $2 AND {BROWSE_LIVE}"]
+def browse_scopes(links: str | None) -> list[tuple[str, str]]:
+    """The children of the start ``$2`` as (rows, condition on ``r``) pairs: by the primary parent, a range of the children indexes, and, when it has linked children (``links``: the
+    parameter that carries their keys, distinct: the key of kg.links), those by their keys (never the primary parent again, so no child is read twice). Each linked key is read
+    by its primary key in a subquery of its own (a LIMIT keeps the planner from flattening it into a join): as ``r.sk = ANY(links)`` the planner could read the org's whole range
+    of another index instead, when its estimate of the probes came out higher."""
+    scopes = [(ROWS, f"r.parent_sk = $2 AND {BROWSE_LIVE}")]
     if links:
-        scopes.append(f"r.sk = ANY({links}::bigint[]) AND r.parent_sk IS DISTINCT FROM $2 AND {BROWSE_LIVE}")
+        scopes.append((f"unnest({links}::bigint[]) AS q(sk) CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk = q.sk LIMIT 1) r",
+                       f"r.parent_sk IS DISTINCT FROM $2 AND {BROWSE_LIVE}"))
     return scopes
 
 
 def _children(cols: str, where: str, links: str | None, tail: str | None = None) -> str:
     tail = _limit("$3") if tail is None else tail
-    return " UNION ALL ".join(f"(SELECT {cols} FROM kg.records r WHERE r.org_id = $1 AND {sc}{where}{tail})" for sc in browse_scopes(links))
+    return " UNION ALL ".join(f"(SELECT {cols} FROM {rows} WHERE r.org_id = $1 AND {sc}{where}{tail})" for rows, sc in browse_scopes(links))
 
 
 def children_sql(where: str, links: str | None) -> str:

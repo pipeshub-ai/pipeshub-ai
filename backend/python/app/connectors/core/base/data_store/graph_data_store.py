@@ -422,6 +422,13 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
+    async def name_default_knowledge_base(self, user_key: str, kb_key: str, expected: str | None) -> bool:
+        """Name ``kb_key`` the user's default knowledge base, only while the name is still ``expected`` (None: none)."""
+        return await self.graph_provider.update_node_fields_if_match(
+            user_key, CollectionNames.USERS.value, {"defaultKnowledgeBaseId": kb_key},
+            {"defaultKnowledgeBaseId": expected}, transaction=self.txn,
+        )
+
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
@@ -2019,6 +2026,8 @@ _HARMLESS_WRITERS = frozenset({
     "delete_record_entity_relations",
     # the same, replaced together with the links that follow
     "replace_record_entity_relations",
+    # which knowledge base a user calls their default: a field of the user node, never an edge or an access rule
+    "name_default_knowledge_base",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 

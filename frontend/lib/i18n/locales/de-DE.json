@@ -709,7 +709,8 @@
       "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     },
-    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal."
+    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal.",
+    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -5344,6 +5345,7 @@
     "mcpServerNeedsToolsTooltip": "Wählen Sie Tools für jeden MCP-Server aus oder aktivieren Sie „Alle Tools“.",
     "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
+    "serviceAgentCollectionsNeedBinding": "Sammlungen können hinzugefügt werden, sobald dieser Service-Agent an ein Dienstkonto gebunden ist.",
     "mcpAgentApprovalsEnterprise": "Tool-Freigaben pro Agent sind Teil der Enterprise Edition. Hier gelten die eigenen Tool-Freigaben jeder Person.",
     "mcpAgentApprovals": "Tool-Freigaben pro Agent",
     "limitSource": "Auswählen, was {{name}} durchsucht",
