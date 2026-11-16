@@ -660,3 +660,64 @@ async def test_two_processes_saving_one_bucket_keep_both_addresses(world) -> Non
     await asyncio.gather(accounts.before_link([_user(first, "acc-1")]), second_replica())
 
     assert _saved(config)["linked"] == {first: "acc-1", second: "acc-2"}
+
+
+async def _withdraw_noted(directory: _Directory, accounts: SourceAccounts, sid: str) -> None:
+    """``withdraw_app_user_access``: the account each withdrawn link names is noted first, then the link goes."""
+    gone = [link for link in await directory.processor.get_app_user_links(CONNECTOR) if link.source_user_id == sid]
+    await accounts.note_withdrawn(gone)
+    _withdraw(directory, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawal_before_any_listing_still_notes_the_account(world) -> None:
+    """A run that withdraws before it lists anyone (an incremental user_delete, a listing with no active member):
+    the account is noted at withdrawal, so a new account on the address later is still a change of hands."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "old-oid")])         # linked by an earlier version, nothing noted yet
+    await _withdraw_noted(directory, accounts, "old-oid")
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
+
+
+@pytest.mark.asyncio
+async def test_an_address_with_unreconciled_deleted_evidence_takes_only_its_linked_account(world) -> None:
+    """Deleted accounts were read, but no listing has shown ana@ yet: a grant naming no account (a SharePoint
+    principal) or the deleted account waits; one naming the account ana@ is linked to goes through."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ not in this listing
+
+    worker = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another process
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", None) and not worker.may_grant("ana@x.com", "old-oid")
+    assert worker.may_grant("ana@x.com", "new-oid") and worker.may_grant("bo@x.com", None)
+
+
+@pytest.mark.asyncio
+async def test_recheck_does_not_refuse_a_site_principal_id_at_an_address_nobody_else_held(world) -> None:
+    """A SharePoint principal's grant carries its site user id, not the Entra object id: recheck refuses it only where
+    the address passed to another account, not because the ids differ in kind."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid"), _user("bo@x.com", "old-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid"), _user("bo@x.com", "new-oid")])
+    site = [Permission(external_id="17", email="ana@x.com", type=PermissionType.READ, entity_type=EntityType.USER),
+            Permission(external_id="18", email="bo@x.com", type=PermissionType.READ, entity_type=EntityType.USER)]
+    assert [p.external_id for p in await accounts.recheck(site)] == ["17"]
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_whose_link_failed_is_reconciled_when_the_first_account_is_listed_again(world) -> None:
+    """B was compared in (ana@ saved as re-used, held by B) but its link write failed; A is listed again: the saved
+    holder follows the account listed now."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "a-oid")])
+    assert await accounts.before_link([_user("ana@x.com", "b-oid")])      # the link write then fails
+    await _admit(directory, accounts, [_user("ana@x.com", "a-oid")])
+    await accounts.ensure_loaded()
+    assert accounts.may_grant("ana@x.com", "a-oid") and not accounts.may_grant("ana@x.com", "b-oid")

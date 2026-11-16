@@ -5573,6 +5573,8 @@ class DataSourceEntitiesProcessor:
     async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
         the user's node). Without it no grant of the connector reaches the user."""
+        if users and getattr(users[0], "app_name", None) not in NOT_SOURCE_ACCOUNTS:
+            await self.source_accounts(connector_id).note_withdrawn(users)
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 await tx_store.delete_edge(

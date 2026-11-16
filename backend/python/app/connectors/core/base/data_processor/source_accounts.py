@@ -50,7 +50,7 @@ NOT_SOURCE_ACCOUNTS = frozenset({
 BUCKETS = 256     # the state is split by address so no one config value grows with the directory
 # How long a loaded state is trusted before a grant decision checks it again: another instance of the connector may
 # have admitted a new account for an address since (a reindex worker beside a sync).
-STATE_MAX_AGE_SECONDS = 5.0
+STATE_MAX_AGE_SECONDS = 1.0
 
 
 def source_accounts_key(connector_id: str, bucket: int | None = None) -> str:
@@ -123,6 +123,7 @@ class SourceAccounts:
         self._reused: dict[int, dict[str, str]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
         self._stored: dict[int, dict | None] = {}     # each bucket's value as read, for the compare-and-set
+        self._deleted: dict[int, dict[str, str]] = {}  # deleted-account evidence no listing has reconciled yet
         # One read-update-save at a time per connector in this process (a connector may list users in parallel tasks);
         # across processes each bucket is saved by compare-and-set and the run starts over on a conflict.
         self._lock = asyncio.Lock()
@@ -163,7 +164,7 @@ class SourceAccounts:
             stored = _mapping(raw or {}, self.connector_id)
             self._stored[bucket] = raw or None
             self._linked[bucket], self._reused[bucket] = _lower(stored.get("linked")), _lower(stored.get("reused"))
-            deleted[bucket] = _lower(stored.get("deleted"))
+            deleted[bucket] = self._deleted[bucket] = _lower(stored.get("deleted"))
             self._read.add(bucket)
         await asyncio.gather(*(one(b) for b in set(buckets)))
         return deleted
@@ -205,7 +206,11 @@ class SourceAccounts:
         async with self._lock:
             self._take_marker(await self._get(source_accounts_key(self.connector_id)))
             await self._load({_bucket(p.email.lower()) for p in users})
-        refused = {id(p) for p in users if not self.may_grant(p.email, p.external_id)}
+        # Not may_grant: a SharePoint principal's grant carries its site user id, which never equals the Entra object
+        # id the address is linked to. What matters here is an admission made meanwhile, which re-used addresses and
+        # deleted-account evidence record.
+        refused = {id(p) for p in users if not self.holds(p.email, p.external_id)
+                   or not self._evidence_allows(p.email.lower(), p.external_id)}
         return [p for p in permissions if id(p) not in refused]
 
     async def _save(self, buckets: Iterable[int], deleted: dict[int, dict[str, str]]) -> None:
@@ -227,6 +232,33 @@ class SourceAccounts:
         except Exception as e:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
+
+    async def note_withdrawn(self, users: list) -> None:
+        """Before ``users`` are withdrawn, note the account each one is linked to by its address, for a run that
+        withdraws without listing first (an incremental delete, a listing with nobody active): a new account taking
+        the address later is then still compared with it. A failed read or save raises, so nobody is withdrawn
+        unnoted."""
+        gone = {u.id: sid for u in users if u.id and (sid := _account_id(getattr(u, "source_user_id", None)))}
+        if not gone:
+            return
+        by_user = {link.id: getattr(link, "email", None) for link in await self.processor.get_app_user_links(self.connector_id)}
+        noted = {email.lower(): sid for u in users if (sid := gone.get(u.id))
+                 and (email := getattr(u, "email", None) or by_user.get(u.id))}
+        if not noted:
+            return
+        async with self._lock:
+            for _ in range(_SAVE_ATTEMPTS):
+                deleted = await self._load({_bucket(e) for e in noted})
+                changed = set()
+                for email, sid in noted.items():
+                    if self._linked.setdefault(_bucket(email), {}).setdefault(email, sid) == sid:
+                        changed.add(_bucket(email))
+                try:
+                    await self._save(changed, deleted)
+                    return
+                except _Conflict:
+                    continue
+            raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
 
     async def before_link(self, users: list["AppUser"]) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
@@ -331,6 +363,8 @@ class SourceAccounts:
             return False
         if self._holder(email) is not None:
             return self.holds(email, object_id)
+        if not self._evidence_allows(email, object_id):
+            return False
         if object_id is None and self.deleted_pending:
             # shortcut: until the source's deleted accounts are read, any address may be one an earlier version moved
             # to a new account, so a grant naming no account (a SharePoint principal) waits; one naming its account
@@ -346,6 +380,14 @@ class SourceAccounts:
         address. Only a re-used address is checked; there the grant must name the current account by id."""
         holder = self._holder(email.lower())
         return holder is None or (source_id is not None and source_id == holder)
+
+    def _evidence_allows(self, email: str, source_id: str | None) -> bool:
+        """An address a deleted account still holds in the source's deleted accounts, and that no listing has shown
+        since, takes only a grant naming the account it is linked to: not the deleted one, not one naming nobody."""
+        if email not in self._deleted.get(_bucket(email), {}) or email in self._reused.get(_bucket(email), {}):
+            return True
+        linked = self._linked.get(_bucket(email), {}).get(email)
+        return source_id is not None and source_id == linked
 
     def _holder(self, email: str) -> str | None:
         part = self._reused.get(_bucket(email), {})
