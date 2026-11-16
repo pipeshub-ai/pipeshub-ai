@@ -62,15 +62,17 @@ def _consumer(heavy_parse: int = 2) -> IndexingRedisStreamsConsumer:
     return consumer
 
 
-def _fields(record_id: str) -> dict[str, str]:
+def _fields(record_id: str, extension: str = "pdf") -> dict[str, str]:
     # No size in the event: the dispatch prior is small.
-    payload = {"recordId": record_id, "extension": "pdf", "mimeType": "application/pdf", "orgId": "o1"}
+    mime = "application/pdf" if extension == "pdf" else ""
+    payload = {"recordId": record_id, "extension": extension, "mimeType": mime, "orgId": "o1"}
     return {"value": json.dumps({"eventType": "newRecord", "payload": payload})}
 
 
 class _Fleet:
-    def __init__(self, pages: int | None) -> None:
+    def __init__(self, pages: int | None, cells: int | None = None) -> None:
         self.pages = pages
+        self.cells = cells
         self.seen: list[tuple[int, int, int]] = []  # (small, large, huge) running at the index gate while parsing
         self.release = asyncio.Event()
         self.gate: object = None
@@ -80,6 +82,8 @@ class _Fleet:
         yield PipelineEvent(event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id=rid))
         yield PipelineEvent(event=IndexingEvent.START_INSPECT, data=PipelineEventData(record_id=rid, size_bytes=80 * MIB))
         extra = {} if self.pages is None else {"pages": self.pages, "scanned": False}
+        if self.cells is not None:
+            extra = {"cells": self.cells}
         yield PipelineEvent(
             event=IndexingEvent.START_PARSING,
             data=PipelineEventData(record_id=rid, tier=ParseTier.HEAVY, size_bytes=80 * MIB, **extra),
@@ -92,10 +96,10 @@ class _Fleet:
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=rid))
 
 
-async def _run_one(consumer: IndexingRedisStreamsConsumer, fleet: _Fleet) -> bool:
+async def _run_one(consumer: IndexingRedisStreamsConsumer, fleet: _Fleet, extension: str = "pdf") -> bool:
     consumer.message_handler = fleet.handler
     fleet.gate = lambda: wiring.index_gate(consumer.governor)
-    task = asyncio.create_task(consumer._process_message_wrapper("t", "1-0", _fields("r1")))
+    task = asyncio.create_task(consumer._process_message_wrapper("t", "1-0", _fields("r1", extension)))
     await asyncio.sleep(0.4)
     fleet.release.set()
     return await task
@@ -131,3 +135,33 @@ async def test_a_big_record_that_waits_out_its_turn_is_requeued_with_its_first_a
     assert second is False
     (call,) = [c for c in consumer._requeue_message.await_args_list if c.args[2:3] != ()][-1:]
     assert call.kwargs["parse_enqueued_at_ms"] > 0
+
+
+async def test_an_xlsx_cell_area_moves_a_sizeless_workbook_out_of_small_in_place() -> None:
+    """The START_PARSING of a workbook carries the cell area; the consumer folds it into the class context."""
+    consumer = _consumer()
+    fleet = _Fleet(pages=None, cells=26 * 400_000)  # 10.4 million cells in an 80 MiB workbook
+    assert await _run_one(consumer, fleet, "xlsx") is True
+    assert fleet.seen == [(0, 1, 0)]
+    consumer._requeue_message.assert_not_awaited()
+
+
+async def test_an_xlsx_without_a_cell_area_stays_on_its_prior() -> None:
+    consumer = _consumer()
+    fleet = _Fleet(pages=None)
+    assert await _run_one(consumer, fleet, "xlsx") is True
+    assert fleet.seen == [(1, 0, 0)]
+
+
+@pytest.mark.parametrize("module", [
+    "app.services.messaging.redis_streams.indexing_consumer",
+    "app.services.messaging.kafka.consumer.indexing_consumer",
+])
+def test_both_consumers_fold_every_inspected_fact_into_the_class_context(module: str) -> None:
+    """The Kafka consumer's loop is too heavy to drive here; this pins that it passes pages, the scan flag and the
+    cell area on, exactly as the Redis consumer does (the behavioural tests above)."""
+    import importlib
+    import inspect
+
+    source = inspect.getsource(importlib.import_module(module))
+    assert "class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)" in source

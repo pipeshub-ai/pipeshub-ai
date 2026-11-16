@@ -857,7 +857,21 @@ def _pdf_bytes(pages: int) -> bytes:
     return out.getvalue()
 
 
-async def _first_events(monkeypatch: pytest.MonkeyPatch, admission: str, count: int) -> list[Any]:
+def _xlsx_bytes(dimension: str) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        zf.writestr("xl/worksheets/sheet1.xml", f'<worksheet><dimension ref="{dimension}"/><sheetData/></worksheet>')
+    return buf.getvalue()
+
+
+async def _first_events(
+    monkeypatch: pytest.MonkeyPatch, admission: str, count: int, *, extension: str = "pdf", mime: str = "application/pdf",
+    buffer: bytes | None = None,
+) -> list[Any]:
     monkeypatch.setenv("USE_PARSING_SERVICE", "true")
     monkeypatch.setenv("PARSE_ADMISSION", admission)
     monkeypatch.delenv("PARSE_LANES", raising=False)
@@ -867,9 +881,9 @@ async def _first_events(monkeypatch: pytest.MonkeyPatch, admission: str, count: 
         sink_orchestrator=MagicMock(index=AsyncMock()),
     )
     event_data = _make_event_data()
-    event_data["payload"]["extension"] = "pdf"
-    event_data["payload"]["mimeType"] = "application/pdf"
-    event_data["payload"]["buffer"] = _pdf_bytes(9)
+    event_data["payload"]["extension"] = extension
+    event_data["payload"]["mimeType"] = mime
+    event_data["payload"]["buffer"] = _pdf_bytes(9) if buffer is None else buffer
     gen = ep.on_event(event_data)
     return [await gen.__anext__() for _ in range(count)]
 
@@ -888,3 +902,14 @@ async def test_a_pdf_is_not_inspected_without_classes(monkeypatch: pytest.Monkey
     (first,) = await _first_events(monkeypatch, "legacy", 1)
     assert first.event == IndexingEvent.START_PARSING
     assert (first.data.pages, first.data.scanned) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_workbook_is_inspected_and_its_cell_area_travels_with_start_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    inspect_event, parsing_event = await _first_events(
+        monkeypatch, "classes", 2, extension="xlsx", mime="", buffer=_xlsx_bytes("A1:Z400000")
+    )
+    assert inspect_event.event == IndexingEvent.START_INSPECT
+    assert parsing_event.event == IndexingEvent.START_PARSING
+    assert parsing_event.data.cells == 26 * 400_000
+    assert (parsing_event.data.pages, parsing_event.data.scanned) == (None, None)

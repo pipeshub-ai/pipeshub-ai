@@ -106,3 +106,14 @@ def test_with_classes_off_nothing_is_routed_by_class(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("PARSE_ADMISSION", raising=False)
     assert parse_pool.pool_stats() == {}
     assert wiring.classes_enabled() is False  # the legacy pool is built by `_pool` as before (test_parse_pool_off_pin)
+
+
+def test_a_job_waits_for_a_busy_width_slot_as_long_as_its_own_timeout(classes, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both slots are held by long parses; the third job's wait is its own timeout, not the 120 s a worker needs to start."""
+    monkeypatch.setattr(parse_pool, "WORKER_START_SECONDS", 0.2)
+    budget = parse_pool_classes.get_pool(pools.Route.SMALL, classes).budget
+    assert budget.acquire(0.1, lambda: False) and budget.acquire(0.1, lambda: False)
+    threading.Timer(0.8, budget.release).start()  # a slot frees after the start window but inside the job's timeout
+    with pools.parse_scope(CostClass.SMALL):
+        assert parse_pool.run_blocking(time.sleep, 0.0, label="third", size=1, timeout=10) is None
+    budget.release()

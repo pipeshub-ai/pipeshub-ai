@@ -214,7 +214,7 @@ def test_policy_in_simulated_worlds(seed: int) -> None:
         assert not r.violations, f"seed={1000 + seed} world={i} {w}: {r.violations[:3]}"
 
 
-def _starved_world(*, keeps: bool, seed: int) -> World:
+def _starved_world(*, keeps: bool, seed: int, horizon: float = 60_000.0) -> World:
     # one token, small demand beyond what it serves, big hands back every 400 s while it waits
     return World(
         capacity=1,
@@ -225,7 +225,7 @@ def _starved_world(*, keeps: bool, seed: int) -> World:
         large_service=60.0,
         handback_after_s=400.0,
         handback_keeps_first_seen=keeps,
-        horizon=60_000.0,
+        horizon=horizon,
         seed=seed,
     )
 
@@ -240,9 +240,12 @@ def test_aging_bounds_the_big_head(seed: int) -> None:
 
 
 def test_aging_negative_control_hand_backs_reset_first_seen() -> None:
-    # a hand-back that restarts the clock never lets the head age: the bound is blown
-    worst = max(simulate(_starved_world(keeps=False, seed=s)).max_big_head_wait for s in range(4))
-    w = _starved_world(keeps=True, seed=0)
+    # A hand-back that restarts the clock never lets the head age: the bound is blown. The simulation runs on its own
+    # clock, so this is deterministic; one world over a horizon long enough for four hand-backs shows it, which keeps
+    # the test cheap (the full-horizon runs are the bounded-head cases above).
+    horizon = 10_000.0
+    worst = simulate(_starved_world(keeps=False, seed=0, horizon=horizon)).max_big_head_wait
+    w = _starved_world(keeps=True, seed=0, horizon=horizon)
     assert worst > w.numbers.aging_s + 2 * simulate(w).max_service
 
 

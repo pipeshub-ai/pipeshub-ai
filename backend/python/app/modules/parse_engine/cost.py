@@ -213,6 +213,21 @@ def _classify(est: float, size: int, *, hinted: bool, inspected: bool, cfg: Cost
     return CostClass.SMALL, min(est, cfg.small_max_s)
 
 
+_RANK = {CostClass.SMALL: 0, CostClass.LARGE: 1, CostClass.HUGE: 2}
+
+
+def _never_below_the_size_prior(
+    cls: CostClass, est: float, prior_est: float, size: int, *, hinted: bool, cfg: CostConfig
+) -> tuple[CostClass, float]:
+    """Metadata a document writes about itself (docx Pages, pptx Slides, an xlsx dimension) is stale or missing in
+    files made by common writers, so it may raise a class but never lower it below what the size alone says. Only
+    measured facts (a PDF's page count and text layer) may lower one."""
+    prior_cls, prior_est = _classify(prior_est, size, hinted=hinted, inspected=False, cfg=cfg)
+    if _RANK[prior_cls] > _RANK[cls]:
+        return prior_cls, max(est, prior_est)
+    return cls, est
+
+
 def _pdf(inp: CostInputs, cfg: CostConfig, size: int, tag: str, *, hinted: bool) -> CostEstimate:
     inspected = inp.pages is not None and not hinted
     pages_known = inp.pages is not None
@@ -256,12 +271,12 @@ def _pdf(inp: CostInputs, cfg: CostConfig, size: int, tag: str, *, hinted: bool)
 
 def _office(inp: CostInputs, cfg: CostConfig, size: int, tag: str, *, hinted: bool) -> CostEstimate:
     inspected = inp.pages is not None and not hinted
-    if inp.pages is not None:
-        units = max(1, int(inp.pages))
-    else:
-        units = max(1, math.ceil(size / cfg.office_bytes_per_unit)) if size else 1
+    size_units = max(1, math.ceil(size / cfg.office_bytes_per_unit)) if size else 1
+    units = max(1, int(inp.pages)) if inp.pages is not None else size_units
     est = units * cfg.office_s_per_unit
     cls, est = _classify(est, size, hinted=hinted, inspected=inspected, cfg=cfg)
+    if inspected:
+        cls, est = _never_below_the_size_prior(cls, est, size_units * cfg.office_s_per_unit, size, hinted=hinted, cfg=cfg)
     # An office document cannot be split: over the unit budget it stays one unbounded in-process job.
     bounded = est <= cfg.unit_budget_s
     if cls is CostClass.HUGE:
@@ -281,13 +296,14 @@ def _office(inp: CostInputs, cfg: CostConfig, size: int, tag: str, *, hinted: bo
 
 def _xlsx(inp: CostInputs, cfg: CostConfig, size: int, tag: str, *, hinted: bool) -> CostEstimate:
     inspected = inp.cells is not None and not hinted
-    if inp.cells is not None:
-        cells = max(0, int(inp.cells))
-    else:
-        cells = size // cfg.xlsx_bytes_per_cell if size else 0
+    size_cells = size // cfg.xlsx_bytes_per_cell if size else 0
+    cells = max(0, int(inp.cells)) if inp.cells is not None else size_cells
     # The load is cut off at its own limit, so a workbook is never more than large.
     est = min(cfg.excel_load_max_s, cells / 1e6 * cfg.excel_s_per_million_cells)
     cls, est = _classify(est, size, hinted=hinted, inspected=inspected, cfg=cfg)
+    if inspected:
+        prior_est = min(cfg.excel_load_max_s, size_cells / 1e6 * cfg.excel_s_per_million_cells)
+        cls, est = _never_below_the_size_prior(cls, est, prior_est, size, hinted=hinted, cfg=cfg)
     if cls is CostClass.HUGE:
         cls = CostClass.LARGE
     return CostEstimate(

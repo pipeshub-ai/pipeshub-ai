@@ -51,7 +51,9 @@ class _BudgetedLane(base._Lane):
     def _start_worker(self, job: base._Job) -> base._Worker:
         budget = self._budget
         if budget is not None:
-            end = time.monotonic() + base.WORKER_START_SECONDS
+            # The slot is busy while another worker parses, which can take as long as a job may: the wait is bounded by
+            # this job's own timeout, not by the time a worker needs to start.
+            end = time.monotonic() + (job.timeout if job.timeout is not None else base.messaging_env.record_processing_timeout)
             while not budget.acquire(0.05, lambda: self._abandoned(job)):
                 if self._abandoned(job):
                     raise base.ParseAbandonedError("parse abandoned while it waited for a worker slot")

@@ -12,6 +12,7 @@ import zipfile
 from dataclasses import dataclass
 
 _MAX_MEMBERS = 5000  # a package with more entries than this is not a document we inspect
+_MAX_DIRECTORY_BYTES = 1 << 20  # the central directory of 5000 ordinary entries is far smaller; the declared count is not trusted
 _HEAD = 8192  # bytes read from a member: the dimension element and the document properties sit at the start
 _MAX_SHEETS = 200
 _MAX_CELLS = 10**12
@@ -48,6 +49,8 @@ def _entry_count(content: bytes) -> int | None:
     at = tail.rfind(b"PK\x05\x06")
     if at < 0 or len(tail) - at < 22:
         return None
+    if int.from_bytes(tail[at + 12:at + 16], "little") > _MAX_DIRECTORY_BYTES:
+        return None  # a directory this large is refused whatever count it declares
     return int.from_bytes(tail[at + 10:at + 12], "little")
 
 
