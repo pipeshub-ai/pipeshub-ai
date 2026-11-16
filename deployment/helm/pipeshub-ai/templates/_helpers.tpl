@@ -568,3 +568,68 @@ ceiling when autoscaling is on.
 {{- end -}}
 {{- $replicas -}}
 {{- end -}}
+
+{{/*
+PostgreSQL (postgres.enabled): the document store of a new install. Nothing below renders by default.
+*/}}
+{{- define "pipeshub-ai.postgres.name" -}}
+{{- /* a Service name is a DNS label: at most 63 characters, so the base is cut to leave room for the suffix */ -}}
+{{- printf "%s-postgres" (include "pipeshub-ai.fullname" . | trunc 54 | trimSuffix "-") -}}
+{{- end }}
+
+{{/* The nine logins, in one place: the Secret, the server's environment and the validation all use this list. */}}
+{{- define "pipeshub-ai.postgres.logins" -}}
+admin node connectors indexing query kv jobs migrate backup
+{{- end }}
+
+{{/* The Secret holding the passwords and the connection URLs: the chart's own, or the operator's. */}}
+{{- define "pipeshub-ai.postgres.secretName" -}}
+{{- default (include "pipeshub-ai.postgres.name" .) .Values.postgres.auth.existingSecret -}}
+{{- end }}
+
+{{- define "pipeshub-ai.postgres.image" -}}
+{{- $registry := .Values.global.imageRegistry | default "" -}}
+{{- $repo := .Values.postgres.image.repository -}}
+{{- $tag := .Values.postgres.image.tag | default (printf "%v-1" .Values.postgres.major) | toString -}}
+{{- if $registry }}{{ printf "%s/%s:%s" $registry $repo $tag }}{{ else }}{{ printf "%s:%s" $repo $tag }}{{ end -}}
+{{- end }}
+
+{{- define "pipeshub-ai.postgres.migrateImage" -}}
+{{- $registry := .Values.global.imageRegistry | default "" -}}
+{{- $repo := .Values.postgres.migrateImage.repository -}}
+{{- $tag := .Values.postgres.migrateImage.tag | default .Values.image.tag | toString -}}
+{{- if $registry }}{{ printf "%s/%s:%s" $registry $repo $tag }}{{ else }}{{ printf "%s:%s" $repo $tag }}{{ end -}}
+{{- end }}
+
+{{/* One Secret key as an environment variable: include "pipeshub-ai.postgres.secretEnv" (dict "name" "PG_NODE_URL" "key" "node-url" "ctx" $) */}}
+{{- define "pipeshub-ai.postgres.secretEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "pipeshub-ai.postgres.secretName" .ctx }}
+      key: {{ .key }}
+{{- end }}
+
+{{/* Refuse what cannot work, with the message a user needs. */}}
+{{- define "pipeshub-ai.validatePostgres" -}}
+{{- if .Values.postgres.enabled -}}
+  {{- if not (has (.Values.postgres.major | int) (list 17 18)) -}}
+    {{- fail "postgres.major must be 17 or 18." -}}
+  {{- end -}}
+  {{- if not .Values.postgres.auth.existingSecret -}}
+    {{- if .Values.secretManagement.externalSecrets.enabled -}}
+      {{- fail "postgres.auth.existingSecret is required with secretManagement.externalSecrets.enabled: sync a Secret with the keys listed under postgres.auth in values.yaml." -}}
+    {{- end -}}
+    {{- /* All nine, whether or not the key survived an override (a null deletes it): none may be empty or unsafe for a URL. */ -}}
+    {{- range $name := splitList " " (include "pipeshub-ai.postgres.logins" .) -}}
+      {{- $pw := index $.Values.postgres.auth.passwords $name -}}
+      {{- if not $pw -}}
+        {{- fail (printf "postgres.auth.passwords.%s is required (or set postgres.auth.existingSecret). Set it with --set postgres.auth.passwords.%s=<password>; there is no default." $name $name) -}}
+      {{- end -}}
+      {{- if not (regexMatch "^[A-Za-z0-9._~-]+$" ($pw | toString)) -}}
+        {{- fail (printf "postgres.auth.passwords.%s may use only A-Z a-z 0-9 . _ ~ - (it goes into a connection URL)." $name) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}

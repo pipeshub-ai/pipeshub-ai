@@ -1,0 +1,241 @@
+{{- if .Values.postgres.enabled }}
+{{- include "pipeshub-ai.validatePostgres" . }}
+{{- $name := include "pipeshub-ai.postgres.name" . }}
+{{- $class := .Values.postgres.persistence.storageClass | default .Values.global.storageClass }}
+{{- $secret := include "pipeshub-ai.postgres.secretName" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+# The server needs no Kubernetes API access: no token is mounted, and no Role is bound.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      {{- if not .Values.postgres.auth.existingSecret }}
+      annotations:
+        checksum/postgres-secret: {{ include (print $.Template.BasePath "/postgres-secret.yaml") . | sha256sum }}
+      {{- end }}
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      # The pooler's config (baked into the image) names its server `postgres`: in this pod that is the container beside it.
+      hostAliases:
+        - ip: 127.0.0.1
+          hostnames:
+            - postgres
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.postgres.nodeSelector }}
+      {{- $selector := include "pipeshub-ai.compactMap" . }}
+      {{- if $selector }}
+      nodeSelector:
+        {{- $selector | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- with .Values.postgres.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Keeps the stop clean: PostgreSQL writes a shutdown checkpoint on SIGTERM.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: postgres
+          image: {{ include "pipeshub-ai.postgres.image" . | quote }}
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: pipeshub
+            # One level below the mount: a volume's root holds lost+found, which initdb refuses.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: PG_SHARED_BUFFERS
+              value: {{ .Values.postgres.sharedBuffers | quote }}
+            - name: PG_MAX_CONNECTIONS
+              value: {{ .Values.postgres.maxConnections | quote }}
+            {{- include "pipeshub-ai.postgres.secretEnv" (dict "name" "POSTGRES_PASSWORD" "key" "admin-password" "ctx" .) | nindent 12 }}
+            {{- range $key := splitList " " (include "pipeshub-ai.postgres.logins" . | replace "admin " "") }}
+            {{- include "pipeshub-ai.postgres.secretEnv" (dict "name" (printf "PG_%s_PASSWORD" ($key | upper)) "key" (printf "%s-password" $key) "ctx" $) | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: pgbouncer-auth
+              mountPath: /pgbouncer-auth
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Ready means answering AND role setup done: the verifier file is written last, only when it succeeded (and removed at start).
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U postgres -d pipeshub && test -s /pgbouncer-auth/userlist.txt"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # initdb on slow storage or crash recovery of a large database can take many minutes: the server is not judged until it answers once.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "pipeshub"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 90
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "pipeshub"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+        # The pooler of the same image: transaction pooling with a session reset between clients (see deployment/docker-compose/postgres).
+        # It reads the SCRAM verifiers the server writes to the shared volume, and is ready once they exist.
+        - name: pgbouncer
+          image: {{ include "pipeshub-ai.postgres.image" . | quote }}
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          command: ["sh", "-c", "until [ -s /pgbouncer-auth/userlist.txt ]; do sleep 1; done; exec pgbouncer /etc/pgbouncer/pgbouncer.ini"]
+          ports:
+            - name: pgbouncer
+              containerPort: 6432
+          volumeMounts:
+            - name: pgbouncer-auth
+              mountPath: /pgbouncer-auth
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "test -s /pgbouncer-auth/userlist.txt && pg_isready -h 127.0.0.1 -p 6432"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # It does not listen until the server has finished role setup (first initialisation or recovery can take minutes), so liveness
+          # waits for it to answer once, with the same budget as the server's.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "6432"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 90
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "6432"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.postgres.pgbouncer.resources | nindent 12 }}
+      volumes:
+        - name: pgbouncer-auth
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: run
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size | quote }}
+        {{- if $class }}
+        storageClassName: {{ $class | quote }}
+        {{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Only the application's pods (the main component) reach the server and the pooler.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "pipeshub-ai.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: main
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6432
+{{- end }}
+{{- end }}
