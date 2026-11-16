@@ -666,6 +666,73 @@ async def test_losing_access_to_a_file_removes_only_that_users_access(ws: Worksp
     assert ALICE in ws.records.perm_emails("shared")
 
 
+CAROL = "carol@example.com"
+GONE_OWNER = "gone@example.com"
+
+
+def _folder_of_a_suspended_owner(ws: Workspace, *, doc_perms: Optional[list[dict[str, Any]]] = None) -> None:
+    """A suspended person's folder shared with Carol (writer) and Bob (reader), with a doc inside that only inherits.
+    Only an owner or writer may read an item's sharing, so once Carol loses the folder nobody synced can read the
+    doc's list again."""
+    ws.world.add_user(GONE_OWNER, suspended=True)
+    ws.world.add_user(CAROL)
+    ws.records.active_users.append(User(id="u-carol", email=CAROL, is_active=True))
+    ws.world.folder("dir", "Team", parent=ws.world.users[GONE_OWNER].root_id, owner=GONE_OWNER, perms=[
+        {"type": "user", "role": "writer", "emailAddress": CAROL}, reader(BOB),
+    ])
+    ws.world.add_item("doc", "plan.txt", parent="dir", owner=GONE_OWNER, perms=doc_perms)
+    for file_id in ("dir", "doc"):
+        ws.world.files[file_id].perm_access = "sharers"
+
+
+async def test_unsharing_a_folder_whose_items_nobody_can_reread_removes_the_access_on_the_next_sync(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner(ws)
+    await ws.sync()
+    assert {CAROL, BOB} <= ws.records.perm_emails("doc"), "Carol's read of the doc's list stored its folder's grants"
+
+    ws.world.unshare("dir", CAROL)
+    # Only Carol's feed is read, so it is her `removed` folder that must reach the doc.
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != CAROL)
+    await ws.sync()
+
+    assert CAROL not in ws.records.perm_emails("dir")
+    assert CAROL not in ws.records.perm_emails("doc"), "Drive reports only the folder in her feed; the doc goes too"
+    assert BOB in ws.records.perm_emails("doc")
+
+
+async def test_a_full_read_removes_a_grant_nobody_can_read_the_sharing_of_any_more(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner(ws)
+    await ws.sync()
+    assert CAROL in ws.records.perm_emails("doc")
+
+    ws.world.unshare("dir", CAROL)
+    ws.sync_points.sync_points.clear()
+    await ws.sync()
+
+    assert CAROL not in ws.records.perm_emails("doc"), "Bob can only show he opens it; Carol is asked and cannot"
+    assert BOB in ws.records.perm_emails("doc")
+
+
+async def test_a_full_read_keeps_the_grant_of_a_person_who_can_still_open_the_item(ws: Workspace) -> None:
+    _folder_of_a_suspended_owner(ws, doc_perms=[reader(CAROL)])
+    await ws.sync()
+
+    ws.world.unshare("dir", CAROL)
+    ws.sync_points.sync_points.clear()
+    await ws.sync()
+
+    assert {CAROL, BOB} <= ws.records.perm_emails("doc"), "Carol's own share on the doc still opens it"
+
+
+async def test_an_item_its_synced_owner_rereads_asks_no_one_whether_they_can_open_it(ws: Workspace) -> None:
+    ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.files["shared"].perm_access = "sharers"
+    await ws.sync()
+
+    assert not [r for r in ws.http.calls("GET", "/drive/v3/files/shared") if r.query.get("fields") == "id, trashed"]
+    assert BOB in ws.records.perm_emails("shared")
+
+
 async def test_a_file_deleted_from_my_drive_is_deleted_for_everyone(ws: Workspace) -> None:
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
     ws.world.add_item("kept", "notes.txt", parent="root-alice", owner=ALICE)

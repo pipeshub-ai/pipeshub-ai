@@ -15,7 +15,8 @@ masks are honoured, so a connector only gets the fields it asked for.
 
 Knobs a test can turn: ``page_size`` (small by default, so every listing pages),
 ``empty_page_at`` (Drive may return an empty page that still has a next token),
-per-file ``perm_access`` ("all", "empty" or "forbidden") for permissions.list, and
+per-file ``perm_access`` ("all", "empty", "forbidden", or "sharers": the list for an owner or writer, 403 for
+anyone else) for permissions.list, and
 the HTTP layer's ``fail(...)`` for quota errors and outages.
 """
 
@@ -623,7 +624,10 @@ class DriveWorld:
             return google_error(404, "notFound")
         state = self.files[resource_id]
         role = self.direct_role(resource_id, email) or self.member_role(resource_id, email)
-        access = state.perm_access or ("all" if role in ("owner", "organizer", "fileOrganizer", "writer") else ("empty" if state.meta.get("driveId") else "all"))
+        sharer = role in ("owner", "organizer", "fileOrganizer", "writer")
+        access = state.perm_access or ("all" if sharer else ("empty" if state.meta.get("driveId") else "all"))
+        if access == "sharers":
+            access = "all" if sharer else "forbidden"
         if access == "forbidden":
             return google_error(403, "insufficientFilePermissions", "The user does not have sufficient permissions for this file.")
         if access == "empty":
