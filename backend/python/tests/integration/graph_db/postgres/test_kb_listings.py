@@ -16,8 +16,8 @@ from app.core import org_context
 from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from tests.support import plan_gate
 
-from . import plan_gate
 from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
 from .test_kb import FOLDER, folder, grant, kb, other_org, team, users

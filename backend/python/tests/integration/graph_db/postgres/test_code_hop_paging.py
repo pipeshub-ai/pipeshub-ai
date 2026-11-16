@@ -13,8 +13,8 @@ import pytest
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres import codegraph as cg
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
-from . import plan_gate
 from .pg_support import new_org
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]

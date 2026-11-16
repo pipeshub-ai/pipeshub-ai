@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from app.core.db import uow
+from tests.support import plan_gate
 
-from . import plan_gate
 from .test_access import w as w
 
 if TYPE_CHECKING:

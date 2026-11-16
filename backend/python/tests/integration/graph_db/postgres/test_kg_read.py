@@ -28,8 +28,8 @@ from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.runner import ConformanceRunner, targets
 from tests.permissions.scenario import load_all
+from tests.support import plan_gate
 
-from . import plan_gate
 from .test_conformance import CHUNK, PgLayer, _describe
 
 if TYPE_CHECKING:

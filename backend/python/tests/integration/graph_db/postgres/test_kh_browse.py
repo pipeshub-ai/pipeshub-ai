@@ -16,8 +16,8 @@ from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
+from tests.support import plan_gate
 
-from . import plan_gate
 from .pg_support import new_org
 from .test_kh_listing_flat import (
     _admin,

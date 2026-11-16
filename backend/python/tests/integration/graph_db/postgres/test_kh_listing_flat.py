@@ -19,8 +19,8 @@ from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
-from . import plan_gate
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
 from .test_kg_read import _admin, flip

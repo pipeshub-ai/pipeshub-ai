@@ -20,8 +20,8 @@ from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.scenario import load_all
+from tests.support import plan_gate
 
-from . import plan_gate
 from .pg_support import new_org
 from .test_conformance import CHUNK, PgLayer
 from .test_kg_derivation import ctx, edge
