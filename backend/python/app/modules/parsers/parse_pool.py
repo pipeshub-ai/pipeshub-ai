@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import logging
 import os
 import pickle
@@ -518,7 +519,7 @@ async def submit(
                 pass
         # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
         # ends, so the permit is released when the thread does, not when the caller goes away.
-        future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+        future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
         if held is not None:
             future.add_done_callback(lambda _f, p=held: p.release())
             release_here = False
