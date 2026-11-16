@@ -47,7 +47,6 @@ from app.modules.indexing.connector_off_events import (
     ConnectorState,
     RecordHeldForDelete,
     already_indexed,
-    clears_embeddings_first,
     connector_gated_event,
     connector_state,
     gating_connector_id,
@@ -2026,23 +2025,12 @@ class RecordEventHandler(BaseEventService):
                 # The sink remembers this delivery when it writes COMPLETED, as a call of its own.
                 replay_set.begin_delivery(self._replay_ref(payload))
 
-            # Reconciliation: only an event that goes on to run touches the vector store.
             vector_db_only = bool(payload.get("vectorDbOnly"))
-            if parse_now:
-                # Parsing to read, not to index: nothing is taken out of the vector store.
-                pass
-            elif clears_embeddings_first(event_type, payload):
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    [virtual_record_id], org_id=payload.get("orgId") or None
-                )
-            elif not vector_db_only and event_type in (
-                EventTypes.UPDATE_RECORD.value,
-                EventTypes.REINDEX_RECORD.value,
-            ):
-                self.logger.info(
-                    f"📊 Reconciliation-enabled type detected for record {record_id}, "
-                    f"skipping full embedding deletion"
-                )
+            # Nothing is taken out of the vector store ahead of the work. The record still holds its
+            # vrid, so a delete here only rewrote the points' membership and left what search serves as
+            # it was; the points a re-parse replaces go with the old vrid once the record has moved to
+            # its new one (the abandoned-vrid path in EventProcessor.on_event), and a failed run leaves
+            # the last good copy searchable.
 
             # Check if record is from a connector and if the connector is active.
             # UPDATE_RECORD is included: without it an update for a disabled

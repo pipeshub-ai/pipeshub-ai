@@ -155,6 +155,10 @@ class Coordinator:
             _ = await self._headlines.set_headline(view.record_ids, target.headline, ProgressStatus.QUEUED, rev=view.rev)
         return job.job_id
 
+    def stage_names(self) -> tuple[str, ...]:
+        """The runnable stages, in dependency order."""
+        return self._registry.names()
+
     async def has_seen_revision(self, virtual_record_id: str, rev: str) -> bool:
         """Whether an external prerequisite was recorded for this revision, i.e. the
         indexer's hand-off reached the runtime and its successors are the runtime's

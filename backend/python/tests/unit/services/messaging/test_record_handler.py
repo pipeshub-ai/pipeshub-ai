@@ -114,29 +114,35 @@ class TestProcessEventEdgeCases:
 
 
 @pytest.mark.asyncio
-async def test_a_retry_clears_the_vectors_of_the_vrid_on_the_record_not_the_one_in_the_message() -> None:
-    """The first attempt's vectors are under the VRID it saved on the record."""
+@pytest.mark.parametrize("event_type", [EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value])
+async def test_nonreconciled_update_does_not_rewrite_before_work(event_type: str) -> None:
+    """The record still holds its vrid, so taking its points out first only rewrote their membership. Nothing
+    leaves the vector store before the work: the old points go once the record has moved to its new vrid."""
     handler = _make_handler()
     handler.event_processor.graph_provider.get_document = AsyncMock(
         return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1")
     )
     pipeline = handler.event_processor.processor.indexing_pipeline
-    pipeline.bulk_delete_embeddings = AsyncMock(side_effect=RuntimeError("stop after the clear"))
+    pipeline.bulk_delete_embeddings = AsyncMock()
+    # A folder record is settled as soon as the handler is past the point where the vectors used to go.
+    handler.event_processor.graph_provider.get_document = AsyncMock(
+        return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1", isFile=False)
+    )
 
-    with pytest.raises(RuntimeError, match="stop after the clear"):
-        await _collect_events(
-            handler,
-            EventTypes.REINDEX_RECORD.value,
-            {
-                "recordId": "rec-1",
-                "orgId": "org-1",
-                "virtualRecordId": "vrid-in-the-message",
-                "mimeType": MimeTypes.XLSX.value,
-                "extension": "xlsx",
-            },
-        )
+    events = await _collect_events(
+        handler,
+        event_type,
+        {
+            "recordId": "rec-1",
+            "orgId": "org-1",
+            "virtualRecordId": "vrid-in-the-message",
+            "mimeType": MimeTypes.XLSX.value,
+            "extension": "xlsx",
+        },
+    )
 
-    pipeline.bulk_delete_embeddings.assert_awaited_once_with(["saved-by-attempt-1"], org_id="org-1")
+    assert [e.event for e in events] == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 # ===================================================================
@@ -512,8 +518,7 @@ class TestSyncVectorMembershipEvent:
         assert len(events) == 2
         processor.sync_vector_membership.assert_awaited_once_with("vr-1")
         pipeline.bulk_delete_embeddings.assert_not_awaited()
-        pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
-
+    
     @pytest.mark.asyncio
     async def test_sync_membership_skips_missing_vrid(self):
         handler = _make_handler()

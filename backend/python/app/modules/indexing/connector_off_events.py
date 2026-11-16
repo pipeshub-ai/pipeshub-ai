@@ -101,8 +101,10 @@ def connector_gated_event(event_type: str, payload: Mapping[str, Any]) -> bool:
 
 
 def clears_embeddings_first(event_type: str, payload: Mapping[str, Any]) -> bool:
-    """Whether the handler deletes the record's embeddings before anything
-    else: an update or reindex of a type that is not reconciled block by block."""
+    """Whether an update or reindex is of a type that is not reconciled block by block: its re-parse
+    replaces the whole record under a new vrid. The handler no longer takes the old points out first
+    (they go with the old vrid once the record has moved); the read-time filter still leaves these
+    events to the handler."""
     if payload.get("vectorDbOnly") or event_type not in (
         EventTypes.UPDATE_RECORD.value,
         EventTypes.REINDEX_RECORD.value,

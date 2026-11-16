@@ -582,3 +582,46 @@ async def test_a_forced_redrive_keeps_a_live_twins_reservation(fleet) -> None:
     assert await store.reserve(key, attempt=5, absolute=20, now_ms=now, stale_ms=10**9) == 20  # a run newer than the claim
     await store.reset(key, attempt=3)
     assert await store.reserve(key, attempt=6, absolute=20, now_ms=now, stale_ms=10**9) == 0
+
+
+# ---- redrive_unchanged: the same-bytes update's re-dispatch (unforced) -----------------------------------
+
+from app.modules.pipeline.ingress import StageIngress  # noqa: E402
+
+
+def _ingress_for(h: _Harness, store: PauseStore) -> StageIngress:
+    coordinator = Coordinator(
+        _classify_after_embed(), h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    return StageIngress(coordinator, graph=None, logger=logging.getLogger("test"))  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_keeps_the_pause_budget(fleet) -> None:
+    h = _Harness(_classify_after_embed())
+    store = PauseStore()
+    ingress = _ingress_for(h, store)
+    key = stage_state_key(VRID, REV, "classify")
+    spent = PauseState(since_ms=h.clock(), charged=6, sends=6)
+    await store.put(key, spent)
+    h.complete("embed")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(_view(), stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.PAUSED, h.clock(),
+        )
+    )
+
+    assert await ingress.redrive_unchanged(VRID, REV) == [f"{key}@1"]
+
+    assert await store.get(key) == spent
+    [(_topic, _event, payload, _key)] = h.producer.sent
+    job = StageJob.model_validate(payload)
+    assert job.force is False and job.priority is Priority.BULK
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_without_a_recorded_revision_is_none(fleet) -> None:
+    h = _Harness(_classify_after_embed())
+    assert await _ingress_for(h, PauseStore()).redrive_unchanged(VRID, REV) is None

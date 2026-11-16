@@ -61,6 +61,17 @@ class StageIngress:
             virtual_record_id, rev, stages, priority=Priority.INTERACTIVE, force=force
         )
 
+    async def redrive_unchanged(self, virtual_record_id: str, rev: str) -> list[str] | None:
+        """Re-dispatch every stage after embed for a revision whose content did not change.
+
+        Unforced and at bulk priority: a stage whose output is current finishes without work, one that
+        failed or paused runs again, and the claim keeps the stage's pause budget (only a forced claim
+        resets it). None when the runtime holds no state for the revision, which the caller treats as
+        "run the record in full"."""
+        return await self._coordinator.redrive_revision(
+            virtual_record_id, rev, self._coordinator.stage_names(), priority=Priority.BULK, force=False
+        )
+
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:
         """An indexed record still QUEUED for classification whose revision the runtime
         never recorded: the indexer stopped between the indexed write and the hand-off,
