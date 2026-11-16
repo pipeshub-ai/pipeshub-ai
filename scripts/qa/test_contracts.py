@@ -155,6 +155,13 @@ class TestStandInModel(unittest.TestCase):
         for key in ("TEST_AI_MODEL_PROVIDER", "TEST_STAND_IN_MODEL_ENDPOINT"):
             line = next(l for l in text.splitlines() if l.strip().startswith(key + ":"))
             self.assertIn("github.event_name == 'pull_request' || inputs.mode == 'pr'", line, key)
+            self.assertIn("secrets.TEST_AZURE_OPENAI_API_KEY == ''", line, key)
+
+    def test_the_unit_job_spreads_pytest_and_a_full_run_gets_more_time(self) -> None:
+        text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
+        job = text[text.index("\n  run-unit:"):text.index("\n  run-stack:")]
+        self.assertIn("timeout-minutes: ${{ inputs.mode == 'full' && 180 || 90 }}", job)
+        self.assertIn("QA_PYTEST_ARGS: -n logical --dist loadfile --timeout=60", job)
 
 
 class TestReportAndGate(unittest.TestCase):

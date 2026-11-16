@@ -224,7 +224,8 @@ jobs:
     # The QA agent runs the unit suites itself, in its stack job.
     if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && !inputs.agent && needs.plan.outputs.tests != '0'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A full run selects every unit suite; 90 minutes is enough for a PR's share only.
+    timeout-minutes: ${{ inputs.mode == 'full' && 180 || 90 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -262,6 +263,9 @@ jobs:
           uv venv .venv --python 3.12
           VIRTUAL_ENV=.venv uv pip install -e .
       - name: Run the selected unit tests
+        # The same spread over the runner's cores as unit-test.yml (pytest-xdist comes with backend/python[dev]).
+        env:
+          QA_PYTEST_ARGS: -n logical --dist loadfile --timeout=60
         run: python3 scripts/qa run --plan qa-out/plan.json --scope unit
       - uses: actions/upload-artifact@v4
         if: always()
@@ -398,9 +402,10 @@ jobs:
       # indexes with the web-fixtures stand-in model. Tests that assert on a real
       # model's answers carry the live_model marker and stay not_run there.
       # The perf variant uses it too: it measures our code, not the provider's latency.
+      # A full run with no Azure key uses it too, so a repository without model secrets still indexes.
       # Neither value is a secret.
-      TEST_AI_MODEL_PROVIDER: ${{ (github.event_name == 'pull_request' || inputs.mode == 'pr' || matrix.variant == 'perf') && 'standIn' || 'azureOpenAI' }}
-      TEST_STAND_IN_MODEL_ENDPOINT: ${{ (github.event_name == 'pull_request' || inputs.mode == 'pr' || matrix.variant == 'perf') && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
+      TEST_AI_MODEL_PROVIDER: ${{ (github.event_name == 'pull_request' || inputs.mode == 'pr' || matrix.variant == 'perf' || secrets.TEST_AZURE_OPENAI_API_KEY == '') && 'standIn' || 'azureOpenAI' }}
+      TEST_STAND_IN_MODEL_ENDPOINT: ${{ (github.event_name == 'pull_request' || inputs.mode == 'pr' || matrix.variant == 'perf' || secrets.TEST_AZURE_OPENAI_API_KEY == '') && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
       # Other events: Azure OpenAI is where the quota is, and TEST_AI_MODEL_PROVIDER
       # names it outright: the helper falls back to the next provider on a health
       # check failure, so without this an Azure problem retries against the
