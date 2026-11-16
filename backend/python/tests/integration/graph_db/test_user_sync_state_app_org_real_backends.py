@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, Connectors
+from app.models.entities import AppUser
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -113,3 +114,21 @@ async def test_a_users_sync_state_is_read_and_set_on_the_app_of_that_name_in_the
             await graph.delete_nodes_and_edges([their_user, my_user], CollectionNames.USERS.value)
             await graph.delete_nodes_and_edges([their_drive, my_drive, their_mail, their_chat, my_legacy_mail], CollectionNames.APPS.value)
             await graph.delete_nodes_and_edges([other, mine], CollectionNames.ORGS.value)
+
+
+@pytest.mark.parametrize("graph", ["neo4j"], indirect=True)      # ArangoDB does not create a missing app here; it raises
+async def test_an_app_the_user_sync_creates_is_the_orgs_for_its_sync_state(graph: IGraphDBProvider) -> None:
+    run = uuid.uuid4().hex[:10]
+    org, connector, email = f"org-c-{run}", f"conn-{run}", f"kim-{run}@example.com"
+    user = AppUser(app_name=Connectors.JIRA, connector_id=connector, source_user_id=f"acc-{run}", org_id=org, email=email, full_name="Kim")
+    try:
+        await graph.batch_upsert_app_users([user], org_id=org)
+        app = await graph.get_document(connector, CollectionNames.APPS.value)
+        assert app is not None and app.get("orgId") == org, "the app is created in the users' org"
+        assert await graph.get_user_sync_state(email, connector, org_id=org) is not None, "its sync state is the org's to read"
+    finally:
+        with contextlib.suppress(Exception):
+            stored = await graph.get_user_by_email(email, org_id=org)
+            if stored is not None:
+                await graph.delete_nodes_and_edges([stored.id], CollectionNames.USERS.value)
+            await graph.delete_nodes_and_edges([connector], CollectionNames.APPS.value)
