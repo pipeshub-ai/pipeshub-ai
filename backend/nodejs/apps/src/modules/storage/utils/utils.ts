@@ -495,7 +495,7 @@ export function parseByteRange(
   header: string | undefined,
   size: number,
 ): ByteRange | 'unsatisfiable' | null {
-  if (!header) return null;
+  if (header === undefined || header === '') return null;
   const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
   if (!match || (match[1] === '' && match[2] === '')) return null;
   if (match[1] === '') {
@@ -607,7 +607,7 @@ export function serveFileFromLocalStorage(
     if (range === 'unsatisfiable') {
       fs.closeSync(fd);
       res.status(416);
-      res.setHeader('Content-Range', `bytes */${size}`);
+      res.setHeader('Content-Range', `bytes */${String(size)}`);
       res.end();
       return;
     }
@@ -631,7 +631,7 @@ export function serveFileFromLocalStorage(
       res.status(206);
       res.setHeader(
         'Content-Range',
-        `bytes ${range.start}-${range.end}/${size}`,
+        `bytes ${String(range.start)}-${String(range.end)}/${String(size)}`,
       );
       res.setHeader('Content-Length', String(range.end - range.start + 1));
     }

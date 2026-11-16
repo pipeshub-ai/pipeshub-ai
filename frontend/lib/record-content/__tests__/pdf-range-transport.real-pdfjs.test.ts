@@ -128,7 +128,6 @@ describe('range transport against the real pdf.js', () => {
     const first = await renderPageOne(out.transport, out.length);
     expect(first.result).toBe('ok');
     await first.task.destroy();
-    const before = s.requests.length;
     const second = await renderPageOne(out.transport, out.length);
     expect(second.result).toBe('ok');
     await second.task.destroy();
