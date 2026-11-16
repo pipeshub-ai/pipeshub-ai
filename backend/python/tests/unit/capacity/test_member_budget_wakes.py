@@ -226,3 +226,79 @@ def test_a_forked_child_can_wait_for_a_slot_the_parent_frees(ledger: Path) -> No
     outcome = os.read(r, 1)
     os.waitpid(pid, 0)
     assert outcome == b"\x00"
+
+
+def _in_a_forked_child(work: object) -> bytes:
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        code = 2
+        try:
+            work()  # type: ignore[operator]
+            code = 0
+        except BaseException:
+            code = 1
+        finally:
+            os.write(w, bytes([code]))
+            os._exit(code)
+    outcome = os.read(r, 1)
+    os.waitpid(pid, 0)
+    return outcome
+
+
+def test_every_entry_point_works_in_a_forked_child(ledger: Path) -> None:
+    """Wait, try_reserve, async wait, snapshot: each is the child's first ledger call in its own fork."""
+    b = MemberBudget(ledger, cpu_tokens=8, mem_bytes=1 << 34, llm_cap=4)
+
+    def first_try() -> None:
+        b.try_reserve(_small()).release()  # type: ignore[union-attr]
+
+    def first_blocking_wait() -> None:
+        b.reserve_blocking(_small(), deadline_s=1).release()
+
+    def first_async_wait() -> None:
+        asyncio.run(_async_wait(b))
+
+    def first_snapshot() -> None:
+        assert b.snapshot()["cpu_tokens"] == 8
+
+    for work in (first_try, first_blocking_wait, first_async_wait, first_snapshot):
+        assert _in_a_forked_child(work) == b"\x00", work.__name__
+
+
+async def _async_wait(b: MemberBudget) -> None:
+    (await b.reserve(_small(), deadline_s=1)).release()
+
+
+async def test_a_freed_token_wakes_the_critical_waiter_before_an_older_big_one(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mb, "FALLBACK_S", 5.0)  # only a wake, not the fallback tick, can serve the waiter in time
+    b = MemberBudget(ledger, cpu_tokens=1, mem_bytes=1 << 36)
+    held = b.try_reserve(_small())
+    big = asyncio.create_task(b.reserve(Demand(Family.PARSE, 1, 0, "large"), deadline_s=10))
+    await asyncio.sleep(0.1)
+    critical = asyncio.create_task(b.reserve(_small(), deadline_s=10))
+    await asyncio.sleep(0.1)
+    started = time.monotonic()
+    held.release()
+    permit = await asyncio.wait_for(critical, 2)
+    assert time.monotonic() - started < 0.5  # woken first, not after the fallback tick (5 s)
+    assert not big.done()
+    permit.release()
+    (await asyncio.wait_for(big, 2)).release()
+
+
+async def test_a_wake_that_is_lost_is_served_by_the_fallback_tick(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mb, "FALLBACK_S", 0.05)
+    real_pick = mb._Watcher._pick
+
+    def lose_change_wakes(self: mb._Watcher, entries: list, n: int, *, llm: bool, fallback: bool) -> list:
+        return real_pick(self, entries, n, llm=llm, fallback=fallback) if fallback else []
+
+    monkeypatch.setattr(mb._Watcher, "_pick", lose_change_wakes)
+    b = MemberBudget(ledger, cpu_tokens=1, mem_bytes=1 << 36, llm_cap=1)
+    held = b.try_reserve(_llm())
+    task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
+    await asyncio.sleep(0.1)
+    held.release()  # the change wake is lost on purpose
+    permit = await asyncio.wait_for(task, 2)  # the fallback tick serves it
+    permit.release()
