@@ -6363,12 +6363,17 @@ components:
                 connectors that do not set it.
             accessRule:
               type: string
-              enum: [OPEN, STRICT, RESTRICTED]
+              enum: [OPEN, STRICT, RESTRICTED, PARENT_AND_GRANT]
               description: |
                 How this record's own permissions combine with its ancestors'.
                 OPEN: an accessible parent, or a direct grant, is enough.
                 STRICT: every ancestor up to the connector must be accessible too.
                 RESTRICTED: strict, and a grant on the record itself is required.
+                PARENT_AND_GRANT: the record must inherit from its parent, the
+                parent must be accessible (by its own rule, which for example
+                STRICT may consult its ancestors), and the record must carry its
+                own grant. The rule adds no requirement of its own on the
+                ancestors above the parent.
                 Absent on records written before the field existed; read as OPEN.
             uploadedBy:
               type: string
@@ -8478,6 +8483,12 @@ components:
           items:
             type: string
           description: Ids of the sources left out of this listing because their copy is not made yet (just connected, or right after an upgrade); the others are listed. Ask again in a moment. Absent when none.
+        preparing:
+          type: boolean
+          description: |
+            `true` when nothing could be listed because the source is still being prepared (its copy is not finished yet):
+            `items` is empty, the totals are 0 and there is no cursor to page on with. Ask again in a moment; the rows are
+            listed once the copy is done. Absent otherwise.
         success:
           type: boolean
           enum: [true]

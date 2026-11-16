@@ -332,7 +332,7 @@ class Record(BaseModel):
     # inherit_permissions — which is expressed as an edge — this is stored.
     # OPEN by default: a connector that says nothing gets the permissive
     # reading, and only sources that need every ancestor checked opt in.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
     parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
@@ -3115,7 +3115,7 @@ class RecordGroup(BaseModel):
     # As on Record: read per node by the traversal, so stored rather than
     # inferred from an edge. A Confluence space is RESTRICTED — it carries its
     # own permission list, so inheriting from the App is never enough alone.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
     hide_children: bool | None = Field(
         default=False,

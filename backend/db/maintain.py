@@ -2,7 +2,9 @@
 
     python -m db.maintain placement [--watch [SECONDS]]   create the LIST leaf of every org that asked for one (retrieval.placement_requests);
                                                           needs PG_JOBS_URL. --watch keeps running (the placement worker: a writing service
-                                                          waits for it before an org's first vector write)
+                                                          waits for it before an org's first vector write); every pass also runs `analyze`
+    python -m db.maintain analyze                     ANALYZE the kg tables the knowledge-hub browse reads when a connector's first load or a restore
+                                                      asked for it (kg.analyze_requests; db/lib/kg_stats.py); needs PG_JOBS_URL
 
     python -m db.maintain fold [--watch [SECONDS]]    fold the point-count deltas of every org into retrieval.collection_stats, one transaction
                                                       per org; needs PG_JOBS_URL. --watch repeats (default 30 s)
@@ -28,7 +30,7 @@ import psycopg
 from sqlalchemy import Connection, create_engine
 from sqlalchemy.exc import InterfaceError, OperationalError
 
-from db.lib import fold, placement, upkeep
+from db.lib import fold, kg_stats, placement, upkeep
 from db.migrate import (
     EXIT_CONFIG,
     EXIT_FAILED,
@@ -43,8 +45,8 @@ from db.migrate import (
 T = TypeVar("T")
 EXIT_REFUSED = 5
 EXIT_PARTIAL = 6                # a job finished but some orgs or leaves failed; the next run resumes
-USAGE = ("usage: python -m db.maintain placement [--watch [SECONDS]] | fold [--watch [SECONDS]] | recount [<org>] | build-indexes | group-gc | nightly [--all]\n"
-         "placement, fold, recount, group-gc and nightly need PG_JOBS_URL (the jobs role, direct address); placement, build-indexes and nightly also PG_MIGRATE_URL")
+USAGE = ("usage: python -m db.maintain placement [--watch [SECONDS]] | analyze | fold [--watch [SECONDS]] | recount [<org>] | build-indexes | group-gc | nightly [--all]\n"
+         "placement, analyze, fold, recount, group-gc and nightly need PG_JOBS_URL (the jobs role, direct address); placement, analyze, build-indexes and nightly also PG_MIGRATE_URL")
 
 
 def _interval(args: list[str], default: float) -> float:
@@ -84,6 +86,21 @@ def _placement_pass(url: str) -> tuple[list[str], list[str], list[str]]:
                 engine.dispose()
 
 
+def _analyze_pass(url: str) -> list[str]:
+    """Delete the analyze requests the statistics already cover, then ANALYZE as the owner the kg tables still due. The migrate lock is taken only when a table is
+    due, so an idle worker, or one waiting out the interval between two ANALYZEs of a table, never holds up a deployment. Returns the tables analyzed."""
+    with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
+        kg_stats.close_covered(jobs)
+        todo = kg_stats.due(jobs)
+        if not todo:
+            return []
+        with locked(url) as owner:
+            owner.execute(f"SET ROLE {OWNER_ROLE}")
+            done = kg_stats.analyze(owner, kg_stats.due(jobs))       # again under the lock: a pass it waited behind may have analyzed them
+        kg_stats.close_covered(jobs)
+        return done
+
+
 def _owner_pass(url: str, work: Callable[[Connection], T]) -> T:
     """Run ``work(owner)`` as the owner role under the migrate lock."""
     with locked(url):
@@ -119,15 +136,21 @@ def _summary(done: list[str], failed: list[str], refused: list[str]) -> str:
 def _watch(url: str, interval: float) -> None:
     log(f"placement worker running (every {interval:g}s)")
     while True:
+        full = False
         try:
             done, failed, refused = _placement_pass(url)
             if done or failed or refused:
                 log(_summary(done, failed, refused))
-            if len(done) + len(failed) + len(refused) >= placement.MAX_PER_PASS:
-                continue                                            # a full pass: more wait behind the cap, and a new org's writer waits too
+            full = len(done) + len(failed) + len(refused) >= placement.MAX_PER_PASS     # more wait behind the cap: no sleep, but the analyze pass still runs
         except (RunnerError, psycopg.Error, OperationalError, InterfaceError, OSError) as exc:   # the database is away or the lock is busy: try again
             log(f"placement pass failed: {_first_line(exc)}")
-        time.sleep(interval)
+        try:
+            if analyzed := _analyze_pass(url):
+                log(f"kg tables analyzed: {', '.join(analyzed)}")
+        except (RunnerError, psycopg.Error, OperationalError, InterfaceError, OSError) as exc:
+            log(f"analyze pass failed: {_first_line(exc)}")
+        if not full:
+            time.sleep(interval)
 
 
 def _fold_pass() -> tuple[dict[str, int], dict[str, str]]:
@@ -219,6 +242,11 @@ def main(argv: list[str]) -> int:
                 placement.check_build_settings()
             except ValueError as exc:
                 raise RunnerError(EXIT_CONFIG, str(exc)) from exc
+        if cmd in ("placement", "analyze"):        # a malformed interval never fixes itself: exit 2 here, not a failure on every pass
+            try:
+                kg_stats.every_s()
+            except ValueError as exc:
+                raise RunnerError(EXIT_CONFIG, str(exc)) from exc
         if cmd == "recount" and len(argv) in (1, 2):
             if len(argv) == 2 and not placement.is_org_id(argv[1]):
                 raise RunnerError(EXIT_CONFIG, USAGE)
@@ -241,6 +269,9 @@ def main(argv: list[str]) -> int:
             return EXIT_PARTIAL if failed else 0
         if cmd == "nightly" and (len(argv) == 1 or argv[1:] == ["--all"]):
             return _nightly(migrate_url(), every_leaf=len(argv) == 2)
+        if cmd == "analyze" and len(argv) == 1:
+            log(f"kg tables analyzed: {', '.join(_analyze_pass(migrate_url())) or 'none'}")
+            return 0
         if cmd == "build-indexes" and len(argv) == 1:
             log(f"indexes ensured: {', '.join(_build_indexes(migrate_url())) or 'none'}")
             return 0

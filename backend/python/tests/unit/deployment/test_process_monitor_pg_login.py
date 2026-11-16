@@ -51,13 +51,17 @@ def test_a_child_inherits_only_its_own_login() -> None:
 
 def test_each_python_service_start_line_uses_it() -> None:
     text = SCRIPT.read_text()
-    for service, module in (("indexing", "indexing_main"), ("connectors", "connectors_main"), ("query", "query_main"),
-                            ("kv", "embedding_main"), ("kv", "docling_main")):
+    for service, module in (("indexing", "indexing_main"), ("connectors", "connectors_main"), ("query", "query_main")):
         assert f"(use_own_pg_login {service}; exec python -m app.{module}) &" in text
-    # the configuration-only services take the key-value login; nothing starts a Python service on the shared one
-    for name, module in (("PARSING", "parsing_main"), ("EXTRACTION", "extraction_main")):
-        assert f"(use_own_pg_login kv; {name}_SERVICE_PORT=${{{name}_PORT}} exec python -m app.{module}) &" in text
-    assert not re.search(r"^\s*(\w+=\S+ )?python -m app\.", text, re.M)
+    # the configuration-only services take the key-value login but keep their own capacity name; nothing starts a
+    # Python service on the shared one
+    for name in ("embedding", "docling"):
+        assert f"(use_own_pg_login kv; PIPESHUB_SERVICE={name} exec python -m app.{name}_main) &" in text
+    for name in ("parsing", "extraction"):
+        port = name.upper()
+        assert (f"(use_own_pg_login kv; PIPESHUB_SERVICE={name} {port}_SERVICE_PORT=${{{port}_PORT}} "
+                f"exec python -m app.{name}_main) &") in text
+    assert not re.search(r"^\s*(\w+=\S+ )*python -m app\.", text, re.M)
 
 
 def test_the_configuration_only_services_use_the_key_value_login_and_role() -> None:
