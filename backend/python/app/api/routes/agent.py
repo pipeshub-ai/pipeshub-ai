@@ -1749,8 +1749,9 @@ async def _assert_service_account_knowledge(
 
     def label(app: dict[str, Any]) -> str:
         # The lookup is by the ids sent, in any organisation: only the editor's own source is named.
-        key = str(app.get("_key") or app.get("id"))
-        return app.get("name") or key if app.get("createdBy") == user_id else key
+        if app.get("createdBy") != user_id:
+            return "one that someone else owns"
+        return app.get("name") or str(app.get("_key") or app.get("id"))
 
     personal = [
         label(a) for a in apps if a.get("type") != kb and a.get("scope") == ConnectorScope.PERSONAL.value

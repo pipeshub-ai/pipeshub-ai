@@ -59,13 +59,13 @@ class TestCreate:
         assert f"Personal sources ({source} name)" in response.json()["detail"]
         assert not graph.calls_to("begin_transaction")
 
-    def test_someone_elses_source_is_named_by_its_id_only(self, client) -> None:
+    def test_someone_elses_source_is_not_named(self, client) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
             "name": "Helpdesk", "isServiceAccount": True, "knowledge": _knowledge("drive-bob"),
         })
         assert response.status_code == 400
-        assert "Personal sources (drive-bob)" in response.json()["detail"]
-        assert "drive-bob name" not in response.json()["detail"]
+        assert "Personal sources (one that someone else owns)" in response.json()["detail"]
+        assert "drive-bob" not in response.json()["detail"]
 
     def test_a_collection_is_refused_without_a_binding(self, client) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

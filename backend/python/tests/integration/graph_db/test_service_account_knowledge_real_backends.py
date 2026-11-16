@@ -81,8 +81,8 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
             # Saving: a personal source is refused, a collection too unless bound, the org's connectors pass.
             with pytest.raises(InvalidRequestError, match=f"Personal sources \\(Name {key['drive_mine']}\\)"):
                 await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, creator, bound=True)
-            # Someone else's source is named by the id that was sent, never by its stored name.
-            with pytest.raises(InvalidRequestError, match=f"Personal sources \\({key['drive_colleague']}\\)"):
+            # Someone else's source is not named.
+            with pytest.raises(InvalidRequestError, match=r"Personal sources \(one that someone else owns\)"):
                 await _assert_service_account_knowledge([key["drive_colleague"]], graph, creator, bound=True)
             with pytest.raises(InvalidRequestError, match="Collections"):
                 await _assert_service_account_knowledge([key["collection"]], graph, creator, bound=False)
