@@ -264,6 +264,7 @@ class TestHandleUserAdded:
     @pytest.mark.asyncio
     async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
+        gp.get_user_by_user_id = AsyncMock(return_value=None)
         gp.get_user_by_email = AsyncMock(side_effect=Exception("db error"))
         payload = {
             "userId": "uid-1",

@@ -67,6 +67,8 @@ class TokenScopes(Enum):
     DOCUMENT_CLASSIFY = "document:classify"
     # Node -> connectors: write verified profile email onto the graph user.
     ENTITY_USER_WRITE = "entity:user:write"
+    # query -> connectors: write a brand-new caller's graph user before its userAdded event arrives.
+    USER_NODE_ENSURE = "entity:user:ensure"
 
 
 class OAuthScopes(str, Enum):

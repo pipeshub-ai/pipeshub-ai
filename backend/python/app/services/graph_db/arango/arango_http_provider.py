@@ -9971,6 +9971,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """
         Get organization apps.
@@ -9978,18 +9979,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             active_filter = "FILTER app.isActive == true" if active_only else ""
             type_filter = "FILTER app.type == @app_type" if app_type is not None else ""
+            ids_filter = "FILTER app._key IN @app_ids" if app_ids is not None else ""
             query = f"""
             FOR app IN OUTBOUND
                 '{CollectionNames.ORGS.value}/{org_id}'
                 {CollectionNames.ORG_APP_RELATION.value}
             {active_filter}
             {type_filter}
+            {ids_filter}
             RETURN app
             """
+            bind_vars: dict[str, Any] = {}
+            if app_type is not None:
+                bind_vars["app_type"] = app_type
+            if app_ids is not None:
+                bind_vars["app_ids"] = app_ids
 
-            results = await self.http_client.execute_aql(
-                query, bind_vars={"app_type": app_type} if app_type is not None else None,
-            )
+            results = await self.http_client.execute_aql(query, bind_vars=bind_vars or None)
             return results if results else []
         except Exception as e:
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
@@ -28340,7 +28346,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     LET knowledge = DOCUMENT(edge._to)
                     FILTER knowledge != null
 
-                    LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    LET app_doc = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    // Only an app of the agent's organisation (through its org edge) is resolved; another org's reads as UNKNOWN.
+                    LET connector_instance = app_doc != null AND @org_id != null AND LENGTH(
+                        FOR oe IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER oe._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND oe._to == app_doc._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0 ? app_doc : null
                     LET is_kb = connector_instance != null AND connector_instance.type == @kb_type
 
                     LET kb_info = is_kb ? (
@@ -28846,7 +28859,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             LET knowledge = DOCUMENT(edge._to)
                             FILTER knowledge != null
 
-                            LET connector_instance2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            LET app_doc2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            // Only an app of the agent's organisation (through its org edge) is resolved; another org's reads as UNKNOWN.
+                            LET connector_instance2 = app_doc2 != null AND @org_id != null AND LENGTH(
+                                FOR oe IN {CollectionNames.ORG_APP_RELATION.value}
+                                    FILTER oe._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND oe._to == app_doc2._id
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0 ? app_doc2 : null
                             LET is_kb2 = connector_instance2 != null AND connector_instance2.type == @kb_type
 
                             LET kb_info = is_kb2 ? (

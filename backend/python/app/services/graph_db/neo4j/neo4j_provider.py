@@ -7000,6 +7000,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """Get all apps for an organization"""
         try:
@@ -7008,6 +7009,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 conditions.append("app.isActive = true")
             if app_type is not None:
                 conditions.append("app.type = $app_type")
+            if app_ids is not None:
+                conditions.append("app.id IN $app_ids")
             where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
             query = f"""
             MATCH (o:Organization {{id: $org_id}})-[:ORG_APP_RELATION]->(app:App)
@@ -7017,7 +7020,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             results = await self.client.execute_query(
                 query,
-                parameters={"org_id": org_id, "app_type": app_type}
+                parameters={"org_id": org_id, "app_type": app_type, "app_ids": app_ids}
             )
 
             apps = []
@@ -26878,7 +26881,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return docs
 
     async def _project_agents_toolsets_and_knowledge(
-        self, agent_ids: list[str], transaction: str | None = None
+        self, agent_ids: list[str], transaction: str | None = None, org_id: str | None = None,
     ) -> dict[str, dict[str, list[dict]]]:
         """Build the toolsets + knowledge graph projection for many agents at once.
 
@@ -26978,7 +26981,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             staged.append((k_row["agent_id"], item))
 
         # ── Query 3: batch-resolve Apps docs ────────────────────────────────────
-        app_docs = await self._get_documents_by_ids(list(connector_ids), CollectionNames.APPS.value, transaction)
+        # Only through the agent's organisation: another org's app reads as UNKNOWN, name included.
+        app_docs = {
+            app["_key"]: app
+            for app in await self.get_org_apps(org_id, active_only=False, app_ids=list(connector_ids))
+        } if org_id and connector_ids else {}
 
         # Second pass: enrich each staged knowledge item from the prefetched map.
         for agent_id, item in staged:
@@ -27129,7 +27136,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
 
             # Get linked toolsets + knowledge (shared with the GET /agents list projection)
-            projection = await self._project_agents_toolsets_and_knowledge([agent_id], transaction)
+            projection = await self._project_agents_toolsets_and_knowledge([agent_id], transaction, org_id)
             agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
             agent["toolsets"] = agent_projection["toolsets"]
             agent["knowledge"] = agent_projection["knowledge"]
@@ -27475,7 +27482,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             async def _enrich(agent_list: list[dict]) -> list[dict]:
                 ids = [ag.get("_key") for ag in agent_list if ag.get("_key")]
                 try:
-                    projection = await self._project_agents_toolsets_and_knowledge(ids, transaction)
+                    projection = await self._project_agents_toolsets_and_knowledge(ids, transaction, org_id)
                 except Exception as e:
                     self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
                     projection = {}

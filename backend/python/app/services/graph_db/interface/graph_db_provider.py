@@ -4531,6 +4531,7 @@ class IGraphDBProvider(ABC):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """
         Get all apps for an organization.
@@ -4539,6 +4540,8 @@ class IGraphDBProvider(ABC):
             org_id (str): Organization ID
             active_only: When True (default), only apps with isActive true.
             app_type: Only apps of this type, filtered in the database.
+            app_ids: Only these apps, filtered in the database; an id that is
+                not one of the organization's apps is not returned.
             raise_on_error: Raise instead of answering [] when the listing fails,
                 for a caller that must tell "none" from "unknown".
 
