@@ -86,6 +86,11 @@ async def test_with_the_setting_on_each_account_holds_its_own_grants(setup: Setu
     refusal = await setup.w.p._refuse_without_delete_role(records["by-id"].id, {"connectorId": APP, "connectorName": scenario.APP.value},
                                                          "uid-ana", None)
     assert refusal is None, "the OWNER grant of the account ana is linked to lets ana delete"
+    ana_account = next(a for a in accounts if a["sourceUserId"] == "s-ana")
+    assert await setup.w.p.update_node(ana_account.get("_key") or ana_account["id"], CollectionNames.SOURCE_ACCOUNTS.value, {"state": "withdrawn"})
+    assert await setup.w.p._refuse_without_delete_role(records["by-id"].id, {"connectorId": APP, "connectorName": scenario.APP.value},
+                                                       "uid-ana", None) is not None, "a withdrawn account links nobody: no delete through it"
+    assert await setup.w.p.update_node(ana_account.get("_key") or ana_account["id"], CollectionNames.SOURCE_ACCOUNTS.value, {"state": "listed"})
 
     await setup.processor.on_new_app_users([scenario.account(APP, setup.emails, "s-ana", "ana2")])
     assert (await setup.readers(records))["by-id"] == {"ana2"}, "the renamed account's grant follows its new address"

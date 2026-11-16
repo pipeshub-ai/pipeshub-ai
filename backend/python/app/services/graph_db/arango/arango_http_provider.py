@@ -7740,7 +7740,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             LET holder = DOCUMENT(edge._from)
                             FILTER holder != null AND (
                                 (IS_SAME_COLLECTION('{CollectionNames.USERS.value}', holder) AND holder.userId == @user_id)
-                                OR (IS_SAME_COLLECTION('{CollectionNames.SOURCE_ACCOUNTS.value}', holder) AND LENGTH(
+                                OR (IS_SAME_COLLECTION('{CollectionNames.SOURCE_ACCOUNTS.value}', holder) AND holder.state != 'withdrawn' AND LENGTH(
                                     FOR l IN {CollectionNames.AUTHENTICATED_AS.value}
                                         FILTER l._to == holder._id AND l.connectorId == @connector_id
                                         LET me = DOCUMENT(l._from)
@@ -15122,6 +15122,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR l IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER l._from == @user_from AND rec != null AND l.connectorId == rec.connectorId
                         AND STARTS_WITH(l._to, "{CollectionNames.SOURCE_ACCOUNTS.value}/")
+                    FILTER DOCUMENT(l._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN l._to
             ))
             FOR edge IN {CollectionNames.PERMISSION.value}
@@ -15168,6 +15169,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principals = APPEND([user_from], (
                 FOR l IN @@authenticated_as
                     FILTER l._from == user_from AND rec != null AND l.connectorId == rec.connectorId AND STARTS_WITH(l._to, "sourceAccounts/")
+                    FILTER DOCUMENT(l._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN l._to
             ))
 
@@ -15263,6 +15265,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principals = APPEND([user_from], (
                 FOR l IN @@authenticated_as
                     FILTER l._from == user_from AND rec != null AND l.connectorId == rec.connectorId AND STARTS_WITH(l._to, "sourceAccounts/")
+                    FILTER DOCUMENT(l._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN l._to
             ))
             LET direct_permission = FIRST(

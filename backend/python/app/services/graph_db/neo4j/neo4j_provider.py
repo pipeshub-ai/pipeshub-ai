@@ -6024,7 +6024,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User|SourceAccount)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
             // the owner is the user, or a source account the user is linked to in this connector
             WHERE u.userId = $user_id
-               OR EXISTS { (me:User {userId: $user_id})-[l:AUTHENTICATED_AS {connectorId: $connector_id}]->(u) WHERE u:SourceAccount }
+               OR EXISTS { (me:User {userId: $user_id})-[l:AUTHENTICATED_AS {connectorId: $connector_id}]->(u)
+                           WHERE u:SourceAccount AND coalesce(u.state, '') <> 'withdrawn' }
             RETURN r
             LIMIT 1
             """

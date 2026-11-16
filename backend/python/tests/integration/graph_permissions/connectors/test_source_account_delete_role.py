@@ -35,6 +35,16 @@ async def test_the_strongest_grant_of_the_user_and_its_linked_account_decides(ar
         assert await p._check_record_permission(record, user) == "OWNER"
         assert await p._check_drive_permissions(record, user) == "OWNER"
         assert await p._check_gmail_permissions(record, user) == "OWNER"
+        # withdrawn, the account links nobody: with the user's own grant READER, its OWNER grant no longer counts
+        await p.batch_create_edges([{"from_id": holder, "from_collection": coll, "to_id": record, "to_collection": CollectionNames.RECORDS.value,
+                                     "type": "USER", "role": role, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}
+                                    for holder, coll, role in ((account, CollectionNames.SOURCE_ACCOUNTS.value, "OWNER"),
+                                                               (user, CollectionNames.USERS.value, "READER"))],
+                                   CollectionNames.PERMISSION.value)
+        assert await p.update_node(account, CollectionNames.SOURCE_ACCOUNTS.value, {"state": "withdrawn"})
+        assert await p._check_record_permission(record, user) == "READER"
+        assert await p._check_drive_permissions(record, user) == "READER"
+        assert await p._check_gmail_permissions(record, user) == "READER"
     finally:
         await p.delete_nodes_and_edges([record], CollectionNames.RECORDS.value)
         await p.delete_nodes_and_edges([account], CollectionNames.SOURCE_ACCOUNTS.value)

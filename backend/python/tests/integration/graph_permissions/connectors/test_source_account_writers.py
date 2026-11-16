@@ -163,6 +163,10 @@ async def test_a_mail_thread_owned_by_a_linked_account_is_the_users(world: World
     owned = await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["cal"])
     assert owned is not None and owned.id == mail.id, "cal is linked to the account that owns the thread"
     assert await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["ana"]) is None
+    # a withdrawn account links nobody: its OWNER grant and the link stay, the thread is not cal's
+    assert await world.backend.provider.update_node(account_node_id(ORG, world.connector_id, "s-cal"), CollectionNames.SOURCE_ACCOUNTS.value,
+                                                    {"state": "withdrawn"})
+    assert await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["cal"]) is None
 
 
 async def test_the_authenticator_link_survives_every_relink_of_its_pair(world: World) -> None:

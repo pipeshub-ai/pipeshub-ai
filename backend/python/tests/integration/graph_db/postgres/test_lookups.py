@@ -331,6 +331,8 @@ async def test_mail_message_file_and_duplicate_lookups(g: G) -> None:
                                        "createdAtTimestamp": 1}], CollectionNames.AUTHENTICATED_AS.value)
     owned = await g.graph.get_record_by_conversation_index(g.conn, "ci2", "t2", g.org, user_id)
     assert owned is not None and owned.id == other.id
+    assert await g.graph.update_node(account, CollectionNames.SOURCE_ACCOUNTS.value, {"state": "withdrawn"})
+    assert await g.graph.get_record_by_conversation_index(g.conn, "ci2", "t2", g.org, user_id) is None, "a withdrawn account links nobody"
 
     await g.graph.update_node(f.id, RECORDS, {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 5, "duplicateReconcileAttempts": 2})
     rows = await g.graph.get_records_pending_duplicate_reconcile(due_before_ms=10, limit=100)

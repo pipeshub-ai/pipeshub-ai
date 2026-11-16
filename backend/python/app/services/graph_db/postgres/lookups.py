@@ -155,7 +155,8 @@ class LookupsMixin(PgBase):
                 me AS (SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.doc->>'userId' = $6),
                 holders(coll, id) AS (SELECT 'users'::text, me.id FROM me
                   UNION SELECT l.to_coll, l.to_id FROM me JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = me.id
-                    AND l.to_coll = 'sourceAccounts' AND l.doc->>'connectorId' = $2)
+                    AND l.to_coll = 'sourceAccounts' AND l.doc->>'connectorId' = $2
+                    JOIN graph.nodes s ON s.org_id = l.org_id AND s.coll = l.to_coll AND s.id = l.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn')
                 SELECT m.doc FROM m WHERE EXISTS (SELECT 1 FROM up JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = up.cur_coll AND p.to_id = up.cur
                     AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
                   JOIN holders h ON h.coll = p.from_coll AND h.id = p.from_id WHERE up.rid = m.id) LIMIT 1""",

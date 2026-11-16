@@ -364,7 +364,9 @@ class DeleteMixin(PgBase):
             return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
         user_key = user.get("id") or user.get("_key")
         rows = await self._drows("""/* pipeshub:graph.delete_record_roles */ WITH pr(coll, id) AS (SELECT 'users'::text, $3::text
-              UNION SELECT l.to_coll, l.to_id FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $3
+              UNION SELECT l.to_coll, l.to_id FROM graph.edges l
+                JOIN graph.nodes s ON s.org_id = l.org_id AND s.coll = l.to_coll AND s.id = l.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn'
+                WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $3
                 AND l.to_coll = 'sourceAccounts' AND l.doc->>'connectorId' = $4)
             SELECT p.doc->>'role' AS role FROM graph.edges p
             WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'records' AND p.to_id = $2
