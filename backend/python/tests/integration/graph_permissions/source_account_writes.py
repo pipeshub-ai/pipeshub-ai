@@ -246,3 +246,32 @@ async def revocations_reach_the_account(processor: Any, provider: Any, connector
     assert in_group in await targets("s-cal")
     assert await processor.on_user_group_member_removed(group_id, emails["cal"], connector_id)
     assert in_group not in await targets("s-cal"), "the removed membership is taken from the account"
+
+
+async def a_deactivated_signer_keeps_no_link(processor: Any, provider: Any, connector_id: str, emails: dict[str, str],  # noqa: ANN401
+                                             users: dict[str, str], cal_user_id: str) -> None:
+    """After ``write``: cal signs in as its account, then is deactivated without its links being removed (a sync that read it live
+    racing its delete). The next sign-in removes the link instead of keeping it."""
+    from app.config.constants.arangodb import CollectionNames
+
+    def signed_in(links: set[tuple[str, str | None]]) -> bool:
+        return any(via == "authenticator" for _, via in links)
+
+    await processor.link_authenticator_to_source_user(connector_id, cal_user_id, emails["cal"], "s-cal", APP)
+    assert signed_in(await links_of(provider, users["cal"]))
+    await provider.batch_upsert_nodes([{"_key": users["cal"], "isActive": False}], CollectionNames.USERS.value)
+    await processor.link_authenticator_to_source_user(connector_id, cal_user_id, emails["cal"], "s-cal", APP)
+    assert not signed_in(await links_of(provider, users["cal"])), "a deactivated user keeps no authenticator link"
+
+
+async def a_stale_address_links_nothing(provider: Any, connector_id: str, org_id: str, emails: dict[str, str], users: dict[str, str]) -> None:  # noqa: ANN401
+    """After ``write``: cal's address changes to one no account holds, and the relink of the new address leaves cal unlinked. A relink
+    that read cal under the old address and writes afterwards links nothing: the user no longer holds that address."""
+    from app.config.constants.arangodb import CollectionNames
+
+    moved = f"moved-{uuid.uuid4().hex[:8]}@acme.com"
+    await provider.batch_upsert_nodes([{"_key": users["cal"], "email": moved}], CollectionNames.USERS.value)
+    await provider.set_directory_link(users["cal"], connector_id, moved, org_id)
+    assert not [x for x in await links_of(provider, users["cal"]) if x[1] == "directory"], "no account holds the new address"
+    await provider.set_directory_link(users["cal"], connector_id, emails["cal"], org_id)
+    assert not [x for x in await links_of(provider, users["cal"]) if x[1] == "directory"], "the stale address links nothing"

@@ -5659,9 +5659,6 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(
                     f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
                 )
-            elif authenticator.get("isActive") is False:
-                # a deleted user is linked again only when restored (a missing field is a live user written before it existed)
-                self.logger.info(f"User {authenticated_by} is deactivated; connector {connector_id} is not linked to its source account")
             elif account:
                 # Signing the connector in as the account shows the user holds it, whatever the address says: linked even
                 # where two accounts share the address and the directory links neither.

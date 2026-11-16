@@ -200,3 +200,15 @@ async def test_a_revoked_grant_and_a_removed_membership_are_taken_from_the_accou
     await scenario.revocations_reach_the_account(setup.processor, setup.w.p, APP, setup.emails, records)
     readers = await setup.readers(records)
     assert "ana" not in readers["by-id"] and "cal" not in readers["by-group"]
+
+
+async def test_a_deactivated_signer_keeps_no_authenticator_link(setup: Setup) -> None:
+    await scenario.enable(setup.processor, APP)
+    await setup.write()
+    await scenario.a_deactivated_signer_keeps_no_link(setup.processor, setup.w.p, APP, setup.emails, setup.users, "uid-cal")
+
+
+async def test_a_relink_for_an_address_the_user_no_longer_holds_writes_nothing(setup: Setup) -> None:
+    await scenario.enable(setup.processor, APP)
+    await setup.write()
+    await scenario.a_stale_address_links_nothing(setup.w.p, APP, setup.w.org, setup.emails, setup.users)

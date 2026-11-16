@@ -10828,13 +10828,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         label = collection_to_label(target_collection)
         via = "authenticator" if to_account else ""
         merge = "{connectorId: $connector_id, via: $via}" if to_account else "{connectorId: $connector_id}"
+        # The SET takes the write lock a delete takes, so isActive is read current: a deactivated user (false; a missing field is a
+        # live user) keeps no authenticator link and gets none.
         query = f"""
         MATCH (c:User {{id: $creator_key}})
+        SET c.updatedAtTimestamp = c.updatedAtTimestamp
+        WITH c, coalesce(c.isActive, true) <> false AS live
         MATCH (s:{label} {{id: $source_user_key}})
         OPTIONAL MATCH (x:User)-[old:AUTHENTICATED_AS {{connectorId: $connector_id}}]->(y)
-        WHERE coalesce(old.via, 'authenticator') = 'authenticator' AND (x <> c OR y <> s OR coalesce(old.via, '') <> $via)
+        WHERE coalesce(old.via, 'authenticator') = 'authenticator' AND (NOT live OR x <> c OR y <> s OR coalesce(old.via, '') <> $via)
         DELETE old
-        WITH DISTINCT c, s
+        WITH DISTINCT c, s, live
+        WHERE live
         MERGE (c)-[r:AUTHENTICATED_AS {merge}]->(s)
         ON CREATE SET r.orgId = $org_id, r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
         ON MATCH SET r.orgId = $org_id, r.updatedAtTimestamp = $ts
@@ -10865,7 +10870,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         query = """
         MATCH (u:User {id: $user_key, orgId: $org_id})
         SET u.updatedAtTimestamp = u.updatedAtTimestamp
-        WITH u
+        // a user whose address changed since the caller read it is left as it is: the relink of its new address decides
+        WITH u WHERE toLower(u.email) = toLower($email)
         OPTIONAL MATCH (s:SourceAccount {orgId: $org_id, connectorId: $connector_id, email: $email})
         SET s.updatedAtTimestamp = s.updatedAtTimestamp
         WITH u, [x IN collect(s) WHERE coalesce(x.state, '') <> 'withdrawn'] AS live

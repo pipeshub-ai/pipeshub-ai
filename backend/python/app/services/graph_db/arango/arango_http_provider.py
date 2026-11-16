@@ -11387,8 +11387,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         target_collection: str = CollectionNames.USERS.value,
     ) -> None:
         # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth. A directory link
-        # has a key of its own, so neither this nor remove_authenticated_as touches one.
+        # has a key of its own, so neither this nor remove_authenticated_as touches one. The empty update writes the user, so a
+        # concurrent delete conflicts instead of being missed: a deactivated user (isActive false; a missing field is a live user)
+        # keeps no authenticator link and gets none.
         ts = get_epoch_timestamp_in_ms()
+        users = CollectionNames.USERS.value
+        live = await self.execute_query(f"""
+        FOR x IN {users} FILTER x._key == @creatorKey UPDATE x WITH {{}} IN {users} RETURN NEW.isActive != false
+        """, bind_vars={"creatorKey": creator_key}, transaction=transaction)
+        if live and live[0] is False:
+            await self.remove_authenticated_as(connector_id, transaction=transaction)
+            return
         query = f"""
         UPSERT {{ _key: @connectorId }}
         INSERT MERGE({{
@@ -11431,9 +11440,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UPDATE s WITH {{}} IN {accounts}
             FILTER NEW.state != 'withdrawn'
             RETURN NEW._id)
-        LET want = (user != null AND user.isActive != false AND LENGTH(live) == 1) ? live[0] : null
+        // a user whose address changed since the caller read it is left as it is: the relink of its new address decides
+        LET holds = user != null AND LOWER(user.email) == LOWER(@email)
+        LET want = (holds AND user.isActive != false AND LENGTH(live) == 1) ? live[0] : null
         LET gone = (FOR link IN {links}
-            FILTER link._from == @from AND link.connectorId == @connectorId AND link.via == 'directory' AND link._to != want
+            FILTER holds AND link._from == @from AND link.connectorId == @connectorId AND link.via == 'directory' AND link._to != want
             REMOVE link IN {links} RETURN 1)
         RETURN want
         """, bind_vars={"userKey": user_key, "orgId": org_id, "connectorId": connector_id, "email": email, "from": frm},

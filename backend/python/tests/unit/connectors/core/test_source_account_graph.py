@@ -56,3 +56,18 @@ async def test_a_creator_stand_in_or_an_unknown_account_holds_no_grant() -> None
     assert await graph.principal(store, "s-unknown") is None
     store.get_nodes_by_field_in = AsyncMock(return_value=[{"_key": account_node_id("org1", "c1", "s1")}])
     assert await graph.principal(store, "s1") == (account_node_id("org1", "c1", "s1"), "sourceAccounts")
+
+
+
+async def test_an_account_write_that_fails_leaves_no_account_known() -> None:
+    """The transaction rolls the accounts back, so a later grant must read the store again rather than trust them."""
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import AppUser
+
+    graph = SourceAccountGraph("c1", "org1", MagicMock())
+    tx = MagicMock(get_nodes_by_field_in=AsyncMock(return_value=[]), batch_upsert_nodes=AsyncMock(),
+                   get_users_by_emails=AsyncMock(side_effect=RuntimeError("graph down")))
+    user = AppUser(app_name=Connectors.CONFLUENCE, connector_id="c1", source_user_id="s-1", email="a@x.io", full_name="A")
+    with pytest.raises(RuntimeError):
+        await graph.upsert(tx, [user])
+    assert graph._known == set()

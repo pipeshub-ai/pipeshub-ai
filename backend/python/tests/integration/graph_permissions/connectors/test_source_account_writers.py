@@ -204,3 +204,19 @@ async def test_a_revoked_grant_and_a_removed_membership_are_taken_from_the_accou
     await scenario.revocations_reach_the_account(world.processor, world.backend.provider, world.connector_id, world.emails, records)
     readers = await world.readers(records)
     assert "ana" not in readers["by-id"] and "cal" not in readers["by-group"]
+
+
+async def test_a_deactivated_signer_keeps_no_authenticator_link(world: World) -> None:
+    await scenario.enable(world.processor, world.connector_id)
+    await world.write()
+    cal_user_id = f"uid-cal-{uuid.uuid4().hex[:6]}"
+    await world.backend.provider.batch_upsert_nodes([{"_key": world.users["cal"], "userId": cal_user_id, "email": world.emails["cal"], "orgId": ORG,
+                                                      "isActive": True, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}],
+                                                    collection=CollectionNames.USERS.value)
+    await scenario.a_deactivated_signer_keeps_no_link(world.processor, world.backend.provider, world.connector_id, world.emails, world.users, cal_user_id)
+
+
+async def test_a_relink_for_an_address_the_user_no_longer_holds_writes_nothing(world: World) -> None:
+    await scenario.enable(world.processor, world.connector_id)
+    await world.write()
+    await scenario.a_stale_address_links_nothing(world.backend.provider, world.connector_id, ORG, world.emails, world.users)

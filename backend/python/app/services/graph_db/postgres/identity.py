@@ -626,6 +626,12 @@ class IdentityMixin(PgBase):
         ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
+            # locked as a delete writes it: a deactivated user (isActive false; a missing field is a live user) keeps no authenticator link
+            if await tx.fetchval("""/* pipeshub:graph.authenticated_as_creator */ SELECT doc->>'isActive' = 'false' FROM graph.nodes
+                WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR UPDATE""", org, creator_key):
+                await tx.execute("""/* pipeshub:graph.authenticated_as_drop_deactivated */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
+                    AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator'""", org, connector_id)
+                return
             if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1
                 AND ((coll = 'users' AND id = $2) OR (coll = $4 AND id = $3))""", org, creator_key, source_user_key, target_collection) < len({("users", creator_key), (target_collection, source_user_key)}):
                 self.logger.warning("Connector %s: the authenticated-as link is not written, its user or its %s node is not stored", connector_id, target_collection)
@@ -650,8 +656,10 @@ class IdentityMixin(PgBase):
         ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
-            user = await tx.fetchrow("""/* pipeshub:graph.directory_link_user */ SELECT doc->>'isActive' AS active FROM graph.nodes
-                WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR UPDATE""", org, user_key)
+            user = await tx.fetchrow("""/* pipeshub:graph.directory_link_user */ SELECT doc->>'isActive' AS active, lower(doc->>'email') = lower($3) AS holds
+                FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR UPDATE""", org, user_key, email)
+            if user is not None and not user["holds"]:
+                return      # the address changed since the caller read it: the relink of the new address decides
             live = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.directory_link_accounts */ SELECT id, doc->>'state' AS state FROM graph.nodes
                 WHERE org_id = $1 AND coll = 'sourceAccounts' AND doc->>'connectorId' = $2 AND doc->>'email' = $3 ORDER BY id FOR UPDATE""",
                                                     org, connector_id, email) if r["state"] != "withdrawn"]

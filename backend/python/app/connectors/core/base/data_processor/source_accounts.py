@@ -506,7 +506,7 @@ class SourceAccountGraph:
                 "state": state, "createdAtTimestamp": old.get("createdAtTimestamp") or now, "updatedAtTimestamp": now,
             })
         await tx_store.batch_upsert_nodes(docs, ACCOUNTS)
-        self._known |= set(wanted)
+        # not added to _known here: the transaction may still roll back, and principal() then has to read the store again
         await self.relink(tx_store, sorted(addresses))
 
     async def relink(self, tx_store: "TransactionStore", addresses: list[str]) -> None:
