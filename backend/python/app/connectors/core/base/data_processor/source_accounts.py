@@ -180,7 +180,7 @@ class SourceAccounts:
 
     async def before_grants(self, accounts: Iterable[tuple[str | None, str | None]]) -> bool:
         """The check ``before_link`` makes, for accounts a connector grants but does not list (an external
-        collaborator, a customer): ``(address, source id)`` pairs from the data the grant comes from, passed before
+        collaborator, an end user): ``(address, source id)`` pairs from the data the grant comes from, passed before
         the grants are written. Only pairs this process has not seen as they are go through, so a page of grants
         repeating known accounts costs nothing. False as ``before_link``: the stored links could not be read."""
         fresh = []
