@@ -13,10 +13,12 @@ import asyncio
 import contextlib
 import os
 import threading
-from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 _current: ContextVar[ThreadWork | None] = ContextVar("parse_thread_work", default=None)
 _INSTALLED = "_parse_thread_work_installed"
