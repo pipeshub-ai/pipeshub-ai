@@ -6553,7 +6553,7 @@ class SalesforceConnector(BaseConnector):
         # run (it has already taken an earlier account's grants): only that account is read and written. Deciding it
         # again here would let two active users on one address take turns removing each other's grants.
         await self.source_accounts.ensure_loaded([u["Email"] for u in sf_users])
-        sf_users = [u for u in sf_users if self.source_accounts.holds(u["Email"], u["Id"])]
+        sf_users = [u for u in sf_users if self.source_accounts.admits(u["Email"], u["Id"])]
 
         await self._sync_product_readers(eligibility, sf_users)
 

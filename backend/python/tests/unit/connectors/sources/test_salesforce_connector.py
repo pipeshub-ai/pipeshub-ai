@@ -18,7 +18,10 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+from app.connectors.core.base.data_processor.source_accounts import (
+    SourceAccounts,
+    _bucket,
+)
 from app.connectors.sources.salesforce.connector import (
     ACCOUNTS_SYNC_POINT_KEY,
     CASES_SYNC_POINT_KEY,
@@ -3833,6 +3836,20 @@ class TestPermissionsFollowTheAddressHolder:
                                                    {"Id": new, "Email": "alice@example.com"}])
 
         assert read == [new]
+
+    @pytest.mark.asyncio
+    async def test_an_address_a_deleted_user_still_holds_is_read_only_for_the_linked_user(self) -> None:
+        """Deleted-account evidence no listing has reconciled: the deleted user's access is never read or written."""
+        connector, accounts = self._connector()
+        gone, linked = "005000000000001AAA", "005000000000002AAA"
+        assert await accounts.before_link([self._sf_user(linked)])
+        await accounts.ensure_loaded()
+        accounts._deleted = {_bucket("alice@example.com"): {"alice@example.com": gone}}
+
+        read = await self._permissions(connector, [{"Id": gone, "Email": "alice@example.com"},
+                                                   {"Id": linked, "Email": "alice@example.com"}])
+
+        assert read == [linked]
 
     @pytest.mark.asyncio
     async def test_two_active_users_on_one_address_keep_the_listings_holder_and_remove_nothing_more(self) -> None:
