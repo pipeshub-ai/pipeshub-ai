@@ -6014,7 +6014,7 @@ class DataSourceEntitiesProcessor:
         """Delete the permission edges into a record of the user and of the Person (an external collaborator) with an
         email. A failed read raises, so nothing is left unremoved."""
         async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
             person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
             edges = [
                 {"from_id": principal.id, "from_collection": collection, "to_id": record_id,
