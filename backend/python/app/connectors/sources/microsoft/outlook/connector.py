@@ -180,6 +180,8 @@ class OutlookUserListing(UserListing):
 
     listed_ids: frozenset[str] | set[str] = frozenset()
     disabled_ids: frozenset[str] | set[str] = frozenset()
+    # Filled on every read: an account a page reports disabled is disabled, whether or not the read was complete.
+    reported_disabled_ids: frozenset[str] | set[str] = frozenset()
 
 
 @ConnectorBuilder(OutlookConnectorNames.TEAM)\
@@ -669,6 +671,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # Sync all enterprise users to database
             await self.data_entities_processor.on_new_app_users(all_enterprise_users)
             self._users_trusted = await self._withdraw_disabled_app_users(all_enterprise_users)
+            if not getattr(all_enterprise_users, "complete", True):
+                await self.data_entities_processor.withdraw_reported_unusable(
+                    self.connector_id, set(getattr(all_enterprise_users, "reported_disabled_ids", ())))
             if self._users_trusted:
                 await self._populate_user_cache(all_enterprise_users)
 
@@ -812,6 +817,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             listing.complete = complete
             listing.listed_ids = listed_ids if complete else set()
             listing.disabled_ids = disabled_ids if complete else set()
+            listing.reported_disabled_ids = disabled_ids
 
             self.logger.info(f"Retrieved {len(all_users)} total users across {page_num} page(s) (complete: {complete})")
             return listing

@@ -974,10 +974,13 @@ class JiraConnector(BaseConnector):
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
-            if not self._user_read_unfinished:
-                await self._withdraw_ineligible_app_users(
-                    jira_users, unlicensed_ids | self._deactivated_account_ids
-                )
+            # An unfinished read still withdraws the accounts it reported deactivated (stated on the row); product
+            # access needs the complete read.
+            await self._withdraw_ineligible_app_users(
+                jira_users,
+                self._deactivated_account_ids if self._user_read_unfinished
+                else unlicensed_ids | self._deactivated_account_ids,
+            )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
