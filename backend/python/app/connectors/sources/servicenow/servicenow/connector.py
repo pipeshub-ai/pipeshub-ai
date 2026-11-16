@@ -2224,6 +2224,7 @@ class ServiceNowConnector(BaseConnector):
         latest_update_time = None
         inactive: set[str] = set()
         no_email = 0
+        lock_unread = 0
 
         # A failed page raises: a short list is indistinguishable from a complete one to
         # everything downstream, so the sync would report success over what it missed.
@@ -2262,6 +2263,11 @@ class ServiceNowConnector(BaseConnector):
                         or str(user_data.get(ServiceNowFields.LOCKED_OUT) or "").lower() == "true"
                         or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME):
                     inactive.add(user_data.sys_id)
+                    continue
+                if not hasattr(user_data, ServiceNowFields.LOCKED_OUT):
+                    # Not returned (a field ACL can hide it) is unknown, not unlocked: neither linked nor withdrawn,
+                    # and the checkpoint stays so the row is read again once the field can be read.
+                    lock_unread += 1
                     continue
                 if not (user_data.email or "").strip():
                     # Signs in as no PipesHub user: one stored with the email it had loses access too.
@@ -2309,11 +2315,16 @@ class ServiceNowConnector(BaseConnector):
                 )
 
         # Save checkpoint for next sync
-        if latest_update_time and not withdrawal_failed:
+        if latest_update_time and not withdrawal_failed and not lock_unread:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
         if not migrated:
             await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS_V2, {ServiceNowDictKeys.DONE: True})
 
+        if lock_unread:
+            self._note_problem(
+                f"The integration user cannot read whether {_plural(lock_unread, 'ServiceNow user is', 'ServiceNow users are')} "
+                "locked out, so they are not synced until it can"
+            )
         if no_email:
             self._note_problem(
                 f"{_plural(no_email, 'active ServiceNow user has', 'active ServiceNow users have')} no email "
