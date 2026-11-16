@@ -55,6 +55,7 @@ CALLS = {
     "has_records_indexed_since": ("c1", 0), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),
     "page_record_ids_by_type": ("o", ["FILE"]),
+    "list_unsupported_page": ("o", "c1", None, 10), "transition_unsupported": (["r"], "QUEUED"),
 }
 
 
