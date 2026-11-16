@@ -68,9 +68,19 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
 
 #: The delayed hops are a new event type. A consumer from before it existed drops a record hop ("record not found")
 #: and dead-letters an org hop (no recordId), so while old and new consumers run side by side the hop chain would be
-#: lost. Publishing is off until the operator has rolled every consumer out and sets this; the fence and the org purge
-#: still erase a deleted record's stored results, and the retention sweep removes what an orphaned parse leaves.
+#: lost. The FIRST hop of a delete is therefore published only once the operator has rolled every consumer out and
+#: sets this. A hop already on the topic always continues: its successor is published whatever this says, or a
+#: rolling restart that turns the setting on would end chains in flight. Without it a delete still sets the fence and
+#: purges the folder; only a write by a parse that outlived its record, after Redis lost the fence, stays until the
+#: org is purged (the retention sweep runs when a revision completes, and a deleted record has none).
 REPURGE_CHAIN_ENV = "PAID_RESULT_REPURGE_CHAIN"
+
+
+def _chain_on() -> bool:
+    if chain_enabled():
+        return True
+    logging.getLogger(__name__).debug("Paid-result re-purge hops are off (%s); the first hop is not published", REPURGE_CHAIN_ENV)
+    return False
 
 
 def chain_enabled() -> bool:
@@ -82,9 +92,6 @@ async def _publish(
 ) -> None:
     from app.services.messaging.kafka.topics import Topic
 
-    if not chain_enabled():
-        logging.getLogger(__name__).debug("Paid-result re-purge hops are off (%s); not published", REPURGE_CHAIN_ENV)
-        return
 
     if producer is None:
         raise RuntimeError("No messaging producer configured; cannot schedule the paid-result re-purge")
@@ -101,11 +108,15 @@ async def _publish(
 
 async def schedule_org_repurge(producer: Any, org_id: str, *, now: float | None = None, loop: Any = None) -> None:  # noqa: ANN401 - the messaging producer
     """The first hop of the chain for a deleted org (not one per record). Raises when it cannot be published."""
+    if not _chain_on():
+        return
     await _publish(producer, org_repurge_event_payload(org_id, now=now), org_id, loop)
 
 
 async def schedule_repurge(producer: Any, org_id: str, record_id: str, *, now: float | None = None, loop: Any = None) -> None:  # noqa: ANN401 - the messaging producer
     """The first hop of the chain for a record. Raises when it cannot be published: the delete event is redelivered."""
+    if not _chain_on():
+        return
     await _publish(producer, repurge_event_payload(org_id, record_id, now=now), record_id, loop)
 
 

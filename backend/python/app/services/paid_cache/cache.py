@@ -253,7 +253,7 @@ class PaidResultCache:
         if not fenced:
             self.logger.warning(
                 "Paid-result delete marker for record %s reached this process only; "
-                "the delayed re-purge removes late writes", record_id,
+                "a late write by a parse still running for it is not fenced fleet-wide", record_id,
             )
         await self._store.purge_record(org_id, record_id)
         return fenced

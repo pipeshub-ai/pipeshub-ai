@@ -401,9 +401,12 @@ async def test_the_org_delete_handler_purges_then_schedules_the_org_repurge(worl
         await handler._handle_org_deleted({"orgId": ORG})
 
 
-async def test_no_hop_is_published_until_the_operator_turns_the_chain_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A consumer from before the event type drops a record hop and dead-letters an org hop, so during a rollout the
-    hops are not published: the delete still succeeds, and a stub of the old consumer never sees the new type."""
+async def test_the_first_hop_waits_for_the_operator_but_a_hop_in_flight_always_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumer from before the event type drops a record hop and dead-letters an org hop, so the first hop of a
+    delete is not published until the setting is on. A hop already on the topic must publish its successor, or a
+    rolling restart that turns the setting on would end the chains in flight."""
     from unittest.mock import AsyncMock
 
     from app.services.paid_cache import repurge
@@ -415,11 +418,12 @@ async def test_no_hop_is_published_until_the_operator_turns_the_chain_on(monkeyp
 
     await repurge.schedule_repurge(producer, "org-1", "rec-1")
     await repurge.schedule_org_repurge(producer, "org-1")
+    old_consumer_inbox.assert_not_awaited()                # no first hop while the setting is off
+
     first = repurge.repurge_event_payload("org-1", "rec-1", now=1000.0)
     assert await repurge.schedule_next_hop(producer, "org-1", first, now=1100.0) is True
-
-    old_consumer_inbox.assert_not_awaited()
+    assert old_consumer_inbox.await_count == 1             # a hop in flight continues on a consumer with it off
 
     monkeypatch.setenv("PAID_RESULT_REPURGE_CHAIN", "true")
     await repurge.schedule_repurge(producer, "org-1", "rec-1")
-    assert old_consumer_inbox.await_count == 1
+    assert old_consumer_inbox.await_count == 2
