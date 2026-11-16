@@ -10,7 +10,7 @@
 # p_projector_epoch (kg_0013): the writers of stamps and fences and those that take work off the change log or the restamp queue take the caller's projection code
 # epoch and refuse one below 7. Code of an older release calls them without it and finds no such function: it wrote stamps without the access lists (kg.scopes)
 # and r13, and would take work off the log or the queue without writing them. Epoch 5 (kg_0014) is refused too: it wrote no PARENT_CHILD links (kind 3). Epoch 6
-# (kg_0016) is refused too: it read PARENT_AND_GRANT as an unknown rule.
+# (kg_0017) is refused too: it read PARENT_AND_GRANT as an unknown rule.
 functions:
   - name: kg.w_nodes_upsert
     class: write
@@ -768,3 +768,21 @@ functions:
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n;
       END;
+
+  # A connector's first load into kg (its promotion to enforce) or its count after a restore asks the maintenance worker to refresh the statistics of the kg tables
+  # (db/lib/kg_stats.py): one row per org, and a later ask moves its time forward (a first seed counts a load still being copied; the promotion that ends it asks
+  # again, and statistics taken in between must not close it). The worker deletes it once every table has statistics newer than the request.
+  - name: kg.w_analyze_request
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.analyze_requests", "set": ["requested_at"]}]
+    args:
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      INSERT INTO kg.analyze_requests (org_id, app_sk) VALUES (v_org, p_app_sk) ON CONFLICT (org_id) DO UPDATE SET requested_at = excluded.requested_at;
+        RETURN true;

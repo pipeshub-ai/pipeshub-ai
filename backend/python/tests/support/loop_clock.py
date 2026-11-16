@@ -19,6 +19,8 @@ def virtual_loop_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     loop = asyncio.get_running_loop()
     selector = loop._selector  # type: ignore[attr-defined]
+    if getattr(selector.select, "virtual", False):
+        return  # one clock per loop: a second would run beside the first instead of replacing it
     real_select = selector.select
     now = loop.time()
 
@@ -32,5 +34,6 @@ def virtual_loop_time(monkeypatch: pytest.MonkeyPatch) -> None:
         now += timeout
         return []
 
+    select.virtual = True  # type: ignore[attr-defined]
     monkeypatch.setattr(loop, "time", lambda: now)
     monkeypatch.setattr(selector, "select", select)
