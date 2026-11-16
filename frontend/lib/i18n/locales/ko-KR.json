@@ -798,7 +798,8 @@
       "folderSeparator": "폴더 이름에는 \"/\" 또는 \"\\\"를 사용할 수 없습니다.",
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     },
-    "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요."
+    "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요.",
+    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -5427,6 +5428,7 @@
     "mcpServerNeedsToolsTooltip": "모든 MCP 서버에 대해 도구를 선택하거나 \"모든 도구\"를 켜세요.",
     "mcpServerNeedsToolsBanner": "{{names}}에 대해 도구를 하나 이상 선택하거나 \"모든 도구\"를 켜세요.",
     "mcpPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 MCP 서버입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
+    "serviceAgentCollectionsNeedBinding": "이 서비스 에이전트를 서비스 계정에 연결한 후에 컬렉션을 추가할 수 있습니다.",
     "mcpAgentApprovalsEnterprise": "에이전트별 도구 승인은 Enterprise Edition 기능입니다. 여기서는 각자의 도구 승인 설정이 적용됩니다.",
     "mcpAgentApprovals": "에이전트별 도구 승인",
     "limitSource": "{{name}}에서 검색할 범위 선택",

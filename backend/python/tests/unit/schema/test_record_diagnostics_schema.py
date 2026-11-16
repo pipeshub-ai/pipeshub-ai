@@ -172,6 +172,11 @@ def _docstrings(tree: ast.AST) -> set[int]:
 
 def _writers(source: str) -> list[int]:
     """Lines that name one of the four fields (as a string or an entity attribute store) outside a docstring."""
+    # Skipping a file whose text never spells a name keeps the whole-tree scan inside the unit
+    # timeout. Identifiers always appear in the text; a string hit is caught only when the name is
+    # written out whole (not split across adjacent literals or hidden behind an escape).
+    if not _NAME.search(source):
+        return []
     tree = ast.parse(source)
     skip = _docstrings(tree)
     hits: list[int] = []

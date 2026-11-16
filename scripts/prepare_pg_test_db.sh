@@ -4,7 +4,7 @@
 #   PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5432/postgres scripts/prepare_pg_test_db.sh [dbname]
 # Needs: python with backend/db/requirements.txt installed (PREPARE_PG_PYTHON, default python), a superuser in PG_ADMIN_URL.
 # A non-local PG_ADMIN_URL host is refused unless PG_TEST_ALLOW_REMOTE=1.
-# PG_RUNTIME_ROLE (connectors|node) picks the login in PG_RUNTIME_TEST_URL. Every login role gets the password in PG_TEST_PASSWORD (default: a fixed test value; the server is a throwaway one).
+# PG_RUNTIME_ROLE (connectors|node) picks the login in PG_RUNTIME_TEST_URL. PG_TEST_MIGRATE_URL and PG_TEST_JOBS_URL are the maintenance worker's credentials and PG_TEST_MAINTAIN_PYTHON its interpreter (a test runs `python -m db.maintain` with them). Every login role gets the password in PG_TEST_PASSWORD (default: a fixed test value; the server is a throwaway one).
 set -euo pipefail
 : "${PG_ADMIN_URL:?PG_ADMIN_URL is required}"
 db=${1:-pipeshub_ci}
@@ -39,4 +39,7 @@ export PG_NODE_URL=$(login node)
 export PG_RUNTIME_TEST_URL=$(login "${PG_RUNTIME_ROLE:-connectors}")
 export PG_POOLER=none
 export PG_RUNTIME_SERVICE=connectors
+export PG_TEST_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:$pw@$hostport/$db
+export PG_TEST_JOBS_URL=postgresql://pipeshub_jobs:$pw@$hostport/$db
+export PG_TEST_MAINTAIN_PYTHON=$py
 OUT

@@ -155,7 +155,7 @@ class InMemoryGraph:
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list[Any],
-        return_fields: list[str] | None = None, transaction: str | None = None,
+        return_fields: list[str] | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
     ) -> list[dict]:
         self._enter("get_nodes_by_field_in", collection, field, values)
         stored_field = "_key" if field == "id" else field
@@ -165,6 +165,33 @@ class InMemoryGraph:
                 view = {**doc, "id": doc["_key"]}
                 out.append({f: view.get(f) for f in return_fields} if return_fields else view)
         return out
+
+    async def get_user_connector_instances(
+        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, **_: object,
+    ) -> list[dict]:
+        try:
+            self._enter("get_user_connector_instances", user_id, org_id)
+        except Exception:
+            return []  # like the real providers
+        return [
+            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
+            if doc.get("orgId") == org_id and (
+                doc.get("scope") == team_scope
+                or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id)
+            )
+        ]
+
+    async def get_org_apps(
+        self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
+    ) -> list[dict]:
+        self._enter("get_org_apps", org_id)
+        return [
+            {**copy.deepcopy(doc), "id": doc["_key"]} for doc in self.nodes.get("apps", {}).values()
+            if doc.get("orgId") == org_id and (not active_only or doc.get("isActive"))
+            and (app_type is None or doc.get("type") == app_type)
+            and (app_ids is None or doc["_key"] in app_ids)
+        ]
 
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
         self._enter("check_agent_permission", agent_id, user_id, org_id)

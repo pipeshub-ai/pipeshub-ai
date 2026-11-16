@@ -18,7 +18,7 @@ from app.services.graph_db.postgres.kg.writers import KgWriter
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge, prov
-from .test_kg_projection import run
+from .test_kg_projection import run, update_node
 from .test_kg_projection_races import OPS, everything2, world2
 from .test_kg_read import flip
 
@@ -262,6 +262,11 @@ async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(
     assert await counts.run(pg_db, dst)                                          # every restored connector is counted whole again
     truth, held, unfolded = await state(p, dst)
     assert truth and held == truth and unfolded == 0
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:                                                                         # and its rows, new to the statistics, ask the worker to analyze kg
+        assert await con.fetchval("SELECT count(*) FROM kg.analyze_requests WHERE org_id = $1", dst) == 1
+    finally:
+        await con.close()
 
 
 async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_its_counters_equal_to_count_star(pg_db) -> None:
@@ -305,6 +310,29 @@ async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_it
         await con.close()
     truth, held, _ = await state(p, org)
     assert truth and held == truth
+    await fold_all(pg_db, org)
+    truth, held, unfolded = await state(p, org)
+    assert held == truth and unfolded == 0
+
+
+async def test_records_with_the_parent_and_grant_rule_keep_the_counters_equal_to_count_star(pg_db) -> None:
+    """A live record under a folder its viewer reads by a grant of the folder's own becomes PARENT_AND_GRANT, then RESTRICTED: the records writer takes the rule,
+    the record moves to a class of its own and back, and the counters by class follow it, folded or not."""
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await run(p, org, await everything2(p, org))
+    with ctx(org):
+        await p.batch_create_edges([edge("f1", "records", "fold", "records")], "inheritPermissions")
+        await p.batch_create_edges([edge("u1", "users", "fold", "records", type="USER", role="READER")], "permission")
+    for rule in ("PARENT_AND_GRANT", "RESTRICTED", "PARENT_AND_GRANT"):
+        await run(p, org, await update_node(p, org, "records", "f1", isDeleted=False, accessRule=rule) | {("records", "fold")})
+
+        async def stored(tx) -> str | None:
+            return await tx.fetchval("SELECT rule FROM kg.records WHERE org_id = $1 AND id = 'f1'", org)
+        with ctx(org):
+            assert await p._q(stored, None) == rule
+        truth, held, _ = await state(p, org)
+        assert held == truth
     await fold_all(pg_db, org)
     truth, held, unfolded = await state(p, org)
     assert held == truth and unfolded == 0

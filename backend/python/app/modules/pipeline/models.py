@@ -254,6 +254,48 @@ class StageResult(BaseModel):
     record_view: RecordView | None = None
     # Kept with the stage's state on COMPLETED (see StageState.output).
     output: str | None = None
+    # What a PAUSED outcome says about the model call behind it, for the pause budget
+    # (``pause_budget``). Not stored: none of it reaches a record or a stage state.
+    # ``sent``: a request reached the wire (an open circuit is a refusal, not a send);
+    # a stage that cannot tell says it did, so a paused job never gets free sends.
+    sent: bool = True
+    # Requests on the wire behind this outcome (None: one when ``sent``); the pause budget counts these as sends.
+    requests: int | None = None
+    # A half-open trial: carried for the fleet, never charged to the job.
+    trial: bool = False
+    # A failed send made with the breaker closed while the provider was serving others.
+    chargeable: bool = False
+    # How many of the run's failed sends were chargeable (None: one when ``chargeable``).
+    charged: int | None = None
+    # Digest and size class of the provider key's breaker, for its hold ledger.
+    provider_pk: str | None = None
+    size_class: str | None = None
+    # The provider's readable key (class, model and endpoint host; never a credential), for reasons and notices.
+    provider_label: str | None = None
+
+    @classmethod
+    def paused_for(
+        cls, exc: BaseException | None, reason: str, *, traced: Mapping[str, object] | None = None
+    ) -> "StageResult":
+        """A PAUSED outcome for model calls the provider could not serve, carrying what the pause budget needs to count
+        them. ``traced`` is the run's own count (the job trace's ``pause_fields``), which wins over what one exception
+        says; without it, ``exc`` (``LLMUnavailableError``) is read, and an error that does not say counts as a send."""
+        retry_after = getattr(exc, "retry_after", None)
+        if traced:
+            return cls(outcome=StageOutcome.PAUSED, reason=reason, retry_after_s=retry_after, **traced)  # type: ignore[arg-type]
+        return cls(
+            outcome=StageOutcome.PAUSED,
+            reason=reason,
+            retry_after_s=retry_after,
+            sent=getattr(exc, "sent", True),
+            requests=getattr(exc, "requests", None),
+            trial=getattr(exc, "trial", False),
+            chargeable=getattr(exc, "chargeable", False),
+            charged=getattr(exc, "charged", None),
+            provider_pk=getattr(exc, "pk", None),
+            size_class=getattr(exc, "size_class", None),
+            provider_label=getattr(exc, "provider", None),
+        )
 
 
 class StageState(BaseModel):

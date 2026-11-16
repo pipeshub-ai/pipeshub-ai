@@ -21,11 +21,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
+from app.api.routes.parsing import parse_admission_stats
 from app.api.routes.parsing import router as parsing_router
 from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
@@ -70,7 +72,9 @@ from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.text.plain_text_parser import PlainTextParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.services.docling.client import DoclingClient
+from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
 from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
@@ -106,6 +110,9 @@ def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
 
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ParsingAppContainer.init("parsing_service")
 container_lock = asyncio.Lock()
@@ -332,6 +339,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     asyncio.get_running_loop().set_default_executor(executor)
     app.state.parse_executor = executor
 
+    # The model providers' circuit breaker is the fleet's: shared with the indexing service through Redis, so every
+    # process and pod sees the same outage.
+    fleet_registry = await bind_service_fleet(config_service, app_logger)
+
     app_logger.info(
         "✅ Parsing Service started — %d formats registered | "
         "heavy_parse_ceiling=%d light_parse_ceiling=%d (worker_count=%d) | thread_pool_size=%d | "
@@ -349,6 +360,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     app_logger.info("🔄 Parsing Service shutting down")
+    bind_fleet_redis(None)
+    await fleet_registry.aclose()
     # The pool goes first: its workers hold leases and tokens of the governor's
     # lane budget, and closing the budget under them strands the waiters.
     # Cleared first, or the next submit in this process starts a new pool.
@@ -419,8 +432,18 @@ async def health_check() -> JSONResponse:
             container.logger().warning("Resource governor stats failed: %s", stats_error)
             content["resource_governor"] = {"error": "unavailable"}
     try:
+        # Why the pools admit what they admit, and which requests were refused and why.
+        content["admission"] = {
+            "governor": governor.admission_explain() if governor is not None else None,
+            "parse": parse_admission_stats(),
+        }
+    except Exception as stats_error:
+        container.logger().warning("Admission stats failed: %s", stats_error)
+        content["admission"] = {"error": "unavailable"}
+    try:
         # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
         content["llm_gateway"] = get_llm_gateway().stats()
+        content["llm_wire_hooks"] = wire_hook_status()
     except Exception as stats_error:
         # Logged, not returned: exception text does not belong in /health.
         container.logger().warning("LLM gateway stats failed: %s", stats_error)

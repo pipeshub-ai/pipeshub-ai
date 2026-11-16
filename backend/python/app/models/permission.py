@@ -21,6 +21,20 @@ def read_role(role: str | None) -> str | None:
     return PermissionType.READ.value if role in RETIRED_ROLES else role
 
 
+#: The access paths of a record's details that are grants on the record itself: the user's (or a linked source account's), a group's or role's, the
+#: organisation's.
+RECORD_OWN_ACCESS_TYPES = frozenset({"DIRECT", "GROUP", "ORGANIZATION"})
+
+
+def best_record_access(access: list[dict], access_rule: str | None) -> dict:
+    """The access path whose role a record's details show: the highest. A record whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes
+    it from its own grants alone, as the role reads do: a grant on what it inherits from never sets it (READER, read access, when none is listed)."""
+    if access_rule in ("RESTRICTED", "PARENT_AND_GRANT"):
+        access = [a for a in access if a.get("type") in RECORD_OWN_ACCESS_TYPES] or [{"type": "CONNECTOR", "role": PermissionType.READ.value}]
+    rank = {"OWNER": 3, "WRITER": 2, "READER": 1}
+    return max(access, key=lambda a: rank.get(read_role(a.get("role", "")), 0))
+
+
 class EntityType(str, Enum):
     USER = "USER"
     GROUP = "GROUP"
