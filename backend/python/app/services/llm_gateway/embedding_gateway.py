@@ -73,6 +73,10 @@ def _status_of(exc: BaseException) -> int | None:
             status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
             if isinstance(status, int) and 100 <= status <= 599:
                 return status
+        # An httpx (or requests) error keeps its status only on the response it carries.
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
         current = current.__cause__
     return None
 

@@ -105,3 +105,40 @@ async def test_a_request_fault_is_raised_unchanged() -> None:
     vs = _store(fault, [[0.2]])
     result, _sleep = await _run(vs, EmbeddingGateway(retry_budget=RetryBudget()))
     assert result is fault and vs.dense_embeddings.aembed_documents.await_count == 1
+
+
+async def test_a_local_embedding_server_is_probed_without_the_gateway() -> None:
+    """The local server is not paid and keeps its own client retry: its size probe is not repeated by the gateway and spends
+    none of the shared retry budget."""
+    from app.utils.embedding_server_client import EmbeddingServerEmbeddings
+
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    vs = _make_vectorstore()
+    local = AsyncMock(spec=EmbeddingServerEmbeddings)
+    local.aembed_query = AsyncMock(side_effect=[_error(503)])
+    with patch("app.modules.transformers.vectorstore.get_embedding_gateway", return_value=gateway), \
+            patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=local), \
+            pytest.raises(Exception):  # noqa: B017 - the build reports the model as unavailable
+        await vs._build_embedding_model(None, "hash")
+    assert local.aembed_query.await_count == 1, "the gateway must not repeat a local probe"
+
+
+async def test_a_local_embedding_server_is_not_repeated_by_the_entity_store() -> None:
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
+    from app.utils.embedding_server_client import EmbeddingServerEmbeddings
+
+    local = AsyncMock(spec=EmbeddingServerEmbeddings)
+    local.embed_documents = lambda texts: (_ for _ in ()).throw(_error(503))
+    store = EntityVectorStore.__new__(EntityVectorStore)
+    store._dense_embeddings = local
+    calls = 0
+
+    def boom(texts: list[str]) -> list[list[float]]:
+        nonlocal calls
+        calls += 1
+        raise _error(503)
+
+    local.embed_documents = boom
+    with pytest.raises(openai.InternalServerError):
+        await store._embed(["x"])
+    assert calls == 1

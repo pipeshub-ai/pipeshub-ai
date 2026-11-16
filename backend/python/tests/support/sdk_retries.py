@@ -65,7 +65,14 @@ def sdk_retries(model: Any) -> int:  # noqa: ANN401
             return 99
         return max(0, int(model.max_retries) - 1)
     if name == "GoogleGenerativeAIEmbeddings":
-        return 0 if _genai_uses_httpx(model) else 99
+        # The transport (aiohttp repeats a dropped connection by itself) and the retry options (attempts) are separate.
+        if not _genai_uses_httpx(model):
+            return 99
+        attempts = [
+            getattr(getattr(api._http_options, "retry_options", None), "attempts", None)
+            for api in wire._genai_api_clients(model)
+        ]
+        return max((max(0, int(a) - 1) for a in attempts if a), default=0)
     if name in {"ChatCohere", "CohereEmbeddings"}:
         # The HTTP client retries 408, 429 and 5xx twice unless the request option says otherwise; the embeddings
         # wrapper adds a tenacity layer of its own that counts attempts.

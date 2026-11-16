@@ -7,6 +7,7 @@ would call it again too early and dead-letter the record after three such tries.
 from __future__ import annotations
 
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -91,3 +92,21 @@ async def test_processing_a_record_again_clears_its_wait() -> None:
     harness = Harness(_record(indexingStatus="QUEUED", deferredUntilMs=1_000))
     await harness.run(_payload(parseNow=False))
     assert {"deferredUntilMs": None} in [{"deferredUntilMs": w["deferredUntilMs"]} for w in harness.writes() if "deferredUntilMs" in w]
+
+
+async def test_a_failed_cleanup_does_not_replace_the_hand_back() -> None:
+    """If putting the record back in line fails, the consumer must still see the hand-back (its delay, no attempt counted),
+    not the provider's original error, which it would retry at the 15 s backoff."""
+    harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
+    real = harness.graph.update_node.side_effect
+
+    async def update(doc_id: str, collection: str, fields: dict) -> bool:
+        if fields.get("indexingStatus") == "QUEUED":
+            raise ConnectionError("graph unavailable")
+        return await real(doc_id, collection, fields) if real else True
+
+    harness.graph.update_node = AsyncMock(side_effect=update)
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert raised.value.delay_s == 300.0

@@ -98,6 +98,12 @@ RAW_CALL_ALLOWANCES = {
     ("modules/transformers/vectorstore.py", "_compute_sparse_embeddings"): "local BM25 vectors: no provider, no cost",
     ("modules/transformers/entity_vectorstore.py", "_embed_sparse"): "local BM25 vectors: no provider, no cost",
     ("modules/transformers/entity_vectorstore.py", "_query_vectors"): "query-time sparse vectors (local BM25) for a search",
+    ("modules/transformers/vectorstore.py", "_build_embedding_model"):
+        "the local embedding server's size probe: not paid, its client retries; a remote model goes through probe_dimension",
+    ("modules/transformers/entity_vectorstore.py", "_embedding_dimension"):
+        "the local embedding server's size probe: not paid, its client retries; a remote model goes through probe_dimension",
+    ("modules/transformers/entity_vectorstore.py", "_embed"):
+        "the local embedding server: not paid, its client retries; a remote model goes through EmbeddingGateway.call",
     ("modules/transformers/vectorstore.py", "_embed_documents_with_retry"):
         "the per-attempt body of the loop whose retry decision is EmbeddingGateway.decide (asserted below)",
     ("modules/transformers/vectorstore.py", "_process_image_embeddings"):
@@ -125,16 +131,21 @@ def _raw_calls(path: Path) -> list[tuple[int, str, str]]:
         for target in candidates:
             if not _RAW_CALL.match(target.attr) or _GATEWAY_RECEIVER.search(ast.unparse(target.value)):
                 continue
-            # Inside the arguments of a gateway call (``get_embedding_gateway().call(lambda: client.embed(...))``): its own.
-            ancestor = parents.get(node)
+            # Handed to a gateway to call (a method reference, or inside a deferred ``lambda`` passed to it): its own. An
+            # eagerly evaluated argument (``gateway.invoke(llm, llm.invoke(m))``) runs before the gateway starts: raw.
+            by_reference = target is not node.func
             inside_gateway = (
                 isinstance(node.func, ast.Attribute) and bool(_GATEWAY_RECEIVER.search(ast.unparse(node.func.value)))
+                and by_reference
             )
+            ancestor, crossed_deferred = parents.get(node), False
+            child: ast.AST = node
             while ancestor is not None and not inside_gateway:
+                crossed_deferred = crossed_deferred or isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef))
                 if isinstance(ancestor, ast.Call) and isinstance(ancestor.func, ast.Attribute) \
-                        and _GATEWAY_RECEIVER.search(ast.unparse(ancestor.func.value)):
+                        and _GATEWAY_RECEIVER.search(ast.unparse(ancestor.func.value)) and crossed_deferred:
                     inside_gateway = True
-                ancestor = parents.get(ancestor)
+                child, ancestor = ancestor, parents.get(ancestor)
             if inside_gateway:
                 continue
             scope: ast.AST | None = node
@@ -225,3 +236,11 @@ def test_the_scan_lets_a_gateway_call_wrap_the_same_references(tmp_path: Path) -
 def test_the_scan_covers_the_other_paid_modules() -> None:
     covered = {path.relative_to(APP).as_posix() for path in PAID_CALL_PATHS}
     assert {"utils/indexing_helpers.py", "events/processor.py", "modules/pipeline"} <= covered
+
+
+def test_the_scan_flags_a_raw_call_evaluated_eagerly_as_a_gateway_argument(tmp_path: Path) -> None:
+    """``get_llm_gateway().invoke(llm, llm.invoke(m))`` runs the inner call before the gateway starts: it is raw."""
+    found = _scan(tmp_path, "async def f(llm, m):\n    return await get_llm_gateway().invoke(llm, llm.invoke(m))\n")
+    assert [attr for _line, attr, _function in found] == ["invoke"]
+    deferred = _scan(tmp_path, "async def f(e, t):\n    return await get_embedding_gateway().call(lambda: e.aembed_documents(t))\n")
+    assert deferred == []

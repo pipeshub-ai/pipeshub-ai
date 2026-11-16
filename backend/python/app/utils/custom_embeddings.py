@@ -54,9 +54,23 @@ def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any
     )
 
 
-def _check_response(response: dict) -> dict:
+class VoyageAPIError(RuntimeError):
+    """Voyage answered without embeddings. Keeps the HTTP status and the response (its headers carry ``Retry-After``), so
+    the caller that owns the retries can tell a throttle or an outage from a request's own fault."""
+
+    def __init__(self, message: str, *, status_code: int | None = None, response: Any = None) -> None:  # noqa: ANN401
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
+
+
+def _check_response(response: dict, http_response: Any = None) -> dict:  # noqa: ANN401
     if "data" not in response:
-        raise RuntimeError(f"Voyage API Error. Message: {json.dumps(response)}")
+        raise VoyageAPIError(
+            f"Voyage API Error. Message: {json.dumps(response)}",
+            status_code=getattr(http_response, "status_code", None),
+            response=http_response,
+        )
     return response
 
 
@@ -67,7 +81,11 @@ def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> 
     @retry_decorator
     def _embed_with_retry(**kwargs: dict[str, Any]) -> dict[str, Any]:
         response = requests.post(**kwargs)
-        return _check_response(response.json())
+        try:
+            payload = response.json()
+        except ValueError:  # an outage page is not JSON: the status still says what it was
+            payload = {"error": (response.text or "")[:200]}
+        return _check_response(payload, response)
 
     return _embed_with_retry(**kwargs)
 

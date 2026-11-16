@@ -503,6 +503,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             nonlocal unreadable_count, last_unreadable
             async with semaphore:
                 last_error = None
+                truncated_seen = False
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
                         result = await self.process_page(page, page_number)
@@ -517,7 +518,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                         last_error = e
                         # A cut-off page is paid for each time it is sent and usually comes back cut again: it
                         # gets one more send (two in all), not the full retry allowance.
-                        retries = 1 if isinstance(e, VlmOutputTruncated) else self.MAX_RETRY_ATTEMPTS
+                        truncated_seen = truncated_seen or isinstance(e, VlmOutputTruncated)
+                        retries = 1 if truncated_seen else self.MAX_RETRY_ATTEMPTS
                         if attempt < retries:
                             self.logger.warning(
                                 f"⚠️ Retry {attempt + 1}/2 for page {page_number}: {str(e)}"

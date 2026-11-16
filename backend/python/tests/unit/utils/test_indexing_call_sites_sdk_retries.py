@@ -315,3 +315,28 @@ def test_the_extraction_client_sends_each_request_once_until_the_service_single_
     from app.services.extraction.client import ExtractionClient
 
     assert ExtractionClient(service_url="http://extraction:8093").max_retries == 1
+
+
+def test_the_google_embedding_reader_sees_a_retry_policy_not_only_the_transport() -> None:
+    """A control: the reader reports the retries a Google embeddings client is configured with, so a regression that turns
+    them on is seen (httpx transport alone does not mean no retries)."""
+    from google.genai import types
+
+    from app.services.llm_gateway import wire
+
+    config = {"configuration": CONFIGURATION, "isDefault": True}
+    model = get_embedding_model("gemini", config, "m", sdk_retries=INDEXING_SDK_RETRIES)
+    assert sdk_retries(model) == 0
+    for api in wire._genai_api_clients(model):
+        api._http_options.retry_options = types.HttpRetryOptions(attempts=4)
+    assert sdk_retries(model) == 3
+
+
+async def test_the_gemini_agent_transport_sends_through_httpx_when_single_attempt() -> None:
+    """With aiohttp installed google-genai repeats a request after a lost reply by itself; a single-attempt transport is
+    routed through httpx, which does not."""
+    from app.services.llm_gateway import wire
+
+    config = {"configuration": CONFIGURATION, "isDefault": True}
+    single = GeminiTransport.from_langchain_model(get_generator_model("gemini", config, "m", sdk_retries=0), "m")
+    assert all(not api._use_aiohttp() for api in wire._genai_api_clients(single._client))

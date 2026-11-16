@@ -98,3 +98,20 @@ async def test_the_truncation_is_its_own_error_type() -> None:
     with patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_llm_gateway", return_value=LLMGateway(1)), \
             pytest.raises(VlmOutputTruncated, match="page 1"):
         await strategy._call_llm_for_markdown("data:image/png;base64,AAAA", 1)
+
+
+async def test_a_page_cut_off_once_and_then_failing_otherwise_keeps_its_two_sends() -> None:
+    """The reduced allowance is the page's, not the last error's: a cut-off page whose second send fails another way does not
+    get the full retry allowance back."""
+    class Flaky(_PagesModel):
+        async def ainvoke(self, messages: Any, **kw: Any) -> Any:  # noqa: ANN401
+            if "BBBB" in str(messages):
+                return await super().ainvoke(messages, **kw)
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(content="cut", response_metadata={"finish_reason": "length"}, usage_metadata=None)
+            raise ValueError("unreadable")
+
+    model = Flaky()
+    await _run(_strategy(model))
+    assert model.calls == 2

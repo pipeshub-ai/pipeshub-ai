@@ -2665,11 +2665,14 @@ class RecordEventHandler(BaseEventService):
                         # Preserve the exception already propagating (e.g. a
                         # CancelledError during shutdown) instead of masking
                         # it with a new one raised from this cleanup step.
-                        if last_exception is not None:
-                            raise last_exception from revert_exc
-                        raise RuntimeError(
-                            f"Failed to clear transient IN_PROGRESS status for {record_id}"
-                        ) from revert_exc
+                        # A hand-back is that exception: it carries the provider's wait to the consumer, which a
+                        # re-raised original error would replace with the ordinary retry.
+                        if not handed_back:
+                            if last_exception is not None:
+                                raise last_exception from revert_exc
+                            raise RuntimeError(
+                                f"Failed to clear transient IN_PROGRESS status for {record_id}"
+                            ) from revert_exc
 
                     if reverted:
                         self.logger.info(

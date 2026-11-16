@@ -1791,8 +1791,14 @@ class VectorStore(Transformer):
             is_multimodal = config.get("isMultimodal")
 
         try:
-            # Paid like any embedding request, so it goes through the gateway (one retry layer, kept per provider key).
-            embedding_size = await get_embedding_gateway().probe_dimension(dense_embeddings)
+            if isinstance(dense_embeddings, EmbeddingServerEmbeddings) or is_local_cpu_embedding_provider(
+                provider, (configuration or {}).get("endpoint")
+            ):
+                # The local embedding server is not paid and keeps its own client retry: it does not pass the gateway.
+                embedding_size = len(await dense_embeddings.aembed_query("test"))
+            else:
+                # Paid like any embedding request, so it goes through the gateway (one retry layer, kept per provider key).
+                embedding_size = await get_embedding_gateway().probe_dimension(dense_embeddings)
         except Exception as e:
             raise EmbeddingModelUnavailableError(
                 "Failed to get embedding model",

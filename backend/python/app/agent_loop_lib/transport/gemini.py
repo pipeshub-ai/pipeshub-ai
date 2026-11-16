@@ -197,6 +197,12 @@ class GeminiTransport(LLMTransport):
             if single_attempt or isinstance(timeout, (int, float)) else None
         )
         self._client = genai.Client(api_key=api_key, http_options=http_options)
+        if single_attempt:
+            # With aiohttp installed the SDK sends async requests through it and repeats one after a dropped connection
+            # on its own, whatever the retry options say: send them through httpx, which repeats nothing.
+            from app.services.llm_gateway.wire import route_genai_through_httpx
+
+            route_genai_through_httpx(self._client)
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
         self.total_llm_calls: int = 0

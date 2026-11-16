@@ -91,6 +91,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -698,9 +699,11 @@ class EntityVectorStore:
 
     async def _embedding_dimension(self) -> int:
         embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            # Not paid, and its client keeps its own retry: it does not pass the gateway.
+            return len(await asyncio.to_thread(embeddings.embed_query, "test"))
         # Paid like any embedding request: one retry layer, and the size is kept per provider key.
-        sample = await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_query, "test"))
-        return len(sample)
+        return await get_embedding_gateway().probe_dimension(embeddings)
 
     async def _init_collection(
         self, name: str | None = None, *, recreate: bool = False, create: bool = True,
@@ -974,6 +977,8 @@ class EntityVectorStore:
     # (tracing) into the worker thread.
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            return await asyncio.to_thread(embeddings.embed_documents, texts)
         return await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_documents, texts))
 
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
