@@ -137,19 +137,27 @@ class StoredContentHeal(ConnectorSweep):
         # with them. Only the window is lost with the process; the graph still
         # marks each one under way.
         self._in_flight: dict[str, str] = {}
+        self._listed: set[str] = set()
 
-    async def _capacity(self) -> int:
-        by_org: dict[str, list[str]] = {}
-        for key, org_id in self._in_flight.items():
-            by_org.setdefault(org_id, []).append(key)
-        still: dict[str, str] = {}
-        for org_id, keys in by_org.items():
-            rows = await self.graph.get_records_by_record_ids(
-                keys, org_id, visibility=RecordVisibility.ALL,
-            )
-            still.update({k: org_id for row in rows or [] if indexing_under_way(row) and (k := key_of(row))})
-        self._in_flight = still
-        return self.max_in_flight - len(still)
+    async def tick(self) -> str:
+        self._listed = set()
+        outcome = await super().tick()
+        if outcome != "not_leader":
+            # A holder whose org is no longer listed cannot be read again; kept, it would hold its slot forever.
+            self._in_flight = {k: o for k, o in self._in_flight.items() if o in self._listed}
+        return outcome
+
+    async def before_org(self, org_id: str) -> None:
+        """Let go of this org's holders that indexing is done with, read under this org's own context. The window
+        is one for every org (the re-indexes share the indexing service), so every org's holders are read each tick,
+        not only the org being swept."""
+        self._listed.add(org_id)
+        keys = [k for k, o in self._in_flight.items() if o == org_id]
+        if not keys:
+            return
+        rows = await self.graph.get_records_by_record_ids(keys, org_id, visibility=RecordVisibility.ALL)
+        still = {k for row in rows or [] if indexing_under_way(row) and (k := key_of(row))}
+        self._in_flight = {k: o for k, o in self._in_flight.items() if o != org_id or k in still}
 
     async def process_page(
         self, app: dict[str, Any], app_key: str, rows: list[dict[str, Any]],
@@ -157,7 +165,8 @@ class StoredContentHeal(ConnectorSweep):
         candidates = [(row, vrid) for row in rows if (vrid := _indexed_vrid(row))]
         if not candidates:
             return PageResult()
-        capacity = await self._capacity()
+        # This org's holders were read just before this page; another org's count as at its last read.
+        capacity = self.max_in_flight - len(self._in_flight)
         if capacity <= 0:
             return PageResult(waiting=True)
         # A failed read raises rather than reading as "no mapping", so the
