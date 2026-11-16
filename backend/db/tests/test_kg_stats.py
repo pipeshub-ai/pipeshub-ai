@@ -2,6 +2,8 @@
 ANALYZEs the kg browse tables as the owner and deletes the requests the new statistics cover, at most once per table per interval. Against a migrated database
 (PostgreSQL 17 and 18)."""
 
+import contextlib
+
 import psycopg
 import pytest
 from psycopg import errors as pg
@@ -102,6 +104,70 @@ def test_a_later_ask_moves_the_request_so_statistics_taken_while_a_load_is_copie
     seen = last(cluster, name)
     assert maintain.main(["analyze"]) == 0
     assert all(v != seen[t] for t, v in last(cluster, name).items() if t != kg_stats.TABLES[0]) and requests(cluster, name) == []
+
+
+def jobs_conn(cluster, name):
+    return psycopg.connect(f"postgresql://pipeshub_jobs@127.0.0.1:{cluster.port}/{name}", autocommit=True)
+
+
+def test_a_request_is_timed_when_it_is_made_not_when_its_transaction_began(rdb, monkeypatch):
+    cluster, name = rdb
+    env(monkeypatch, cluster, name)
+    with connect_as(cluster, name, "pipeshub_connectors_login") as c, uow(c, "pipeshub_connectors", ORG_A):   # a seed's transaction: it counts first, then asks
+        with cluster.admin(name) as a:                                                        # statistics taken while it counts
+            for t in kg_stats.TABLES:
+                a.execute(f"ANALYZE {t}")
+        assert c.execute(ASK, (5,)).fetchall() == [(True,)]
+    with jobs_conn(cluster, name) as jobs:
+        assert kg_stats.close_covered(jobs) == 0 and requests(cluster, name) == [ORG_A]
+
+
+def test_a_table_analyzed_after_an_older_request_is_due_again_for_a_newer_one(rdb, monkeypatch):
+    cluster, name = rdb
+    env(monkeypatch, cluster, name)
+    ask(cluster, name, ORG_A)
+    with cluster.admin(name) as c:                                                            # one table analyzed; the others were skipped (locked)
+        c.execute(f"ANALYZE {kg_stats.TABLES[0]}")
+    ask(cluster, name, ORG_B)                                                                 # a later org's first load
+    with jobs_conn(cluster, name) as jobs:
+        assert sorted(kg_stats.due(jobs)) == sorted(kg_stats.TABLES)
+
+
+def test_a_pass_that_waited_for_the_lock_checks_again_what_is_due(rdb, monkeypatch):
+    cluster, name = rdb
+    env(monkeypatch, cluster, name, every="3600")
+    ask(cluster, name, ORG_A)
+    real, seen = maintain.locked, {}
+
+    @contextlib.contextmanager
+    def behind_another_pass(url):
+        with cluster.admin(name) as c:                                                        # the pass it waited behind analyzed every table
+            for t in kg_stats.TABLES:
+                c.execute(f"ANALYZE {t}")
+        seen.update(last(cluster, name))
+        with real(url) as owner:
+            yield owner
+    monkeypatch.setattr(maintain, "locked", behind_another_pass)
+    assert maintain._analyze_pass(maintain.migrate_url()) == []
+    assert last(cluster, name) == seen and requests(cluster, name) == []
+
+
+def test_a_full_placement_pass_still_runs_the_analyze_pass(monkeypatch):
+    class Stop(BaseException):
+        pass
+    calls: list[str] = []
+
+    def full_pass(url):
+        calls.append("placement")
+        if calls.count("placement") > 3:
+            raise Stop
+        return [f"leaf{i}" for i in range(maintain.placement.MAX_PER_PASS)], [], []
+    monkeypatch.setattr(maintain, "_placement_pass", full_pass)
+    monkeypatch.setattr(maintain, "_analyze_pass", lambda url: calls.append("analyze") or [])
+    monkeypatch.setattr(maintain.time, "sleep", lambda s: calls.append("sleep"))
+    with pytest.raises(Stop):
+        maintain._watch("postgresql://unused", 1.0)
+    assert calls[:6] == ["placement", "analyze"] * 3                                          # every pass analyzes; a full one does not sleep
 
 
 def test_an_idle_job_never_takes_the_migrate_lock_and_a_due_one_waits_for_it(rdb, monkeypatch):

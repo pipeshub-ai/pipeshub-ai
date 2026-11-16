@@ -46,16 +46,17 @@ def close_covered(jobs: psycopg.Connection) -> int:
 
 
 def due(jobs: psycopg.Connection) -> list[str]:
-    """The tables to analyze now: those whose statistics are older than the oldest open request and were not taken in the last ``every_s()`` seconds."""
-    oldest = jobs.execute("SELECT min(requested_at) FROM kg.analyze_requests").fetchone()[0]
-    if oldest is None:
+    """The tables to analyze now: those whose statistics are older than some open request (the newest) and were not taken in the last ``every_s()`` seconds. Against the
+    oldest, a table analyzed after it would wait for that request to close, which a table skipped as locked could hold open, while a later org's request waited too."""
+    newest = jobs.execute("SELECT max(requested_at) FROM kg.analyze_requests").fetchone()[0]
+    if newest is None:
         return []
     out = []
     for t in TABLES:
         last, recent = jobs.execute(
             "SELECT greatest(s.last_analyze, s.last_autoanalyze), greatest(s.last_analyze, s.last_autoanalyze) > now() - make_interval(secs => %s) "
             "FROM pg_stat_all_tables s WHERE s.relid = %s::regclass", (every_s(), t)).fetchone()
-        if last is None or (last < oldest and not recent):
+        if last is None or (last < newest and not recent):
             out.append(t)
     return out
 

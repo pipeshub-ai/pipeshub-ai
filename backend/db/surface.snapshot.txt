@@ -410,7 +410,7 @@ column kernel.vetted_write_pins.set_cols type=name[] notnull=false identity= gen
 column kernel.vetted_write_pins.txn_col type=name notnull=false identity= generated= default=-
 column kg.analyze_requests.app_sk type=bigint notnull=true identity= generated= default=-
 column kg.analyze_requests.org_id type=text notnull=true identity= generated= default=-
-column kg.analyze_requests.requested_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column kg.analyze_requests.requested_at type=timestamp with time zone notnull=true identity= generated= default=clock_timestamp()
 column kg.class_literals.anchor_sk type=bigint notnull=true identity= generated= default=-
 column kg.class_literals.class_id type=bigint notnull=true identity= generated= default=-
 column kg.class_literals.org_id type=text notnull=true identity= generated= default=-

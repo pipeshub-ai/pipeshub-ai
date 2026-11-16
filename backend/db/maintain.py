@@ -96,7 +96,7 @@ def _analyze_pass(url: str) -> list[str]:
             return []
         with locked(url) as owner:
             owner.execute(f"SET ROLE {OWNER_ROLE}")
-            done = kg_stats.analyze(owner, todo)
+            done = kg_stats.analyze(owner, kg_stats.due(jobs))       # again under the lock: a pass it waited behind may have analyzed them
         kg_stats.close_covered(jobs)
         return done
 
@@ -136,12 +136,12 @@ def _summary(done: list[str], failed: list[str], refused: list[str]) -> str:
 def _watch(url: str, interval: float) -> None:
     log(f"placement worker running (every {interval:g}s)")
     while True:
+        full = False
         try:
             done, failed, refused = _placement_pass(url)
             if done or failed or refused:
                 log(_summary(done, failed, refused))
-            if len(done) + len(failed) + len(refused) >= placement.MAX_PER_PASS:
-                continue                                            # a full pass: more wait behind the cap, and a new org's writer waits too
+            full = len(done) + len(failed) + len(refused) >= placement.MAX_PER_PASS     # more wait behind the cap: no sleep, but the analyze pass still runs
         except (RunnerError, psycopg.Error, OperationalError, InterfaceError, OSError) as exc:   # the database is away or the lock is busy: try again
             log(f"placement pass failed: {_first_line(exc)}")
         try:
@@ -149,7 +149,8 @@ def _watch(url: str, interval: float) -> None:
                 log(f"kg tables analyzed: {', '.join(analyzed)}")
         except (RunnerError, psycopg.Error, OperationalError, InterfaceError, OSError) as exc:
             log(f"analyze pass failed: {_first_line(exc)}")
-        time.sleep(interval)
+        if not full:
+            time.sleep(interval)
 
 
 def _fold_pass() -> tuple[dict[str, int], dict[str, str]]:
