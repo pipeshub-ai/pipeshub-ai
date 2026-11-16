@@ -2,7 +2,7 @@
 # docker-compose.postgres-only.yml starts PipesHub on PostgreSQL alone: with every profile switched on (COMPOSE_PROFILES='*'), no
 # MongoDB, Qdrant, Redis, Neo4j, ArangoDB, etcd, Zookeeper or Kafka service renders or runs; the app selects PostgreSQL for the
 # document store, graph, vectors, key-value store, broker and scheduler; postgres, pgbouncer, the migration job and the placement
-# and fold workers start without their profiles. The app is stood in for by a sleeping container of the postgres image (building
+# and fold workers start without their profiles (with every profile on, and with none), and each worker does its job. The app is stood in for by a sleeping container of the postgres image (building
 # the application image is out of scope here); its dependencies and environment are the overlay's own. The optional helpers that are no
 # store (sandbox, web search and page reading) are left out of the run so that their images are not pulled.
 # Test-only environment: PROJECT_PREFIX names the compose project; EXTRA_COMPOSE_FILE adds one compose file. Both change nothing when
@@ -41,8 +41,11 @@ proj="${PROJECT_PREFIX:-pgimg}-only-$major-$$"
 services="$(dc config --services)"
 echo "PostgreSQL $major"
 check "no other store renders" "$(echo "$services" | grep -cE "$stores" || true)" 0
+# With no profile on at all (the documented start), the PostgreSQL stack renders too; '*' alone cannot show that.
+bare="$(COMPOSE_PROFILES= dc config --services)"
 for s in postgres pgbouncer pipeshub-migrate pipeshub-placement pipeshub-fold pipeshub-ai; do
-  check "$s renders without its profile" "$(echo "$services" | grep -cx "$s")" 1
+  check "$s renders with every profile on" "$(echo "$services" | grep -cx "$s")" 1
+  check "$s renders with no profile on" "$(echo "$bare" | grep -cx "$s")" 1
 done
 envs="$(dc config --format json | python3 -c 'import json,sys; e=json.load(sys.stdin)["services"]["pipeshub-ai"]["environment"]; print(" ".join(k+"="+str(e.get(k)) for k in ("DOC_STORE","DATA_STORE","VECTOR_DB_TYPE","KV_STORE_TYPE","MESSAGE_BROKER","REDIS_MODE","CRAWL_SCHEDULER")))')"
 check "the app selects PostgreSQL for every store" "$envs" \
@@ -59,6 +62,16 @@ for w in placement fold; do
 done
 check "the placement worker is watching" "$(dc logs pipeshub-placement 2>&1 | grep -c 'placement worker running')" 1
 check "the fold worker is watching" "$(dc logs pipeshub-fold 2>&1 | grep -c 'fold worker running')" 1
+# A banner is printed before any database work, and both loops outlive a failed pass: check what each worker did.
+org=0123456789abcdef01234567
+sql() { dc exec -T postgres psql -qtAX -U postgres -d pipeshub -v ON_ERROR_STOP=1 -c "$1"; }
+until_sql() { for _ in $(seq 60); do [ "$(sql "$1")" = "$2" ] && break; sleep 2; done; sql "$1"; }
+sql "INSERT INTO retrieval.placement_requests (org_id) VALUES ('$org')" >/dev/null
+check "the placement worker created the org's partition" \
+  "$(until_sql "SELECT to_regclass('retrieval.points_o_$org') IS NOT NULL" t)" t
+sql "INSERT INTO retrieval.lexical_df_delta (org_id, collection_id, space_id, term, d) VALUES ('$org', 1, 1, -1, 3)" >/dev/null
+check "the fold worker folded a point-count delta" \
+  "$(until_sql "SELECT n_points FROM retrieval.collection_stats WHERE org_id = '$org'" 3)" 3
 dc down -v >/dev/null 2>&1
 done
 
