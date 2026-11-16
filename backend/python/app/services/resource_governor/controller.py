@@ -40,6 +40,7 @@ from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
     LimitRule,
+    Limits,
     Pool,
     PoolDemand,
     ResourceSnapshot,
@@ -534,6 +535,7 @@ class ResourceGovernor:
         # that read the registry before the incident but writes after it.
         changed: list[tuple[Pool, int, int]] = []
         with self._state_lock:
+            state_at_start = self._state
             current = self._registry.snapshot()
             new_limits, new_state = next_limits(
                 current=current,
@@ -547,19 +549,39 @@ class ResourceGovernor:
                 worker_count=self._worker_count,
                 heavy_working_set_gb=self._policy_working_set(),
             )
-            if self._container is not None:
-                new_limits, new_state = self._container.step(
-                    own=(new_limits, new_state), snap=snapshot, ceilings=self._ceilings, demand=demand, now=now,
-                    interval=self._sample_interval, feedback=feedback,
-                    heavy_working_set_gb=self._policy_working_set(),
-                )
-            self._state = new_state
+            if self._container is None:
+                self._state = new_state
 
-            for pool in Pool:
-                new_value = new_limits.get(pool)
-                old_value = current.get(pool)
-                if self._registry.set(pool, new_value):
-                    changed.append((pool, old_value, new_value))
+                for pool in Pool:
+                    new_value = new_limits.get(pool)
+                    old_value = current.get(pool)
+                    if self._registry.set(pool, new_value):
+                        changed.append((pool, old_value, new_value))
+            ws_gb = self._policy_working_set()
+        if self._container is not None:
+            # PIPESHUB_CAPACITY_PROFILE=auto only. The shared ledger is read and written under file locks: off the
+            # event loop and outside the state lock, so a slow holder stalls neither the handlers nor an incident report.
+            stepped = await asyncio.to_thread(
+                self._container.step,
+                own=(new_limits, new_state), snap=snapshot, ceilings=self._ceilings, demand=demand, now=now,
+                interval=self._sample_interval, feedback=feedback, heavy_working_set_gb=ws_gb,
+            )
+            with self._state_lock:
+                new_limits, new_state = stepped
+                current = self._registry.snapshot()
+                if self._state is not state_at_start:
+                    # report_memory_incident() ran meanwhile: its state and its halved heavy limit stand.
+                    new_state = self._state
+                    new_limits = Limits(values={
+                        p: (min(new_limits.get(p), current.get(p)) if p is Pool.HEAVY_PARSE else new_limits.get(p))
+                        for p in Pool
+                    })
+                self._state = new_state
+                for pool in Pool:
+                    new_value = new_limits.get(pool)
+                    old_value = current.get(pool)
+                    if self._registry.set(pool, new_value):
+                        changed.append((pool, old_value, new_value))
 
         with self._stats_lock:
             self._last_snapshot = snapshot

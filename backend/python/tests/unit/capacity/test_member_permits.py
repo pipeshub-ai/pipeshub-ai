@@ -86,8 +86,12 @@ async def test_a_caller_without_a_permit_gets_one_from_the_lane(monkeypatch: pyt
 async def test_a_lane_wait_is_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None) -> None:
     b = install_budget(monkeypatch, tmp_path / "l", c=2)
     assert b.try_reserve(Demand(Family.PARSE, 2, 0, "small")) is not None
-    with pytest.raises(AdmissionTimeout):
+    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout, RequeueWithoutAttempt
+
+    with pytest.raises(ParseAdmissionTimeout) as err:
         await parse_pool.submit(lambda: 1, timeout=0.2)
+    assert isinstance(err.value, RequeueWithoutAttempt)  # a wait for capacity goes back uncounted, it is not a failure
+    assert not isinstance(err.value, AdmissionTimeout)
 
 
 def test_run_blocking_adopts_too(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -233,3 +237,54 @@ async def test_llm_slot_is_a_noop_with_the_flag_off(monkeypatch: pytest.MonkeyPa
         pass
     assert not (tmp_path / "never").exists()
     assert not os.path.exists(tmp_path / "never")
+
+
+async def test_a_cancelled_caller_does_not_free_the_tokens_of_a_thread_that_is_still_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None
+) -> None:
+    b = install_budget(monkeypatch, tmp_path / "l", c=2)
+    task = asyncio.create_task(parse_pool.submit(_hold, 0.6))
+    await asyncio.sleep(0.15)
+    assert b.snapshot()["used"] == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert b.snapshot()["used"] == 1  # the thread cannot be stopped: its tokens stay with it
+    await asyncio.sleep(0.8)
+    assert b.snapshot()["used"] == 0  # released when the thread ended
+
+
+def test_run_blocking_stops_waiting_for_capacity_when_its_caller_is_cancelled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import threading
+
+    from app.modules.parsers.parse_pool import ParseAbandonedError
+
+    b = install_budget(monkeypatch, tmp_path / "l", c=1)
+    held = b.try_reserve(Demand(Family.PARSE, 1, 0, "small"))
+    cancelled = threading.Event()
+    threading.Timer(0.2, cancelled.set).start()
+    started = time.monotonic()
+    with pytest.raises(ParseAbandonedError):
+        parse_pool.run_blocking(_hold, 0, timeout=30, cancelled=cancelled)  # the budget is full: it waits, then is cancelled
+    assert time.monotonic() - started < 3.0
+    held.release()
+
+
+async def test_a_gateway_call_that_finds_no_llm_slot_is_an_unavailable_provider_not_a_raw_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.capacity import admission
+    from app.services.llm_gateway.gateway import LLMGateway, ProviderUnavailableError
+
+    b = install_budget(monkeypatch, tmp_path / "l", llm=1)
+    held = b.try_reserve(Demand(Family.LLM, 0))
+    monkeypatch.setattr(admission, "LLM_WAIT_S", 0.2)
+    gw = LLMGateway(5)
+
+    async def make_call() -> str:
+        return "never"
+
+    with pytest.raises(ProviderUnavailableError) as err:
+        await gw.call(make_call, provider="p")
+    assert err.value.sent is False
+    held.release()
