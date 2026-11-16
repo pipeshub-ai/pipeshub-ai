@@ -159,6 +159,12 @@ status = "draft"
   priority = "P2"
   tests = []
 
+  [[feature.behavior]]
+  id = "connectors.instances.beta-gate"
+  says = "While beta connectors are switched off in platform settings, a beta connector type is refused with 403 on create, delete and the other instance routes."
+  priority = "P1"
+  tests = []
+
 [[feature]]
 id = "connectors.config"
 title = "Connector configuration and credentials"
@@ -216,6 +222,12 @@ status = "draft"
   priority = "P1"
   kind = "security"
   tests = ["fe:app/(main)/workspace/connectors/components/__tests__/schema-form-field.test.tsx", "fe:app/(main)/workspace/connectors/components/authenticate-tab/__tests__/authenticate-tab.test.tsx"]
+
+  [[feature.behavior]]
+  id = "connectors.config.locked"
+  says = "Changing the settings of a connector that is syncing, queued for a sync or being deleted gets 409 with a message that names what is running."
+  priority = "P1"
+  tests = []
 
 [[feature]]
 id = "connectors.oauth-signin"
@@ -308,7 +320,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "connectors.oauth-apps.toolset-scopes"
-  says = "The toolset OAuth config routes need the connector:read, connector:write and connector:delete scopes for list, update and delete, and delete is refused with 409 while an agent uses the app."
+  says = "The toolset OAuth config routes need the toolset:read, toolset:write and toolset:delete scopes for list, update and delete, and delete is refused with 409 while a toolset instance uses the app."
   priority = "P1"
   kind = "security"
   tests = ["node:tests/modules/toolsets/routes/toolsets_routes.scopes.test.ts"]
@@ -337,7 +349,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "connectors.filters.options-paging"
-  says = "The dynamic options route forwards the context path as one repeated parameter, refuses a page size above 100 with a clear message, and the gateway rejects a page size above 200."
+  says = "The dynamic options route forwards the context path as one repeated parameter, refuses a page size outside 1 to 100 with the message Limit must be between 1 and 100, before the connector service is called."
   priority = "P1"
   tests = ["node:tests/modules/tokens_manager/routes/connectors.routes.http.test.ts"]
 
@@ -425,7 +437,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "connectors.crawling.access"
-  says = "A schedule needs a sign-in and the crawl:write scope; a member cannot schedule a team connector or touch another member's personal one, and another org's admin cannot reach it by id."
+  says = "Creating, pausing or resuming a schedule needs a sign-in and the crawl:write scope (crawl:read to read, crawl:delete to remove); a member cannot schedule a team connector or touch another member's personal one, and another org's admin cannot reach it by id."
   priority = "P0"
   kind = "security"
   tests = ["node:tests/modules/crawling_manager/routes/cm_routes.http.test.ts", "node:tests/modules/crawling_manager/routes/cm_routes.test.ts"]
@@ -2012,7 +2024,7 @@ status = "draft"
 
   [[feature.behavior]]
   id = "connectors.zoom.permissions"
-  says = "A meeting record is owned by its host (an owner grant to the user)."
+  says = "A meeting record is owned by its host (an owner grant), and its alternate hosts, participants and invitees get read."
   priority = "P0"
   kind = "security"
   tests = []
