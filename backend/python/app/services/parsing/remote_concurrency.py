@@ -9,7 +9,9 @@ pool. Local memory and download gates are untouched.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
+from collections import deque
 import os
 
 from app.services.resource_governor.models import Ceilings
@@ -59,21 +61,55 @@ def lift_ceilings(ceilings: Ceilings, concurrency: int, env_index: int | None = 
 
 
 class RemoteParseSlots:
-    """The process's admission for remote parses, one permit per call in flight."""
+    """The process's admission for remote parses, one permit per call in flight.
+
+    A waiter from the priority lane is served ahead of every queued bulk waiter (each queue is FIFO),
+    as the local gate does, so an interactive parse never waits out a backlog of bulk ones; the total
+    in flight still never exceeds *size*.
+    """
 
     def __init__(self, size: int) -> None:
         self.size = size
-        self._sem = asyncio.Semaphore(size)
+        self._free = size
+        self._waiters: deque[tuple[asyncio.Future[None], bool]] = deque()
 
-    async def acquire(self, timeout: float | None) -> bool:
+    async def acquire(self, timeout: float | None, *, priority: bool = False) -> bool:
+        if self._free > 0 and not self._waiters:
+            self._free -= 1
+            return True
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        entry = (future, priority)
+        if priority:
+            # Behind earlier priority waiters, ahead of every bulk one.
+            position = sum(1 for _, is_priority in self._waiters if is_priority)
+            self._waiters.insert(position, entry)
+        else:
+            self._waiters.append(entry)
         try:
-            await asyncio.wait_for(self._sem.acquire(), timeout=timeout)
+            await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError:
+            self._discard(entry, future)
             return False
+        except BaseException:
+            self._discard(entry, future)
+            raise
         return True
 
+    def _discard(self, entry: tuple[asyncio.Future[None], bool], future: asyncio.Future[None]) -> None:
+        """Drop a waiter that gave up; a permit it was already handed goes to the next one."""
+        if future.done() and not future.cancelled():
+            self.release()
+            return
+        with contextlib.suppress(ValueError):
+            self._waiters.remove(entry)
+
     def release(self) -> None:
-        self._sem.release()
+        while self._waiters:
+            future, _ = self._waiters.popleft()
+            if not future.done():
+                future.set_result(None)
+                return
+        self._free += 1
 
 
 _slots: RemoteParseSlots | None = None

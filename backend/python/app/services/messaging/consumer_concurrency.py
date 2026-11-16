@@ -1717,7 +1717,7 @@ async def acquire_parsing_slot(
         # configured concurrency does. Memory reserved for the record and the download gates
         # were taken before this call and still apply.
         slots = remote_parse_slots(remote)
-        if not await slots.acquire(timeout):
+        if not await slots.acquire(timeout, priority=_lane(host) is not None):
             raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
         return Admission(tier=tier, cost=1, _release=slots.release)
 

@@ -300,3 +300,68 @@ def test_metrics_and_health_endpoints_on_the_parsing_app() -> None:
     assert "pipeshub_parsing_in_flight " in response.text
     health_load = parse_load().snapshot()
     assert set(health_load) == {"in_flight", "max_concurrent", "saturated_total", "requests_total"}
+
+
+# --- priority lane on the process's remote slots -----------------------------
+
+
+async def test_a_priority_parse_is_served_ahead_of_queued_bulk_parses() -> None:
+    from app.services.parsing.remote_concurrency import RemoteParseSlots
+
+    slots = RemoteParseSlots(1)
+    assert await slots.acquire(1)                       # one bulk parse holds the only slot
+    order: list[str] = []
+
+    async def take(name: str, priority: bool) -> None:
+        assert await slots.acquire(5, priority=priority)
+        order.append(name)
+        slots.release()
+
+    bulk = [asyncio.create_task(take(f"bulk{i}", False)) for i in range(2)]
+    await asyncio.sleep(0)
+    interactive = asyncio.create_task(take("interactive", True))
+    await asyncio.sleep(0)
+    slots.release()
+    await asyncio.gather(*bulk, interactive)
+    assert order[0] == "interactive"
+    assert order[1:] == ["bulk0", "bulk1"]
+
+
+async def test_the_remote_slots_never_exceed_their_size_with_priority_waiters() -> None:
+    from app.services.parsing.remote_concurrency import RemoteParseSlots
+
+    slots = RemoteParseSlots(2)
+    assert await slots.acquire(1) and await slots.acquire(1)
+    assert not await slots.acquire(0.05, priority=True)  # full: a priority waiter times out, it does not overshoot
+    slots.release()
+    assert await slots.acquire(0.5, priority=True)
+    assert not await slots.acquire(0.05)
+    assert slots._free == 0
+
+
+async def test_a_waiter_that_timed_out_leaves_no_permit_behind() -> None:
+    from app.services.parsing.remote_concurrency import RemoteParseSlots
+
+    slots = RemoteParseSlots(1)
+    assert await slots.acquire(1)
+    assert not await slots.acquire(0.02)
+    slots.release()
+    assert slots._free == 1 and not slots._waiters
+
+
+async def test_acquire_parsing_slot_gives_the_priority_lane_the_queue_jump(monkeypatch) -> None:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "1")
+    bulk_host = _Host(None)
+    lane_host = _Host(None)
+    lane_host.priority_lane = concurrency.PriorityLane(heavy_limit=1, light_limit=3)
+    first = await concurrency.acquire_parsing_slot(bulk_host, ParseTier.HEAVY, 1, timeout=1)
+    queued_bulk = asyncio.create_task(concurrency.acquire_parsing_slot(bulk_host, ParseTier.HEAVY, 1, timeout=2))
+    await asyncio.sleep(0.01)
+    interactive = asyncio.create_task(concurrency.acquire_parsing_slot(lane_host, ParseTier.LIGHT, 1, timeout=2))
+    await asyncio.sleep(0.01)
+    first._release()
+    got = await asyncio.wait_for(interactive, 1)
+    assert not queued_bulk.done()
+    got._release()
+    (await asyncio.wait_for(queued_bulk, 1))._release()
