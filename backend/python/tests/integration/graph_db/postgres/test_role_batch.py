@@ -141,3 +141,20 @@ async def test_entity_search_walks_the_same_window_with_the_batched_and_with_the
     monkeypatch.setattr(type(w.p), "_roles_on", per_record)
     assert batched == {(limit, offset): await asked(limit, offset) for limit in (1, 5, 20) for offset in (0, 7)}
     assert any(batched.values())
+
+
+async def test_a_record_that_needs_its_own_grant_takes_no_role_from_what_it_inherits(w: World) -> None:
+    """A role on the record group a record inherits from is a role on an OPEN record, not on a RESTRICTED or PARENT_AND_GRANT one: those take a role only
+    when the user holds a grant on the record itself, by the batched and by the per-record read alike."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("apps", {"_key": "a1", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "rg", "connectorId": "a1"})
+    rules = {"open": None, "pag": "PARENT_AND_GRANT", "res": "RESTRICTED", "pag-own": "PARENT_AND_GRANT", "res-own": "RESTRICTED"}
+    await w.nodes("records", *({"_key": k, "connectorId": "a1", "recordName": k, **({"accessRule": r} if r else {})} for k, r in rules.items()))
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": k, "to_collection": "recordGroups", "to_id": "rg"} for k in rules], "inheritPermissions")
+    await w.p.batch_create_edges([{"from_collection": "users", "from_id": "u", "to_collection": to[0], "to_id": to[1], "type": "USER", "role": "READER"}
+                                  for to in (("recordGroups", "rg"), ("records", "pag-own"), ("records", "res-own"))], "permission")
+    ids = list(rules)
+    batch = await w.p._q(lambda tx: w.p._roles_on(tx, w.org, "u", "records", ids, _CTX_RANK), None)
+    assert batch == await w.p._q(lambda tx: _per_record(w, tx, "u", ids, _CTX_RANK), None)
+    assert {k for k, v in batch.items() if v} == {"open", "pag-own", "res-own"}

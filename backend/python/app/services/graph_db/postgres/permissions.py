@@ -90,6 +90,23 @@ def _best_role(rows: Any, coll: str, node_id: str, ranks: dict[str, int]) -> tup
     return best
 
 
+# The nodes among ``$3`` (of collection ``$2``) whose rule needs a grant of their own (RESTRICTED, PARENT_AND_GRANT) and that no principal of the user ``$4``
+# holds one on: the user, the source account they authenticated the node's connector as, a group, role or team they belong to, or their organization
+# by an ORG grant. A role on what such a node inherits from alone is not access to it.
+_WITHOUT_OWN_GRANT = """/* pipeshub:graph.node_roles_own_grant */ SELECT n.id FROM graph.nodes n
+    WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[]) AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT')
+      AND NOT EXISTS (
+        WITH pr AS (SELECT $4::text AS id UNION SELECT l.to_id FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users'
+                      AND l.from_id = $4 AND l.to_coll = 'users' AND l.doc->>'connectorId' = n.doc->>'connectorId')
+        SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = n.coll AND p.to_id = n.id
+          AND ((p.from_coll = 'users' AND p.from_id IN (SELECT id FROM pr))
+            OR (p.from_coll IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
+                  AND m.from_coll = 'users' AND m.from_id IN (SELECT id FROM pr) AND m.to_coll = p.from_coll AND m.to_id = p.from_id AND m.doc->>'type' = 'USER'))
+            OR (p.from_coll = 'organizations' AND p.doc->>'type' IN ('ORG', 'ORGANIZATION') AND EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1
+                  AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id IN (SELECT id FROM pr) AND b.to_coll = 'organizations' AND b.to_id = p.from_id
+                  AND b.doc->>'entityType' = 'ORGANIZATION'))))"""
+
+
 class PermissionsMixin(PgBase):
     async def get_user_kb_permission(self, kb_id: str, user_id: str, transaction: str | None = None) -> str | None:
         """The user's effective role on a collection: the highest of the direct grant and what each team the collection is shared with gives its members.
@@ -524,6 +541,8 @@ class PermissionsMixin(PgBase):
               JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, node_id, user_key)
+        if await tx.fetchval(_WITHOUT_OWN_GRANT, org, coll, [node_id], user_key):
+            return None
         return _best_role(rows, coll, node_id, ranks)
 
     async def _roles_on(self, tx: Tx, org: str, user_key: str, coll: str, node_ids: list[str], ranks: dict[str, int] = _CTX_RANK) -> dict[str, tuple[str, str] | None]:
@@ -574,7 +593,8 @@ class PermissionsMixin(PgBase):
         by_origin: dict[str, list] = {i: [] for i in ids}
         for r in rows:
             by_origin[r["origin"]].append(r)
-        return {i: _best_role(by_origin[i], coll, i, ranks) for i in ids}
+        without = {r["id"] for r in await tx.fetch(_WITHOUT_OWN_GRANT, org, coll, ids, user_key)}
+        return {i: None if i in without else _best_role(by_origin[i], coll, i, ranks) for i in ids}
 
     async def _app_role(self, tx: Tx, org: str, user_key: str, app_id: str) -> str | None:
         """The user's role on an app (a connector or a collection); None when nothing relates them."""

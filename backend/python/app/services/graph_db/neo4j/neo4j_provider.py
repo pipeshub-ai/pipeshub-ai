@@ -25486,6 +25486,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
 
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes a role only when a principal holds a grant on the node
+            // itself: a role on what it inherits from alone is not access to it.
+            WITH {node_var}, {user_var}, role_priority, principals,
+                 CASE WHEN coalesce({node_var}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT']
+                       AND NOT EXISTS {{ MATCH (kh_g)-[kh_p:PERMISSION]->({node_var})
+                         WHERE kh_g IN principals
+                            OR ((kh_g:Group OR kh_g:Role OR kh_g:Teams)
+                                AND any(kh_pr IN principals WHERE EXISTS {{ (kh_pr)-[:PERMISSION {{type: 'USER'}}]->(kh_g) }}))
+                            OR (kh_g:Organization AND kh_p.type IN ['ORG', 'ORGANIZATION']
+                                AND any(kh_pr IN principals WHERE EXISTS {{ (kh_pr)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(kh_g) }})) }}
+                      THEN [] ELSE permission_targets END AS permission_targets
+
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
@@ -25614,6 +25626,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE linked.connectorId = {node_var}.connectorId
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
+
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes a role only when a principal holds a grant on the node
+            // itself: a role on what it inherits from alone is not access to it.
+            WITH {node_var}, {user_var}, role_priority, principals,
+                 CASE WHEN coalesce({node_var}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT']
+                       AND NOT EXISTS {{ MATCH (kh_g)-[kh_p:PERMISSION]->({node_var})
+                         WHERE kh_g IN principals
+                            OR ((kh_g:Group OR kh_g:Role OR kh_g:Teams)
+                                AND any(kh_pr IN principals WHERE EXISTS {{ (kh_pr)-[:PERMISSION {{type: 'USER'}}]->(kh_g) }}))
+                            OR (kh_g:Organization AND kh_p.type IN ['ORG', 'ORGANIZATION']
+                                AND any(kh_pr IN principals WHERE EXISTS {{ (kh_pr)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(kh_g) }})) }}
+                      THEN [] ELSE permission_targets END AS permission_targets
 
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target
