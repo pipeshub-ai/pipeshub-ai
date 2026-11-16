@@ -26,19 +26,27 @@ def _kv_runtime(runtime, monkeypatch) -> RuntimeDb:
     return RuntimeDb()
 
 
-async def test_the_kv_role_reads_and_writes_configuration(
+async def test_the_kv_role_uses_the_key_value_table_and_writes_only_while_access_by_prefix_is_in_shadow(
     runtime, monkeypatch, uid
 ) -> None:
+    db = await runtime.db()
+    async with db.runtime_uow() as tx:
+        enforce = await tx.fetchval("/* pipeshub:test.kvmode */ SELECT enforce FROM platform.kv_access")
     store = PostgresKeyValueStore(
         lambda v: json.dumps(v).encode(),
         json.loads,
         runtime=_kv_runtime(runtime, monkeypatch),
     )
     assert await store.health_check()
+    await store.publish_change(f"/kv{uid}/a")
+    if enforce:  # the kv role writes no prefix
+        with pytest.raises(ConnectionError, match="row-level security"):
+            await store.create_key(f"/kv{uid}/a", {"x": 1}, overwrite=False)
+        assert await store.list_keys_in_directory(f"/kv{uid}") == []
+        return
     assert await store.create_key(f"/kv{uid}/a", {"x": 1}, overwrite=False)
     assert await store.get_key(f"/kv{uid}/a") == {"x": 1}
     assert await store.list_keys_in_directory(f"/kv{uid}") == [f"/kv{uid}/a"]
-    await store.publish_change(f"/kv{uid}/a")
     assert await store.delete_key(f"/kv{uid}/a")
 
 
