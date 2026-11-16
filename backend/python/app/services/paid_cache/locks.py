@@ -35,8 +35,15 @@ REPURGE_MARGIN_S = 60
 #: (lock TTL + write deadline + margin), so no queued message waits long enough to outlive its signature.
 REPURGE_HOP_S = LOCK_TTL_MS // 1000 + WRITE_DEADLINE_S + REPURGE_MARGIN_S
 REPURGE_DELAY_S = REPURGE_HOP_S
-#: The chain ends once this long has passed since the delete: the longest paid stage plus a lock's life and a margin.
-REPURGE_HORIZON_S = STAGE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
+#: The latest a paid stage can begin after its record was deleted. The indexing client sends the parse request while
+#: the record's budget still holds a read (the share it reserves for one), and the parsing route can then hold it
+#: for the admission gate and the memory wait before ``parse`` starts: for a PDF (5400 s budget, 80 % reserved for the
+#: read) 1080 s + 120 s + 30 s. ``STAGE_DEADLINE_S`` counts from the stage's start, so this is added to the horizon;
+#: a test ties it to those constants. Raise it with ``PDF_RECORD_PROCESSING_TIMEOUT``.
+ADMISSION_WINDOW_S = 1500
+#: The chain ends once this long has passed since the delete: the latest a stage can begin, the longest it may run,
+#: a lock's life and a margin.
+REPURGE_HORIZON_S = ADMISSION_WINDOW_S + STAGE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
 
 
 def lock_name(org_id: str, record_id: str, digest: str) -> str:

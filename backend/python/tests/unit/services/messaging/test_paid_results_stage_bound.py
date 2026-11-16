@@ -188,29 +188,32 @@ async def _deliver_due(handler: Any, producer: Any, pending: list, now: float) -
     return hops
 
 
+@pytest.mark.parametrize("starts_after_s", [0, 600, 1230])
 @pytest.mark.parametrize("parse_runs_for_s", [2400, 3000, 3600, 7200])
 async def test_an_orphan_that_keeps_paying_leaves_nothing_once_the_chain_ends(
-    world: Any, monkeypatch: pytest.MonkeyPatch, parse_runs_for_s: int,  # noqa: ANN401
+    world: Any, monkeypatch: pytest.MonkeyPatch, parse_runs_for_s: int, starts_after_s: int,  # noqa: ANN401
 ) -> None:
-    """The parsing route has no server-side deadline (api/routes/parsing.py: ``await parser.parse(...)``): only the
-    client's read timeout (2400 s) ends the indexing side's wait. A big scanned PDF (VLM_OCR_MAX_PAGES 500) behind a
-    rate-limited provider keeps paying pages after that."""
+    """A parse that keeps paying pages after its record was deleted, Redis having lost the delete marker, leaves
+    nothing once the chain ends, however long it runs and however late it was admitted (the client's retries and the
+    parsing route's gate can start a stage up to ``starts_after_s`` after the delete)."""
     store, locks, cache = world
     now = [1_000_000.0]
     monkeypatch.setattr(repurge, "time", SimpleNamespace(time=lambda: now[0]))
     monkeypatch.setattr(cache_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
     producer = AsyncMock()
     handler = _record_handler(producer)
-    scope = RunScope(ORG, REC, "rev1", "parse", clock=lambda: now[0])     # the parse started just before the delete
-    run_module._run.set(scope)                                          # the ambient run of the parse
-    now[0] += 10
     delete_at = now[0]
     with bind(OrgContext(ORG, None, "service", "envelope", "qa")):
         [e async for e in handler.process_event(EventTypes.DELETE_RECORD.value, DELETE)]
         locks._held.clear()                                             # Redis lost the marker
         pending = [producer.send_event.await_args.kwargs["payload"]]
-        page = 0
-        while now[0] - delete_at < parse_runs_for_s:
+        while now[0] - delete_at < starts_after_s:
+            now[0] += 30
+            await _deliver_due(handler, producer, pending, now[0])
+        scope = RunScope(ORG, REC, "rev1", "parse", clock=lambda: now[0])     # the stage begins here
+        run_module._run.set(scope)
+        stage_start, page = now[0], 0
+        while now[0] - stage_start < parse_runs_for_s:
             now[0] += 30
             await scope.note(cache.store, _key(page).relative_path(), opens=True)
             await cache.get_or_compute(_key(page), _text)              # one more short paid call
@@ -222,7 +225,21 @@ async def test_an_orphan_that_keeps_paying_leaves_nothing_once_the_chain_ends(
             now[0] = max(now[0], pending[0]["_retry_not_before"])
             await _deliver_due(handler, producer, pending, now[0])
     left = store.paths(ORG, REC)
-    assert left == [], f"parse ran {parse_runs_for_s} s after the delete: {len(left)} objects left after the chain ended"
+    assert left == [], f"stage began {starts_after_s} s after the delete and ran {parse_runs_for_s} s: {len(left)} left"
+
+
+def test_the_admission_window_covers_the_latest_a_parse_can_start_after_its_record() -> None:
+    """The client sends the parse request while the record's budget still holds its read, and the route can then hold
+    it for the gate and the memory wait: the horizon must cover that before the stage's own deadline."""
+    from app.api.routes.parsing import PARSE_GATE_TIMEOUT_SECONDS
+    from app.services.messaging.config import messaging_env as env
+    from app.services.parsing.client import PARSE_SHARE_OF_RECORD_BUDGET
+    from app.services.resource_governor.kinds import EXCESS_WAIT_SECONDS
+
+    budget = max(env.pdf_record_processing_timeout, env.record_processing_timeout)
+    latest = budget * (1 - PARSE_SHARE_OF_RECORD_BUDGET) + PARSE_GATE_TIMEOUT_SECONDS + EXCESS_WAIT_SECONDS
+    assert locks_module.ADMISSION_WINDOW_S >= latest
+    assert REPURGE_HORIZON_S >= locks_module.ADMISSION_WINDOW_S + locks_module.STAGE_DEADLINE_S + locks_module.LOCK_TTL_MS // 1000
 
 
 async def test_a_call_started_long_after_its_stage_began_is_still_stored(monkeypatch: pytest.MonkeyPatch) -> None:

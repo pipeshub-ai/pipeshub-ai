@@ -214,6 +214,7 @@ export function createS3Service(config: S3ServiceConfig): S3Service {
         UploadId?: string;
         ResponseContentDisposition?: string;
         ContentType?: string;
+        IfNoneMatch?: string;
       };
       let command: GetObjectCommand | PutObjectCommand | UploadPartCommand;
       if (operation === 'getObject') {

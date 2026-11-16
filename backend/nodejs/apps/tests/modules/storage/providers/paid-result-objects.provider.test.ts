@@ -125,6 +125,16 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       expect(signed.headers).to.deep.equal({ 'Content-Type': 'application/json', 'If-None-Match': '*' })
     })
 
+    it('the URL of a once-only PUT signs the condition, so S3 applies it', async () => {
+      const signed = await adapter().signObjectUrl(key(1), {
+        method: 'PUT',
+        contentType: 'application/json',
+        expiresInSeconds: 900,
+        ifAbsent: true,
+      })
+      expect((new URL(signed.url).searchParams.get('X-Amz-SignedHeaders') ?? '').split(';')).to.include('if-none-match')
+    })
+
     it('a signed PUT that may replace sends no condition', async () => {
       const signed = await adapter().signObjectUrl(key(1), { method: 'PUT', expiresInSeconds: 900 })
       expect(signed.headers).to.not.have.property('If-None-Match')

@@ -504,6 +504,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
           Bucket: this.bucketName,
           Key: storageKey,
           ContentType: contentType,
+          // Signed into the URL: S3 applies a conditional header only when it is a signed one, and the
+          // uploader must then send the same value.
+          ...(options.ifAbsent === true && { IfNoneMatch: '*' }),
           Expires: options.expiresInSeconds,
         });
         return {

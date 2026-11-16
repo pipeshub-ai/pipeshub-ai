@@ -168,7 +168,7 @@ async def test_an_orphaned_parse_paying_for_2400_s_after_a_delete_with_redis_flu
                 pending.append(producer.send_event.await_args.kwargs["payload"])
 
     assert store.paths(ORG, REC) == [], f"left: {store.paths(ORG, REC)}"
-    assert 8 <= hops <= 10                                            # about 9 hops, then the chain ends
+    assert REPURGE_HORIZON_S // REPURGE_HOP_S <= hops <= REPURGE_HORIZON_S // REPURGE_HOP_S + 2   # then the chain ends
     assert clock[0] - delete_at <= REPURGE_HORIZON_S + REPURGE_HOP_S
 
 
@@ -198,7 +198,7 @@ async def test_every_hop_verifies_within_the_signature_window(
             break
     # A lagging consumer reaches the horizon in fewer hops; the last hop always runs after it (it is the one
     # that finds nothing left to schedule).
-    assert (8 <= consumed <= 10) if lag_s == 0 else consumed >= 3
+    assert (REPURGE_HORIZON_S // REPURGE_HOP_S <= consumed <= REPURGE_HORIZON_S // REPURGE_HOP_S + 2) if lag_s == 0 else consumed >= 3
     assert clock[0] - delete_at > REPURGE_HORIZON_S
 
 
