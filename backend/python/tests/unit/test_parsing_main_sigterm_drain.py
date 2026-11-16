@@ -90,7 +90,8 @@ def test_a_service_started_the_way_the_pod_starts_it_drains_on_sigterm(tmp_path:
         thread.join(timeout=20)
         assert "error" not in result, result
         assert b"done" in result["body"]
-        assert proc.wait(timeout=20) == 0
+        # uvicorn re-raises the signal once it has drained, so the exit is a clean 0 or death by SIGTERM.
+        assert proc.wait(timeout=20) in (0, -signal.SIGTERM)
     finally:
         if proc.poll() is None:
             proc.kill()
