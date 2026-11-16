@@ -7,6 +7,7 @@ import type { McpManageAccessProps } from '../mcp-manage-access';
 const mocks = vi.hoisted(() => ({
   createInstance: vi.fn(),
   updateInstance: vi.fn(),
+  authenticate: vi.fn(),
   saveAccess: vi.fn(),
   section: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -31,6 +32,7 @@ vi.mock('../../../api', () => ({
   McpServersApi: {
     createInstance: mocks.createInstance,
     updateInstance: mocks.updateInstance,
+    authenticate: mocks.authenticate,
     discoverOAuthMetadata: vi.fn(),
     getOAuthConfig: vi.fn(),
   },
@@ -67,7 +69,23 @@ vi.mock('../../../../components', () => ({
       {children}
     </div>
   ),
-  SelectDropdown: () => null,
+  SelectDropdown: ({
+    value,
+    onChange,
+    options,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    options: { value: string; label: string }[];
+  }) => (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  ),
   TagInput: () => null,
   ConfirmationDialog: () => null,
 }));
@@ -117,7 +135,6 @@ describe('McpInstanceConfigPanel Manage Access', () => {
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(mocks.saveAccess).toHaveBeenCalledWith('new-1');
-    expect(mocks.createInstance.mock.invocationCallOrder[0]).toBeLessThan(mocks.saveAccess.mock.invocationCallOrder[0] as number);
   });
 
   const fillAndSave = () => {
@@ -126,18 +143,35 @@ describe('McpInstanceConfigPanel Manage Access', () => {
     fireEvent.click(screen.getByText('save'));
   };
 
-  it('reports success and closes only after access is saved', async () => {
+  it('saves access only after the credentials are saved, and reports success and closes only after access is saved', async () => {
     mocks.createInstance.mockResolvedValue({ _id: 'new-1' });
-    mocks.saveAccess.mockResolvedValue(undefined);
+    let finishCredentials: () => void = () => undefined;
+    mocks.authenticate.mockReturnValue(new Promise<void>((resolve) => (finishCredentials = resolve)));
+    let finishAccess: () => void = () => undefined;
+    mocks.saveAccess.mockReturnValue(new Promise<void>((resolve) => (finishAccess = resolve)));
     const onSaved = vi.fn();
     const onOpenChange = vi.fn();
     render(panel('org', onSaved, onOpenChange));
+    fireEvent.change(within(screen.getByRole('group', { name: 'workspace.mcpServers.form.authMode' })).getByRole('combobox'), {
+      target: { value: 'api_token' },
+    });
+    const token = screen.getByRole('group', { name: 'workspace.mcpServers.form.apiToken' }).querySelector('input');
+    fireEvent.change(token as HTMLInputElement, { target: { value: 'secret-token' } });
     fillAndSave();
 
+    await waitFor(() => expect(mocks.authenticate).toHaveBeenCalledWith('new-1', { apiToken: 'secret-token' }));
+    expect(mocks.saveAccess).not.toHaveBeenCalled();
+
+    finishCredentials();
+    await waitFor(() => expect(mocks.saveAccess).toHaveBeenCalledWith('new-1'));
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    finishAccess();
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(onSaved).toHaveBeenCalledTimes(1);
     expect(mocks.toast.success).toHaveBeenCalledWith('workspace.mcpServers.toasts.created');
-    expect(mocks.saveAccess.mock.invocationCallOrder[0]).toBeLessThan(mocks.toast.success.mock.invocationCallOrder[0] as number);
-    expect(mocks.saveAccess.mock.invocationCallOrder[0]).toBeLessThan(onSaved.mock.invocationCallOrder[0] as number);
     expect(mocks.toast.error).not.toHaveBeenCalled();
   });
 
