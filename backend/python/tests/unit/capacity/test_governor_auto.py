@@ -244,3 +244,17 @@ def test_an_indexing_process_alone_applies_its_own_cells_cap_not_the_plans_cell_
     plan = runtime.current_plan()
     assert plan is not None and plan.cells > 1 and g._container is not None
     assert g._container.cells == 1
+
+
+def test_the_shared_ramp_is_the_same_whichever_service_is_controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The indexing governor (several cells, embedding reservation) and the Docling governor build the container
+    ramp on the same fleet, so the elected service never changes the limits every follower applies."""
+    _governor(tmp_path, monkeypatch, auto=True, cpus=64.0, workers=4)
+    fleets = {}
+    for service, workers in (("indexing", 4), ("docling", 1)):
+        monkeypatch.setenv("PIPESHUB_SERVICE", service)
+        runtime.reset_for_tests()
+        g = ResourceGovernor(logger=logging.getLogger("t"), probe=Probe(snap(64.0)), worker_count=workers, sample_interval=1.0)
+        assert g._container is not None
+        fleets[service] = g._container.fleet
+    assert fleets["indexing"] == fleets["docling"]

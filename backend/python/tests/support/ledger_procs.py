@@ -93,3 +93,49 @@ def bulk_loader(directory: str, until: float, ready: Connection, hold_s: float) 
         for permit in held:
             permit.release()
     budget.close()
+
+
+def die_at_hot_write(directory: str, cpu_tokens: int, mode: str) -> None:
+    """Take (``acquire``) or give back (``release``) tokens and die just before the hot block reaches the file,
+    after this process's own slot was written."""
+    import app.capacity.member_budget as mb
+
+    budget = MemberBudget(directory, cpu_tokens=cpu_tokens, mem_bytes=1 << 34)
+    real = os.pwrite
+    state = {"armed": False}
+
+    def dying(fd: int, data: bytes, offset: int) -> int:
+        if state["armed"] and offset < mb.TABLE_OFFSET:
+            os._exit(9)
+        return real(fd, data, offset)
+
+    os.pwrite = dying  # type: ignore[assignment]
+    if mode == "acquire":
+        state["armed"] = True
+        budget.try_reserve(Demand(Family.PARSE, 2, 0, "small"))
+    else:
+        permit = budget.try_reserve(Demand(Family.PARSE, 2, 0, "small"))
+        state["armed"] = True
+        permit.release()  # type: ignore[union-attr]
+
+
+def llm_waiters(directory: str, count: int, seconds: float, out: Connection) -> None:
+    """``count`` LLM calls waiting for the container's member slots; reports the CPU seconds the process spent."""
+    import asyncio
+
+    from app.capacity.member_budget import AdmissionTimeout
+
+    budget = open_budget(directory, "w", cpu_tokens=16, mem=1 << 36)
+
+    async def run() -> None:
+        async def one() -> None:
+            try:
+                await budget.reserve(Demand(Family.LLM, 0), deadline_s=seconds)
+            except AdmissionTimeout:
+                pass
+
+        await asyncio.gather(*(one() for _ in range(count)))
+
+    start = time.process_time()
+    asyncio.run(run())
+    out.send(time.process_time() - start)
