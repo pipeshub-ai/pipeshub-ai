@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import stat
 import struct
 import tempfile
@@ -66,10 +67,12 @@ STATE_BYTES = 1024
 HOT = 4096
 SLOT = 256
 TABLE_OFFSET = 2 * HOT
-FILE_SIZE = TABLE_OFFSET + MAX_SLOTS * SLOT
+CHANGE_OFFSET = TABLE_OFFSET + MAX_SLOTS * SLOT  # two counters (cpu, llm) bumped under the lock when capacity frees
+FILE_SIZE = CHANGE_OFFSET + 64
 MAGIC = 0x50484C47
 DEAD_SCAN_INTERVAL_S = 0.1
-POLL_MAX_S = 0.02
+WATCH_S = 0.002  # how often a process's one watcher reads the change counters (no lock taken)
+FALLBACK_S = 0.05  # a waiter re-checks at least this often (jittered) in case a wake was missed
 SPIN_TRIES = int(os.environ.get("PIPESHUB_LEDGER_SPIN", "200"))
 _NF, _NC, _NK = len(FAMILIES), len(CLASSES), len(FAMILIES) * len(CLASSES)
 _NFLOOR = len(PRECEDENCE)
@@ -84,6 +87,7 @@ _BODY = struct.Struct(
     f"H {STATE_BYTES}s"  # controller state
     "4Q H"  # occupancy bits, number of heads
 )
+_CHANGES = struct.Struct("<QQ")  # cpu-side changes, llm-side changes
 _HEAD = struct.Struct("<QQQfHBBB")
 _DEMAND = struct.Struct("<fIIH")
 _SLOT = struct.Struct(f"<iQ{_NK}iqqi16s" + "fIIH" * len(DEMAND_POOLS))
@@ -237,6 +241,7 @@ class Permit:
         self.released = False
         self.adopted = False
         self.actual_bytes = 0
+        self.owner_pid = os.getpid()  # a forked child that inherits this permit must not release the parent's tokens
         self._lock = threading.Lock()
 
     def adopt(self) -> Permit:
@@ -252,6 +257,8 @@ class Permit:
         with self._lock:
             if self.released:
                 return
+            if os.getpid() != self.owner_pid:
+                return  # inherited across a fork: the owner process still holds it
             self.released = True
         self._budget._release(self)
 
@@ -260,6 +267,58 @@ class Permit:
 
     def __exit__(self, *exc: object) -> None:
         self.release()
+
+
+class _Watcher:
+    """Wakes this process's waiters when the ledger's capacity changes.
+
+    One thread per process reads the two change counters (a plain ``pread``, no ledger lock) every
+    ``WATCH_S`` while anyone waits, and wakes the waiters of the side that changed: a release of an LLM slot
+    wakes LLM waiters only, so CPU churn never makes them take the lock. Every waiter is also woken at
+    ``FALLBACK_S`` (jittered) in case a change was missed.
+    """
+
+    def __init__(self, budget: MemberBudget) -> None:
+        self._budget = budget
+        self._lock = threading.Lock()
+        self._entries: dict[object, tuple[bool, Any, float]] = {}
+        self._thread: threading.Thread | None = None
+
+    def add(self, wake: Any, *, llm: bool) -> object:  # noqa: ANN401
+        token = object()
+        with self._lock:
+            self._entries[token] = (llm, wake, time.monotonic() + FALLBACK_S * (1 + random.random()))
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name="ledger-watch", daemon=True)
+                self._thread.start()
+        return token
+
+    def remove(self, token: object) -> None:
+        with self._lock:
+            self._entries.pop(token, None)
+
+    def _run(self) -> None:
+        last = self._budget._changes()
+        while True:
+            time.sleep(WATCH_S)
+            with self._lock:
+                if not self._entries or self._budget._closed:
+                    self._thread = None
+                    return
+                entries = list(self._entries.items())
+            try:
+                cur = self._budget._changes()
+            except OSError:
+                continue
+            now = time.monotonic()
+            for token, (llm, wake, due) in entries:
+                changed = cur[1] != last[1] if llm else cur[0] != last[0]
+                if changed or now >= due:
+                    with self._lock:
+                        if token in self._entries:
+                            self._entries[token] = (llm, wake, now + FALLBACK_S * (1 + random.random()))
+                    wake()
+            last = cur
 
 
 class MemberBudget:
@@ -300,6 +359,7 @@ class MemberBudget:
         self._service_raw = self.service.encode()[:16]
         self._demand_flat: list[Any] = [0.0, 0, 0, 0] * len(DEMAND_POOLS)
         self._live: set[Permit] = set()
+        self._watcher = _Watcher(self)
         self._open_files()
         self._init_file()
         self._attach()
@@ -352,6 +412,15 @@ class MemberBudget:
             if hot is not None:
                 return hot
         return _Hot.fresh()
+
+    def _changes(self) -> tuple[int, int]:
+        raw = os.pread(self._fd, _CHANGES.size, CHANGE_OFFSET)
+        return _CHANGES.unpack(raw.ljust(_CHANGES.size, b"\0"))
+
+    def _bump(self, *, cpu: bool = False, llm: bool = False) -> None:
+        """Tell the waiters capacity was freed (under the ledger lock, so the read-add-write is not racy)."""
+        a, b = self._changes()
+        os.pwrite(self._fd, _CHANGES.pack(a + int(cpu), b + int(llm)), CHANGE_OFFSET)
 
     def _config_hash(self) -> int:
         return zlib.crc32(repr(self._want).encode()) or 1
@@ -410,6 +479,7 @@ class MemberBudget:
         self._demand_flat = [0.0, 0, 0, 0] * len(DEMAND_POOLS)
         self._live = set()
         self._tlock = threading.RLock()
+        self._watcher = _Watcher(self)
         self._slot = self._slot_fd = -1
         self._open_files()
         self._attach()
@@ -461,6 +531,7 @@ class MemberBudget:
             hot.ctl_pid, hot.ctl_slot = 0, -1
         os.pwrite(self._fd, bytes(SLOT), self._slot_offset(i))
         hot.dirty = True
+        self._bump(cpu=True, llm=True)
 
     def _reap(self, hot: _Hot, *, force: bool = False) -> int:
         """Return the holdings of processes that died: their lifetime lock is free."""
@@ -486,7 +557,29 @@ class MemberBudget:
                 reaped += 1
             finally:
                 os.close(fd)
+        if reaped:
+            self._reconcile(hot)
         return reaped
+
+    def _reconcile(self, hot: _Hot) -> None:
+        """Rebuild the totals from the live slots. A slot is the single source of truth for what its process holds:
+        a process that died between writing its slot and the hot block would otherwise leave the two disagreeing
+        (tokens leaked, or tokens granted twice)."""
+        used = [0] * _NK
+        mem = excess = llm = 0
+        for i in range(MAX_SLOTS):
+            if not hot.occupancy[i // 64] >> (i % 64) & 1:
+                continue
+            s = self._read_slot(i)
+            for k, n in enumerate(s["holdings"]):
+                used[k] += n
+            mem += s["mem"]
+            excess += s["excess"]
+            llm += s["llm"]
+        if (used, mem, excess, llm) != (hot.used, hot.mem_charged, hot.mem_excess, hot.llm_used):
+            _LOG.warning("capacity ledger: totals rebuilt from the process table after a holder died")
+            hot.used, hot.mem_charged, hot.mem_excess, hot.llm_used = used, mem, excess, llm
+            hot.dirty = True
 
     # ---- floors and shared settings -------------------------------------------------------------
 
@@ -508,6 +601,7 @@ class MemberBudget:
                 return False
             self._set_floors(hot, floors)
             hot.dirty = True
+            self._bump(cpu=True)
             return True
 
     def floors(self) -> Floors:
@@ -619,6 +713,7 @@ class MemberBudget:
             self._apply_excess(hot)
             hot.dirty = True
             self._write_slot()
+            self._bump(cpu=d.family is not Family.LLM, llm=d.family is Family.LLM)
 
     def _apply_excess(self, hot: _Hot) -> None:
         excess = sum(max(0, p.actual_bytes - p.mem_bytes) for p in self._live)
@@ -639,26 +734,48 @@ class MemberBudget:
             raise ValueError("reserve needs a deadline or a cancel token: an unbounded wait cannot be stopped")
 
     async def reserve(self, d: Demand, *, deadline_s: float | None = None, cancel: CancelToken | None = None) -> Permit:
-        """Wait for capacity in the ledger's order. ``AdmissionTimeout`` at the deadline, ``Cancelled`` on cancel."""
+        """Wait for capacity in the ledger's order. ``AdmissionTimeout`` at the deadline, ``Cancelled`` on cancel.
+
+        A waiter sleeps until the ledger's capacity changes (see :class:`_Watcher`); it does not poll.
+        """
         self._check_wait(deadline_s, cancel)
         end = None if deadline_s is None else time.monotonic() + deadline_s
         head: WaiterHead | None = None
-        delay = 0.002
+        seen: tuple[int, int] | None = None
+        loop = asyncio.get_running_loop()
+        event = asyncio.Event()
+        token = self._watcher.add(lambda: loop.call_soon_threadsafe(event.set), llm=d.family is Family.LLM)
         try:
             while True:
+                event.clear()  # before the attempt: a change that lands after it is not lost
+                seen_now = self._changes()
+                if d.family is Family.LLM and seen is not None and seen_now[1] == seen[1]:
+                    # An LLM slot frees only through a release or a reap, and both bump the counter: with it
+                    # unchanged a fallback wake has nothing to try, so it does not take the ledger lock.
+                    if cancel is not None and cancel.cancelled():
+                        raise Cancelled("reserve cancelled")
+                    left = None if end is None else end - time.monotonic()
+                    if left is not None and left <= 0:
+                        raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(event.wait(), FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
+                    continue
+                seen = seen_now
                 permit = self._take(d, head)
                 if permit is not None:
                     head = None
                     return permit
-                if head is None:
-                    head = self.register_head(d)
+                if head is None and d.family is not Family.LLM:
+                    head = self.register_head(d)  # LLM demands are not ordered, so they take no place
                 if cancel is not None and cancel.cancelled():
                     raise Cancelled("reserve cancelled")
-                if end is not None and time.monotonic() >= end:
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
                     raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, POLL_MAX_S)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(event.wait(), FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
         finally:
+            self._watcher.remove(token)
             self.withdraw_head(head)
 
     def reserve_blocking(self, d: Demand, *, deadline_s: float | None = None, cancel: CancelToken | None = None) -> Permit:
@@ -666,22 +783,36 @@ class MemberBudget:
         self._check_wait(deadline_s, cancel)
         end = None if deadline_s is None else time.monotonic() + deadline_s
         head: WaiterHead | None = None
-        delay = 0.002
+        seen: tuple[int, int] | None = None
+        event = threading.Event()
+        token = self._watcher.add(event.set, llm=d.family is Family.LLM)
         try:
             while True:
+                event.clear()
+                seen_now = self._changes()
+                if d.family is Family.LLM and seen is not None and seen_now[1] == seen[1]:
+                    if cancel is not None and cancel.cancelled():
+                        raise Cancelled("reserve cancelled")
+                    left = None if end is None else end - time.monotonic()
+                    if left is not None and left <= 0:
+                        raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
+                    event.wait(FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
+                    continue
+                seen = seen_now
                 permit = self._take(d, head)
                 if permit is not None:
                     head = None
                     return permit
-                if head is None:
+                if head is None and d.family is not Family.LLM:
                     head = self.register_head(d)
                 if cancel is not None and cancel.cancelled():
                     raise Cancelled("reserve cancelled")
-                if end is not None and time.monotonic() >= end:
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
                     raise AdmissionTimeout(f"no {d.family.value} capacity within {deadline_s}s")
-                time.sleep(delay)
-                delay = min(delay * 2, POLL_MAX_S)
+                event.wait(FALLBACK_S * 2 if left is None else min(FALLBACK_S * 2, left))
         finally:
+            self._watcher.remove(token)
             self.withdraw_head(head)
 
     def grant_plan(self) -> GrantPlan:
