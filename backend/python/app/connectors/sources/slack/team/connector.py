@@ -1022,7 +1022,7 @@ class SlackConnector(BaseConnector):
                 await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
         # After all pages, build the internal-ID cache for fast mention resolution
-        await self._build_user_id_caches()
+        await self._build_user_id_caches(unusable)
 
         self.logger.info(
             f"✅ Users — synced: {synced}, skipped: {skipped}, "
@@ -1062,7 +1062,7 @@ class SlackConnector(BaseConnector):
             self.logger.error(f"_to_app_user failed for {uid}: {exc}")
             return None
 
-    async def _build_user_id_caches(self) -> None:
+    async def _build_user_id_caches(self, unusable: set[str] = frozenset()) -> None:
         """
         Query the DB for all synced AppUsers and build user_id_to_internal_id_cache.
 
@@ -1079,7 +1079,9 @@ class SlackConnector(BaseConnector):
                 if u.source_user_id and u.id:
                     self.user_id_to_internal_id_cache[u.source_user_id] = u.id
                     self._source_id_to_app_user[u.source_user_id] = u
-                    if u.source_user_id not in self.user_id_to_email_cache and u.email and u.is_active is not False:
+                    # ``unusable``: listed deactivated or invited this run, so no grant goes to its stored email.
+                    if (u.source_user_id not in self.user_id_to_email_cache and u.source_user_id not in unusable
+                            and u.email and u.is_active is not False):
                         self.user_id_to_email_cache[u.source_user_id] = u.email
                     # Populate name cache if not already set
                     if u.source_user_id not in self.user_id_to_name_cache and u.full_name:
