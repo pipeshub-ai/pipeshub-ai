@@ -176,6 +176,7 @@ class ResourceGovernor:
             reserve_embedding_cpus=reserve_embedding_cpus,
             **(auto.resolve_kwargs if auto is not None else {}),
         )
+        container_fleet = self._fleet_ceilings  # the whole container's: what the shared ramp is sized against
         if auto is not None:
             self._fleet_ceilings = auto.partition(self._fleet_ceilings)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
@@ -213,7 +214,7 @@ class ResourceGovernor:
         self._state_lock = threading.Lock()
         self._registry = LimitRegistry(warm_start_limits(self._ceilings))
         self._state = ControllerState.initial()
-        self._container = auto.link(self._fleet_ceilings, self._ceilings, self._logger) if auto is not None else None
+        self._container = auto.link(container_fleet, self._ceilings, self._logger) if auto is not None else None
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}

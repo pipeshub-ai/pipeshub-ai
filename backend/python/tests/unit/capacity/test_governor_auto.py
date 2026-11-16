@@ -207,3 +207,16 @@ def test_each_cell_takes_its_share_of_the_container_limits(tmp_path: Path) -> No
     assert limits.get(Pool.HEAVY_PARSE) <= 28
     assert limits.get(Pool.HEAVY_PARSE) * 4 <= container.get(Pool.HEAVY_PARSE) + 4 * 3
     assert limits.get(Pool.INDEX_LIGHT) == 0 and limits.get(Pool.HEAVY_PARSE) >= 1
+
+
+def test_the_container_controller_ramps_against_the_whole_fleet_not_one_services_share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whichever service wins the election persists limits every follower applies; a Docling controller
+    must not carry Docling's own heavy cap into the container-wide limits."""
+    _governor(tmp_path, monkeypatch, auto=True, cpus=16.0)
+    monkeypatch.setenv("PIPESHUB_SERVICE", "docling")
+    runtime.reset_for_tests()
+    g = ResourceGovernor(logger=logging.getLogger("t"), probe=Probe(snap(16.0)), sample_interval=1.0)
+    whole = resolve_ceilings(snap(16.0), None, None, 1, reserve_embedding_cpus=False, cells=1, profile="auto")
+    assert g._container is not None
+    assert g._fleet_ceilings.heavy < whole.heavy  # the service's own gates stay held to its share
+    assert g._container.fleet == whole  # the shared ramp is sized from the whole container
