@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[5]
 COMPOSE_FILE = ROOT / "deployment/docker-compose/docker-compose.yml"
 ENV_TEMPLATE = ROOT / "deployment/docker-compose/env.template"
 HELM_DIR = ROOT / "deployment/helm/pipeshub-ai"
-DEPLOYMENT = HELM_DIR / "templates/deployment.yaml"
+# The pod env list is the shared helper, included by the app and parsing pods.
+DEPLOYMENT = HELM_DIR / "templates/_helpers.tpl"
 VALUES = HELM_DIR / "values.yaml"
 
 

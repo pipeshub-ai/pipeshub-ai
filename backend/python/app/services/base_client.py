@@ -360,6 +360,7 @@ class BaseServiceClient:
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
         config_service: "ConfigurationService | None" = None,
         service_scope: "TokenScopes | None" = None,
+        max_connections: int = 10,
     ) -> None:
         self.service_url = service_url.rstrip("/")
         self.service_name = service_name
@@ -372,8 +373,8 @@ class BaseServiceClient:
             pool=pool_timeout,
         )
         self._limits = httpx.Limits(
-            max_keepalive_connections=5,
-            max_connections=10,
+            max_keepalive_connections=min(5, max_connections) if max_connections <= 10 else max_connections,
+            max_connections=max_connections,
             keepalive_expiry=30.0,
         )
         self.max_retries = max_retries
