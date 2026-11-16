@@ -56,7 +56,7 @@ RECORD_PROPERTIES = frozenset({
     "failedAt", "firstQueuedAt", "indexingAttempts", "pageCount",
     # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message fires, so the
     # recovery scans do not republish it first. Optional, internal, and written only on that hand-back.
-    "deferredUntilMs", "rateLimitedForMs",
+    "deferredUntilMs", "rateLimitedSinceMs",
 })
 
 

@@ -130,3 +130,10 @@ async def test_a_refused_retry_keeps_the_attempts_it_charged(monkeypatch: pytest
     with pytest.raises(ProviderUnavailableError) as raised:
         await LLMGateway(2, retry_budget=RetryBudget()).invoke(Failing(), "hi", provider=key)
     assert raised.value.requests == 1 and raised.value.charged == 1 and raised.value.chargeable
+
+
+@pytest.mark.parametrize("key", ["Retry-After", "RETRY-AFTER", "retry-after", "Retry-After-Ms"])
+def test_the_header_is_found_whatever_the_case_of_its_key(key: str) -> None:
+    """httpx and requests headers are case-insensitive, a plain dict (a stand-in, a botocore header map) is not."""
+    value = "2500" if key.lower().endswith("-ms") else "2.5"
+    assert wire.parse_retry_after({key: value}) == 2.5

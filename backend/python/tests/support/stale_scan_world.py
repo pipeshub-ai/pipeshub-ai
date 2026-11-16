@@ -87,3 +87,23 @@ def enrichment_twin(started_at) -> dict:
         "extractionStatus": ProgressStatus.IN_PROGRESS.value,
         "processingStartedAt": started_at,
     }
+
+
+class FakeConcurrencyManager:
+    """The per-record lease of the distributed indexing mode, in memory."""
+
+    def __init__(self, owners: dict | None = None) -> None:
+        self.owners = dict(owners or {})
+
+    async def try_acquire(self, pool: str, owner: str, _limit: int, _lease_seconds: float) -> bool:
+        if pool in self.owners and self.owners[pool] != owner:
+            return False
+        self.owners[pool] = owner
+        return True
+
+    async def renew(self, pool: str, owner: str, _lease_seconds: float) -> bool:
+        return self.owners.get(pool) == owner
+
+    async def release(self, pool: str, owner: str) -> None:
+        if self.owners.get(pool) == owner:
+            self.owners.pop(pool)

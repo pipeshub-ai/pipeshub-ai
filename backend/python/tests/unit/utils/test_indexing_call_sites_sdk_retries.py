@@ -212,7 +212,9 @@ def _role_arg(call: ast.Call) -> ast.expr | None:
     if name not in names:
         return None
     index = 1 if name == "get_llm_for_role" else 0
-    return call.args[index] if len(call.args) > index else None
+    if len(call.args) > index:
+        return call.args[index]
+    return next((k.value for k in call.keywords if k.arg == "role"), None)
 
 
 def test_every_indexing_role_call_site_passes_sdk_retries() -> None:
@@ -282,9 +284,10 @@ def test_the_multimodal_embedding_providers_are_built_without_sdk_retries(monkey
     from app.modules.transformers.vectorstore import VectorStore
     from app.services.embeddings.multimodal.config import MultimodalProviderConfig
     from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
+    from tests.support.vectorstore_world import make_vectorstore
 
-    source = Path(VectorStore._multimodal_provider_config.__code__.co_filename).read_text()
-    assert "sdk_retries=INDEXING_SDK_RETRIES" in source, "the vector store must hand sdk_retries to its multimodal config"
+    # The config the vector store builds for its multimodal provider (not its source text): SDK retries are off.
+    assert make_vectorstore()._multimodal_provider_config().sdk_retries == INDEXING_SDK_RETRIES
 
     def config(provider: str) -> MultimodalProviderConfig:
         return MultimodalProviderConfig(
@@ -362,3 +365,16 @@ async def test_the_gemini_agent_transport_sends_through_httpx_when_single_attemp
     config = {"configuration": CONFIGURATION, "isDefault": True}
     single = GeminiTransport.from_langchain_model(get_generator_model("gemini", config, "m", sdk_retries=0), "m")
     assert all(not api._use_aiohttp() for api in wire._genai_api_clients(single._client))
+
+
+def test_the_scan_reads_the_role_keyword_too(tmp_path: Path) -> None:
+    """``get_llm_for_role(config, role="indexing")`` is as much an indexing site as the positional form."""
+    source = (
+        "async def f(config):\n"
+        "    return await get_llm_for_role(config, role=\"indexing\", reasoning_effort=\"low\")\n"
+    )
+    path = tmp_path / "site.py"
+    path.write_text(source)
+    call = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and _role_arg(n) is not None)
+    role = _role_arg(call)
+    assert isinstance(role, ast.Constant) and role.value == INDEXING_ROLE

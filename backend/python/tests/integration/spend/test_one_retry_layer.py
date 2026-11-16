@@ -7,6 +7,8 @@ attempts. No external network; the socket is a local fake, and the gateway's sle
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from app.services.llm_gateway import gateway as gateway_module
@@ -25,6 +27,29 @@ from tests.support.fake_llm_server import FakeLLMServer, Reply
 from tests.support.provider_configs import BASE
 
 pytestmark = pytest.mark.timeout(180)
+
+
+@pytest.fixture(autouse=True)
+def _no_aws_lookup_leaves_the_process(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+    """Static dummy credentials and a disabled metadata service: building a Bedrock client connects nowhere but the local fake.
+    Every connection the process opens is recorded; one to another host (the instance-metadata address) fails the test."""
+    import socket
+
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIADUMMY")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "dummy")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    foreign: list[object] = []
+    real = socket.create_connection
+
+    def watched(address: tuple[str, int], *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if address[0] not in {"127.0.0.1", "localhost", "::1"}:
+            foreign.append(address)
+        return real(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", watched)
+    yield
+    assert not foreign, f"a connection left for another host: {foreign}"
 
 
 @pytest.fixture(autouse=True)

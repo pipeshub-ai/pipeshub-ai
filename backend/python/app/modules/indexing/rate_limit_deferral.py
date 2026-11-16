@@ -51,8 +51,9 @@ RATE_LIMITED_SINCE_FIELD = "rateLimitedSince"
 # fires. The recovery scans leave the record alone until then. ``processingStartedAt`` stays the time processing really
 # began; nothing is dated into the future.
 DEFERRED_UNTIL_FIELD = "deferredUntilMs"
-# The time (ms) a record has spent handed back for a model provider's rate limit, over all its hand-backs.
-RATE_LIMITED_FOR_FIELD = "rateLimitedForMs"
+# When (ms) a record was first handed back for a model provider's rate limit: set once, never moved. The wall time since then is
+# what ``RATE_LIMIT_MAX_WAIT_S`` bounds, whatever the waits were (a Retry-After of 1 s cannot go on for ever).
+RATE_LIMITED_SINCE_MS_FIELD = "rateLimitedSinceMs"
 
 # A Retry-After of 0 still has to land after the queue time it is written
 # with, or the sweep could not tell the wait from an old one.
@@ -111,9 +112,7 @@ def is_deferred_until_later(record: Mapping[str, object], now_ms: float) -> bool
 
 
 def handback_wait_ms(wait_s: float) -> int:
-    """What a hand-back for ``wait_s`` adds to a record's rate-limited total, and how long its deferral lasts: the wait in
-    milliseconds, at least ``_MIN_WAIT_MS``. A wait that rounds to nothing would add nothing to the total that bounds the
-    hand-backs, and they would never end."""
+    """How long a hand-back's deferral lasts: the wait in milliseconds, at least ``_MIN_WAIT_MS``."""
     return max(_MIN_WAIT_MS, math.ceil(wait_s * 1000))
 
 

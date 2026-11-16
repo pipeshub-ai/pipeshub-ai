@@ -77,7 +77,7 @@ from app.modules.indexing.parse_now_marker import (
 )
 from app.modules.indexing.rate_limit_deferral import (
     DEFERRED_UNTIL_FIELD,
-    RATE_LIMITED_FOR_FIELD,
+    RATE_LIMITED_SINCE_MS_FIELD,
     cleared_deferral,
     deferral_updates,
     handback_wait_ms,
@@ -847,23 +847,27 @@ class RecordEventHandler(BaseEventService):
             )
 
     @staticmethod
-    def _rate_limited_for_ms(record: dict | None) -> int:
-        """Milliseconds this record has already spent handed back for a model provider's rate limit."""
-        value = (record or {}).get(RATE_LIMITED_FOR_FIELD)
-        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else 0
+    def _rate_limited_since_ms(record: dict | None) -> int | None:
+        """When this record was first handed back for a model provider's rate limit (ms), or None (a record from before the
+        field, or never handed back: the field is read tolerating its absence)."""
+        value = (record or {}).get(RATE_LIMITED_SINCE_MS_FIELD)
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
 
     def _rate_limited_too_long(
         self, record_id: str, record: dict | None, wait_s: float
     ) -> ProviderRateLimitedTooLongError | None:
-        """The error that ends the record when one more hand-back for ``wait_s`` would carry the time it has spent
-        rate-limited past ``RATE_LIMIT_MAX_WAIT_S``; None while it is within the limit."""
+        """The error that ends the record when one more hand-back for ``wait_s`` would carry it past ``RATE_LIMIT_MAX_WAIT_S`` of
+        wall time since its first hand-back; None while it is within the limit (or has never been handed back)."""
+        since = self._rate_limited_since_ms(record)
+        if since is None:
+            return None
         limit_s = messaging_env.rate_limit_max_wait_seconds
-        total_s = (self._rate_limited_for_ms(record) + handback_wait_ms(wait_s)) / 1000.0
-        if total_s <= limit_s:
+        elapsed_s = (get_epoch_timestamp_in_ms() - since + handback_wait_ms(wait_s)) / 1000.0
+        if elapsed_s <= limit_s:
             return None
         hours = limit_s / 3600.0
         self.logger.warning(
-            f"Record {record_id} has been rate-limited by its model provider for {total_s / 3600.0:.1f} h "
+            f"Record {record_id} has been rate-limited by its model provider for {elapsed_s / 3600.0:.1f} h "
             f"(limit {hours:g} h): failing it"
         )
         return ProviderRateLimitedTooLongError(
@@ -872,35 +876,39 @@ class RecordEventHandler(BaseEventService):
             doc_id=record_id,
         )
 
-    async def _record_handback_wait(self, record_id: str, wait_s: float, total_ms: int) -> bool:
+    async def _hand_back_for_provider_wait(self, record_id: str, record: dict | None, wait_s: float) -> bool:
         """Store the wait a record is handed back for (``deferredUntilMs``: the recovery scans leave it alone until then) and
-        the time it has spent rate-limited in all (``rateLimitedForMs``, what bounds the hand-backs). False when the write
-        fails: the caller then does not hand the record back, because nothing would bound it."""
+        the time of its first hand-back (``rateLimitedSinceMs``, set once, never moved: what bounds the hand-backs). False,
+        and nothing to hand back, when the fields are not written in this release (``RECORD_DEFERRAL_FIELDS_WRITE`` off) or
+        the write fails: the failure stays an ordinary one, counted by its delivery attempts, because nothing would bound it."""
+        if not messaging_env.record_deferral_fields_write:
+            return False
+        now = get_epoch_timestamp_in_ms()
         try:
             stored = await self.event_processor.graph_provider.update_node(
                 record_id,
                 CollectionNames.RECORDS.value,
                 {
-                    DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + handback_wait_ms(wait_s),
-                    RATE_LIMITED_FOR_FIELD: total_ms,
+                    DEFERRED_UNTIL_FIELD: now + handback_wait_ms(wait_s),
+                    RATE_LIMITED_SINCE_MS_FIELD: self._rate_limited_since_ms(record) or now,
                 },
             )
         except Exception as exc:
             self.logger.warning(f"Could not record the rate-limit wait of record {record_id}; not handing it back: {exc}")
             return False
         if not stored:
-            # A store answers False for an update it did not apply: the total is not there, so nothing would bound the record.
+            # A store answers False for an update it did not apply: the bound is not there, so nothing would bound the record.
             self.logger.warning(f"The rate-limit wait of record {record_id} was not stored; not handing it back")
             return False
         return True
 
     async def _end_provider_rate_limit_total(self, record_id: str, record: dict | None) -> None:
         """The record ended (indexed or failed): the time it spent rate-limited starts from zero next time (best effort)."""
-        if not record or record.get(RATE_LIMITED_FOR_FIELD) is None:
+        if not record or record.get(RATE_LIMITED_SINCE_MS_FIELD) is None:
             return
         try:
             await self.event_processor.graph_provider.update_node(
-                record_id, CollectionNames.RECORDS.value, {RATE_LIMITED_FOR_FIELD: None}
+                record_id, CollectionNames.RECORDS.value, {RATE_LIMITED_SINCE_MS_FIELD: None}
             )
         except Exception as exc:
             self.logger.warning(f"Could not clear the rate-limit total of record {record_id}: {exc}")
@@ -952,7 +960,7 @@ class RecordEventHandler(BaseEventService):
             )
             await self._release_queued_copies(record_id)
             # Best effort and nested: a failed write must not change the retry path below.
-            await self._end_provider_rate_limit_total(record_id, {RATE_LIMITED_FOR_FIELD: 1})
+            await self._end_provider_rate_limit_total(record_id, {RATE_LIMITED_SINCE_MS_FIELD: 1})
             return
         except Exception as e:
             self.logger.error(
@@ -2509,11 +2517,9 @@ class RecordEventHandler(BaseEventService):
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from ie
-                # The hand-back is bounded by the total stored here (the broker's own budget is not used), so it is
-                # only made when the total was stored: otherwise this stays an ordinary failure, counted by its attempts.
-                if await self._record_handback_wait(
-                    record_id, wait, self._rate_limited_for_ms(record) + handback_wait_ms(wait)
-                ):
+                # The hand-back is bounded by the time of its first hand-back, stored here (the broker's own budget is not used),
+                # so it is only made when that was stored: otherwise this stays an ordinary failure, counted by its attempts.
+                if await self._hand_back_for_provider_wait(record_id, record, wait):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
@@ -2532,11 +2538,9 @@ class RecordEventHandler(BaseEventService):
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from e
-                # The hand-back is bounded by the total stored here (the broker's own budget is not used), so it is
-                # only made when the total was stored: otherwise this stays an ordinary failure, counted by its attempts.
-                if await self._record_handback_wait(
-                    record_id, wait, self._rate_limited_for_ms(record) + handback_wait_ms(wait)
-                ):
+                # The hand-back is bounded by the time of its first hand-back, stored here (the broker's own budget is not used),
+                # so it is only made when that was stored: otherwise this stays an ordinary failure, counted by its attempts.
+                if await self._hand_back_for_provider_wait(record_id, record, wait):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
             # No traceback here: the Kafka consumer already logs the full
@@ -2809,8 +2813,8 @@ class RecordEventHandler(BaseEventService):
             # Each of these statuses ends a record's wait on a rate limit.
             if is_deferred(record) and not store_only_active():
                 updates.update(cleared_deferral())
-            if record.get(RATE_LIMITED_FOR_FIELD) is not None:
-                updates[RATE_LIMITED_FOR_FIELD] = None
+            if record.get(RATE_LIMITED_SINCE_MS_FIELD) is not None:
+                updates[RATE_LIMITED_SINCE_MS_FIELD] = None
 
             success = await self.event_processor.graph_provider.update_node(
                 record_id,

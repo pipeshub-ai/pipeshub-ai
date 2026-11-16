@@ -198,3 +198,33 @@ async def test_a_cancelled_attempt_charges_what_it_sent() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
     assert meter.failed == 1
+
+
+async def test_a_batch_that_times_out_is_charged_as_a_failed_send() -> None:
+    """A request sent and never answered (the batch timeout ends it) is a failed send of the stage job, like a 503."""
+    import asyncio
+
+    from app.services.llm_gateway import wire
+
+    class Hanging:
+        calls = 0
+
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+            wire.note_request_sent()
+            Hanging.calls += 1
+            await asyncio.Event().wait()  # never answers
+            return [[0.0]]
+
+    vs = _make_vectorstore()
+    vs.embedding_provider = "openAI"
+    vs.dense_embeddings = Hanging()
+    meter = wire.SendMeter(allowance=10)
+    real_sleep = asyncio.sleep
+    with patch("app.modules.transformers.vectorstore._REMOTE_EMBEDDING_BATCH_TIMEOUT_S", 0.05), \
+            patch("app.modules.transformers.vectorstore.get_embedding_gateway",
+                  return_value=EmbeddingGateway(retry_budget=RetryBudget())), \
+            patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock(side_effect=lambda s: real_sleep(0))), \
+            wire.metered(meter):
+        with pytest.raises(EmbeddingError):
+            await vs._embed_documents_with_retry(["hello"], "rec-1")
+    assert Hanging.calls >= 1 and meter.failed == Hanging.calls

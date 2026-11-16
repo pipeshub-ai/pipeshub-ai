@@ -461,7 +461,7 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "trashedExternalRecordId",
     "rateLimitedSince",
     "deferredUntilMs",
-    "rateLimitedForMs",
+    "rateLimitedSinceMs",
     "lastRepublishedAt",
     "republishCount",
     "firstQueuedAt",
