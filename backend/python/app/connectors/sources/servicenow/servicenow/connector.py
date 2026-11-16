@@ -2304,6 +2304,8 @@ class ServiceNowConnector(BaseConnector):
                 if reconcile:
                     gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
                 stored = [u for u in stored_users if u.source_user_id in gone]
+                # Before the withdrawal: should it fail, the groups and grants this run writes still leave them out.
+                self._unusable_user_ids |= gone
                 if stored:
                     await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
             except Exception as e:
