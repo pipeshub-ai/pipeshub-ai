@@ -251,3 +251,21 @@ async def test_a_refresh_refused_for_a_user_without_access_purges_nothing(store:
     assert handler._parse_now_refusal.await_count == 1
     assert store.paths(ORG, REC) != []                       # the refused event wrote and erased nothing
     assert current_run() is None
+
+
+async def test_a_failed_graph_read_on_a_delete_without_an_org_is_retried_not_fenced(store: MemoryResultStore) -> None:
+    from app.core.org_context import OrgContext, bind
+
+    _seed(store)
+    handler = _handler()
+    async def get_document(*_a: object, raise_on_error: bool = False, **_k: object) -> None:
+        if raise_on_error:
+            raise ConnectionError("graph unavailable")
+        return None                                          # what a non-raising read answers on a blip
+
+    handler.event_processor.graph_provider.get_document = get_document
+
+    with bind(OrgContext(ORG, None, "service", "envelope", "req-1")), pytest.raises(ConnectionError):
+        await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "virtualRecordId": "vr"})
+
+    assert store.paths(ORG, REC) != []                       # nothing erased or fenced on a failed read

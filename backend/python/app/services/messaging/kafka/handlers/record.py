@@ -1853,8 +1853,10 @@ class RecordEventHandler(BaseEventService):
                 # without its org takes it from the record. The read is non-raising; with no org
                 # at all (and none bound) the delete fails closed.
                 if not org_id:
+                    # A failed read raises (the event is redelivered): only an answer that the record is gone
+                    # may fall back to the bound org, or a graph blip would fence a live record's results.
                     record_doc = await self.event_processor.graph_provider.get_document(
-                        record_id, CollectionNames.RECORDS.value
+                        record_id, CollectionNames.RECORDS.value, raise_on_error=True
                     )
                     org_id = (record_doc or {}).get("orgId")
                 if not org_id:

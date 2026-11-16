@@ -399,3 +399,27 @@ async def test_the_org_delete_handler_purges_then_schedules_the_org_repurge(worl
     producer.send_event.side_effect = ConnectionError("broker down")
     with pytest.raises(ConnectionError):                  # not acknowledged: the delete event is redelivered
         await handler._handle_org_deleted({"orgId": ORG})
+
+
+async def test_no_hop_is_published_until_the_operator_turns_the_chain_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A consumer from before the event type drops a record hop and dead-letters an org hop, so during a rollout the
+    hops are not published: the delete still succeeds, and a stub of the old consumer never sees the new type."""
+    from unittest.mock import AsyncMock
+
+    from app.services.paid_cache import repurge
+
+    monkeypatch.delenv("PAID_RESULT_REPURGE_CHAIN", raising=False)
+    old_consumer_inbox = AsyncMock()                       # what a not yet upgraded consumer would receive
+    producer = AsyncMock()
+    producer.send_event = old_consumer_inbox
+
+    await repurge.schedule_repurge(producer, "org-1", "rec-1")
+    await repurge.schedule_org_repurge(producer, "org-1")
+    first = repurge.repurge_event_payload("org-1", "rec-1", now=1000.0)
+    assert await repurge.schedule_next_hop(producer, "org-1", first, now=1100.0) is True
+
+    old_consumer_inbox.assert_not_awaited()
+
+    monkeypatch.setenv("PAID_RESULT_REPURGE_CHAIN", "true")
+    await repurge.schedule_repurge(producer, "org-1", "rec-1")
+    assert old_consumer_inbox.await_count == 1

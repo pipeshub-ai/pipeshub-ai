@@ -137,12 +137,11 @@ class RunScope:
         reader = getattr(store, "get", None)
         if reader is None:
             return
-        try:
-            async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
-                raw = await reader(self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer))
-            previous = json.loads(raw).get("keys", []) if raw else []
-        except Exception:
-            return
+        # An absent manifest is ``None`` and adds nothing. A failed or undecodable read raises out of the write, so
+        # the manifest is not replaced with this attempt's keys alone and the earlier references stay in place.
+        async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+            raw = await reader(self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer))
+        previous = json.loads(raw).get("keys", []) if raw else []
         for path in previous if isinstance(previous, list) else []:
             if isinstance(path, str) and path not in self._seen:
                 self._seen.add(path)

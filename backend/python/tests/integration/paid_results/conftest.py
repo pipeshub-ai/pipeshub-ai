@@ -22,3 +22,9 @@ async def store() -> AsyncIterator[NodePaidResultStore]:
     log = logging.getLogger("paid-results-it")
     yield NodePaidResultStore(BlobStorage(log, config_service()), log)
     await close_shared_session()
+
+
+@pytest.fixture(autouse=True)
+def _repurge_chain_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests drive the delayed re-purge, which is published only when the operator turns it on."""
+    monkeypatch.setenv("PAID_RESULT_REPURGE_CHAIN", "true")

@@ -15,7 +15,9 @@ An org purge schedules one chain for the org (``scope: "org"``), not one per rec
 is the verified envelope's.
 """
 
+import logging
 import math
+import os
 import time
 from typing import Any
 
@@ -64,10 +66,25 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
     }
 
 
+#: The delayed hops are a new event type. A consumer from before it existed drops a record hop ("record not found")
+#: and dead-letters an org hop (no recordId), so while old and new consumers run side by side the hop chain would be
+#: lost. Publishing is off until the operator has rolled every consumer out and sets this; the fence and the org purge
+#: still erase a deleted record's stored results, and the retention sweep removes what an orphaned parse leaves.
+REPURGE_CHAIN_ENV = "PAID_RESULT_REPURGE_CHAIN"
+
+
+def chain_enabled() -> bool:
+    return (os.getenv(REPURGE_CHAIN_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def _publish(
     producer: Any, payload: dict[str, Any], key: str, loop: Any,  # noqa: ANN401 - the messaging producer and its owning loop
 ) -> None:
     from app.services.messaging.kafka.topics import Topic
+
+    if not chain_enabled():
+        logging.getLogger(__name__).debug("Paid-result re-purge hops are off (%s); not published", REPURGE_CHAIN_ENV)
+        return
 
     if producer is None:
         raise RuntimeError("No messaging producer configured; cannot schedule the paid-result re-purge")

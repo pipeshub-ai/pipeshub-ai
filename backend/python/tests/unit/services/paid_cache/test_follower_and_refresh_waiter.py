@@ -220,3 +220,28 @@ def test_two_event_loop_threads_never_both_take_the_same_lock() -> None:
         sys.setswitchinterval(old)
     assert len(wins[0]) + len(wins[1]) == len(names)
     assert not set(wins[0]) & set(wins[1]), "a lock was taken by both threads"
+
+
+async def test_a_failed_read_of_the_earlier_manifest_does_not_replace_it() -> None:
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    first = RunScope(ORG, REC, "rev1", "parse")
+    await first.note(store, "ocr_page/" + "a" * 64 + ".json", opens=True)
+    first._keys.append("ocr_page/" + "b" * 64 + ".json")
+    first._unflushed = 5
+    await first.flush(store)
+    before = store.files[(ORG, REC, "manifests/rev1/parse.open.json")][0]
+
+    async def failing_get(*_a: object) -> bytes:
+        raise ConnectionError("storage unreachable")
+
+    store.get = failing_get  # type: ignore[method-assign]
+    retry = RunScope(ORG, REC, "rev1", "parse")
+    with pytest.raises(ConnectionError):
+        await retry.note(store, "ocr_page/" + "a" * 64 + ".json", opens=True)
+
+    assert store.files[(ORG, REC, "manifests/rev1/parse.open.json")][0] == before
+    assert len(json.loads(before)["keys"]) == 2
