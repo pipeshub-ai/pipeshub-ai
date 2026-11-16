@@ -49,22 +49,35 @@ def test_a_hostile_svg_is_refused_quickly_by_the_static_checks(name: str) -> Non
     assert time.process_time() - start < 5.0
 
 
-def test_refusing_too_many_elements_costs_the_same_however_many_there_are() -> None:
+def test_refusing_too_many_elements_costs_the_same_however_many_there_are(monkeypatch: pytest.MonkeyPatch) -> None:
     """Counting stops at the limit, so twenty times the elements is not twenty
-    times the work."""
+    times the work: counted as the elements the parser built, not timed (a CPU-time
+    ratio against the smaller document failed at 3.03x on a loaded runner)."""
+    from app.modules.parsers.image_parser import svg_core
 
-    def refuse(n: int) -> float:
-        svg = _b64('<svg xmlns="http://www.w3.org/2000/svg">' + "<g/>" * n + "</svg>")
-        best = float("inf")
-        for _ in range(3):
-            start = time.process_time()
-            with pytest.raises(DocumentProcessingError):
-                ImageParser._svg_to_png_in_process(svg)
-            best = min(best, time.process_time() - start)
-        return best
+    built: list[int] = []
+    real_builder = svg_core._budget_builder
 
-    at_limit, far_past = refuse(60_000), refuse(1_200_000)
-    assert far_past < max(at_limit, 0.05) * 3, (at_limit, far_past)
+    def counting_builder() -> object:
+        builder = real_builder()
+        start = builder.start
+
+        def counted(tag: str, attrs: dict[str, str]) -> object:
+            built[-1] += 1
+            return start(tag, attrs)
+
+        builder.start = counted
+        return builder
+
+    monkeypatch.setattr(svg_core, "_budget_builder", counting_builder)
+
+    def refuse(n: int) -> int:
+        built.append(0)
+        with pytest.raises(DocumentProcessingError):
+            ImageParser._svg_to_png_in_process(_b64('<svg xmlns="http://www.w3.org/2000/svg">' + "<g/>" * n + "</svg>"))
+        return built[-1]
+
+    assert refuse(60_000) == refuse(1_200_000) == svg_core._MAX_SVG_ELEMENTS + 1
 
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))
