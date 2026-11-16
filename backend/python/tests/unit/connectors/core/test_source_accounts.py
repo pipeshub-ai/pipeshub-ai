@@ -3,6 +3,8 @@ PipesHub granted the old one, on every connector whose users are accounts of the
 account is assigned a new ID value even though the UPN is the same"
 (https://learn.microsoft.com/en-us/troubleshoot/sharepoint/sharing-and-permissions/fix-site-user-id-mismatch)."""
 
+import asyncio
+import contextlib
 import json
 import logging
 from types import SimpleNamespace
@@ -593,3 +595,32 @@ async def test_recheck_reads_the_state_again_and_drops_refused_user_grants(world
     await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])         # admitted while the batch was read
     assert [p.external_id for p in await worker.recheck(grants)] == ["g-1", "bo-oid"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_user_syncs_of_one_connector_keep_every_address_they_link(world) -> None:
+    """Two listings of one connector at once (users read in parallel): the second runs while the first is still
+    saving a bucket both addresses fall in. Neither save may drop the other's entry."""
+    directory, accounts, config = world
+    first = "a0@x.com"
+    second = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(first))
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(first))
+    real_set = config.set_config
+    saving, second_done = asyncio.Event(), asyncio.Event()
+
+    async def slow_set(key: str, value: object, **kw: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()       # the first save is under way; let the other listing run now (bounded, not a deadlock)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(second_done.wait(), 0.2)
+        return await real_set(key, value, **kw)
+
+    async def second_listing() -> None:
+        await saving.wait()
+        await accounts.before_link([_user(second, "acc-2")])
+        second_done.set()
+
+    config.set_config = slow_set
+    await asyncio.gather(accounts.before_link([_user(first, "acc-1")]), second_listing())
+
+    assert _saved(config)["linked"] == {first: "acc-1", second: "acc-2"}
