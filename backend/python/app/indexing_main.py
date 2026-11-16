@@ -1723,7 +1723,15 @@ async def _republish_stranded_records(
 
             # The scan's snapshot may be old: while it waited on other lookups the record can have been processed, handed
             # back for a provider's wait and released. Read it again under the lease, before claiming or publishing.
-            fresh = await graph_provider.get_document(record_key, CollectionNames.RECORDS.value)
+            try:
+                fresh = await graph_provider.get_document(
+                    record_key, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+            except Exception as exc:
+                # A read that failed is not "no wait": the delayed message may still be in the broker, and sending another
+                # now would call the provider before it said it can serve. Left for the next pass.
+                logger.warning("Could not re-read stranded record %s under its lease; skipping it this pass: %s", record_key, exc)
+                return False
             if fresh is not None and is_deferred_until_later(fresh, get_epoch_timestamp_in_ms()):
                 return False
 

@@ -4187,6 +4187,31 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
         graph.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_failed_reread_under_the_lease_is_not_taken_for_no_wait(self) -> None:
+        """A graph error reads as ``None`` unless the read is told to raise: the sweep must skip the record, not send another
+        event while the broker may still hold the delayed one."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=None, rateLimitedSince=None, queuedAtTimestamp=now - 3 * HOUR_MS)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        previous = graph.get_document.side_effect
+
+        async def get_document(key, collection, **kwargs):
+            if collection == CollectionNames.RECORDS.value:
+                if kwargs.get("raise_on_error"):
+                    raise ConnectionError("graph unavailable")
+                return None  # what a provider answers for an unreadable record when not asked to raise
+            return previous(key, collection, **kwargs)
+
+        graph.get_document = AsyncMock(side_effect=get_document)
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_not_sent_before_its_time(self) -> None:
         now = get_epoch_timestamp_in_ms()
         row = self._waiting(now, retryNotBefore=now + HOUR_MS, queuedAtTimestamp=1)

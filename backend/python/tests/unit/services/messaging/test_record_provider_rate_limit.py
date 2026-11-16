@@ -151,9 +151,10 @@ async def test_a_record_within_the_limit_is_still_handed_back() -> None:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
 
 
-async def test_a_record_that_cannot_store_its_wait_is_still_handed_back() -> None:
-    """If the write of ``deferredUntilMs`` is refused (a process on an older record schema), the hand-back still carries the
-    provider's wait to the broker; the failure is logged, not raised."""
+async def test_a_record_whose_wait_cannot_be_stored_is_not_handed_back_unbounded() -> None:
+    """The hand-back is bounded by the rate-limited total stored with it, not by the broker's redelivery budget. If that write
+    is refused (a process on an older record schema, a graph error) the record is not handed back: it stays an ordinary failure,
+    retried on the delivery attempts, which do bound it."""
     harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
     real = harness.graph.update_node.side_effect
@@ -164,6 +165,6 @@ async def test_a_record_that_cannot_store_its_wait_is_still_handed_back() -> Non
         return await real(doc_id, collection, fields) if real else True
 
     harness.graph.update_node = AsyncMock(side_effect=update)
-    with pytest.raises(ProviderRateLimitRequeue) as raised:
+    with pytest.raises(Exception) as raised:  # noqa: B017
         await harness.run(_payload(parseNow=False, is_final_failure=False))
-    assert raised.value.delay_s == 300.0
+    assert not isinstance(raised.value, RequeueWithoutAttempt)

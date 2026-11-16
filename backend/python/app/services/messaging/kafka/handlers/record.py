@@ -871,6 +871,24 @@ class RecordEventHandler(BaseEventService):
             doc_id=record_id,
         )
 
+    async def _record_handback_wait(self, record_id: str, wait_s: float, total_ms: int) -> bool:
+        """Store the wait a record is handed back for (``deferredUntilMs``: the recovery scans leave it alone until then) and
+        the time it has spent rate-limited in all (``rateLimitedForMs``, what bounds the hand-backs). False when the write
+        fails: the caller then does not hand the record back, because nothing would bound it."""
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                {
+                    DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + int(wait_s * 1000),
+                    RATE_LIMITED_FOR_FIELD: total_ms,
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(f"Could not record the rate-limit wait of record {record_id}; not handing it back: {exc}")
+            return False
+        return True
+
     async def _end_provider_rate_limit_total(self, record_id: str, record: dict | None) -> None:
         """The record ended (indexed or failed): the time it spent rate-limited starts from zero next time (best effort)."""
         if not record or record.get(RATE_LIMITED_FOR_FIELD) is None:
@@ -1661,7 +1679,6 @@ class RecordEventHandler(BaseEventService):
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
         handback_delay_s = 0.0
-        handback_total_ms = 0
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         record = None
@@ -2486,10 +2503,14 @@ class RecordEventHandler(BaseEventService):
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from ie
-                handed_back = True
-                handback_delay_s = wait
-                handback_total_ms = self._rate_limited_for_ms(record) + int(wait * 1000)
-                raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
+                # The hand-back is bounded by the total stored here (the broker's own budget is not used), so it is
+                # only made when the total was stored: otherwise this stays an ordinary failure, counted by its attempts.
+                if await self._record_handback_wait(
+                    record_id, wait, self._rate_limited_for_ms(record) + int(wait * 1000)
+                ):
+                    handed_back = True
+                    handback_delay_s = wait
+                    raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=wait) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
             # Not a failure: the consumer hands the message back, and nothing is written for it.
@@ -2506,10 +2527,14 @@ class RecordEventHandler(BaseEventService):
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from e
-                handed_back = True
-                handback_delay_s = wait
-                handback_total_ms = self._rate_limited_for_ms(record) + int(wait * 1000)
-                raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
+                # The hand-back is bounded by the total stored here (the broker's own budget is not used), so it is
+                # only made when the total was stored: otherwise this stays an ordinary failure, counted by its attempts.
+                if await self._record_handback_wait(
+                    record_id, wait, self._rate_limited_for_ms(record) + int(wait * 1000)
+                ):
+                    handed_back = True
+                    handback_delay_s = wait
+                    raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=wait) from e
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
             # only once, when this turns out to be the final attempt.
@@ -2566,19 +2591,6 @@ class RecordEventHandler(BaseEventService):
                     # like a transient failure (QUEUED, no processing start), so the broker's delay is the only wake-up and
                     # the stale-record scan does not mistake the wait for a crash and call the provider again.
                     is_final = False
-                    # The recovery scans leave the record alone until the broker's delayed message fires: the wait is
-                    # recorded as such, and ``processingStartedAt`` keeps saying when processing really began.
-                    try:
-                        await self.event_processor.graph_provider.update_node(
-                            record_id,
-                            CollectionNames.RECORDS.value,
-                            {
-                                DEFERRED_UNTIL_FIELD: get_epoch_timestamp_in_ms() + int(handback_delay_s * 1000),
-                                RATE_LIMITED_FOR_FIELD: handback_total_ms,
-                            },
-                        )
-                    except Exception as wait_exc:
-                        self.logger.warning(f"Could not record the rate-limit wait of record {record_id}: {wait_exc}")
 
                 if cancelled:
                     # Checked before is_final: a cancellation is not a verdict
