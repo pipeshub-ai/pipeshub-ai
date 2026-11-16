@@ -303,6 +303,7 @@ async def an_address_change_moves_the_directory_link(provider: Any, config_servi
         with patch.object(service, "_relink_source_accounts", AsyncMock(side_effect=RuntimeError("relink failed"))), \
                 contextlib.suppress(RuntimeError):
             await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": moved})
+        assert ((await provider.get_user_by_user_id(user_id)) or {}).get("email") == moved, "the address was stored before the move failed"
         assert directory(await links_of(provider, users["cal"])) == {old}
         assert await service.process_event("userUpdated", {"userId": user_id, "orgId": org_id, "email": moved})
         assert directory(await links_of(provider, users["cal"])) == set(), "no account holds the new address: the old link goes"
