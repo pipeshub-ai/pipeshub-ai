@@ -99,6 +99,7 @@ class KhPgLayer(KgLayer):
         self.not_current = not_current
         self.not_ready = 0
         self.hide_first_app = False
+        self.copied: dict = {}      # world -> (connectors promoted, connectors) of its own copy
         self.name = f"postgres-kg-{'walk' if not_current else 'kg'}"
 
     async def preload(self, worlds) -> None:
@@ -112,6 +113,7 @@ class KhPgLayer(KgLayer):
                     AND id = (SELECT min(id) FROM graph.nodes WHERE org_id = $1 AND coll = 'apps')""", org)
             done, total = await flip(self._db, org)
             self.promoted.update(promoted=done, connectors=total)
+            self.copied[w] = (done, total)
         if self.not_current:
             for w in new:
                 await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", _hex(Namespace(self._prefix[w]).org))
@@ -477,7 +479,9 @@ async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_
     asked = {PAGSEED: ["P", "i1", "i2", "c1", "c2", "c3", "c4", "c5", "f1", "s1"], PAGSTORY: ["P", "epic", "story", "sub", "plain", "note"], DECLPAG: ["d", "k", "c"]}
     worlds = [PAGSEED, PAGSTORY, DECLPAG]
     await kh_layer.preload(worlds)
-    assert kh_layer.promoted["promoted"] == kh_layer.promoted["connectors"], (kh_layer.name, dict(kh_layer.promoted))      # no world is refused by the copy
+    for world in worlds:      # no world is refused by the copy
+        done, total = kh_layer.copied[world]
+        assert total > 0 and done == total, (kh_layer.name, worlds.index(world), done, total)
     for (world, who), want in expected.items():
         ns = await kh_layer._ns(world)
         with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
