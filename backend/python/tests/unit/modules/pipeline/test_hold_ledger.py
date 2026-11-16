@@ -372,3 +372,27 @@ async def test_a_restored_hold_credits_no_time_from_before_it_began(fleet: Fleet
     sim_clock.advance(10 * 60_000)
     assert await keeper.tick() == 1  # the reconcile restores the entry, then the pass advances the ledger
     assert await breaker.ledger(scope) == 10 * 60_000, "ten minutes of hold, not ten hours and ten minutes"
+
+
+async def test_a_job_at_the_charged_cap_waits_while_the_hold_cannot_be_asked(sim_clock: SimClock) -> None:
+    """The budget check of a job at its charged cap registers it with the key's hold. When Redis cannot answer, that is the
+    store's own outage (the caller defers the job), not an error the delivery is counted and abandoned for."""
+    from app.modules.pipeline.pause_budget import PauseState
+    from app.modules.pipeline.pause_store import PauseStoreUnavailable
+    from app.services.llm_gateway.fleet_breaker import FleetBreakerUnavailable
+
+    class DownBreaker:
+        async def now_ms(self) -> int:
+            return 0
+
+        async def ledger(self, scope: str) -> int:
+            return 0
+
+        async def register_capped(self, *args: object, **kwargs: object) -> None:
+            raise FleetBreakerUnavailable("redis down")
+
+    judge = PauseJudge(PauseStore(), clock_ms=sim_clock, limits=PauseLimits(), breaker=DownBreaker())  # type: ignore[arg-type]
+    limits = await judge.limits()
+    prior = PauseState(since_ms=0, charged=limits.charged_sends, scope=f"{PK}:{CLS}")
+    with pytest.raises(PauseStoreUnavailable):
+        await judge._ask_hold(_job(), prior, PK, CLS, None, 0, {"now_ms": 0, "ledger_now": 0, "limits": limits})

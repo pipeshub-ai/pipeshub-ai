@@ -242,7 +242,10 @@ class PauseJudge:
         if breaker is None or not pk or not size_class:
             return decide(state, capped_distinct=0, **decide_kwargs), (), False, ""
         label = label or "model provider"
-        capped = await breaker.register_capped(pk, size_class, job.state_key, label=label, reason="charged_cap", org=job.org_id)
+        try:
+            capped = await breaker.register_capped(pk, size_class, job.state_key, label=label, reason="charged_cap", org=job.org_id)
+        except FleetBreakerUnavailable as exc:
+            raise PauseStoreUnavailable(str(exc)) from exc
         decision = decide(state, capped_distinct=0 if capped.already else capped.distinct, **decide_kwargs)
         if decision.verdict is not Verdict.REDRIVE:
             return decision, (), False, ""
