@@ -188,7 +188,7 @@ async def _deliver_due(handler: Any, producer: Any, pending: list, now: float) -
     return hops
 
 
-@pytest.mark.parametrize("starts_after_s", [0, 600, 1230])
+@pytest.mark.parametrize("starts_after_s", [0, 1230, 1950, 4800])
 @pytest.mark.parametrize("parse_runs_for_s", [2400, 3000, 3600, 7200])
 async def test_an_orphan_that_keeps_paying_leaves_nothing_once_the_chain_ends(
     world: Any, monkeypatch: pytest.MonkeyPatch, parse_runs_for_s: int, starts_after_s: int,  # noqa: ANN401
@@ -228,18 +228,28 @@ async def test_an_orphan_that_keeps_paying_leaves_nothing_once_the_chain_ends(
     assert left == [], f"stage began {starts_after_s} s after the delete and ran {parse_runs_for_s} s: {len(left)} left"
 
 
-def test_the_admission_window_covers_the_latest_a_parse_can_start_after_its_record() -> None:
-    """The client sends the parse request while the record's budget still holds its read, and the route can then hold
-    it for the gate and the memory wait: the horizon must cover that before the stage's own deadline."""
+def test_the_admission_window_is_tied_to_the_consumer_and_the_route() -> None:
+    """The constants the horizon mirrors are the ones the consumer, the client and the route really use."""
     from app.api.routes.parsing import PARSE_GATE_TIMEOUT_SECONDS
     from app.services.messaging.config import messaging_env as env
+    from app.services.messaging.consumer_concurrency import parse_admission_wait_seconds
     from app.services.parsing.client import PARSE_SHARE_OF_RECORD_BUDGET
     from app.services.resource_governor.kinds import EXCESS_WAIT_SECONDS
 
-    budget = max(env.pdf_record_processing_timeout, env.record_processing_timeout)
-    latest = budget * (1 - PARSE_SHARE_OF_RECORD_BUDGET) + PARSE_GATE_TIMEOUT_SECONDS + EXCESS_WAIT_SECONDS
+    assert locks_module.PARSE_GATE_WAIT_S == PARSE_GATE_TIMEOUT_SECONDS
+    assert locks_module.PARSE_MEMORY_WAIT_S == EXCESS_WAIT_SECONDS
+    assert locks_module.PARSE_READ_SHARE == PARSE_SHARE_OF_RECORD_BUDGET
+    assert locks_module.PARSE_SLOT_WAITS * env.record_processing_timeout == 2 * parse_admission_wait_seconds()
+    latest = (
+        2 * parse_admission_wait_seconds()
+        + env.max_record_processing_timeout * (1 - PARSE_SHARE_OF_RECORD_BUDGET)
+        + PARSE_GATE_TIMEOUT_SECONDS + EXCESS_WAIT_SECONDS
+    )
     assert locks_module.ADMISSION_WINDOW_S >= latest
-    assert REPURGE_HORIZON_S >= locks_module.ADMISSION_WINDOW_S + locks_module.STAGE_DEADLINE_S + locks_module.LOCK_TTL_MS // 1000
+    assert REPURGE_HORIZON_S >= (
+        locks_module.ADMISSION_WINDOW_S + locks_module.STAGE_DEADLINE_S + locks_module.WRITE_DEADLINE_S
+        + locks_module.LOCK_TTL_MS // 1000
+    )
 
 
 async def test_a_call_started_long_after_its_stage_began_is_still_stored(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,7 +301,7 @@ async def test_every_hop_verifies_under_random_lag_and_the_chain_ends_after_the_
         else:
             await repurge.schedule_org_repurge(wire, ORG)
     delete_at, consumed, purge_times = now[0], 0, []
-    while consumed < len(wire.sent) and consumed < 30:
+    while consumed < len(wire.sent) and consumed < 60:
         topic, signed, published = wire.sent[consumed]
         lag = rng.uniform(0, 590)
         now[0] = max(published + lag, published + REPURGE_HOP_S)          # delivered after its hold and its lag
@@ -305,7 +315,7 @@ async def test_every_hop_verifies_under_random_lag_and_the_chain_ends_after_the_
         assert store.paths(ORG, REC) == []
         purge_times.append(now[0] - delete_at)
         consumed += 1
-    assert consumed < 30, "the chain did not end"
+    assert consumed < 60, "the chain did not end"
     assert purge_times[-1] > REPURGE_HORIZON_S, f"last purge at {purge_times[-1]:.0f} s"
     assert all(b - a <= REPURGE_HOP_S + 590 + 1e-6 for a, b in zip([0.0, *purge_times], purge_times)), purge_times
 

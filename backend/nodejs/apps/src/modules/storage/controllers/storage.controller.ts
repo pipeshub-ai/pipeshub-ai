@@ -77,7 +77,6 @@ import {
   isPaidResultManifestPath,
   isPaidResultObjectPath,
   paidResultsRecordRoot,
-  requireStringParam,
 } from '../utils/paid-results';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
@@ -1268,9 +1267,18 @@ export class StorageController {
           'Send the file as the request body with Content-Type application/octet-stream',
         );
       }
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const pathParam: unknown = req.params[0];
+      if (typeof pathParam !== 'string' || pathParam === '') {
+        throw new BadRequestError('path must be a single value');
+      }
       const adapter = await this.localArtifactAdapter(req);
-      const filePath = requireStringParam(req.params[0], 'path');
-      const storageKey = `${paidResultsRecordRoot(orgId, requireStringParam(req.params.recordId, 'recordId'))}/${filePath}`;
+      const filePath = pathParam;
+      const storageKey = `${paidResultsRecordRoot(orgId, recordParam)}/${filePath}`;
       let written = true;
       const replace = req.query.replace === '1';
       const refresh = req.query.refresh === '1';
@@ -1313,10 +1321,19 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = extractOrgId(req);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const pathParam: unknown = req.params[0];
+      if (typeof pathParam !== 'string' || pathParam === '') {
+        throw new BadRequestError('path must be a single value');
+      }
       const adapter = await this.localArtifactAdapter(req);
-      const filePath = requireStringParam(req.params[0], 'path');
+      const filePath = pathParam;
       const opened = await adapter.openObject(
-        `${paidResultsRecordRoot(orgId, requireStringParam(req.params.recordId, 'recordId'))}/${filePath}`,
+        `${paidResultsRecordRoot(orgId, recordParam)}/${filePath}`,
       );
       if (opened === null) {
         // A miss is the cache's normal path: answered here, not thrown, so it is not logged as a failed request.
@@ -1342,11 +1359,22 @@ export class StorageController {
           'The organization in the request does not match the storage token',
         );
       }
-      const { prefix, after } = req.query as {
-        prefix?: string;
-        after?: string;
-      };
-      const root = paidResultsRecordRoot(orgId, String(req.params.recordId));
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const prefixQuery: unknown = req.query.prefix;
+      const afterQuery: unknown = req.query.after;
+      if (
+        (prefixQuery !== undefined && typeof prefixQuery !== 'string') ||
+        (afterQuery !== undefined && typeof afterQuery !== 'string')
+      ) {
+        throw new BadRequestError('prefix and after must be single values');
+      }
+      const prefix = prefixQuery;
+      const after = afterQuery;
+      const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
       const page = await adapter.listObjects(`${root}/${prefix ?? ''}`, {
         after,
@@ -1375,8 +1403,13 @@ export class StorageController {
     try {
       const orgId = extractOrgId(req);
       this.assertBodyOrgMatchesToken(req, orgId);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
       const { paths } = req.body as { paths: string[] };
-      const root = paidResultsRecordRoot(orgId, String(req.params.recordId));
+      const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
       await adapter.deleteObjects(paths.map((p) => `${root}/${p}`));
       res.status(HTTP_STATUS.OK).json({ deleted: paths.length });
@@ -1393,10 +1426,13 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = extractOrgId(req);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
       const adapter = await this.initializeStorageAdapter(req);
-      await adapter.deleteTree(
-        paidResultsRecordRoot(orgId, String(req.params.recordId)),
-      );
+      await adapter.deleteTree(paidResultsRecordRoot(orgId, recordParam));
       res.status(HTTP_STATUS.OK).json({ purged: true });
     } catch (error) {
       next(error);

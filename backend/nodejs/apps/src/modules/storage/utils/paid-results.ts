@@ -1,5 +1,4 @@
 import { getFullDocumentPath } from './utils';
-import { BadRequestError } from '../../../libs/errors/http.errors';
 
 /**
  * The cache kinds (contracts §12.2). A new kind is a contract change, so a
@@ -54,15 +53,3 @@ export const paidResultsRecordRoot = (
   orgId: string,
   recordId: string,
 ): string => `${paidResultsOrgRoot(orgId)}/${recordId}`;
-
-/**
- * The `*` of a `/files/*` route and the record id, as the strings they must be. A request
- * parameter can be an array (a repeated key, a framework that splits a wildcard), and a
- * value that is not a string never reaches a storage key or a response.
- */
-export const requireStringParam = (value: unknown, name: string): string => {
-  if (typeof value !== 'string' || value === '') {
-    throw new BadRequestError(`${name} must be a single value`);
-  }
-  return value;
-};

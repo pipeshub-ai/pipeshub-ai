@@ -185,7 +185,7 @@ async def test_every_hop_verifies_within_the_signature_window(
     with bind(OrgContext(ORG, None, "service", "envelope", "req-1")):
         [e async for e in handler.process_event(EventTypes.DELETE_RECORD.value, DELETE)]
     delete_at, consumed = clock[0], 0
-    while wire.sent and consumed < 20:
+    while wire.sent and consumed < 60:
         topic, signed, published_at, signed_at = wire.sent[consumed]
         due = published_at + REPURGE_HOP_S                            # the consumer holds it until then, plus its lag
         clock[0] = due + lag_s

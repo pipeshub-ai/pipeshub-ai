@@ -9,6 +9,8 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Protocol
 
+from app.utils.env_config import env_seconds
+
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
@@ -35,15 +37,32 @@ REPURGE_MARGIN_S = 60
 #: (lock TTL + write deadline + margin), so no queued message waits long enough to outlive its signature.
 REPURGE_HOP_S = LOCK_TTL_MS // 1000 + WRITE_DEADLINE_S + REPURGE_MARGIN_S
 REPURGE_DELAY_S = REPURGE_HOP_S
-#: The latest a paid stage can begin after its record was deleted. The indexing client sends the parse request while
-#: the record's budget still holds a read (the share it reserves for one), and the parsing route can then hold it
-#: for the admission gate and the memory wait before ``parse`` starts: for a PDF (5400 s budget, 80 % reserved for the
-#: read) 1080 s + 120 s + 30 s. ``STAGE_DEADLINE_S`` counts from the stage's start, so this is added to the horizon;
-#: a test ties it to those constants. Raise it with ``PDF_RECORD_PROCESSING_TIMEOUT``.
-ADMISSION_WINDOW_S = 1500
+#: The latest a paid stage can begin after its record was deleted. The indexing consumer may queue for a parse slot
+#: twice (before the download and before the parse) and the record's budget is paused meanwhile, each wait up to
+#: ``RECORD_PROCESSING_TIMEOUT``; the parse request is then sent while the budget still holds a read (the budget's
+#: share the client does not reserve for it), and the parsing route can hold it for the admission gate and the
+#: memory wait before ``parse`` starts. ``STAGE_DEADLINE_S`` counts from the stage's start, so this is added to the
+#: horizon. The three figures below mirror the consumer's and the route's (a test ties each to its source); the
+#: record budgets are read from the same environment variables.
+PARSE_SLOT_WAITS = 2
+PARSE_READ_SHARE = 0.8
+PARSE_GATE_WAIT_S = 120
+PARSE_MEMORY_WAIT_S = 30
+
+
+def _admission_window_s() -> int:
+    record = env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
+    budget = max(record, env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
+    window = (
+        PARSE_SLOT_WAITS * record + budget * (1 - PARSE_READ_SHARE) + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
+    )
+    return int(-(-window // REPURGE_MARGIN_S) * REPURGE_MARGIN_S)
+
+
+ADMISSION_WINDOW_S = _admission_window_s()
 #: The chain ends once this long has passed since the delete: the latest a stage can begin, the longest it may run,
-#: a lock's life and a margin.
-REPURGE_HORIZON_S = ADMISSION_WINDOW_S + STAGE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
+#: the last write's deadline, a lock's life and a margin.
+REPURGE_HORIZON_S = ADMISSION_WINDOW_S + STAGE_DEADLINE_S + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
 
 
 def lock_name(org_id: str, record_id: str, digest: str) -> str:
