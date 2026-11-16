@@ -67,6 +67,7 @@ _FOLDED_KEPT = 256
 MAX_SERIES = 300
 DEFAULT_BIND = "0.0.0.0"  # the scraper is another pod; the chart narrows it to the pod IP
 MAX_CONNECTIONS = 16  # handler threads of the port; past them the oldest unfinished request is evicted
+ADMIT_WAIT_S = 1.0  # how long a new connection waits for an evicted handler's thread to exit before it is refused
 REQUEST_DEADLINE_S = 2.0  # the whole request (line and headers) must arrive within this, however it trickles
 CONNECTION_TIMEOUT_S = 5.0  # a single read or write that blocks this long is dropped (the answer's own I/O)
 COLLECT_CACHE_TTL_S = 1.0  # a scrape inside this window reuses the folded result
@@ -785,6 +786,8 @@ class BoundedServer(HTTPServer):
         self._deadline = REQUEST_DEADLINE_S if request_deadline is None else request_deadline
         self._conns: dict[socket.socket, list[Any]] = {}  # socket -> [accepted at, being answered]
         self._lock = threading.Lock()
+        self._live: set[threading.Thread] = set()  # handler threads that have not yet exited: the real slot count
+        self._cut_socks: set[socket.socket] = set()  # evicted, not yet gone
         self._reaper_stop = threading.Event()
         threading.Thread(target=self._reap, name="ops-exporter-reaper", daemon=True).start()
 
@@ -810,22 +813,31 @@ class BoundedServer(HTTPServer):
 
     def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         sock: socket.socket = request  # type: ignore[assignment]
-        victim = None
-        with self._lock:
-            if len(self._conns) >= self._max:
-                waiting = [(at, s) for s, (at, serving) in self._conns.items() if not serving]
-                if not waiting:
-                    sock.close()  # every slot is mid-answer: a moment's wait, then the scraper retries
-                    return
-                victim = min(waiting, key=lambda item: item[0])[1]
-            self._conns[sock] = [time.monotonic(), False]
-        if victim is not None:
-            self._cut(victim)
+        thread = threading.Thread(target=self._serve, args=(request, client_address), name="ops-exporter-conn", daemon=True)
+        give_up = time.monotonic() + ADMIT_WAIT_S
+        while True:
+            with self._lock:
+                self._live = {t for t in self._live if t.is_alive()}  # a slot is held until its thread has exited
+                if len(self._live) < self._max:
+                    self._conns[sock] = [time.monotonic(), False]
+                    self._live.add(thread)
+                    break
+                waiting = [(at, s) for s, (at, serving) in self._conns.items() if not serving and s not in self._cut_socks]
+                if waiting:
+                    victim = min(waiting, key=lambda item: item[0])[1]
+                    self._cut_socks.add(victim)
+                    self._cut(victim)
+                all_answering = len(self._conns) >= self._max and not waiting and not self._cut_socks
+            if all_answering or time.monotonic() >= give_up:
+                sock.close()  # every slot is mid-answer, or none freed within the bound: refuse, never exceed the cap
+                return
+            time.sleep(0.005)  # an evicted handler is leaving: re-check until its thread has exited
         try:
-            threading.Thread(target=self._serve, args=(request, client_address), name="ops-exporter-conn", daemon=True).start()
+            thread.start()
         except Exception:
             with self._lock:
                 self._conns.pop(sock, None)
+                self._live.discard(thread)
             self.shutdown_request(request)
 
     def _serve(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
@@ -836,6 +848,7 @@ class BoundedServer(HTTPServer):
         finally:
             with self._lock:
                 self._conns.pop(request, None)  # type: ignore[arg-type]
+                self._cut_socks.discard(request)  # type: ignore[arg-type]
             self.shutdown_request(request)
 
     def server_close(self) -> None:

@@ -225,18 +225,15 @@ def test_idle_connections_do_not_grow_threads_without_bound_and_time_out(tmp_pat
     try:
         base = threading.active_count()
         socks.extend(socket.create_connection(("127.0.0.1", port)) for _ in range(200))
-        # Observe the peaks over a bounded window instead of one sleep. A connection that evicts another gets its
-        # slot before the evicted handler thread has exited, so under load the live count overshoots the cap
-        # for a moment. The property is that it stays a small multiple of the cap and does not follow the 200
-        # connections, and that it settles back below. Literal margin: raising it is a deliberate edit.
+        # A slot is held until its handler thread has exited, so the live count is bounded at every sample.
         peak_conns = peak_threads = 0
         window_end = time.monotonic() + 0.3
         while time.monotonic() < window_end:
             peak_conns = max(peak_conns, len(exporter._server._conns))
             peak_threads = max(peak_threads, threading.active_count() - base)
-            time.sleep(0.01)
-        assert peak_conns <= 16 * 3, f"{peak_conns} tracked connections for 200 idle connections"
-        assert peak_threads <= 16 * 3, f"{peak_threads} threads for 200 idle connections"
+            time.sleep(0.001)
+        assert peak_conns <= 16, f"{peak_conns} tracked connections for 200 idle connections"
+        assert peak_threads <= 16, f"{peak_threads} threads for 200 idle connections"
         # every idle handler passes its request deadline and is closed: poll the observable state, bounded
         assert _wait_until(lambda: threading.active_count() - base <= 1, 30), "idle handlers were not closed"
         assert urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5).status == 200
@@ -245,6 +242,71 @@ def test_idle_connections_do_not_grow_threads_without_bound_and_time_out(tmp_pat
             s.close()
         exporter._server.shutdown()
         exporter._server.server_close()
+
+
+def test_live_handler_threads_never_exceed_the_cap_under_trickling_clients_and_cpu_stress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.4)
+    port = _free(BASE_PORT + 35)
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind="127.0.0.1")
+    assert exporter.try_bind()
+    stop = threading.Event()
+    socks: list[socket.socket] = []
+
+    def burn() -> None:
+        while not stop.is_set():
+            sum(i * i for i in range(2000))
+
+    def trickle() -> None:
+        while not stop.is_set():
+            try:
+                c = socket.create_connection(("127.0.0.1", port), timeout=2)
+            except OSError:
+                continue
+            socks.append(c)
+            try:
+                for _ in range(3):
+                    c.send(b"G")  # one byte at a time: never a complete request
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    workers = [threading.Thread(target=burn, daemon=True) for _ in range(4)]
+    workers += [threading.Thread(target=trickle, daemon=True) for _ in range(6)]
+    try:
+        base = threading.active_count()  # the acceptor and the reaper are already in it
+        for w in workers:
+            w.start()
+        base += len(workers)
+        peak_conns = peak_threads = samples = 0
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            peak_conns = max(peak_conns, len(exporter._server._conns))
+            peak_threads = max(peak_threads, threading.active_count() - base)
+            samples += 1
+            if samples % 300 == 0:
+                _scrape_status(port)  # a refused connection is allowed; the scrape below must be answered
+            time.sleep(0.0005)
+        assert peak_conns <= 16, f"{peak_conns} tracked connections"
+        assert peak_threads <= 16, f"{peak_threads} live handler threads over {samples} samples"
+        stop.set()
+        for w in workers:
+            w.join(5)
+        assert _wait_until(lambda: _scrape_status(port) == 200, 10), "a scrape was not answered while slots were held"
+    finally:
+        stop.set()
+        for s in socks:
+            s.close()
+        exporter._server.shutdown()
+        exporter._server.server_close()
+
+
+def _scrape_status(port: int) -> int:
+    try:
+        return urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5).status
+    except OSError:
+        return 0
 
 
 def test_the_shipped_bounds_are_small_literals() -> None:
