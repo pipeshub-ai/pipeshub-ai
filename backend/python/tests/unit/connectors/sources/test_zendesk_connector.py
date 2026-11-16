@@ -6,6 +6,7 @@
 import json
 import logging
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -20,6 +21,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -57,8 +59,6 @@ from tests.support.in_memory_config import InMemoryConfigService
 from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
     stub_source_accounts,
 )
-from types import SimpleNamespace
-from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 
 # ---------------------------------------------------------------------------
 # Fixtures
