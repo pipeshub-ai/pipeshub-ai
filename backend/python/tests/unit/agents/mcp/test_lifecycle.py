@@ -155,7 +155,7 @@ class TestDeletionEventsCleanUp:
         from app.services.messaging.kafka.handlers.entity import EntityEventService
 
         graph = MagicMock()
-        graph.get_entity_id_by_email = AsyncMock(return_value="user-key")
+        graph.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key"))
         graph.batch_upsert_nodes = AsyncMock()
         container = MagicMock()
         container.config_service.return_value = store
