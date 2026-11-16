@@ -1838,6 +1838,9 @@ class TestAPartialUserReadKeepsTheStoredLevelGroup:
         c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
         await c._write_level_groups(PROJECT_ID, "PROJ", c._issue_security[PROJECT_ID], ["10102"], {})
         c.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        (group, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert group.external_group_id == "level:p-1:10102"
+        assert {(g.entity_type, g.external_id) for g in grants} == {(EntityType.GROUP, "group-1")}
 
 
 @pytest.mark.asyncio

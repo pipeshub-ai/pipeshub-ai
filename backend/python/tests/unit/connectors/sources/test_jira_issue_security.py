@@ -946,9 +946,11 @@ class TestLevelGroups:
         parent: it keeps no group, so it inherits its parent and is read by those its level admits among its parent's."""
         rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, parent_external_record_id="1")
         assert (rec.access_rule, rec.access_group_external_id, rec.inherit_permissions) == (AccessRule.RESTRICTED, "", True)
-        assert len(grants) == 3  # a copy of every holder
+        copy = {(EntityType.GROUP, None, "g-1"), (EntityType.USER, "rep@x.com", None), (EntityType.ROLE, None, "P_projectLead")}
+        assert len(grants) == 3 and {(g.entity_type, g.email, g.external_id) for g in grants} == copy  # a copy of every holder
         rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, project_id=None)
         assert (rec.access_rule, len(grants)) == (AccessRule.RESTRICTED, 3)
+        assert {(g.entity_type, g.email, g.external_id) for g in grants} == copy
 
     def test_an_issue_with_no_level_or_a_level_without_holders_names_no_group(self) -> None:
         for fields in ({"security": None}, {"security": {"id": "8"}}):
