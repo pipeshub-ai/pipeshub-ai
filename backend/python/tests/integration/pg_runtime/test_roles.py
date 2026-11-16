@@ -50,6 +50,54 @@ async def test_the_kv_role_uses_the_key_value_table_and_writes_only_while_access
     assert await store.delete_key(f"/kv{uid}/a")
 
 
+def _config_as(runtime, monkeypatch, service: str):  # noqa: ANN202
+    """The configuration service a process of ``service`` builds at start, on its own login."""
+    import logging
+
+    from app.config.configuration_service import ConfigurationService
+    from app.config.providers.encrypted_store import EncryptedKeyValueStore
+
+    dsn = runtime.cfg.dsn.replace("pipeshub_connectors_login", f"pipeshub_{service}_login")
+    monkeypatch.setenv("KV_STORE_TYPE", "postgres")
+    monkeypatch.setenv("PG_CORE_URL", dsn)
+    monkeypatch.setenv("PG_LISTEN_URL", runtime.cfg.dsn)        # change notifications on the suite's one listen connection (the hub keeps one per DSN)
+    monkeypatch.setenv("PG_RUNTIME_SERVICE", service)
+    log = logging.getLogger(f"spend-guard-{service}")
+    return ConfigurationService(log, EncryptedKeyValueStore(log))
+
+
+async def test_the_services_that_bind_the_spend_guard_start_its_key_path_in_either_mode(runtime, monkeypatch) -> None:
+    """The breaker's key path at start: ``fleet_breaker.load_install_secret`` (create the install secret if absent, then read it) in
+    indexing (indexing_main) and in parsing and extraction (the kv login, ``fleet_redis.bind_service_fleet``, which also reads the Redis
+    the breaker lives in: ``fleet_redis_config``); then indexing's pause judge reads the limits an admin saved (``spend_limits_source``).
+    Refused, the create raises and the service does not start, the Redis settings read as absent (the environment's), and so do the limits."""
+    from app.modules.pipeline.pause_budget import PauseLimits
+    from app.modules.pipeline.pause_judge import SPEND_GUARD_KEY, spend_limits_source
+    from app.services.llm_gateway.fleet_breaker import load_install_secret
+    from app.services.llm_gateway.fleet_redis import fleet_redis_config
+
+    admin = _config_as(runtime, monkeypatch, "node")
+    redis_key = "/services/redis"
+    saved_redis = await admin.get_config(redis_key, use_cache=False)
+    try:
+        assert await admin.set_config(SPEND_GUARD_KEY, {"pause": {"sends": 7, "absoluteSends": 9, "wallSeconds": 11}})     # the admin API saves the limits
+        assert await admin.set_config(redis_key, {"host": "fleet-redis.invalid", "port": 6390})                              # and the Redis
+        for service in ("indexing", "kv"):
+            svc = _config_as(runtime, monkeypatch, service)
+            try:
+                await load_install_secret(svc)
+                assert (await fleet_redis_config(svc)).host == "fleet-redis.invalid", service
+                if service == "indexing":
+                    got = await spend_limits_source(svc, PauseLimits())()
+                    assert (got.charged_sends, got.absolute_sends, got.wall_seconds) == (7, 9, 11)
+            finally:
+                await svc.close()
+    finally:
+        await admin.delete_config(SPEND_GUARD_KEY)
+        await (admin.set_config(redis_key, saved_redis) if saved_redis is not None else admin.delete_config(redis_key))
+        await admin.close()
+
+
 async def test_the_kv_role_holds_nothing_else(runtime) -> None:
     db = await runtime.db()
     async with db.runtime_uow() as tx:
