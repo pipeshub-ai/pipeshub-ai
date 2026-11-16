@@ -2908,6 +2908,34 @@ async def test_members_only_a_non_member_who_joins_a_kept_group_gets_nothing(ws:
     assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws) and BOB in f1_people(ws)
 
 
+async def test_a_person_who_leaves_a_members_only_drive_loses_their_own_shares_on_the_next_run(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    del ws.world.drives["sd-1"]["members"][CAROL]  # the drive's change log names the member's removal, not its items
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0, "the drive is read again: who it keeps out changed"
+    assert CAROL not in f1_people(ws)
+
+
+async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_the_next_run(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL not in f1_people(ws), "not a member: her share does not open it"
+
+    ws.world.drives["sd-1"]["members"][CAROL] = "reader"
+    await ws.sync()
+
+    assert CAROL in f1_people(ws)
+
+
 async def relisted(ws: Workspace) -> bool:
     before = len(ws.http.requests)
     await ws.sync()

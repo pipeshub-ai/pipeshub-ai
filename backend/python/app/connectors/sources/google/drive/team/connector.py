@@ -207,6 +207,8 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 # Shared drives this connector has synced, kept so a drive deleted from Workspace can be removed.
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
+# Stored beside the member groups' digests: the drive's direct members, whom a members-only drive's grants depend on.
+DRIVE_DIRECT_MEMBERS_MARK = "drive-members"
 DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
 # Set once a full read has written the audience grants (discoverable domain and "anyone" shares).
 DISCOVERABLE_SHARES_SYNC_POINT_KEY = "discoverable_shares_read"
@@ -2158,13 +2160,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Emails of the people who are members of a shared drive, directly or through a member group, and of
         the member groups. A member group the directory cannot list adds nobody, with a warning."""
         if drive_id not in self._drive_principals:
-            users: set[str] = set()
-            groups: set[str] = set()
-            for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
-                if permission.entity_type == EntityType.USER and permission.email:
-                    users.add(permission.email.lower())
-                elif permission.entity_type == EntityType.GROUP and permission.external_id:
-                    groups.add(permission.external_id.lower())
+            users, groups = await self._drive_direct_members(drive_id)
+            await self._note_group_people(drive_id, DRIVE_DIRECT_MEMBERS_MARK, users)
             for group in sorted(groups):
                 members = await self._group_member_emails(group)
                 if members is None:
@@ -2216,9 +2213,17 @@ class GoogleDriveTeamConnector(BaseConnector):
         for group, digest in seen.items():
             if relist:
                 break
-            # The grants written for the drive depend on who is in these groups. One that cannot be read now has
+            # The grants written for the drive depend on who is in these groups, and on who is a member at all: a
+            # person who leaves a members-only drive keeps no access through a share of their own ("Whether access to
+            # items inside this shared drive is restricted to its members",
+            # https://developers.google.com/workspace/drive/api/reference/rest/v3/drives), and the drive's change log
+            # records only "removal of a member", not its items
+            # (https://developers.google.com/workspace/drive/api/guides/about-changes). One that cannot be read now has
             # changed too: the relist hides it, and it is then remembered as hidden, so this happens once.
-            people = await self._group_member_emails(group)
+            if group == DRIVE_DIRECT_MEMBERS_MARK:
+                people = (await self._drive_direct_members(drive_id))[0]
+            else:
+                people = await self._group_member_emails(group)
             relist = people is None or self._people_digest(people) != digest
         if not relist:
             self._hidden_groups[drive_id] = set(hidden)
@@ -2306,6 +2311,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                     generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id),
                     {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []},
                 )
+
+    async def _drive_direct_members(self, drive_id: str) -> tuple[set[str], set[str]]:
+        """The emails of a shared drive's member users and of its member groups, as its permission list names them."""
+        users: set[str] = set()
+        groups: set[str] = set()
+        for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
+            if permission.entity_type == EntityType.USER and permission.email:
+                users.add(permission.email.lower())
+            elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                groups.add(permission.external_id.lower())
+        return users, groups
 
     @staticmethod
     def _people_digest(people: set[str]) -> str:
