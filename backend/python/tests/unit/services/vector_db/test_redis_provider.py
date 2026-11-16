@@ -1304,7 +1304,7 @@ class TestRedisScrollCeilingAndFanOut:
         with pytest.raises(ScrollWindowExceededError, match="ceiling"):
             await service.scroll("records", FilterExpression(), limit=100, offset=result.next_offset)
         first = mock_redis_client.execute_command.await_args_list[0].args
-        assert first[0] == "FT.AGGREGATE" and first[first.index("LIMIT") + 1:first.index("LIMIT") + 3] == ("10050", "100")
+        assert first[0] == "FT.AGGREGATE" and "WITHCURSOR" in first and "LIMIT" not in first  # a cursor, not an offset past the cap
 
     @pytest.mark.asyncio
     async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client) -> None:

@@ -117,7 +117,9 @@ async def sweep_stray_points(
     if strays or truncated:
         _logger.info(
             "stray sweep of %s: scanned %d points, removed the points of %d stale blocks%s",
-            virtual_record_id, scanned, len(strays), " (bounded; the rest next run)" if truncated else "",
+            virtual_record_id, scanned, len(strays),
+            (" (stopped at its bound; the next pass resumes there)" if stopped_at is not None
+             else " (the store could not list further; points past that depth were not checked)") if truncated else "",
         )
     if stopped_at is not None:
         stopped_at = vector_db.scroll_offset_after_delete(stopped_at, stray_points)

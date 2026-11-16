@@ -5,6 +5,8 @@ Run: pytest tests/integration/vector_db/test_redis_scroll_window.py -m integrati
 """
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from app.modules.indexing.stray_sweep import sweep_stray_points
@@ -33,6 +35,9 @@ def _points() -> list[VectorPoint]:
 
 
 async def _load(svc, col: str) -> None:
+    # the window this file is about; a server that already has it (the older default) or refuses the change is left as it is
+    with contextlib.suppress(Exception):
+        await svc.client.execute_command("FT.CONFIG", "SET", "MAXSEARCHRESULTS", "10000")
     await svc.create_collection(col, make_collection_config())
     for field in ("metadata.blockId", "metadata.virtualRecordId"):
         await svc.create_index(col, field, {"type": "keyword"})

@@ -157,6 +157,9 @@ _DELETE_PAGE_SIZE = 500
 
 # How long RediSearch keeps an idle aggregate cursor alive between reads.
 _CURSOR_MAX_IDLE_MS = 300000
+# Past the search window a scroll reads by cursor: rows read per round trip, and cursors kept open for the next page of a scroll.
+_SCROLL_CURSOR_COUNT = 10000
+_SCROLL_CURSORS_KEPT = 8
 
 # Fallback for when the service was built without a parsed config.
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
@@ -206,6 +209,8 @@ class RedisVectorService(IVectorDBService):
         self._collection_configs: dict[str, CollectionConfig] = {}
         # Dense vector dtype applied to all indexes; set from config on connect().
         self._dense_dtype: str = "FLOAT16"
+        # (index, query) -> (position, cursor id) of the cursor the last past-the-window page left open
+        self._scroll_cursors: dict[tuple[str, str], tuple[int, int]] = {}
         self._max_concurrent_searches: int = _DEFAULT_MAX_CONCURRENT_SEARCHES
 
     # ------------------------------------------------------------------
@@ -1135,16 +1140,11 @@ class RedisVectorService(IVectorDBService):
     async def _scroll_past_window(
         self, collection_name: str, idx: str, query: str, offset: int, limit: int, with_payload: list[str] | None,
     ) -> ScrollResult:
-        """One page at *offset* (past MAXSEARCHRESULTS) through ``FT.AGGREGATE ... LIMIT``: the keys of the page, then their fields. The
-        order is the index's, the same as the pages before the window, so the position is a cursor that survives a call."""
-        rows = await self.client.execute_command(  # type: ignore
-            "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key", "LIMIT", str(offset), str(limit), *_NO_TIMEOUT,
-        )
-        keys: list[str] = []
-        for row in list(rows)[1:] if isinstance(rows, (list, tuple)) else []:
-            key = _parse_fields_list(row).get("__key")
-            if key:
-                keys.append(key.decode() if isinstance(key, bytes) else key)
+        """One page at *offset* (past MAXSEARCHRESULTS) through ``FT.AGGREGATE ... WITHCURSOR``: the keys of the page, then their fields.
+        A cursor is not bounded by the offset cap (``LIMIT`` is). The order is the index's, the same as the pages before the window, so the
+        position is a cursor that survives a call: the cursor the last page left is kept for the page that follows it, and any other
+        offset reads and drops the rows before it."""
+        keys = await self._cursor_keys(idx, query, offset, limit)
         total = await self.client.execute_command(  # type: ignore
             "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
         )
@@ -1169,6 +1169,57 @@ class RedisVectorService(IVectorDBService):
         nxt = offset + len(keys)
         more = len(keys) == limit and nxt < int(total[0])
         return ScrollResult(points=points, next_offset=str(nxt) if more else None)
+
+    async def _cursor_keys(self, idx: str, query: str, offset: int, limit: int) -> list[str]:
+        """The document keys at positions ``offset`` .. ``offset + limit`` of the query's match set, by cursor."""
+        cache = self._scroll_cursors
+        cached = cache.pop((idx, query), None)
+        cursor, position = 0, 0
+        raw = None
+        if cached is not None and cached[0] == offset:
+            cursor, position = cached[1], offset
+            try:
+                raw = await self.client.execute_command("FT.CURSOR", "READ", idx, cursor, "COUNT", str(limit))  # type: ignore
+            except Exception:  # expired or evicted: read again from the start
+                cursor, position, raw = 0, 0, None
+        elif cached is not None:
+            with contextlib.suppress(Exception):
+                await self.client.execute_command("FT.CURSOR", "DEL", idx, cached[1])  # type: ignore
+        keys: list[str] = []
+        try:
+            while True:
+                if raw is None:
+                    raw = await self.client.execute_command(  # type: ignore
+                        "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key", *_NO_TIMEOUT,
+                        "WITHCURSOR", "COUNT", str(min(_SCROLL_CURSOR_COUNT, offset)), "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
+                    )
+                rows, cursor, _ = parse_aggregate_rows(raw)
+                for key, _fields in rows:
+                    if position >= offset and len(keys) < limit:
+                        keys.append(key.decode() if isinstance(key, bytes) else key)
+                    position += 1
+                if len(keys) >= limit or not cursor:
+                    break
+                raw = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, cursor,
+                    "COUNT", str(min(_SCROLL_CURSOR_COUNT, offset - position) if position < offset else limit),
+                )
+        except BaseException:
+            if cursor:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
+            raise
+        if cursor and len(keys) >= limit and position == offset + len(keys):
+            cache[(idx, query)] = (position, cursor)
+            while len(cache) > _SCROLL_CURSORS_KEPT:
+                _, (_, evicted) = next(iter(cache.items()))
+                del cache[next(iter(cache))]
+                with contextlib.suppress(Exception):
+                    await self.client.execute_command("FT.CURSOR", "DEL", idx, evicted)  # type: ignore
+        elif cursor:
+            with contextlib.suppress(Exception):
+                await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
+        return keys
 
     def scroll_offset_after_delete(
         self, next_offset: str | None, deleted: int,
