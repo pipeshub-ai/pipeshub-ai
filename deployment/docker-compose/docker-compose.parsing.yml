@@ -10,6 +10,8 @@ services:
     environment:
       - USE_PARSING_SERVICE=true
       - PARSING_SERVICE_URL=http://parsing:8092
+      # Parses in flight per app process toward the parsing service; empty keeps the CPU-derived slots.
+      - PARSING_SERVICE_CONCURRENCY=${PARSING_SERVICE_CONCURRENCY:-}
     depends_on:
       parsing:
         condition: service_healthy
@@ -24,6 +26,8 @@ services:
     environment:
       - PIPESHUB_ROLE=parsing
       - PARSING_SERVICE_PORT=8092
+      # Requests in the route beyond this get 429 at once; empty = not limited by count.
+      - PARSING_MAX_CONCURRENT=${PARSING_MAX_CONCURRENT:-}
       # The configuration store and secrets are the app's: same values, same stores.
       - SECRET_KEY=${SECRET_KEY:-}
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -61,3 +65,6 @@ services:
       - redis
     networks:
       - pipeshub
+    # Model endpoints on the host (for example Ollama) are reached by this name, as from the app.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

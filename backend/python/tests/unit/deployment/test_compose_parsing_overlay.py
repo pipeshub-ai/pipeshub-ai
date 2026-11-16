@@ -40,3 +40,16 @@ def test_parsing_gets_every_redis_connection_setting_the_app_has() -> None:
     assert wanted <= set(_env(parsing)), sorted(wanted - set(_env(parsing)))
     for key in wanted:
         assert _env(parsing)[key] == _env(base)[key], key
+
+
+def test_the_concurrency_settings_reach_the_containers_that_read_them() -> None:
+    """Compose does not pass `.env` values into a container: each setting has to be listed."""
+    overlay = yaml.safe_load((COMPOSE / "docker-compose.parsing.yml").read_text())["services"]
+    assert "PARSING_SERVICE_CONCURRENCY" in _env(overlay["pipeshub-ai"])
+    assert "PARSING_MAX_CONCURRENT" in _env(overlay["parsing"])
+
+
+def test_parsing_resolves_host_docker_internal_like_the_app() -> None:
+    base, parsing = _services()
+    assert "host.docker.internal:host-gateway" in base["extra_hosts"]
+    assert "host.docker.internal:host-gateway" in parsing["extra_hosts"]

@@ -182,6 +182,22 @@ print("ok", sys.argv[1], "parsing NetworkPolicy: app selector on 8092 only, plus
 PY
 }
 netpol_check "$OUT/local-parsing-netpol.yaml" present
+# Parsing pod labels, rendered alone (the main workload's labels do not take these inputs): the name stays within
+# 63 characters, the selector keys are not overridable from global.commonLabels, other common labels are kept.
+helm template ci . "${SECRETS[@]}" "${LOCAL[@]}" --set parsing.enabled=true --show-only templates/parsing.yaml \
+  --set nameOverride=a-very-long-release-name-that-is-nearly-at-the-sixty-three-limit \
+  --set-string global.commonLabels.team=platform --set-string 'global.commonLabels.app\.kubernetes\.io/instance=hijack' >"$OUT/parsing-labels.yaml"
+python3 - "$OUT/parsing-labels.yaml" <<'PY' || failed=1
+import sys, yaml
+dep = next(d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "Deployment")
+pod = dep["spec"]["template"]["metadata"]["labels"]
+sel = dep["spec"]["selector"]["matchLabels"]
+assert len(pod["app.kubernetes.io/name"]) <= 63, pod["app.kubernetes.io/name"]
+assert pod["app.kubernetes.io/instance"] != "hijack", pod
+assert all(pod[k] == v for k, v in sel.items()), (pod, sel)
+assert pod["team"] == "platform", pod
+print("ok parsing pod labels: name within 63, selector keys not overridable, common labels kept")
+PY
 netpol_check "$OUT/local-parsing.yaml" absent
 netpol_check "$OUT/local-extras.yaml" absent
 if [[ -f "$OUT/eks.yaml" ]]; then

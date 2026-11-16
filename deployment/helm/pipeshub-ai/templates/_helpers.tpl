@@ -132,7 +132,7 @@ Labels of the parsing pods. Their application name differs from the main Deploym
 nothing that selects the main pods (its autoscaler, its policies) also selects these.
 */}}
 {{- define "pipeshub-ai.parsingSelectorLabels" -}}
-app.kubernetes.io/name: {{ printf "%s-parsing" (include "pipeshub-ai.name" .) }}
+app.kubernetes.io/name: {{ printf "%s-parsing" (include "pipeshub-ai.name" . | trunc 55 | trimSuffix "-") }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
@@ -143,7 +143,8 @@ helm.sh/chart: {{ include "pipeshub-ai.chart" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- with .Values.global.commonLabels }}
+{{- /* The name and instance keys are the selector's, set above; they cannot be overridden here. */}}
+{{- with omit (default dict .Values.global.commonLabels) "app.kubernetes.io/name" "app.kubernetes.io/instance" }}
 {{ toYaml . }}
 {{- end }}
 {{- end }}
