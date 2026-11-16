@@ -248,6 +248,8 @@ UNDECIDED_REMOVALS_SYNC_POINT_PREFIX = "undecided_removals_"
 # Per user: items below a folder they lost whose check of their own access failed, asked again on later runs. Not an
 # undecided removal: nothing reported these items removed, so they are never settled as one.
 DESCENDANT_RECHECK_SYNC_POINT_PREFIX = "drive_descendant_recheck_"
+# Items whose sharing nobody synced can read again and whose holders' check failed, asked again on later runs.
+HOLDER_RECHECK_SYNC_POINT_KEY = "drive_holder_recheck"
 UNDECIDED_REMOVALS = "entries"
 MAX_UNDECIDED_REMOVALS = MAX_FAILED_ITEMS
 UNDECIDED_PARTS = "parts"
@@ -847,6 +849,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
             await self._recheck_unvisited_undecided_removals()
+            try:
+                await self._recheck_parked_holders()
+            except Exception as e:
+                self.logger.warning(f"The items to check again could not be read ({type(e).__name__}); next run")
             if self._reach_candidates and len(self._account_domains or ()) > 1:
                 # Files read this run can ask Google how far a domain share reaches, now or when it is asked again
                 # (so they are kept); the groups follow its answer.
@@ -3053,6 +3059,33 @@ class GoogleDriveTeamConnector(BaseConnector):
         if file_id not in items:
             await self.drive_delta_sync_point.update_sync_point(key, {"items": sorted([*items, file_id])})
 
+    async def _park_holder_recheck(self, file_id: str) -> None:
+        """List an item whose holders' check failed (see `_process_drive_item`). A failed write raises, so the item
+        fails and is read again.
+
+        shortcut: one list for the connector, read and rewritten whole; split it if it ever holds many thousands."""
+        items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY) or {}).get("items") or [])]
+        if file_id not in items:
+            await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": sorted([*items, file_id])})
+
+    async def _recheck_parked_holders(self) -> None:
+        """Ask again about each item `_park_holder_recheck` listed, as the first try did. One that is gone or answered
+        leaves the list; one whose check fails again stays. Nothing here holds a checkpoint."""
+        items = [str(x) for x in ((await self.drive_delta_sync_point.read_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY) or {}).get("items") or [])]
+        left: list[str] = []
+        for file_id in items:
+            try:
+                record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=file_id
+                )
+                if record is not None:
+                    await self._drop_grants_of_people_who_cannot_open(record, self._holder_sources)
+            except Exception as e:
+                self.logger.warning(f"Still not known who can open item {file_id}: {_failure_summary(e)}")
+                left.append(file_id)
+        if left != items:
+            await self.drive_delta_sync_point.update_sync_point(HOLDER_RECHECK_SYNC_POINT_KEY, {"items": left})
+
     async def _recheck_parked_descendants(self, user: AppUser, source: GoogleDriveDataSource) -> None:
         """Ask the user again about each item parked by `_drop_reporters_grant`, as the first try did: if they cannot
         open it, their grant and their groups' grants on it go, and the item stays for everyone else. One whose check
@@ -4432,9 +4465,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                         ):
                             # Nobody synced can read this item's sharing again (its owner is suspended or not synced),
                             # so the grants stored from an earlier read are never replaced: each is checked instead.
-                            await self._drop_grants_of_people_who_cannot_open(
-                                existing_record, self._holder_sources, skip_email=user_email
-                            )
+                            # A check that fails is listed and asked again on later runs; the item is still written,
+                            # so one undecided answer does not hold the reader's feed.
+                            try:
+                                await self._drop_grants_of_people_who_cannot_open(
+                                    existing_record, self._holder_sources, skip_email=user_email
+                                )
+                            except Exception as e:
+                                self.logger.warning(
+                                    f"Could not check who can still open {existing_record.record_name} "
+                                    f"({_failure_summary(e)}); it is checked again on later runs"
+                                )
+                                await self._park_holder_recheck(file_id)
                             self._holders_checked.add(existing_record.id)
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single

@@ -866,6 +866,27 @@ async def test_a_failed_grant_removal_does_not_stop_the_other_holders_being_chec
     assert CAROL in ws.records.perm_emails("doc") and BOB in ws.records.perm_emails("doc")
 
 
+async def test_a_holder_check_that_keeps_failing_does_not_hold_the_feed_and_is_asked_again(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    _folder_of_a_suspended_owner_shared_with_a_group(ws)
+    await ws.sync()
+    ws.world.unshare("dir", ENG)
+    # Only Bob's feed is read: he re-reads the folder's items, and nobody can read the doc's sharing again.
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != BOB)
+    ws.http.fail("GET", "/drive/v3/files/doc", 500, "backendError",
+                 when=lambda r: r.identity == DANA and r.query.get("fields") == "id, trashed")
+    for _ in range(MAX_HELD_RUNS + 1):
+        await ws.sync()
+    assert (ENG, "GROUP", "READ") in ws.grants("doc"), "Dana's answer keeps failing: not taken as either"
+
+    ws.http.clear_faults()
+    ws.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: r.identity != BOB)
+    await ws.sync()
+
+    assert (ENG, "GROUP", "READ") not in ws.grants("doc"), "asked again once the answer comes: Dana cannot open it"
+
+
 async def test_a_full_read_removes_a_grant_nobody_can_read_the_sharing_of_any_more(ws: Workspace) -> None:
     _folder_of_a_suspended_owner(ws)
     await ws.sync()
