@@ -10,8 +10,9 @@ ones whose block id is not in the revision's set.
 It is a backstop, never the mechanism, so:
 - it is idempotent: a second pass finds nothing;
 - it is bounded: at most `INDEXING_STRAY_SWEEP_MAX_POINTS` points are listed per record per run
-  (the rest are met by a later run), and deletes go out in batches; a store that can page only so
-  far (Redis, 10,000 results) ends the listing there, and the strays found before it are removed;
+  (the rest are met by a later run), and deletes go out in batches; Redis reads past its
+  10,000-result window by cursor (`redis_vector._cursor_keys`); a store that still cannot list further ends the
+  listing there, and the strays found before it are removed;
 - a point with no block id is left alone (what it is, is unknown);
 - a failure is logged and never fails the record's indexing.
 """
