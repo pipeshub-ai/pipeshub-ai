@@ -614,7 +614,7 @@ function KnowledgeBasePageContent() {
   const { settle: settlePreparing, isCurrent: isPreparingCurrent } = usePreparingRetry(
     preparingKey(isAllRecordsMode, searchParams.get('nodeType'), searchParams.get('nodeId'))
   );
-  const fetchTableDataRef = useRef<((nodeType: string, nodeId: string, retry?: boolean) => Promise<void>) | null>(null);
+  const fetchTableDataRef = useRef<((nodeType: string, nodeId: string, retryOf?: number | null) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -845,17 +845,20 @@ function KnowledgeBasePageContent() {
 
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
-    async (nodeType: string, nodeId: string, retry = false) => {
-      // A retry of a source being prepared asks quietly with its own request: it never cancels a request the user made, and its answer is
-      // dropped once the user has asked for anything else or left this node (``stale``).
+    async (nodeType: string, nodeId: string, retryOf: number | null = null) => {
+      // A retry of a source being prepared asks quietly with its own request: it never cancels a request the user made. It carries the
+      // generation of the request it was scheduled from (``retryOf``), so it is dropped, sent or answered, once the user has asked for
+      // anything else since, or left this node (``stale``).
+      const retry = retryOf !== null;
       const key = preparingKey(false, nodeType, nodeId);
       const controller = new AbortController();
       if (!retry) {
         collectionsFetchRef.current?.abort();
         collectionsFetchRef.current = controller;
       }
-      const fetchGeneration = retry ? collectionsFetchGeneration : ++collectionsFetchGeneration;
+      const fetchGeneration = retry ? retryOf : ++collectionsFetchGeneration;
       const stale = () => retry && (fetchGeneration !== collectionsFetchGeneration || !key || !isPreparingCurrent(key));
+      if (stale()) return;
       const stillSignedIn = kbSessionToken();
       if (!retry) {
         setIsLoadingTableData(true);
@@ -899,7 +902,7 @@ function KnowledgeBasePageContent() {
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
-        if (key) settlePreparing(key, data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, true));
+        if (key) settlePreparing(key, data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, fetchGeneration));
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.

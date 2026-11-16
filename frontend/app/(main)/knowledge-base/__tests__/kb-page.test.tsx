@@ -455,6 +455,34 @@ describe('Knowledge base page — inside a collection', () => {
       expect(row('deal.pdf')).toBeTruthy();
     });
 
+    it('sends no retry scheduled before a newer request of the same collection, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.loadFolderData.mockImplementation((_type: string, id: string) => {
+        if (id !== 'kb-eng') return Promise.resolve(salesContents());
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve({ ...engineeringContents([]), preparing: true });
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-eng&from=search'));      // same collection, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      // The page loads twice on open, so the retry pending is the second (4 s after the second answer): wait past it.
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));
+      await act(async () => userAnswers.forEach((answer) => answer(engineeringContents())));
+
+      expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+      expect(screen.queryByText(/Failed to load items/)).toBeNull();
+    });
+
     it('asks nothing more for All records once the user leaves it', async () => {
       api.hub.getAllRootItems.mockResolvedValue(hubResponse([], { preparing: true }));
       openAt('/knowledge-base?view=all-records');
