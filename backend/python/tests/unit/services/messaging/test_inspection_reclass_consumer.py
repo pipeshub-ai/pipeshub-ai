@@ -157,7 +157,9 @@ def _kafka_consumer():  # noqa: ANN202
     from unittest.mock import MagicMock
 
     from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
-    from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
+    from app.services.messaging.kafka.consumer.indexing_consumer import (
+        IndexingKafkaConsumer,
+    )
 
     cfg = KafkaConsumerConfig(
         topics=["record-events"], client_id="c", group_id="g", auto_offset_reset="earliest", enable_auto_commit=False,
@@ -178,7 +180,7 @@ async def _kafka_run(cells: int | None) -> list[tuple[int, int, int]]:
     consumer = _kafka_consumer()
     seen: list[tuple[int, int, int]] = []
 
-    async def handler(message):  # noqa: ANN001, ANN202
+    async def handler(message):
         rid = message.payload["recordId"]
         yield PipelineEvent(event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id=rid))
         yield PipelineEvent(event=IndexingEvent.START_INSPECT, data=PipelineEventData(record_id=rid, size_bytes=80 * MIB))

@@ -70,7 +70,7 @@ EDITED = {
         "DispatchBudget.allows", "DispatchBudget.tiers",  # type widening only
         "_tier_ceiling", "_class_ceiling", "dispatch_budget",  # class levels only with the flag on; `waiters.get(tier, 0)` equals `waiters[tier]` for both tiers
         "acquire_index_slot", "acquire_download_slot", "acquire_parsing_slot",  # keyword `ctx` (None = the old body); a CostClass tier takes the class gate first
-        "_acquire_parsing_slot_by_class", "class_context", "class_kwargs", "reclass_index_slot",  # new; reached only with a `ctx`
+        "_acquire_parsing_slot_by_class", "_acquire_remote_by_class", "class_context", "class_kwargs", "reclass_index_slot",  # new; reached only with a `ctx`
         "class BigAdmissionTimeout", "BigAdmissionTimeout.__init__", "BigAdmissionTimeout.counts_toward_backstop",  # new exception, raised only by the class path
         "BigAdmissionTimeout.pauses_consumer", "BigAdmissionTimeout:Expr",
         # Inspection and the requeue: `first_admission_kwargs` is new and returns {} for anything but a BigAdmissionTimeout
