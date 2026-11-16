@@ -437,7 +437,7 @@ class ConfigurationService:
         return created
 
     async def compare_and_set_config(
-        self, key: str, expected: str | int | float | bool | dict | list | None, new: str | int | float | bool | dict | list,
+        self, key: str, expected: str | int | float | bool | dict | list | None, new: str | int | float | bool | dict | list,  # noqa: FBT001
     ) -> bool:
         """Atomically replace ``key`` with ``new`` only if it still holds ``expected`` (None: the key is absent).
 

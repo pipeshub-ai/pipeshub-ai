@@ -20,13 +20,16 @@ can quietly skip them.
 import asyncio
 import hashlib
 import json
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.key_value_store import KeyValueStore
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.utils.encryption.encryption_service import DecryptionError, EncryptionService
 
 
 class _FakeInnerStore:
@@ -137,7 +140,7 @@ class _FakeEtcdClient:
     def __init__(self) -> None:
         self.data: dict[str, bytes] = {}
 
-    def get(self, key):
+    def get(self, key) -> tuple[bytes | None, None]:
         return self.data.get(key), None
 
     def put_if_not_exists(self, key, value, lease=None) -> bool:
@@ -152,12 +155,12 @@ class _FakeEtcdClient:
         self.data[key] = new_value
         return True
 
-    def put(self, key, value, lease=None):
+    def put(self, key, value, lease=None) -> bool:
         self.data[key] = value
         return True
 
 
-def _redis():
+def _redis() -> KeyValueStore:
     from fakeredis import FakeServer
 
     from app.config.providers.redis import redis_store as redis_store_module
@@ -172,7 +175,7 @@ def _redis():
         )
 
 
-def _etcd():
+def _etcd() -> KeyValueStore:
     from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 
     manager = MagicMock()
@@ -185,14 +188,12 @@ def _etcd():
     return store
 
 
-def _real_encryption():
-    from app.utils.encryption.encryption_service import EncryptionService
-
+def _real_encryption() -> EncryptionService:
     return EncryptionService("aes-256-gcm", hashlib.sha256(b"cas-contract").hexdigest(), MagicMock())
 
 
-def _encrypted_over(cls):
-    def make():
+def _encrypted_over(cls) -> Callable[[], KeyValueStore]:
+    def make() -> KeyValueStore:
         store = cls.__new__(cls)
         store.logger = MagicMock()
         store.store = _in_memory()
@@ -292,7 +293,7 @@ async def test_the_encrypted_stores_raise_on_a_value_they_cannot_decrypt(cls) ->
     store = _encrypted_over(cls)()
     await store.store.create_key("/k", "not-a-ciphertext")
 
-    with pytest.raises(Exception):  # noqa: B017, PT011 - whatever the decryption raises
+    with pytest.raises(DecryptionError):
         await store.compare_and_set("/k", None, {"n": 1})
     assert await store.store.get_key("/k") == "not-a-ciphertext"
 
@@ -305,7 +306,7 @@ async def test_redis_writers_that_both_read_before_either_writes_have_one_winner
     client = store._get_client()
     read, both_read = client.get, asyncio.Barrier(2)
 
-    async def read_then_wait(name):
+    async def read_then_wait(name) -> bytes | None:
         raw = await read(name)
         await both_read.wait()
         return raw
