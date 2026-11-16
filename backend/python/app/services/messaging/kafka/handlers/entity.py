@@ -299,7 +299,13 @@ class EntityEventService(BaseEventService):
             await paid_cache_access.paid_cache_for(self.app_container.config_service(), self.logger).purge_org(org_id)
             # Redis can lose the marker while a parse that outlived the org is still running: one durable delayed
             # purge for the org removes whatever such a write left. A publish failure raises (redelivery).
-            await schedule_org_repurge(self.app_container.messaging_producer, org_id)
+            producer = self.app_container.messaging_producer
+            if producer is None:
+                # Nothing to publish with: the purge above already ran and the org is soft-deleted, so the event
+                # completes. Redelivering cannot create a producer. Never log the payload.
+                self.logger.warning("Org deleted, but no messaging producer is configured: the delayed paid-result re-purge was not scheduled")
+            else:
+                await schedule_org_repurge(producer, org_id)
             return True
 
         except SchemaValidationError:
