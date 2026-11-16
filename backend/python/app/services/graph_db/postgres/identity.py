@@ -228,7 +228,7 @@ class IdentityMixin(PgBase):
 
     @_soft(dict, flag=True)
     async def get_users_by_emails(self, emails: list[str], transaction: str | None = None, *, raise_on_error: bool = False,
-                                  org_id: str | None = None) -> dict[str, User]:
+                                  org_id: str) -> dict[str, User]:
         org = current_org_id()
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted or not self._mine(org_id):
@@ -637,6 +637,27 @@ class IdentityMixin(PgBase):
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('orgId', $1::text, 'updatedAtTimestamp', $5::bigint)""",
                              org, creator_key, source_user_key,
                              _j(link), ts, ekey, target_collection)
+        await self._q(go, transaction, write=True)
+
+    async def set_directory_link(self, user_key: str, connector_id: str, account_key: str | None, org_id: str, transaction: str | None = None) -> None:
+        """Directory links only (``via: directory``, their own edge key): an authenticator link of the same pair is another edge and stays."""
+        self._require_org(org_id)
+        org, ts = current_org_id(), get_epoch_timestamp_in_ms()
+        link = {"connectorId": connector_id, "orgId": org, "via": "directory", "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        _VALIDATOR.validate_edge(CollectionNames.AUTHENTICATED_AS.value, link)
+        ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
+
+        async def go(tx: Any) -> None:  # noqa: ANN401
+            await tx.execute("""/* pipeshub:graph.directory_link_drop */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
+                AND from_coll = 'users' AND from_id = $2 AND ekey = $3 AND NOT (to_coll = 'sourceAccounts' AND to_id IS NOT DISTINCT FROM $4)""",
+                             org, user_key, ekey, account_key)
+            if account_key is None:
+                return
+            await tx.execute("""/* pipeshub:graph.directory_link_upsert */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+                SELECT $1, 'authenticatedAs', 'users', $2, 'sourceAccounts', $3, $4, $5::jsonb
+                WHERE (SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND ((coll = 'users' AND id = $2) OR (coll = 'sourceAccounts' AND id = $3))) = 2
+                ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('updatedAtTimestamp', $6::bigint)""",
+                             org, user_key, account_key, ekey, _j(link), ts)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:

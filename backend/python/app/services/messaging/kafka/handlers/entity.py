@@ -394,7 +394,7 @@ class EntityEventService(BaseEventService):
             )
 
             # A restored user gets back the source accounts its address holds, as a new one gets those already synced.
-            await self._relink_source_accounts(payload["orgId"], payload["email"])
+            await self._relink_source_accounts(org_id, payload["email"])
 
             # Adopt anything this email already accumulated as an external
             # collaborator. Never fatal: the account itself is what this event is for, and
@@ -634,7 +634,7 @@ class EntityEventService(BaseEventService):
 
         address = email.lower()
         found = await self.graph_provider.get_nodes_by_filters(
-            CollectionNames.SOURCE_ACCOUNTS.value, {"email": address}, raise_on_error=True,
+            CollectionNames.SOURCE_ACCOUNTS.value, {"email": address, "orgId": org_id}, raise_on_error=True,
         )
         config = self.app_container.config_service()
         for connector_id in sorted({a.get("connectorId") for a in found if a.get("connectorId")}):

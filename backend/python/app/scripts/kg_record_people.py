@@ -60,10 +60,9 @@ class _DryRunStore:
         self.people = 0
 
     async def get_users_by_emails(
-        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str,
     ) -> dict[str, User]:
-        scope = {"org_id": org_id} if org_id is not None else {}
-        return await self._graph.get_users_by_emails(emails, raise_on_error=raise_on_error, **scope)
+        return await self._graph.get_users_by_emails(emails, raise_on_error=raise_on_error, org_id=org_id)
 
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,

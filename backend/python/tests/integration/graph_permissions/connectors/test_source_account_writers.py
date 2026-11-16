@@ -160,3 +160,30 @@ async def test_a_mail_thread_owned_by_a_linked_account_is_the_users(world: World
     owned = await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["cal"])
     assert owned is not None and owned.id == mail.id, "cal is linked to the account that owns the thread"
     assert await world.backend.provider.get_record_by_conversation_index(world.connector_id, mail.conversation_index, "t1", ORG, ids["ana"]) is None
+
+
+async def test_the_authenticator_link_survives_every_relink_of_its_pair(world: World) -> None:
+    await scenario.enable(world.processor, world.connector_id)
+    await world.write()
+    cal_user_id = f"uid-cal-{uuid.uuid4().hex[:6]}"
+    await world.backend.provider.batch_upsert_nodes([{"_key": world.users["cal"], "userId": cal_user_id, "email": world.emails["cal"], "orgId": ORG,
+                                                      "isActive": True, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}],
+                                                    collection=CollectionNames.USERS.value)
+    await scenario.authenticator_survives_relinks(world.processor, world.backend.provider, world.connector_id, ORG, world.emails, world.users, cal_user_id)
+
+
+async def test_a_user_of_another_org_with_the_same_address_is_never_linked(world: World) -> None:
+    """The other org's user is written first and its key sorts first, so an unscoped read by address answers it."""
+    await scenario.enable(world.processor, world.connector_id)
+    provider, ana = world.backend.provider, world.users["ana"]
+    foreign = f"a0-foreign-{_suffix()}"
+    await provider.delete_nodes_and_edges([ana], CollectionNames.USERS.value)
+    for key, org in ((foreign, f"org-other-{_suffix()}"), (ana, ORG)):
+        await provider.batch_upsert_nodes([{"_key": key, "email": world.emails["ana"], "orgId": org, "isActive": True,
+                                            "createdAtTimestamp": TS, "updatedAtTimestamp": TS}], collection=CollectionNames.USERS.value)
+    try:
+        records = await world.write()
+        await scenario.another_orgs_user_is_not_linked(provider, ORG, world.connector_id, world.users, foreign)
+        assert "ana" in (await world.readers(records))["by-id"]
+    finally:
+        await provider.delete_nodes_and_edges([foreign], CollectionNames.USERS.value)

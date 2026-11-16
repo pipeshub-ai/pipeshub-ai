@@ -6320,24 +6320,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted:
             return {}
         try:
-            scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
             # toLower(u.email) keeps matching case-insensitive, which the
             # user_email index cannot serve.
-            query = f"""
+            query = """
             MATCH (u:User)
-            WHERE toLower(u.email) IN $emails {org_filter}
+            WHERE toLower(u.email) IN $emails AND u.orgId = $org_id
             RETURN u
             """
             results = await self.client.execute_query(
-                query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
+                query, parameters={"emails": wanted, "org_id": org_id}, txn_id=transaction,
             )
             found: dict[str, User] = {}
             for row in results or []:
@@ -10851,6 +10849,35 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "via": via,
                 "ts": ts,
             },
+            txn_id=transaction,
+        )
+
+    async def set_directory_link(
+        self,
+        user_key: str,
+        connector_id: str,
+        account_key: str | None,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        # The MERGE pattern names via, so an authenticator link of the same pair is never taken for this one, and the delete reads
+        # directory links only.
+        query = """
+        MATCH (u:User {id: $user_key, orgId: $org_id})
+        OPTIONAL MATCH (u)-[old:AUTHENTICATED_AS {connectorId: $connector_id, via: 'directory'}]->(a)
+        WHERE $account_key IS NULL OR NOT (a:SourceAccount AND a.id = $account_key)
+        DELETE old
+        WITH DISTINCT u
+        OPTIONAL MATCH (s:SourceAccount {id: $account_key, orgId: $org_id})
+        FOREACH (_ IN CASE WHEN s IS NULL THEN [] ELSE [1] END |
+            MERGE (u)-[r:AUTHENTICATED_AS {connectorId: $connector_id, via: 'directory'}]->(s)
+            ON CREATE SET r.orgId = $org_id, r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
+            ON MATCH SET r.updatedAtTimestamp = $ts)
+        """
+        await self.client.execute_query(
+            query,
+            parameters={"user_key": user_key, "connector_id": connector_id, "account_key": account_key, "org_id": org_id,
+                        "ts": get_epoch_timestamp_in_ms()},
             txn_id=transaction,
         )
 

@@ -124,3 +124,49 @@ async def delete_and_restore(provider: Any, config_service: Any, org_id: str, em
 async def mark_indexed(provider: Any, record: FileRecord) -> None:  # noqa: ANN401
     """The search scope holds indexed records only; a new record is written queued for indexing."""
     await provider.batch_upsert_nodes([{"_key": record.id, "indexingStatus": "COMPLETED", "virtualRecordId": record.id}], CollectionNames.RECORDS.value)
+
+
+async def links_of(provider: Any, user_key: str) -> set[tuple[str, str | None]]:  # noqa: ANN401
+    """``(target, via)`` of the user's authenticatedAs links."""
+    edges = await provider.get_edges_from_node(f"{CollectionNames.USERS.value}/{user_key}", CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True)
+    return {(e.get("_to") or f"{e.get('to_collection')}/{e.get('to_id')}", e.get("via")) for e in edges}
+
+
+async def authenticator_survives_relinks(processor: Any, provider: Any, connector_id: str, org_id: str,  # noqa: ANN401
+                                         emails: dict[str, str], users: dict[str, str], cal_user_id: str) -> None:
+    """cal signs the connector in as its own account, which its address also links (two links of one pair: authenticator and
+    directory). A second live account with the address, a withdrawal, a re-listing and a rename each relink the address; only the
+    directory link may come and go, the authenticator link always stays. Run after ``write``."""
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+
+    target = f"{ACCOUNTS_COLL}/{account_node_id(org_id, connector_id, 's-cal')}"
+    signed_in, listed = (target, "authenticator"), (target, "directory")
+    cal = users["cal"]
+    await processor.link_authenticator_to_source_user(connector_id, cal_user_id, emails["cal"], "s-cal", APP)
+    assert {signed_in, listed} <= await links_of(provider, cal), "signed in as the account its address links"
+
+    await processor.on_new_app_users([account(connector_id, emails, "s-cal2", "cal")])
+    got = await links_of(provider, cal)
+    assert signed_in in got and listed not in got, f"a second live account with the address: the directory link goes, not the sign-in: {got}"
+
+    await processor.withdraw_app_user_access(connector_id, [account(connector_id, emails, "s-cal2", "cal").model_copy(update={"id": cal})])
+    await processor.on_new_app_users([account(connector_id, emails, "s-cal")])
+    got = await links_of(provider, cal)
+    assert {signed_in, listed} <= got, f"the directory link comes back beside the sign-in, not over it: {got}"
+
+    await processor.on_new_app_users([account(connector_id, emails, "s-cal", "ana2")])
+    got = await links_of(provider, cal)
+    assert signed_in in got and listed not in got, f"renamed away from cal's address: {got}"
+    assert listed in await links_of(provider, users["ana2"]), "the new address links the renamed account"
+
+    await processor.withdraw_app_user_access(connector_id, [account(connector_id, emails, "s-cal", "ana2").model_copy(update={"id": users["ana2"]})])
+    got = await links_of(provider, cal)
+    assert signed_in in got, f"a withdrawal relinks the addresses; the sign-in stays: {got}"
+
+
+async def another_orgs_user_is_not_linked(provider: Any, org_id: str, connector_id: str, users: dict[str, str], foreign_key: str) -> None:  # noqa: ANN401
+    """After ``write``: ana's address is linked to this org's ana only, never to another org's user with the same address."""
+    from app.connectors.core.base.data_processor.source_accounts import account_node_id
+
+    assert await links_of(provider, foreign_key) == set(), "another org's user with the address is linked to nothing here"
+    assert (f"{ACCOUNTS_COLL}/{account_node_id(org_id, connector_id, 's-ana')}", "directory") in await links_of(provider, users["ana"])

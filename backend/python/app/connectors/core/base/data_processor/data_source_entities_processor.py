@@ -5654,14 +5654,14 @@ class DataSourceEntitiesProcessor:
             elif (authenticator.get("email") or "").lower() == email.lower():
                 link_changed = await tx_store.remove_authenticated_as(connector_id)
             else:
-                source_user = await tx_store.get_user_by_email(email)
+                source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     # Same inactive stub + userAppRelation the user sync would create for this email
                     await tx_store.batch_upsert_app_users([AppUser(
                         app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
                         email=email, full_name=email, org_id=self.org_id,
                     )])
-                    source_user = await tx_store.get_user_by_email(email)
+                    source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
 

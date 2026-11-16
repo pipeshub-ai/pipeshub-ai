@@ -353,9 +353,9 @@ class SourceAccountGraph:
         if not addresses:
             return
         accounts = [a for a in await tx_store.get_nodes_by_field_in(ACCOUNTS, "email", addresses, raise_on_error=True)
-                    if a.get("connectorId") == self.connector_id and a.get("state") != "withdrawn"]
-        users = await tx_store.get_users_by_emails(addresses, raise_on_error=True)
-        now = get_epoch_timestamp_in_ms()
+                    # the id is derived from (org, connector, source id), so a match is this connector's account in this org
+                    if (a.get("_key") or a.get("id")) == self.node_id(a.get("sourceUserId")) and a.get("state") != "withdrawn"]
+        users = await tx_store.get_users_by_emails(addresses, raise_on_error=True, org_id=self.org_id)
         for address in addresses:
             user = users.get(address)
             if user is None:
@@ -366,22 +366,7 @@ class SourceAccountGraph:
                     "Connector %s lists %d accounts with one address; their PipesHub user is linked to none of them",
                     self.connector_id, len(live),
                 )
-            want = live[0] if len(live) == 1 else None
-            have = set()
-            for edge in await tx_store.get_edges_from_node(f"{CollectionNames.USERS.value}/{user.id}", LINKS, raise_on_error=True):
-                coll, _, target = (edge.get("_to") or "").partition("/")
-                if edge.get("via") != DIRECTORY or edge.get("connectorId") != self.connector_id:
-                    continue
-                if target == want:
-                    have.add(target)
-                else:
-                    await tx_store.delete_edge(user.id, CollectionNames.USERS.value, target, coll, LINKS)
-            if want and want not in have:
-                await tx_store.batch_create_edges([{
-                    "from_id": user.id, "from_collection": CollectionNames.USERS.value, "to_id": want, "to_collection": ACCOUNTS,
-                    "connectorId": self.connector_id, "orgId": self.org_id, "via": DIRECTORY,
-                    "createdAtTimestamp": now, "updatedAtTimestamp": now,
-                }], LINKS)
+            await tx_store.set_directory_link(user.id, self.connector_id, live[0] if len(live) == 1 else None, self.org_id)
 
     async def withdraw(self, tx_store: "TransactionStore", users: list["AppUser"]) -> None:
         """Mark the stored accounts of ``users`` withdrawn (kept: they hold the grants, and the addresses they had), then

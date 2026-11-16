@@ -3579,10 +3579,11 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> dict[str, 'User']:
         """
-        Get the users whose email is any of ``emails``, in one query.
+        Get the users of org ``org_id`` whose email is any of ``emails``, in one query. The org is required: an address is
+        unique only within an org, so an unscoped read could answer another org's user.
 
         Matching ignores case. The result maps each matched address, lowercased,
         to its user; an address with no user is absent, and no addresses give
@@ -5671,6 +5672,22 @@ class IGraphDBProvider(ABC):
 
         Exactly one such link exists per connector instance: re-linking repoints it. The directory links of the
         connector (``via``: ``directory``) are not this link and are left alone, here and in ``remove_authenticated_as``.
+        """
+        pass
+
+    @abstractmethod
+    async def set_directory_link(
+        self,
+        user_key: str,
+        connector_id: str,
+        account_key: str | None,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Make ``account_key`` (a ``sourceAccounts`` node) the user's only directory link (``via``: ``directory``) in the connector, or
+        remove every one when it is None. Only directory links are read, written or removed: an authenticator link of the same pair,
+        or a link without ``via``, is another edge and stays.
         """
         pass
 

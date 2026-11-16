@@ -222,6 +222,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def remove_authenticated_as(self, connector_id) -> None:
         pass
 
+    async def set_directory_link(self, user_key, connector_id, account_key, org_id) -> None:
+        pass
+
     async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):
         return None
 

@@ -8263,21 +8263,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted:
             return {}
-        scoped = org_id is not None
-        org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
+        bind_vars = {"emails": wanted, "org_id": org_id}
         # LOWER(user.email) keeps matching case-insensitive, which no index on
         # users.email can serve; one scan per call instead of one per address.
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             FILTER LOWER(user.email) IN @emails
-            {org_filter}
+            FILTER user.orgId == @org_id
             RETURN user
         """
         try:
@@ -11413,6 +11411,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             },
             transaction=transaction,
         )
+
+    async def set_directory_link(
+        self,
+        user_key: str,
+        connector_id: str,
+        account_key: str | None,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        # Directory links only: the authenticator link (keyed by the connector) and links without via are never read or written here.
+        links = CollectionNames.AUTHENTICATED_AS.value
+        frm = f"{CollectionNames.USERS.value}/{user_key}"
+        to = f"{CollectionNames.SOURCE_ACCOUNTS.value}/{account_key}" if account_key else None
+        await self.execute_query(f"""
+        FOR link IN {links}
+            FILTER link._from == @from AND link.connectorId == @connectorId AND link.via == 'directory' AND link._to != @to
+            REMOVE link IN {links}
+        """, bind_vars={"from": frm, "connectorId": connector_id, "to": to}, transaction=transaction)
+        if to is None:
+            return
+        ts = get_epoch_timestamp_in_ms()
+        await self.execute_query(f"""
+        LET user = DOCUMENT(@from)
+        LET account = DOCUMENT(@to)
+        FILTER user != null AND user.orgId == @orgId AND account != null AND account.orgId == @orgId
+        UPSERT {{ _from: @from, _to: @to, connectorId: @connectorId, via: 'directory' }}
+        INSERT {{ _from: @from, _to: @to, connectorId: @connectorId, via: 'directory', orgId: @orgId,
+                  createdAtTimestamp: @ts, updatedAtTimestamp: @ts }}
+        UPDATE {{ updatedAtTimestamp: @ts }}
+        IN {links}
+        """, bind_vars={"from": frm, "to": to, "connectorId": connector_id, "orgId": org_id, "ts": ts}, transaction=transaction)
 
     async def remove_authenticated_as(
         self,

@@ -5,6 +5,8 @@ delete-right check: the setting on gives each listed account a node of its own; 
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import os
 import uuid
@@ -24,7 +26,7 @@ from tests.support.in_memory_config import InMemoryConfigService
 from .test_access import World
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 pytestmark = pytest.mark.integration
 
@@ -146,3 +148,39 @@ async def test_a_deleted_user_reads_nothing_through_its_account_and_a_restore_gi
     await scenario.delete_and_restore(setup.w.p, setup.processor.config_service, setup.w.org, setup.emails["cal"], "uid-cal", deleted, restored)
     accounts, _, _ = await scenario.state(setup.w.p, APP, setup.users, records)
     assert "s-cal" in {a["sourceUserId"] for a in accounts}
+
+
+async def test_the_authenticator_link_survives_every_relink_of_its_pair(setup: Setup) -> None:
+    await scenario.enable(setup.processor, APP)
+    await setup.write()
+    await scenario.authenticator_survives_relinks(setup.processor, setup.w.p, APP, setup.w.org, setup.emails, setup.users, "uid-cal")
+
+
+async def test_a_user_of_another_org_with_the_same_address_is_never_linked(setup: Setup, pg_db, org_ctx) -> None:
+    """Here the store reads one org at a time, so the other org's user is out of reach before the provider is asked."""
+    other = uuid.uuid4().hex[:24]
+
+    async def in_other_org(work: Callable[[], Awaitable[object]]) -> object:
+        async def go() -> object:
+            with org_ctx(other):
+                return await work()
+        return await asyncio.get_running_loop().create_task(go(), context=contextvars.Context())     # outside the setup's org
+
+    async def seed() -> None:
+        w = World(setup.w.p, other)
+        await w.nodes("organizations", {"_key": other, "isActive": True, "accountType": "enterprise"})
+        await w.nodes("users", {"_key": "a0-foreign", "userId": "uid-foreign", "email": setup.emails["ana"], "isActive": True})
+
+    async def drop() -> None:
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", other), write=True)
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+
+    await in_other_org(seed)
+    try:
+        await scenario.enable(setup.processor, APP)
+        records = await setup.write()
+        await scenario.another_orgs_user_is_not_linked(setup.w.p, setup.w.org, APP, setup.users, "a0-foreign")
+        assert "ana" in (await setup.readers(records))["by-id"]
+        assert await in_other_org(lambda: scenario.links_of(setup.w.p, "a0-foreign")) == set()
+    finally:
+        await in_other_org(drop)
