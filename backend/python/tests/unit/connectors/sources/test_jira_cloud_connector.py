@@ -1320,6 +1320,23 @@ class TestFetchUsersPhases:
         assert await connector._keep_licensed_users(users, mapping) == ([] if read else users[:2])
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("details", [None, [], [{"name": "jira-software-users"}]],
+                             ids=["no_group_details", "empty_group_details", "group_details_without_id"])
+    async def test_a_role_naming_groups_it_does_not_identify_leaves_product_access_unknown(self, details) -> None:
+        """ApplicationRole.groups: "The groups associated with the application role. As a group's name can change, use of
+        `groupDetails` is recommended to identify a groups." A role naming a group its groupDetails do not identify by id
+        licenses people this read cannot name: product access is unknown, so the linked keep it and no one new is linked."""
+        connector = _make_connector()
+        role = {"key": "jira-software", "groups": ["jira-software-users"]}
+        if details is not None:
+            role["groupDetails"] = details
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is False
+        users = self._three(connector)
+        assert await connector._keep_licensed_users(users, mapping) == users[:2]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [403, 404])
     async def test_a_role_list_refused_or_missing_leaves_product_access_unknown(self, status: int) -> None:
         connector = _make_connector()
