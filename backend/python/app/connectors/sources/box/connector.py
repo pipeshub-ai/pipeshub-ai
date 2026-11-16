@@ -889,7 +889,7 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
             self._mark_read_incomplete(e)
 
-    async def _withdraw_inactive_users(self, users: List[AppUser]) -> None:
+    async def _withdraw_inactive_users(self, users: list[AppUser]) -> None:
         """A stored user the complete list shows inactive (USABLE_USER_STATUSES) loses the connector, as it is not
         linked either; a cut list withdraws nobody. Made active again, it is linked on the next read."""
         inactive = {u.source_user_id for u in users if not u.is_active}
