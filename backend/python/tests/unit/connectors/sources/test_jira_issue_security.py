@@ -957,6 +957,10 @@ class TestPerIssueHoldersNameTheAccount:
         )
         assert {(p.email, p.external_id) for p in grants} == {("rep@ex.com", "acc-r")}
 
+    def test_a_legacy_data_center_holder_carries_its_name(self) -> None:
+        """A legacy Data Center user object has only ``name``, which the user sync lists it by."""
+        assert self._level([{"type": "reporter"}], {"reporter": {"name": "rep"}}) == {("rep@ex.com", "rep")}
+
     def test_a_holder_whose_field_names_no_account_carries_none(self) -> None:
         assert self._level([{"type": "reporter"}], {}) == {("rep@ex.com", None)}
 
