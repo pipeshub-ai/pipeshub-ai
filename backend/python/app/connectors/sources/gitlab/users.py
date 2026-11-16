@@ -32,6 +32,15 @@ def _filter_op_val(f: Any) -> str:
     return (op.value if hasattr(op, "value") else str(op)).lower()
 
 
+
+def _note_member(dict_member: dict, member: object) -> None:
+    """Keep one row per user, but never let a membership awaiting approval replace an active one: the user can
+    use GitLab through the active membership, and the row decides whether they are linked."""
+    kept = dict_member.get(member.id)
+    if kept is None or getattr(kept, "membership_state", "active") != "active" \
+            or getattr(member, "membership_state", "active") == "active":
+        dict_member[member.id] = member
+
 class UsersSync:
     """Handles all GitLab user-synchronisation steps for ``GitLabConnector``."""
 
@@ -213,7 +222,7 @@ class UsersSync:
                     return False, 0
                 rows = list(pres.data or [])
                 for member in rows:
-                    dict_member[member.id] = member
+                    _note_member(dict_member, member)
                 return bool(rows), len(rows)
             except Exception as e:
                 self.logger.error("Error in syncing users for %s: %s", label, e, exc_info=True)
@@ -239,7 +248,7 @@ class UsersSync:
                 else:
                     rows = list(members_res.data or [])
                     for member in rows:
-                        dict_member[member.id] = member
+                        _note_member(dict_member, member)
                     if rows:
                         any_success = True
                     total_groups_synced += 1
@@ -383,7 +392,7 @@ class UsersSync:
                         total_groups_skipped += 1
                         continue
                     for member in members_res.data:
-                        dict_member[member.id] = member
+                        _note_member(dict_member, member)
                     total_groups_synced += 1
                 except Exception as e:
                     self.logger.error(
@@ -439,7 +448,7 @@ class UsersSync:
                         total_projects_skipped += 1
                         continue
                     for member in members_res.data:
-                        dict_member[member.id] = member
+                        _note_member(dict_member, member)
                     total_projects_synced += 1
                 except Exception as e:
                     self.logger.error("Error in syncing users for project: %s", e, exc_info=True)

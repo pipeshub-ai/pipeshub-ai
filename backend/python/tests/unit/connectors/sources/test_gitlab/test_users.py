@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.gitlab.users import UsersSync, _filter_op_val
+from app.connectors.sources.gitlab.users import UsersSync, _filter_op_val, _note_member
 
 from .conftest import make_mock_connector, paged_res, failed_res
 
@@ -735,3 +735,15 @@ class TestSyncUsersFromProjectsGroups:
 
         gone = c.data_entities_processor.withdraw_app_user_access.await_args.args[1]
         assert sorted(u.source_user_id for u in gone) == ["2", "3", "4"]
+
+
+def test_a_membership_awaiting_approval_never_replaces_an_active_one() -> None:
+    """One row per user: a user active in one group and awaiting approval in another stays an active member,
+    whichever row is read last."""
+    active = SimpleNamespace(id=7, membership_state="active")
+    awaiting = SimpleNamespace(id=7, membership_state="awaiting")
+    for rows in ((active, awaiting), (awaiting, active)):
+        dict_member: dict = {}
+        for row in rows:
+            _note_member(dict_member, row)
+        assert dict_member[7] is active
