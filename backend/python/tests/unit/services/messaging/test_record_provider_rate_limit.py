@@ -188,7 +188,7 @@ async def test_a_short_retry_after_repeated_fails_the_record_after_the_wall_time
         harness.fail_with = RateLimited("model busy", provider="p", retry_after=1.0)
         real = harness.graph.update_node.side_effect
 
-        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:  # noqa: ANN001
+        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:
             _stored.update({k: v for k, v in fields.items()})
             return await _real(doc_id, collection, fields) if _real else True
 
@@ -215,7 +215,7 @@ async def test_the_deferral_fields_are_not_written_while_the_setting_is_off(monk
     for final in (False, True):
         harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
         harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
-        with pytest.raises(Exception) as raised:  # noqa: B017
+        with pytest.raises(Exception) as raised:
             await harness.run(_payload(parseNow=False, is_final_failure=final))
         assert not isinstance(raised.value, RequeueWithoutAttempt)
         for write in harness.writes():

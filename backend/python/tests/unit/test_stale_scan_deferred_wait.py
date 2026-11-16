@@ -96,11 +96,11 @@ async def _scan_snapshot(monkeypatch: pytest.MonkeyPatch, snapshot: dict, fresh:
     graph = MagicMock()
     graph.ensure_pipeline_schema = AsyncMock()
 
-    async def page(collection, skip=0, limit=100, filters=None, **_):  # noqa: ANN001, ANN202
+    async def page(collection, skip=0, limit=100, filters=None, **_):  # noqa: ANN202
         ok = collection == CollectionNames.RECORDS.value and all(snapshot.get(k) == v for k, v in (filters or {}).items())
         return [dict(snapshot)] if ok and skip == 0 else []
 
-    async def get_document(key, collection, **_):  # noqa: ANN001, ANN202
+    async def get_document(key, collection, **_):  # noqa: ANN202
         return _CONNECTOR if collection == CollectionNames.APPS.value else dict(fresh)
 
     graph.get_documents_paginated = AsyncMock(side_effect=page)

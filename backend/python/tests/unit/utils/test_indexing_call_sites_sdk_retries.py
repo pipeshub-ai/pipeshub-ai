@@ -281,7 +281,6 @@ def test_the_multimodal_embedding_providers_are_built_without_sdk_retries(monkey
     import types
     from unittest.mock import MagicMock
 
-    from app.modules.transformers.vectorstore import VectorStore
     from app.services.embeddings.multimodal.config import MultimodalProviderConfig
     from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
     from tests.support.vectorstore_world import make_vectorstore
