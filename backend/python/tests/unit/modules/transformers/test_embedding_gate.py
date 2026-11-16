@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.documents import Document
 
+import app.modules.transformers.vectorstore as vectorstore_module
 import app.utils.embedding_gate as gate_module
 from app.exceptions.indexing_exceptions import EmbeddingError
 from app.models.blocks import BlocksContainer
@@ -482,22 +483,25 @@ class TestServerThatIsHungOrDown:
         assert [r for r in results if isinstance(r, Exception)] == []
 
     async def test_a_hung_server_costs_less_than_serial_timeouts(self) -> None:
-        async def run(factor: float) -> float:
+        # Counted, not timed: at width one each attempt that reaches the hung server waits out a full timeout
+        # in turn, so their number is the serial cost. Comparing two wall-clock runs failed on loaded runners.
+        async def run(factor: float) -> int:
             server = FakeServer(make_gate(Health()), slots=1, work=3600.0)
             server._test_gate._fetch = lambda url, timeout: _health_of(server)
             with fast(0.1), patch.object(gate_module, "STUCK_AGE_ATTEMPTS", factor):
-                started = time.monotonic()
                 try:
                     results = await embed(store_for(server), 6)
                 finally:
                     server.stop()
             assert all(isinstance(r, EmbeddingError) for r in results)
-            return time.monotonic() - started
+            assert server.requests == len(server.timed_out)  # nothing the hung server was sent came back
+            return len(server.timed_out)
 
-        with_rule = await run(2.0)
-        # A rule that never fires is the same gate without the hung-server check: every waiter runs its own timeouts in turn.
-        without = await run(1e9)
-        assert with_rule < without * 0.75
+        attempts = vectorstore_module._EMBEDDING_BATCH_MAX_ATTEMPTS
+        # A rule that never fires is the same gate without the hung-server check: every attempt of every record times out.
+        assert await run(1e9) == 6 * attempts
+        # With it, only the first two records' attempts can reach the server; the waiters queued behind them fail fast.
+        assert await run(2.0) <= 2 * attempts
 
 
 async def _health_of(server: FakeServer) -> dict[str, Any]:
