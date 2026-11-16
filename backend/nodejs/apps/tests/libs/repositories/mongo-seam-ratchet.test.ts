@@ -164,7 +164,8 @@ const baselineFilesUnder = (dir: string, out: string[] = []): string[] => {
 /**
  * The committed baseline plus every `*baseline*.json` found under the directories
  * in `dirs` (env `SEAM_BASELINE_DIRS`, separated by the path delimiter; default none),
- * for code kept outside this tree. Lists are united and per-file counts added.
+ * for source files a downstream build adds under `src/` (they are scanned like any other).
+ * Lists are united and per-file counts added.
  */
 export function loadBaseline(dirs: string[] = []): Baseline {
   const merged: Baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf8'));
@@ -261,14 +262,23 @@ describe('repository seam ratchet: Mongoose use outside the Mongo repositories',
 
   it('scans the whole source tree and exempts the seam', () => {
     // Every aggregate has moved behind a repository, so the committed baseline is empty;
-    // an empty scan must mean "clean", not "the walker saw nothing".
+    // an empty scan must mean "clean", not "the walker saw nothing". Uses in source files that a
+    // downstream build adds under src/ are recorded under SEAM_BASELINE_DIRS; the scan walks those
+    // files too, so it must match that record exactly (a stale entry fails as well as a new use).
     expect(walk(SRC).length).to.be.greaterThan(500);
     expect(isExempt('libs/repositories/org/mongo.ts')).to.equal(true);
     expect(isExempt('modules/oauth_provider/services/pat.service.ts')).to.equal(false);
+    // The file committed here must stay empty: only the extra directories record uses, so a new
+    // use in this repository's own files can't be authorised by editing the committed baseline.
+    const committed = loadBaseline([]);
+    expect(committed.imports).to.deep.equal([]);
+    expect(committed.saves).to.deep.equal({});
+    expect(committed.newModels).to.deep.equal({});
     const now = scan();
-    expect(now.imports).to.deep.equal([]);
-    expect(now.saves).to.deep.equal({});
-    expect(now.newModels).to.deep.equal({});
+    const recorded = loadBaseline(extraDirs());
+    expect(now.imports).to.deep.equal(recorded.imports);
+    expect(now.saves).to.deep.equal(recorded.saves);
+    expect(now.newModels).to.deep.equal(recorded.newModels);
   });
 });
 

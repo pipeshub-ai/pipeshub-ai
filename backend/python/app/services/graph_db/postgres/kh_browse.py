@@ -16,10 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import current_org_id
-from app.exceptions.graph_db_exceptions import (
-    KnowledgeHubListingNotReady,
-    KnowledgeHubListingTooLarge,
-)
+from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
@@ -104,7 +101,7 @@ class KhBrowseMixin(PgBase):
             """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
             its ancestors and the children the classes do not decide."""
             app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, held, by_class=by_class)
-            if app_sk is None:      # a connector the viewer may browse that kg holds no current copy of: not ready, as the flat listing says
+            if app_sk is None:      # a connector the viewer may browse that holds nodes kg has not finished copying: not ready, as the flat listing says
                 return "not_ready"
             # a start of this connector that kg holds and no group above hides (else the browse's 404)
             if not at_app and (start is None or start["app_sk"] != app_sk or start["deleted"] or start["alien"] or start["sk"] in set(hidden)):
@@ -161,7 +158,7 @@ class KhBrowseMixin(PgBase):
         if u == "refused":
             return refused()
         if u == "not_ready":
-            raise KnowledgeHubListingNotReady
+            return await self._kh_not_ready(org, start_id, at_app=at_app, access=access, transaction=transaction, include_scope=include_scope, include_total=include_total)
         app_id, app_sk, app_doc, hidden, served, sets = (u[k] for k in ("app_id", "app_sk", "app_doc", "hidden", "served", "sets"))
         if grants_out is not None:
             grants_out[app_id] = granted

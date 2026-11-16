@@ -163,8 +163,10 @@ def test_no_binary_on_this_host_reads_as_text() -> None:
     paths = [p for d in ("/bin", "/usr/bin", "/usr/lib") for p in sorted(Path(d).glob("*"))[:150] if p.is_file()]
     misread = []
     for path in paths:
+        # Only the head: reading a whole runner binary (/bin/chromium) took over 60 s in CI.
         try:
-            head = path.read_bytes()[:64 * 1024]
+            with path.open("rb") as file:
+                head = file.read(64 * 1024)
         except OSError:
             continue
         if b"\x00" in head[:8192] and not isinstance(prepare_capped_text(head), BinaryFile):
