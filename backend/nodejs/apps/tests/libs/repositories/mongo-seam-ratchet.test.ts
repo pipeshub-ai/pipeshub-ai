@@ -266,6 +266,12 @@ describe('repository seam ratchet: Mongoose use outside the Mongo repositories',
     expect(walk(SRC).length).to.be.greaterThan(500);
     expect(isExempt('libs/repositories/org/mongo.ts')).to.equal(true);
     expect(isExempt('modules/oauth_provider/services/pat.service.ts')).to.equal(false);
+    // The file committed here must stay empty: extra directories record code kept outside
+    // this tree, so a new use in this tree can't be authorised by editing the baseline.
+    const committed = loadBaseline([]);
+    expect(committed.imports).to.deep.equal([]);
+    expect(committed.saves).to.deep.equal({});
+    expect(committed.newModels).to.deep.equal({});
     const now = scan();
     const recorded = loadBaseline(extraDirs());
     expect(now.imports).to.deep.equal(recorded.imports);
