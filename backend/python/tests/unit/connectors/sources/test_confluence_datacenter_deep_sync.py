@@ -181,9 +181,11 @@ class TestSyncUsers:
     async def test_single_page_users(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
-                {"userKey": "u1", "displayName": "User1", "email": "u1@x.com"},
+                {"type": "known", "userKey": "u1", "displayName": "User1", "email": "u1@x.com"},
             ],
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -203,16 +205,18 @@ class TestSyncUsers:
             if call_count == 1:
                 return _resp(200, {
                     "results": [
-                        {"userKey": f"u{i}", "displayName": f"U{i}", "email": f"u{i}@x.com"}
+                        {"type": "known", "userKey": f"u{i}", "displayName": f"U{i}", "email": f"u{i}@x.com"}
                         for i in range(200)
                     ],
                 })
             return _resp(200, {
-                "results": [{"userKey": "u200", "displayName": "U200", "email": "u200@x.com"}],
+                "results": [{"type": "known", "userKey": "u200", "displayName": "U200", "email": "u200@x.com"}],
             })
 
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(side_effect=mock_user_list)
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(side_effect=mock_user_list)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         await connector._sync_users()
@@ -222,10 +226,12 @@ class TestSyncUsers:
     async def test_skips_users_without_email(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
-                {"userKey": "u1", "displayName": "NoEmail", "email": ""},
-                {"userKey": "u2", "displayName": "HasEmail", "email": "u2@x.com"},
+                {"type": "known", "userKey": "u1", "displayName": "NoEmail", "email": ""},
+                {"type": "known", "userKey": "u2", "displayName": "HasEmail", "email": "u2@x.com"},
             ],
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -239,7 +245,9 @@ class TestSyncUsers:
     async def test_api_failure_breaks_loop(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(500, {}))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         # Should not raise but break the loop

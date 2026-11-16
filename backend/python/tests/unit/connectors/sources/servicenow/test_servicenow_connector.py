@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from servicenow_fakes import (
+    FakeServiceNow,
+    MemorySyncPoint,
     block_groups,
     file_response,
     keyset_page,
@@ -896,6 +898,31 @@ class TestSyncUsers:
             servicenow_connector.connector_id, [stored])
         fields = mock_datasource.get_now_table_tableName.call_args.kwargs["sysparm_fields"]
         assert "locked_out" in fields
+
+    async def test_a_user_locked_out_without_a_row_change_is_withdrawn_by_the_reconcile(
+        self, servicenow_connector
+    ) -> None:
+        """Linked before the lock was read, its row unchanged since, it keeps no grant: the reconcile reads the
+        listing's locked_out. A user whose locked_out is empty is not locked and stays."""
+        servicenow_connector.user_sync_point = MemorySyncPoint({
+            "users/v2": {"done": True}, "users": {"last_sync_time": "2026-01-02 00:00:00"},
+        })
+        rows = [
+            {"sys_id": sid, "user_name": sid, "email": f"{sid}@example.com", "active": "true", "locked_out": locked,
+             "sys_updated_on": "2026-01-01 00:00:00"}
+            for sid, locked in (("u1", "false"), ("u2", "true"), ("u3", ""))
+        ]
+        fake = FakeServiceNow({"sys_user": rows})
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=fake)
+        stored = [MagicMock(source_user_id=sid) for sid in ("u1", "u2", "u3")]
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=stored)
+        servicenow_connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+
+        await servicenow_connector._sync_users()
+
+        assert fake.calls_to("sys_user")[0].startswith("sys_updated_on>")  # a delta: no row changed
+        servicenow_connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
+            servicenow_connector.connector_id, [stored[1]])
 
     async def test_skips_users_without_email(self, servicenow_connector):
         servicenow_connector.user_sync_point = AsyncMock()
