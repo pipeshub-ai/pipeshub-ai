@@ -1448,10 +1448,12 @@ class RequeueWithoutAttempt(Exception):
     # can stop claiming does; False when only this message has to wait.
     pauses_consumer = True
 
-    def __init__(self, message: str = "", *, delay_s: float | None = None) -> None:
+    def __init__(self, message: str = "", *, delay_s: float | None = None, log_level: int = logging.WARNING) -> None:
         super().__init__(message)
         # How long the broker holds it before redelivery; None for the first retry backoff.
         self.delay_s = delay_s
+        # The level the consumer logs the hand-back at: lower for a wake that only repeats what was already reported.
+        self.log_level = log_level
 
 
 class ProgressRequeue(RequeueWithoutAttempt):

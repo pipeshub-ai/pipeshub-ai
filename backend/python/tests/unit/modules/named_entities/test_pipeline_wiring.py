@@ -19,6 +19,8 @@ from app.modules.named_entities.domain.models import (
     NamedEntityExtraction,
 )
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.services.base_client import ServiceUnavailableError
+from app.utils.llm import LLMUnavailableError
 
 _SECRET_NAME = "Zebulon Quartermaine"
 
@@ -197,6 +199,46 @@ async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
         result = await sink.extract_named_entities(ctx)
     assert result.status == "FAILED"
     assert _SECRET_NAME not in caplog.text
+
+
+async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_unavailable() -> None:
+    """The service's 424 reaches the stage as every window unavailable, so the stage pauses on it (and counts the sends
+    the service made) instead of retrying the document as a model failure."""
+    from app.modules.pipeline.stages.entities import _provider_down
+    from app.utils.llm import LLMUnavailableError
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=LLMUnavailableError("provider down"))):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    assert result.status == "FAILED"
+    assert _provider_down(result)
+
+
+@pytest.mark.parametrize(
+    ("raised", "sent", "retry_after"),
+    [
+        (LLMUnavailableError("down", retry_after=120.0), True, 120.0),
+        (ServiceUnavailableError("circuit open", delivered=False), False, None),
+        (ServiceUnavailableError("503", delivered=True), True, None),
+    ],
+    ids=["provider-down", "service-unreachable", "service-5xx"],
+)
+async def test_the_extraction_carries_what_the_stage_needs_to_pause(raised, sent, retry_after) -> None:
+    """A service that was never reached has sent nothing (the pause is not a send against the budget); the provider's
+    retry-after survives to the stage's pause."""
+    from app.modules.pipeline.models import StageResult
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=raised)):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    paused = StageResult.paused_for(result.pause_cause, "down")
+    assert (paused.sent, paused.retry_after_s) == (sent, retry_after)
 
 
 @pytest.mark.parametrize("config", [{"budgets": {"max_turns": "lots"}}, {"tz": 7}])

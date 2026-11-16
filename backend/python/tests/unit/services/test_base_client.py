@@ -466,3 +466,41 @@ def test_only_one_thread_claims_the_half_open_probe() -> None:
     for thread in threads:
         thread.join()
     assert claims.count(True) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failures", "delivered"),
+    [
+        pytest.param([httpx.ConnectError("refused")] * 2, False, id="never-connected"),
+        pytest.param([httpx.ConnectTimeout("slow connect")] * 2, False, id="connect-timeouts"),
+        pytest.param([httpx.ConnectError("refused"), httpx.ReadTimeout("no answer")], True, id="read-timeout-after-send"),
+        pytest.param([httpx.WriteError("broken pipe")] * 2, True, id="write-error"),
+    ],
+)
+async def test_an_unavailable_service_says_whether_a_request_may_have_reached_it(
+    failures: list[Exception], delivered: bool
+) -> None:
+    """A caller that pays for the work behind a request (a model call) needs to know whether it may have been done."""
+    client = _ConcreteClient(max_retries=2, retry_delay=0.0)
+
+    with patch.object(client, "_make_client") as mock_make_client:
+        mock_httpx = AsyncMock()
+        mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+        mock_httpx.__aexit__ = AsyncMock(return_value=False)
+        mock_httpx.request = AsyncMock(side_effect=failures)
+        mock_make_client.return_value = mock_httpx
+
+        with pytest.raises(ServiceUnavailableError) as raised:
+            await client._post_json("/test", {})
+    assert raised.value.delivered is delivered
+
+
+@pytest.mark.asyncio
+async def test_an_open_circuit_sent_nothing() -> None:
+    client = _ConcreteClient(max_retries=1, retry_delay=0.0)
+    for _ in range(client.circuit_breaker.failure_threshold + 1):
+        client.circuit_breaker.record_failure()
+    with pytest.raises(ServiceUnavailableError) as raised:
+        await client._post_json("/test", {})
+    assert raised.value.delivered is False
