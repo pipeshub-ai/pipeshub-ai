@@ -88,20 +88,12 @@ def _login_user_key(org_id: str, user_id: str) -> str:
     return str(uuid5(_LOGIN_USER_NAMESPACE, f"{org_id}:{user_id}"))
 
 
-_PENDING_DEFAULT_KB = "pending:"
-# Rounds of reading a user's default and claiming one, lost each time to another writer of the same user.
+# Rounds of reading a user's default and writing one, lost each time to another writer of the same user.
 _DEFAULT_KB_CLAIM_ATTEMPTS = 5
-# A claim not written by then is taken to be abandoned (its writer stopped), and a fresh key is claimed. Far longer
-# than any write of one knowledge base takes.
-_PENDING_DEFAULT_KB_MS = 10 * 60 * 1000
 
 
-def _parse_pending_default(marker: str | None) -> tuple[str | None, int]:
-    """(key, claimed at in ms) of a "pending:<key>:<ms>" claim; (None, 0) for anything else."""
-    if not marker or not marker.startswith(_PENDING_DEFAULT_KB):
-        return None, 0
-    key, _, at = marker[len(_PENDING_DEFAULT_KB):].rpartition(":")
-    return (key, int(at)) if key and at.isdigit() else (None, 0)
+class _DefaultKnowledgeBaseNamedMeanwhile(Exception):
+    """Another writer named the user's default after it was read: this transaction is rolled back."""
 
 
 def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
@@ -1193,12 +1185,20 @@ class EntityEventService(BaseEventService):
             self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
             return {}
 
-        # The user names their default on their own node: absent (none yet), "pending:<key>:<claimed at, ms>" (claimed;
-        # only the writer that claimed it writes it) and "<key>" (written). So a knowledge base they made themselves,
-        # possibly in the moment between their user and their default being written, never stands in for it; two
-        # writers of one user's default make one; and no key is ever written twice: a deleted default is replaced
-        # under a fresh key, which cleanup queued for the deleted one, keyed by its id, cannot reach.
+        # The user names their default on their own node (defaultKnowledgeBaseId), and the name is set in the very
+        # transaction that writes the knowledge base, on the condition that it still says what was read. So a
+        # knowledge base they made themselves, possibly in the moment between their user and their default being
+        # written, never stands in for it; of two writers of one user's default exactly one commits and the other
+        # then finds it; a write that fails leaves no claim behind for a retry to trip on; and no key is ever written
+        # twice: a named default that is gone is replaced under a fresh key, which cleanup queued for the deleted one,
+        # keyed by its id, cannot reach.
         for _ in range(_DEFAULT_KB_CLAIM_ATTEMPTS):
+            # The name before the knowledge bases: both commit together, so a name read first has its knowledge base
+            # visible to the read after it. The other way round, a default committed between the two reads would
+            # look named but missing, and be replaced.
+            user_doc = await self.graph_provider.get_document(user_key, CollectionNames.USERS.value, raise_on_error=True)
+            marker = (user_doc or {}).get("defaultKnowledgeBaseId")
+            marker = marker if isinstance(marker, str) and marker else None
             # raise_on_error: the providers answer [] to a failed lookup too, and "no
             # knowledge base" here would mint a second App under a new id.
             all_kbs = await self.graph_provider.get_nodes_by_filters(
@@ -1210,18 +1210,13 @@ class EntityEventService(BaseEventService):
                 },
                 raise_on_error=True,
             )
-            user_doc = await self.graph_provider.get_document(user_key, CollectionNames.USERS.value, raise_on_error=True)
-            marker = (user_doc or {}).get("defaultKnowledgeBaseId")
-            marker = marker if isinstance(marker, str) and marker else None
-            pending_key, claimed_at = _parse_pending_default(marker)
-            named = pending_key or marker
-            default = next((kb for kb in all_kbs if (kb.get("id") or kb.get("_key")) == named), None) if named else None
+            default = next((kb for kb in all_kbs if (kb.get("id") or kb.get("_key")) == marker), None) if marker else None
             live = default is not None and not default.get("isDeleted", False) and default.get("status") != APP_STATUS_DELETING
 
             if live:
                 existing_kbs = [default]
             elif marker is None and user_key != _login_user_key(orgId, userId):
-                # A user under an older key whose default predates the claim: any knowledge base of theirs will do.
+                # A user under an older key whose default predates the name: any knowledge base of theirs will do.
                 existing_kbs = [kb for kb in all_kbs if not kb.get("isDeleted", False)]
             else:
                 existing_kbs = []
@@ -1239,68 +1234,48 @@ class EntityEventService(BaseEventService):
                         await self.graph_data_store.execute_idempotent_in_transaction(
                             self._ensure_kb_edges, user_key, orgId, existing_key, explicit=True
                         )
-                if pending_key and live:  # written by a claimer that stopped before saying so
-                    await self.graph_provider.update_node_fields_if_match(
-                        user_key, CollectionNames.USERS.value, {"defaultKnowledgeBaseId": pending_key},
-                        {"defaultKnowledgeBaseId": marker},
-                    )
                 return existing_kbs[0]
 
-            if pending_key and default is None and get_epoch_timestamp_in_ms() - claimed_at < _PENDING_DEFAULT_KB_MS:
-                # Claimed a moment ago and not written yet: the claimer writes it. Writing it here as well could
-                # put back one deleted meanwhile, under a key cleanup is queued for.
-                self.logger.info(f"Default KB of user {userId} is being written by another writer")
-                return {}
-
+            current_timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid4())
-            if await self.graph_provider.update_node_fields_if_match(
-                user_key, CollectionNames.USERS.value,
-                {"defaultKnowledgeBaseId": f"{_PENDING_DEFAULT_KB}{kb_key}:{get_epoch_timestamp_in_ms()}"},
-                {"defaultKnowledgeBaseId": marker},
-            ):
-                claim = f"{_PENDING_DEFAULT_KB}{kb_key}:"
+            kb_data = {
+                "id": kb_key,
+                "createdBy": userId,
+                "orgId": orgId,
+                "name": name,
+                "type": Connectors.KNOWLEDGE_BASE.value,
+                "appGroup": AppGroups.LOCAL_STORAGE.value,
+                "authType": "NONE",
+                "scope": ConnectorScopes.PERSONAL.value,
+                "isActive": True,
+                "isAgentActive": True,
+                "isConfigured": True,
+                "isAuthenticated": True,
+                "vectorMembershipBackfilled": True,
+                "hideConnector": True,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+
+            async def write_kb(tx_store: "TransactionStore", kb_key: str = kb_key, kb_data: dict = kb_data,
+                               marker: str | None = marker) -> None:
+                if not await tx_store.name_default_knowledge_base(user_key, kb_key, marker):
+                    raise _DefaultKnowledgeBaseNamedMeanwhile
+                ensure_written(
+                    await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the default knowledge base",
+                )
+                await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
+
+            try:
+                # explicit: a failure leaves no App without its edges, and no name without its App, on Neo4j either.
+                # Every write is keyed by kb_key, so a re-run after a write conflict (the org node is shared by every
+                # onboarding message) completes the same App rather than starting a second one.
+                await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
                 break
+            except _DefaultKnowledgeBaseNamedMeanwhile:
+                continue  # another writer committed the user's default: read again and find it
         else:
-            raise RuntimeError(f"could not claim a default knowledge base for user {user_key}")
-
-        current_timestamp = get_epoch_timestamp_in_ms()
-
-        kb_data = {
-            "id": kb_key,
-            "createdBy": userId,
-            "orgId": orgId,
-            "name": name,
-            "type": Connectors.KNOWLEDGE_BASE.value,
-            "appGroup": AppGroups.LOCAL_STORAGE.value,
-            "authType": "NONE",
-            "scope": ConnectorScopes.PERSONAL.value,
-            "isActive": True,
-            "isAgentActive": True,
-            "isConfigured": True,
-            "isAuthenticated": True,
-            "vectorMembershipBackfilled": True,
-            "hideConnector": True,
-            "createdAtTimestamp": current_timestamp,
-            "updatedAtTimestamp": current_timestamp,
-        }
-
-        async def write_kb(tx_store: "TransactionStore") -> None:
-            ensure_written(
-                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the default knowledge base",
-            )
-            await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
-
-        # explicit: a failure leaves no App without its edges on Neo4j either.
-        # Every write is keyed by kb_key, so a re-run after a write conflict
-        # (the org node is shared by every onboarding message) completes the
-        # same App rather than starting a second one.
-        await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
-        claimed = await self.graph_provider.get_document(user_key, CollectionNames.USERS.value, raise_on_error=True)
-        if str((claimed or {}).get("defaultKnowledgeBaseId") or "").startswith(claim):
-            await self.graph_provider.update_node_fields_if_match(
-                user_key, CollectionNames.USERS.value,
-                {"defaultKnowledgeBaseId": kb_key}, {"defaultKnowledgeBaseId": claimed["defaultKnowledgeBaseId"]},
-            )
+            raise RuntimeError(f"could not name a default knowledge base for user {user_key}")
 
         # Register per-KB connector instance at runtime
         try:

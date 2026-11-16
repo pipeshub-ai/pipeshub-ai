@@ -10,7 +10,6 @@ knowledge base, because both are keyed by (org, userId) and the stores upsert on
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -190,8 +189,11 @@ def test_the_key_of_a_new_user_depends_only_on_org_and_user() -> None:
 
 
 def _kb_service(existing: list[dict], marker: str | None = None) -> tuple[EntityEventService, dict]:
-    """A user's knowledge bases and the default their node names; the claim is a compare-and-set, as on the stores."""
-    state: dict[str, Any] = {"marker": marker, "apps": list(existing)}
+    """A user's knowledge bases and the default their node names, with transactions as the stores give them: what a
+    transaction writes shows only once it commits, and a conditional write on the user holds the user until then."""
+    state: dict[str, Any] = {"marker": marker, "apps": list(existing), "fail_app_writes": 0}
+    held = asyncio.Lock()  # the user node's row lock
+    staged: dict[str, dict] = {}
     svc = _service()
     graph = svc.graph_provider
 
@@ -201,25 +203,60 @@ def _kb_service(existing: list[dict], marker: str | None = None) -> tuple[Entity
     async def document(key: str, collection: str, **_kwargs: Any) -> dict:  # noqa: ANN401
         return {"id": key, **({"defaultKnowledgeBaseId": state["marker"]} if state["marker"] else {})}
 
-    async def claim(key: str, collection: str, updates: dict, expected: dict, *_a: Any, **_k: Any) -> bool:  # noqa: ANN401
-        await asyncio.sleep(0.01)  # a second writer reads meanwhile
+    async def begin(*_a: Any, **_k: Any) -> str:  # noqa: ANN401
+        txn = f"txn-{len(staged)}-{id(object())}"
+        staged[txn] = {"apps": [], "marker": None, "held": False}
+        return txn
+
+    async def name(key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, **_k: Any) -> bool:  # noqa: ANN401
+        if transaction is None:  # a statement of its own, committed at once
+            async with held:
+                if state["marker"] != expected["defaultKnowledgeBaseId"]:
+                    return False
+                state["marker"] = updates["defaultKnowledgeBaseId"]
+                return True
+        await held.acquire()  # a second writer waits here until the first commits or rolls back
+        staged[transaction]["held"] = True
+        await asyncio.sleep(0.01)
         if state["marker"] != expected["defaultKnowledgeBaseId"]:
             return False
-        state["marker"] = updates["defaultKnowledgeBaseId"]
+        staged[transaction]["marker"] = updates["defaultKnowledgeBaseId"]
         return True
 
-    async def upsert(nodes: list[dict], collection: str, *_a: Any, **_k: Any) -> bool:  # noqa: ANN401
+    async def upsert(nodes: list[dict], collection: str, transaction: str | None = None, **_k: Any) -> bool:  # noqa: ANN401
         if collection == CollectionNames.APPS.value:
-            state["apps"] = [a for a in state["apps"] if a["id"] != nodes[0]["id"]] + [dict(nodes[0])]
+            if state["fail_app_writes"]:
+                state["fail_app_writes"] -= 1
+                raise RuntimeError("connection reset by peer")
+            staged[transaction]["apps"].append(dict(nodes[0]))
         return True
+
+    def end(transaction: str, *, apply: bool) -> None:
+        tx = staged.pop(transaction)
+        if apply:
+            if tx["marker"] is not None:
+                state["marker"] = tx["marker"]
+            for app in tx["apps"]:
+                state["apps"] = [a for a in state["apps"] if a["id"] != app["id"]] + [app]
+        if tx["held"]:
+            held.release()
+
+    async def commit(transaction: str, *_a: Any, **_k: Any) -> None:  # noqa: ANN401
+        end(transaction, apply=True)
+
+    async def rollback(transaction: str, *_a: Any, **_k: Any) -> None:  # noqa: ANN401
+        end(transaction, apply=False)
 
     graph.get_nodes_by_filters = AsyncMock(side_effect=apps)
     graph.get_document = AsyncMock(side_effect=document)
-    graph.update_node_fields_if_match = AsyncMock(side_effect=claim)
+    graph.begin_transaction = AsyncMock(side_effect=begin)
+    graph.update_node_fields_if_match = AsyncMock(side_effect=name)
     graph.batch_upsert_nodes = AsyncMock(side_effect=upsert)
-    graph.begin_transaction = AsyncMock(return_value="txn1")
     graph.batch_create_edges = AsyncMock(return_value=True)
-    graph.commit_transaction = AsyncMock()
+    graph.commit_transaction = AsyncMock(side_effect=commit)
+    graph.rollback_transaction = AsyncMock(side_effect=rollback)
+    graph.is_write_conflict = MagicMock(return_value=False)
+    graph.opens_explicit_transaction = MagicMock(return_value=True)
     svc.app_container.data_store = AsyncMock(return_value=AsyncMock())
     svc.app_container.connector_notification_service.return_value = MagicMock()
     return svc, state
@@ -234,8 +271,8 @@ def _no_connector() -> Any:  # noqa: ANN401
 NEW_USER = _login_user_key(ORG, USER)
 
 
-def _pending(key: str, ms_ago: int = 0) -> str:
-    return f"pending:{key}:{int(time.time() * 1000) - ms_ago}"
+def _written(svc: EntityEventService) -> list[str]:
+    return [c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list]
 
 
 class TestDefaultKnowledgeBase:
@@ -250,14 +287,59 @@ class TestDefaultKnowledgeBase:
             "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
             AsyncMock(side_effect=start),
         ) as create:
-            await asyncio.gather(
+            first, second = await asyncio.gather(
                 svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private"),
                 svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private"),
             )
         (app,) = state["apps"]
+        assert {first.get("kb_id") or first.get("id"), second.get("kb_id") or second.get("id")} == {app["id"]}
         assert state["marker"] == app["id"]
         create.assert_awaited_once()
         assert list(svc.app_container.connectors_map) == [app["id"]]
+
+    async def test_a_default_another_writer_commits_between_the_reads_is_found_not_replaced(self) -> None:
+        """The other writer's default (its name and its knowledge base, one commit) lands just after this writer's
+        first read. Read in the wrong order, it looked named but missing, and a second one was made."""
+        svc, state = _kb_service([])
+        graph = svc.graph_provider
+        reads = {"done": 0}
+        read_user, read_apps = graph.get_document.side_effect, graph.get_nodes_by_filters.side_effect
+
+        def other_writer_commits_after_the_first_read() -> None:
+            reads["done"] += 1
+            if reads["done"] == 1:
+                state["marker"] = "theirs"
+                state["apps"] = [{"id": "theirs", "createdBy": USER, "name": "Admin's Private"}]
+
+        async def user(*a: Any, **k: Any) -> dict:  # noqa: ANN401
+            answer = await read_user(*a, **k)
+            other_writer_commits_after_the_first_read()
+            return answer
+
+        async def apps(*a: Any, **k: Any) -> list[dict]:  # noqa: ANN401
+            answer = await read_apps(*a, **k)
+            other_writer_commits_after_the_first_read()
+            return answer
+
+        graph.get_document.side_effect = user
+        graph.get_nodes_by_filters.side_effect = apps
+        with _no_connector():
+            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private")
+        assert (result.get("kb_id") or result.get("id")) == "theirs"
+        assert [a["id"] for a in state["apps"]] == ["theirs"]
+        assert state["marker"] == "theirs"
+
+    async def test_a_write_that_fails_leaves_no_name_and_the_redelivery_makes_exactly_one(self) -> None:
+        # Nothing of the failed write stays, the name included, so the retried event writes the default.
+        svc, state = _kb_service([])
+        state["fail_app_writes"] = 1
+        with _no_connector():
+            with pytest.raises(RuntimeError, match="connection reset"):
+                await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private")
+            assert (state["marker"], state["apps"]) == (None, [])
+            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private")
+        (app,) = state["apps"]
+        assert result["kb_id"] == app["id"] == state["marker"]
 
     @pytest.mark.parametrize("left", [[{"id": "gone", "status": APP_STATUS_DELETING}], []], ids=["deleting", "removed"])
     async def test_a_named_default_that_is_gone_is_replaced_under_a_fresh_key_never_by_a_sibling(self, left: list[dict]) -> None:
@@ -267,7 +349,7 @@ class TestDefaultKnowledgeBase:
         with _no_connector():
             result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG, name="Admin's Private")
         assert result["kb_id"] not in ("gone", "own-kb")
-        assert [c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list] == [result["kb_id"]]
+        assert _written(svc) == [result["kb_id"]]
         assert state["marker"] == result["kb_id"]
 
     async def test_a_default_removed_and_made_again_gets_a_new_key(self) -> None:
@@ -287,35 +369,6 @@ class TestDefaultKnowledgeBase:
         assert state["marker"] == result["kb_id"]
         (call,) = svc.graph_provider.batch_upsert_nodes.await_args_list
         assert call.args[0][0]["name"] == "Admin's Private"
-
-    async def test_a_default_another_writer_is_writing_is_left_to_that_writer(self) -> None:
-        # Writing it here too could put back one deleted meanwhile, under a key cleanup is queued for.
-        claim = _pending("claimed-kb")
-        svc, state = _kb_service([], marker=claim)
-        with _no_connector():
-            assert await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG) == {}
-        svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
-        assert state["marker"] == claim
-
-    @pytest.mark.parametrize(
-        ("left", "ms_ago"),
-        [([{"id": "claimed-kb", "status": APP_STATUS_DELETING}], 0), ([], 60 * 60 * 1000)],
-        ids=["deleted-mid-claim", "abandoned-claim"],
-    )
-    async def test_a_claim_whose_collection_is_gone_is_replaced_under_a_fresh_key(self, left: list[dict], ms_ago: int) -> None:
-        svc, state = _kb_service(left, marker=_pending("claimed-kb", ms_ago))
-        with _no_connector():
-            result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
-        assert result["kb_id"] != "claimed-kb"
-        assert [c.args[0][0]["id"] for c in svc.graph_provider.batch_upsert_nodes.await_args_list] == [result["kb_id"]]
-        assert state["marker"] == result["kb_id"]
-
-    async def test_a_claim_written_by_a_writer_that_stopped_is_taken_as_the_default(self) -> None:
-        svc, state = _kb_service([{"id": "claimed-kb", "createdBy": USER}], marker=_pending("claimed-kb"))
-        result = await svc._get_or_create_knowledge_base(NEW_USER, USER, ORG)
-        assert result["id"] == "claimed-kb"
-        assert state["marker"] == "claimed-kb"
-        svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
 
     async def test_the_default_the_user_names_is_found(self) -> None:
         svc, _ = _kb_service([{"id": "own-kb", "createdBy": USER}, {"id": "the-default", "createdBy": USER}], marker="the-default")
