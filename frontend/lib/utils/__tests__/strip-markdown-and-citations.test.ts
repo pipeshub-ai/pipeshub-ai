@@ -18,6 +18,11 @@ describe('stripMarkdownAndCitations', () => {
     );
   });
 
+  it('keeps asterisk runs around spaces', () => {
+    expect(stripMarkdownAndCitations('** spaced **')).toBe('** spaced **');
+    expect(stripMarkdownAndCitations('*** spaced ***')).toBe('*** spaced ***');
+  });
+
   it('removes citation markers, headings and links', () => {
     expect(stripMarkdownAndCitations('## Title\nSee [the docs](https://x.y) [1][2].')).toBe(
       'Title\nSee the docs.',

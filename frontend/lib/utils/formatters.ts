@@ -63,7 +63,7 @@ export function stripMarkdownAndCitations(text: string): string {
     .replace(/^#{1,6}\s+/gm, '')
     // Remove bold/italic markers. A pair must hug its text, so `2 * 3 * 4` and a
     // `* item` bullet are not read as emphasis.
-    .replace(/(\*{1,3})(\S(?:.*?\S)?)\1/g, '$2')
+    .replace(/(\*{1,3})([^\s*](?:.*?[^\s*])?)\1/g, '$2')
     // Remove inline code backticks
     .replace(/`([^`]+)`/g, '$1')
     // Remove links, keep text
