@@ -6,6 +6,9 @@ import asyncio
 import json
 import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -354,14 +357,17 @@ async def test_a_placeholder_that_leads_through_a_placeholder_listed_elsewhere_i
 
 
 async def test_a_node_of_a_connector_kg_has_not_copied_is_not_ready_and_one_not_gated_is_not_found(pg_db) -> None:
+    """Not ready only for a start the viewer may open (r0000); one they may not (g1: u1 holds no grant on it, and nothing leads to it from the App) is the same not-found as a
+    missing one, so the refusal says nothing of a node they cannot see."""
     from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 
     from .test_kh_listing_flat import seed
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
+    with pytest.raises(KnowledgeHubListingNotReady):
+        await browse(p, org, "r0000", ["r0000"], start_type="record")
+    assert (await browse(p, org, "g1", ["r0000"], start_type="recordGroup"))["scope"]["admitted"] is False
     for start, typ in (("g1", "recordGroup"), ("r0000", "record")):
-        with pytest.raises(KnowledgeHubListingNotReady):
-            await browse(p, org, start, ["r0000"], start_type=typ)
         with ctx(org):      # not gated to its connector, or no such node: not found
             assert (await p.get_knowledge_hub_connector_page_v3(app_id="", org_id=org, grantee_ids=["u1"], gated_app_ids=["other"], granted_ids=["r0000"], flatten=False,
                                                                 start_id=start, start_type=typ, include_scope=True))["scope"]["admitted"] is False
@@ -434,12 +440,27 @@ CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
 NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*>?=")
 
 
-@pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
+def run_kg_analyze() -> None:
+    """The maintenance worker's analyze job (``python -m db.maintain analyze``) as it runs in a deployment: the migrate login as the owner role, the jobs login for the
+    requests. With no interval between two ANALYZEs, so every run of the test is served (the worker waits 10 minutes)."""
+    need = ("PG_TEST_MIGRATE_URL", "PG_TEST_JOBS_URL")
+    assert all(os.environ.get(k) for k in need), f"set {need} (scripts/prepare_pg_test_db.sh prints them)"
+    env = {**os.environ, "PG_MIGRATE_URL": os.environ["PG_TEST_MIGRATE_URL"], "PG_JOBS_URL": os.environ["PG_TEST_JOBS_URL"], "PG_KG_ANALYZE_EVERY_S": "0"}
+    ran = subprocess.run([os.environ.get("PG_TEST_MAINTAIN_PYTHON") or sys.executable, "-m", "db.maintain", "analyze"], cwd=Path(__file__).parents[5],
+                         env=env, capture_output=True, text=True, timeout=300, check=False)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+# after_first_load: the statistics are those the worker took when the connectors' first loads asked for them (kg.analyze_requests), and the org has grown tenfold since.
+# Before the request, an org the statistics did not know was put at one row, and the plan of a page could read every kg row of the org (records_pkey bounded by
+# the org alone, then a sort) instead of the parent's range of a children index: a near tie the planner broke either way.
+@pytest.mark.parametrize("analyzed", [False, True], ids=["after_first_load", "after_analyze"])
 async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
     p, org = prov(pg_db), new_org()
     await seed_folder(p, pg_db, org, 400, readable_kids=[])
     for _ in range(2):
         await seed_folder(p, pg_db, new_org(), 50, readable_kids=[])
+    run_kg_analyze()                                    # each seed promoted its connector, which asked for the statistics
     # every child also hangs under a second parent (a hierarchy link), so a read of the links that is not by the parent walks all of them
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT r.org_id, g.sk, 1, r.sk FROM kg.records r JOIN kg.node_keys g ON g.org_id = r.org_id AND g.coll = 2 AND g.id = 'g1' "
                  "WHERE r.org_id = $1 AND r.parent_sk IS NOT NULL", org)
@@ -499,7 +520,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
             if not name.startswith(CUSTOM_ONLY):
                 plans.append(("generic", await _generic_plan(con, sql)))
             for kind, plan in plans:
-                at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
+                at = f"{name} {kind} ({'after ANALYZE' if analyzed else 'after the first load'})"
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
                 assert not seq, f"{at}: sequential scan of {seq}"
                 # once analyzed, every read of the org's rows and links is bounded by the nodes it asks about, never a walk of the org's index (with no statistics the planner may
@@ -687,11 +708,54 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
     assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls
 
 
+async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organisation_is_estimated_at(pg_db) -> None:
+    """The page of a group whose 400 children are linked to it (``wide linked``): the linked children are read by their keys, one primary-key probe each, and the
+    primary ones by the parent's range of a children index, however the planner estimates the organisation. Here the organisation is outside the most common values
+    (statistics target 1 with a larger decoy org, as on a database of more organisations than the list holds) and estimated at the average of 2,000 one-row orgs.
+    Read as ``r.sk = ANY(<the 400 keys>)``, the plan then read the organisation's whole range of another index (records_id on PostgreSQL 18, records_group on 17): the
+    probes cost more than a range the planner put at a few rows, and with real statistics it flipped now and then."""
+    from asyncpg import connect
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 400, readable_kids=[])
+    await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT r.org_id, g.sk, 1, r.sk FROM kg.records r JOIN kg.node_keys g ON g.org_id = r.org_id AND g.coll = 2 AND g.id = 'g1' "
+                 "WHERE r.org_id = $1 AND r.parent_sk IS NOT NULL", org)
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, parent_sk, name_sort) SELECT $1, 60000000 + g, 3, 'other' || g, 3, a.sk, h.sk, convert_to('other' || g, 'UTF8') "
+                 "FROM generate_series(1, 4000) g JOIN kg.node_keys a ON a.org_id = $1 AND a.coll = 1 AND a.id = 'app1' JOIN kg.node_keys h ON h.org_id = $1 AND h.coll = 2 AND h.id = 'hid'", org)
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("INSERT INTO kg.records (org_id, sk, coll, id, kind) SELECT left(md5('decoy' || $1), 24), g, 3, 'd' || g, 3 FROM generate_series(1, 6000) g", org)
+        await con.execute("INSERT INTO kg.records (org_id, sk, coll, id, kind) SELECT left(md5('tiny' || $1 || g), 24), 1, 3, 'tiny', 3 FROM generate_series(1, 2000) g", org)
+        await con.execute("ALTER TABLE kg.records ALTER COLUMN org_id SET STATISTICS 1")
+        await con.execute("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys")
+        assert not await con.fetchval("SELECT most_common_vals::text::text[] @> ARRAY[$1] FROM pg_stats WHERE schemaname = 'kg' AND tablename = 'records' AND attname = 'org_id'", org)
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        g1 = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 2 AND id = 'g1'", org)
+        linked = [r["child_sk"] for r in await con.fetch(kgl.LINKED_CHILDREN, org, g1, kgl.LINKS_MAX + 1, [])]
+        assert len(linked) == 400
+        for field in ("name", "updatedAt"):
+            base, where = kh_listing.where_of(org, app_sk, {}, {}, [], browse=True)
+            base.values[1], base.values[2] = g1, 51
+            sql = kgl.page_sql(field, "ASC", "next", where, None, None, kgl.browse_scopes(base.add(linked)))
+            plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *base.values))
+            scans = [n for n in _nodes(plan) if n.get("Relation Name") == "records" or str(n.get("Index Name")).startswith("records_")]
+            probes = [n for n in scans if n.get("Index Name") == "records_pkey" and re.search(r"\bsk = (?!ANY)", n.get("Index Cond") or "")]
+            ranges = [n for n in scans if str(n.get("Index Name")).startswith(("records_children_", "records_parent")) and "parent_sk = " in (n.get("Index Cond") or "")]
+            # a bitmap heap scan is as bounded as its bitmap index scans, which are checked themselves; any other read of records (a seq scan) is loose
+            loose = [(n["Node Type"], n.get("Index Name"), n.get("Index Cond")) for n in scans if n["Node Type"] != "Bitmap Heap Scan" and n not in probes and n not in ranges]
+            assert loose == [] and probes, (field, loose, plan)
+            assert len(await con.fetch(sql, *base.values)) == 51
+    finally:
+        await con.execute("DELETE FROM kg.records WHERE org_id IN (SELECT left(md5('decoy' || $1), 24) UNION ALL SELECT left(md5('tiny' || $1 || g), 24) FROM generate_series(1, 2000) g)", org)
+        await con.execute("ALTER TABLE kg.records ALTER COLUMN org_id SET STATISTICS -1")
+        await con.execute("ANALYZE kg.records")             # the next tests plan with ordinary statistics
+        await con.close()
+
+
 async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_statistics(pg_db) -> None:
     """EXPLAIN gate for ``CHAIN_GRANTED`` (``_kh_v3_chain_top_groups``): an org of 4,000 records and 200 groups, 600 of them granted, read as the call reads it (custom plan) while the
     statistics know only two small orgs whose graph nodes share its partition, after ANALYZE, and with two more orgs of its size in that partition. In every state each graph node is
-    read by its key for its kg row: an index scan of the partition's primary key with the id in its condition, one row per probe; once analysed, kg.records is read by the granted ids or
-    the connector, never by the org alone. As a join, the org's nodes were read whole once per granted row while the statistics did not know the org (they put it at one row), or once
+    read by its key for its kg row: an index scan of the partition's primary key with the id in its condition, one row per probe; kg.records and the connector's key are read once, never per
+    row. As a join, the org's nodes were read whole once per granted row while the statistics did not know the org (they put it at one row), or once
     for the statement with a kg probe per node after ANALYZE (the access rule, an expression with no statistics, put it at 0.5 % of its nodes). Rows whose rule is not OPEN (RESTRICTED,
     an empty string) are left out; an absent or null rule is OPEN."""
     from asyncpg import connect
@@ -720,20 +784,18 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
     granted = [f"chain{g}" for g in range(1, 4201, 7)]
     expected = sorted(f"chain{g}" for g in range(1, 4201, 7) if g % 10 not in (1, 2))
 
-    def unkeyed(node: dict, analysed: bool) -> list[str]:
+    def unkeyed(node: dict) -> list[str]:
         found = []
         rel, index, cond = node.get("Relation Name") or "", node.get("Index Name") or "", node.get("Index Cond") or ""
-        if node["Node Type"] == "Seq Scan" and (rel in ("records", "node_keys") or rel.startswith("nodes")):
-            found.append(f"Seq Scan on {rel}")
-        elif rel.startswith("nodes") or index.startswith("nodes"):
+        if rel.startswith("nodes") or index.startswith("nodes"):
             if node["Node Type"] != "Index Scan" or not re.fullmatch(r"nodes\w*_pkey", index) or not re.search(r"\bid = ", cond):
                 found.append(f"{node['Node Type']} {index} on {rel}: {cond}")
             elif node["Actual Rows"] > 1:
                 found.append(f"{index}: {node['Actual Rows']} rows per probe")
-        # before ANALYZE the planner may read the org's kg rows once (as any browse statement may: test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation)
-        if analysed and index.startswith(("records_", "node_keys")) and not NODE_COND.search(cond):
-            found.append(f"{index} without the node in its index condition: {cond}")
-        return found + [x for child in node.get("Plans", []) for x in unkeyed(child, analysed)]
+        # kg.records and the connector's key are read once, by whatever plan the statistics pick (a few thousand rows are a sequential scan even when analysed), never per row
+        elif (rel in ("records", "node_keys") or index.startswith(("records_", "node_keys"))) and node.get("Actual Loops", 1) > 1:
+            found.append(f"{node['Node Type']} {index or rel} read {node['Actual Loops']} times")
+        return found + [x for child in node.get("Plans", []) for x in unkeyed(child)]
 
     for state in ("fresh", "analysed", "crowded"):
         if state == "crowded":
@@ -749,7 +811,7 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
         with ctx(org):
             plan, rows = await p._kq(go, None)
         assert rows == expected, (state, len(rows), len(expected))
-        assert not (bad := unkeyed(plan["Plan"], state != "fresh")), f"{state}: {bad}"
+        assert not (bad := unkeyed(plan["Plan"])), f"{state}: {bad}"
 
 
 async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:

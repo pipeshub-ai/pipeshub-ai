@@ -130,6 +130,13 @@ class AccessRule(Enum):
     ``STRICT``: every ancestor up to the App must be accessible as well.
     ``RESTRICTED``: implies strict, and inheritance alone is not sufficient —
     the node's own grant is required on top of it.
+    ``PARENT_AND_GRANT``: the node must inherit from its parent, the parent
+    must be accessible (by its own rule, which for ``STRICT`` consults the
+    ancestors above it), and the node needs its own grant. The rule adds no
+    requirement of its own on the ancestors above the parent, so, as for
+    ``OPEN``, a parent read only through its own direct grant counts. For
+    content only some readers of its parent may see (a comment restricted to
+    a group). The node is never readable through its grant alone.
 
     A missing value reads as ``OPEN`` (a connector that declares nothing gets
     the permissive reading), but an *unrecognised* value reads as
@@ -140,6 +147,7 @@ class AccessRule(Enum):
     OPEN = "OPEN"
     STRICT = "STRICT"
     RESTRICTED = "RESTRICTED"
+    PARENT_AND_GRANT = "PARENT_AND_GRANT"
 
 
 class AppGroups(Enum):

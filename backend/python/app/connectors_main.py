@@ -77,6 +77,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import (
     knowledge_hub_router,
 )
 from app.containers.connector import initialize_container
+from app.edition import check_runtime_settings  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.edition_containers import ConnectorAppContainer
 from app.edition_services import (
     build_sync_dispatcher,
@@ -105,6 +106,9 @@ from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -1189,6 +1193,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         except Exception as e:
             logger.error(f"❌ Code graph backfill failed: {e}", exc_info=True)
+
+        # After the consumers: the reindex events it sends are handled by this service.
+        try:
+            from uuid import uuid4
+
+            from app.migrations.file_type_requeue.migration import (
+                LEASE_KEY,
+                LEASE_TTL_SECONDS,
+                run_file_type_requeue,
+            )
+            from app.modules.indexing.vector_membership_backfill import (
+                VectorMembershipBackfillLeaderLock,
+            )
+
+            requeue_lock = VectorMembershipBackfillLeaderLock(
+                logger, await MessagingUtils._get_redis_config(app_container), f"file_type_requeue:{uuid4().hex}",
+                ttl_seconds=LEASE_TTL_SECONDS, key=LEASE_KEY,
+            )
+            try:
+                await run_file_type_requeue(
+                    app_container.config_service(), graph_provider, app_container.kafka_service(), logger,
+                    lock=requeue_lock,
+                )
+            finally:
+                await requeue_lock.close()
+        except Exception as e:
+            logger.error(f"File-type re-queue failed: {e}", exc_info=True)
 
     post_startup_task = spawn_detached(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task

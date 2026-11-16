@@ -17,7 +17,9 @@ from app.services.graph_db.common.team_grant_role import (
 )
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
+    AccessibleContainers,
     _distinct_connector_types,
+    _unsupported_container_filters,
     requested_scope_ids,
 )
 from app.services.graph_db.postgres import access as access_sql
@@ -86,6 +88,11 @@ def _best_role(rows: Any, coll: str, node_id: str, ranks: dict[str, int]) -> tup
         if best is None or ranks[role] > ranks[best[0]] or (ranks[role] == ranks[best[0]] and source < best[1]):      # a tie goes to the source that sorts first, whatever the row order
             best = (role, source)
     return best
+
+
+# A node whose rule needs a grant of its own (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: the role walk reads the rule in the
+# same statement as the grants (one snapshot) and does not leave such a node, so a grant on what it inherits from never gives or raises its role
+# (the ``own_only`` column of ``_role_on``'s and ``_roles_on``'s walk).
 
 
 class PermissionsMixin(PgBase):
@@ -392,6 +399,47 @@ class PermissionsMixin(PgBase):
             return {"grantee_ids": list(dict.fromkeys(gate[0])), "gated_app_ids": list(dict.fromkeys(gate[1]))} if gate else {"grantee_ids": [], "gated_app_ids": []}
         return await self._q(go, transaction)
 
+    async def get_accessible_containers(self, user_id: str, org_id: str, filters: dict[str, list[str]] | None = None,
+                                        time_range: dict[str, int] | None = None) -> AccessibleContainers:
+        """The Apps the permission gate lets the user reach, and nothing trusted, as Neo4j's and ArangoDB's: a search scopes by them and the verifier (the batch access
+        check on the hits) decides every record, so the search never enumerates what the user may read (the record-id path is O(org): past 20 s at 1M records).
+        See the interface for the contract. A request for another org reaches nothing."""
+        unsupported = _unsupported_container_filters(filters, time_range)
+        if unsupported:
+            return AccessibleContainers(fallback_reason=unsupported)
+        scope = requested_scope_ids(filters)
+        scope_set = frozenset(scope) if scope is not None else None
+        if scope_set is not None and not scope_set:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        # a project-scoped chat that selected nothing reaches nothing, as on the record-id path
+        if scope_set is None and bool((filters or {}).get(STRICT_SCOPE_FILTER_KEY)):
+            return AccessibleContainers(scope_connector_ids=None)
+        if not user_id:
+            return AccessibleContainers(fallback_reason="no_user_or_client")
+        org = current_org_id()
+        if org_id != org:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user_key = (user or {}).get("id") or (user or {}).get("_key")
+            if not user_key:
+                return AccessibleContainers(fallback_reason="user_not_found")
+            access = await self.get_knowledge_hub_access_context_v2(user_key, org)
+            # unscoped, a project's hidden Collection stays out of search, as on the record-id path; a scoped request reaches one only by naming it
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.accessible_container_apps */ SELECT a.id,
+                  coalesce((a.doc->>'vectorMembershipBackfilled')::boolean, false) AND NOT coalesce((a.doc->>'vectorMembershipBackfillExhausted')::boolean, false) AS ready
+                FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'apps' AND a.id = ANY($2::text[])
+                  AND ($3::text[] IS NULL OR a.id = ANY($3::text[])) AND (NOT coalesce((a.doc->>'isHidden')::boolean, false) OR $3::text[] IS NOT NULL)""",
+                                                     org, list(access["gated_app_ids"]), sorted(scope_set) if scope_set is not None else None), None)
+        except Exception as exc:
+            self.logger.error("get_accessible_containers: failed — %s", exc)
+            return AccessibleContainers(fallback_reason="query_failed")
+        # points of an App whose membership arrays were never written carry no connectorIds, so a container filter cannot see them at all
+        unready = sorted(r["id"] for r in rows if not r["ready"])
+        if unready:
+            return AccessibleContainers(fallback_reason=f"membership_not_backfilled:{unready[0]}")
+        return AccessibleContainers(app_ids=frozenset(r["id"] for r in rows), scope_connector_ids=scope_set)
+
     async def get_accessible_connector_types(self, user_id: str, org_id: str) -> list[str]:
         """Types of the apps the user passes the gate for. A failed read widens the search (an empty list), it never narrows it."""
         try:
@@ -441,16 +489,17 @@ class PermissionsMixin(PgBase):
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
     async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str, ranks: dict[str, int] = _CTX_RANK) -> tuple[str, str] | None:
         """The highest role the user holds on a record or record group: their own grant, a group's, a role's, a team's (never above WRITER) or the
-        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to; a source account the user authenticated
-        as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
-        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth) AS (
-              SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
+        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to (on the node alone when its rule needs a grant
+        of its own, read in the same statement); a source account the user authenticated as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
+        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth, own_only) AS (
+              SELECT n.coll, n.id, 0, coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT') FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
               UNION
-              SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+              SELECT i.to_coll, i.to_id, a.depth + 1, a.own_only FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20 AND NOT a.own_only),
             targets AS (
               SELECT coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                JOIN anc s0 ON s0.depth = 0 AND NOT s0.own_only
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
             principals AS (
               SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
@@ -490,14 +539,15 @@ class PermissionsMixin(PgBase):
         if not ids:
             return {}
         rows = await tx.fetch("""/* pipeshub:graph.node_roles_batch */ WITH RECURSIVE o(origin) AS (SELECT unnest($3::text[])),
-            anc(origin, coll, id, depth) AS (
-              SELECT n.id, n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
+            anc(origin, coll, id, depth, own_only) AS (
+              SELECT n.id, n.coll, n.id, 0, coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT') FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
               UNION
-              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1, a.own_only FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20 AND NOT a.own_only),
             targets(origin, coll, id, depth) AS (
               SELECT origin, coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.from_id, b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                JOIN anc s0 ON s0.origin = b.from_id AND s0.depth = 0 AND NOT s0.own_only
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = ANY($3::text[])),
             principals(origin, id) AS (
               SELECT o.origin, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4

@@ -34,6 +34,24 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# The container's CPU and memory facts, read once here and inherited by every Python process, so
+# each sizes itself from the same values instead of probing on its own. A failure here is not
+# fatal: a process without them reads the cgroup itself. The helper's output is never evaluated:
+# only a `KEY=value` line whose key is on the list and whose value is plain JSON text is exported,
+# so a banner a library prints, or any other line, cannot stop the boot or run anything.
+capacity_facts=$(cd /app/python 2>/dev/null && timeout 30 python -m app.capacity facts --export 2>/dev/null) || capacity_facts=""
+while IFS= read -r capacity_line; do
+    case "$capacity_line" in
+        PIPESHUB_CAPACITY_FACTS=*)
+            capacity_value=${capacity_line#PIPESHUB_CAPACITY_FACTS=}
+            if [ "${#capacity_value}" -le 16384 ] && [[ "$capacity_value" =~ ^[][{}A-Za-z0-9_.,:\"\ +-]+$ ]]; then
+                export "PIPESHUB_CAPACITY_FACTS=$capacity_value"
+            fi
+            ;;
+    esac
+done <<< "$capacity_facts"
+unset capacity_facts capacity_line capacity_value
+
 # Startup limits. A service is waited on while it is alive and using CPU, because on a slow machine
 # importing the Python services takes minutes and a fixed window kills them half way through. It is
 # given up on when it died, when it used no CPU for STARTUP_STALL_SECONDS (hung), or when
@@ -186,7 +204,7 @@ start_slackbot() {
 spawn_embedding() {
     log "Starting Embedding service..."
     cd /app/python
-    python -m app.embedding_main &
+    PIPESHUB_SERVICE=embedding python -m app.embedding_main &
     EMBEDDING_PID=$!
     log "Embedding service started with PID: $EMBEDDING_PID"
 }
@@ -199,7 +217,7 @@ start_embedding() {
 start_docling() {
     log "Starting Docling service..."
     cd /app/python
-    python -m app.docling_main &
+    PIPESHUB_SERVICE=docling python -m app.docling_main &
     DOCLING_PID=$!
     log "Docling started with PID: $DOCLING_PID"
 }
@@ -213,6 +231,8 @@ export -n PG_CORE_QUERY_URL PG_CORE_INDEXING_URL PG_CORE_CONNECTORS_URL
 # login keeps the shared PG_CORE_URL and role exactly as before. Call it in the subshell that execs the service.
 use_own_pg_login() {
     local up url_var pool_var
+    # Names the process for its capacity plan (app/capacity); the other services set it on their start line.
+    export PIPESHUB_SERVICE="$1"
     up=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
     url_var="PG_CORE_${up}_URL"
     pool_var="PG_${up}_POOL_MAX"
@@ -254,7 +274,7 @@ start_query() {
 spawn_parsing() {
     log "Starting Parsing service (port ${PARSING_PORT})..."
     cd /app/python
-    PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
+    PIPESHUB_SERVICE=parsing PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
     PARSING_PID=$!
     log "Parsing service started with PID: $PARSING_PID"
 }
@@ -267,7 +287,7 @@ start_parsing() {
 spawn_extraction() {
     log "Starting Extraction service (port ${EXTRACTION_PORT})..."
     cd /app/python
-    EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} python -m app.extraction_main &
+    PIPESHUB_SERVICE=extraction EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} python -m app.extraction_main &
     EXTRACTION_PID=$!
     log "Extraction service started with PID: $EXTRACTION_PID"
 }

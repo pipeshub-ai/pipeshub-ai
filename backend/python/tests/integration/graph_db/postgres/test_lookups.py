@@ -380,6 +380,7 @@ NO_ORG_CALLS = {
     "delete_connector_sync_edges": ("c",), "reap_stale_external_app_relations": ("c",),
     "find_next_queued_duplicate": ("a",), "get_app_needing_vector_membership_backfill": (), "page_records_for_vector_membership_backfill": ("c", None, 1),
     "_fetch_existing_file_names_in_parent": ("kb", None), "get_connector_instances_with_filters": ("apps",), "get_connector_stats": ("o", "c"),
+    "_ref_link_rows": (["d"],),
 }
 NO_ORG_KW = {"find_file_by_name_in_parent": {"kb_id": "kb", "file_name": "f", "mime_type": "m"}, "link_record_to_group": {"inherit": True},
              "remove_nodes_by_field": {"field_value": 1}}

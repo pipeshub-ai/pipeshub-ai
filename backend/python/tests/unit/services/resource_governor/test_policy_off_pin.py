@@ -27,21 +27,43 @@ EDITED = {
         "docling_working_set_gb", "resolve_heavy_working_set", "class HeavyWorkingSet", "HeavyWorkingSet.gb",  # new
         "HeavyWorkingSet.source", "HeavyWorkingSet.as_dict",
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
+        # Read-only admission explain: a rule tag on the returned state, no change to any limit.
+        "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
     },
     "memory_budget.py": {"kind_reservation_cost"},  # new; record_memory_cost itself is unchanged
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
         "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
+        "RequeueWithoutAttempt.__init__",  # adds the level the consumer logs the hand-back at; reserves nothing
         "class ProgressRequeue", "ProgressRequeue.__init__", "ProgressRequeue.counts_toward_backstop",  # new exception, raised after the handler has unwound and its memory is released
         "ProgressRequeue:Expr", "requeue_after_productive_cut",  # new; runs in the consumers' timeout handler and reserves nothing
         "if:TYPE_CHECKING",  # one more type-only import
+        # Read-only admission explain: counters and a tag, no change to any admission decision.
+        "class AdmissionBacklog", "AdmissionBacklog.__slots__", "AdmissionBacklog.__init__", "AdmissionBacklog.add", "AdmissionBacklog._observed",
+        "AdmissionBacklog.remove", "AdmissionBacklog.totals", "AdmissionBacklog.lease_waiting",
+        "AdmissionBacklog.reset", "AdmissionBacklog:Expr",
+        "class LocalPermits", "LocalPermits.__slots__", "LocalPermits.__init__", "LocalPermits:Expr",
+        "assign:PHASE_GATE", "assign:PHASE_LEASE", "assign:PHASE_DOWNLOAD", "assign:PHASE_PARSE",
+        "assign:_PHASES", "assign:_SLOT", "assign:_SUM",
+        "in_phase", "_counted", "at_gate", "_read_paused_for_admission", "consumer_id", "_lease_pools", "_local_permits_name", "admission_explain",
+        "GateWaiterToken.__slots__", "GateWaiterToken.__init__", "GateWaiterToken._backlog",
+        "GateWaiterToken.enter_gate", "GateWaiterToken._leave_gate", "GateWaiterToken.admit",
+        "GateWaiterToken.release",
+        # The waiter counter also tells admitted records from waiting ones; the pool a parse waits on has one decision.
+        "GateWaiters.__slots__", "GateWaiters.__init__", "GateWaiters.reset", "GateWaiters.retain",
+        "GateWaiters.unretain", "GateWaiters.retained_snapshot", "GateWaiters.view", "admission_parse_lease_pool",
+        "acquire_index_slot",  # the legacy semaphore path counts its holders and waiters
+        "_wait_for_heavy_parse_slots",  # counts a caller that has to wait for the shared slots
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
         "ResourceGovernor.try_acquire_heavy_parse_slots", "ResourceGovernor.heavy_working_set",
         "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
         "ResourceGovernor._resolve_heavy_working_set",
+        # Read-only admission explain.
+        "ResourceGovernor.admission_explain", "ResourceGovernor.slot_wait", "ResourceGovernor.report_memory_incident",
+        "if:TYPE_CHECKING",  # Iterator, for slot_wait
     },
 }
 
@@ -137,6 +159,7 @@ def test_governor_limits_and_health_fields_are_unchanged(monkeypatch: pytest.Mon
     now = json.loads(json.dumps(trace.governor_trace(), default=str))
     for value in (*now.values(), *RECORDED["governor"].values()):
         value["lanes"] = {"mode": value["lanes"]["mode"]}  # the plan reads this host's CPU count
+        value["keys"] = [k for k in value["keys"] if k != "admission"]  # the read-only explain section
     assert now == RECORDED["governor"]
     for value in now.values():
         assert "heavy_working_set" not in value["keys"]
@@ -190,4 +213,5 @@ def test_governor_trace_ignores_downstream_feedback_left_by_other_tests(monkeypa
         set_default_downstream_feedback(None)
     for value in (*now.values(), *RECORDED["governor"].values()):
         value["lanes"] = {"mode": value["lanes"]["mode"]}
+        value["keys"] = [k for k in value["keys"] if k != "admission"]
     assert now == RECORDED["governor"]
