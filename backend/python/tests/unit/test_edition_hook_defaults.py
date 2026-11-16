@@ -33,29 +33,31 @@ APP = Path(edition.__file__).parent
 READS_NO_SETTINGS = {"docker_proxy_main.py"}
 
 
-def test_configure_app_runs_the_settings_check_before_touching_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse() -> None:
-        raise RuntimeError("refused")
-
-    monkeypatch.setattr(edition, "check_runtime_settings", refuse)
-    app = MagicMock()
-
-    with pytest.raises(RuntimeError, match="refused"):
-        edition_services.configure_app(app, "query")
-    assert app.mock_calls == []
+def _is_check(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "check_runtime_settings"
+    )
 
 
-def _module_level_calls(path: Path) -> set[str]:
-    return {
-        node.value.func.id
-        for node in ast.parse(path.read_text()).body
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
-    }
+def _builds_the_service(node: ast.stmt) -> bool:
+    """The service's container (which holds its stores), its app, or the edition setup of that app."""
+    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {"container", "app"} for t in node.targets):
+        return True
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "configure_app"
 
 
 @pytest.mark.parametrize("main", sorted(p.name for p in APP.glob("*_main.py") if p.name not in READS_NO_SETTINGS))
-def test_every_service_runs_the_settings_check_at_load(main: str) -> None:
-    assert _module_level_calls(APP / main) & {"configure_app", "check_runtime_settings"}
+def test_every_service_runs_the_settings_check_at_load_before_building_itself(main: str) -> None:
+    # Called by the main itself: configure_app is replaceable, so a call inside it can be dropped.
+    body = ast.parse((APP / main).read_text()).body
+    check = next((i for i, node in enumerate(body) if _is_check(node)), None)
+    build = next((i for i, node in enumerate(body) if _builds_the_service(node)), len(body))
+
+    assert check is not None, f"{main} never calls check_runtime_settings() at module level"
+    assert check < build, f"{main} builds its container or app before check_runtime_settings()"
 
 
 def test_a_registered_classifier_is_asked_first(monkeypatch) -> None:

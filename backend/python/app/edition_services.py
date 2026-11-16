@@ -99,10 +99,8 @@ def register_extra_toolsets(registry: "ToolsetRegistry") -> None:
 
 
 def configure_app(app: "FastAPI", service: str) -> None:
-    """Edition setup on a freshly built FastAPI app. `service` names the process. OSS: only the settings check."""
-    from app.edition import check_runtime_settings
-
-    check_runtime_settings()
+    """Edition setup on a freshly built FastAPI app. `service` names the process. OSS: no-op."""
+    pass
 
 
 def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, config: dict) -> "BaseChatModel":
