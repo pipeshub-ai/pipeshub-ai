@@ -151,6 +151,7 @@ from app.schema.arango.documents import (
     value_mention_schema,
     webpage_record_schema,
 )
+from app.edition import extra_edge_schemas
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
     agent_has_mcp_server_schema,
@@ -479,6 +480,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.SOLD_IN.value, sold_in_schema),
     (CollectionNames.MEMBER_OF.value, member_of_schema),
 ]
+EDGE_COLLECTIONS.extend(extra_edge_schemas().items())
 
 
 _HIERARCHY_AQL = '["PARENT_CHILD", "ATTACHMENT"]'

@@ -51,3 +51,9 @@ def extra_node_collections() -> dict[str, tuple[tuple[str, ...], ...]]:
     ``id`` constraint per collection, which keeps ``MERGE`` an index seek, and each declared index; a node keeps its
     key as ``id`` there, so a declared ``_key`` is indexed as ``id``). Here there are none."""
     return {}
+
+
+def extra_edge_schemas() -> dict[str, dict]:
+    """Arango schemas (collection name -> schema) of edge collections this build adds to the shared
+    edge registry in ``app.schema.node_schema_registry``. None by default."""
+    return {}
