@@ -737,11 +737,11 @@ class TestRunAgentLoopStream:
     async def test_a_service_account_agent_queries_only_the_orgs_databases(self, is_service_account, expected) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, Any, Any, list[Any]]:
             captured["allowed"] = context.tool_state.get("allowed_sql_connector_ids")
             return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, **kwargs):
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
             return {"answer": "ok"}
 
         instances = [

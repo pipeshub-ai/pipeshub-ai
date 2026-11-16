@@ -167,7 +167,7 @@ class InMemoryGraph:
         return out
 
     async def get_user_connector_instances(
-        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, **_: Any,
+        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, **_: object,
     ) -> list[dict]:
         try:
             self._enter("get_user_connector_instances", user_id, org_id)

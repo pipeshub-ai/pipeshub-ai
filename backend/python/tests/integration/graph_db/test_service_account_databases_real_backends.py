@@ -21,7 +21,11 @@ from app.core.org_context import for_org
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.execute_query import shared_sql_knowledge
-from tests.integration.real_graph import backend_unavailable, connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

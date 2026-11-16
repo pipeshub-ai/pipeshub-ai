@@ -26,6 +26,8 @@ from app.utils.sql_limits import (
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    import logging
+
     from app.config.configuration_service import ConfigurationService
     from app.modules.transformers.blob_storage import BlobStorage
 
@@ -126,7 +128,7 @@ async def shared_sql_knowledge(
     agent_knowledge: list[dict[str, Any]],
     user_id: str,
     org_id: str,
-    log: Any,
+    log: logging.Logger,
 ) -> list[dict[str, Any]]:
     """*agent_knowledge* without the databases that are not shared with the whole org.
 
