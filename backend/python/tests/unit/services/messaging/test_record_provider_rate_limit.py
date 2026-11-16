@@ -10,10 +10,8 @@ import pytest
 
 from app.services.llm_gateway.embedding_gateway import EmbeddingRateLimited
 from app.services.llm_gateway.gateway import RateLimited
-from app.services.messaging.consumer_concurrency import (
-    ProviderRateLimitRequeue,
-    RequeueWithoutAttempt,
-)
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from tests.unit.services.messaging.test_record_handler_parse_now import (
     Harness,
     _payload,

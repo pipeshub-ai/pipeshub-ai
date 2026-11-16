@@ -103,7 +103,6 @@ from app.services.messaging.config import (
     Topic,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import ProviderRateLimitRequeue
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -113,6 +112,7 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
