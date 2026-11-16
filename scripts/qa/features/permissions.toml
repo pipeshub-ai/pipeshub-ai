@@ -40,17 +40,17 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.users-directory.service-accounts-hidden"
-  says = "Service accounts are left out of user lists, lookups and counts for a member and included only for an admin who asks for them."
+  says = "Service accounts are left out of the user list, GET /api/v1/users/{id} (404) and POST /api/v1/users/by-ids for a member, and the list and the with-groups list include them only for an admin who passes includeServiceAccounts=true."
   priority = "P1"
   kind = "security"
   tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
 
   [[feature.behavior]]
   id = "permissions.users-directory.unauthenticated"
-  says = "A request with no token or a malformed token gets 401 from the user read routes."
+  says = "A request with no token or a malformed token gets 401 from the user read routes (a deleted or disabled user's unexpired session token gets 401 too)."
   priority = "P0"
   kind = "security"
-  tests = ["it:security/integration_test_unauthorized_reads.py::test_unauthorized_read_is_refused", "it:response-validation/user_management/integration_test_users.py::TestGetAllUsers::test_get_all_users_negative_tests"]
+  tests = ["it:security/integration_test_unauthorized_reads.py::test_unauthorized_read_is_refused", "it:response-validation/user_management/integration_test_users.py::TestGetAllUsers::test_get_all_users_negative_tests", "node:tests/modules/user_management/routes/users.permissions.test.ts"]
 
   [[feature.behavior]]
   id = "permissions.users-directory.list-schema"
@@ -62,6 +62,18 @@ code = [
     "it:response-validation/user_management/integration_test_users.py::TestGraphList::test_list_users_graph_negative_tests",
     "it:response-validation/user_management/integration_test_users.py::TestGetUsersByIds::test_get_users_by_ids_response_schema",
   ]
+
+  [[feature.behavior]]
+  id = "permissions.users-directory.list-filters"
+  says = "GET /api/v1/users filters by search text (regex characters are escaped), hasLoggedIn, isBlocked, groupIds and join or last-active dates, pages at 25 by default and at most 100, and the total agrees with the filtered pages."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.users-directory.hide-email"
+  says = "When the HIDE_EMAIL setting is true, GET /api/v1/users/{id} leaves the email out of the user it returns."
+  priority = "P2"
+  tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
 
 # ---------------------------------------------------------------- users: invite
 
@@ -86,17 +98,17 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.user-invite.member-limits"
-  says = "A member who invites with role admin gets 403 'Members can only invite users as member', and one who sends groupIds gets 403 'Members cannot assign groups when inviting'."
+  says = "A member who bulk-invites with role admin gets 403 'Members can only invite users as member', and one who sends groupIds, in the body or with a file, gets 403 'Members cannot assign groups when inviting'."
   priority = "P0"
   kind = "security"
-  tests = []
+  tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
 
   [[feature.behavior]]
   id = "permissions.user-invite.create-admin-only"
-  says = "POST /api/v1/users returns 403 for a member, and 400 for a missing fullName or email or an email that already exists."
+  says = "POST /api/v1/users returns 403 for a member, and 400 for a missing fullName or email, an invalid role, email or mobile, or an email that already exists."
   priority = "P0"
   kind = "security"
-  tests = ["it:response-validation/user_management/integration_test_users.py::TestCreateAndDeleteUser::test_create_user_negative_tests", "node:tests/modules/user_management/middlewares/userAdminCheck.test.ts"]
+  tests = ["it:response-validation/user_management/integration_test_users.py::TestCreateAndDeleteUser::test_create_user_negative_tests", "node:tests/modules/user_management/middlewares/userAdminCheck.test.ts", "it:permissions/test_admin_routes.py::TestMembersAreRefused::test_a_member_is_refused", "node:tests/modules/user_management/controller/users.controller.test.ts"]
 
   [[feature.behavior]]
   id = "permissions.user-invite.bulk"
@@ -121,9 +133,34 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.user-invite.accept"
-  says = "An invited person opens the invite link, sets a password and signs in; resending the invite to a user who already accepted it gets 400."
+  says = "An invited person opens the invite link, sets a password and signs in."
   priority = "P0"
   tests = ["e2e:tests/e2e/users/invite-accept.spec.ts", "e2e:tests/e2e/users/users-invite.spec.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-invite.resend"
+  says = "POST /api/v1/users/{id}/resend-invite mails the invite again to a user who has not signed in yet, and gets 400 'User has already accepted the invite' for one who has."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-invite.mail-required"
+  says = "Bulk invite, file invite and resend-invite fail with 404 or 400 while mail settings (host, port, from address) are missing, and with 400 for an individual (single-user) account."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/middlewares/smtpConfigCheck.test.ts", "node:tests/modules/user_management/middlewares/accountTypeCheck.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-invite.existing-emails"
+  says = "Bulk invite answers 409 when every address already has an active account, re-invites pending users, restores deleted ones and skips service-account addresses; making someone an admin by invite is refused with 400 when the organization already has five admins."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-invite.starting-password"
+  says = "POST /api/v1/users accepts a starting password only for the bundled demo accounts; for any other address it is refused with 400, so a real colleague's account never gets an admin-chosen password."
+  priority = "P0"
+  kind = "security"
+  tests = []
 
 # ---------------------------------------------------------------- users: profile
 
@@ -179,7 +216,7 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.user-profile.dp"
-  says = "A display picture upload accepts png, jpeg, webp or gif up to 1 MB and can then be read and removed; no file, another type or a bigger file is refused."
+  says = "A user uploads, reads and removes their own display picture (PUT, GET, DELETE /api/v1/users/dp always act on the caller). Upload accepts png, jpeg, webp or gif up to 1 MB, stores it re-encoded as a JPEG of at most 100 KB, and refuses a missing file or another type."
   priority = "P1"
   tests = ["it:response-validation/user_management/integration_test_users.py::TestDisplayPicture::test_display_picture_lifecycle", "it:response-validation/user_management/integration_test_users.py::TestDisplayPicture::test_display_picture_negative_tests"]
 
@@ -189,6 +226,19 @@ code = [
   priority = "P0"
   kind = "security"
   tests = ["node:tests/modules/user_management/routes/mongo-operator-input.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-profile.restricted-fields"
+  says = "PUT /api/v1/users/{id} refuses a body that carries _id, orgId, slug or __v with 400, refuses a body with no updatable field with 400, and only an admin may set role or hasLoggedIn (a user may mark their own first sign-in)."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts", "node:tests/modules/user_management/controller/users.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-profile.name-fields"
+  says = "PATCH /api/v1/users/{id}/fullname, /firstName, /lastName and /designation update that field for the user themselves or for an admin, and a member gets 403 for another user."
+  priority = "P1"
+  tests = ["node:tests/modules/user_management/controller/users.controller.test.ts", "node:tests/modules/user_management/middlewares/userAdminOrSelfCheck.test.ts"]
 
 # ---------------------------------------------------------------- users: roles
 
@@ -220,11 +270,11 @@ code = [
   id = "permissions.user-roles.last-admin"
   says = "Demoting the last admin is refused with 400, and an admin can step down while another admin remains."
   priority = "P0"
-  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts", "node:tests/modules/user_management/services/user-admin.service.test.ts"]
+  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts", "node:tests/modules/user_management/services/user-admin.service.test.ts", "node:tests/modules/user_management/controller/users.controller.test.ts"]
 
   [[feature.behavior]]
   id = "permissions.user-roles.admin-cap"
-  says = "Promoting a user so that the organization would have more than five admins is refused with 400."
+  says = "Promoting a user, or inviting one as admin, so that the organization would have more than five admins is refused with 400 'An organization can have at most 5 admins.'"
   priority = "P1"
   tests = ["node:tests/modules/user_management/controller/users.controller.test.ts"]
 
@@ -248,6 +298,27 @@ code = [
   kind = "security"
   tests = ["it:permissions/test_admin_routes.py::TestMembersAreRefused::test_a_member_is_refused", "it:permissions/test_admin_routes.py::TestTheAdminGetsThrough::test_the_admin_passes_the_check"]
 
+  [[feature.behavior]]
+  id = "permissions.user-roles.role-change-signs-out"
+  says = "Changing a user's role records a role-changed activity and signs that user out of every session, so the new role applies on the next sign-in."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-roles.service-account-never-admin"
+  says = "A service account is never treated as an admin, even when its stored role says admin: the admin check refuses it and its role reads as member."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/services/user-admin.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.user-roles.internal-lookups"
+  says = "The service-to-service admin check, user lookup and admin list accept only a service token scoped for user lookup (a user session token gets 401), answer for the token's organization only, and the admin check answers only about the token's own user (403 for any other id)."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts"]
+
 # ---------------------------------------------------------------- users: delete, unblock
 
 [[feature]]
@@ -270,7 +341,7 @@ code = [
   says = "A member gets 403 from DELETE /api/v1/users/{id} and from PUT /api/v1/users/{id}/unblock."
   priority = "P0"
   kind = "security"
-  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts"]
+  tests = ["node:tests/modules/user_management/routes/users.permissions.test.ts", "it:permissions/test_admin_routes.py::TestMembersAreRefused::test_a_member_is_refused"]
 
   [[feature.behavior]]
   id = "permissions.user-removal.demote-first"
@@ -287,12 +358,13 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.user-removal.access-ends"
-  says = "A deleted user's token is refused, the user loses access to everything shared with them, and is no longer listed on what was shared."
+  says = "A deleted user's token is refused, the user loses access to everything shared with them, and is no longer listed on what was shared. Deleting also takes the user out of every group and project, deletes their OAuth apps (revoking their tokens) and clears their password."
   priority = "P0"
   kind = "security"
   tests = [
     "it:permissions/test_user_lifecycle_access.py::TestADeletedMember::test_loses_everything_and_their_token_is_refused",
     "it:permissions/test_user_lifecycle_access.py::TestADeletedMember::test_is_no_longer_listed_on_what_was_shared_with_them",
+    "node:tests/modules/user_management/controller/users.controller.test.ts",
   ]
 
   [[feature.behavior]]
@@ -305,7 +377,7 @@ code = [
   id = "permissions.user-removal.locked-account"
   says = "A locked account cannot search until an admin unblocks it; unblocking an account that is not blocked gets 400."
   priority = "P1"
-  tests = ["it:permissions/test_user_lifecycle_access.py::TestALockedMember::test_cannot_search_until_an_admin_unlocks_them"]
+  tests = ["it:permissions/test_user_lifecycle_access.py::TestALockedMember::test_cannot_search_until_an_admin_unlocks_them", "node:tests/modules/user_management/controller/users.controller.test.ts"]
 
   [[feature.behavior]]
   id = "permissions.user-removal.new-member-access"
@@ -368,7 +440,7 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.user-groups.membership"
-  says = "Adding and removing users updates every named group, and a request that names no users or no groups gets 400."
+  says = "Adding and removing users updates every named group, and a request that names no users or no groups, or none of whose groups exist, gets 400."
   priority = "P0"
   tests = [
     "it:response-validation/user_management/integration_test_user_groups.py::TestAddAndRemoveUsersFromGroups::test_add_users_to_group_response_schema",
@@ -381,7 +453,14 @@ code = [
   says = "A member gets 403 from creating, listing, renaming and deleting groups and from adding or removing users."
   priority = "P0"
   kind = "security"
-  tests = ["node:tests/modules/user_management/routes/userGroups.routes.test.ts"]
+  tests = ["it:permissions/test_admin_routes.py::TestMembersAreRefused::test_a_member_is_refused", "it:permissions/test_admin_routes.py::TestTheAdminGetsThrough::test_the_admin_passes_the_check"]
+
+  [[feature.behavior]]
+  id = "permissions.user-groups.member-reads"
+  says = "Any signed-in user of the organization can read a group by id, its members (name and email), the groups of any user and the group statistics; only the list of all groups is admin-only."
+  priority = "P1"
+  kind = "security"
+  tests = []
 
   [[feature.behavior]]
   id = "permissions.user-groups.service-accounts-hidden"
@@ -431,39 +510,39 @@ code = [
   id = "permissions.teams.create-owner"
   says = "The creator of a team is always its owner, and a team can be created with a name only."
   priority = "P0"
-  tests = ["it:response-validation/user_management/integration_test_teams.py::TestCreateTeam::test_create_team_response_schema", "e2e:tests/e2e/teams/teams-create.spec.ts"]
+  tests = ["py:tests/unit/api/routes/test_entity.py", "it:response-validation/user_management/integration_test_teams.py::TestCreateTeam::test_create_team_response_schema", "e2e:tests/e2e/teams/teams-create.spec.ts"]
 
   [[feature.behavior]]
   id = "permissions.teams.owner-or-admin-changes"
-  says = "A team member who is not an owner gets 403 when updating or deleting the team; an owner or an admin of the team's organization can."
+  says = "A team member who is not an owner gets 403 when updating or deleting the team; an owner, or an admin of the team's own organization (not of another one), can."
   priority = "P0"
   kind = "security"
-  tests = ["node:tests/modules/user_management/routes/teams.routes.http.test.ts"]
+  tests = ["py:tests/unit/api/routes/test_entity.py"]
 
   [[feature.behavior]]
   id = "permissions.teams.no-probing"
   says = "A team that does not exist, belongs to another organization or has no edge to the caller gets the same 404, so team ids cannot be probed."
   priority = "P0"
   kind = "security"
-  tests = ["node:tests/modules/user_management/routes/teams.routes.http.test.ts"]
+  tests = ["py:tests/unit/api/routes/test_entity.py"]
 
   [[feature.behavior]]
   id = "permissions.teams.last-owner"
-  says = "The last owner of a team cannot be removed or demoted (400)."
+  says = "The last owner of a team cannot be removed or demoted (400), and a single update cannot change several owners at once (400)."
   priority = "P0"
-  tests = ["node:tests/modules/user_management/routes/teams.routes.http.test.ts"]
+  tests = ["py:tests/unit/api/routes/test_entity.py"]
 
   [[feature.behavior]]
   id = "permissions.teams.default-team"
   says = "The default team that holds every user of the organization cannot be deleted (403)."
   priority = "P1"
-  tests = ["node:tests/modules/user_management/routes/teams.routes.http.test.ts"]
+  tests = []
 
   [[feature.behavior]]
   id = "permissions.teams.list-scope"
   says = "GET /api/v1/teams/user/teams lists the teams the caller is in, and every team of the organization for an admin."
   priority = "P1"
-  tests = ["it:response-validation/user_management/integration_test_teams.py::TestGetUserTeams::test_get_user_teams_response_schema", "e2e:tests/e2e/teams/teams-table.spec.ts"]
+  tests = ["py:tests/unit/api/routes/test_entity.py", "it:response-validation/user_management/integration_test_teams.py::TestGetUserTeams::test_get_user_teams_response_schema", "e2e:tests/e2e/teams/teams-table.spec.ts"]
 
   [[feature.behavior]]
   id = "permissions.teams.membership-access"
@@ -484,6 +563,26 @@ code = [
   kind = "security"
   tests = ["node:tests/modules/user_management/routes/teams.routes.http.test.ts"]
 
+  [[feature.behavior]]
+  id = "permissions.teams.unique-name"
+  says = "A team name is trimmed, must not be blank (400), and must not match another team of the organization, ignoring case (409), on create and on rename."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_entity.py"]
+
+  [[feature.behavior]]
+  id = "permissions.teams.request-trust"
+  says = "A team id that is not a team key is refused with 400 before the team service is called, and an org, creator or unknown field in a create or update body is dropped before it is forwarded."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/user_management/routes/teams.routes.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "permissions.teams.service-accounts-hidden"
+  says = "A team's member list and the team list include service accounts only for an admin."
+  priority = "P1"
+  kind = "security"
+  tests = []
+
 # ---------------------------------------------------------------- knowledge base sharing
 
 [[feature]]
@@ -501,14 +600,14 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.kb-sharing.owner-only"
-  says = "Only a knowledge base owner can grant, update or remove permissions or list who the knowledge base is shared with; others get 403."
+  says = "Only a knowledge base owner can grant or update permissions or list who the knowledge base is shared with: a reader or writer gets 403, and a user with no access gets 404 so ids cannot be probed. Any member may remove their own permission."
   priority = "P0"
   kind = "security"
-  tests = []
+  tests = ["py:tests/unit/connectors/sources/test_kb_service_access_control.py", "py:tests/unit/connectors/sources/localKB/test_kb_service.py"]
 
   [[feature.behavior]]
   id = "permissions.kb-sharing.grant-validation"
-  says = "A grant with no users and no teams, or with users and no role, or with a role other than OWNER, WRITER or READER, gets 400."
+  says = "A grant with no users and no teams, or with users and no role, or with a role other than OWNER, WRITER or READER, gets 400, and users or teams outside the caller's organization are refused (404)."
   priority = "P1"
   tests = ["it:response-validation/knowledgebase/integration_test_permissions_crud.py::TestKBPermissionCreate::test_create_kb_permission_negative"]
 
@@ -532,15 +631,30 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.kb-sharing.owner-guards"
-  says = "The last owner of a knowledge base cannot be removed or demoted, and a grant never changes the role of an existing member."
+  says = "The last owner of a knowledge base cannot be removed or demoted (400), the creator cannot be removed or demoted by another owner (403), an owner who is not the creator cannot change or remove another owner (403), and one request cannot change several owners at once (400). A grant for an existing member with a different role is a role change and goes through the same guards."
   priority = "P0"
-  tests = ["py:tests/integration/graph_permissions/test_kb_roles.py"]
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/localKB/test_kb_service.py", "py:tests/unit/connectors/sources/localKB/test_kb_service_full_coverage.py"]
 
   [[feature.behavior]]
   id = "permissions.kb-sharing.deleted-users-hidden"
   says = "A deleted user is not listed among the people a knowledge base is shared with."
   priority = "P1"
   tests = ["py:tests/unit/services/graph_db/test_kb_permission_list_hides_deleted_users.py"]
+
+  [[feature.behavior]]
+  id = "permissions.kb-sharing.team-role-capped"
+  says = "A team grant never makes its members owners: a member's role through a team is decided by the grant on the team, capped at writer, so a team owner cannot share the knowledge base on or write to one granted for reading."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/integration/graph_db/test_kb_role_through_team_real_backends.py"]
+
+  [[feature.behavior]]
+  id = "permissions.kb-sharing.scopes"
+  says = "Listing permissions needs the kb:read scope, granting and updating need kb:write and removing needs kb:delete."
+  priority = "P1"
+  kind = "security"
+  tests = []
 
 # ---------------------------------------------------------------- record access in search and chat
 
@@ -601,7 +715,7 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.record-access.shared-chat-viewer"
-  says = "POST /chat/records/access returns only the records the viewer named in the service token may read, and answers 503 when the check cannot answer, never an empty or full list."
+  says = "POST /chat/records/access (service token only) returns only the records and web addresses the viewer named in the token may read, and answers 503 when the check cannot answer, never an empty or full list."
   priority = "P0"
   kind = "security"
   tests = ["py:tests/unit/api/routes/test_chat_record_access.py"]
@@ -615,10 +729,10 @@ code = [
 
   [[feature.behavior]]
   id = "permissions.record-access.fetch-record"
-  says = "Reading a record the caller cannot access returns 403 'You do not have permission to access this record'."
+  says = "Reading a record's content (GET /api/v1/records/{id}/read) as a caller who cannot access it returns 403 'You do not have permission to access this record' and reads nothing or starts no parse."
   priority = "P0"
   kind = "security"
-  tests = []
+  tests = ["py:tests/unit/api/routes/test_records_read.py"]
 
   [[feature.behavior]]
   id = "permissions.record-access.entity-search"
@@ -626,6 +740,13 @@ code = [
   priority = "P1"
   kind = "security"
   tests = ["py:tests/unit/modules/retrieval/test_entity_permissions.py"]
+
+  [[feature.behavior]]
+  id = "permissions.record-access.attachment-sharing"
+  says = "When a conversation is shared, reader access is written only for the uploader's own chat attachments and only for users of the same organization; unsharing never removes the uploader's own access, and a user cannot delete another user's attachment."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_chat_attachment_ownership.py"]
 
 [ignore]
 routes = [
