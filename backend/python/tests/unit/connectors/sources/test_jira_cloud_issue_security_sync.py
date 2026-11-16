@@ -2239,6 +2239,34 @@ class TestIssueGrantsNameListedAccountsOnly:
             assert {p.email for p in grants} == (set() if complete or shown_deactivated else {"mia@x.com"})
 
     @pytest.mark.asyncio
+    async def test_a_sync_on_a_list_cut_short_writes_a_linked_level_holder_into_the_level_group(self) -> None:
+        """The sync writes the levels' groups before the walk. mia (acc-9) is linked but missing from a list cut short, and
+        the level names her by account id: the group grants her, as an issue's own grants would, not only the users read."""
+        c = _connector()
+        c._stored_app_users = _users()
+        c._listed_account_ids = c._seen_account_ids = {"acc-1", "acc-2"}
+        c._user_read_unfinished = True
+        security = _present(members={"10102": [{"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9"}}]})
+        point: dict = {"issue_placement": ISSUE_PLACEMENT, "security_levels": json.dumps(security.level_fingerprints(split=True)),
+                       "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda _key: dict(point))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda _key, data: point.update(data))
+        c._load_issue_security = AsyncMock(return_value=security)
+        c._process_new_records = AsyncMock()
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+
+        async def fetch(*_a: object, **_k: object) -> AsyncIterator:
+            return
+            yield
+
+        c._fetch_issues_batched = fetch
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), _users()[:2], 1)
+        written = [g for call in c.data_entities_processor.on_new_record_groups.await_args_list for g in call.args[0]]
+        grants = {p.email for group, perms in written if group.external_group_id == "level:p-1:10102" for p in perms}
+        assert grants == {"mia@x.com"}
+
+    @pytest.mark.asyncio
     async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:
         c = _connector()
         c.data_source = MagicMock()
