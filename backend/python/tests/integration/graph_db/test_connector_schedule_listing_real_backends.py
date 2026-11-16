@@ -61,7 +61,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
                     await graph.delete_nodes_and_edges(keys, coll)
         cleanup.push_async_callback(remove)
         now = get_epoch_timestamp_in_ms()
-        assert await graph.batch_upsert_nodes([{"_key": ids[o], "accountType": "enterprise", "isActive": True, "name": o} for o in ("org_a", "org_b")], ORGS)
+        assert await graph.batch_upsert_nodes([{"_key": ids[o], "accountType": "individual", "isActive": True, "name": o} for o in ("org_a", "org_b")], ORGS)
         app = {"type": "JIRA", "appGroup": "Atlassian", "scope": "team", "createdAtTimestamp": now}
         assert await graph.batch_upsert_nodes([
             {"_key": ids["app_a"], "name": "a", "isActive": True, "orgId": ids["org_a"], **app},
