@@ -5,6 +5,7 @@ to localhost:3000 after a viewer left).
 """
 
 import asyncio
+import contextlib
 import gc
 import socket
 
@@ -178,10 +179,8 @@ async def test_open_bound_closes_its_session_when_cancelled(monkeypatch: pytest.
                 await asyncio.sleep(30)  # the transport is not accepting writes
 
             scope = {"type": "http", "asgi": {"spec_version": "2.3"}, "method": "GET", "path": "/s", "headers": []}
-            try:
+            with contextlib.suppress(Exception):  # a disconnect may surface as an error; the read is closed either way
                 await response(scope, receive, send)
-            except Exception:  # noqa: BLE001  a disconnect may surface as an error; the read must be closed either way
-                pass
             assert not any(m["type"] == "http.response.body" for m in sent), "the body must not have started"
         await asyncio.sleep(0.2)
         gc.collect()
