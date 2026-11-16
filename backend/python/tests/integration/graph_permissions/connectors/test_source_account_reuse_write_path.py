@@ -87,7 +87,7 @@ async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_a
     alone): the id this connector last linked the address to tells the change of hands."""
     await drive.write()
     async with drive.processor.data_store_provider.transaction() as tx:
-        await tx.batch_upsert_app_users([_member(drive, "ben", "u-ben-new")])
+        await tx.batch_upsert_app_users([_member(drive, "ben", "u-ben-new")], drive.processor.org_id)
     assert "ben" in await drive.readers("Plans")
 
     await _ben_reused(drive)

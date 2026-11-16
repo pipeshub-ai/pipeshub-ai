@@ -454,7 +454,7 @@ async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_a
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m")])
     renewed = app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
-    await w.p.batch_upsert_app_users([renewed])
+    await w.p.batch_upsert_app_users([renewed], org_id=w.org)
     assert await w.allowed("m", "mine") == {"mine"}
 
     await processor.on_new_app_users([renewed])
