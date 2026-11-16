@@ -45,6 +45,8 @@ def missing_refs(chart: Path) -> list[str]:
     values = yaml.safe_load((chart / "values.yaml").read_text(encoding="utf-8"))
     refs: set[str] = set()
     for template in (chart / "templates").iterdir():
+        if not template.is_file():
+            continue  # a subdirectory has no template refs of its own to check
         refs |= template_refs(template.read_text(encoding="utf-8"))
 
     missing = []
