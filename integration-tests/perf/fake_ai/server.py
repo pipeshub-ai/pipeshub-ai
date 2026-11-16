@@ -68,6 +68,9 @@ _COUNT_PATTERNS = (
 )
 # The list fields whose length a prompt can constrain by naming a count.
 _COUNTED_FIELDS = frozenset({"descriptions"})
+# Lists of names the product looks up in the organization's own data: a made-up name sends it down a "not
+# found" path and a warning per record, so the fake names none (an empty list is valid for these fields).
+_EMPTY_LIST_FIELDS = frozenset({"departments"})
 
 
 def requested_count(prompt: str) -> int | None:
@@ -115,6 +118,8 @@ def example_from_schema(
         n = int(schema.get("minItems") or 1)
         if count and key in _COUNTED_FIELDS:
             n = count
+        if key in _EMPTY_LIST_FIELDS and not schema.get("minItems"):
+            return []
         if schema.get("maxItems") is not None:
             n = min(n, int(schema["maxItems"]))
         item = example_from_schema(schema.get("items") or {}, key, defs, count)

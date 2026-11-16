@@ -5,7 +5,8 @@ name: Cost-class Indexing Performance
 # Never runs on pull requests: it holds secrets and only ever checks out this repository's own branches.
 #
 #   smoke   nightly: the cost-smoke corpus, every kind, all probes accepted, at most 30 minutes of bench run (the build and stack start are budgeted apart)
-#   weekly  Saturday: B-05, B-03 and a scaled B-01 on 4 CPUs, and the fake-embedding control
+#   weekly  Saturday: B-05, B-03 and a scaled B-01 on 4 CPUs, and the fake-embedding control, one job per run
+#           (perf/costclass_weekly_legs.json; the control is first)
 #   tiers   dispatch only: run_tiers_e2e.sh over the tiers you name, on the runner you name (B-06 knee, calibration, ...)
 #
 # The pure parts (schedules, filters, salts, verdicts) are checked on every pull request by
@@ -48,12 +49,40 @@ env:
   TIERS_INPUT: ${{ github.event.inputs.tiers || 'T4:4:16' }}
 
 jobs:
+  plan:
+    name: Plan the runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # One job per weekly run, so each has its own build, start and time limit; smoke and tiers are one job.
+      - name: Matrix
+        id: matrix
+        run: |
+          case "$SUITE" in
+            weekly) matrix=$(jq -c '{include: .legs}' integration-tests/perf/costclass_weekly_legs.json) ;;
+            smoke|tiers) matrix=$(jq -cn --arg leg "$SUITE" '{include: [{leg: $leg}]}') ;;
+            *) echo "suite must be smoke, weekly or tiers"; exit 1 ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   costclass:
-    name: Cost-class benchmark
+    name: Cost-class benchmark (${{ matrix.leg }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 1  # in the order of the list: the control first
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: runs-on=${{ github.run_id }}/runner=${{ github.event.inputs.runner || '4cpu-linux-x64' }}/volume=100gb/ssh=true
-    # 90 minutes in all (D-144): the image build and the stack start (30 + 10 + 10) have their own step limits, and
-    # the bench steps theirs, so a slow build is not paid for out of the bench's budget and a hung step ends early.
-    timeout-minutes: 90
+    # The image build, the stack start and the bench run have step limits of their own, so a slow build is not paid
+    # for out of the bench's budget and a hung step ends early. The job limit holds all of them plus the steps
+    # without a limit, with at least 20 percent to spare (test_perf_costclass.py checks the sums).
+    timeout-minutes: 160
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     env:
@@ -169,7 +198,7 @@ jobs:
       # path cannot pass as a measurement.
       - name: Smoke
         if: env.SUITE == 'smoke'
-        timeout-minutes: 35  # the bench's own wall budget is 30 minutes (--max-wall-s 1800), plus corpus generation
+        timeout-minutes: 45  # the bench's own wall budget is 30 minutes (--max-wall-s 1800), plus corpus generation, with 20 percent to spare
         working-directory: integration-tests
         run: |
           source .venv/bin/activate
@@ -180,30 +209,36 @@ jobs:
             --inject-duplicate --timeout 1500 --max-p95-s 600 --max-wall-s 1800 --fail-on-log-errors \
             --output reports/perf/costclass-smoke.json --summary reports/perf/summary.md
 
-      - name: Weekly (B-05, B-03, scaled B-01, then the fake-embedding control)
+      # One weekly run per job (matrix leg). Its schedule, the wait for the indexing tail and the corpus build must fit
+      # this step with 20 percent to spare (test_perf_costclass.py); --timeout is the bench's own hard wall limit.
+      - name: Weekly run
         if: env.SUITE == 'weekly'
-        timeout-minutes: 60
+        timeout-minutes: 38
         working-directory: integration-tests
+        env:
+          LEG_SCENARIO: ${{ matrix.scenario }}
+          LEG_DURATION: ${{ matrix.duration }}
+          LEG_TIMEOUT: ${{ matrix.timeout }}
+          LEG_FAKE_EMBEDDINGS: ${{ matrix.fake_embeddings }}
+          LEG: ${{ matrix.leg }}
         run: |
           source .venv/bin/activate
           COMPOSE=(docker compose -p cc -f ../deployment/docker-compose/docker-compose.integration.neo4j.yml -f ../deployment/docker-compose/docker-compose.bench.yml --env-file ../deployment/docker-compose/bench.env)
           APP=$("${COMPOSE[@]}" ps -q pipeshub-ai)
-          rc=0
-          for sc in b05 b03 b01; do
-            python perf/bench_costclass.py --scenario "$sc" --label ci-costclass-4cpu \
-              --tier-cpus 4 --tier-mem-gb 12 --fake-ai-endpoint http://fake-ai:8080/v1 --app-container "$APP" \
-              --duration 900 --output "reports/perf/costclass-$sc.json" --summary "reports/perf/summary-$sc.md" || rc=$?
-          done
-          # The control (TC-SB-12): the same b05 with the embedding model faked as well. The fake is recreated
-          # with its embedding route on, and the bench reads that back from the running container.
-          BENCH_FAKE_AI_ARGS="--fake-embeddings" "${COMPOSE[@]}" up -d --force-recreate fake-ai
-          sleep 15
-          python perf/bench_costclass.py --scenario b05 --label ci-costclass-4cpu-fakeemb \
+          extra=()
+          label=ci-costclass-4cpu
+          if [ "$LEG_FAKE_EMBEDDINGS" = "true" ]; then
+            # The control: the same run with the embedding model faked as well. The fake is recreated with its
+            # embedding route on, and the bench reads that back from the running container.
+            BENCH_FAKE_AI_ARGS="--fake-embeddings" "${COMPOSE[@]}" up -d --force-recreate fake-ai
+            sleep 15
+            extra=(--fake-embeddings --fake-ai-container cc-fake-ai-1)
+            label=ci-costclass-4cpu-fakeemb
+          fi
+          python perf/bench_costclass.py --scenario "$LEG_SCENARIO" --label "$label" \
             --tier-cpus 4 --tier-mem-gb 12 --fake-ai-endpoint http://fake-ai:8080/v1 --app-container "$APP" \
-            --fake-embeddings --fake-ai-container cc-fake-ai-1 \
-            --duration 900 --output reports/perf/costclass-b05-fakeemb.json --summary reports/perf/summary-b05-fakeemb.md || rc=$?
-          cat reports/perf/summary-*.md > reports/perf/summary.md
-          exit "$rc"
+            --duration "$LEG_DURATION" --timeout "$LEG_TIMEOUT" "${extra[@]}" \
+            --output "reports/perf/costclass-$LEG.json" --summary reports/perf/summary.md
 
       - name: Tiers
         if: env.SUITE == 'tiers'
@@ -235,7 +270,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: perf-costclass-${{ github.run_id }}
+          name: perf-costclass-${{ github.run_id }}-${{ matrix.leg }}
           path: |
             integration-tests/reports/perf/
             integration-tests/perf/reports/

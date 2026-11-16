@@ -34,6 +34,9 @@ class Check:
     # A move smaller than this, in the measure's own unit, is never flagged
     # however large it is as a share: on a 50 ms search, 30% is jitter.
     min_change: float = 0.0
+    # True: the metric may be absent on one side (a corpus kind that one run did not have). Every other
+    # check treats a missing or null metric as an error in the result, not as "nothing to compare".
+    optional: bool = False
 
 
 INDEXING_CHECKS: tuple[Check, ...] = (
@@ -127,6 +130,7 @@ COSTCLASS_KIND_BUDGET = 0.20
 def _kind_check(kind: str, stat: str) -> Check:
     return Check(
         f"{kind} {stat}", lambda m, k=kind, s=stat: m["by_kind"][k][s], +1, COSTCLASS_KIND_BUDGET, " s", min_change=1.0,
+        optional=True,
     )
 
 
@@ -218,7 +222,9 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
 
 
 def _value(check: Check, metrics: dict[str, Any]) -> Any:
-    """A check's value, or None for a kind that one side never ran."""
+    """A check's value. Only an optional check (a corpus kind) reads as None when one side never ran it."""
+    if not check.optional:
+        return check.read(metrics)
     try:
         return check.read(metrics)
     except (KeyError, TypeError):

@@ -13,6 +13,7 @@ import io
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -447,6 +448,125 @@ def test_knee_from_results_uses_only_valid_one_process_runs() -> None:
     assert {e["tier"] for e in out["excluded"]} == {12, 16, 24}
     assert bc.knee_from_results([_knee_result(12, 14.8)])["cell_cpus"] is None  # no T8: nothing reported
     assert bc.knee_from_results([_knee_result(8, 10.0, corpus="a"), _knee_result(12, 14.0, corpus="b")])["confidence"] == "low"
+
+
+# -- repeats: the knee over several runs per tier, and the baseline step ------------------------------------------------
+
+
+def _shuffles(items: list, seeds: tuple[int, ...] = (1, 2, 3, 4, 5, 6)) -> list[list]:
+    out = []
+    for seed in seeds:
+        copy = list(items)
+        random.Random(seed).shuffle(copy)
+        out.append(copy)
+    return [list(reversed(items)), *out]
+
+
+def test_the_knee_over_repeats_does_not_depend_on_the_order_of_the_files() -> None:
+    """Per tier the point is the median of its repeats: any order of the same files gives the same knee."""
+    files = [_knee_result(8, 100.0), _knee_result(8, 102.0), _knee_result(8, 98.0),
+             _knee_result(12, 150.0), _knee_result(12, 149.0), _knee_result(12, 110.0),   # one bad repeat
+             _knee_result(16, 150.0), _knee_result(16, 152.0), _knee_result(16, 151.0)]
+    baseline = bc.knee_from_results(files)
+    assert baseline["cell_cpus"] == 12 and baseline["repeats"][12]["median"] == 149.0
+    assert baseline["repeats"][12]["values"] == [110.0, 149.0, 150.0]
+    for shuffled in _shuffles(files):
+        out = bc.knee_from_results(shuffled)
+        assert out == baseline, (out["cell_cpus"], baseline["cell_cpus"])
+    # last-wins would read T12 as 110 or 150 depending on the order: the two orders below pin that it does not
+    assert bc.knee_from_results(files)["curve"] == bc.knee_from_results(list(reversed(files)))["curve"]
+
+
+def test_a_docling_capped_repeat_is_left_out_of_the_median_and_listed() -> None:
+    files = [_knee_result(8, 100.0), _knee_result(12, 150.0, bound="docling"), _knee_result(12, 149.0),
+             _knee_result(12, 151.0), _knee_result(16, 120.0)]
+    out = bc.knee_from_results(files)
+    assert out["docling_capped_repeats"] == [{"tier": 12, "records_per_minute": 150.0}]
+    assert out["repeats"][12] == {"runs": 3, "used": 2, "docling_capped": 1, "values": [149.0, 151.0], "median": 150.0}
+    assert out["cell_cpus"] == 12 and "bound" not in out
+    for shuffled in _shuffles(files):
+        assert bc.knee_from_results(shuffled) == out
+
+
+def test_a_tier_whose_every_repeat_was_capped_makes_the_knee_docling_bound() -> None:
+    files = [_knee_result(8, 100.0), _knee_result(12, 150.0), _knee_result(16, 150.0, bound="docling"),
+             _knee_result(16, 151.0, bound="docling")]
+    for shuffled in _shuffles(files):
+        out = bc.knee_from_results(shuffled)
+        assert out["cell_cpus"] is None and out["bound"] == "docling" and out["docling_bound_tiers"] == [16]
+        assert out["docling_capped_repeats"] == [] and out["record_as_decision"] is False
+
+
+def _result_with(p50: float, tier: int = 4, status: str = "pass", scenario: str = "b05", rpm: float = 30.0) -> dict:
+    r = _result(status=status)
+    r["plan"]["scenario"] = scenario
+    r["environment"]["tier"] = {"cpus": tier, "mem_gb": tier * 4}
+    r["metrics"]["by_kind"] = {"small-pdf": {"p50": p50, "p95": p50 * 2}, "scanned": {"p50": 90.0, "p95": 200.0}}
+    r["metrics"]["records_per_minute"] = rpm
+    return r
+
+
+def test_a_baseline_needs_three_passing_repeats_with_a_steady_p50() -> None:
+    steady = [_result_with(40.0), _result_with(41.0), _result_with(39.5)]
+    for shuffled in _shuffles(steady):
+        out = bc.baseline_from_results(shuffled)
+        assert out["baseline_valid"] is True and out["reasons"] == []
+        assert out["groups"][0]["median"]["small-pdf p50"] == 40.0 and out["groups"][0]["repeats"] == 3
+    # CV above 10 %: refused, and the reason names the metric and the CV
+    noisy = [_result_with(40.0), _result_with(55.0), _result_with(30.0)]
+    out = bc.baseline_from_results(noisy)
+    assert out["baseline_valid"] is False
+    assert any("small-pdf p50 varies too much" in r and "CV" in r for r in out["reasons"]), out["reasons"]
+    # too few repeats
+    assert any("at least 3" in r for r in bc.baseline_from_results(steady[:2])["reasons"])
+    # a repeat that did not pass
+    out = bc.baseline_from_results([*steady[:2], _result_with(40.0, status="invalid")])
+    assert out["baseline_valid"] is False and any("did not pass" in r for r in out["reasons"])
+    assert bc.baseline_from_results([])["baseline_valid"] is False
+
+
+def test_the_baseline_checks_throughput_sensitivity_between_two_burst_tiers() -> None:
+    def burst(tier: int, rpm: float) -> list[dict]:
+        return [_result_with(40.0, tier=tier, scenario="b06", rpm=rpm + d) for d in (0.0, 0.3, -0.3)]
+
+    flat = bc.baseline_from_results([*burst(4, 30.0), *burst(16, 31.0)])
+    assert flat["baseline_valid"] is False and flat["sensitivity"]["ok"] is False
+    assert any("less than the 30 %" in r for r in flat["reasons"])
+    good = bc.baseline_from_results([*burst(4, 30.0), *burst(16, 90.0)])
+    assert good["baseline_valid"] is True and good["sensitivity"] == {"ok": True, "difference": 0.667, "tiers": [4, 16]}
+
+
+def test_baseline_from_exits_non_zero_for_an_unsteady_baseline_and_writes_nothing_to_commit(tmp_path: Path) -> None:
+    def write(name: str, p50: float) -> str:
+        f = tmp_path / name
+        f.write_text(json.dumps(_result_with(p50)))
+        return str(f)
+
+    good = [write("a.json", 40.0), write("b.json", 41.0), write("c.json", 39.0)]
+    assert bc.main(["--baseline-from", *good, "--output", str(tmp_path / "ok.json")]) == 0
+    assert json.loads((tmp_path / "ok.json").read_text())["baseline_valid"] is True
+    bad = [write("d.json", 40.0), write("e.json", 70.0), write("f.json", 30.0)]
+    assert bc.main(["--baseline-from", *bad, "--output", str(tmp_path / "bad.json")]) == bc.EXIT_INVALID
+    assert json.loads((tmp_path / "bad.json").read_text())["baseline_valid"] is False
+
+
+def test_runner_repeats_every_tier_on_a_fresh_stack_and_checks_the_baseline(tmp_path: Path) -> None:
+    tree, log, env = _stub_tree(tmp_path)
+    env.update({"BENCH_TIERS": "T2:2:8", "BENCH_REPEATS": "3"})
+    p = _runner(tree, env, "--scenario", "b05")
+    calls = log.read_text().splitlines()
+    benches = [c for c in calls if c.startswith("bench") and "--baseline-from" not in c]
+    assert len(benches) == 3 and p.returncode == 0, p.stderr[-300:]
+    assert [c for c in calls if " up -d " in c].__len__() == 3  # a fresh stack for every repeat
+    last = [c for c in calls if c.startswith("bench --baseline-from")]
+    assert len(last) == 1 and all(f"costclass-local-T2-r{n}.json" in last[0] for n in (1, 2, 3))
+    (tmp_path / "one").mkdir()
+    tree1, log1, env1 = _stub_tree(tmp_path / "one")
+    env1["BENCH_TIERS"] = "T2:2:8"
+    _runner(tree1, env1, "--scenario", "b05")
+    assert not any("--baseline-from" in c for c in log1.read_text().splitlines())  # one run is not a baseline
+    env1["BENCH_REPEATS"] = "0"
+    assert _runner(tree1, env1, "--scenario", "b05").returncode == 64
 
 
 def test_one_indexing_process_is_checked_not_assumed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1048,7 +1168,7 @@ def test_chaos_verdict_needs_the_kill_and_a_restart() -> None:
 
 
 def test_bench_compose_never_hands_the_app_to_docker_s_restart_policy() -> None:
-    # QA-SB-15: Docker applies no restart policy to a container it was told to kill, so the chaos run kills the
+    # Docker applies no restart policy to a container it was told to kill, so the chaos run kills the
     # indexing process and the app's process monitor restarts it; a policy would only hide a real crash.
     compose = (_ROOT / "deployment/docker-compose/docker-compose.bench.yml").read_text()
     app = compose.split("  neo4j:")[0]
@@ -1072,11 +1192,25 @@ def test_workflow_smoke_enforces_budgets_and_weekly_runs_the_fake_embedding_cont
     assert "--max-p95-s 600" in smoke and "--max-wall-s 1800" in smoke and "--fail-on-log-errors" in smoke
     weekly = next(v for k, v in steps.items() if k.startswith("Weekly"))
     assert "BENCH_FAKE_AI_ARGS=\"--fake-embeddings\"" in weekly
-    assert any(ln.strip().startswith("--fake-embeddings --fake-ai-container") for ln in weekly.splitlines())
-    assert "--fake-ai-container" in weekly
+    assert "extra=(--fake-embeddings --fake-ai-container" in weekly and '"${extra[@]}"' in weekly
+    assert _weekly_legs()[0]["fake_embeddings"] is True  # the control is the first leg
 
 
 # -- the fake provider and the product's log ---------------------------------------------------------
+
+
+def test_the_fake_names_no_departments_the_organization_does_not_have() -> None:
+    """A made-up department name sends the product down its "not found" path (a warning per record): the fake
+    answers an empty list for it, and still fills every other list."""
+    schema = {"type": "object", "properties": {
+        "departments": {"type": "array", "items": {"type": "string"}},
+        "topics": {"type": "array", "items": {"type": "string"}}}}
+    body = {"messages": [{"role": "user", "content": "classify"}],
+            "response_format": {"type": "json_schema", "json_schema": {"schema": schema}}}
+    answer = json.loads(fake.chat_answer(body)["choices"][0]["message"]["content"])
+    assert answer["departments"] == [] and len(answer["topics"]) == 1
+    required = {"type": "object", "properties": {"departments": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}
+    assert len(fake.example_from_schema(required)["departments"]) == 1  # a schema that demands one still gets one
 
 
 def test_the_fake_answers_the_count_a_prompt_asks_for() -> None:
@@ -1158,6 +1292,13 @@ def _stub_tree(tmp_path: Path, bench_rc: int = 0, fail_up_for: str = "") -> tupl
         (tree / d).mkdir(parents=True)
     for name in ("run_tiers_e2e.sh", "tiers.py"):
         (tree / "integration-tests/perf" / name).write_text((_ROOT / "integration-tests/perf" / name).read_text())
+    # The host's load is injected: a quiet reading, so these tests never read the real host and cannot go red
+    # because the machine they run on is busy. The real reader is exercised by its own tests.
+    tiers_copy = tree / "integration-tests/perf/tiers.py"
+    real = "def host_usage() -> tuple[float, float]:"
+    assert real in tiers_copy.read_text()
+    tiers_copy.write_text(tiers_copy.read_text().replace(
+        real, f"{real}\n    return 1.0, 1.0\n\n\ndef _real_host_usage() -> tuple[float, float]:"))
     (tree / "integration-tests/perf/bench_costclass.py").write_text(
         "import sys, pathlib\n"
         f"open({str(log)!r}, 'a').write('bench ' + ' '.join(sys.argv[1:]) + '\\n')\n"
@@ -1167,13 +1308,28 @@ def _stub_tree(tmp_path: Path, bench_rc: int = 0, fail_up_for: str = "") -> tupl
         f"sys.exit({bench_rc})\n")
     env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}", "BENCH_HOST_CPUS": "48", "BENCH_HOST_MEM_GB": "188",
            "BENCH_ORDER": ",".join(map(str, range(48))), "BENCH_QUIET_RETRIES": "1", "BENCH_QUIET_SLEEP": "0",
-           "BENCH_OUT": str(tmp_path / "out"), "BENCH_PROJECT": "idxs-stub"}
+           "BENCH_OUT": str(tmp_path / "out"), "BENCH_PROJECT": "bench-stub"}
     return tree, log, env
 
 
 def _runner(tree: Path, env: dict, *argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(["bash", str(tree / "integration-tests/perf/run_tiers_e2e.sh"), *argv], env=env,
                           capture_output=True, text=True, timeout=90, stdin=subprocess.DEVNULL, check=False)
+
+
+def test_runner_tests_inject_the_host_load_and_never_read_the_real_host(tmp_path: Path) -> None:
+    """The stub tree's tiers.py reports a fixed quiet host, so a busy machine cannot fail the runner tests."""
+    tree, _log, env = _stub_tree(tmp_path)
+    probe = ("import sys, inspect; sys.path.insert(0, sys.argv[1]); import tiers; "
+             "src = inspect.getsource(tiers.host_usage); assert '/proc' not in src, src; print(tiers.host_usage())")
+    out = subprocess.run([sys.executable, "-c", probe, str(tree / "integration-tests/perf")], env=env,
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "(1.0, 1.0)"
+    quiet = subprocess.run([sys.executable, str(tree / "integration-tests/perf/tiers.py"), "quiet", "--retries", "1",
+                            "--sleep", "0"], env=env, capture_output=True, text=True, check=False)
+    assert quiet.returncode == 0, quiet.stderr
+    # the real reader still reads /proc (its own test): the injection did not replace the production file
+    assert "/proc/stat" in (_ROOT / "integration-tests/perf/tiers.py").read_text()
 
 
 def test_runner_exits_non_zero_and_says_why_when_every_tier_is_skipped(tmp_path: Path) -> None:
@@ -1219,7 +1375,7 @@ def test_runner_with_every_tier_refused_for_a_busy_host_is_non_zero(tmp_path: Pa
 
 
 def test_runner_starts_a_stack_that_cannot_come_up_and_still_tries_the_next(tmp_path: Path) -> None:
-    tree, log, env = _stub_tree(tmp_path, fail_up_for="idxs-stub-t2")
+    tree, log, env = _stub_tree(tmp_path, fail_up_for="bench-stub-t2")
     env["BENCH_TIERS"] = "T2:2:8 T4:4:16"
     p = _runner(tree, env, "--scenario", "b05")
     benches = [ln for ln in log.read_text().splitlines() if ln.startswith("bench")]
@@ -1314,15 +1470,15 @@ def test_workflow_is_valid_scheduled_and_wires_the_unit_tests() -> None:
               "integration-tests/perf/run_tiers_e2e.sh", "backend/python/tests/perf/parse_bench/corpus.py",
               "deployment/docker-compose/docker-compose.bench.yml", "integration-tests/unit/test_perf_costclass.py",
               "integration-tests/helper/local_auth.py", "integration-tests/perf/stack.py", "integration-tests/perf/compare.py",
-              ".github/workflows/perf-costclass.yml"):  # QA-SB-21: this test reads it, so a change to it must run it
+              ".github/workflows/perf-costclass.yml"):  # this test reads it, so a change to it must run it
         assert watched.search(f), f
 
 
-# -- round 3: QA round-2 defects (QA-SB-15 to -23) -------------------------------------------------------
+# -- the driver's accounting, the log oracle, the knee's attribution and the chaos kill ---------------------
 
 
 def test_a_failed_copy_with_the_original_vrid_is_not_a_working_dedup(live_corpus: tuple) -> None:
-    """QA-SB-19: the product found the twin and then failed the copy: the trust anchor must not pass."""
+    """The product found the twin and then failed the copy: the trust anchor must not pass."""
     _out, manifest, by_kind, _entries = live_corpus
     plan = _plan("small-text", [0.0], by_kind["small-text"][0], control=True)
     args = _args(inject_duplicate=True)
@@ -1334,7 +1490,7 @@ def test_a_failed_copy_with_the_original_vrid_is_not_a_working_dedup(live_corpus
 
 
 def test_a_control_whose_original_upload_failed_does_not_hold_the_run_to_its_timeout(live_corpus: tuple) -> None:
-    """QA-SB-20: the original never gets a final status; the control must not wait out the whole timeout."""
+    """The original never gets a final status; the control must not wait out the whole timeout."""
     _out, manifest, by_kind, _entries = live_corpus
     tpl = by_kind["small-text"][0]
     plan = _plan("small-text", [0.0], tpl, control=True)
@@ -1363,14 +1519,14 @@ def _entry_suffix(live_corpus: tuple, template: str) -> str:
     "\x1b[1m\x1b[31mERROR\x1b[0m: coloured at the line start",
 ], ids=["node-text-coloured", "uvicorn-prefix", "python-critical", "python-json-critical", "coloured-line-start"])
 def test_product_error_lines_in_every_format_the_stack_writes_are_caught(line: str) -> None:
-    """QA-SB-16: the Node logger colours the level unconditionally (logger.service.ts:403-409)."""
+    """The Node logger colours the level unconditionally (logger.service.ts:403-409)."""
     assert bc.scan_error_lines(line) == [bc._ANSI.sub("", line).strip()]
     assert bc.scan_error_lines("2026-11-15 10:00:00,123 - app.x - WARNING - [a.py:1] - error count 0 ERRORS none") == []
     assert bc.scan_error_lines("\x1b[33mWARNING\x1b[0m - retrying after an error") == []
 
 
 def test_an_unreadable_or_empty_product_log_is_a_failed_check_not_a_clean_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """QA-SB-16: docker failing or timing out, or a log with nothing in it, must fail the run."""
+    """Docker failing or timing out, or a log with nothing in it, must fail the run."""
     monkeypatch.setattr(bc, "docker", lambda *a, **k: None)
     assert bc.fetch_log_errors("app", "2026-11-15T00:00:00+00:00") is None
     monkeypatch.setattr(bc, "docker", lambda *a, **k: "  \n")
@@ -1383,7 +1539,7 @@ def test_an_unreadable_or_empty_product_log_is_a_failed_check_not_a_clean_one(mo
 
 
 def test_a_result_with_an_unreadable_log_fails_only_when_the_log_was_asked_for(live_corpus: tuple) -> None:
-    """QA-SB-16: through build_result, the way the run hands over fetch_log_errors' None."""
+    """Through build_result, the way the run hands over fetch_log_errors' None."""
     _out, manifest, by_kind, _entries = live_corpus
     plan = _plan("small-text", [0.0], by_kind["small-text"][0])
     args = _args(fail_on_log_errors=True)
@@ -1407,7 +1563,7 @@ def _series(idle_cores: float, busy_cores: float, idle_before: float, busy: floa
 
 
 def test_idle_cpu_outside_the_busy_intervals_is_not_counted_against_busy_time() -> None:
-    """QA-SB-18: 0.05 cores idling for 85 s plus 2 cores for 5 s is 2.0 cores while busy, not 2.85."""
+    """0.05 cores idling for 85 s plus 2 cores for 5 s is 2.0 cores while busy, not 2.85."""
     cpu, busy = bc.busy_and_cpu(_series(0.05, 2.0, 40, 5, 45))
     assert busy == pytest.approx(5.0) and cpu == pytest.approx(10.0)
     measured = bc.cores_per_unit(cpu, busy)
@@ -1425,7 +1581,7 @@ def _report(readings: int = 100, busy_s: float = 20.0, span_s: float = 100.0, cp
 
 
 def test_a_knee_point_says_which_component_capped_it() -> None:
-    """QA-SB-17: Docling busy nearly all the burst is Docling-bound; slack in Docling is not; no data is unknown."""
+    """Docling busy nearly all the burst is Docling-bound; slack in Docling is not; no data is unknown."""
     assert bc.attribute_knee_point(_report(busy_s=95.0), _report())["bound"] == "docling"
     assert bc.attribute_knee_point(_report(busy_s=40.0), _report())["bound"] == "not_docling"
     assert bc.attribute_knee_point(_report(pids=0), _report())["bound"] == "unknown"
@@ -1451,7 +1607,7 @@ def test_a_docling_bound_knee_reports_no_cell_cpus() -> None:
 
 
 def test_the_knee_is_a_decision_only_at_high_confidence_and_on_the_legacy_profile(tmp_path: Path) -> None:
-    """D-144."""
+    """Only a high-confidence knee on the default capacity profile is a decision."""
     high = [_knee_result(8, 10.0), _knee_result(12, 14.8), _knee_result(16, 19.0), _knee_result(24, 20.0)]
     assert bc.knee_from_results(high)["record_as_decision"] is True
     medium = [_knee_result(8, 10.0), _knee_result(12, 15.0), _knee_result(16, 20.0), _knee_result(24, 30.0)]
@@ -1480,7 +1636,7 @@ def test_check_stack_reads_the_capacity_profile_and_docling_workers(monkeypatch:
 
 
 def test_one_process_check_does_not_read_a_docker_failure_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """QA-SB-22: a wrong container name or a docker timeout is an unreadable stack, not one process."""
+    """A wrong container name or a docker timeout is an unreadable stack, not one process."""
     monkeypatch.setattr(bc, "docker", lambda *a, **k: None)
     assert bc.container_env("not-a-container", "INDEXING_UVICORN_WORKERS") is None
     assert bc.workers_from_container("not-a-container", "INDEXING_UVICORN_WORKERS") == -1
@@ -1493,7 +1649,7 @@ def test_one_process_check_does_not_read_a_docker_failure_as_unset(monkeypatch: 
 
 
 def test_chaos_kills_the_indexing_process_and_recovery_is_a_new_one() -> None:
-    """QA-SB-15: Docker never restarts what `docker kill` stopped, so the indexing process is killed inside the
+    """Docker never restarts what `docker kill` stopped, so the indexing process is killed inside the
     container and the process monitor's restart is detected by a new indexing pid."""
     tops = iter(["PID PPID ARGS\n20 1 python -m app.indexing_main\n"] +
                 ["PID PPID ARGS\n"] * 2 + ["PID PPID ARGS\n31 1 python -m app.indexing_main\n"] * 10)
@@ -1540,7 +1696,7 @@ def test_the_kill_goes_into_the_container_and_never_to_pid_1(monkeypatch: pytest
 
 
 def test_knee_sampling_is_wired_for_the_knee_scenario_only() -> None:
-    """QA-SB-17: a knee run watches Docling's process and the indexing process the whole burst."""
+    """A knee run watches Docling's process and the indexing process the whole burst."""
     knee = bc.knee_watchers(bc.parse_args(["--scenario", "b06-knee", "--label", "x", "--app-container", "app"]))
     assert {k: (w.marker, w.refresh_s) for k, w in knee.items()} == {"docling": ("docling_main", 15.0),
                                                                      "indexing": ("indexing_main", 15.0)}
@@ -1548,20 +1704,95 @@ def test_knee_sampling_is_wired_for_the_knee_scenario_only() -> None:
     assert bc.knee_watchers(bc.parse_args(["--scenario", "b06-knee", "--label", "x"])) == {}
 
 
+_UNLIMITED_STEP_ALLOWANCE_MIN = 2  # a step without its own limit: checkout, setup, login, upload, teardown (generous)
+_HEADROOM = 0.8  # a planned duration may use at most 80 percent of its limit
+_CORPUS_BUILD_S = 300  # generating the corpus before the first upload
+
+
+def _perf_workflow() -> dict:
+    return yaml.safe_load((_ROOT / ".github/workflows/perf-costclass.yml").read_text())
+
+
+def _weekly_legs() -> list[dict]:
+    return json.loads((_ROOT / "integration-tests/perf/costclass_weekly_legs.json").read_text())["legs"]
+
+
+def _planned_leg_seconds(leg: dict) -> float:
+    """The longest a leg's bench run can take: its hard wall limit, after checking that its schedule ends first."""
+    plan = bc.build_plan(leg["scenario"], tier_cpus=4, duration_s=float(leg["duration"]))
+    last_arrival = max(a.at_s for a in plan.arrivals)
+    assert last_arrival < float(leg["timeout"]), (leg["leg"], last_arrival, leg["timeout"])
+    return float(leg["timeout"]) + _CORPUS_BUILD_S
+
+
+def _job_steps(suite_step_prefix: str) -> tuple[list[dict], dict]:
+    job = _perf_workflow()["jobs"]["costclass"]
+    return job["steps"], next(s for s in job["steps"] if s.get("name", "").startswith(suite_step_prefix))
+
+
+def _worst_case_job_minutes(steps: list[dict], suite: str, bench_step: dict) -> float:
+    """The sum of the limits of every step that runs for the suite; steps without a limit count a fixed allowance."""
+    total = 0.0
+    for st in steps:
+        cond = st.get("if", "")
+        if f"env.SUITE != '{suite}'" in cond or ("env.SUITE ==" in cond and f"'{suite}'" not in cond):
+            continue
+        total += st.get("timeout-minutes", _UNLIMITED_STEP_ALLOWANCE_MIN)
+    return total
+
+
 def test_the_job_budgets_the_build_and_stack_start_apart_from_the_bench_run() -> None:
-    """D-144: timeout-minutes 90 for the job; the build, the start and the bench have limits of their own."""
-    job = yaml.safe_load((_ROOT / ".github/workflows/perf-costclass.yml").read_text())["jobs"]["costclass"]
-    assert job["timeout-minutes"] == 90
+    """The build, the start and the bench run have limits of their own, and the job limit holds them all."""
+    wf = _perf_workflow()
+    job = wf["jobs"]["costclass"]
     steps = {s.get("name", ""): s for s in job["steps"]}
     build, start, wait = steps["Build the stack image"], steps["Start the stack (smoke and weekly)"], steps["Wait for the stack"]
-    smoke = steps["Smoke"]
-    assert all("timeout-minutes" in s for s in (build, start, wait, smoke))
-    assert smoke["timeout-minutes"] * 60 >= 1800  # the bench's own wall budget fits in its step
-    assert build["timeout-minutes"] + start["timeout-minutes"] + wait["timeout-minutes"] + smoke["timeout-minutes"] <= 90
+    assert all("timeout-minutes" in s for s in (build, start, wait, steps["Smoke"], steps["Weekly run"]))
+    for suite, name in (("smoke", "Smoke"), ("weekly", "Weekly run")):
+        worst = _worst_case_job_minutes(job["steps"], suite, steps[name])
+        assert worst <= job["timeout-minutes"] * _HEADROOM, (suite, worst, job["timeout-minutes"])
+
+
+def test_the_smoke_run_fits_its_step_with_headroom() -> None:
+    """The bench's own wall budget (--max-wall-s) plus the corpus build fits the smoke step with 20 percent to spare."""
+    smoke = {s.get("name", ""): s for s in _perf_workflow()["jobs"]["costclass"]["steps"]}["Smoke"]
+    wall = float(re.search(r"--max-wall-s (\d+)", smoke["run"]).group(1))
+    timeout = float(re.search(r"--timeout (\d+)", smoke["run"]).group(1))
+    assert timeout <= wall
+    assert wall + _CORPUS_BUILD_S <= smoke["timeout-minutes"] * 60 * _HEADROOM
+
+
+def test_every_weekly_leg_fits_its_step_with_headroom() -> None:
+    """Each weekly run is a job of its own: its schedule (from build_plan), its wait and its corpus build fit the
+    step with 20 percent to spare, and the step's limit is the one the workflow declares."""
+    step = {s.get("name", ""): s for s in _perf_workflow()["jobs"]["costclass"]["steps"]}["Weekly run"]
+    limit_s = step["timeout-minutes"] * 60
+    legs = _weekly_legs()
+    assert legs
+    for leg in legs:
+        planned = _planned_leg_seconds(leg)
+        assert planned <= limit_s * _HEADROOM, (leg["leg"], planned, limit_s)
+
+
+def test_the_fake_embedding_control_runs_first_and_alone() -> None:
+    """A slow later run can never skip the control: it is the first leg, with its own job, and the matrix runs one at a time."""
+    legs = _weekly_legs()
+    assert legs[0]["fake_embeddings"] is True and legs[0]["scenario"] == "b05"
+    assert [leg["leg"] for leg in legs if leg["fake_embeddings"]] == [legs[0]["leg"]]
+    assert len({leg["leg"] for leg in legs}) == len(legs)
+    job = _perf_workflow()["jobs"]["costclass"]
+    assert job["strategy"]["max-parallel"] == 1 and job["strategy"]["fail-fast"] is False
+
+
+def test_a_leg_that_cannot_fit_is_caught() -> None:
+    """Negative control: a leg whose duration alone exceeds the step is refused by the planner arithmetic."""
+    long_leg = {"leg": "x", "scenario": "b05", "duration": 3000, "timeout": 1500, "fake_embeddings": False}
+    with pytest.raises(AssertionError):
+        _planned_leg_seconds(long_leg)
 
 
 def test_the_guards_watch_every_workflow_file_the_guard_tests_read() -> None:
-    """QA-SB-21: test_guard_scope fails a guard that reads a file WATCHED_PATHS misses; so does this, before CI."""
+    """test_guard_scope fails a guard that reads a file WATCHED_PATHS misses; so does this, before CI."""
     import re
 
     guards = yaml.safe_load((_ROOT / ".github/workflows/integration-suite-guards.yml").read_text())

@@ -159,7 +159,7 @@ def lambda_for_rho(
 ) -> float:
     """The small-PDF arrival rate that keeps Docling's utilisation at *rho_target*, capped at *rate_cap*.
 
-    ``rho_d = lambda * E[pages] * s_d / W_d`` (the B-01 precondition P-D).
+    ``rho_d = lambda * E[pages] * s_d / W_d`` (the B-01 precondition: Docling is not the bottleneck).
     """
     if s_d <= 0 or mean_pages <= 0 or docling_workers <= 0:
         return rate_cap
@@ -502,7 +502,7 @@ def check_limits(
     peaks: dict[str, float | None], *, redis_maxclients: int | None, neo4j_budget: int | None,
     pg_max_connections: int | None, oom_kills: int,
 ) -> list[str]:
-    """TC-SB-9: connection counts against their limits and no OOM kill. Returns violations."""
+    """Connection counts against their limits and no OOM kill. Returns violations."""
     bad: list[str] = []
     redis = peaks.get("redis_clients")
     if redis is not None and redis_maxclients and redis >= 0.5 * redis_maxclients:
@@ -773,52 +773,87 @@ def knee(points: dict[int, float | None], base_tier: int = 8, efficiency: float 
     }
 
 
+def _tier_of(result: dict[str, Any]) -> int | None:
+    return (result.get("environment", {}).get("tier") or {}).get("cpus")
+
+
+def _knee_exclusion(r: dict[str, Any]) -> str | None:
+    """Why a result cannot be a knee point, or None."""
+    if r.get("plan", {}).get("scenario") != "b06-knee":
+        return f"scenario {r.get('plan', {}).get('scenario')!r}, not b06-knee"
+    if r.get("environment", {}).get("indexing_processes") != 1:
+        return f"indexing processes {r.get('environment', {}).get('indexing_processes')!r}, not 1"
+    if r.get("environment", {}).get("capacity_profile") != "legacy":
+        return f"capacity profile {r.get('environment', {}).get('capacity_profile')!r}, not legacy"
+    if (r.get("knee_attribution") or {}).get("bound", "unknown") == "unknown":
+        return "no process CPU recorded for Docling and the indexing process: the cap cannot be attributed"
+    if r["verdict"]["status"] != "pass":
+        return f"run {r['verdict']['status']}"
+    if r["metrics"].get("records_per_minute") is None:
+        return "no throughput"
+    return None
+
+
 def knee_from_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     """``CELL_CPUS`` from the result files of a ``b06-knee`` run over the tiers.
 
-    Only results that passed, ran scenario ``b06-knee`` with exactly one indexing process, and share one
-    corpus make a point; anything else is listed as excluded and costs confidence. Without a T8 point there
-    is no knee, and nothing is reported.
+    The files may be in any order and a tier may have several repeats. Per tier, the point is the **median**
+    throughput of its valid repeats that Docling did not cap. A repeat that Docling capped measures Docling,
+    not the indexing process: it is left out of the median and listed under ``docling_capped_repeats``. A tier
+    whose valid repeats were all capped stays a (Docling-bound) point, so the whole knee is reported as
+    Docling-bound. Only results that passed, ran scenario ``b06-knee`` with exactly one indexing process, and
+    share one corpus make a point; anything else is listed as excluded and costs confidence. Without a T8
+    point there is no knee, and nothing is reported.
     """
-    points: dict[int, float | None] = {}
     excluded: list[dict[str, Any]] = []
     corpora = {r["plan"]["corpus_id"] for r in results}
+    valid: dict[int, list[dict[str, Any]]] = {}
+    seen: set[int] = set()
     for r in results:
-        tier = (r.get("environment", {}).get("tier") or {}).get("cpus")
-        why = None
-        if r.get("plan", {}).get("scenario") != "b06-knee":
-            why = f"scenario {r.get('plan', {}).get('scenario')!r}, not b06-knee"
-        elif r.get("environment", {}).get("indexing_processes") != 1:
-            why = f"indexing processes {r.get('environment', {}).get('indexing_processes')!r}, not 1"
-        elif r.get("environment", {}).get("capacity_profile") != "legacy":
-            why = f"capacity profile {r.get('environment', {}).get('capacity_profile')!r}, not legacy (D-144)"
-        elif (r.get("knee_attribution") or {}).get("bound", "unknown") == "unknown":
-            why = "no process CPU recorded for Docling and the indexing process: the cap cannot be attributed"
-        elif r["verdict"]["status"] != "pass":
-            why = f"run {r['verdict']['status']}"
-        elif r["metrics"].get("records_per_minute") is None:
-            why = "no throughput"
+        tier = _tier_of(r)
+        why = _knee_exclusion(r)
         if tier is None:
-            why = why or "no tier"
+            excluded.append({"tier": None, "why": why or "no tier"})
+            continue
+        seen.add(tier)
         if why:
             excluded.append({"tier": tier, "why": why})
-            if tier is not None:
-                points.setdefault(tier, None)
         else:
-            points[tier] = r["metrics"]["records_per_minute"]
+            valid.setdefault(tier, []).append(r)
+    points: dict[int, float | None] = {t: None for t in seen}
+    repeats: dict[int, dict[str, Any]] = {}
+    attribution: dict[int, dict[str, Any]] = {}
+    capped_repeats: list[dict[str, Any]] = []
+    capped_tiers: list[int] = []
+    for tier, runs in valid.items():
+        capped = [r for r in runs if r["knee_attribution"]["bound"] == "docling"]
+        usable = [r for r in runs if r not in capped] or capped
+        if usable is not capped:
+            for r in capped:
+                capped_repeats.append({"tier": tier, "records_per_minute": r["metrics"]["records_per_minute"]})
+        else:
+            capped_tiers.append(tier)
+        rpms = sorted(r["metrics"]["records_per_minute"] for r in usable)
+        points[tier] = statistics.median(rpms)
+        repeats[tier] = {"runs": len(runs), "used": len(usable), "docling_capped": len(capped),
+                         "values": rpms, "median": points[tier]}
+        # the attribution of the repeat nearest the median (the lower one on a tie), whatever the file order
+        nearest = min(usable, key=lambda r: (abs(r["metrics"]["records_per_minute"] - points[tier]),
+                                             r["metrics"]["records_per_minute"]))
+        attribution[tier] = nearest["knee_attribution"]
     out = knee(points)
-    out["excluded"] = excluded
-    attribution = {t: (r.get("knee_attribution") or {}) for r in results
-                   if (t := (r.get("environment", {}).get("tier") or {}).get("cpus")) is not None}
+    out["excluded"] = sorted(excluded, key=lambda e: (-1 if e["tier"] is None else e["tier"], e["why"]))
+    out["repeats"] = {t: repeats[t] for t in sorted(repeats)}
+    out["docling_capped_repeats"] = sorted(capped_repeats, key=lambda c: (c["tier"], c["records_per_minute"]))
     out["attribution"] = {t: {k: a.get(k) for k in ("bound", "docling_busy_fraction", "indexing_cores")}
                           for t, a in sorted(attribution.items())}
-    capped = sorted(t for t, v in points.items() if v is not None and attribution.get(t, {}).get("bound") == "docling")
-    if out.get("cell_cpus") is not None and capped:
+    capped_tiers.sort()
+    if out.get("cell_cpus") is not None and capped_tiers:
         # Docling's process was the cap at these tiers, so the curve measures it, not the indexing process.
-        out.update(cell_cpus=None, confidence=None, bound="docling", docling_bound_tiers=capped,
+        out.update(cell_cpus=None, confidence=None, bound="docling", docling_bound_tiers=capped_tiers,
                    reason=f"Docling's process was busy at least {DOCLING_BOUND_BUSY:.0%} of the run at "
-                          f"T{', T'.join(map(str, capped))}: the knee is Docling-bound, not the indexing process's")
-    # D-144: only a high-confidence knee is recorded as a decision; anything else is a note.
+                          f"T{', T'.join(map(str, capped_tiers))}: the knee is Docling-bound, not the indexing process's")
+    # Only a high-confidence knee is recorded as a decision; anything else is a note.
     out["record_as_decision"] = out.get("cell_cpus") is not None and out.get("confidence") == "high"
     if len(corpora) > 1:
         out["confidence"] = "low" if out.get("confidence") else None
@@ -827,11 +862,83 @@ def knee_from_results(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def sensitivity(a: float | None, b: float | None, minimum: float = 0.30) -> dict[str, Any]:
-    """TC-SB-7: do two tiers' throughput differ by at least *minimum* (of the larger)?"""
+    """Do two tiers' throughput differ by at least *minimum* (of the larger)?"""
     if not a or not b:
         return {"ok": False, "difference": None}
     diff = abs(b - a) / max(a, b)
     return {"ok": diff >= minimum, "difference": round(diff, 3)}
+
+
+MIN_BASELINE_REPEATS = 3
+BASELINE_MAX_CV = 0.10
+
+
+def _baseline_group_key(r: dict[str, Any]) -> tuple[Any, ...]:
+    env, tier = r.get("environment", {}), r.get("environment", {}).get("tier") or {}
+    return (r.get("plan", {}).get("scenario"), tier.get("cpus"), tier.get("mem_gb"), env.get("embedding_mode"),
+            r.get("plan", {}).get("corpus_id"))
+
+
+def baseline_from_results(results: list[dict[str, Any]], *, max_cv: float = BASELINE_MAX_CV,
+                          min_repeats: int = MIN_BASELINE_REPEATS) -> dict[str, Any]:
+    """Whether result files are a valid baseline: at least *min_repeats* passing repeats of one scenario and tier,
+    and the p50 of every kind (and, for a saturation burst, the throughput) steady across them, CV at most *max_cv*.
+
+    The files may be in any order. Anything else marks the baseline **invalid** with the reasons; only a valid
+    one is committed. When the files hold two tiers of a saturation burst, the throughput of the lowest and
+    the highest tier must also differ by at least the sensitivity minimum .
+    """
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for r in results:
+        groups.setdefault(_baseline_group_key(r), []).append(r)
+    reasons: list[str] = []
+    out_groups: list[dict[str, Any]] = []
+    by_tier: list[tuple[int, float | None]] = []
+    for key in sorted(groups, key=lambda k: tuple("" if v is None else str(v) for v in k)):
+        runs = groups[key]
+        name = f"{key[0]} at {key[1]} CPU / {key[2]} GB ({key[3]} embedding)"
+        problems: list[str] = []
+        not_pass = sorted(r["verdict"]["status"] for r in runs if r["verdict"]["status"] != "pass")
+        if not_pass:
+            problems.append(f"{len(not_pass)} repeat(s) did not pass: {', '.join(not_pass)}")
+        if len(runs) < min_repeats:
+            problems.append(f"{len(runs)} repeat(s), at least {min_repeats} are needed")
+        passing = [r for r in runs if r["verdict"]["status"] == "pass"]
+        series: dict[str, list[float]] = {}
+        for r in passing:
+            for kind, row in (r["metrics"].get("by_kind") or {}).items():
+                if row.get("p50") is not None:
+                    series.setdefault(f"{kind} p50", []).append(float(row["p50"]))
+            if str(key[0]).startswith("b06") and r["metrics"].get("records_per_minute") is not None:
+                series.setdefault("throughput", []).append(float(r["metrics"]["records_per_minute"]))
+        if not series:
+            problems.append("no p50 or throughput to compare")
+        cvs: dict[str, float | None] = {}
+        for metric, values in sorted(series.items()):
+            cvs[metric] = None if coefficient_of_variation(values) is None else round(coefficient_of_variation(values), 4)
+            if len(values) < len(passing):
+                problems.append(f"{metric} is missing in {len(passing) - len(values)} repeat(s)")
+            elif not repeats_stable(values, max_cv):
+                problems.append(f"{metric} varies too much across repeats: CV {cvs[metric]} > {max_cv}")
+        out_groups.append({
+            "group": name, "repeats": len(runs), "valid": not problems, "problems": problems, "cv": cvs,
+            "median": {m: round(statistics.median(v), 3) for m, v in sorted(series.items())},
+        })
+        reasons += [f"{name}: {p}" for p in problems]
+        if str(key[0]).startswith("b06") and key[1] is not None:
+            by_tier.append((key[1], out_groups[-1]["median"].get("throughput")))
+    sens: dict[str, Any] | None = None
+    by_tier.sort(key=lambda row: row[0])
+    if len({t for t, _ in by_tier}) >= 2:
+        sens = sensitivity(by_tier[0][1], by_tier[-1][1])
+        sens["tiers"] = [by_tier[0][0], by_tier[-1][0]]
+        if not sens["ok"]:
+            reasons.append(f"throughput at T{by_tier[0][0]} and T{by_tier[-1][0]} differs by "
+                           f"{sens['difference']}, less than the 30 % the benchmark must be able to see")
+    if not results:
+        reasons.append("no result files")
+    return {"baseline_valid": not reasons, "reasons": reasons, "groups": out_groups, "sensitivity": sens,
+            "max_cv": max_cv, "min_repeats": min_repeats}
 
 
 # ====================================================================================
@@ -885,7 +992,7 @@ def scan_error_lines(text: str, allow: tuple[tuple[str, str], ...] = LOG_ERROR_A
 
 
 def budget_violations(p95_s: float | None, wall_s: float, p95_limit: float | None, wall_limit: float | None) -> list[str]:
-    """The smoke's budgets (TC-SB-10): p95 over every accepted probe and the run's wall time."""
+    """The smoke's budgets : p95 over every accepted probe and the run's wall time."""
     bad: list[str] = []
     if p95_limit is not None and (p95_s is None or p95_s > p95_limit):
         bad.append("no accepted latency to hold to the p95 budget" if p95_s is None
@@ -1208,7 +1315,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                       args.neo4j_container, args.postgres_container)
     restarts_before = _restart_count(args.app_container)
     chaos = ChaosKill(args.app_container, chaos_spec[1]) if chaos_spec else None
-    # A knee run records which process capped it: Docling's, or the indexing process (QA-SB-17).
+    # A knee run records which process capped it: Docling's, or the indexing process .
     knee_watch = knee_watchers(args)
     knee_attribution: dict[str, Any] | None = None
     run = Run()
@@ -1250,8 +1357,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001
                 print(f"warning: could not remove fake model: {exc}", file=sys.stderr)
     restarts = _restart_count(args.app_container) - restarts_before
-    if chaos and chaos.fired and chaos.recovered(wait_s=CHAOS_RECOVERY_WAIT_S):
-        restarts += 1
+    restarts += chaos_restart_count(chaos)
     log_errors = fetch_log_errors(args.app_container, started_at.isoformat(timespec="seconds")) \
         if args.fail_on_log_errors else []
     if args.inject_duplicate and args.app_container:  # the product's dedup decisions, as evidence for the control
@@ -1421,6 +1527,11 @@ class ChaosKill:
             sleep(poll_s)
 
 
+def chaos_restart_count(chaos: Any, sleep: Any = time.sleep) -> int:
+    """1 when the kill fired and a new indexing process came up within the recovery wait, else 0."""
+    return 1 if chaos and chaos.fired and chaos.recovered(wait_s=CHAOS_RECOVERY_WAIT_S, sleep=sleep) else 0
+
+
 class ControlBytes:
     """The bytes of every upload, kept so a control can re-send its original's exactly.
 
@@ -1441,8 +1552,12 @@ class ControlBytes:
         self._items[seq] = (data, name)
         self._event(seq).set()
 
+    def fail(self, seq: int) -> None:
+        """The original has no bytes and never will: whoever waits for them is released with None."""
+        self._event(seq).set()
+
     def get(self, seq: int, timeout: float) -> tuple[bytes, str] | None:
-        return self._items[seq] if self._event(seq).wait(timeout) else None
+        return self._items.get(seq) if self._event(seq).wait(timeout) else None
 
 
 def _upload_one(a: Arrival, kb_client: Any, kb_id: str, run: Run, tmp: Path, entries: dict[str, Any],
@@ -1533,6 +1648,27 @@ def _fetch_details(kb_client: Any, sample: Sample) -> None:
         fields["gateway_calls"], fields["cache_hits"], fields["embed_wait_s"])
 
 
+def _upload_guarded(a: Arrival, kb_client: Any, kb_id: str, run: Run, tmp: Path, entries: dict[str, Any],
+                    run_id: str, t0: float, control_bytes: ControlBytes, control_wait_s: float = 600.0) -> Sample:
+    """``_upload_one``, but an exception in the harness (a template it cannot read, a salt it refuses) is
+    recorded as that upload's error, with its cause, instead of leaving the probe looking never started."""
+    try:
+        return _upload_one(a, kb_client, kb_id, run, tmp, entries, run_id, t0, control_bytes, control_wait_s)
+    except Exception as exc:  # noqa: BLE001
+        why = f"the harness failed this upload before it was sent: {type(exc).__name__}: {str(exc)[:160]}"
+        with run.lock:
+            sample = run.samples.get(a.seq)
+            if sample is None:
+                sample = Sample(seq=a.seq, kind=a.kind, role=a.role, name=f"harness-error-{a.seq}",
+                                md5=f"harness-error-{a.seq}", scheduled_arrival_ms=(t0 + a.at_s) * 1000.0,
+                                control=a.role == "control", control_of=a.control_of)
+                run.samples[a.seq] = sample
+            sample.upload_error = sample.upload_error or why
+        run.final_event(a.seq).set()
+        control_bytes.fail(a.seq)  # a control of this upload must not wait for bytes that never come
+        return sample
+
+
 def _run_open_loop(plan: Plan, kb_client: Any, kb_id: str, run: Run, tmp: Path, entries: dict[str, Any],
                    run_id: str, t0: float, args: argparse.Namespace) -> None:
     control_bytes = ControlBytes()
@@ -1543,7 +1679,7 @@ def _run_open_loop(plan: Plan, kb_client: Any, kb_id: str, run: Run, tmp: Path, 
             delay = t0 + a.at_s - time.time()
             if delay > 0:
                 time.sleep(delay)
-            futures.append(pool.submit(_upload_one, a, kb_client, kb_id, run, tmp, entries, run_id, t0, control_bytes,
+            futures.append(pool.submit(_upload_guarded, a, kb_client, kb_id, run, tmp, entries, run_id, t0, control_bytes,
                                        max(1.0, args.timeout)))
         _wait_all(kb_client, kb_id, run, futures, t0 + args.timeout, args.poll_interval)
     finally:
@@ -1660,7 +1796,7 @@ def _run_sequential(plan: Plan, kb_client: Any, kb_id: str, run: Run, tmp: Path,
 
 
 def calibration_report(log: list[dict[str, Any]]) -> dict[str, Any]:
-    """Cores per unit and ``s_d`` from each family's own process CPU (D-139). Whole-container CPU over a
+    """Cores per unit and ``s_d`` from each family's own process CPU . Whole-container CPU over a
     record's wall time is never used: it mixes every stage of the pipeline."""
     by_family: dict[str, list[dict[str, Any]]] = {}
     for row in log:
@@ -1844,6 +1980,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--label")
     ap.add_argument("--knee-from", nargs="+", type=Path, default=None, metavar="RESULT",
                     help="no run: compute CELL_CPUS and its confidence from the b06-knee result files of the tiers")
+    ap.add_argument("--baseline-from", nargs="+", type=Path, default=None, metavar="RESULT",
+                    help="no run: check that the repeats of a scenario are a valid baseline (3 or more passing runs, "
+                         "p50 CV at most 10 percent); exit 3 and no baseline when not")
     ap.add_argument("--profile", default=None, help="corpus profile (default: the scenario's)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--corpus-scale", type=float, default=1.0)
@@ -1882,8 +2021,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--output", type=Path, default=_IT_DIR / "reports" / "perf" / "costclass.json")
     ap.add_argument("--summary", type=Path, default=None)
     args = ap.parse_args(argv)
-    if not args.knee_from and not (args.scenario and args.label):
-        ap.error("--scenario and --label are required (or --knee-from)")
+    if not args.knee_from and not args.baseline_from and not (args.scenario and args.label):
+        ap.error("--scenario and --label are required (or --knee-from, or --baseline-from)")
     return args
 
 
@@ -1899,7 +2038,21 @@ def knee_main(args: argparse.Namespace) -> int:
         print(f"no CELL_CPUS: {out['reason']}")
         return EXIT_FAILED
     print(f"CELL_CPUS={out['cell_cpus']} confidence={out['confidence']} "
-          f"{'record as a decision' if out['record_as_decision'] else 'note only: not a decision (D-144 needs high confidence)'}")
+          f"{'record as a decision' if out['record_as_decision'] else 'note only: not a decision (it needs high confidence)'}")
+    return EXIT_PASS
+
+
+def baseline_main(args: argparse.Namespace) -> int:
+    out = baseline_from_results([json.loads(p.read_text(encoding="utf-8")) for p in args.baseline_from])
+    text = json.dumps(out, indent=2) + "\n"
+    if args.output != _IT_DIR / "reports" / "perf" / "costclass.json":
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+    print(text)
+    if not out["baseline_valid"]:
+        print("baseline INVALID, do not commit it: " + "; ".join(out["reasons"]))
+        return EXIT_INVALID
+    print("baseline valid")
     return EXIT_PASS
 
 
@@ -1907,6 +2060,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.knee_from:
         return knee_main(args)
+    if args.baseline_from:
+        return baseline_main(args)
     load_env()
     result = execute(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)

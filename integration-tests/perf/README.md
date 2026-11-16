@@ -464,12 +464,28 @@ corpus (`backend/python/tests/perf/parse_bench/corpus.py`, profiles `cost-smoke`
   with more stops the run) at each tier. `--knee-from <result files>` (the runner calls it after the tiers) keeps
   valid one-process results and prints `CELL_CPUS` with a confidence: `high` when every tier has a point and a
   tier above the knee fell short, `medium` when the top tier still scaled (a lower bound), `low` when a tier is
-  missing, the curve recovered after falling short, or the knee is the base tier.
+  missing, the curve recovered after falling short, or the knee is the base tier. With `BENCH_REPEATS=N` a tier
+  has several results, in any file order: its point is the **median** of its repeats, and a repeat that
+  Docling's process capped is left out of the median and listed under `docling_capped_repeats` (a tier whose
+  every repeat was capped makes the whole knee Docling-bound).
+* **Baselines and repeats:** `BENCH_REPEATS=3` runs every tier three times, each on a fresh stack, then
+  `--baseline-from <result files>` decides whether the repeats are a valid baseline: at least three, all passing,
+  the p50 of every kind (and the throughput of a saturation burst) steady with a coefficient of variation of at
+  most 10 %, and, when two burst tiers are present, throughput differing by at least 30 % between them. Anything
+  else exits 3 with the reasons and the baseline is not committed. No baselines are committed yet: they need
+  a quiet host.
+* **Upload errors:** an exception inside the harness's own upload (a file it cannot read or salt) is reported as
+  that upload's error with its cause; it fails the run.
 * **Calibration** reads each family from its own process (`/proc/<pid>/stat` utime+stime of Docling's and the
   embedding server's process trees, sampled while one unit runs at a single worker). `s_d` is Docling's busy
   seconds per page. Parse, inspect and raster run inside the indexing process's pools and are reported **not
   measurable** until the pools report per-unit CPU; their design weights stay. Container CPU over a record's wall
   time is never used.
+* **CI** (`.github/workflows/perf-costclass.yml`): the nightly `smoke`, and a Saturday `weekly` with one job per
+  run, listed in `costclass_weekly_legs.json` (the control with the embedding model faked runs first, then B-05,
+  B-03 and a scaled B-01, 4 CPUs each). Each job has its own build, start and bench limits, and
+  `integration-tests/unit/test_perf_costclass.py` computes every leg's planned duration from its schedule and
+  fails when it does not fit its step limit with 20 % to spare.
 * **Smoke gates:** `--max-p95-s`, `--max-wall-s` and `--fail-on-log-errors` (any ERROR line of the app's log
   since the run started, minus `LOG_ERROR_ALLOW`, fails the run).
 

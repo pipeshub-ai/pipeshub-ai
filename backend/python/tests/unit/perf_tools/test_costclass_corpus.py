@@ -114,3 +114,11 @@ def test_profiles_are_registered() -> None:
     assert set(corpus.COST_PROFILES) == {"cost-smoke", "cost-standard", "cost-huge"}
     assert corpus.COST_PROFILES["cost-huge"]["huge-pdf"][0] == 10
     assert corpus.COST_PROFILES["cost-smoke"]["huge-pdf"][0] == 0
+
+
+def test_page_counts_are_spread_not_constant(tmp_path: Path) -> None:
+    """Small PDFs differ in length (1..20 pages), so a per-kind number is not one page size's number."""
+    manifest = corpus.generate(tmp_path, profile="cost-standard", seed=11, scale=0.5)
+    pages = sorted({e.pages for e in manifest.entries if e.kind == "small-pdf"})
+    assert len(pages) > 1 and pages[0] >= 1 and pages[-1] <= 20, pages
+    assert corpus._spread(3, 20) != corpus._spread(4, 20)

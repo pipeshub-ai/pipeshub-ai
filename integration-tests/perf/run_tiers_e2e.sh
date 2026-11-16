@@ -9,9 +9,11 @@
 # deployment/docker-compose/docker-compose.bench.yml, run bench_costclass.py, tear the stack down with -v.
 # --dry-run prints the plan and starts nothing.
 #
-# Env: BENCH_TIERS (default "T4:4:16"), BENCH_PROJECT (compose project, default idxs-bench),
+# Env: BENCH_TIERS (default "T4:4:16"), BENCH_PROJECT (compose project, default bench-run),
 #      BENCH_PORT (first host port, default 19500), BENCH_LABEL, BENCH_QUIET_RETRIES, BENCH_QUIET_SLEEP,
-#      BENCH_ORDER (comma-separated CPU numbers, idlest first; for tests), BENCH_OUT (result dir).
+#      BENCH_ORDER (comma-separated CPU numbers, idlest first; for tests), BENCH_OUT (result dir),
+#      BENCH_REPEATS (default 1; the number of runs of every tier, each on a fresh stack. Above 1, the runner then
+#      checks that the repeats are a valid baseline: all pass and p50 CV at most 10 percent, else it exits 3).
 # Large host: BENCH_TIERS="T16:16:64 T32:32:128 T48:48:192 T96:96:256" with the siblings scaled as in
 # the capacity design.
 set -euo pipefail
@@ -31,9 +33,11 @@ done
 [ -n "$scenario" ] || { echo "--scenario is required" >&2; exit 64; }
 
 tiers=${BENCH_TIERS:-T4:4:16}
-project=${BENCH_PROJECT:-idxs-bench}  # lower case: compose rejects capitals
+project=${BENCH_PROJECT:-bench-run}  # lower case: compose rejects capitals
 port=${BENCH_PORT:-19500}
 label=${BENCH_LABEL:-local}
+repeats=${BENCH_REPEATS:-1}
+[[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { echo "BENCH_REPEATS must be a positive integer" >&2; exit 64; }
 out=${BENCH_OUT:-$repo/integration-tests/reports/perf}
 plan_args=(plan --tiers "$tiers" --scenario "$scenario")
 [ -n "${BENCH_ORDER:-}" ] && plan_args+=(--order "$BENCH_ORDER")
@@ -75,6 +79,8 @@ export BENCH_FAKE_AI_ARGS="${fake_args# }"
 
 ran=0 skipped=0 rc=0 results=()
 : >"$out/summary.md"
+for ((rep = 1; rep <= repeats; rep++)); do
+rep_suffix=""; [ "$repeats" -gt 1 ] && rep_suffix="-r$rep"
 while IFS= read -r line <&3; do
   case "$line" in
     SKIP*) echo "$line" >&2; skipped=$((skipped + 1)); continue ;;
@@ -126,15 +132,15 @@ PY
   fi
   if [ "$tier_rc" = 0 ]; then
     ran=$((ran + 1))
-    result="$out/costclass-$label-$name.json"
+    result="$out/costclass-$label-$name$rep_suffix.json"
     python3 "$here/bench_costclass.py" --scenario "$scenario" --label "$label-$name" \
       --base-url "$base" --tier-cpus "$cpus" --tier-mem-gb "${mem%g}" \
       --fake-ai-endpoint "http://fake-ai:8080/v1" --fake-ai-container "$proj-fake-ai-1" \
       --app-container "$proj-pipeshub-ai-1" \
       --siblings "$proj-neo4j-1,$proj-qdrant-1,$proj-redis-1,$proj-mongodb-1" \
       --redis-container "$proj-redis-1" --neo4j-container "$proj-neo4j-1" \
-      --output "$result" --summary "$out/summary-$name.md" "${extra[@]}" || tier_rc=$?
-    [ -f "$out/summary-$name.md" ] && cat "$out/summary-$name.md" >>"$out/summary.md"
+      --output "$result" --summary "$out/summary-$name$rep_suffix.md" "${extra[@]}" || tier_rc=$?
+    [ -f "$out/summary-$name$rep_suffix.md" ] && cat "$out/summary-$name$rep_suffix.md" >>"$out/summary.md"
     [ -f "$result" ] && results+=("$result")
   else
     echo "FAIL $name: the stack did not come up or the organization could not be created" >&2
@@ -143,6 +149,7 @@ PY
   [ "$tier_rc" -gt "$rc" ] && rc=$tier_rc  # a failed tier does not stop the next ones: the knee needs every point
   port=$((port + 1))
 done 3<<<"$plan"
+done
 
 echo "tiers: $ran ran, $skipped skipped" >&2
 if [ "$ran" = 0 ]; then
@@ -153,5 +160,9 @@ fi
 # The knee: CELL_CPUS and its confidence from the tiers' results, valid runs only.
 if [ "$scenario" = b06-knee ] && [ "${#results[@]}" -gt 0 ]; then
   python3 "$here/bench_costclass.py" --knee-from "${results[@]}" --output "$out/knee-$label.json" || rc=$(( rc > 1 ? rc : 1 ))
+fi
+# Repeats: a baseline is valid only when every repeat passed and the p50 of every kind is steady (CV at most 10 percent).
+if [ "$repeats" -gt 1 ] && [ "${#results[@]}" -gt 0 ]; then
+  python3 "$here/bench_costclass.py" --baseline-from "${results[@]}" --output "$out/baseline-$label.json" || rc=$(( rc > 3 ? rc : 3 ))
 fi
 exit "$rc"

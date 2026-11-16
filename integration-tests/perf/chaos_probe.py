@@ -1,4 +1,4 @@
-"""Live check of ``--chaos kill-app-at`` on a throwaway container, no PipesHub stack needed (QA-SB-15).
+"""Live check of ``--chaos kill-app-at`` on a throwaway container, no PipesHub stack needed.
 
 Docker applies no restart policy to ``docker kill``, so the chaos run kills the indexing process inside the app
 container and the container's process monitor restarts it. This starts a 64 MB container whose PID 1 is a small
@@ -9,7 +9,7 @@ monitor loop like ``deployment/process_monitor.sh`` (it restarts ``app.indexing_
    indexing process came back.
 
 Usage: python chaos_probe.py [image]   (default redis:7.4-bookworm: any Debian image with a shell, tr and grep)
-Exit 0 only when both hold. The container (``idxs-sb-chaos-*``) is removed with ``-v`` on the way out.
+Exit 0 only when both hold. The container (``bench-chaos-*``) is removed with ``-v`` on the way out.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def start(name: str) -> None:
 
 def main() -> int:
     stamp = str(int(time.time()))
-    names = [f"idxs-sb-chaos-{stamp}-a", f"idxs-sb-chaos-{stamp}-b"]
+    names = [f"bench-chaos-{stamp}-a", f"bench-chaos-{stamp}-b"]
     ok = True
     try:
         start(names[0])
