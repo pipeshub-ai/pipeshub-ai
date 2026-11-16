@@ -1233,8 +1233,9 @@ class DrupalWikiConnector(BaseConnector):
                 shares, permissions = self._page_access(page_id, home, listing)
                 written = _grants_digest(permissions)
                 # No memory of a page stored plain means plain; one stored with grants of its
-                # own (the memory was lost) is compared as unknown, so it is written again.
-                before_grants = had.get("grants", None if page_id in listing.stored_shared else "")
+                # own that the memory lost, or still holds as plain (its save failed after the
+                # grant), is compared as unknown, so it is written again.
+                before_grants = had.get("grants") or ("" if page_id not in listing.stored_shared else None)
                 if written != listing.written_as.get(page_id, before_grants):
                     record = record or await self._stored_page(page_id)
                     if record is None:

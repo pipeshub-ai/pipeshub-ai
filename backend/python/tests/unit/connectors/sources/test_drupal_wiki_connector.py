@@ -2429,6 +2429,23 @@ class TestSharedPages:
         assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
 
     @pytest.mark.asyncio
+    async def test_a_shared_page_is_unshared_even_when_the_share_memory_is_stale(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The memory still says plain (shared into protected 14 only): it was not saved after
+        # a share into open 13 wrote the page OPEN. That share is gone now, so the page is
+        # written plain again, not left with the org-wide grant.
+        had = {"home": 12, "spaces": [14], "grants": ""}
+        self.wiki(
+            connector, processor, {12: [self.PAGE], 13: [], 14: [self.PAGE], 15: []},
+            shares={"1": had}, stored_open=True,
+        )
+
+        await connector._sync_pages(self.SPACES)
+
+        assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
+
+    @pytest.mark.asyncio
     async def test_a_share_into_a_space_that_did_not_list_stays(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
