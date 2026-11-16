@@ -2727,6 +2727,13 @@ class JiraConnector(BaseConnector):
                     # access, so a role with users and no group leaves access unknown (fail closed).
                     # (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json)
                     access_outside_groups = True
+                named = role.get("groups") if isinstance(role.get("groups"), list) else []
+                identified = [g for g in group_details if isinstance(g, dict) and g.get("groupId")]
+                if len(identified) < max(len(named), len(group_details)):
+                    # ApplicationRole.groups: "The groups associated with the application role. As a group's name can
+                    # change, use of `groupDetails` is recommended to identify a groups." A group the role names but its
+                    # groupDetails do not identify by id licenses people this read cannot name (fail closed).
+                    access_outside_groups = True
 
                 if role_key and group_details:
                     mapping[role_key] = [
