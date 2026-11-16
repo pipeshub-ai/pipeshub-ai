@@ -26,9 +26,9 @@ from app.services.graph_db.postgres.kg.writers import RECORD_COLS, KgWriter
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, prov
-from .test_kg_read import _admin
 from .test_kg_projection import add_edge, delete_edge
 from .test_kg_projection_races import OPS, world2
+from .test_kg_read import _admin
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
@@ -616,7 +616,7 @@ async def test_a_restart_that_demotes_the_copy_while_a_batch_runs_is_not_overwri
     p, org = await fresh_world(pg_db)
     real, seen, demoted = bf.app_nodes, [], []
 
-    async def nodes(tx, o, app, after, limit):  # noqa: ANN001, ANN202
+    async def nodes(tx, o, app, after, limit):
         got = await real(tx, o, app, after, limit)
         seen.append(after)
         if not demoted and after is not None and (not got if last else bool(got)):
