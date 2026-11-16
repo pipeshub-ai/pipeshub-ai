@@ -155,7 +155,7 @@ class InMemoryGraph:
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list[Any],
-        return_fields: list[str] | None = None, transaction: str | None = None,
+        return_fields: list[str] | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
     ) -> list[dict]:
         self._enter("get_nodes_by_field_in", collection, field, values)
         stored_field = "_key" if field == "id" else field

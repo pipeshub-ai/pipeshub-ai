@@ -51144,6 +51144,11 @@ paths:
             `serviceAccountUserId` without `isServiceAccount` is refused (`VALIDATION_ERROR` on
             `serviceAccountUserId`: `Only a service agent searches as a service account. Set
             isServiceAccount, or leave the binding out.`).
+
+            A service-account agent (`isServiceAccount: true`) may only be given knowledge shared
+            with the whole organization: a personal connector is refused (`HTTP_BAD_REQUEST`,
+            `Personal sources (...) can't be attached to an agent that runs as a service account.`),
+            and so is a collection unless `serviceAccountUserId` binds the agent to a service account.
           content:
             application/json:
               schema:
@@ -51165,6 +51170,14 @@ paths:
             The AI backend failed to save the agent.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The knowledge of a service-account agent could not be checked just now. Nothing was
+            saved; retry.
           content:
             application/json:
               schema:
@@ -51349,7 +51362,10 @@ paths:
             schema violations. `HTTP_BAD_REQUEST` for an `agentKey` that is not
             safe to forward, and from the AI backend's rules, for example turning
             a service-account agent back into a regular one
-            (`isServiceAccount: false`).
+            (`isServiceAccount: false`), or giving a service-account agent a
+            personal connector, or a collection while it is not bound to a
+            service account (the same rule as on create, checked when
+            `knowledge`, `isServiceAccount` or `serviceAccountUserId` changes).
           content:
             application/json:
               schema:
@@ -51376,7 +51392,8 @@ paths:
             The change needs the caller's organization role (converting a
             regular agent by setting `isServiceAccount: true` as a non-owner, or
             changing `serviceAccountUserId`) and the role could not be confirmed just
-            now. Nothing was saved; retry.
+            now, or the knowledge of a service-account agent could not be checked.
+            Nothing was saved; retry.
           content:
             application/json:
               schema:
