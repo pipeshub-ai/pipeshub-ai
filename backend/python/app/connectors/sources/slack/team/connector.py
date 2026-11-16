@@ -1083,8 +1083,10 @@ class SlackConnector(BaseConnector):
             for u in all_users:
                 if u.source_user_id and u.id:
                     self.user_id_to_internal_id_cache[u.source_user_id] = u.id
-                    self._source_id_to_app_user[u.source_user_id] = u
-                    # ``unusable``: listed deactivated or invited this run, so no grant goes to its stored email.
+                    # ``unusable``: listed deactivated or invited this run, so no grant or group membership goes to
+                    # its stored row. Mentions still resolve through the internal-id cache.
+                    if u.source_user_id not in unusable:
+                        self._source_id_to_app_user[u.source_user_id] = u
                     if (u.source_user_id not in self.user_id_to_email_cache and u.source_user_id not in unusable
                             and u.email and u.is_active is not False):
                         self.user_id_to_email_cache[u.source_user_id] = u.email
