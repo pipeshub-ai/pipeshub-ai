@@ -138,8 +138,8 @@ class _Graph:
         await asyncio.sleep(0.01)
         return found
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
-        found = next((u for u in self.users.values() if u["email"].lower() == email.lower()), None)
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False, org_id: str) -> Any:  # noqa: ANN401
+        found = next((u for u in self.users.values() if u["email"].lower() == email.lower() and u.get("orgId") == org_id), None)
         await asyncio.sleep(0.01)
         return MagicMock(id=found["id"]) if found else None
 

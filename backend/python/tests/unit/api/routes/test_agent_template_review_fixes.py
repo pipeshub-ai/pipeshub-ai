@@ -32,6 +32,7 @@ async def test_null_memory_is_replaced_on_create() -> None:
 
 async def test_null_memory_is_replaced_on_update() -> None:
     graph = AsyncMock()
+    graph.get_template = AsyncMock(return_value={"can_edit": True})
     request = MagicMock()
     request.body = AsyncMock(return_value=b'{"memory":null}')
     a, b, c = _patches(graph)
@@ -66,6 +67,7 @@ async def test_an_invalid_memory_is_not_replaced_with_the_default_on_create(memo
 @pytest.mark.parametrize("memory", ["false", '""', "[]", "{}"])
 async def test_an_invalid_memory_is_not_replaced_with_the_default_on_update(memory: str) -> None:
     graph = AsyncMock()
+    graph.get_template = AsyncMock(return_value={"can_edit": True})
     request = MagicMock()
     request.body = AsyncMock(return_value=b'{"memory":' + memory.encode() + b"}")
     a, b, c = _patches(graph)

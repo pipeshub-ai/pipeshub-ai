@@ -1043,6 +1043,26 @@ class TestUnfinishedUserRead:
         assert after["lead"] == []
         assert ("EntityType.USER", "bo@acme.com") not in after["project"]
 
+    async def test_a_short_read_that_shows_a_user_deactivated_withdraws_them(self, api, site_db, checkpoints, search) -> None:
+        """Absence from a list cut short says nothing, but a row marked inactive does: Bo is withdrawn with his own
+        grants, so a later read listing him active again finds him newly listed and reads his issues again."""
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        bo_inactive = {**person("acc-bo", "bo@acme.com"), "active": False}
+
+        def users(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("startAt") == "0":
+                return json_response([bo_inactive, *self.FIRST_PAGE[:49]])
+            return json_response({"errorMessages": ["expired"]}, status=401)
+
+        api.on("GET", f"{JIRA}/users/search", users)
+        await connector.run_sync()
+        assert connector._user_read_unfinished is True
+        assert [u.source_user_id for u in site_db.withdrawn_users] == ["acc-bo"]
+
     async def test_a_user_list_refused_from_the_first_page_fails_closed(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
@@ -1055,6 +1075,8 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == []
+        # A refused list says nothing about who left Jira: nobody is withdrawn, nor loses their own grants.
+        assert site_db.withdrawn_users == []
 
     async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
