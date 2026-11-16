@@ -77,6 +77,23 @@ status = "draft"
   tests = ["node:tests/modules/auth/controller/userAccount.signInFlow.test.ts"]
 
   [[feature.behavior]]
+  id = "auth.sign-in.lock-expiry"
+  says = "A locked account is unlocked automatically after 24 hours and can sign in again."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/auth/sign-in-audit.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.sign-in.audit"
+  says = "Each sign-in outcome (success, refusal with a reason, lock, partial multi-step) is recorded once as an audit line that names the account and method and never holds the password, code or email as the method."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "node:tests/modules/auth/sign-in-audit.http.test.ts",
+    "node:tests/modules/auth/utils/sign-in-audit.test.ts",
+  ]
+
+  [[feature.behavior]]
   id = "auth.sign-in.login-page"
   says = "The login page shows the email and password fields, validates the email, shows an error for a wrong password, and sends a successful sign-in to /chat; if the server is unreachable it shows a retry, not a password form."
   priority = "P1"
@@ -270,7 +287,7 @@ status = "draft"
   says = "Reading or saving the Google or Microsoft settings needs an admin and the config scope; a member gets 403."
   priority = "P0"
   kind = "security"
-  tests = []
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
 
   [[feature.behavior]]
   id = "auth.provider-config.masked"
@@ -345,6 +362,13 @@ status = "draft"
   priority = "P0"
   kind = "security"
   tests = ["node:tests/modules/auth/controller/userAccount.controller.test.ts", "node:tests/modules/auth/routes/userAccount.address-limit.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "auth.password-reset.captcha"
+  says = "When a Turnstile secret is configured, a reset-link request without a valid challenge is refused."
+  priority = "P2"
+  kind = "security"
+  tests = []
 
   [[feature.behavior]]
   id = "auth.password-reset.strength"
@@ -704,6 +728,7 @@ status = "draft"
   tests = [
     "it:response-validation/user_management/integration_test_org.py::TestUpdateOnboardingStatus::test_update_onboarding_status_negative_tests",
     "it:response-validation/user_management/integration_test_org.py::TestGetOnboardingStatus::test_get_onboarding_status_negative_tests",
+    "node:tests/modules/user_management/routes/org.routes.test.ts",
   ]
 
   [[feature.behavior]]
@@ -759,6 +784,7 @@ status = "draft"
     "it:response-validation/user_management/integration_test_org.py::TestGetOrganizationById::test_get_current_organization_negative_tests",
     "it:response-validation/user_management/integration_test_org.py::TestUpdateOrgLogo::test_upload_org_logo_negative_tests",
     "it:response-validation/user_management/integration_test_org.py::TestRemoveOrgLogo::test_delete_org_logo_negative_tests",
+    "node:tests/modules/user_management/routes/org.routes.test.ts",
   ]
 
   [[feature.behavior]]
