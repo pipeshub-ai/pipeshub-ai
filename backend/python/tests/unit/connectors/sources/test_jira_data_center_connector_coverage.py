@@ -940,7 +940,7 @@ async def test_fetch_project_permission_scheme_dc_branches():
         pytest.param("acc", True, None, True, id="user list cut short"),
         pytest.param("acc", True, {"other"}, False, id="user list cut short, no product access"),
         pytest.param("acc", True, {"acc"}, True, id="user list cut short, product access"),
-        pytest.param("ann", False, None, True, id="named by username"),
+        pytest.param("ann", False, None, False, id="a username is never read as a key"),
     ],
 )
 async def test_a_user_holder_outside_the_synced_users_is_granted_only_while_they_may_be_unread(
@@ -1307,6 +1307,62 @@ async def test_sync_project_lead_roles_with_and_without_lead_user():
     assert batch[0][1] == [u]
     assert batch[1][1] == []
     assert batch[2][1] == []
+
+
+def _renamed_and_new_alice(conn) -> tuple[AppUser, AppUser]:
+    """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice"."""
+    conn._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.old": "alice"}
+    return tuple(
+        AppUser(app_name=Connectors.JIRA_DATA_CENTER, connector_id=conn.connector_id, source_user_id=key,
+                org_id="org-dc-cov", email=email, full_name=key, is_active=True)
+        for key, email in (("alice", "old-alice@example.com"), ("JIRAUSER10100", "new-alice@example.com"))
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_project_lead_named_by_username_is_the_account_holding_that_username() -> None:
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    renamed, newer = _renamed_and_new_alice(conn)
+    await conn._sync_project_lead_roles([{"key": "K1", "lead": {"name": "alice"}}], [renamed, newer])
+    batch = conn.data_entities_processor.on_new_app_roles.call_args[0][0]
+    assert batch[0][1] == [newer]
+
+
+@pytest.mark.asyncio
+async def test_a_group_member_named_by_username_is_the_account_holding_that_username() -> None:
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    _renamed_and_new_alice(conn)
+    page = MagicMock()
+    page.status = HttpStatusCode.OK.value
+    page.json = MagicMock(return_value={"values": [{"name": "alice"}, {"name": "unlisted"}], "isLast": True})
+    ds = MagicMock()
+    ds.get_users_from_group_v2 = AsyncMock(return_value=page)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        assert await conn._fetch_group_members("g1", "G") == ["JIRAUSER10100"]
+
+
+@pytest.mark.asyncio
+async def test_a_project_user_grant_parameter_is_a_key_never_a_username() -> None:
+    """The renamed account (key "alice") is not synced; the newer account holding the username "alice" is."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    _, newer = _renamed_and_new_alice(conn)
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 10000})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(return_value={"permissions": [
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "alice"}},
+    ]})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("TEST", {}, {"JIRAUSER10100": newer})
+    assert perms == []
 
 
 @pytest.mark.asyncio

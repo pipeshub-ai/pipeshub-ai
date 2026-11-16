@@ -62,6 +62,13 @@ class TestUsernames:
         resolved = connector._users_with_usernames(users)
         assert resolved["carol"].email == "carol@example.com" and resolved["carol-key"] is users["carol-key"]
 
+    def test_a_username_that_is_a_listed_accounts_key_is_no_alias(self) -> None:
+        """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice"."""
+        connector = _connector()
+        connector._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.old": "alice"}
+        users = {"JIRAUSER10100": _user("JIRAUSER10100", "new-alice@example.com")}
+        assert "alice" not in connector._users_with_usernames(users)
+
 
 class TestStoredGrantsKept:
     """A leveled issue whose level could not be read yet keeps the grants it has: a full sync's first

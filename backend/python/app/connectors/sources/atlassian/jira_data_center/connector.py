@@ -2418,10 +2418,12 @@ class JiraDataCenterConnector(BaseConnector):
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
 
-                    # The parameter is the user's key or, on some builds, their username.
-                    key = holder_param if holder_param in (user_by_key or {}) else (
-                        self._dc_name_to_source_id.get(str(holder_param).lower(), holder_param)
-                    )
+                    # The parameter is the user key on every supported release, never a username (which another account
+                    # may hold once renamed): Jira stores "the userkey, not the username"
+                    # (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/), and the
+                    # single-user grant reads its argument as a "user key string" in the Java API of 8.5.0, 9.12.0,
+                    # 10.3.0 and 11.0.0 (e.g. https://docs.atlassian.com/software/jira/docs/api/11.0.0/com/atlassian/jira/security/type/SingleUser.html).
+                    key = holder_param
                     resolved_email = None
                     if user_by_key and key in user_by_key:
                         resolved_email = user_by_key[key].email
@@ -2834,14 +2836,15 @@ class JiraDataCenterConnector(BaseConnector):
                     break
 
                 for member in batch_members:
-                    user_key = member.get("accountId") or member.get("key") or member.get("name") \
-                        if isinstance(member, dict) else None
-                    if not user_key:
+                    member = member if isinstance(member, dict) else {}
+                    if not (member.get("accountId") or member.get("key") or member.get("name")):
                         # A member we cannot name: skipping it would read the list as complete without them.
                         self.logger.warning("Group %s answered a member without a key or name", group_name)
                         self._note_unread(None)
                         return None
-                    member_keys.append(user_key)
+                    user_key = self._account_key(member)
+                    if user_key:  # none: a username the user list did not show, so no synced account
+                        member_keys.append(user_key)
 
                 if is_last is True:
                     break
@@ -3183,7 +3186,7 @@ class JiraDataCenterConnector(BaseConnector):
                     lead_display_name = lead_data.get("displayName", "Unknown")
 
                     if lead_identifier:
-                        lead_user = user_by_account_id.get(lead_identifier)
+                        lead_user = self._synced_account(lead_data, user_by_account_id)
 
                         if not lead_user and self._user_read_unfinished:
                             unresolved_leads[app_role.source_role_id] = (project_key, project.get("id"))
@@ -4825,12 +4828,36 @@ class JiraDataCenterConnector(BaseConnector):
         )
 
     def _users_with_usernames(self, user_by_key: dict[str, AppUser]) -> dict[str, AppUser]:
-        """The synced users by key, and also by username: a level names its user holders either way."""
+        """The synced users by key, and also by username: a level names its user holders either way. A username that
+        is the key of an account the user list showed is left out: existing users were given "a key that is equal to
+        the lowercase of the username" and usernames can change
+        (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/), so it may name that other
+        account, which may have no access.
+
+        shortcut: an account the user list did not show (a list cut short) is not known here, so its key could still
+        match a listed account's username; upgrade when level holders are read with their key."""
+        listed_keys = set(self._dc_name_to_source_id.values())
         aliases = {
             name: user_by_key[key]
-            for name, key in self._dc_name_to_source_id.items() if key in user_by_key and name not in user_by_key
+            for name, key in self._dc_name_to_source_id.items()
+            if key in user_by_key and name not in user_by_key and name not in listed_keys
         }
         return {**aliases, **user_by_key}
+
+    def _account_key(self, ref: dict[str, Any]) -> str | None:
+        """The key a user reference names: its own key, or its username's key in the user list. A username is never
+        taken for a key, since one account's key can be another account's username (see ``_users_with_usernames``)."""
+        key, name = ref.get("accountId") or ref.get("key"), ref.get("name")
+        if not isinstance(key or "", str) or not isinstance(name or "", str):
+            # Not a reference this code can read: the caller's read fails instead of naming no one.
+            raise TypeError("a user reference whose key or name is not a string")
+        if key:
+            return key
+        return self._dc_name_to_source_id.get(name.lower()) if name else None
+
+    def _synced_account(self, ref: dict[str, Any], user_by_key: dict[str, AppUser]) -> AppUser | None:
+        key = self._account_key(ref)
+        return user_by_key.get(key) if key else None
 
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
         """Note the project and level of each issue read that may parent a story."""

@@ -1550,8 +1550,9 @@ class TestDirectoryEdgeCases:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)
 
+        connector._dc_name_to_source_id = {"b": "b-key"}  # a member named by username is the account the user list gave it
         jira.on("GET", f"{API}/group/member", json_response([{"key": "a"}, {"name": "b"}]))
-        assert await connector._fetch_group_members("g", "g") == ["a", "b"]
+        assert await connector._fetch_group_members("g", "g") == ["a", "b-key"]
 
         jira.on("GET", f"{API}/group/member", json_response("odd"))
         assert await connector._fetch_group_members("g", "g") is None, "a body that is not a page leaves the members unknown"
