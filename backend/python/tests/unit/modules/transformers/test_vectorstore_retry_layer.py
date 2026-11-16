@@ -228,3 +228,30 @@ async def test_a_batch_that_times_out_is_charged_as_a_failed_send() -> None:
         with pytest.raises(EmbeddingError):
             await vs._embed_documents_with_retry(["hello"], "rec-1")
     assert Hanging.calls >= 1 and meter.failed == Hanging.calls
+
+
+async def test_an_entity_query_embedding_is_repeated_by_the_gateway_on_a_transient_failure() -> None:
+    """The entity store's model is built without SDK retries; the query path must not let the first 503 escape."""
+    from collections import OrderedDict
+
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
+
+    class Remote:
+        calls = 0
+
+        def embed_query(self, text: str) -> list[float]:
+            Remote.calls += 1
+            if Remote.calls == 1:
+                raise _error(503)
+            return [0.5, 0.5]
+
+    store = EntityVectorStore.__new__(EntityVectorStore)
+    store._dense_embeddings = Remote()
+    store._query_vector_cache = OrderedDict()
+    store._generation = 0
+    store._sparse_embedder = None
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    with patch("app.modules.transformers.entity_vectorstore.get_embedding_gateway", return_value=gateway), \
+            patch("app.services.llm_gateway.embedding_gateway.asyncio.sleep", AsyncMock()):
+        dense, _sparse = await store._query_vectors("acme")
+    assert dense == [0.5, 0.5] and Remote.calls == 2

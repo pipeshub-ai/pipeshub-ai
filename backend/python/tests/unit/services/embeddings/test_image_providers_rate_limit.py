@@ -173,3 +173,30 @@ async def test_bedrock_one_images_unexpected_failure_does_not_abort_the_batch(
     provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
     results = await provider.embed_images([IMAGE, IMAGE])  # type: ignore[union-attr]
     assert [r.error is not None for r in results] == [True, True]
+
+
+async def test_voyage_repeats_a_transport_failure_through_the_real_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The actual path: ``VoyageEmbeddings.aembed_documents`` posts with ``requests``; a refused connection is retried by the
+    gateway (three sends), and is not turned into a per-image error after one."""
+    import requests
+
+    from app.services.llm_gateway import embedding_gateway as gateway_module
+    from app.utils.custom_embeddings import VoyageEmbeddings
+
+    posts: list[int] = []
+
+    def post(**_: Any) -> Any:  # noqa: ANN401
+        posts.append(1)
+        raise requests.exceptions.ConnectionError("refused")
+
+    async def instant(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.utils.custom_embeddings.requests.post", post)
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", instant)
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    monkeypatch.setattr("app.services.embeddings.multimodal.voyage_provider.get_embedding_gateway", lambda: gateway)
+    embeddings = VoyageEmbeddings(model="voyage-multimodal-3", voyage_api_key="k", max_retries=1)
+    provider = MultimodalEmbeddingFactory.create(_config("voyage", dense_embeddings=embeddings))
+    results = await provider.embed_images([IMAGE])  # type: ignore[union-attr]
+    assert len(posts) == 3 and results[0].error is not None

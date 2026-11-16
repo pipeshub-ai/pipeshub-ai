@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 import httpx
 import openai
+import requests
 
 from app.exceptions.indexing_exceptions import EmbeddingError
 from app.services.llm_gateway import wire
@@ -92,6 +93,9 @@ def _is_connection_failure(exc: BaseException) -> bool:
         seen.add(id(current))
         if isinstance(current, (ConnectionError, httpx.ConnectError, httpx.RemoteProtocolError)):
             return True
+        # ``requests`` (Voyage's HTTP client) raises its own hierarchy, which is not the builtin one.
+        if isinstance(current, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return True
         if type(current).__name__ in {"EndpointConnectionError", "ConnectionClosedError"}:  # botocore
             return True
         current = current.__cause__
@@ -108,6 +112,10 @@ def retry_after_of(exc: BaseException) -> float | None:
         if headers is None and isinstance(response, dict):
             # botocore keeps them in the parsed error response.
             headers = (response.get("ResponseMetadata") or {}).get("HTTPHeaders")
+        if headers is None:
+            # Cohere's ApiError keeps them on the exception itself, with no response object.
+            own = getattr(current, "headers", None)
+            headers = own if hasattr(own, "get") else None
         if headers is not None:
             return parse_retry_after(headers)
         current = current.__cause__
@@ -168,7 +176,12 @@ class EmbeddingGateway:
         key = provider_key(embeddings)
         if ":?" in key:
             return None
-        requested = (getattr(embeddings, "dimensions", None), getattr(embeddings, "output_dimensionality", None))
+        requested = (
+            getattr(embeddings, "dimensions", None),
+            getattr(embeddings, "output_dimensionality", None),
+            # Two Azure deployments can share an endpoint, a credential and a model label and still differ in size.
+            getattr(embeddings, "deployment", None),
+        )
         return provider_pk(f"{key}|{requested}", credential_of(embeddings))
 
     async def probe_dimension(self, embeddings: Embeddings) -> int:

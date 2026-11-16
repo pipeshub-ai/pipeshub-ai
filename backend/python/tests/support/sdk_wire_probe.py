@@ -184,6 +184,7 @@ async def main() -> int:
                 nd, _, infod = await _one(kind, provider, model_name, None)
             except Exception as exc:
                 print(f"BUILD-ERR {kind:4} {provider:18} {type(exc).__name__}: {str(exc)[:100]}")
+                bad += 1
                 continue
             verdict = "OK" if n0 == 1 else ("UNSEEN" if n0 == 0 else "SDK-RETRIES")
             if verdict != "OK":

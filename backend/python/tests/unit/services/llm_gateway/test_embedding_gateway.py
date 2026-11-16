@@ -226,3 +226,33 @@ async def test_concurrent_probes_of_one_key_pay_once() -> None:
     release.set()
     assert await asyncio.gather(*tasks) == [6] * 5
     assert sum(e.requests for e in embedders) == 1
+
+
+def test_a_cohere_error_keeps_its_retry_after_from_its_own_headers() -> None:
+    """Cohere's ApiError carries the headers on the exception and has no response object (the key keeps its casing)."""
+    from app.services.llm_gateway.embedding_gateway import retry_after_of
+
+    class ApiError(Exception):
+        status_code = 429
+        headers = {"Retry-After": "42"}
+
+    assert retry_after_of(ApiError("slow")) == 42.0
+    assert EmbeddingGateway.retry_kind(ApiError("slow")) is RetryKind.THROTTLE
+
+
+async def test_two_azure_deployments_of_one_endpoint_have_their_own_probe() -> None:
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    a = _Embedder(model="text-embedding", dimension=1536, api_key="k", deployment="small")
+    b = _Embedder(model="text-embedding", dimension=3072, api_key="k", deployment="large")
+    assert await gateway.probe_dimension(a) == 1536  # type: ignore[arg-type]
+    assert await gateway.probe_dimension(b) == 3072  # type: ignore[arg-type]
+    assert (a.requests, b.requests) == (1, 1)
+
+
+def test_requests_transport_failures_are_transient() -> None:
+    """Voyage's client is ``requests``: its connection and timeout errors are not the builtin ones."""
+    import requests
+
+    for error in (requests.exceptions.ConnectionError("refused"), requests.exceptions.ConnectTimeout("slow"),
+                  requests.exceptions.ReadTimeout("slow")):
+        assert EmbeddingGateway.retry_kind(error) is RetryKind.TRANSIENT

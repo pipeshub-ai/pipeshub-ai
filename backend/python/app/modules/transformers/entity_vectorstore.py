@@ -2030,7 +2030,13 @@ class EntityVectorStore:
             self._query_vector_cache.move_to_end(text)
             return cached
         generation = self._generation
-        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, text)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            dense_vec = await asyncio.to_thread(embeddings.embed_query, text)
+        else:
+            # The model is built without SDK retries (it is shared with indexing): a remote provider's transient failure is
+            # repeated by the gateway, the one retry layer, instead of escaping from the first 503.
+            dense_vec = await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_query, text))
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
