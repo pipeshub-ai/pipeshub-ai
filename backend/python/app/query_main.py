@@ -46,6 +46,7 @@ from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
+from app.edition import check_runtime_settings  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.edition_containers import QueryAppContainer
 from app.edition_services import (  # noqa: E402 - like the imports around it, after set_service_suffix()
     configure_app,
@@ -67,6 +68,9 @@ from app.utils.user_lookup import (  # noqa: E402 - after set_service_suffix(), 
 )
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = QueryAppContainer.init("query_service")
 
