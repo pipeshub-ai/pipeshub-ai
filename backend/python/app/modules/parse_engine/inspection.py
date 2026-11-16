@@ -45,7 +45,11 @@ async def inspect_facts(
 
         from app.modules.parse_engine.office_facts import office_facts
 
-        office = await asyncio.to_thread(office_facts, bytes(content))
+        try:
+            office = await asyncio.to_thread(office_facts, bytes(content))
+        except Exception:  # best effort: nothing here may fail the record's attempt
+            _logger.info("No Office facts for %s; its class stays on the size prior", label, exc_info=True)
+            return InspectedFacts()
         return InspectedFacts(pages=office.pages, cells=office.cells)
     from app.modules.parsers.pdf.untrusted_pdf import inspect_for_class
 

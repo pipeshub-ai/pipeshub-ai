@@ -45,6 +45,28 @@ def test_anything_unreadable_is_no_facts() -> None:
         assert office_facts(content) == OfficeFacts()
 
 
+def test_a_member_that_does_not_inflate_is_no_facts_and_never_raises() -> None:
+    good = _xlsx("A1:B2")
+    junk_name = b"xl/worksheets/sheet1.xml"
+    start = good.index(junk_name) + len(junk_name)
+    corrupt = good[:start] + b"\xff" * 20 + good[start + 20:]  # damage the compressed payload, keep the directory
+    assert office_facts(corrupt) == OfficeFacts()
+    docx = _docx(10)
+    name = b"docProps/app.xml"
+    at = docx.index(name) + len(name)
+    assert office_facts(docx[:at] + b"\xff" * 12 + docx[at + 12:]) == OfficeFacts()
+
+
+def test_the_member_cap_is_applied_from_the_directory_record_before_any_entry_is_parsed(monkeypatch) -> None:
+    import zipfile as zf
+
+    def explode(*_a: object, **_k: object) -> None:
+        raise AssertionError("the central directory was parsed")
+
+    monkeypatch.setattr(zf.ZipFile, "_RealGetContents", explode)
+    assert office_facts(_zip({f"m{i}": b"" for i in range(5001)})) == OfficeFacts()
+
+
 def test_a_package_with_too_many_members_is_not_inspected() -> None:
     assert office_facts(_zip({f"m{i}": b"" for i in range(5001)})) == OfficeFacts()
 

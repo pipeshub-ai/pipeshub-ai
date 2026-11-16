@@ -42,14 +42,26 @@ def _area(match: re.Match[bytes]) -> int:
     return min(_MAX_CELLS, cols * rows)
 
 
+def _entry_count(content: bytes) -> int | None:
+    """The entry count in the end-of-central-directory record, read before the directory itself is parsed."""
+    tail = content[-(65535 + 22):]
+    at = tail.rfind(b"PK\x05\x06")
+    if at < 0 or len(tail) - at < 22:
+        return None
+    return int.from_bytes(tail[at + 10:at + 12], "little")
+
+
 def office_facts(content: bytes) -> OfficeFacts:
-    """The facts of a docx, pptx or xlsx package; empty when it cannot be read this way."""
+    """The facts of a docx, pptx or xlsx package; empty when it cannot be read this way.
+
+    Any failure (a bad zip, a damaged member, a stream that does not inflate) is no facts: the size prior stands.
+    """
+    count = _entry_count(content)
+    if count is None or count > _MAX_MEMBERS:
+        return OfficeFacts()  # refused before one ZipInfo is built
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            infos = zf.infolist()
-            if len(infos) > _MAX_MEMBERS:
-                return OfficeFacts()
-            names = {i.filename for i in infos}
+            names = {i.filename for i in zf.infolist()}
             if "xl/workbook.xml" in names:
                 total = 0
                 sheets = sorted(n for n in names if n.startswith("xl/worksheets/sheet") and n.endswith(".xml"))
@@ -66,6 +78,6 @@ def office_facts(content: bytes) -> OfficeFacts:
                     m = pattern.search(head)
                     if m and int(m.group(1)) > 0:
                         return OfficeFacts(pages=int(m.group(1)))
-    except (zipfile.BadZipFile, OSError, ValueError, KeyError, RuntimeError, NotImplementedError):
+    except Exception:  # noqa: BLE001 - best effort by design; zlib.error, BadZipFile, OSError and the rest all mean no facts
         return OfficeFacts()
     return OfficeFacts()
