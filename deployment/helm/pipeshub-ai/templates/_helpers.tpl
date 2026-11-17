@@ -406,7 +406,8 @@ the raw daemon API with no policy in between, i.e. root on the node.
     {{- if or $live.memHigh $live.memHard }}
       {{- $high := float64 ($live.memHigh | default "0.90") }}
       {{- $hard := float64 ($live.memHard | default "0.95") }}
-      {{- if lt (subf $hard $high) 0.01 }}
+      {{- /* Same tolerance as the app: a gap of exactly 0.01 passes despite float rounding (0.94 - 0.93 < 0.01). */}}
+      {{- if lt (subf $hard $high) 0.009999999 }}
         {{- fail "sandbox.dind.liveLimit.memHigh must be below memHard by at least 0.01 (empty values are 0.90 and 0.95): runs are held back above memHigh and the limit halves above memHard." }}
       {{- end }}
     {{- end }}
