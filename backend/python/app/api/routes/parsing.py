@@ -199,8 +199,14 @@ def _warn_if_budget_differs(sent: float | None, extension: str, mime_type: str |
     """One warning per pair when the caller's record budget is not this service's own (the settings drifted)."""
     from app.services.messaging.config import messaging_env
 
+    raw = sent
     sent = lock_limits.valid_record_budget(sent)
     if sent is None:                       # absent or unusable: the service's own settings apply, nothing to compare
+        if isinstance(raw, int | float) and not isinstance(raw, bool) and raw == raw and raw > lock_limits.MAX_RECORD_BUDGET_S:
+            logger.warning(
+                "The caller's record budget (%.0f s) is above the %.0f s this service accepts (the open-manifest "
+                "protection window less a margin); this service's own settings apply.", raw, lock_limits.MAX_RECORD_BUDGET_S,
+            )
         return
     own = messaging_env.record_processing_timeout_for(extension, mime_type)
     if abs(own - sent) > 1.0 and (round(sent), round(own)) not in _budget_mismatch_logged:

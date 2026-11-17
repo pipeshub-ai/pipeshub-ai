@@ -30,7 +30,7 @@ from app.services.paid_cache import locks as lock_limits
 FLUSH_KEYS = 50
 FLUSH_SECONDS = 30.0
 #: How long an open manifest keeps its objects out of the sweep.
-OPEN_PROTECTS_MS = 24 * 3600 * 1000
+OPEN_PROTECTS_MS = lock_limits.OPEN_MANIFEST_PROTECTS_S * 1000
 #: The manifest label of a run that does not know its revision.
 NO_REV = "norev"
 #: Completion order within one writer process, for manifests that complete in the same millisecond.

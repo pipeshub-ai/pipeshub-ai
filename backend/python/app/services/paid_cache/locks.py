@@ -63,11 +63,16 @@ def stage_deadline_s() -> float:
 
 
 #: The most a record budget a caller sends can be: a request body is not trusted with an unbounded deadline.
-MAX_RECORD_BUDGET_S = 7 * 24 * 3600.0
+#: How long an open manifest keeps its objects out of the retention sweep (a run still writing is protected this long).
+OPEN_MANIFEST_PROTECTS_S = 24 * 3600
+#: Kept inside the window: a run whose budget is longer than the protection could still be writing after it ends.
+OPEN_MANIFEST_MARGIN_S = 4 * 3600
+MAX_RECORD_BUDGET_S = float(OPEN_MANIFEST_PROTECTS_S - OPEN_MANIFEST_MARGIN_S)
 
 
 def valid_record_budget(record_budget_s: object) -> float | None:
-    """The record budget a caller sent, when it is a usable duration (finite, positive, at most a week), else None."""
+    """The record budget a caller sent, when it is a usable duration (finite, positive, below the open-manifest
+    protection window by its margin), else None."""
     if isinstance(record_budget_s, bool) or not isinstance(record_budget_s, int | float):
         return None
     try:

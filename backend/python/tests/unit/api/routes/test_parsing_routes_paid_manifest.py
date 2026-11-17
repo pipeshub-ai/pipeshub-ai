@@ -235,3 +235,24 @@ def test_the_runs_stage_bound_is_the_budget_the_client_sent_with_the_2400_s_floo
     assert bounds[0] == 9000.0
     assert bounds[1] == float(locks.STAGE_DEADLINE_S)
     assert bounds[2] == locks.stage_deadline_s()
+
+
+def test_a_budget_longer_than_the_open_manifest_protection_falls_back_and_one_inside_it_is_honoured(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.services.paid_cache import locks
+    from app.services.paid_cache.run import OPEN_PROTECTS_MS
+
+    assert locks.MAX_RECORD_BUDGET_S * 1000 < OPEN_PROTECTS_MS                  # derived from the window, below it
+    assert locks.stage_deadline_for(20 * 3600.0) == 20 * 3600.0                 # 20 h is honoured
+    assert locks.stage_deadline_for(23 * 3600.0) == locks.stage_deadline_s()    # 23 h falls back
+    assert locks.stage_deadline_for(locks.MAX_RECORD_BUDGET_S + 1) == locks.stage_deadline_s()
+
+    monkeypatch.setattr("app.api.routes.parsing._budget_mismatch_logged", set())
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        return _ok_result()
+
+    with caplog.at_level("WARNING"):
+        assert _post(parse, record_budget_s=str(23 * 3600)).status_code == 200
+    assert any("above" in r.getMessage() and "accepts" in r.getMessage() for r in caplog.records)
