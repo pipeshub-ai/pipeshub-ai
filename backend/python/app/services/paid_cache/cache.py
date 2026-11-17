@@ -50,6 +50,8 @@ MANIFEST_LOCK_POLL_S = 0.05
 #: How long a delivery of a refresh event waits for another delivery that is purging, and how often it looks.
 REFRESH_PURGE_WAIT_S = 20.0
 REFRESH_PURGE_POLL_S = 0.2
+#: The counter of hand-backs stops counting here (the handler's own limit is lower).
+MAX_REFRESH_HANDBACK_COUNT = 1000
 #: Kept for callers: the holder's lease, not this, bounds the wait.
 DEFAULT_WAIT_S = MAX_WAIT_S
 
@@ -286,6 +288,22 @@ class PaidResultCache:
             self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
             return "unclaimed"
         return token
+
+    async def refresh_handback_count(self, org_id: str, record_id: str, event_id: str) -> int:
+        """How many times this refresh event has been handed back for another delivery's purge, counting this one.
+
+        Counted in the lock backend (one ``SET NX`` per hand-back), so the count survives redeliveries and replicas
+        and a holder that keeps renewing cannot hold duplicates back for ever.
+        """
+        name = refresh_name(org_id, record_id, event_id)
+        try:
+            backend = await self._backend()
+            for n in range(1, MAX_REFRESH_HANDBACK_COUNT + 2):
+                if await backend.acquire(f"{name}:handback{n}", 3600 * 1000) is not None:
+                    return n
+        except Exception:
+            self.logger.debug("Paid-result refresh hand-back count unavailable", exc_info=True)
+        return 1
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:
@@ -717,6 +735,9 @@ class NullPaidResultCache:
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
+
+    async def refresh_handback_count(self, org_id: str, record_id: str, event_id: str) -> int:
+        return 1
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:

@@ -230,6 +230,8 @@ _DISABLED_TYPES_TTL_SECONDS = 60.0
 
 #: How long the broker holds a refresh event handed back because another delivery is purging.
 REFRESH_HANDBACK_DELAY_S = 30.0
+#: The most a refresh is handed back for another delivery's purge (20 x 30 s = 10 min), then it fails with a reason.
+MAX_REFRESH_HANDBACKS = 20
 
 
 class RecordEventHandler(BaseEventService):
@@ -1736,6 +1738,7 @@ class RecordEventHandler(BaseEventService):
         handed_back = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
+        held_for_refresh = False
         record = None
         resuming_enrichment = False
         source_name: str | None = None
@@ -2350,6 +2353,16 @@ class RecordEventHandler(BaseEventService):
                                 # A failure raises out of the block: no marker is written, and the redelivery purges.
                                 await paid_cache.purge_record(refresh_org, record_id)
                     except RefreshPurgeInProgress as exc:
+                        # Nothing has been written for this delivery: the bookkeeping below skips it, as for a
+                        # record held for its connector's delete (no FAILED, no queued duplicate, no status rewrite).
+                        held_for_refresh = True
+                        waits = await paid_cache.refresh_handback_count(refresh_org, record_id, str(event_id))
+                        if waits > MAX_REFRESH_HANDBACKS:
+                            held_for_refresh = False
+                            raise RuntimeError(
+                                f"the purge of refresh {event_id} by another delivery is still running after "
+                                f"{MAX_REFRESH_HANDBACKS} hand-backs ({MAX_REFRESH_HANDBACKS * REFRESH_HANDBACK_DELAY_S:.0f} s)"
+                            ) from exc
                         # Queue time, not a failure: handed back after a delay without counting an attempt.
                         raise RefreshPurgeHeld(str(exc), delay_s=REFRESH_HANDBACK_DELAY_S) from exc
                     # A redelivery of the same event (must_purge False) still refreshes: it reuses only what its first
@@ -2645,6 +2658,9 @@ class RecordEventHandler(BaseEventService):
             # Not a failure: the consumer hands the message back, and nothing is written for it.
             self.logger.info(f"Record {record_id} held: its connector is being deleted")
             raise
+        except RefreshPurgeHeld:
+            self.logger.info(f"Record {record_id} held: another delivery of its refresh is purging")
+            raise
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
@@ -2676,7 +2692,7 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if stage_redrive or held_for_delete:
+            if stage_redrive or held_for_delete or held_for_refresh:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
                 # A held event has done nothing yet, and its record is the delete's.
@@ -2891,7 +2907,7 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not held_for_delete and not in_trash and not parse_now_refused and not store_only:
+            if not cancelled and not held_for_delete and not held_for_refresh and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
 
             # Last, so every status write above is shaped by the run.

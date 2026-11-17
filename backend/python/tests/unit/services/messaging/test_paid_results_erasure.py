@@ -387,3 +387,55 @@ async def test_a_long_purge_and_its_duplicate_both_end_with_the_record_completed
     await _reindex(duplicate_handler, dict(payload))               # the duplicate, delivered again, now completes
     run = current_run()
     assert handed_back == 8 and run is not None and run.reuse_prior_attempt
+
+
+async def _held_handler(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
+    from app.services.paid_cache import cache as cache_module
+    from app.services.paid_cache.locks import refresh_name
+
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.02)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.005)
+    _seed(store)
+    handler = _handler()
+    handler._trigger_next_queued_duplicate = AsyncMock()
+    # A record whose release path would trigger the next queued duplicate, were the bookkeeping to run.
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value={
+        "_key": REC, "orgId": ORG, "virtualRecordId": "vr", "indexingStatus": "ENABLE_MULTIMODAL_MODELS",
+    })
+    cache = access.paid_cache_for(MagicMock())
+    backend = await cache._backend()
+    assert await backend.acquire(refresh_name(ORG, REC, "evt-f") + ":lease", 600_000)         # a live holder's lease
+    return handler
+
+
+async def test_a_handed_back_refresh_on_its_last_counted_delivery_does_not_fail_the_record(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+
+    handler = await _held_handler(store, monkeypatch)
+    updates = handler.event_processor.graph_provider.update_node
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-f", "is_final_failure": True}
+
+    with pytest.raises(RefreshPurgeHeld):
+        await _events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+    assert not [c for c in updates.await_args_list if "FAILED" in str(c)]              # the record is not marked FAILED
+    handler._trigger_next_queued_duplicate.assert_not_awaited()                          # no queued duplicate triggered
+    updates.assert_not_awaited()                                                         # no status rewrite at all
+
+
+async def test_a_refresh_handed_back_for_ever_by_a_live_holder_fails_after_the_bound_with_a_reason(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.messaging.kafka.handlers import record as record_module
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+
+    handler = await _held_handler(store, monkeypatch)
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-f", "is_final_failure": False}
+
+    for _ in range(record_module.MAX_REFRESH_HANDBACKS):
+        with pytest.raises(RefreshPurgeHeld):
+            await _events(handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+    with pytest.raises(RuntimeError, match="still running after"):
+        await _events(handler, EventTypes.REINDEX_RECORD.value, dict(payload))
