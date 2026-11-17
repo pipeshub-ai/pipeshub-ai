@@ -416,10 +416,10 @@ def test_an_inspections_lane_demand_keeps_its_designed_memory_and_other_kinds_ke
 async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None
 ) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
     from app.modules.parse_engine import wiring
     from app.services.resource_governor.kinds import ParseKind
-
-    from concurrent.futures import ThreadPoolExecutor
 
     monkeypatch.setenv("PARSE_ADMISSION", "classes")
     wiring.reset_for_tests()
