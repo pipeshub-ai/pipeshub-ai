@@ -1982,25 +1982,34 @@ class TestAlreadyIndexed:
         assert pipeline.mock_calls == []
 
     @pytest.mark.asyncio
-    async def test_a_lost_hand_off_still_reconciles_before_running(self) -> None:
+    async def test_a_lost_hand_off_still_runs_without_taking_the_points_out_first(self) -> None:
         handler, pipeline = self._indexed_xlsx(handoff_lost=True)
-        payload = {"recordId": "r1", "virtualRecordId": "vr1", **self._XLSX}
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "signedUrl": "https://example.com/f.xlsx", **self._XLSX}
 
-        # The full path runs into the bare test doubles further on; what matters is the reconciliation.
-        with contextlib.suppress(Exception):
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"x"):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once()
+        handler.event_processor.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_forced_reindex_of_an_indexed_xlsx_still_reconciles(self) -> None:
+    async def test_a_forced_reindex_of_an_indexed_xlsx_still_runs_without_taking_the_points_out_first(self) -> None:
         handler, pipeline = self._indexed_xlsx(handoff_lost=False)
-        payload = {"recordId": "r1", "virtualRecordId": "vr1", "forceReindex": True, **self._XLSX}
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "signedUrl": "https://example.com/f.xlsx", "forceReindex": True, **self._XLSX}
 
-        with contextlib.suppress(Exception):
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"x"):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once()
+        handler.event_processor.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     # ---- the replay set: an exact replay of a delivery that completed the record -----------------
 
@@ -2924,7 +2933,7 @@ class TestUpdateRecordEvent:
     """Tests for updateRecord event type."""
 
     @pytest.mark.asyncio
-    async def test_update_record_deletes_existing_embeddings(self):
+    async def test_update_record_does_not_take_embeddings_out_before_the_work(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2961,7 +2970,8 @@ class TestUpdateRecordEvent:
             mock_dl.return_value = b"file content"
             events = await _collect_events(handler, EventTypes.UPDATE_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+        ep.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert len(events) == 2
 
 
@@ -5637,7 +5647,7 @@ class TestReconciliationPath:
         pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_reindex_non_reconciliation_deletes_embeddings(self):
+    async def test_reindex_non_reconciliation_does_not_take_embeddings_out_before_the_work(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         pptx_mime = MimeTypes.PPTX.value
@@ -5672,7 +5682,8 @@ class TestReconciliationPath:
             mock_dl.return_value = b"pptx"
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+        ep.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 # ===================================================================
@@ -6438,8 +6449,8 @@ class TestStageRedrive:
         with contextlib.suppress(Exception):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
         ingress.redrive.assert_awaited_once()
-        # Past the stage branch: the regular reindex path clears the old vectors.
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
+        # Past the stage branch, the regular reindex path takes nothing out of the vector store first.
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

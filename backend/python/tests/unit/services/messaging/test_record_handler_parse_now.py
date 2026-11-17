@@ -217,12 +217,12 @@ class TestStoreOnlyRun:
         harness.pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert "forceReindex" not in harness.runs[0]["payload"]
 
-    async def test_a_normal_reindex_still_clears_the_embeddings_first(self) -> None:
+    async def test_a_normal_reindex_runs_in_full_without_taking_the_embeddings_out_first(self) -> None:
         harness = Harness(_record(indexingStatus="QUEUED"))
 
         await harness.run(_payload(parseNow=False, forceReindex=True))
 
-        harness.pipeline.bulk_delete_embeddings.assert_awaited_once()
+        harness.pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert harness.runs[0]["run"] is None
 
     async def test_the_event_is_completed_from_the_record(self) -> None:
