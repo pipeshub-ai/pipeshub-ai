@@ -475,6 +475,7 @@ def get_default_governor(
                 slots = _open_slots(sandbox_state_directory(), capacity.slot_files)
                 _default_governor = SandboxResourceGovernor(
                     capacity, slots, limit_provider=FixedLimit(capacity),
+                    observers=_default_observers(capacity),
                 )
                 if capacity.mode in ("compose", "local", "helm_dind"):
                     from app.agent_loop_lib.sandbox.live_limit import (
@@ -497,6 +498,16 @@ def get_default_governor(
             "sandbox governor: ignoring limits %s; the process governor is already built", limits,
         )
     return _default_governor
+
+
+def _default_observers(capacity: SandboxCapacity) -> list[AcquireObserver]:
+    """The load ledger behind the admin load alerts. E2B runs elsewhere and
+    has no alerts, so its runs are not recorded."""
+    if capacity.mode == "e2b":
+        return []
+    from app.agent_loop_lib.sandbox.load_ledger import get_default_load_ledger
+
+    return [get_default_load_ledger()]
 
 
 def _attach_indexing_yield(live: LiveLimit) -> None:
@@ -524,6 +535,8 @@ def reset_default_governor() -> None:
     if governor is not None:
         governor.close()
     from app.agent_loop_lib.sandbox.live_limit import set_live_limit
+    from app.agent_loop_lib.sandbox.load_ledger import reset_default_load_ledger
 
     set_live_limit(None)
+    reset_default_load_ledger()
     reset_sandbox_capacity()
