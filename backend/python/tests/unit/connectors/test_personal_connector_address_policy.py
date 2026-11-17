@@ -74,8 +74,11 @@ def _resolve(monkeypatch, answers: dict[str, str]) -> MagicMock:
 
 
 @pytest.fixture
-def no_socket_connect(monkeypatch) -> None:
-    """Any attempt to open a TCP connection fails the test."""
+async def no_socket_connect(monkeypatch) -> None:
+    """Any attempt to open a TCP connection fails the test.
+
+    Async, so the test's event loop exists before the patch: on Windows the loop's
+    socketpair is built with a loopback connect."""
     connect = MagicMock(side_effect=AssertionError("a socket connect was attempted"))
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect)
