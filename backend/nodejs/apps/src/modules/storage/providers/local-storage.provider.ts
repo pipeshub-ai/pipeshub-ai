@@ -167,17 +167,35 @@ class LocalStorageAdapter implements StorageServiceInterface {
   /**
    * Writes beside the target and renames over it, so a write that fails part
    * way (disk full, storage gone) leaves the previous file whole instead of cut short.
+   * With `ifAbsent`, the finished file is linked into place instead: a second
+   * writer's link fails with EEXIST rather than replacing the first one's file,
+   * and the call answers false.
    */
   private async writeFileAtomically(
     fullPath: string,
     data: Buffer,
-  ): Promise<void> {
+    options: { ifAbsent?: boolean } = {},
+  ): Promise<boolean> {
     // Named independently of the target: a long but valid filename plus a suffix
     // can pass the filesystem's limit for one name component.
     const tempPath = path.join(path.dirname(fullPath), `.${randomUUID()}.tmp`);
     try {
       await fs.writeFile(tempPath, data, { mode: 0o600 });
+      if (options.ifAbsent) {
+        try {
+          await fs.link(tempPath, fullPath);
+        } catch (error) {
+          if ((error as { code?: string }).code === 'EEXIST') {
+            return false;
+          }
+          throw error;
+        } finally {
+          await fs.rm(tempPath, { force: true }).catch(() => undefined);
+        }
+        return true;
+      }
       await fs.rename(tempPath, fullPath);
+      return true;
     } catch (error) {
       await fs.rm(tempPath, { force: true }).catch(() => undefined);
       throw error;
@@ -582,22 +600,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (located === null) {
         throw new StorageNotFoundError('Local folder not found');
       }
-      const tempPath = path.join(
-        path.dirname(located.target),
-        `.${randomUUID()}.tmp`,
-      );
-      try {
-        await fs.writeFile(tempPath, data, { mode: 0o600 });
-        await fs.link(tempPath, located.target);
-        return true;
-      } catch (error) {
-        if ((error as { code?: string }).code === 'EEXIST') {
-          return false;
-        }
-        throw error;
-      } finally {
-        await fs.rm(tempPath, { force: true }).catch(() => undefined);
-      }
+      return await this.writeFileAtomically(located.target, data, {
+        ifAbsent: true,
+      });
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
