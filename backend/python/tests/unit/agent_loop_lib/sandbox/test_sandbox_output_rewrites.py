@@ -95,3 +95,20 @@ class TestReplacingAKeptFileCountsOnlyItsGrowth:
             result, _ = await _run(sandbox, {"/output": archive}, client)
             stderr = result.stderr
         assert "this sandbox already keeps" in stderr
+
+
+class TestShrinkingAnUploadEarnsNoCredit:
+    async def test_truncating_a_staged_input_does_not_make_room_for_new_output(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_OUTPUT_MAX_SANDBOX_BYTES", str(1 * MiB))
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        await sandbox.upload_file("big_input.bin", b"i" * (900 * KiB))  # uploaded, never charged
+        client, _c = _client({})
+        stderr = ""
+        for run in range(3):
+            stamp = time.time() + 10 * (run + 1)
+            archive_src = _tar([("src", None, stamp), ("src/big_input.bin", b"", stamp)])
+            archive_out = _tar([("output", None, stamp), (f"output/new{run}.bin", b"n" * (400 * KiB), stamp)])
+            result, _ = await _run(sandbox, {"/src": archive_src, "/output": archive_out}, client)
+            stderr = result.stderr
+        # 3 x 400 KiB of new output is past the 1 MiB limit whatever happened to the upload.
+        assert "this sandbox already keeps" in stderr

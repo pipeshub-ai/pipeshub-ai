@@ -466,7 +466,9 @@ def extract_tar_stream(
       is collected like any other file.
     - Retention counts what the sandbox keeps after the run: a file that
       replaces one already kept under ``kept_dir`` (default ``local_dir``)
-      counts only its growth.
+      counts only its growth. Under a separate ``kept_dir`` a smaller
+      replacement earns no credit, since that file may never have been
+      charged.
     - Sizes are the sizes in the tar header, which for a sparse file is its
       full apparent size, so a sparse file cannot expand past the limits.
     - Every member is sanitised by ``filter="data"``, and one whose own
@@ -559,6 +561,10 @@ def extract_tar_stream(
                     return
                 replaced = _kept_size(os.path.join(kept_dir or local_dir, member.name))
                 grows_by = size - (replaced or 0)
+                if kept_dir is not None:
+                    # Files under kept_dir include uploads that were never
+                    # charged, so shrinking one earns no credit.
+                    grows_by = max(0, grows_by)
                 new_file = replaced is None
                 if retention is not None and (
                     (new_file and budget.retained_files + 1 > retention.room_files)
