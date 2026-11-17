@@ -693,13 +693,13 @@ class KnowledgeHubService:
         return bool(doc) and doc.get("connectorId") in app_ids
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
-        """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
+        """Resolve graph user node from external userId. A subclass may override the org-scoped lookup."""
         return await get_caller_user(self.graph_provider, user_id, org_id=org_id)
 
     async def _get_user_app_ids(
         self, user_key: str, org_id: str
     ) -> list[str]:
-        """Return app IDs accessible to this user. EE overrides for org-scoped lookup."""
+        """Return app IDs accessible to this user. A subclass may override the org-scoped lookup."""
         owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
         shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
         return list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))

@@ -108,6 +108,24 @@ describe('telemetry opt-out window', () => {
     expect(drain.called).to.be.false;
   });
 
+  it('P6: an opt-out during the start delay of a real start leaves no interval and sends nothing', async () => {
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const post = sandbox.stub(axios, 'post').resolves({ data: {} });
+      const kv = { get: sandbox.stub().resolves(stored('true')), set: sandbox.stub().resolves(), watchKey: sandbox.stub().resolves() };
+      const svc = new TelemetryService(kv as any);
+      for (let i = 0; i < 5; i++) await flushAsync(); // the reload ran; the push start waits in its delay
+
+      await optOut({ get: sandbox.stub().resolves(stored('true')), set: sandbox.stub().resolves() });
+      await clock.tickAsync(250);
+      expect((svc as any).pushInterval, 'an interval was armed after the opt-out').to.equal(null);
+      await clock.tickAsync(200_000);
+      expect(post.called).to.equal(false);
+    } finally {
+      clock.restore();
+    }
+  });
+
   it('P2: a reload that read "true" before the opt-out was written cannot switch consent back on', async () => {
     const { svc, kv } = await runningService('false');
     let release!: (raw: string) => void;
@@ -156,6 +174,30 @@ describe('telemetry consent gauge at startup', () => {
     await flushAsync();
     await flushAsync();
     expect(await gaugeLine()).to.match(/ 1$/);
+  });
+
+  it('is written even when consent was off in this process before the stored consent was read', async () => {
+    flag.setCollectionConsent(false);
+    const kv = { get: sandbox.stub().resolves(stored('true')), set: sandbox.stub().resolves(), watchKey: sandbox.stub().resolves() };
+    new TelemetryService(kv as any); // eslint-disable-line no-new
+    await flushAsync();
+    await flushAsync();
+    expect(await gaugeLine()).to.match(/ 1$/);
+  });
+
+  it('stays one series after a restart followed by an opt-in', async () => {
+    const kv = { get: sandbox.stub().resolves(stored('true')), set: sandbox.stub().resolves(), watchKey: sandbox.stub().resolves() };
+    new TelemetryService(kv as any); // eslint-disable-line no-new
+    await flushAsync();
+    await flushAsync();
+    await toggleMetricsCollection({ get: sandbox.stub().resolves(stored('false')), set: sandbox.stub().resolves() } as any)(
+      { body: { enableMetricCollection: true }, user: { orgId: 'o' }, headers: {} } as any,
+      response(),
+      sinon.stub(),
+    );
+    const lines = (await metricsBackend.serialize()).split('\n').filter((l) => l.startsWith('pipeshub_metric_collection_enabled{'));
+    expect(lines).to.have.length(1);
+    expect(lines[0]).to.match(/ 1$/);
   });
 
   it('is not written while the stored consent is off', async () => {

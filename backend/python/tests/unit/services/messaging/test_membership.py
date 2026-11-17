@@ -118,6 +118,23 @@ class TestChecks:
         admin.close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_kafka_a_describe_call_that_raises_for_a_later_group_fails_the_check(self) -> None:
+        """aiokafka 0.14 reports a broken describe by raising, not by an error code: no group's answer may stand in for it."""
+        admin = MagicMock()
+        admin.start, admin.close = AsyncMock(), AsyncMock()
+        first = self._described(1, (0, "g1", ["indexing"]))
+
+        async def describe(groups: list[str]) -> list[Any]:
+            if groups == ["g2"]:
+                raise ConnectionError("connection closed")
+            return [first]
+
+        admin.describe_consumer_groups = AsyncMock(side_effect=describe)
+        with pytest.raises(ConnectionError):
+            await m.kafka_untagged(lambda: admin, ["g1", "g2"])
+        admin.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_kafka_describes_one_group_per_request(self) -> None:
         """aiokafka 0.14 reads a v3 DescribeGroups answer with the v2 layout (no authorized_operations), so every group after
         the first in one answer comes back shifted (error -32768, an empty name)."""
