@@ -305,7 +305,13 @@ class YieldSignal:
             return None
 
     def read(self) -> YieldRecord | None:
-        """The record without waiting; a torn read is retried, then given up."""
+        """The record without waiting; a torn read is retried, then given up.
+        A reader that never takes the lock still notices a replaced file."""
+        if self._thread_lock.acquire(blocking=False):
+            try:
+                self._reopen_if_replaced()
+            finally:
+                self._thread_lock.release()
         for _ in range(3):
             record = self._read_raw()
             if record is not None:
