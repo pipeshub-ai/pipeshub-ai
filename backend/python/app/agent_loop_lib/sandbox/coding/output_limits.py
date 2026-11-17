@@ -38,8 +38,10 @@ import asyncio
 import io
 import logging
 import os
+import stat
 import sys
 import tarfile
+import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -308,6 +310,10 @@ class ExtractBudget:
     read_bytes: int = 0
     entries: int = 0
     kept_files: int = 0
+    # What the run changed in the sandbox's kept files: a file that replaces
+    # one already kept adds only the difference, and no file.
+    retained_bytes: int = 0
+    retained_files: int = 0
     skipped: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
@@ -435,7 +441,8 @@ def extract_tar_stream(
     budget: ExtractBudget,
     *,
     allow_symlinks: bool = False,
-    unchanged: Callable[[str, tarfile.TarInfo], bool] | None = None,
+    unchanged: Callable[[str, tarfile.TarInfo], str | None] | None = None,
+    kept_dir: str | None = None,
 ) -> None:
     """Extract the tar stream ``chunks`` (``get_archive`` of
     ``container_path``) into ``local_dir`` within ``budget``.
@@ -451,9 +458,15 @@ def extract_tar_stream(
     - A file larger than the per-file limit is skipped by name; once the
       total, the entry count, or the sandbox's retention is reached,
       collection stops.
-    - ``unchanged(name, member)`` True means the caller already has this
-      file as it is (restored from an earlier run): it is read past, not
-      extracted, and not counted as new output.
+    - ``unchanged(name, member)`` returns the host path of a file the
+      caller already has with this member's size and mtime (restored from
+      an earlier run), or None. The member's bytes are compared with that
+      file as they are read past: an identical file is not extracted and
+      not counted as new output; one rewritten to the same size and mtime
+      is collected like any other file.
+    - Retention counts what the sandbox keeps after the run: a file that
+      replaces one already kept under ``kept_dir`` (default ``local_dir``)
+      counts only its growth.
     - Sizes are the sizes in the tar header, which for a sparse file is its
       full apparent size, so a sparse file cannot expand past the limits.
     - Every member is sanitised by ``filter="data"``, and one whose own
@@ -466,6 +479,7 @@ def extract_tar_stream(
         _close(chunks)
         return
     reader = _ChunkReader(chunks, max(0, budget.read_limit - budget.read_bytes))
+    _discard_spool: list[str] = []
     resolved_root = os.path.realpath(local_dir)
     prefix = os.path.basename(container_path.rstrip("/")) + "/"
     current_target: str | None = None
@@ -502,13 +516,26 @@ def extract_tar_stream(
                     )
                     continue
                 size = member.size if member.isfile() else 0
+                spooled = None
                 if member.isfile() and unchanged is not None:
                     try:
-                        same = unchanged(member.name, member)
+                        baseline = unchanged(member.name, member)
                     except Exception:
-                        same = False
-                    if same:
-                        continue
+                        baseline = None
+                    if baseline is not None:
+                        try:
+                            spooled = _spool_if_changed(tar, member, baseline, target)
+                        except _ArchiveTooLarge:
+                            raise
+                        except Exception as exc:
+                            logger.warning(
+                                "Skipping tar member %r from %s: comparing it failed: %s",
+                                member.name, container_path, exc,
+                            )
+                            continue
+                        if spooled is None:
+                            continue
+                        _discard_spool.append(spooled)
                 shown = f"{container_path.rstrip('/')}/{member.name} ({_human(size)})"
                 if size > limits.max_file_bytes:
                     if budget.streamed_bytes + size > budget.stream_limit:
@@ -530,14 +557,17 @@ def extract_tar_stream(
                     )
                     logger.warning("sandbox output: total limit reached at %s", shown)
                     return
+                replaced = _kept_size(os.path.join(kept_dir or local_dir, member.name))
+                grows_by = size - (replaced or 0)
+                new_file = replaced is None
                 if retention is not None and (
-                    budget.kept_files + 1 > retention.room_files
-                    or budget.extracted_bytes + size > retention.room_bytes
+                    (new_file and budget.retained_files + 1 > retention.room_files)
+                    or (grows_by > 0 and budget.retained_bytes + grows_by > retention.room_bytes)
                 ):
                     budget.stopped_reason = (
                         f"{shown} and any later files were not kept, because this sandbox "
-                        f"already keeps {_human(retention.kept_bytes + budget.extracted_bytes)} in "
-                        f"{retention.kept_files + budget.kept_files} files from its runs and keeps "
+                        f"already keeps {_human(retention.kept_bytes + budget.retained_bytes)} in "
+                        f"{retention.kept_files + budget.retained_files} files from its runs and keeps "
                         f"at most {_human(retention.max_bytes)} or {retention.max_files} files "
                         "across all runs"
                     )
@@ -545,9 +575,16 @@ def extract_tar_stream(
                     return
                 current_target = target
                 try:
-                    # `data` filter rejects a link whose target escapes the
-                    # destination; skip that member rather than abort the run.
-                    tar.extract(member, local_dir, filter="data")
+                    if spooled is not None:
+                        # The member's bytes were read while comparing them.
+                        os.chmod(spooled, (member.mode & 0o755) | 0o600)
+                        os.utime(spooled, (member.mtime, member.mtime))
+                        os.replace(spooled, target)
+                        _discard_spool.remove(spooled)
+                    else:
+                        # `data` filter rejects a link whose target escapes the
+                        # destination; skip that member rather than abort the run.
+                        tar.extract(member, local_dir, filter="data")
                 except _ArchiveTooLarge:
                     raise
                 except Exception as exc:
@@ -560,6 +597,8 @@ def extract_tar_stream(
                 budget.extracted_bytes += size
                 budget.streamed_bytes += size
                 budget.kept_files += 1
+                budget.retained_bytes += grows_by
+                budget.retained_files += int(new_file)
     except _ArchiveTooLarge:
         budget.stopped_reason = (
             f"collection stopped because the archives of this run went past "
@@ -572,8 +611,71 @@ def extract_tar_stream(
             except OSError:
                 pass
     finally:
+        for path in _discard_spool:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         budget.read_bytes += reader.consumed
         _close(chunks)
+
+
+def _kept_size(path: str) -> int | None:
+    """Size of the regular file already kept at ``path``, or None."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return st.st_size if stat.S_ISREG(st.st_mode) else None
+
+
+def _spool_if_changed(tar: tarfile.TarFile, member: tarfile.TarInfo, baseline: str, target: str) -> str | None:
+    """Read ``member``'s bytes and compare them with the host file
+    ``baseline``. None when they are the same; otherwise the path of a
+    temporary file next to ``target`` holding the member's bytes (the
+    stream cannot be read twice)."""
+    source = tar.extractfile(member)
+    if source is None:
+        return None
+    try:
+        host = os.fdopen(os.open(baseline, os.O_RDONLY | os.O_NOFOLLOW), "rb")
+    except OSError:
+        host = None
+    offset = 0
+    with source:
+        try:
+            while True:
+                chunk = source.read(_READ_CHUNK)
+                same = host.read(len(chunk) or 1) if host is not None else None
+                if not chunk and not same and host is not None:
+                    return None
+                if chunk != same:
+                    break
+                offset += len(chunk)
+        finally:
+            if host is not None:
+                host.close()
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        fd, spool = tempfile.mkstemp(prefix=".sandbox-", dir=os.path.dirname(target))
+        try:
+            with os.fdopen(fd, "wb") as out:
+                if offset:
+                    # Bytes already read and found equal to the host file's.
+                    with os.fdopen(os.open(baseline, os.O_RDONLY | os.O_NOFOLLOW), "rb") as prefix:
+                        left = offset
+                        while left > 0:
+                            part = prefix.read(min(_READ_CHUNK, left))
+                            if not part:
+                                raise OSError(f"{baseline} changed while it was read")
+                            out.write(part)
+                            left -= len(part)
+                out.write(chunk)
+                while chunk := source.read(_READ_CHUNK):
+                    out.write(chunk)
+        except BaseException:
+            os.unlink(spool)
+            raise
+    return spool
 
 
 def _close(chunks: Any) -> None:

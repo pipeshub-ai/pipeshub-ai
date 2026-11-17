@@ -1434,14 +1434,18 @@ class DockerCodingSandbox(CodingSandboxBackend):
         src_bytes, _ = _dir_usage(src_dir)
         staged_bytes = sum(f.size for f in staged_inputs.values())
 
-        def _output_unchanged(name: str, member: tarfile.TarInfo) -> bool:
-            return _same_as_host_file(os.path.join(output_dir, name), member)
+        # Each returns the host file the member may be a copy of; the
+        # extractor compares the bytes before it skips the member.
+        def _output_unchanged(name: str, member: tarfile.TarInfo) -> str | None:
+            path = os.path.join(output_dir, name)
+            return path if _same_as_host_file(path, member) else None
 
-        def _src_unchanged(name: str, member: tarfile.TarInfo) -> bool:
+        def _src_unchanged(name: str, member: tarfile.TarInfo) -> str | None:
             staged = staged_inputs.get(name)
             if staged is not None and staged.matches(member):
-                return True
-            return _same_as_host_file(os.path.join(src_dir, name), member)
+                return os.path.join(self._working_dir, name)
+            path = os.path.join(src_dir, name)
+            return path if _same_as_host_file(path, member) else None
 
         with self._collect_lock:
             if self._kept is None:
@@ -1454,10 +1458,14 @@ class DockerCodingSandbox(CodingSandboxBackend):
             _extract_container_dir(
                 container, "/output", output_dir, budget=budget, unchanged=_output_unchanged,
             )
+            # /src files move up into the working dir, replacing what is there.
             _extract_container_dir(
                 container, "/src", src_dir, budget=budget, unchanged=_src_unchanged,
+                kept_dir=self._working_dir,
             )
-            self._kept = (kept_bytes + budget.extracted_bytes, kept_files + budget.kept_files)
+            self._kept = (
+                max(0, kept_bytes + budget.retained_bytes), max(0, kept_files + budget.retained_files),
+            )
         return budget
 
     async def _ensure_image(self) -> None:
@@ -1872,7 +1880,8 @@ def _same_content(a: str, b: str) -> bool | None:
 def _extract_container_dir(
     container: object, container_path: str, local_dir: str, *, allow_symlinks: bool = False,
     budget: ExtractBudget | None = None,
-    unchanged: Callable[[str, tarfile.TarInfo], bool] | None = None,
+    unchanged: Callable[[str, tarfile.TarInfo], str | None] | None = None,
+    kept_dir: str | None = None,
 ) -> ExtractBudget:
     """Pull a directory from a container via `get_archive` and extract it
     into `local_dir`, merging with (not clearing) whatever's already there.
@@ -1898,7 +1907,7 @@ def _extract_container_dir(
         bits, _ = container.get_archive(container_path)
         extract_tar_stream(
             bits, container_path, local_dir, budget,
-            allow_symlinks=allow_symlinks, unchanged=unchanged,
+            allow_symlinks=allow_symlinks, unchanged=unchanged, kept_dir=kept_dir,
         )
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)
