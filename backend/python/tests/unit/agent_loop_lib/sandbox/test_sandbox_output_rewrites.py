@@ -186,3 +186,52 @@ class TestShrinkingACollectedFileGivesBackItsCharge:
         result, _ = await _run(sandbox, {"/output": archive_out}, client)
         # The rewritten upload now keeps 100 KiB that was charged; 950 KiB more is past 1 MiB.
         assert "this sandbox already keeps" in result.stderr
+
+
+class TestASameSizeUploadInTheSameSecondWins:
+    """The upload keeps its size and whole-second mtime, so only the
+    nanosecond mtime or the inode tells it apart from the staged copy."""
+
+    async def _run_with_upload_during_collection(self, tmp_path, upload) -> tuple:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        await sandbox.upload_file("data.csv", b"old,1\n")
+        host = tmp_path / "wd" / "data.csv"
+        second = int(time.time()) - 60
+        os.utime(host, ns=(second * 10**9 + 100, second * 10**9 + 100))
+        # The run rewrote the file in the container with the same size and second.
+        archives = {"/src": _tar([("src", None, second), ("src/data.csv", b"ctr,1\n", second)])}
+        client, container = _client({})
+
+        def get_archive(path: str) -> tuple:
+            if path == "/src":
+                upload(host, second)  # another call uploads while this run is going
+            return iter([archives.get(path, _tar([]))]), {}
+
+        container.get_archive.side_effect = get_archive
+        with patch("docker.from_env", return_value=client):
+            result = await sandbox.execute(CodeRequest(code="print(1)", language="python"))
+        return host, result
+
+    async def test_an_in_place_upload_with_a_later_nanosecond_mtime_is_kept(self, tmp_path) -> None:
+        def upload(host, second: int) -> None:
+            host.write_bytes(b"new,1\n")
+            os.utime(host, ns=(second * 10**9 + 500, second * 10**9 + 500))
+
+        host, result = await self._run_with_upload_during_collection(tmp_path, upload)
+
+        assert host.read_bytes() == b"new,1\n"
+        assert "data.csv" not in result.artifacts
+
+    async def test_an_upload_renamed_into_place_with_the_same_mtime_is_kept(self, tmp_path) -> None:
+        def upload(host, second: int) -> None:
+            staged = os.stat(host)
+            tmp = host.with_name("data.csv.tmp")
+            tmp.write_bytes(b"new,1\n")
+            os.utime(tmp, ns=(staged.st_atime_ns, staged.st_mtime_ns))
+            os.replace(tmp, host)
+            assert os.stat(host).st_mtime_ns == staged.st_mtime_ns
+
+        host, result = await self._run_with_upload_during_collection(tmp_path, upload)
+
+        assert host.read_bytes() == b"new,1\n"
+        assert "data.csv" not in result.artifacts

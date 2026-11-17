@@ -1819,10 +1819,19 @@ def _put_directory(container: Any, path: str, src_dir: str) -> int:
 @dataclass(frozen=True)
 class _StagedFile:
     """A working-dir file archived into ``/src``: its size and whole-second
-    mtime, as written into the archive."""
+    mtime, as written into the archive, and the nanosecond mtime, inode and
+    device of the host file, so a later upload is told apart from the copy
+    that was staged even with the same size in the same second."""
 
     size: int
     mtime: int
+    mtime_ns: int
+    ino: int
+    dev: int
+
+    @classmethod
+    def from_stat(cls, st: os.stat_result) -> _StagedFile:
+        return cls(st.st_size, int(st.st_mtime), st.st_mtime_ns, st.st_ino, st.st_dev)
 
     def matches(self, member: tarfile.TarInfo) -> bool:
         return member.size == self.size and abs(float(member.mtime) - self.mtime) < 1.0
@@ -1851,7 +1860,7 @@ def _scan_working_dir_inputs(working_dir: str) -> dict[str, _StagedFile]:
                 # contents back into the next container (SB-5).
                 logger.warning("_scan_working_dir_inputs: skipping non-regular file %s", rel)
                 continue
-            files[rel] = _StagedFile(st.st_size, int(st.st_mtime))
+            files[rel] = _StagedFile.from_stat(st)
     return files
 
 
@@ -1878,7 +1887,7 @@ def _add_staged_inputs(
             info.size = st.st_size
             info.mtime = int(st.st_mtime)
             tar.addfile(info, fh)
-            staged[rel] = _StagedFile(st.st_size, int(st.st_mtime))
+            staged[rel] = _StagedFile.from_stat(st)
 
 
 def _same_as_host_file(path: str, member: tarfile.TarInfo) -> bool:
@@ -1913,12 +1922,20 @@ def _dir_usage(root: str) -> tuple[int, int]:
 
 def _replaced_since_staged(path: str, staged: _StagedFile) -> bool:
     """Whether the host file at ``path`` is no longer the one archived into
-    the run (another upload replaced it, or it is gone)."""
+    the run (another upload replaced it, or it is gone). An upload that
+    renames a new file into place changes the inode; one that writes in
+    place changes the nanosecond mtime, even within the same second."""
     try:
         st = os.lstat(path)
     except OSError:
         return True
-    return not stat.S_ISREG(st.st_mode) or st.st_size != staged.size or int(st.st_mtime) != staged.mtime
+    return (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_size != staged.size
+        or st.st_mtime_ns != staged.mtime_ns
+        or st.st_ino != staged.ino
+        or st.st_dev != staged.dev
+    )
 
 
 def _same_content(a: str, b: str) -> bool | None:
