@@ -7,7 +7,7 @@ import { relative } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { alive as aliveFn, lockPath, takeLock } from "../src/launcher.ts";
+import { alive as aliveFn } from "../src/launcher.ts";
 
 const root = mkdtempSync(join(tmpdir(), "psh-fake-"));
 const main = join(import.meta.dirname, "..", "src", "main.ts"), fakeApi = join(import.meta.dirname, "fake-api.mjs");
@@ -24,11 +24,12 @@ if [ "$a" = start ]; then grep -q "^listen_addresses = '127.0.0.1'" "$d/launcher
   sleep 600 >/dev/null 2>&1 & echo $! > "$d/postmaster.pid"; else
   [ -f "$d/postmaster.pid" ] && kill $(head -1 "$d/postmaster.pid") 2>/dev/null; rm -f "$d/postmaster.pid"; fi`);
   // Each step and service records its arguments and environment, so the test can check who got which credential.
-  sh(join(b, "py/bin/python3"), `name=$(echo "$*" | sed -n 's/.*-m \\([a-z_.]*\\).*/\\1/p'); name=\${name:-createdb}
+  sh(join(b, "py/bin/python3"), `case "$*" in *fcntl*) exec python3 "$@";; esac
+name=$(echo "$*" | sed -n 's/.*-m \\([a-z_.]*\\).*/\\1/p'); name=\${name:-createdb}
 env > "$HOME/env-$name"; echo "$name" >> "$HOME/order"
 [ "$name" = createdb ] && [ -f "${b}/slow-createdb" ] && sleep 30
 case "$*" in
-  *app.*_main*) [ -f "$HOME/die-$name" ] && { sleep 1; exit 7; }; exec sleep 600;;
+  *app.*_main*) [ -f "$HOME/die-$name" ] && { sleep 1; exit 7; }; [ -f "$HOME/fork-$name" ] && { sleep 600 & wait; exit 0; }; exec sleep 600;;
   *db.maintain*) exec sleep 600;;
   *db.bootstrap_roles*) [ -n "$PG_BACKUP_PASSWORD" ] || exit 2;;
 esac
@@ -39,8 +40,11 @@ exit 0`);
 }
 
 const live: ChildProcess[] = [];
+/** Every bundle and data folder a test started, so teardown stops each deployment (detached ones too) before deleting it. */
+const deployments = new Map<string, string>();
 let nextBase = 54800;
 function launch(b: string, d: string, ...args: string[]) {
+  deployments.set(d, b);
   const p = spawn(process.execPath, [main, ...args, "--bundle", b, "--data-dir", d, "--port-base", String(nextBase += 20), "--json"], { stdio: ["ignore", "pipe", "pipe"], cwd: root });
   live.push(p);
   const events: Record<string, any>[] = [];
@@ -56,6 +60,7 @@ function launch(b: string, d: string, ...args: string[]) {
 }
 // async on purpose: a blocking spawnSync would stop this process reaping the launcher it started, leaving a zombie that still "exists"
 const cli = (b: string, d: string, ...args: string[]) => new Promise<{ code: number | null; out: any }>((resolve) => {
+  deployments.set(d, b);
   const p = spawn(process.execPath, [main, ...args, "--bundle", b, "--data-dir", d, "--json"], { stdio: ["ignore", "pipe", "pipe"], cwd: root });
   let text = ""; p.stdout!.on("data", (c) => (text += c));
   p.once("exit", (code) => resolve({ code, out: text.trim() ? JSON.parse(text.trim().split("\n").pop()!) : {} }));
@@ -67,7 +72,11 @@ const pgPid = (d: string): number | undefined => {
 const untilFile = async (f: string, ms = 20000) => { const end = Date.now() + ms; while (!existsSync(f) && Date.now() < end) await sleep(100); assert.ok(existsSync(f), f); };
 const envOf = (d: string, name: string) => Object.fromEntries(readFileSync(join(d, "home", `env-${name}`), "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 
-after(() => { for (const p of live) try { p.kill("SIGKILL"); } catch { /* gone */ } rmSync(root, { recursive: true, force: true }); });
+after(() => {
+  for (const [d, b] of deployments) spawnSync(process.execPath, [main, "stop", "--bundle", b, "--data-dir", d], { cwd: root, timeout: 60_000, stdio: "ignore" });
+  for (const p of live) try { p.kill("SIGKILL"); } catch { /* gone */ }
+  rmSync(root, { recursive: true, force: true });
+});
 
 describe("alive", () => {
   test("a child that exited but was not reaped is not alive", () => {
@@ -76,26 +85,6 @@ describe("alive", () => {
     assert.equal(aliveFn(c.pid), false);
     assert.equal(aliveFn(process.pid), true);
     assert.equal(aliveFn(undefined), false);
-  });
-});
-
-describe("lock", () => {
-  test("a stale lock is taken over by one start only, even when another start acts in the middle of the takeover", () => {
-    const d = mkdtempSync(join(root, "lock-"));
-    const dead = spawnSync("true").pid!;
-    writeFileSync(lockPath(d), String(dead));
-    let other: number | undefined | "not run" = "not run";
-    const mine = takeLock(d, { beforeBreak: () => { other = takeLock(d); } });
-    assert.equal(mine, undefined, "the first start holds the lock");
-    assert.notEqual(other, "not run", "the second start ran while the first was taking over");
-    assert.notEqual(other, undefined, "the second start must not hold the lock too");
-    assert.equal(readFileSync(lockPath(d), "utf8").trim(), String(process.pid));
-  });
-
-  test("a lock file still being written (empty) counts as held", () => {
-    const d = mkdtempSync(join(root, "lock-"));
-    writeFileSync(lockPath(d), "");
-    assert.notEqual(takeLock(d), undefined);
   });
 });
 
@@ -178,7 +167,7 @@ describe("launcher", () => {
 
   test("a start-up step that fails reports its log, with secrets masked, and exits 1", async () => {
     const b = fakeBundle(), d = join(root, "data four");
-    sh(join(b, "py/bin/python3"), 'echo "boom: $PG_MIGRATE_URL"; exit 1');
+    sh(join(b, "py/bin/python3"), 'case "$*" in *fcntl*) exec python3 "$@";; esac; echo "boom: $PG_MIGRATE_URL"; exit 1');
     const l = launch(b, d, "start");
     assert.equal(await l.exited, 1);
     const err = l.events.find((e) => e.event === "error");
@@ -191,7 +180,7 @@ describe("launcher", () => {
 
   test("a failing migration stops the start before any service runs", async () => {
     const b = fakeBundle(), d = join(root, "data five");
-    sh(join(b, "py/bin/python3"), `case "$*" in *db.migrate*) echo "migration failed: password=$PG_MIGRATE_URL"; exit 1;; *app.*|*db.maintain*) touch "$HOME/started"; exec sleep 600;; esac; exit 0`);
+    sh(join(b, "py/bin/python3"), `case "$*" in *fcntl*) exec python3 "$@";; *db.migrate*) echo "migration failed: password=$PG_MIGRATE_URL"; exit 1;; *app.*|*db.maintain*) touch "$HOME/started"; exec sleep 600;; esac; exit 0`);
     mkdirSync(join(d, "home"), { recursive: true });
     const l = launch(b, d, "start");
     assert.equal(await l.exited, 1);
@@ -348,5 +337,89 @@ describe("launcher", () => {
     assert.equal((await cli(b, d, "stop")).code, 0);
     await sleep(500);
     assert.equal(spawnSync("pgrep", ["-f", `${b}/pg/bin/initdb`]).status, 1, "initdb still running after stop");
+  });
+
+  test("a malformed secrets file is never replaced: the start fails and says why", async () => {
+    const b = fakeBundle(), d = join(root, "data badsecrets");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "secrets.json"), "{not json", { mode: 0o600 });
+    const l = launch(b, d, "start");
+    assert.equal(await l.exited, 1);
+    assert.match(l.events.find((e) => e.event === "error")?.message ?? "", /secrets\.json/);
+    assert.equal(readFileSync(join(d, "secrets.json"), "utf8"), "{not json");
+    assert.ok(!existsSync(join(b, "initdb-calls")));
+  });
+
+  test("the web port is kept for the life of the data folder: when it is taken, the start refuses instead of moving", async () => {
+    const b = fakeBundle(), d = join(root, "data sticky");
+    const a = launch(b, d, "start"); const r = await a.until("ready");
+    await cli(b, d, "stop"); await a.exited;
+    const squat = spawn(process.execPath, ["-e", `require("http").createServer().listen(${r.ports.api}, "127.0.0.1")`], { stdio: "ignore" });
+    live.push(squat);
+    await sleep(500);
+    const w = launch(b, d, "start");
+    assert.equal(await w.exited, 1);
+    const err = w.events.find((e) => e.event === "error");
+    assert.equal(err?.code, "port_in_use");
+    assert.match(err?.message ?? "", new RegExp(String(r.ports.api)));
+    squat.kill();
+  });
+
+  test("an unreadable lock file stops the start rather than being taken over", async () => {
+    const b = fakeBundle(), d = join(root, "data badlock");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "launcher.lock"), "", { mode: 0o000 });
+    const l = launch(b, d, "start");
+    assert.equal(await l.exited, 1);
+    assert.match(l.events.find((e) => e.event === "error")?.message ?? "", /launcher\.lock/);
+    assert.ok(!existsSync(join(b, "initdb-calls")));
+  });
+
+  test("a state file naming someone else's live pid: not reported as running, never signalled, and the start proceeds", async () => {
+    const b = fakeBundle(), d = join(root, "data pidreuse");
+    const stranger = spawn("sleep", ["60"], { stdio: "ignore" }); live.push(stranger);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "launcher.json"), JSON.stringify({ pid: stranger.pid, pidId: "a-process-that-ended-long-ago", phase: "ready", services: {}, ports: {} }));
+    assert.equal((await cli(b, d, "status")).code, 3);
+    assert.equal((await cli(b, d, "stop")).code, 0);
+    assert.ok(alive(stranger.pid!), "stop signalled an unrelated process");
+    const w = launch(b, d, "start"); await w.until("ready");
+    assert.ok(alive(stranger.pid!));
+    await cli(b, d, "stop"); await w.exited;
+    stranger.kill();
+  });
+
+  test("a service whose leader died leaves a worker: after a killed launcher, stop still ends the worker", async () => {
+    const b = fakeBundle(), d = join(root, "data group");
+    mkdirSync(join(d, "home"), { recursive: true }); writeFileSync(join(d, "home", "fork-app.indexing_main"), "");
+    const a = launch(b, d, "start"); await a.until("ready");
+    const leader = JSON.parse(readFileSync(join(d, "launcher.json"), "utf8")).services.indexing as number;
+    a.p.kill("SIGKILL"); await a.exited;
+    process.kill(leader, "SIGKILL");
+    await sleep(300);
+    let groupAlive = true; try { process.kill(-leader, 0); } catch { groupAlive = false; }
+    assert.ok(groupAlive, "the worker should outlive its leader");
+    assert.equal((await cli(b, d, "stop")).code, 0);
+    await sleep(300);
+    assert.throws(() => process.kill(-leader, 0), "the worker survived stop");
+  });
+
+  test("stop and start at once after a crash: a start that comes up keeps its server and its state", async () => {
+    const b = fakeBundle(), d = join(root, "data stopstart");
+    writeFileSync(join(b, "slow-initdb"), "");
+    const a = launch(b, d, "start");
+    await untilFile(join(b, "initdb-calls"));
+    a.p.kill("SIGKILL"); await a.exited;
+    rmSync(join(b, "slow-initdb"));
+    const stopping = cli(b, d, "stop");
+    const w = launch(b, d, "start");
+    await stopping;
+    const outcome = await Promise.race([w.until("ready", 60000).then(() => "ready"), w.exited.then(() => "exited")]);
+    if (outcome === "ready" && !w.events.some((e) => e.event === "stopping")) {
+      await sleep(1000);
+      assert.ok(existsSync(join(d, "launcher.json")), "the new start's state was removed");
+      assert.ok(pgPid(d) && alive(pgPid(d)!), "the new start's server was stopped");
+    }
+    await cli(b, d, "stop"); await w.exited;
   });
 });
