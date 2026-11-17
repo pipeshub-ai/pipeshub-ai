@@ -664,6 +664,23 @@ async def test_a_reporter_who_browses_only_as_reporter_reads_their_issue_in_a_le
     assert not await _mismatches(world, {"PROJ-30": {"alice", "dave"}}, {"PROJ-30": by_key["PROJ-30"]})
 
 
+async def test_a_reindex_after_a_level_is_cleared_opens_the_issue_and_its_sub_task_to_the_project(world: dict[str, Any]) -> None:
+    """A level is set on a story (Jira copies it onto its sub-task) and the sync closes both to alice. The level is then
+    cleared at the source and both are reindexed before the next sync: the project's readers read them again."""
+    await _sync_project(world)
+    story, _ = ISSUES["unleveled story under the unleveled epic"]
+    sub, _ = ISSUES["sub-task of the unleveled story under the unleveled epic"]
+    leveled = [{**i, "fields": {**i["fields"], "updated": "2024-06-16T10:00:00.000+0000",
+                                "security": {"id": "10101", "name": "10101"}}} for i in (story, sub)]
+    await _write(world, leveled)
+    by_key = await _ticket_ids(world)
+    keys = {k: by_key[k] for k in ("PROJ-10", "PROJ-12")}
+    assert not await _mismatches(world, {"PROJ-10": {"alice"}, "PROJ-12": {"alice"}}, keys)
+    for issue in (story, sub):
+        await _reindex(world, {**issue, "fields": {**issue["fields"], "updated": "2024-06-17T10:00:00.000+0000", "security": None}})
+    assert not await _mismatches(world, {"PROJ-10": PROJECT_READERS, "PROJ-12": PROJECT_READERS}, keys)
+
+
 async def test_a_withdrawn_reporter_reads_nothing_of_theirs_through_the_org_team_before_and_after_a_resync(
     world: dict[str, Any],
 ) -> None:

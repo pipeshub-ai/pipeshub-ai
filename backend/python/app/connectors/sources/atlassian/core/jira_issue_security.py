@@ -858,7 +858,8 @@ def apply_issue_access_settled(
     if grouped:
         record.access_group_external_id = level_group_external_id(project_id, level_id)
         alone = _reads_alone(context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
-                             app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email)
+                             app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email,
+                             reporter_account=reporter_account, assignee_account=assignee_account)
         # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
         # Jira shows it to without the project: Browse named on this issue, and named by its level.
         alone_keys = {_grant_key(g) for g in alone}
@@ -878,7 +879,7 @@ def _grant_key(grant: Permission) -> tuple[str, str]:
 def _reads_alone(
     context: IssueSecurityContext, level_id: str, dynamic: list[Permission], *, project_key: str, fields: dict[str, Any],
     users: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None, reporter_email: str | None,
-    assignee_email: str | None,
+    assignee_email: str | None, reporter_account: str | None = None, assignee_account: str | None = None,
 ) -> list[Permission]:
     """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
     reporter, say) whom the level names too, on this issue or as a user holder of the level.
@@ -887,8 +888,10 @@ def _reads_alone(
     reads the issue only through the project; match memberships if a sync shows such a person missing."""
     if not context.browse_holders:
         return []
+    # The same people the level's grants name, by account where the directory holds no email for them.
     browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
-                                  reporter_email=reporter_email, assignee_email=assignee_email)
+                                  reporter_email=reporter_email, assignee_email=assignee_email,
+                                  reporter_account=reporter_account, assignee_account=assignee_account)
     static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
                                    user_by_id=users, app_roles_mapping=app_roles_mapping)
     named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}

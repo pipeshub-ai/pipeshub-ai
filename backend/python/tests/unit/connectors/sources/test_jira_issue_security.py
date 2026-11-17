@@ -1073,6 +1073,18 @@ class TestBrowseAndLevelNamedOnTheIssue:
                                   users={"acc-1": type("U", (), {"email": "one@x.com"})()})  # a user holder resolves through the directory
         assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["one@x.com"])
 
+    def test_a_reporter_the_directory_holds_no_email_for_reads_it_alone_by_account(self) -> None:
+        """The reporter is granted by account when the directory holds no email for them: Browse and the level still name
+        the same person on the issue, so they read it alone, as with an email."""
+        rec2 = _record()
+        context = _present(members=self.LEVEL)
+        context.browse_holders = [{"type": "reporter"}]
+        grants, _, settled = apply_issue_access_settled(
+            rec2, {"security": {"id": "10115"}, "reporter": {"accountId": "acc-r"}}, is_subtask=False, project_key="JUNI",
+            context=context, project_id="p-1", user_by_account_id={"acc-r": type("U", (), {"email": ""})()})
+        assert settled and [(g.email, g.external_id) for g in grants] == [(None, "acc-r")]
+        assert rec2.access_rule == AccessRule.OPEN  # STRICT would also ask for the project, which they do not read
+
     def test_without_browse_named_on_the_issue_the_reporter_needs_the_project(self) -> None:
         for browse in ([], None):
             rec, grants = self._apply(browse, reporter_email="angela@x.com")
