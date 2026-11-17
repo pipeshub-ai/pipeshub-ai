@@ -15,7 +15,7 @@ from app.capacity.controller import ElectedController
 from tests.support import ledger_procs as lp
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from multiprocessing.connection import Connection
     from pathlib import Path
 
@@ -48,12 +48,33 @@ def children() -> Iterator[list]:
         proc.join(5)
 
 
-def start_controller(ctx: mp.context.BaseContext, ledger: Path, children: list) -> tuple[mp.Process, Connection]:
+def start_controller(ctx: mp.context.BaseContext, ledger: Path, children: list, *,
+                     stop_after_beat: bool = False) -> tuple[mp.Process, Connection]:
     parent, child = ctx.Pipe()
-    proc = ctx.Process(target=lp.controller_loop, args=(str(ledger), TICK, child), daemon=True)
+    proc = ctx.Process(target=lp.controller_loop, args=(str(ledger), TICK, child),
+                       kwargs={"stop_after_beat": stop_after_beat}, daemon=True)
     proc.start()
     children.append(proc)
     return proc, parent
+
+
+def recv(pipe: Connection) -> tuple:
+    assert pipe.poll(10), "the controller started"
+    return pipe.recv()
+
+
+def wait_until(condition: Callable[[], object], what: str, timeout_s: float = 10.0) -> object:
+    end = time.monotonic() + timeout_s
+    while not (result := condition()):
+        assert time.monotonic() < end, f"{what} within {timeout_s}s"
+        time.sleep(0.02)
+    return result
+
+
+def stopped(pid: int) -> bool:
+    waited, status = os.waitpid(pid, os.WNOHANG | os.WUNTRACED)
+    assert waited == 0 or os.WIFSTOPPED(status), "the controller exited instead of stopping"
+    return waited != 0
 
 
 def test_exactly_one_process_is_elected_and_the_others_follow(ledger: Path) -> None:
@@ -93,7 +114,7 @@ def test_controller_failover_resumes(ledger: Path, children: list) -> None:
     """SIGKILL the controller: another process takes over at once and resumes the persisted state."""
     ctx = mp.get_context("spawn")
     proc, pipe = start_controller(ctx, ledger, children)
-    epoch, resumed = pipe.recv()
+    epoch, resumed = recv(pipe)
     assert epoch == 1 and resumed is None
     time.sleep(TICK * 2.5)
     watcher = handle(ledger, "watch")
@@ -111,20 +132,19 @@ def test_controller_failover_resumes(ledger: Path, children: list) -> None:
 def test_controller_hang_fenced(ledger: Path, children: list) -> None:
     """SIGSTOP the controller: after two ticks another process takes over; the resumed one cannot write."""
     ctx = mp.get_context("spawn")
-    proc, pipe = start_controller(ctx, ledger, children)
-    assert pipe.recv()[0] == 1
+    proc, pipe = start_controller(ctx, ledger, children, stop_after_beat=True)
+    assert recv(pipe)[0] == 1
+    wait_until(lambda: stopped(proc.pid), "the controller stopped")
     watcher = handle(ledger, "watch")
-    os.kill(proc.pid, signal.SIGSTOP)
     try:
-        assert watcher.elect_controller(TICK) is None  # the beat is still fresh
-        time.sleep(2 * TICK + 0.2)
-        epoch = watcher.elect_controller(TICK)
+        beat_ms = watcher.controller()["beat_ms"]
+        assert watcher.elect_controller(TICK, beat_ms + 1) is None  # the beat is still fresh
+        epoch = wait_until(lambda: watcher.elect_controller(TICK), "a takeover after two silent ticks")
         assert epoch == 2
         assert watcher.controller_beat(epoch, {"n": 1000})
     finally:
         os.kill(proc.pid, signal.SIGCONT)
-    time.sleep(TICK * 1.5)  # the old controller wakes, beats, and is told no
-    proc.join(5)
+    proc.join(10)  # the old controller wakes, beats, and is told no
     assert not proc.is_alive(), "a fenced controller stops"
     info = watcher.controller()
     assert info["epoch"] == 2 and info["state"] == {"n": 1000}
@@ -136,7 +156,7 @@ def test_controller_crash_loop(ledger: Path, children: list) -> None:
     seen = []
     for _ in range(4):
         proc, pipe = start_controller(ctx, ledger, children)
-        epoch, resumed = pipe.recv()
+        epoch, resumed = recv(pipe)
         assert epoch is not None
         seen.append((resumed or {}).get("n", 0))
         time.sleep(TICK * 1.2)

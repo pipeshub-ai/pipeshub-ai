@@ -11,22 +11,32 @@ export interface PoolOptions {
 }
 
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+// Pools are created many times per process; the warning is logged once per service|host|sslmode.
+const plaintextWarned = new Set<string>();
 
-/** A warning (never the URL) when a non-local PostgreSQL URL may connect without TLS. */
-export function plaintextRemoteWarning(
-  service: string,
-  url: string,
-): string | undefined {
+function hostAndMode(url: string): { host: string; mode: string } | undefined {
   let u: URL;
   try {
     u = new URL(url);
   } catch {
     return undefined;
   }
-  const host = (u.searchParams.get('host') ?? u.hostname).toLowerCase();
+  return {
+    host: (u.searchParams.get('host') ?? u.hostname).toLowerCase(),
+    mode: u.searchParams.get('sslmode') ?? 'prefer',
+  };
+}
+
+/** A warning (never the URL) when a non-local PostgreSQL URL may connect without TLS. */
+export function plaintextRemoteWarning(
+  service: string,
+  url: string,
+): string | undefined {
+  const parsed = hostAndMode(url);
+  if (parsed === undefined) return undefined;
+  const { host, mode } = parsed;
   if (host === '' || host.startsWith('/') || LOCAL_HOSTS.includes(host))
     return undefined;
-  const mode = u.searchParams.get('sslmode') ?? 'prefer';
   if (!['disable', 'allow', 'prefer'].includes(mode)) return undefined;
   return `PostgreSQL URL of service "${service}" points at a non-local host without TLS; add ?sslmode=verify-full (at least require)`;
 }
@@ -37,8 +47,12 @@ export function plaintextRemoteWarning(
  */
 export function createPgPool(o: PoolOptions): Pool & PgPool {
   const warning = plaintextRemoteWarning(o.service, o.connectionString);
-  if (warning !== undefined)
+  const parsed = hostAndMode(o.connectionString);
+  const key = [o.service, parsed?.host, parsed?.mode].join('|');
+  if (warning !== undefined && !plaintextWarned.has(key)) {
+    plaintextWarned.add(key);
     Logger.getInstance({ service: 'PgPool' }).warn(warning);
+  }
   const pool = new Pool({
     connectionString: o.connectionString,
     max: o.max ?? 10,
