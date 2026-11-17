@@ -420,6 +420,11 @@ config:
   # supports it (overlay2 on xfs+pquota, or btrfs/zfs/devicemapper); otherwise
   # the service logs a warning once and runs continue uncapped.
   sandboxDiskQuota: "10g"
+  # The most seconds one `run_code` run may take (10..3600). A larger timeout
+  # asked for by the model is lowered to it. Set it here only, never through
+  # extraEnv: the docker-proxy sidecar reads the same value to decide when a
+  # leftover sandbox container is old enough to remove.
+  sandboxMaxRunTimeoutS: 300
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
   # reach a daemon you run yourself, e.g. "tcp://docker-proxy.svc:2375".

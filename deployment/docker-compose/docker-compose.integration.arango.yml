@@ -102,6 +102,9 @@ services:
       # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
       # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
       - SANDBOX_MODE=${SANDBOX_MODE:-local}
+      # The most seconds one code run may take (10..3600); a larger timeout
+      # asked for by the model is lowered to it.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-true}
 
       # Key-Value Store Configuration

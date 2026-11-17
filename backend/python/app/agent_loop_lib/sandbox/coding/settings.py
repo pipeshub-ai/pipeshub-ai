@@ -16,6 +16,7 @@ Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any, Protocol, runtime_checkable
 
@@ -32,6 +33,7 @@ __all__ = [
     "EnvSandboxSettingsLoader",
     "ConfigServiceSandboxSettingsLoader",
     "resolve_sandbox_mode",
+    "max_run_timeout_from_env",
 ]
 
 logger = logging.getLogger(__name__)
@@ -166,6 +168,45 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+ENV_MAX_RUN_TIMEOUT_S = "SANDBOX_MAX_RUN_TIMEOUT_S"
+DEFAULT_MAX_RUN_TIMEOUT_S = 300.0
+_MIN_MAX_RUN_TIMEOUT_S = 10.0
+_MAX_MAX_RUN_TIMEOUT_S = 3600.0
+# Raw values already warned about; `load()` runs on every agent build.
+_warned_run_timeout_values: set[str] = set()
+
+
+def max_run_timeout_from_env(env: Any = None) -> float:
+    """`SANDBOX_MAX_RUN_TIMEOUT_S`: the most seconds one code run may take.
+
+    Always finite: the Docker proxy removes sandbox containers older than
+    this cap plus a margin, so a cap that could be switched off would let it
+    remove runs still in progress. Missing → 300. Not a number or `<= 0` →
+    300, and values outside 10..3600 are moved to the nearest bound; both
+    warn once per process. The Docker proxy parses the same variable the
+    same way (it cannot import this module).
+    """
+    env = os.environ if env is None else env
+    raw = env.get(ENV_MAX_RUN_TIMEOUT_S)
+    if raw is None or not raw.strip():
+        return DEFAULT_MAX_RUN_TIMEOUT_S
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        value = math.nan
+    if math.isnan(value) or value <= 0:
+        used = DEFAULT_MAX_RUN_TIMEOUT_S
+    else:
+        used = min(max(value, _MIN_MAX_RUN_TIMEOUT_S), _MAX_MAX_RUN_TIMEOUT_S)
+    if used != value and raw not in _warned_run_timeout_values:
+        _warned_run_timeout_values.add(raw)
+        logger.warning(
+            "%s=%r is outside %g..%g; using %g", ENV_MAX_RUN_TIMEOUT_S, raw,
+            _MIN_MAX_RUN_TIMEOUT_S, _MAX_MAX_RUN_TIMEOUT_S, used,
+        )
+    return used
+
+
 def _env_cap(key: str, default: int) -> int | None:
     """A sandbox cap: a positive int, or `None` for unlimited.
 
@@ -205,6 +246,9 @@ class SandboxSettings(BaseModel):
     provision_timeout_s: float = 60.0
     # How long a code run waits for a free governor slot before it fails.
     slot_wait_s: float = 120.0
+    # The most seconds one code run may take; a larger requested timeout is
+    # lowered to this (see `max_run_timeout_from_env`).
+    max_run_timeout_s: float = DEFAULT_MAX_RUN_TIMEOUT_S
     governor: GovernorSettings = Field(default_factory=GovernorSettings)
 
 
@@ -285,6 +329,7 @@ class EnvSandboxSettingsLoader:
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),
             slot_wait_s=_env_float(self._ENV_SLOT_WAIT_S, 120.0),
+            max_run_timeout_s=max_run_timeout_from_env(),
             governor=GovernorSettings(
                 max_total_sandboxes=_env_cap(self._ENV_MAX_TOTAL, 50),
                 max_per_org=_env_cap(self._ENV_MAX_PER_ORG, 10),

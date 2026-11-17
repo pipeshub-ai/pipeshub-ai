@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 import os
 import re
 import time
@@ -98,6 +99,35 @@ def _reuse_id(sandbox_id: str | None) -> str | None:
         return None
     stripped = sandbox_id.strip()
     return stripped or None
+
+
+def _resolve_timeout(timeout: Any, default: float, cap: float | None) -> tuple[float, float, bool]:
+    """`(requested, effective, capped)` for the model's `timeout` argument.
+
+    Missing, non-numeric or NaN → `default`; zero or negative → 1 s; above
+    `cap` → `cap`. The cap holds for every backend because it is applied
+    here, before the backend sees the request.
+    """
+    try:
+        requested = float(default if timeout is None else timeout)
+    except (TypeError, ValueError):
+        requested = float(default)
+    if math.isnan(requested):
+        requested = float(default)
+    if requested <= 0:
+        requested = 1.0
+    if cap is not None and requested > cap:
+        return requested, cap, True
+    return requested, requested, False
+
+
+def _at_cap_suggestion(cap: float) -> str:
+    return (
+        f"The run hit the maximum run time of {cap:g}s. A larger timeout will not be "
+        "accepted: make the code faster, process less data per run, or split the work "
+        "across several runs (files written to the sandbox persist between runs with "
+        "the same sandbox_id)."
+    )
 
 
 def _run_outcome(result: CodeResult) -> str:
@@ -437,6 +467,13 @@ class CodingSandboxTool(Tool):
 
     @property
     def parameters(self) -> list[ToolParameter]:
+        cap = self._manager.run_timeout_cap(SandboxType.CODING)
+        timeout_description = "Maximum seconds to let the program run before it is killed"
+        if cap is not None:
+            timeout_description += (
+                f" (default {self._default_timeout:g}, at most {cap:g}; "
+                f"larger values are lowered to {cap:g})"
+            )
         return [
             ToolParameter(
                 name="code", type=ParameterType.STRING, required=True,
@@ -458,7 +495,7 @@ class CodingSandboxTool(Tool):
             ),
             ToolParameter(
                 name="timeout", type=ParameterType.FLOAT, required=False, default=self._default_timeout,
-                description="Maximum seconds to let the program run before it is killed.",
+                description=timeout_description + ".",
             ),
         ]
 
@@ -513,7 +550,10 @@ class CodingSandboxTool(Tool):
             _logger.info("run_code: corrected declared language %r -> %r", language, detected)
             language = detected
 
-        resolved_timeout = timeout if timeout is not None else self._default_timeout
+        cap = self._manager.run_timeout_cap(SandboxType.CODING)
+        requested_timeout, resolved_timeout, timeout_capped = _resolve_timeout(
+            timeout, self._default_timeout, cap,
+        )
         request = CodeRequest(
             code=code,
             language=language,
@@ -531,13 +571,23 @@ class CodingSandboxTool(Tool):
         except asyncio.CancelledError:
             _log_run_finished(
                 "cancelled", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
-                timeout_s=request.timeout, timeout_capped=False, backend=backend,
+                timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
             )
             raise
         _log_run_finished(
             _run_outcome(result), exit_code=result.exit_code, duration_ms=result.duration_ms,
-            timeout_s=request.timeout, timeout_capped=False, backend=backend,
+            timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
         )
+        analysis = result.error_analysis
+        if (
+            cap is not None and resolved_timeout >= cap and result.exit_code == -1
+            and analysis is not None and analysis.category == ErrorCategory.TIMEOUT
+        ):
+            # A wall-clock timeout at the cap (exit -1). The local backend's
+            # CPU-time kill is also TIMEOUT but has its own suggestion.
+            result = result.model_copy(update={
+                "error_analysis": analysis.model_copy(update={"suggestion": _at_cap_suggestion(cap)}),
+            })
         _logger.info(
             "CodingSandboxTool.execute: result artifacts=%s stderr_len=%d",
             result.artifacts,
@@ -549,6 +599,11 @@ class CodingSandboxTool(Tool):
             data["input_files"] = sorted(uploaded_inputs)
         if language_correction is not None:
             data["language_correction"] = language_correction
+        if timeout_capped:
+            data["timeout_note"] = (
+                f"Requested timeout of {requested_timeout:g}s is above this deployment's "
+                f"maximum of {cap:g}s; the run was given {cap:g}s."
+            )
 
         if self._artifact_output_dir and result.artifacts:
             saved = await _save_artifacts(backend, resolved_id, result.artifacts, self._artifact_output_dir)

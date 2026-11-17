@@ -444,6 +444,9 @@ services:
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
       # the storage driver supports it; logs a warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
+      # The most seconds one code run may take (10..3600); a larger timeout
+      # asked for by the model is lowered to it.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
       # The app never sees the Docker socket; sandbox containers are created

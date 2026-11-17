@@ -329,6 +329,7 @@ async def build_coding_sandbox_manager(
             max_concurrent=max_concurrent,
             max_lifetime_s=max_lifetime_s,
             provision_timeout_s=settings.provision_timeout_s,
+            max_run_timeout_s=settings.max_run_timeout_s,
         ),
         ctx=sandbox_ctx,
     )

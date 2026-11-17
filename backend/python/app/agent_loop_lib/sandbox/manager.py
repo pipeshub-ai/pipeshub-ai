@@ -102,6 +102,9 @@ class SandboxLimits:
     max_concurrent: int | None = None
     max_lifetime_s: float | None = None
     provision_timeout_s: float | None = 60.0
+    # The most seconds one code run may take. Applied by the run_code tool
+    # (see `SandboxManager.run_timeout_cap`); `None` means no cap.
+    max_run_timeout_s: float | None = None
 
 
 @dataclass
@@ -211,6 +214,12 @@ class SandboxManager:
 
     def is_registered(self, type: SandboxType) -> bool:
         return type in self._factories
+
+    def run_timeout_cap(self, type: SandboxType) -> float | None:
+        """The most seconds one run on a `type` sandbox may take, from the
+        registered limits, or `None` when unregistered or uncapped."""
+        entry = self._factories.get(type)
+        return entry.limits.max_run_timeout_s if entry is not None else None
 
     async def get_or_create(
         self,

@@ -476,3 +476,107 @@ def test_install_packages_reports_a_failed_install_as_failed() -> None:
 
     assert tool.result_failed({}, _ran(InstallResult(success=False, stderr="no such package").model_dump())) is True
     assert tool.result_failed({}, _ran(InstallResult(success=True, installed=["numpy"]).model_dump())) is False
+
+
+class _TimeoutBackend(_CapturingBackend):
+    """Records the request and reports a wall-clock timeout."""
+
+    async def execute(self, request: CodeRequest) -> CodeResult:
+        from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
+
+        self.last_request = request
+        result = CodeResult(
+            stdout="", stderr=f"Execution timed out after {request.timeout}s", exit_code=-1,
+            language=request.language, duration_ms=1.0,
+        )
+        return result.model_copy(update={"error_analysis": ReflectionEngine().analyze(result)})
+
+
+def _capped_tool(backend_cls=_CapturingBackend, cap: float | None = 300.0):
+    from app.agent_loop_lib.sandbox.manager import SandboxLimits
+
+    backend = backend_cls()
+    manager = SandboxManager()
+    manager.register_backend_factory(
+        SandboxType.CODING, lambda: backend, limits=SandboxLimits(max_run_timeout_s=cap),
+    )
+    return CodingSandboxTool(manager), backend
+
+
+class TestRunTimeoutCap:
+    async def test_timeout_above_the_cap_is_lowered_with_a_note(self) -> None:
+        tool, backend = _capped_tool()
+        result = await tool.execute(code="print(1)", language="python", timeout=900)
+        assert backend.last_request.timeout == 300
+        assert result.data["timeout_note"] == (
+            "Requested timeout of 900s is above this deployment's maximum of 300s; "
+            "the run was given 300s."
+        )
+
+    async def test_timeout_below_the_cap_is_kept(self) -> None:
+        tool, backend = _capped_tool()
+        result = await tool.execute(code="print(1)", language="python", timeout=60)
+        assert backend.last_request.timeout == 60
+        assert "timeout_note" not in result.data
+
+    async def test_omitted_timeout_uses_the_default(self) -> None:
+        tool, backend = _capped_tool()
+        await tool.execute(code="print(1)", language="python")
+        assert backend.last_request.timeout == 30
+
+    async def test_zero_and_negative_become_one_second(self) -> None:
+        for value in (0, -5):
+            tool, backend = _capped_tool()
+            await tool.execute(code="print(1)", language="python", timeout=value)
+            assert backend.last_request.timeout == 1
+
+    async def test_nan_uses_the_default_and_inf_the_cap(self) -> None:
+        tool, backend = _capped_tool()
+        await tool.execute(code="print(1)", language="python", timeout=float("nan"))
+        assert backend.last_request.timeout == 30
+        tool, backend = _capped_tool()
+        result = await tool.execute(code="print(1)", language="python", timeout=float("inf"))
+        assert backend.last_request.timeout == 300
+        assert "timeout_note" in result.data
+
+    async def test_timeout_at_the_cap_replaces_the_suggestion(self) -> None:
+        tool, _backend = _capped_tool(_TimeoutBackend)
+        result = await tool.execute(code="while True: pass", language="python", timeout=900)
+        suggestion = result.data["error_analysis"]["suggestion"]
+        assert suggestion.startswith("The run hit the maximum run time of 300s.")
+
+    async def test_timeout_below_the_cap_keeps_the_suggestion(self) -> None:
+        tool, _backend = _capped_tool(_TimeoutBackend)
+        result = await tool.execute(code="while True: pass", language="python", timeout=60)
+        assert "increase the timeout" in result.data["error_analysis"]["suggestion"]
+
+    async def test_no_cap_leaves_the_timeout_alone(self) -> None:
+        tool, backend = _capped_tool(cap=None)
+        result = await tool.execute(code="print(1)", language="python", timeout=900)
+        assert backend.last_request.timeout == 900
+        assert "timeout_note" not in result.data
+
+    def test_parameter_description_states_the_cap(self) -> None:
+        tool, _backend = _capped_tool()
+        timeout = next(p for p in tool.parameters if p.name == "timeout")
+        assert "at most 300" in timeout.description
+
+    async def test_finished_run_logs_its_outcome(self, caplog) -> None:
+        import logging
+
+        tool, _backend = _capped_tool(_TimeoutBackend)
+        with caplog.at_level(logging.INFO):
+            await tool.execute(code="while True: pass", language="python", timeout=900)
+        assert "run_code finished: outcome=timeout exit_code=-1" in caplog.text
+        assert "timeout_s=300 timeout_capped=True" in caplog.text
+
+
+def test_manager_reports_the_registered_run_timeout_cap() -> None:
+    from app.agent_loop_lib.sandbox.manager import SandboxLimits
+
+    manager = SandboxManager()
+    assert manager.run_timeout_cap(SandboxType.CODING) is None
+    manager.register_backend_factory(
+        SandboxType.CODING, _CapturingBackend, limits=SandboxLimits(max_run_timeout_s=120),
+    )
+    assert manager.run_timeout_cap(SandboxType.CODING) == 120

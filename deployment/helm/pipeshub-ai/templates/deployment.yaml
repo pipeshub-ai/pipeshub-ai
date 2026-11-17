@@ -139,6 +139,8 @@ spec:
               value: {{ .Values.config.sandboxEgressAllowCidrs | default "" | quote }}
             - name: SANDBOX_DISK_QUOTA
               value: {{ .Values.config.sandboxDiskQuota | quote }}
+            - name: SANDBOX_MAX_RUN_TIMEOUT_S
+              value: {{ .Values.config.sandboxMaxRunTimeoutS | quote }}
             {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
               value: {{ . | quote }}
