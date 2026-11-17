@@ -45,7 +45,7 @@ NODE_ONLY = ("/services/smtp", "/services/slackBot", "/services/auth/", "/servic
 _META = "re:^/services/connectors/[^/]+/metadataSchemas/"
 READS = {
     "kv": {
-        "/services/aiModels": ("app/embedding_main.py:1211", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
+        "/services/aiModels": ("app/embedding_main.py:1211", "AI_MODELS"),         # also utils/llm.py:299 (docling, parsing), extraction/client.py:193
         "/services/secretKeys": ("app/api/middlewares/auth.py:206", "SECRET_KEYS"),  # parsing and extraction routes; policy_store.py:75 (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
