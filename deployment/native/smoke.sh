@@ -1,37 +1,28 @@
 #!/usr/bin/env bash
 # Starts a built bundle for real into a fresh data folder: PostgreSQL, the schema steps, every service, the API's health.
-# Checks that every listening socket of the bundle's processes is on 127.0.0.1, then status, health and stop, and that
-# nothing it started is left running.
+# Checks that each of the launcher's ports is served on 127.0.0.1 and that nothing new listens beyond loopback, then status,
+# health and stop, and that nothing it started is left running.
 #   smoke.sh <bundle-dir>
 set -euo pipefail
-b=$(cd "$1" && pwd); d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+b=$(cd "$1" && pwd); d=$(mktemp -d)
 run() { "$b/pipeshub-native" "$@" --data-dir "$d" --json; }
-if ! run start --detach; then tail -n 50 "$d"/logs/*.log >&2 || true; exit 1; fi
-run status
-run health || { tail -n 50 "$d"/logs/*.log >&2; exit 1; }
+# Whatever happens, stop what this run started before deleting its data folder.
+trap 'run stop >/dev/null 2>&1 || true; rm -rf "$d"' EXIT
 
-# The TCP listeners of every process started from this bundle or on this data folder, as address:port.
+# Every TCP listener on this machine as address:port. By address, not by owning process: the services make themselves
+# non-dumpable, which hides their sockets in /proc/<pid>/fd.
 listeners() {
   if [ "$(uname -s)" = Linux ]; then
-    "$b/py/bin/python3" -I - "$b" "$d" <<'PY'
-import os, sys, socket, struct
-roots = sys.argv[1:]
-inodes = set()
-for pid in filter(str.isdigit, os.listdir("/proc")):
+    "$b/py/bin/python3" -I - <<'PY'
+import socket
+for table, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socket.AF_INET6)):
     try:
-        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
-        if not any(r in cmd for r in roots):
-            continue
-        for fd in os.listdir(f"/proc/{pid}/fd"):
-            link = os.readlink(f"/proc/{pid}/fd/{fd}")
-            if link.startswith("socket:["):
-                inodes.add(link[8:-1])
+        lines = open(table).read().splitlines()[1:]
     except OSError:
         continue
-for table, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socket.AF_INET6)):
-    for line in open(table).read().splitlines()[1:]:
+    for line in lines:
         f = line.split()
-        if f[3] != "0A" or f[9] not in inodes:
+        if f[3] != "0A":
             continue
         addr, port = f[1].split(":")
         raw = bytes.fromhex(addr)
@@ -39,17 +30,28 @@ for table, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", sock
         print(f"{socket.inet_ntop(family, raw)}:{int(port, 16)}")
 PY
   else
-    pids=$(ps -axo pid=,args= | grep -F -e "$b" -e "$d" | grep -v grep | awk '{print $1}' | paste -sd, -)
-    [ -n "$pids" ] && lsof -nP -a -p "$pids" -iTCP -sTCP:LISTEN -Fn 2>/dev/null | sed -n 's/^n//p'
+    netstat -an -p tcp | awk '$6 == "LISTEN" { a = $4; sub(/\.[0-9*]+$/, "", a); p = $4; sub(/.*\./, "", p); print a ":" p }'
   fi
 }
-# The Python services come up after the API answers: wait for all seven listeners (API, PostgreSQL, five services).
-for _ in $(seq 1 90); do [ "$(listeners | sort -u | wc -l)" -ge 7 ] && break; sleep 2; done
-found=$(listeners | sort -u)
-echo "listening: $(echo $found)"
-[ "$(echo "$found" | wc -l)" -ge 7 ] || { echo "smoke: expected 7 listeners"; tail -n 30 "$d"/logs/*.log >&2; exit 1; }
-wide=$(echo "$found" | grep -v '^127\.0\.0\.1:' || true)
-[ -z "$wide" ] || { echo "smoke: listening beyond loopback: $wide"; exit 1; }
+before=$(listeners | sort -u)
+
+if ! run start --detach; then tail -n 50 "$d"/logs/*.log >&2 || true; exit 1; fi
+run status
+run health || { tail -n 50 "$d"/logs/*.log >&2; exit 1; }
+ports=$("$b/node/bin/node" -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(s.ports).join(" "))' "$d/launcher.json")
+
+# The Python services come up after the API answers: wait until every port of the launcher is served on 127.0.0.1.
+missing=$ports
+for _ in $(seq 1 90); do
+  now=$(listeners | sort -u)
+  missing=$(for p in $ports; do echo "$now" | grep -qx "127.0.0.1:$p" || echo "$p"; done)
+  [ -z "$missing" ] && break
+  sleep 2
+done
+[ -z "$missing" ] || { echo "smoke: not served on 127.0.0.1: $(echo $missing)"; tail -n 30 "$d"/logs/*.log >&2; exit 1; }
+wide=$(comm -13 <(echo "$before") <(listeners | sort -u) | grep -v '^127\.0\.0\.1:' || true)
+[ -z "$wide" ] || { echo "smoke: new listeners beyond loopback: $(echo $wide)"; exit 1; }
+echo "smoke: every port on 127.0.0.1 only: $(echo $ports)"
 
 run stop
 left=$(ps -eo pid=,args= | grep -F "$d" | grep -v grep || true)
