@@ -34,6 +34,10 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
+import {
+  isTelemetryEnabled,
+  setCollectionConsent,
+} from '../../../libs/services/telemetry/flag';
 import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
@@ -2638,15 +2642,21 @@ export const toggleMetricsCollection =
       const enabled = !(
         enableMetricCollection === false || enableMetricCollection === 'false'
       );
-      setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), enabled);
-
       if (!enabled) {
-        await TelemetryService.current()?.flush();
+        // Opting out sends nothing: stop recording and drop what was gathered.
+        setCollectionConsent(false);
+        TelemetryService.current()?.discardCollected();
       }
 
       if (enableMetricCollection !== metricsCollection.enableMetricCollection) {
         metricsCollection.enableMetricCollection = enableMetricCollection;
         await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
+      }
+
+      if (enabled) {
+        // Consent first: the gauge is dropped while consent is still off.
+        setCollectionConsent(true);
+        setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), true);
       }
 
       res
@@ -2665,7 +2675,16 @@ export const getMetricsCollection =
       const metricsCollection = await getMetricsCollectionConfig(
         keyValueStoreService,
       );
-      res.status(200).json(metricsCollection).end();
+      // The page shows Data Collection only while telemetry can run, so whatever
+      // is collected can always be seen and switched off.
+      const telemetryEnabled = isTelemetryEnabled();
+      if (!telemetryEnabled) {
+        metricsCollection.enableMetricCollection = 'false';
+      }
+      res
+        .status(200)
+        .json({ ...metricsCollection, telemetryEnabled })
+        .end();
     } catch (error: any) {
       logger.warn('Error getting metrics collection', { error });
       next(error);

@@ -6,13 +6,14 @@ import { Logger } from '../logger.service';
 import { KeyValueStoreService } from '../keyValueStore.service';
 import { keyValues, SERVICE_NAME } from './constants';
 import { eventBuffer } from './event-buffer';
-import { setCollectionConsent } from './flag';
+import { isCollecting, setCollectionConsent } from './flag';
 import { METRICS_CONSENT_DEFAULT } from '../../../edition';
 import {
   HEADER_REQUEST_ID,
   newSystemRoot,
 } from '../../context/request-context';
 import { metricsBackend } from './metrics-backend';
+import { setMetricCollectionEnabled } from './modules/collection-metrics';
 import { setInstallInfo } from './modules/install-metrics';
 import { createHash, randomUUID } from 'crypto';
 const SCHEMA_VERSION = 1;
@@ -127,11 +128,13 @@ export class TelemetryService implements ITelemetryService {
         ),
       );
       setCollectionConsent(this.enableMetricCollection);
-      if (!this.enableMetricCollection) {
+      if (this.enableMetricCollection) {
+        // After the consent: the write is dropped while consent is off. Set here as well as
+        // on opt-in, so a restarted process reports it too.
+        setMetricCollectionEnabled('', true);
+      } else {
         // Switched off: what was gathered before must never be sent later.
-        this.abortInFlight();
-        metricsBackend.reset();
-        eventBuffer.drain();
+        this.discardCollected();
       }
 
       this.logConfig();
@@ -238,7 +241,7 @@ export class TelemetryService implements ITelemetryService {
       this.stopMetricsPush();
       await new Promise((resolve) => setTimeout(resolve, START_DELAY_MS));
       // An opt-out during the delay has already stopped the push; don't restart it.
-      if (!this.enableMetricCollection) return;
+      if (!this.enableMetricCollection || !isCollecting()) return;
       this.pushInterval = setInterval(() => {
         if (!this.isServerUrlValid()) {
           logger.debug(
@@ -286,6 +289,8 @@ export class TelemetryService implements ITelemetryService {
   }
 
   private async pushMetricsToServer(): Promise<void> {
+    // Nothing is sent while consent is off, even if a push is still scheduled.
+    if (!isCollecting()) return;
     if (this.instanceId === '') {
       logger.debug('Skipping metrics push - installId not initialized');
       return;
@@ -355,6 +360,8 @@ export class TelemetryService implements ITelemetryService {
   }
 
   private async shipEventsToServer(): Promise<void> {
+    // Checked before the drain: events are kept for nothing while consent is off.
+    if (!isCollecting()) return;
     if (this.instanceId === '') {
       logger.debug('Skipping event shipment - installId not initialized');
       return;
@@ -483,15 +490,17 @@ export class TelemetryService implements ITelemetryService {
   }
 
   /**
-   * Push metrics and events to the collector immediately, outside the interval.
-   * Used to ship a consent opt-out before the flag flips off and stops the loop.
+   * Drop everything gathered so far, cancel sends under way and stop the push loop. Used on
+   * opt-out: what was gathered before is never sent, and nothing is sent between the request
+   * and the config reload that follows it. A reload that started earlier and may have read
+   * the old consent is made stale, so it cannot switch consent back on.
    */
-  public async flush(): Promise<void> {
-    if (!this.isServerUrlValid()) {
-      return;
-    }
-    await this.pushMetricsToServer();
-    await this.shipEventsToServer();
+  public discardCollected(): void {
+    this.reloadGeneration++;
+    this.stopMetricsPush();
+    this.abortInFlight();
+    metricsBackend.reset();
+    eventBuffer.drain();
   }
 
   private async refreshInstallInfo(): Promise<void> {

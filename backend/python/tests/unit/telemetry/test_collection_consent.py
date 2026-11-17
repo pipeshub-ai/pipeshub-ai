@@ -69,7 +69,7 @@ def _http_scope() -> dict:
     return {"type": "http", "method": "GET", "path": "/api/v1/x", "headers": [], "query_string": b"", "state": {}}
 
 
-async def _serve_one(monkeypatch, consent: bool):
+async def _serve_one(monkeypatch: pytest.MonkeyPatch, consent: bool) -> MagicMock:
     """One request through the raw-ASGI middleware with the deployment flag on; returns (inner app called, HTTP_REQUESTS mock)."""
     monkeypatch.setenv(flag.TELEMETRY_COLLECTION_FLAG, "true")
     flag.set_collection_consent(consent)
@@ -157,3 +157,36 @@ async def test_consent_is_read_every_few_seconds_not_once_per_push_interval() ->
         await pusher._run()
 
     assert slept == [5.0]
+
+
+async def test_switching_off_sends_nothing() -> None:
+    """An opt-out discards what was gathered; it must not push it first."""
+    flag.set_collection_consent(True)
+    record_event("gathered_while_on")
+    pusher = _pusher("false")
+
+    with patch("app.telemetry.pusher.aiohttp.ClientSession") as session:
+        await _one_tick(pusher)
+
+    session.assert_not_called()
+    pusher._push.assert_not_called()
+    pusher._ship_events.assert_not_called()
+
+
+async def test_the_first_push_after_an_opt_in_carries_the_consent_gauge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(flag.TELEMETRY_COLLECTION_FLAG, "true")
+    backend = PrometheusBackend()
+    gauge = backend.gauge("pipeshub_metric_collection_enabled", "h", ["service"])
+    flag.set_collection_consent(False)
+    pusher = _pusher("true")
+    seen: list[str] = []
+    pusher._push = AsyncMock(side_effect=lambda _cfg: seen.append(backend.serialize()))
+
+    with patch(
+        "app.telemetry.pusher.set_metric_collection_enabled",
+        lambda service, enabled: gauge.set(service, value=1 if enabled else 0),
+    ):
+        await _one_tick(pusher)
+
+    assert seen
+    assert 'pipeshub_metric_collection_enabled{service="query"} 1.0' in seen[0]

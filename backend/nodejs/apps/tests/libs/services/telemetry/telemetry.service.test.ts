@@ -271,59 +271,33 @@ describe('TelemetryService', () => {
     });
   });
 
-  describe('flush', () => {
-    it('should do nothing when the server URL is invalid', async () => {
-      const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
-      const svc = new TelemetryService(mockKvStore() as any);
-      await flushAsync();
-
-      (svc as any).metricsServerUrl = '';
-      recordEvent('opt_out');
-      await svc.flush();
-
-      expect(postStub.called).to.be.false;
-    });
-
-    it('should ship buffered events to the events endpoint', async () => {
+  describe('discardCollected', () => {
+    it('sends nothing and empties the metric and event buffers', async () => {
       const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
       // An admin has switched collection on since the service read its config.
       setCollectionConsent(true);
-
       recordEvent('consent_changed', { enabled: false });
-      await svc.flush();
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
 
-      const eventsCall = postStub
-        .getCalls()
-        .find((c) => String(c.args[0]).includes('collect-events'));
-      expect(eventsCall, 'expected a POST to collect-events').to.exist;
-      const payload = eventsCall!.args[1] as any;
-      expect(payload.instanceId).to.equal('install-1234');
-      expect(payload.events).to.have.length(1);
-      expect(payload.events[0].event).to.equal('consent_changed');
+      svc.discardCollected();
+
+      expect(postStub.called, 'nothing may be sent on opt-out').to.be.false;
+      expect(resetStub.calledOnce).to.be.true;
+      expect(eventBuffer.size()).to.equal(0);
     });
 
-    it('should not ship when there are no buffered events', async () => {
-      const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
+    it('aborts sends that are under way', async () => {
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      const controller = new AbortController();
+      (svc as any).inFlight.add(controller);
 
-      await svc.flush();
+      svc.discardCollected();
 
-      const eventsCall = postStub
-        .getCalls()
-        .find((c) => String(c.args[0]).includes('collect-events'));
-      expect(eventsCall).to.be.undefined;
-    });
-
-    it('should survive a collector error without throwing', async () => {
-      sandbox.stub(axios, 'post').rejects(new Error('ECONNREFUSED'));
-      const svc = new TelemetryService(mockKvStore() as any);
-      await flushAsync();
-
-      recordEvent('login');
-      await svc.flush(); // must not throw
+      expect(controller.signal.aborted).to.be.true;
+      expect((svc as any).inFlight.size).to.equal(0);
     });
   });
 
@@ -393,6 +367,8 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(err);
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // The admin has switched collection on since the service read its config; a push needs it.
+      setCollectionConsent(true);
       // Starting with consent off discards held metrics; only the push's own reset counts here.
       const resetStub = sandbox.stub(metricsBackend, 'reset');
 
@@ -410,6 +386,8 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(err);
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // The admin has switched collection on since the service read its config; a push needs it.
+      setCollectionConsent(true);
       // Starting with consent off discards held metrics; only the push's own reset counts here.
       const resetStub = sandbox.stub(metricsBackend, 'reset');
 
@@ -468,6 +446,7 @@ describe('TelemetryService', () => {
       await flushAsync();
       expect((svc as any).pushInterval).to.be.null;
 
+      setCollectionConsent(true);
       (svc as any).enableMetricCollection = true;
       await (svc as any).startOrStopMetricCollection();
       expect((svc as any).pushInterval).to.not.be.null;

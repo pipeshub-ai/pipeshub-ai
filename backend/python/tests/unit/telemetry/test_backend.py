@@ -156,3 +156,47 @@ class TestLabelessInstruments:
 
         text = backend.serialize()
         assert "t_plain_hist_count 1.0" in text and 't_plain_hist_bucket{le="5.0"} 1.0' in text
+
+
+class TestMetricsWithoutLabels:
+    """A metric declared without labels is written and reset like any other."""
+
+    def test_unlabelled_counter_gauge_and_histogram_record(self) -> None:
+        backend = PrometheusBackend()
+        counter = backend.counter("t_nolabel_counter", "help", [])
+        gauge = backend.gauge("t_nolabel_gauge", "help", [])
+        histogram = backend.histogram("t_nolabel_hist", "help", [], [1.0])
+
+        counter.inc()
+        counter.inc(value=2)
+        gauge.set(value=4)
+        histogram.observe(value=0.5)
+
+        text = backend.serialize()
+        assert "t_nolabel_counter_total 3.0" in text
+        assert "t_nolabel_gauge 4.0" in text
+        assert "t_nolabel_hist_count 1.0" in text
+
+    def test_reset_drops_what_unlabelled_metrics_gathered(self) -> None:
+        backend = PrometheusBackend()
+        counter = backend.counter("t_nolabel_reset", "help", [])
+        histogram = backend.histogram("t_nolabel_reset_hist", "help", [], [1.0])
+        counter.inc(value=5)
+        histogram.observe(value=0.5)
+
+        backend.reset()
+
+        text = backend.serialize()
+        assert "t_nolabel_reset_total 0.0" in text
+        assert "t_nolabel_reset_hist_count 0.0" in text
+        assert "t_nolabel_reset_hist_sum 0.0" in text
+
+    def test_property_values_dropped_counter_records(self) -> None:
+        from app.telemetry.modules.record_storage_metrics import (
+            PROPERTY_VALUES_DROPPED,
+            record_property_value_dropped,
+        )
+
+        record_property_value_dropped()  # raised ValueError while collecting before
+
+        assert PROPERTY_VALUES_DROPPED._metric._value.get() >= 1.0
