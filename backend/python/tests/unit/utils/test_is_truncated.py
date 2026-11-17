@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.utils.truncation import is_truncated
+from app.utils.is_truncated import is_truncated
 
 
 class _FinishReason(Enum):
