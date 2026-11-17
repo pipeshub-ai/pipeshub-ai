@@ -6680,6 +6680,34 @@ class TestMembershipRepairAfterAGiveUp:
         assert "pendingReasonRecordId" not in payload and "priorReason" not in payload
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["send_raises", "no_producer"])
+    async def test_a_sync_that_could_not_be_queued_gives_the_reason_back(self, failure: str) -> None:
+        handler = self._handler()
+        had = {**self.RECORD, "reason": "Classification skipped: no model"}
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=had)
+        if failure == "send_raises":
+            handler.producer.send_event = AsyncMock(side_effect=ConnectionError("broker down"))
+        else:
+            handler.producer = None
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        calls = handler.event_processor.graph_provider.update_node_fields_if_match.await_args_list
+        assert [c.args[2] for c in calls] == [
+            {"reason": record_module.MEMBERSHIP_SYNC_PENDING}, {"reason": "Classification skipped: no model"},
+        ]
+        assert calls[1].args[3] == {"contentRev": "rev-1", "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+
+        # A later give-up can mark it again, carrying the reason the record had.
+        handler.producer = MagicMock()
+        handler.producer.send_event = AsyncMock(return_value=True)
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+        assert handler.producer.send_event.await_args.kwargs["payload"]["priorReason"] == "Classification skipped: no model"
+
+    @pytest.mark.asyncio
     async def test_a_refused_mark_leaves_the_sync_without_a_reason_to_clear(self) -> None:
         handler = self._handler()
         handler.event_processor.graph_provider.update_node_fields_if_match = AsyncMock(return_value=False)

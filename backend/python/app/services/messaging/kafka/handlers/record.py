@@ -629,6 +629,7 @@ class RecordEventHandler(BaseEventService):
         except Exception as exc:
             self.logger.error("Could not mark the scope of %s stale: %s", vrid, type(exc).__name__)
         if self.producer is None:
+            await self._undo_pending_reason(record_id, content_rev, prior_reason, marked=marked)
             return
         try:
             await run_on_loop(
@@ -649,6 +650,21 @@ class RecordEventHandler(BaseEventService):
             )
         except Exception as exc:
             self.logger.error("Could not queue the membership sync of %s: %s", vrid, type(exc).__name__)
+            await self._undo_pending_reason(record_id, content_rev, prior_reason, marked=marked)
+
+    async def _undo_pending_reason(self, record_id: str, content_rev: object, prior_reason: object, *, marked: bool) -> None:
+        """The sync that was to put the reason back was not queued: put it back now, while it is still the pending one,
+        so the reason the record had is not lost with the event. A later give-up can mark it again."""
+        if not marked or not content_rev:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node_fields_if_match(
+                record_id, CollectionNames.RECORDS.value,
+                {"reason": prior_reason if isinstance(prior_reason, str) and prior_reason else None},
+                {"contentRev": str(content_rev), "reason": MEMBERSHIP_SYNC_PENDING},
+            )
+        except Exception as exc:
+            self.logger.error("Could not put back the reason of %s: %s", record_id, type(exc).__name__)
 
     async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
         """End a record stale recovery has given up on, and move its queued copies on.
