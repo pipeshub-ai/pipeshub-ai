@@ -33,4 +33,12 @@ describe('the desktop token bridge', () => {
     await vi.waitFor(() => expect(setAccessToken).toHaveBeenCalledTimes(2));
     expect(setAccessToken.mock.calls[1]).toEqual(['tok', 'http://127.0.0.1:52000']);
   });
+
+  it('pushes again when the server comes back on the same port (main forgot the token when it went away)', async () => {
+    setAccessToken.mockClear();
+    storage.setLocalModeApiBaseUrl(null);
+    storage.setLocalModeApiBaseUrl('http://127.0.0.1:52000');
+    await vi.waitFor(() => expect(setAccessToken).toHaveBeenCalledTimes(1));
+    expect(setAccessToken.mock.calls[0]).toEqual(['tok', 'http://127.0.0.1:52000']);
+  });
 });
