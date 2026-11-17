@@ -7307,7 +7307,11 @@ async def handle_oauth_callback(
             }
 
         # A user signing in with their own account to a per-user connector, not the connector's own sign-in.
-        from app.connectors.api.user_access_router import complete_user_sign_in, is_user_sign_in_state
+        from app.connectors.api.user_access_router import (
+            complete_user_sign_in,
+            is_user_sign_in_state,
+        )
+
         if is_user_sign_in_state(state_data):
             return await complete_user_sign_in(
                 request, graph_provider, connector_id=connector_id, state=original_state, code=code,

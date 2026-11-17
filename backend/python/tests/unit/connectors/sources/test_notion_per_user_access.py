@@ -6,6 +6,7 @@ user's access away; nothing a failed or partial read saw takes anyone else's acc
 """
 
 import asyncio
+from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -32,14 +33,14 @@ from app.connectors.sources.notion.per_user import (
     parse_identity,
     with_user_grant,
 )
-from app.models.entities import RecordType
+from app.models.entities import RecordGroup, RecordType
 from app.models.permission import EntityType, PermissionType
 
 _MOD = "app.connectors.sources.notion.connector"
 
 
 @pytest.fixture(autouse=True)
-def _no_connect_requests():
+def _no_connect_requests() -> Iterator[None]:
     # Revokes ask the user to reconnect (tested in test_notion_connect_invites); no mail or notice here.
     with patch(f"{_MOD}.send_connect_request", new=AsyncMock(return_value=(True, True))):
         yield
@@ -82,40 +83,40 @@ def _connector(scope: str = "team") -> NotionConnector:
 # ---------------------------------------------------------------- who a token belongs to
 
 class TestParseIdentity:
-    def test_personal_access_token_is_a_person(self):
+    def test_personal_access_token_is_a_person(self) -> None:
         identity = parse_identity({"type": "person", "id": "p1", "person": {"email": " Ann@Acme.com "}})
         assert identity == NotionIdentity("p1", "Ann@Acme.com", None)
 
-    def test_oauth_token_is_the_owner_of_its_bot(self):
+    def test_oauth_token_is_the_owner_of_its_bot(self) -> None:
         identity = parse_identity({"type": "bot", "id": "bot", "bot": {
             "workspace_id": "ws-1", "owner": {"type": "user", "user": {"id": "p1", "person": {"email": "a@x.io"}}}}})
         assert identity == NotionIdentity("p1", "a@x.io", "ws-1")
 
-    def test_integration_secret_is_refused(self):
+    def test_integration_secret_is_refused(self) -> None:
         with pytest.raises(NotionAccessError):
             parse_identity({"type": "bot", "id": "bot", "bot": {"workspace_id": "ws-1", "owner": {"type": "workspace"}}})
 
-    def test_unknown_shape_is_refused(self):
+    def test_unknown_shape_is_refused(self) -> None:
         with pytest.raises(NotionAccessError):
             parse_identity({"object": "error"})
 
 
 class TestCheckIdentity:
-    def test_same_person_and_workspace_passes(self):
+    def test_same_person_and_workspace_passes(self) -> None:
         check_identity(NotionIdentity("p1", "ANN@acme.com", "ws-1"), pipeshub_email="ann@ACME.com",
                        connector_workspace_id="ws-1")
 
-    def test_other_workspace_is_refused(self):
+    def test_other_workspace_is_refused(self) -> None:
         with pytest.raises(NotionAccessError, match="different Notion workspace"):
             check_identity(NotionIdentity("p1", "ann@acme.com", "ws-2"), pipeshub_email="ann@acme.com",
                            connector_workspace_id="ws-1")
 
-    def test_another_persons_account_is_refused(self):
+    def test_another_persons_account_is_refused(self) -> None:
         with pytest.raises(NotionAccessError, match="bob@acme.com"):
             check_identity(NotionIdentity("p1", "bob@acme.com", "ws-1"), pipeshub_email="ann@acme.com",
                            connector_workspace_id="ws-1")
 
-    def test_hidden_email_is_refused(self):
+    def test_hidden_email_is_refused(self) -> None:
         with pytest.raises(NotionAccessError, match="email"):
             check_identity(NotionIdentity("p1", None, None), pipeshub_email="ann@acme.com", connector_workspace_id="ws-1")
 
@@ -123,23 +124,23 @@ class TestCheckIdentity:
 # ---------------------------------------------------------------- the grant a pass writes
 
 class TestWithUserGrant:
-    def test_page_gets_only_the_users_grant_and_stops_inheriting(self):
+    def test_page_gets_only_the_users_grant_and_stops_inheriting(self) -> None:
         page = _record("p1")
         record, permissions = with_user_grant(page, [MagicMock()], _connection())
         assert record.inherit_permissions is False
         assert [(p.email, p.entity_type, p.type) for p in permissions] == [
             ("ann@acme.com", EntityType.USER, PermissionType.READ)]
 
-    def test_data_source_is_granted_too(self):
+    def test_data_source_is_granted_too(self) -> None:
         _, permissions = with_user_grant(_record("d1", record_type=RecordType.DATASOURCE), [], _connection())
         assert len(permissions) == 1
 
-    def test_file_keeps_inheriting_from_its_page(self):
+    def test_file_keeps_inheriting_from_its_page(self) -> None:
         file = _record("f1", record_type=RecordType.FILE)
         record, permissions = with_user_grant(file, [], _connection())
         assert record.inherit_permissions is True and permissions == []
 
-    def test_placeholder_is_left_alone(self):
+    def test_placeholder_is_left_alone(self) -> None:
         stub = _record("p1", is_placeholder=True)
         record, permissions = with_user_grant(stub, [], _connection())
         assert record.inherit_permissions is True and permissions == []
@@ -154,29 +155,29 @@ class TestUserAccessStore:
         ({"sync": {"accessMode": "per_user"}}, "per_user"),
         ({"sync": {"customValues": {"accessMode": "per_user"}}}, "per_user"),
     ])
-    def test_access_mode(self, config, expected):
+    def test_access_mode(self, config, expected) -> None:
         assert access_mode(config) == expected
 
-    def test_public_view_never_carries_the_token(self):
+    def test_public_view_never_carries_the_token(self) -> None:
         public = _connection().public()
         assert "token" not in public and public["email"] == "ann@acme.com"
 
-    def test_round_trip(self):
+    def test_round_trip(self) -> None:
         connection = _connection(last_complete_listing_at=5)
         assert UserConnection.from_dict(connection.to_dict()) == connection
 
-    def test_stale_after_the_limit(self):
+    def test_stale_after_the_limit(self) -> None:
         connection = _connection(last_complete_listing_at=1_000)
         assert not connection.stale(1_000 + STALE_AFTER_MS)
         assert connection.stale(1_001 + STALE_AFTER_MS)
 
-    async def test_failed_listing_raises_rather_than_reading_as_nobody(self):
+    async def test_failed_listing_raises_rather_than_reading_as_nobody(self) -> None:
         config = AsyncMock()
         config.list_keys_in_directory.side_effect = RuntimeError("etcd down")
         with pytest.raises(RuntimeError):
             await list_connections(config, "c1")
 
-    async def test_missing_connection_is_none(self):
+    async def test_missing_connection_is_none(self) -> None:
         config = AsyncMock()
         config.get_config.return_value = None
         assert await get_connection(config, "c1", "u1") is None
@@ -185,7 +186,7 @@ class TestUserAccessStore:
 # ---------------------------------------------------------------- which token a call uses
 
 class TestTokenIsolation:
-    async def test_a_pass_reads_with_its_users_own_client(self):
+    async def test_a_pass_reads_with_its_users_own_client(self) -> None:
         connector = _connector()
         with acting_as(_connection(token="tok-ann")):
             datasource = await connector._get_fresh_datasource()
@@ -193,18 +194,18 @@ class TestTokenIsolation:
         assert connector._user_clients["tok-ann"].get_client() is datasource.http_client
         await connector._close_user_clients()
 
-    async def test_a_concurrent_task_never_sees_another_tasks_credential(self):
+    async def test_a_concurrent_task_never_sees_another_tasks_credential(self) -> None:
         seen: dict[str, object] = {}
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def in_pass():
+        async def in_pass() -> None:
             with acting_as(_connection(token="tok-ann")):
                 started.set()
                 await release.wait()
                 seen["pass"] = active_connection()
 
-        async def beside_it():
+        async def beside_it() -> None:
             await started.wait()
             seen["other"] = active_connection()
             release.set()
@@ -217,12 +218,12 @@ class TestTokenIsolation:
 # ---------------------------------------------------------------- mode
 
 class TestAccessMode:
-    async def test_personal_connector_is_never_per_user(self):
+    async def test_personal_connector_is_never_per_user(self) -> None:
         connector = _connector(scope="personal")
         assert await connector._load_access_mode() is False
         connector.config_service.get_config.assert_not_awaited()
 
-    async def test_team_connector_reads_its_config(self):
+    async def test_team_connector_reads_its_config(self) -> None:
         connector = _connector()
         connector.config_service.get_config.return_value = {"sync": {"accessMode": ACCESS_MODE_PER_USER}}
         assert await connector._load_access_mode() is True
@@ -232,7 +233,7 @@ class TestAccessMode:
 # ---------------------------------------------------------------- records written in a pass
 
 class TestSavingInAPass:
-    async def test_pages_saved_in_a_pass_carry_the_users_grant(self):
+    async def test_pages_saved_in_a_pass_carry_the_users_grant(self) -> None:
         connector = _connector()
         connector.data_entities_processor.get_record_by_external_id.return_value = None
         page, file = _record("p1"), _record("f1", record_type=RecordType.FILE)
@@ -244,7 +245,7 @@ class TestSavingInAPass:
         assert rows[0][0].inherit_permissions is False and rows[0][1][0].email == "ann@acme.com"
         assert rows[1][1] == [] and rows[1][0].inherit_permissions is True
 
-    async def test_outside_a_pass_nothing_is_granted(self):
+    async def test_outside_a_pass_nothing_is_granted(self) -> None:
         connector = _connector()
         connector.data_entities_processor.get_record_by_external_id.return_value = None
         with patch(f"{_MOD}.save_synced_records", new=AsyncMock()) as save, \
@@ -269,7 +270,7 @@ def _reconcile_setup(listed: dict, stored: list, granted: list, verdicts: dict |
     connector._recheck_page_comments = AsyncMock()
     verdicts = verdicts or {}
 
-    async def fetch(record):
+    async def fetch(record) -> bool | None:
         verdict = verdicts.get(record.external_record_id, ("in_scope", {}))
         if isinstance(verdict, BaseException):
             raise verdict
@@ -280,7 +281,7 @@ def _reconcile_setup(listed: dict, stored: list, granted: list, verdicts: dict |
 
 
 class TestReconcile:
-    async def test_listed_and_stored_without_a_grant_is_granted(self):
+    async def test_listed_and_stored_without_a_grant_is_granted(self) -> None:
         page = _record("p1")
         connector = _reconcile_setup({"data_source": {}, "page": {"p1": {"id": "p1"}}}, [page], granted=[])
         with acting_as(_connection()):
@@ -288,7 +289,7 @@ class TestReconcile:
         record, permissions = connector.data_entities_processor.add_permission_to_record.await_args.args
         assert record is page and permissions[0].email == "ann@acme.com"
 
-    async def test_a_page_this_user_lost_loses_only_their_grant(self):
+    async def test_a_page_this_user_lost_loses_only_their_grant(self) -> None:
         page = _record("p1")
         connector = _reconcile_setup({"data_source": {}, "page": {}}, [page], granted=[page],
                                      verdicts={"p1": ("gone", None)})
@@ -297,7 +298,7 @@ class TestReconcile:
         connector.data_entities_processor.remove_user_grants.assert_awaited_once_with("notion-1", "user-node", ["r-p1"])
         connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
-    async def test_search_lag_keeps_the_grant(self):
+    async def test_search_lag_keeps_the_grant(self) -> None:
         page = _record("p1")
         connector = _reconcile_setup({"data_source": {}, "page": {}}, [page], granted=[page],
                                      verdicts={"p1": ("in_scope", {})})
@@ -306,14 +307,14 @@ class TestReconcile:
         connector.data_entities_processor.remove_user_grants.assert_not_awaited()
 
     @pytest.mark.parametrize("verdict", [("unknown", None), RuntimeError("429")])
-    async def test_an_undecided_check_keeps_the_grant_and_is_incomplete(self, verdict):
+    async def test_an_undecided_check_keeps_the_grant_and_is_incomplete(self, verdict) -> None:
         page = _record("p1")
         connector = _reconcile_setup({"data_source": {}, "page": {}}, [page], granted=[page], verdicts={"p1": verdict})
         with acting_as(_connection()):
             assert await connector._reconcile_user_view(_connection(), SimpleNamespace(id="user-node")) is False
         connector.data_entities_processor.remove_user_grants.assert_not_awaited()
 
-    async def test_an_unfinished_listing_removes_nothing(self):
+    async def test_an_unfinished_listing_removes_nothing(self) -> None:
         page = _record("p1")
         connector = _reconcile_setup({"data_source": {}, "page": None}, [page], granted=[page],
                                      verdicts={"p1": ("gone", None)})
@@ -322,7 +323,7 @@ class TestReconcile:
         connector.data_entities_processor.remove_user_grants.assert_not_awaited()
         connector._fetch_placeholder_object.assert_not_awaited()
 
-    async def test_another_users_records_are_not_checked(self):
+    async def test_another_users_records_are_not_checked(self) -> None:
         mine, theirs = _record("p1"), _record("p2")
         connector = _reconcile_setup({"data_source": {}, "page": {"p1": {"id": "p1"}}}, [mine, theirs], granted=[mine])
         with acting_as(_connection()):
@@ -334,7 +335,7 @@ class TestReconcile:
 # ---------------------------------------------------------------- a pass and the whole run
 
 class TestUserPass:
-    async def test_a_refused_token_revokes_the_connection_and_access(self):
+    async def test_a_refused_token_revokes_the_connection_and_access(self) -> None:
         connector = _connector()
         datasource = MagicMock()
         datasource.retrieve_bot_user = AsyncMock(return_value=SimpleNamespace(status_code=401, success=False))
@@ -348,7 +349,7 @@ class TestUserPass:
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "user-node")
         connector._sync_objects_by_type.assert_not_awaited()
 
-    async def test_a_401_mid_walk_revokes_too(self):
+    async def test_a_401_mid_walk_revokes_too(self) -> None:
         connector = _connector()
         datasource = MagicMock()
         datasource.retrieve_bot_user = AsyncMock(return_value=SimpleNamespace(status_code=200, success=True))
@@ -361,7 +362,7 @@ class TestUserPass:
         assert connection.status == STATUS_REVOKED
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once()
 
-    async def test_a_revoke_never_brings_back_a_connection_the_user_removed(self):
+    async def test_a_revoke_never_brings_back_a_connection_the_user_removed(self) -> None:
         connector = _connector()
         datasource = MagicMock()
         datasource.retrieve_bot_user = AsyncMock(return_value=SimpleNamespace(status_code=401, success=False))
@@ -374,14 +375,14 @@ class TestUserPass:
 
 
 class TestUpdateConnection:
-    async def test_a_reconnect_is_not_overwritten(self):
+    async def test_a_reconnect_is_not_overwritten(self) -> None:
         connector = _connector()
         with patch(f"{_MOD}.save_connection", new=AsyncMock()) as save, \
                 patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=_connection(token="new", connected_at=2))):
             assert await connector._update_connection(_connection(token="old")) is False
         save.assert_not_awaited()
 
-    async def test_a_token_refreshed_meanwhile_is_kept(self):
+    async def test_a_token_refreshed_meanwhile_is_kept(self) -> None:
         connector = _connector()
         mine = _connection(token="old", last_complete_listing_at=9)
         with patch(f"{_MOD}.save_connection", new=AsyncMock()) as save, \
@@ -390,7 +391,7 @@ class TestUpdateConnection:
         saved = save.await_args.args[2]
         assert saved.token == "refreshed" and saved.last_complete_listing_at == 9
 
-    async def test_the_same_connection_is_updated(self):
+    async def test_the_same_connection_is_updated(self) -> None:
         connector = _connector()
         with patch(f"{_MOD}.save_connection", new=AsyncMock()) as save, \
                 patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=_connection())):
@@ -398,7 +399,7 @@ class TestUpdateConnection:
         save.assert_awaited_once()
 
 
-def _run_setup(connections, users, pass_results):
+def _run_setup(connections, users, pass_results) -> tuple:
     connector = _connector()
     datasource = MagicMock()
     connector._get_fresh_datasource = AsyncMock(return_value=datasource)
@@ -419,7 +420,7 @@ def _run_setup(connections, users, pass_results):
 
 
 class TestPerUserRun:
-    async def test_records_nobody_sees_are_deleted_only_after_every_pass_completed(self):
+    async def test_records_nobody_sees_are_deleted_only_after_every_pass_completed(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann"),
                  "u2": SimpleNamespace(id="n2", email="bob@acme.com", full_name="Bob")}
         connections = [_connection("u1"), _connection("u2", email="bob@acme.com", token="tok-2")]
@@ -434,7 +435,7 @@ class TestPerUserRun:
             await connector._run_per_user_sync()
         connector._delete_records_nobody_sees.assert_awaited_once()
 
-    async def test_only_connected_users_pass_the_gate(self):
+    async def test_only_connected_users_pass_the_gate(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         connector, p1, p2, p3 = _run_setup([_connection("u1")], users, {"u1": True})
         member = SimpleNamespace(id="n9")
@@ -445,7 +446,7 @@ class TestPerUserRun:
         assert [u.email for u in linked] == ["ann@acme.com"]
         connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("notion-1", [member])
 
-    async def test_a_user_who_disconnected_during_their_pass_loses_what_it_granted(self):
+    async def test_a_user_who_disconnected_during_their_pass_loses_what_it_granted(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         connector, p1, p2, p3 = _run_setup([_connection("u1")], users, {"u1": True})
         connector._update_connection = AsyncMock(return_value=False)
@@ -454,14 +455,14 @@ class TestPerUserRun:
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "n1")
         connector._delete_records_nobody_sees.assert_not_awaited()
 
-    async def test_a_user_who_disconnected_during_an_unfinished_pass_loses_what_it_granted(self):
+    async def test_a_user_who_disconnected_during_an_unfinished_pass_loses_what_it_granted(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         connector, p1, p2, p3 = _run_setup([_connection("u1")], users, {"u1": False})
         with p1, p2, p3, patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=None)):
             await connector._run_per_user_sync()
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "n1")
 
-    async def test_an_unfinished_pass_of_a_user_still_connected_keeps_their_access(self):
+    async def test_an_unfinished_pass_of_a_user_still_connected_keeps_their_access(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         connection = _connection("u1", last_complete_listing_at=10**13)
         connector, p1, p2, p3 = _run_setup([connection], users, {"u1": False})
@@ -469,7 +470,7 @@ class TestPerUserRun:
             await connector._run_per_user_sync()
         connector.data_entities_processor.withdraw_user_from_connector.assert_not_awaited()
 
-    async def test_a_stale_incomplete_user_loses_access(self):
+    async def test_a_stale_incomplete_user_loses_access(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         old = _connection("u1", last_complete_listing_at=1, connected_at=1)
         connector, p1, p2, p3 = _run_setup([old], users, {"u1": False})
@@ -477,7 +478,7 @@ class TestPerUserRun:
             await connector._run_per_user_sync()
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "n1")
 
-    async def test_a_revoked_connection_gets_no_pass_and_no_access(self):
+    async def test_a_revoked_connection_gets_no_pass_and_no_access(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         revoked = _connection("u1", status=STATUS_REVOKED)
         connector, p1, p2, p3 = _run_setup([revoked], users, {"u1": True})
@@ -486,7 +487,7 @@ class TestPerUserRun:
         connector._run_user_pass.assert_not_awaited()
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "n1")
 
-    async def test_a_connection_for_another_workspace_is_revoked(self):
+    async def test_a_connection_for_another_workspace_is_revoked(self) -> None:
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         foreign = _connection("u1", workspace_id="ws-other")
         connector, p1, p2, p3 = _run_setup([foreign], users, {"u1": True})
@@ -497,7 +498,7 @@ class TestPerUserRun:
 
 
 class TestDeleteRecordsNobodySees:
-    async def test_only_unheld_pages_are_deleted(self):
+    async def test_only_unheld_pages_are_deleted(self) -> None:
         connector = _connector()
         held, unheld, stub = _record("p1", "r1"), _record("p2", "r2"), _record("p3", "r3", is_placeholder=True)
         connector.data_entities_processor.get_records_by_record_type.side_effect = (
@@ -510,7 +511,7 @@ class TestDeleteRecordsNobodySees:
 
 
 class TestWorkspaceGroup:
-    def _connector(self, existing):
+    def _connector(self, existing) -> tuple[NotionConnector, MagicMock]:
         connector = _connector()
         dep = connector.data_entities_processor
         dep.get_record_group_by_external_id = AsyncMock(return_value=existing)
@@ -520,20 +521,20 @@ class TestWorkspaceGroup:
         return connector, dep
 
     @staticmethod
-    def _group(model):
+    def _group(model) -> RecordGroup:
         from app.models.entities import RecordGroup, RecordGroupType
 
         return RecordGroup(name="ws", external_group_id="ws-1", connector_name="NOTION", connector_id="notion-1",
                            group_type=RecordGroupType.NOTION_WORKSPACE, permission_model=model, inherit_permissions=True)
 
-    async def test_a_new_per_user_workspace_reaches_nobody_by_itself(self):
+    async def test_a_new_per_user_workspace_reaches_nobody_by_itself(self) -> None:
         connector, dep = self._connector(None)
         await connector._prepare_per_user_workspace()
         group, grants = dep.on_new_record_groups.await_args.args[0][0]
         assert group.permission_model == PermissionModel.RECORD_LEVEL
         assert group.inherit_permissions is False and grants == []
 
-    async def test_switching_from_workspace_mode_closes_the_workspace_then_every_parent_then_marks_it(self):
+    async def test_switching_from_workspace_mode_closes_the_workspace_then_every_parent_then_marks_it(self) -> None:
         connector, dep = self._connector(self._group(PermissionModel.RECORD_GROUP_LEVEL))
         order = []
         dep.on_new_record_groups.side_effect = lambda rows: order.append(("group", rows[0][0].permission_model,
@@ -543,12 +544,12 @@ class TestWorkspaceGroup:
         assert order == [("group", PermissionModel.RECORD_GROUP_LEVEL, False), ("strip", "r-p1"),
                          ("group", PermissionModel.RECORD_LEVEL, False)]
 
-    async def test_a_prepared_workspace_is_not_stripped_again(self):
+    async def test_a_prepared_workspace_is_not_stripped_again(self) -> None:
         connector, dep = self._connector(self._group(PermissionModel.RECORD_LEVEL))
         await connector._prepare_per_user_workspace()
         dep.stop_inheriting_permissions.assert_not_awaited()
 
-    async def test_a_strip_cut_short_is_done_again_next_run(self):
+    async def test_a_strip_cut_short_is_done_again_next_run(self) -> None:
         connector, dep = self._connector(self._group(PermissionModel.RECORD_GROUP_LEVEL))
         dep.stop_inheriting_permissions.side_effect = RuntimeError("graph down")
         with pytest.raises(RuntimeError):
@@ -557,7 +558,7 @@ class TestWorkspaceGroup:
         assert all(rows.args[0][0][0].permission_model != PermissionModel.RECORD_LEVEL
                    for rows in dep.on_new_record_groups.await_args_list)
 
-    async def test_back_in_workspace_mode_the_workspace_is_everyones_again(self):
+    async def test_back_in_workspace_mode_the_workspace_is_everyones_again(self) -> None:
         connector = _connector()
         existing = self._group(PermissionModel.RECORD_LEVEL)
         tx = MagicMock()
@@ -570,7 +571,7 @@ class TestWorkspaceGroup:
         group, _ = connector.data_entities_processor.on_new_record_groups.await_args.args[0][0]
         assert group.permission_model == PermissionModel.RECORD_GROUP_LEVEL and group.inherit_permissions is True
 
-    async def test_back_in_workspace_mode_every_page_inherits_again_before_the_marker_moves(self):
+    async def test_back_in_workspace_mode_every_page_inherits_again_before_the_marker_moves(self) -> None:
         connector = _connector()
         existing = self._group(PermissionModel.RECORD_LEVEL)
         existing.id = "g-1"
@@ -594,20 +595,20 @@ class TestWorkspaceGroup:
 # ---------------------------------------------------------------- content that differs per viewer
 
 class TestContentThatDiffersPerViewer:
-    async def test_synced_block_from_another_page_renders_empty(self):
+    async def test_synced_block_from_another_page_renders_empty(self) -> None:
         connector = _connector()
         connector._per_user = True
         connector._process_blocks_recursive = AsyncMock()
         assert await connector._process_children_of("block", "original-elsewhere") == []
         connector._process_blocks_recursive.assert_not_awaited()
 
-    async def test_a_blocks_own_children_still_render(self):
+    async def test_a_blocks_own_children_still_render(self) -> None:
         connector = _connector()
         connector._per_user = True
         connector._process_blocks_recursive = AsyncMock(return_value=["child"])
         assert await connector._process_children_of("block", "block") == ["child"]
 
-    async def test_a_data_source_table_keeps_only_its_columns(self):
+    async def test_a_data_source_table_keeps_only_its_columns(self) -> None:
         connector = _connector()
         connector._per_user = True
         datasource = MagicMock()
@@ -623,7 +624,7 @@ class TestContentThatDiffersPerViewer:
 
 
 class TestNeverDeleteOnOneUsersView:
-    async def test_reindex_only_queues_records_again(self):
+    async def test_reindex_only_queues_records_again(self) -> None:
         connector = _connector()
         connector._load_access_mode = AsyncMock(return_value=True)
         connector._check_and_fetch_updated_record = AsyncMock()
@@ -632,7 +633,7 @@ class TestNeverDeleteOnOneUsersView:
         connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(records)
         connector._check_and_fetch_updated_record.assert_not_awaited()
 
-    async def test_sweep_leaves_a_stub_one_user_cannot_see(self):
+    async def test_sweep_leaves_a_stub_one_user_cannot_see(self) -> None:
         connector = _connector()
         stub = _record("p1", is_placeholder=True)
         connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
@@ -645,7 +646,7 @@ class TestNeverDeleteOnOneUsersView:
 
 
 class TestReaderForStreaming:
-    async def test_a_file_is_read_as_a_connected_user_who_holds_its_page(self):
+    async def test_a_file_is_read_as_a_connected_user_who_holds_its_page(self) -> None:
         connector = _connector()
         page = _record("p1", "r1")
         file = _record("f1", "rf", record_type=RecordType.FILE, parent="p1")
@@ -658,7 +659,7 @@ class TestReaderForStreaming:
         assert reader.user_id == "u1"
         connector.data_entities_processor.get_users_with_permission_to_node.assert_awaited_once_with("r1", "records")
 
-    async def test_no_active_reader_falls_back_to_the_connectors_own(self):
+    async def test_no_active_reader_falls_back_to_the_connectors_own(self) -> None:
         connector = _connector()
         connector.data_entities_processor.get_users_with_permission_to_node.return_value = [SimpleNamespace(user_id="u2")]
         with patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=[_connection("u2", status=STATUS_REVOKED)])):
@@ -668,12 +669,12 @@ class TestReaderForStreaming:
 # ---------------------------------------------------------------- the connect route
 
 class TestConnectRoute:
-    def _request(self, connections=()):
+    def _request(self, connections=()) -> MagicMock:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         return request
 
-    async def _connect(self, verify, connections=()):
+    async def _connect(self, verify, connections=()) -> tuple:
         from app.connectors.api import user_access_router as routes
 
         graph = AsyncMock()
@@ -688,24 +689,24 @@ class TestConnectRoute:
             result = await routes.connect_my_account("c1", self._request(), token=" tok ", graph_provider=graph)
         return result, save, sync
 
-    async def test_a_refused_credential_is_a_400_and_nothing_is_saved(self):
+    async def test_a_refused_credential_is_a_400_and_nothing_is_saved(self) -> None:
         with pytest.raises(HTTPException) as e:
             await self._connect(AsyncMock(side_effect=NotionAccessError("This token belongs to bob@acme.com.")))
         assert e.value.status_code == 400
 
-    async def test_notion_unreachable_is_a_503(self):
+    async def test_notion_unreachable_is_a_503(self) -> None:
         with pytest.raises(HTTPException) as e:
             await self._connect(AsyncMock(side_effect=RuntimeError("timeout")))
         assert e.value.status_code == 503
 
-    async def test_an_account_another_user_connected_is_a_409(self):
+    async def test_an_account_another_user_connected_is_a_409(self) -> None:
         other = _connection("u9")
         other.source_user_id = "p1"
         with pytest.raises(HTTPException) as e:
             await self._connect(AsyncMock(return_value=NotionIdentity("p1", "ann@acme.com", "ws-1")), [other])
         assert e.value.status_code == 409
 
-    async def test_a_good_credential_is_saved_and_a_sync_requested_without_echoing_it(self):
+    async def test_a_good_credential_is_saved_and_a_sync_requested_without_echoing_it(self) -> None:
         result, save, sync = await self._connect(AsyncMock(return_value=NotionIdentity("p1", "ann@acme.com", "ws-1")))
         saved: UserConnection = save.await_args.args[2]
         assert saved.token == "tok" and saved.email == "ann@acme.com" and saved.source_user_id == "p1"
@@ -716,7 +717,7 @@ class TestConnectRoute:
 # ---------------------------------------------------------------- framework pieces
 
 class TestConnectorDeletion:
-    async def test_every_users_credential_goes_with_the_connector(self):
+    async def test_every_users_credential_goes_with_the_connector(self) -> None:
         from app.connectors.services.storage_release import delete_connector_credentials
 
         keys = {
@@ -733,7 +734,7 @@ class TestConnectorDeletion:
                            "/services/connectors/c1/sign-in/u3", "/services/connectors/c1/members",
                            "/services/connectors/c1/config"]
 
-    async def test_a_credential_left_behind_is_reported(self):
+    async def test_a_credential_left_behind_is_reported(self) -> None:
         from app.connectors.services.storage_release import delete_connector_credentials
 
         config = AsyncMock()
@@ -744,8 +745,10 @@ class TestConnectorDeletion:
 
 
 class TestRemoveUserGrants:
-    async def test_only_that_users_edges_go_and_search_access_is_dropped(self):
-        from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+    async def test_only_that_users_edges_go_and_search_access_is_dropped(self) -> None:
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
 
         processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
         tx = MagicMock()
@@ -761,8 +764,10 @@ class TestRemoveUserGrants:
         assert all(e["from_collection"] == "users" and e["to_collection"] == "records" for e in edges)
         processor._access_changed.assert_awaited_once_with({"c1"})
 
-    async def test_nothing_to_remove_is_a_no_op(self):
-        from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+    async def test_nothing_to_remove_is_a_no_op(self) -> None:
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
 
         processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
         processor.data_store_provider = MagicMock()
@@ -771,7 +776,7 @@ class TestRemoveUserGrants:
 
 
 class TestListRoute:
-    async def test_only_per_user_connectors_are_listed_with_the_callers_status(self):
+    async def test_only_per_user_connectors_are_listed_with_the_callers_status(self) -> None:
         from app.connectors.api import user_access_router as routes
 
         graph = AsyncMock()
@@ -793,7 +798,7 @@ class TestListRoute:
 
 
 class TestRouteGate:
-    async def _gate(self, app, config, same_org=True):
+    async def _gate(self, app, config, same_org=True) -> dict:
         from app.connectors.api import user_access_router as routes
 
         graph = AsyncMock()
@@ -806,7 +811,7 @@ class TestRouteGate:
                 patch.object(routes, "_config_service", return_value=cfg):
             return await routes._per_user_connector(request, "c1", graph)
 
-    async def test_a_per_user_team_notion_connector_passes(self):
+    async def test_a_per_user_team_notion_connector_passes(self) -> None:
         app = {"type": "Notion", "scope": "team"}
         config = {"sync": {"accessMode": "per_user"}}
         assert await self._gate(app, config) == {**app, "config": config}
@@ -820,7 +825,7 @@ class TestRouteGate:
         ({"type": "Notion", "scope": "personal"}, {"sync": {"accessMode": "per_user"}}, True),
         ({"type": "Confluence", "scope": "team"}, {"sync": {"accessMode": "per_user"}}, True),
     ])
-    async def test_anything_else_is_the_same_404(self, app, config, same_org):
+    async def test_anything_else_is_the_same_404(self, app, config, same_org) -> None:
         with pytest.raises(HTTPException) as e:
             await self._gate(app, config, same_org)
         assert e.value.status_code == 404
@@ -832,15 +837,15 @@ _PER_USER = "app.connectors.sources.notion.per_user"
 
 
 class TestStoredSignIn:
-    def test_public_view_never_carries_the_refresh_token(self):
+    def test_public_view_never_carries_the_refresh_token(self) -> None:
         public = _connection(refresh_token="rt", method="oauth").public()
         assert "refreshToken" not in public and "token" not in public and public["method"] == "oauth"
 
-    def test_round_trip_keeps_the_refresh_token_and_method(self):
+    def test_round_trip_keeps_the_refresh_token_and_method(self) -> None:
         connection = _connection(refresh_token="rt", method="oauth")
         assert UserConnection.from_dict(connection.to_dict()) == connection
 
-    def test_a_pair_a_refresh_stored_wins_over_the_old_one(self):
+    def test_a_pair_a_refresh_stored_wins_over_the_old_one(self) -> None:
         # OAuthProvider.refresh_access_token writes the new pair under "credentials" before anything else.
         data = {**_connection(token="old", refresh_token="rt-old").to_dict(),
                 "credentials": {"access_token": "new", "refresh_token": "rt-new"}}
@@ -854,13 +859,13 @@ class TestStoredSignIn:
         ({}, False),
         (None, False),
     ])
-    def test_sign_in_needs_the_connectors_oauth_app(self, config, expected):
+    def test_sign_in_needs_the_connectors_oauth_app(self, config, expected) -> None:
         from app.connectors.sources.notion.per_user import has_oauth_app
         assert has_oauth_app(config) is expected
 
 
 class TestRefreshConnection:
-    async def _refresh(self, connection, stored, *, refreshed=None, error=None, after=None):
+    async def _refresh(self, connection, stored, *, refreshed=None, error=None, after=None) -> tuple:
         """``stored``: what get_connection returns first; ``after``: what it returns after the refresh."""
         from app.connectors.sources.notion import per_user
 
@@ -868,7 +873,7 @@ class TestRefreshConnection:
         provider = MagicMock()
         provider.refresh_access_token = AsyncMock(side_effect=error, return_value=refreshed)
         provider.close = AsyncMock()
-        with patch(f"{_PER_USER}.get_connection", new=AsyncMock(side_effect=reads + [after])), \
+        with patch(f"{_PER_USER}.get_connection", new=AsyncMock(side_effect=[*reads, after])), \
                 patch(f"{_PER_USER}.save_connection", new=AsyncMock()) as save, \
                 patch(f"{_PER_USER}.delete_connection", new=AsyncMock()) as delete, \
                 patch(f"{_PER_USER}.user_oauth_config", new=AsyncMock(return_value=MagicMock())), \
@@ -878,25 +883,25 @@ class TestRefreshConnection:
             )
         return result, provider, save, delete
 
-    async def test_a_token_another_task_refreshed_is_adopted_without_a_refresh(self):
+    async def test_a_token_another_task_refreshed_is_adopted_without_a_refresh(self) -> None:
         connection = _connection(token="old", refresh_token="rt")
         result, provider, save, _ = await self._refresh(connection, _connection(token="new", refresh_token="rt2"))
         assert result is True and connection.token == "new" and connection.refresh_token == "rt2"
         provider.refresh_access_token.assert_not_awaited()
         save.assert_not_awaited()
 
-    async def test_a_pasted_token_cannot_be_refreshed(self):
+    async def test_a_pasted_token_cannot_be_refreshed(self) -> None:
         result, provider, _, _ = await self._refresh(_connection(), _connection())
         assert result is False
         provider.refresh_access_token.assert_not_awaited()
 
-    async def test_a_disconnected_or_reconnected_user_is_not_refreshed(self):
+    async def test_a_disconnected_or_reconnected_user_is_not_refreshed(self) -> None:
         for stored in (None, _connection(refresh_token="rt", connected_at=2)):
             result, provider, _, _ = await self._refresh(_connection(refresh_token="rt"), stored)
             assert result is False
             provider.refresh_access_token.assert_not_awaited()
 
-    async def test_a_refresh_stores_the_new_pair_and_the_running_task_uses_it(self):
+    async def test_a_refresh_stores_the_new_pair_and_the_running_task_uses_it(self) -> None:
         connection = _connection(token="old", refresh_token="rt")
         stored = _connection(token="old", refresh_token="rt")
         token = SimpleNamespace(access_token="new", refresh_token="rt2")
@@ -906,8 +911,10 @@ class TestRefreshConnection:
         saved = save.await_args.args[2]
         assert (saved.token, saved.refresh_token, saved.last_complete_listing_at) == ("new", "rt2", 7)
 
-    async def test_a_refused_refresh_token_ends_the_sign_in(self):
-        from app.connectors.core.base.token_service.oauth_service import RefreshTokenInvalidError
+    async def test_a_refused_refresh_token_ends_the_sign_in(self) -> None:
+        from app.connectors.core.base.token_service.oauth_service import (
+            RefreshTokenInvalidError,
+        )
 
         connection = _connection(refresh_token="rt")
         result, _, save, _ = await self._refresh(
@@ -917,8 +924,10 @@ class TestRefreshConnection:
         assert result is False
         save.assert_not_awaited()
 
-    async def test_a_refusal_after_another_process_refreshed_adopts_its_token(self):
-        from app.connectors.core.base.token_service.oauth_service import RefreshTokenInvalidError
+    async def test_a_refusal_after_another_process_refreshed_adopts_its_token(self) -> None:
+        from app.connectors.core.base.token_service.oauth_service import (
+            RefreshTokenInvalidError,
+        )
 
         connection = _connection(refresh_token="rt")
         result, _, _, _ = await self._refresh(
@@ -927,14 +936,14 @@ class TestRefreshConnection:
         )
         assert result is True and connection.token == "other"
 
-    async def test_notion_down_is_neither_success_nor_a_revoke(self):
+    async def test_notion_down_is_neither_success_nor_a_revoke(self) -> None:
         result, _, save, _ = await self._refresh(
             _connection(refresh_token="rt"), _connection(refresh_token="rt"), error=RuntimeError("503"),
         )
         assert result is None
         save.assert_not_awaited()
 
-    async def test_a_disconnect_during_the_refresh_leaves_no_credential_behind(self):
+    async def test_a_disconnect_during_the_refresh_leaves_no_credential_behind(self) -> None:
         token = SimpleNamespace(access_token="new", refresh_token="rt2")
         result, _, save, delete = await self._refresh(
             _connection(refresh_token="rt"), _connection(refresh_token="rt"), refreshed=token, after=None,
@@ -945,7 +954,7 @@ class TestRefreshConnection:
 
 
 class TestUserPassRefresh:
-    def _setup(self, refresh_result, statuses):
+    def _setup(self, refresh_result, statuses) -> NotionConnector:
         connector = _connector()
         datasource = MagicMock()
         datasource.retrieve_bot_user = AsyncMock(
@@ -959,30 +968,30 @@ class TestUserPassRefresh:
         connector._revoke_connection = AsyncMock()
         return connector
 
-    async def test_an_expired_sign_in_is_refreshed_and_the_pass_runs_again(self):
+    async def test_an_expired_sign_in_is_refreshed_and_the_pass_runs_again(self) -> None:
         connector = self._setup(True, [401, 200])
         assert await connector._run_user_pass(_connection(refresh_token="rt"), SimpleNamespace(id="n")) is True
         connector._revoke_connection.assert_not_awaited()
         assert connector._sync_incomplete is False
 
-    async def test_a_sign_in_that_cannot_be_refreshed_is_revoked(self):
+    async def test_a_sign_in_that_cannot_be_refreshed_is_revoked(self) -> None:
         connector = self._setup(False, [401])
         assert await connector._run_user_pass(_connection(refresh_token="rt"), SimpleNamespace(id="n")) is False
         connector._revoke_connection.assert_awaited_once()
 
-    async def test_a_refresh_that_could_not_run_keeps_access_but_marks_the_run_incomplete(self):
+    async def test_a_refresh_that_could_not_run_keeps_access_but_marks_the_run_incomplete(self) -> None:
         connector = self._setup(None, [401])
         assert await connector._run_user_pass(_connection(refresh_token="rt"), SimpleNamespace(id="n")) is False
         connector._revoke_connection.assert_not_awaited()
         assert connector._sync_incomplete is True
 
-    async def test_a_second_refusal_after_a_refresh_is_revoked(self):
+    async def test_a_second_refusal_after_a_refresh_is_revoked(self) -> None:
         connector = self._setup(True, [401, 401])
         assert await connector._run_user_pass(_connection(refresh_token="rt"), SimpleNamespace(id="n")) is False
         connector._refresh_user_token.assert_awaited_once()
         connector._revoke_connection.assert_awaited_once()
 
-    async def test_a_stream_reading_as_a_user_refreshes_that_user_never_the_connector(self):
+    async def test_a_stream_reading_as_a_user_refreshes_that_user_never_the_connector(self) -> None:
         connector = self._setup(True, [])
         connector.notion_client = None
         with acting_as(_connection(refresh_token="rt")):
@@ -990,19 +999,19 @@ class TestUserPassRefresh:
         connector._refresh_user_token.assert_awaited_once()
 
 
-def _session_store():
+def _session_store() -> AsyncMock:
     store = AsyncMock()
     store.get_config.return_value = {"oauth": {"state": "s1"}}
     return store
 
 
 class TestSignInRoutes:
-    def _request(self):
+    def _request(self) -> MagicMock:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         return request
 
-    async def test_the_sign_in_url_carries_the_marker_and_keeps_state_per_user(self):
+    async def test_the_sign_in_url_carries_the_marker_and_keeps_state_per_user(self) -> None:
         from app.connectors.api import router as main_router
         from app.connectors.api import user_access_router as routes
 
@@ -1028,7 +1037,7 @@ class TestSignInRoutes:
         assert not routes.is_user_sign_in_state({"state": "s1", "connector_id": "c1"})
         assert not routes.is_user_sign_in_state(["not", "a", "dict"])
 
-    async def test_no_oauth_app_is_a_400(self):
+    async def test_no_oauth_app_is_a_400(self) -> None:
         from app.connectors.api import user_access_router as routes
 
         with patch.object(routes, "_per_user_connector", new=AsyncMock(return_value={"type": "Notion", "config": {}})), \
@@ -1041,7 +1050,7 @@ class TestSignInRoutes:
                 await routes.start_my_sign_in("c1", self._request(), graph_provider=AsyncMock())
         assert e.value.status_code == 400
 
-    async def _complete(self, *, gate=None, exchange=None, verify=None):
+    async def _complete(self, *, gate=None, exchange=None, verify=None) -> tuple:
         from app.connectors.api import user_access_router as routes
 
         provider = MagicMock()
@@ -1068,7 +1077,7 @@ class TestSignInRoutes:
             )
         return result, provider, save, drop_session
 
-    async def test_a_sign_in_connects_the_oauth_token_and_drops_the_session(self):
+    async def test_a_sign_in_connects_the_oauth_token_and_drops_the_session(self) -> None:
         result, provider, save, drop_session = await self._complete()
         assert result["success"] is True and result["redirect_url"].endswith("/c1")
         provider.handle_callback.assert_awaited_once_with("code", "s1")
@@ -1076,31 +1085,31 @@ class TestSignInRoutes:
         assert (saved.token, saved.refresh_token, saved.method) == ("at", "rt", "oauth")
         drop_session.assert_awaited_once_with(ANY, "/services/connectors/c1/sign-in/u1")
 
-    async def test_a_wrong_account_is_reported_and_nothing_is_saved(self):
+    async def test_a_wrong_account_is_reported_and_nothing_is_saved(self) -> None:
         result, _, save, drop_session = await self._complete(
             verify=AsyncMock(side_effect=NotionAccessError("This token belongs to bob@acme.com.")))
         assert result["success"] is False and "bob@acme.com" in result["error_message"]
         save.assert_not_awaited()
         drop_session.assert_awaited_once()
 
-    async def test_a_failed_exchange_is_reported_and_the_session_dropped(self):
+    async def test_a_failed_exchange_is_reported_and_the_session_dropped(self) -> None:
         result, _, save, drop_session = await self._complete(exchange=AsyncMock(side_effect=ValueError("Invalid state")))
         assert result["success"] is False and result["error_message"]
         save.assert_not_awaited()
         drop_session.assert_awaited_once()
 
-    async def test_it_never_raises_so_the_connector_itself_is_never_marked_signed_out(self):
+    async def test_it_never_raises_so_the_connector_itself_is_never_marked_signed_out(self) -> None:
         result, _, _, _ = await self._complete(gate=AsyncMock(side_effect=RuntimeError("etcd down")))
         assert result["success"] is False
 
-    async def test_a_connector_not_in_per_user_mode_is_refused(self):
+    async def test_a_connector_not_in_per_user_mode_is_refused(self) -> None:
         result, provider, _, _ = await self._complete(gate=AsyncMock(side_effect=HTTPException(status_code=404)))
         assert result["success"] is False
         provider.handle_callback.assert_not_awaited()
 
 
 class TestDisconnectAndAdminRoutes:
-    def _patches(self, routes, delete_ok=True):
+    def _patches(self, routes, delete_ok=True) -> tuple:
         return (
             patch.object(routes, "_per_user_connector", new=AsyncMock(return_value={"type": "Notion", "config": {}})),
             patch.object(routes, "get_user_or_503", new=AsyncMock(return_value={"id": "n1", "userId": "u1",
@@ -1111,7 +1120,7 @@ class TestDisconnectAndAdminRoutes:
             patch.object(routes, "_withdraw", new=AsyncMock()),
         )
 
-    async def test_disconnect_drops_the_credential_and_any_pending_sign_in_then_the_access(self):
+    async def test_disconnect_drops_the_credential_and_any_pending_sign_in_then_the_access(self) -> None:
         from app.connectors.api import user_access_router as routes
 
         request = MagicMock()
@@ -1124,7 +1133,7 @@ class TestDisconnectAndAdminRoutes:
         drop_mock.assert_awaited_once_with(ANY, "/services/connectors/c1/sign-in/u1")
         withdraw_mock.assert_awaited_once_with(ANY, "c1", "n1")
 
-    async def test_disconnect_waits_for_a_token_refresh_in_progress(self):
+    async def test_disconnect_waits_for_a_token_refresh_in_progress(self) -> None:
         import asyncio
 
         from app.connectors.api import user_access_router as routes
@@ -1143,7 +1152,7 @@ class TestDisconnectAndAdminRoutes:
             await task
         delete_mock.assert_awaited_once()
 
-    async def test_a_credential_that_could_not_be_deleted_keeps_nothing_quiet(self):
+    async def test_a_credential_that_could_not_be_deleted_keeps_nothing_quiet(self) -> None:
         from app.connectors.api import user_access_router as routes
 
         request = MagicMock()
@@ -1156,7 +1165,7 @@ class TestDisconnectAndAdminRoutes:
         withdraw_mock.assert_not_awaited()
 
     @pytest.mark.parametrize("call", ["list", "remove"])
-    async def test_admin_routes_are_a_404_for_anyone_else(self, call):
+    async def test_admin_routes_are_a_404_for_anyone_else(self, call) -> None:
         from app.connectors.api import user_access_router as routes
 
         request = MagicMock()

@@ -1031,7 +1031,7 @@ class NotionConnector(BaseConnector):
                     connected.append((connection, user))
             except Exception as e:
                 # One user's failure must not stop everyone else's sync; this run is not complete.
-                self.logger.error("Notion per-user sync: could not update %s: %s", connection.email, e, exc_info=True)
+                self.logger.error("Notion per-user sync: could not update user %s: %s", connection.user_id, e, exc_info=True)
                 self._sync_incomplete = True
 
         await self._link_connected_users(connected)
@@ -1057,7 +1057,7 @@ class NotionConnector(BaseConnector):
                 await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
             elif connection.active and connection.stale(now):
                 # Its last complete view is too old to trust: no access until one completes.
-                self.logger.warning("Notion per-user sync: %s has no recent complete listing", connection.email)
+                self.logger.warning("Notion per-user sync: user %s has no recent complete listing", connection.user_id)
                 await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
             all_complete = all_complete and complete
         if all_complete:
@@ -1118,7 +1118,7 @@ class NotionConnector(BaseConnector):
         connection.last_error = reason
         await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
         stored = await self._update_connection(connection)
-        self.logger.warning("Notion per-user access revoked for %s: %s", connection.email, reason)
+        self.logger.warning("Notion per-user access revoked for user %s: %s", connection.user_id, reason)
         if was_active and stored:
             await self._ask_to_connect(connection.user_id, connection.email, reconnect=True)
 
@@ -1256,7 +1256,7 @@ class NotionConnector(BaseConnector):
                 if self._is_unauthorized(e):
                     complete = None
                 else:
-                    self.logger.error("Notion per-user pass for %s failed: %s", connection.email, e, exc_info=True)
+                    self.logger.error("Notion per-user pass for user %s failed: %s", connection.user_id, e, exc_info=True)
                     complete = False
             finally:
                 self._sync_incomplete = outer_incomplete or self._sync_incomplete or not complete
@@ -1322,7 +1322,7 @@ class NotionConnector(BaseConnector):
                     lost.append(granted[record.external_record_id])
             if lost:
                 self.logger.info(
-                    "Notion per-user sync: %s can no longer open %d %s(s)", connection.email, len(lost), object_type
+                    "Notion per-user sync: user %s can no longer open %d %s(s)", connection.user_id, len(lost), object_type
                 )
                 await self.data_entities_processor.remove_user_grants(self.connector_id, user.id, lost)
         return complete

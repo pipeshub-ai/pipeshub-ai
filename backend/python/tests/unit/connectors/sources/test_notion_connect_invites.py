@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -32,6 +33,10 @@ from app.connectors.core.base.user_access_invites import (
 _DAY = 24 * 60 * 60 * 1000
 _MOD = "app.connectors.sources.notion.connector"
 
+if TYPE_CHECKING:
+    from app.connectors.sources.notion.connector import NotionConnector
+    from app.models.entities import User
+
 
 class _Store:
     """An in-memory configuration store with the calls the per-user code makes."""
@@ -39,18 +44,18 @@ class _Store:
     def __init__(self) -> None:
         self.data: dict[str, object] = {}
 
-    async def get_config(self, key, *args, **kwargs):
+    async def get_config(self, key, *args, **kwargs) -> dict | None:
         return self.data.get(key)
 
-    async def set_config(self, key, value, **kwargs):
+    async def set_config(self, key, value, **kwargs) -> bool:
         self.data[key] = value
         return True
 
-    async def delete_config(self, key):
+    async def delete_config(self, key) -> bool:
         self.data.pop(key, None)
         return True
 
-    async def list_keys_in_directory(self, prefix):
+    async def list_keys_in_directory(self, prefix) -> list[str]:
         return [k for k in self.data if k.startswith(prefix)]
 
 
@@ -67,7 +72,7 @@ def _user(user_id: str, org: str = "org-1", **kw) -> dict:
 # ---------------------------------------------------------------- store
 
 class TestReminderSchedule:
-    def test_reminders_come_at_3_and_10_days_then_stop(self):
+    def test_reminders_come_at_3_and_10_days_then_stop(self) -> None:
         invite = Invite(user_id="u1")
         invite.sent(0)
         assert not invite.reminder_due(REMINDER_AFTER_MS[0] - 1)
@@ -79,7 +84,7 @@ class TestReminderSchedule:
         assert invite.send_count == 3 and invite.first_sent_at == 0
         assert not invite.reminder_due(365 * _DAY)
 
-    def test_syncs_that_missed_both_dates_send_one_reminder(self):
+    def test_syncs_that_missed_both_dates_send_one_reminder(self) -> None:
         invite = Invite(user_id="u1")
         invite.sent(0)
         late = 20 * _DAY
@@ -88,7 +93,7 @@ class TestReminderSchedule:
         assert not invite.reminder_due(late + 60 * 60 * 1000)  # the next hourly sync
         assert not invite.reminder_due(late + _DAY)
 
-    def test_an_admins_resend_does_not_use_up_a_reminder(self):
+    def test_an_admins_resend_does_not_use_up_a_reminder(self) -> None:
         invite = Invite(user_id="u1")
         invite.sent(0)
         invite.sent(60 * 1000)  # the admin pressed Remind straight away
@@ -96,14 +101,14 @@ class TestReminderSchedule:
         invite.sent(REMINDER_AFTER_MS[0])
         assert invite.reminder_due(REMINDER_AFTER_MS[1])
 
-    def test_a_resend_after_a_reminder_date_stands_in_for_that_reminder(self):
+    def test_a_resend_after_a_reminder_date_stands_in_for_that_reminder(self) -> None:
         invite = Invite(user_id="u1")
         invite.sent(0)
         invite.sent(REMINDER_AFTER_MS[0] + _DAY)
         assert not invite.reminder_due(REMINDER_AFTER_MS[1] - 1)
         assert invite.reminder_due(REMINDER_AFTER_MS[1])
 
-    def test_no_reminder_after_opting_out_or_before_any_invite(self):
+    def test_no_reminder_after_opting_out_or_before_any_invite(self) -> None:
         invite = Invite(user_id="u1")
         assert not invite.reminder_due(365 * _DAY)
         invite.sent(0)
@@ -112,7 +117,7 @@ class TestReminderSchedule:
 
 
 class TestConnectLinks:
-    async def test_a_link_names_its_user_until_it_expires_and_only_its_hash_is_stored(self):
+    async def test_a_link_names_its_user_until_it_expires_and_only_its_hash_is_stored(self) -> None:
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-1", now_ms=1000)
         connector_id, user_id, secret = token.split(".", 2)
@@ -124,18 +129,18 @@ class TestConnectLinks:
 
     @pytest.mark.parametrize("token", ["", "c1", "c1.", ".secret", "c1.u1", "c1.u1.wrong", "c1.u2.x", "a/b.u1.s",
                                        "c1.u/1.s"])
-    async def test_a_malformed_or_unknown_token_names_nobody(self, token):
+    async def test_a_malformed_or_unknown_token_names_nobody(self, token) -> None:
         store = _Store()
         await create_link(store, "c1", "u1", "org-1", now_ms=0)
         assert await resolve_link(store, token, now_ms=0) is None
 
-    async def test_a_user_keeps_their_newest_three_links(self):
+    async def test_a_user_keeps_their_newest_three_links(self) -> None:
         store = _Store()
         tokens = [await create_link(store, "c1", "u1", "org-1", now_ms=10**13 + i) for i in range(4)]
         alive = [await resolve_link(store, t, now_ms=10**13 + 10) is not None for t in tokens]
         assert alive == [False, True, True, True]
 
-    async def test_deleting_a_users_links_keeps_everyone_elses(self):
+    async def test_deleting_a_users_links_keeps_everyone_elses(self) -> None:
         store = _Store()
         mine = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
         theirs = await create_link(store, "c1", "u2", "org-1", now_ms=10**13)
@@ -143,7 +148,7 @@ class TestConnectLinks:
         assert await resolve_link(store, mine, now_ms=10**13) is None
         assert await resolve_link(store, theirs, now_ms=10**13) is not None
 
-    async def test_a_deleted_connector_takes_invites_links_and_member_list_along(self):
+    async def test_a_deleted_connector_takes_invites_links_and_member_list_along(self) -> None:
         store = _Store()
         await create_link(store, "c1", "u1", "org-1", now_ms=0)
         await user_access.save_invite(store, "c1", Invite(user_id="u1", send_count=1))
@@ -158,7 +163,7 @@ class TestConnectLinks:
 # ---------------------------------------------------------------- sending
 
 class TestSendConnectRequest:
-    async def _send(self, *, mail_ok: bool = True, reconnect: bool = False, notification_ok: bool = True):
+    async def _send(self, *, mail_ok: bool = True, reconnect: bool = False, notification_ok: bool = True) -> tuple[dict, AsyncMock, AsyncMock, _Store]:
         store = _Store()
         notifications = MagicMock()
         notifications.publish_notification = AsyncMock(return_value=notification_ok)
@@ -172,7 +177,7 @@ class TestSendConnectRequest:
             )
         return result, notifications.publish_notification, send_email, store
 
-    async def test_the_user_gets_a_notification_that_opens_the_dialog_and_an_email_with_a_working_link(self):
+    async def test_the_user_gets_a_notification_that_opens_the_dialog_and_an_email_with_a_working_link(self) -> None:
         (notified, emailed), publish, send_email, store = await self._send()
         assert notified and emailed
         sent = publish.await_args.kwargs
@@ -188,11 +193,11 @@ class TestSendConnectRequest:
         assert resolved is not None and resolved.user_id == "u1"
         assert send_email.await_args.args[2] == "u1@acme.com"
 
-    async def test_no_mail_server_still_notifies(self):
+    async def test_no_mail_server_still_notifies(self) -> None:
         (notified, emailed), *_ = await self._send(mail_ok=False)
         assert notified and not emailed
 
-    async def test_a_reconnect_says_so(self):
+    async def test_a_reconnect_says_so(self) -> None:
         _, publish, send_email, _ = await self._send(reconnect=True)
         assert publish.await_args.kwargs["title"] == "Reconnect your Notion account"
         assert send_email.await_args.kwargs["template_data"]["reconnect"] is True
@@ -200,20 +205,20 @@ class TestSendConnectRequest:
 
 # ---------------------------------------------------------------- routes
 
-def _routes():
+def _routes() -> ModuleType:
     from app.connectors.api import user_access_router as routes
 
     return routes
 
 
-def _admin_request(user_id: str = "admin"):
+def _admin_request(user_id: str = "admin") -> MagicMock:
     request = MagicMock()
     request.state.user = {"userId": user_id}
     return request
 
 
 class TestRoster:
-    async def _roster(self, *, members, connections=(), invites=None, users=(), lookup_fails=False):
+    async def _roster(self, *, members, connections=(), invites=None, users=(), lookup_fails=False) -> dict:
         from app.models.entities import User
 
         routes = _routes()
@@ -221,7 +226,7 @@ class TestRoster:
         by_email = {u["email"].lower(): User(email=u["email"], user_id=u["userId"], org_id=u["orgId"],
                                              full_name=u["fullName"], is_active=u["isActive"]) for u in users}
 
-        async def by_emails(emails, **kw):  # noqa: ANN001, ANN003
+        async def by_emails(emails, **kw) -> dict[str, User]:
             assert kw == {"raise_on_error": True, "org_id": "org-1"}
             if lookup_fails:
                 raise RuntimeError("graph down")
@@ -239,7 +244,7 @@ class TestRoster:
                 patch.object(routes, "list_invites", new=AsyncMock(return_value=invites or {})):
             return await routes.get_roster("c1", _admin_request(), graph_provider=graph)
 
-    async def test_everyone_listed_is_matched_by_email_with_a_status(self):
+    async def test_everyone_listed_is_matched_by_email_with_a_status(self) -> None:
         members = [
             {"sourceUserId": f"n-{u}", "name": u, "email": f"{u.upper()}@acme.com"}
             for u in ("conn", "gone", "inv", "out", "new", "stranger")
@@ -260,16 +265,16 @@ class TestRoster:
         assert result["counts"]["connected"] == 1 and result["membersUpdatedAt"] == 123
         assert all("token" not in (p["connection"] or {}) for p in result["people"])
 
-    async def test_a_connected_user_the_member_list_does_not_show_is_still_listed(self):
+    async def test_a_connected_user_the_member_list_does_not_show_is_still_listed(self) -> None:
         result = await self._roster(members=[], connections=[_connection("u1")], users=[_user("u1")])
         assert [(p["userId"], p["status"]) for p in result["people"]] == [("u1", "connected")]
 
-    async def test_a_failed_user_read_is_a_503_not_everyone_without_an_account(self):
+    async def test_a_failed_user_read_is_a_503_not_everyone_without_an_account(self) -> None:
         with pytest.raises(HTTPException) as e:
             await self._roster(members=[{"email": "a@acme.com"}], users=[_user("a")], lookup_fails=True)
         assert e.value.status_code == 503
 
-    async def test_the_roster_is_a_404_for_anyone_but_an_admin(self):
+    async def test_the_roster_is_a_404_for_anyone_but_an_admin(self) -> None:
         routes = _routes()
         with patch.object(routes, "is_request_admin", return_value=False):
             with pytest.raises(HTTPException) as e:
@@ -279,24 +284,24 @@ class TestRoster:
 
 class TestInvitesRoute:
     async def _invite(self, *, user_ids=None, all_people=False, roster_people=(), connections=(), users=None,
-                      invites=None, sent=(True, True)):
+                      invites=None, sent=(True, True)) -> tuple[dict, AsyncMock, list]:
         routes = _routes()
         users = users or {}
         saved: list[Invite] = []
 
-        async def save(_cfg, _cid, invite):
+        async def save(_cfg, _cid, invite) -> None:
             saved.append(invite)
 
-        async def lookup(_graph, user_id):
+        async def lookup(_graph, user_id) -> dict | None:
             return {"admin": _user("admin"), **users}.get(user_id)
 
         background = []
 
-        def spawn(coro, name=None):  # noqa: ANN001
+        def spawn(coro, name=None) -> asyncio.Task:
             background.append(coro)
             return asyncio.get_running_loop().create_task(asyncio.sleep(0))
 
-        async def get_invite(_cfg, _cid, uid):  # noqa: ANN001
+        async def get_invite(_cfg, _cid, uid) -> Invite | None:
             return (invites or {}).get(uid)
 
         with patch.object(routes, "is_request_admin", return_value=True), \
@@ -320,7 +325,7 @@ class TestInvitesRoute:
                 await coro
         return result, send, saved
 
-    async def test_invite_all_reaches_who_is_not_connected_and_did_not_opt_out(self):
+    async def test_invite_all_reaches_who_is_not_connected_and_did_not_opt_out(self) -> None:
         people = [{"userId": u, "status": s} for u, s in (
             ("a", "not_invited"), ("b", "invited"), ("c", "needs_reconnect"), ("d", "opted_out"),
             ("e", "connected"), (None, "no_account"), ("f", "needs_reconnect"), ("g", "invited"))]
@@ -339,7 +344,7 @@ class TestInvitesRoute:
         assert {i.user_id: i.send_count for i in saved} == {"a": 1, "b": 2, "c": 1}
         assert send.await_args_list[0].args[0].inviter_name == "ADMIN"
 
-    async def test_named_people_are_reached_even_if_they_opted_out_but_never_strangers_or_the_connected(self):
+    async def test_named_people_are_reached_even_if_they_opted_out_but_never_strangers_or_the_connected(self) -> None:
         result, send, _ = await self._invite(
             user_ids=["opted", "conn", "other-org", "nobody"],
             connections=[_connection("conn")],
@@ -350,19 +355,19 @@ class TestInvitesRoute:
         assert {s["userId"]: s["reason"] for s in result["skipped"]} == {
             "conn": "connected", "other-org": "not_found", "nobody": "not_found"}
 
-    async def test_a_failed_mail_is_counted_and_nothing_sent_is_not_recorded(self):
+    async def test_a_failed_mail_is_counted_and_nothing_sent_is_not_recorded(self) -> None:
         result, _, saved = await self._invite(user_ids=["a"], users={"a": _user("a")}, sent=(True, False))
         assert result["sent"] == 1 and result["emailed"] == 0 and saved[0].send_count == 1
         result, _, saved = await self._invite(user_ids=["a"], users={"a": _user("a")}, sent=(False, False))
         assert result["sent"] == 0 and saved == [] and result["skipped"] == [{"userId": "a", "reason": "not_sent"}]
 
     @pytest.mark.parametrize(("user_ids", "all_people"), [(None, False), (["a"], True)])
-    async def test_exactly_one_of_userids_or_all(self, user_ids, all_people):
+    async def test_exactly_one_of_userids_or_all(self, user_ids, all_people) -> None:
         with pytest.raises(HTTPException) as e:
             await self._invite(user_ids=user_ids, all_people=all_people)
         assert e.value.status_code == 400
 
-    async def test_only_admins_invite(self):
+    async def test_only_admins_invite(self) -> None:
         routes = _routes()
         with patch.object(routes, "is_request_admin", return_value=False):
             with pytest.raises(HTTPException) as e:
@@ -371,7 +376,7 @@ class TestInvitesRoute:
 
 
 class TestRemindersRoute:
-    async def test_a_user_turns_their_own_reminders_off_and_on(self):
+    async def test_a_user_turns_their_own_reminders_off_and_on(self) -> None:
         routes = _routes()
         store = _Store()
         with patch.object(routes, "_per_user_connector", new=AsyncMock(return_value={"type": "Notion", "config": {}})), \
@@ -385,7 +390,7 @@ class TestRemindersRoute:
 
 
 class TestConnectLinkRoutes:
-    def _patches(self, routes, store, *, user=None, gate=None):
+    def _patches(self, routes, store, *, user=None, gate=None) -> list:
         return [
             patch.object(routes, "_config_service", return_value=store),
             patch.object(routes, "get_user_or_503", new=AsyncMock(return_value=user if user is not None else _user("u1"))),
@@ -394,7 +399,7 @@ class TestConnectLinkRoutes:
                                                              "config": {"auth": {"authType": "OAUTH"}}})),
         ]
 
-    async def _call(self, fn, store, *args, user=None, gate=None, **kwargs):
+    async def _call(self, fn, store, *args, user=None, gate=None, **kwargs) -> dict:
         routes = _routes()
         patches = self._patches(routes, store, user=user, gate=gate)
         for p in patches:
@@ -405,14 +410,14 @@ class TestConnectLinkRoutes:
             for p in reversed(patches):
                 p.stop()
 
-    async def test_the_public_link_routes_need_no_sign_in_and_nothing_else_does(self):
+    async def test_the_public_link_routes_need_no_sign_in_and_nothing_else_does(self) -> None:
         from app import connectors_main
 
         public = [p for p in connectors_main.EXCLUDE_PATHS if "user-access" in p]
         assert sorted(public) == sorted(f"/api/v1/connectors/user-access/link/{n}"
                                         for n in ("info", "authorize", "complete", "opt-out"))
 
-    async def test_info_names_the_connector_and_the_user(self):
+    async def test_info_names_the_connector_and_the_user(self) -> None:
         routes = _routes()
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
@@ -420,13 +425,13 @@ class TestConnectLinkRoutes:
         assert result["connectorName"] == "Team Notion" and result["email"] == "u1@acme.com"
         assert result["connected"] is False and result["signInAvailable"] is True
 
-    async def test_the_link_runs_in_its_own_organisation(self):
+    async def test_the_link_runs_in_its_own_organisation(self) -> None:
         routes = _routes()
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-7", now_ms=10**13)
         seen = {}
 
-        async def gate(*_a):
+        async def gate(*_a) -> dict:
             seen["org"] = routes.current_org_id()
             return {"type": "Notion", "name": "N", "config": {}}
 
@@ -435,7 +440,7 @@ class TestConnectLinkRoutes:
         assert seen["org"] == "org-7"
 
     @pytest.mark.parametrize("case", ["unknown", "expired", "left_org", "inactive", "not_per_user"])
-    async def test_a_dead_link_is_a_404(self, case):
+    async def test_a_dead_link_is_a_404(self, case) -> None:
         routes = _routes()
         store = _Store()
         now = 10**13
@@ -447,7 +452,7 @@ class TestConnectLinkRoutes:
                              token="c1.nope" if case == "unknown" else token, user=user, gate=gate)
         assert e.value.status_code == 404
 
-    async def test_authorize_starts_a_sign_in_for_the_link_user_in_their_org(self):
+    async def test_authorize_starts_a_sign_in_for_the_link_user_in_their_org(self) -> None:
         routes = _routes()
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
@@ -463,11 +468,11 @@ class TestConnectLinkRoutes:
         assert decoded == {"state": "s1", "connector_id": "c1", "userAccess": True,
                            "linkUser": "u1", "linkOrg": "org-1"}
 
-    def _state(self, **over):
+    def _state(self, **over) -> str:
         data = {"state": "s1", "connector_id": "c1", "userAccess": True, "linkUser": "u1", "linkOrg": "org-1", **over}
         return base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
 
-    async def test_complete_connects_the_user_the_state_names(self):
+    async def test_complete_connects_the_user_the_state_names(self) -> None:
         routes = _routes()
         complete = AsyncMock(return_value={"name": "Team Notion"})
         with patch.object(routes, "_complete_user_sign_in", new=complete):
@@ -478,13 +483,13 @@ class TestConnectLinkRoutes:
         assert complete.await_args.kwargs == {"connector_id": "c1", "state": "s1", "code": "code"}
 
     @pytest.mark.parametrize("state", ["garbage", "e30", None])
-    async def test_complete_never_raises_on_a_bad_state(self, state):
+    async def test_complete_never_raises_on_a_bad_state(self, state) -> None:
         routes = _routes()
         bad = state or self._state(userAccess=None)
         result = await self._call(routes.connect_link_complete, _Store(), MagicMock(), code="c", state=bad)
         assert result["success"] is False
 
-    async def test_complete_refuses_a_user_outside_the_named_org(self):
+    async def test_complete_refuses_a_user_outside_the_named_org(self) -> None:
         routes = _routes()
         complete = AsyncMock()
         with patch.object(routes, "_complete_user_sign_in", new=complete):
@@ -494,7 +499,7 @@ class TestConnectLinkRoutes:
                           "error_message": "Notion sign-in did not complete. Use the link in your email to try again."}
         complete.assert_not_awaited()
 
-    async def test_complete_reports_a_refused_account_without_raising(self):
+    async def test_complete_reports_a_refused_account_without_raising(self) -> None:
         routes = _routes()
         with patch.object(routes, "_complete_user_sign_in",
                           new=AsyncMock(side_effect=routes._SignInFailed("wrong account", shareable=True))):
@@ -502,7 +507,7 @@ class TestConnectLinkRoutes:
                                       state=self._state())
         assert result == {"success": False, "error_message": "wrong account"}
 
-    async def test_a_forged_state_leaves_the_users_sign_in_in_progress_alone(self):
+    async def test_a_forged_state_leaves_the_users_sign_in_in_progress_alone(self) -> None:
         routes = _routes()
         store = _Store()
         session = "/services/connectors/c1/sign-in/u1"
@@ -512,13 +517,13 @@ class TestConnectLinkRoutes:
         assert result["success"] is False
         assert store.data[session] == {"oauth": {"state": "the-real-one"}}
 
-    async def test_public_routes_never_act_as_a_signed_in_user(self):
+    async def test_public_routes_never_act_as_a_signed_in_user(self) -> None:
         routes = _routes()
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
         seen = {}
 
-        async def gate(*_a):  # noqa: ANN002
+        async def gate(*_a) -> dict:
             from app.core.org_context import current
 
             seen["kind"] = current().kind
@@ -527,7 +532,7 @@ class TestConnectLinkRoutes:
         await self._call(routes.connect_link_info, store, MagicMock(), token=token, gate=gate)
         assert seen["kind"] == "service"
 
-    async def test_opt_out_from_the_email(self):
+    async def test_opt_out_from_the_email(self) -> None:
         routes = _routes()
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
@@ -536,7 +541,7 @@ class TestConnectLinkRoutes:
 
 
 class TestConnectDropsLinks:
-    async def test_connecting_ends_the_users_links(self):
+    async def test_connecting_ends_the_users_links(self) -> None:
         from app.connectors.sources.notion.per_user import NotionIdentity
 
         routes = _routes()
@@ -554,22 +559,21 @@ class TestConnectDropsLinks:
 
 # ---------------------------------------------------------------- sync
 
-def _sync_connector():
+def _sync_connector() -> NotionConnector:
     from app.connectors.sources.notion.connector import NotionConnector
 
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.get_user_by_user_id = AsyncMock()
     dep.withdraw_user_from_connector = AsyncMock()
-    connector = NotionConnector(
+    return NotionConnector(
         logger=MagicMock(), data_entities_processor=dep, data_store_provider=MagicMock(),
         config_service=_Store(), connector_id="c1", scope="team", created_by="admin",
     )
-    return connector
 
 
 class TestSyncReminders:
-    async def test_due_reminders_go_to_who_has_not_connected_and_are_recorded(self):
+    async def test_due_reminders_go_to_who_has_not_connected_and_are_recorded(self) -> None:
         connector = _sync_connector()
         store = connector.config_service
         now = 100 * _DAY
@@ -587,12 +591,12 @@ class TestSyncReminders:
         connector._ask_to_connect.assert_awaited_once_with("due", "due@acme.com", reconnect=False)
         assert (await user_access.get_invite(store, "c1", "due")).send_count == 2
 
-    async def test_a_reminder_failure_never_fails_the_sync(self):
+    async def test_a_reminder_failure_never_fails_the_sync(self) -> None:
         connector = _sync_connector()
         connector.config_service.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("store down"))
         await connector._send_due_reminders(set())
 
-    async def test_a_revoke_asks_to_reconnect_once(self):
+    async def test_a_revoke_asks_to_reconnect_once(self) -> None:
         connector = _sync_connector()
         await user_access.save_connection(connector.config_service, "c1", _connection("u1"))
         connector._ask_to_connect = AsyncMock(return_value=True)
@@ -602,7 +606,7 @@ class TestSyncReminders:
         await connector._revoke_connection(connection, SimpleNamespace(id="k-u1"), "refused again")
         assert connector._ask_to_connect.await_count == 1
 
-    async def test_a_revoke_of_a_connection_removed_meanwhile_asks_nothing(self):
+    async def test_a_revoke_of_a_connection_removed_meanwhile_asks_nothing(self) -> None:
         connector = _sync_connector()
         connector._ask_to_connect = AsyncMock(return_value=True)
         await connector._revoke_connection(_connection("u1"), SimpleNamespace(id="k-u1"), "refused")
@@ -610,7 +614,7 @@ class TestSyncReminders:
 
 
 class TestSyncUsersWhoLeft:
-    async def _run(self, user):
+    async def _run(self, user) -> tuple[NotionConnector, _Store]:
         connector = _sync_connector()
         store = connector.config_service
         await user_access.save_connection(store, "c1", _connection("u1"))
@@ -631,30 +635,30 @@ class TestSyncUsersWhoLeft:
             await connector._run_per_user_sync()
         return connector, store
 
-    async def test_a_deactivated_user_loses_access_but_keeps_the_connection(self):
+    async def test_a_deactivated_user_loses_access_but_keeps_the_connection(self) -> None:
         connector, store = await self._run(SimpleNamespace(id="k-u1", email="u1@acme.com", is_active=False))
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("c1", "k-u1")
         connector._run_user_pass.assert_not_awaited()
         assert await user_access.get_connection(store, "c1", "u1") is not None
 
-    async def test_a_deleted_user_leaves_no_credential_behind(self):
+    async def test_a_deleted_user_leaves_no_credential_behind(self) -> None:
         _, store = await self._run(None)
         assert not any("u1" in key for key in store.data)
 
 
 class TestMemberList:
-    def _page(self, results, *, has_more=False, cursor=None, success=True):
+    def _page(self, results, *, has_more=False, cursor=None, success=True) -> SimpleNamespace:
         return SimpleNamespace(success=success, data=SimpleNamespace(json=lambda: {
             "results": results, "has_more": has_more, "next_cursor": cursor}))
 
-    async def _read(self, pages):
+    async def _read(self, pages) -> list[dict]:
         connector = _sync_connector()
         datasource = MagicMock()
         datasource.list_users = AsyncMock(side_effect=pages)
         connector._get_fresh_datasource = AsyncMock(return_value=datasource)
         return await connector._read_member_list()
 
-    async def test_people_with_an_email_across_pages(self):
+    async def test_people_with_an_email_across_pages(self) -> None:
         members = await self._read([
             self._page([{"type": "person", "id": "p1", "name": "Ann", "person": {"email": "ann@acme.com"}},
                         {"type": "bot", "id": "b1"},
@@ -668,14 +672,14 @@ class TestMemberList:
     @pytest.mark.parametrize("pages", [
         "failed", "stuck_cursor", "no_cursor",
     ])
-    async def test_a_list_read_short_is_none(self, pages):
+    async def test_a_list_read_short_is_none(self, pages) -> None:
         first = {"failed": self._page([], success=False),
                  "stuck_cursor": self._page([], has_more=True, cursor=None),
                  "no_cursor": self._page([{"type": "person", "id": "p1", "person": {"email": "a@a.com"}}],
                                          has_more=True)}[pages]
         assert await self._read([first, self._page([])]) is None
 
-    async def test_a_short_list_does_not_replace_the_last_whole_one(self):
+    async def test_a_short_list_does_not_replace_the_last_whole_one(self) -> None:
         connector = _sync_connector()
         await user_access.save_members(connector.config_service, "c1", [{"email": "old@acme.com"}], now_ms=1)
         connector._read_member_list = AsyncMock(return_value=None)

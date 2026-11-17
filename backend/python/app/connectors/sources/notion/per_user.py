@@ -277,7 +277,7 @@ async def refresh_connection(
         except NotionAccessError:
             return False
         except Exception as e:
-            logger.warning("Could not refresh the Notion sign-in of %s: %s", connection.email, e)
+            logger.warning("Could not refresh the Notion sign-in of user %s: %s", connection.user_id, e)
             return None
 
         latest = await get_connection(config_service, connector_id, connection.user_id)
