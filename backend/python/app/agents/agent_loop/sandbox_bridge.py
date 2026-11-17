@@ -280,6 +280,9 @@ async def build_coding_sandbox_manager(
         slot_wait_s=settings.slot_wait_s,
         on_slot_wait=_slot_wait_notice(ctx),
         stop_token=getattr(ctx, "cancellation_token", None),
+        # One manager per chat request, shared by its sub-agents, so the
+        # per-request limit (SANDBOX_MAX_PER_REQUEST) bounds one chat.
+        max_slots_per_request="env",
     )
 
     network_enabled = allow_network

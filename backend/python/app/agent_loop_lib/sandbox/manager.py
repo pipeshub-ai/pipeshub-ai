@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.core.tasks import wait_owned
@@ -267,7 +267,7 @@ class SandboxManager:
         slot_wait_s: float = 0.0,
         on_slot_wait: Callable[..., Awaitable[None]] | None = None,
         stop_token: "CancellationToken | None" = None,
-        max_slots_per_request: int | None = None,
+        max_slots_per_request: int | Literal["env"] | None = None,
     ) -> None:
         self._factories: dict[SandboxType, _FactoryEntry] = {}
         self._instances: dict[tuple[SandboxType, str], _InstanceRecord] = {}
@@ -287,9 +287,14 @@ class SandboxManager:
         # provisioning is exactly where the awaits are, so N callers would
         # otherwise all see an empty map and all proceed.
         self._in_flight: dict[SandboxType, int] = {}
-        # The most governor slots this request's calls hold at once (`slot()`),
+        # The most governor slots this manager's calls hold at once (`slot()`),
         # so one chat's parallel calls cannot take every slot of the
-        # container. `None`: SANDBOX_MAX_PER_REQUEST, read on first use.
+        # container. Opt-in, because it counts per manager: set it only where
+        # a manager serves one request (and its sub-agents), as the chat path
+        # does. A manager shared by many requests (the library's
+        # `ControlPlane`) would otherwise cap the whole server. `None`: no
+        # such limit; ``"env"`` (or an int <= 0): SANDBOX_MAX_PER_REQUEST,
+        # read on each call.
         self._max_slots_per_request = max_slots_per_request
         self._request_slots = _RequestSlots()
 
@@ -465,9 +470,9 @@ class SandboxManager:
         """Hold a governor slot while one call (of tool *tool*) runs on the sandbox.
 
         Waits for a free slot (see `slot_wait_s`), then raises
-        `SandboxLimitExceeded`. This request's calls hold at most
-        `request_slot_limit()` slots at once; its other calls wait for one of
-        those first, within the same `slot_wait_s`. A no-op for a sandbox that keeps its slot for
+        `SandboxLimitExceeded`. With a per-request limit, this manager's
+        calls hold at most `request_slot_limit()` slots at once; its other
+        calls wait for one of those first, within the same `slot_wait_s`. A no-op for a sandbox that keeps its slot for
         life (metered backends), an unknown id, or a manager with no governor.
 
         The slot is released when the body returns or raises. So a backend
@@ -479,7 +484,9 @@ class SandboxManager:
         if record is None or self._governor is None or record.governor_lease is not None:
             yield
             return
-        lease = await self._acquire_slot(record.org_id, tool, per_request=True)
+        lease = await self._acquire_slot(
+            record.org_id, tool, per_request=self._max_slots_per_request is not None,
+        )
         try:
             yield
         finally:
@@ -487,11 +494,14 @@ class SandboxManager:
             # governor's lock must not leave the slot counted.
             await asyncio.shield(self._release_lease(lease))
 
-    def request_slot_limit(self) -> int:
+    def request_slot_limit(self) -> int | None:
         """The most slots this request's calls hold at once: the setting,
-        never above the governor's ceiling."""
+        never above the governor's ceiling. ``None`` when this manager has
+        no per-request limit (it may be shared by many requests)."""
         limit = self._max_slots_per_request
-        if limit is None or limit <= 0:
+        if limit is None:
+            return None
+        if not isinstance(limit, int) or limit <= 0:
             from app.agent_loop_lib.sandbox.capacity import max_per_request
 
             limit = max_per_request()
@@ -525,7 +535,7 @@ class SandboxManager:
             wait_s = self._slot_wait_s
             if per_request:
                 started = time.monotonic()
-                await self._request_slots.take(self.request_slot_limit(), wait_s, on_wait)
+                await self._request_slots.take(self.request_slot_limit() or 1, wait_s, on_wait)
                 turn = True
                 if wait_s >= 0:
                     wait_s = max(0.0, wait_s - (time.monotonic() - started))

@@ -44,6 +44,7 @@ class _PerCall:
 
 
 async def _chat(governor: SandboxResourceGovernor, **kwargs: object) -> tuple[SandboxManager, str]:
+    kwargs.setdefault("max_slots_per_request", "env")  # as the chat path builds it
     manager = SandboxManager(governor=governor, **kwargs)  # type: ignore[arg-type]
     manager.register_backend_factory(SandboxType.CODING, _PerCall)
     sid, _ = await manager.get_or_create(SandboxType.CODING)
