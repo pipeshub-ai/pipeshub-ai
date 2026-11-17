@@ -325,3 +325,48 @@ async def test_voyage_requests_are_counted_and_admitted_by_the_wire_scope(monkey
     with wire.metered(wire.SendMeter(allowance=0)), wire.wire_scope(), pytest.raises(Exception) as refused:
         await embeddings.aembed_documents(["x"])
     assert wire.refused_by_allowance(refused.value) and posted == [1], "no request was made past the allowance"
+
+
+async def test_a_cancelled_voyage_call_waits_for_its_request_to_return(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancelling ``aembed_documents`` while ``requests.post`` is running must not reach the caller (the gateway, which charges
+    the attempt) until the post has returned, so the request is counted and none leaves after the hand-back."""
+    import asyncio
+    import threading
+
+    import requests
+
+    from app.services.llm_gateway import wire
+    from app.utils.custom_embeddings import VoyageEmbeddings
+
+    inside, release, returned = threading.Event(), threading.Event(), threading.Event()
+
+    def post(**_: Any) -> Any:  # noqa: ANN401
+        inside.set()
+        release.wait(5)
+        returned.set()
+        raise requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr("app.utils.custom_embeddings.requests.post", post)
+    embeddings = VoyageEmbeddings(model="voyage-multimodal-3", voyage_api_key="k", max_retries=1)
+
+    async def attempt(seen_holder: list) -> None:
+        with wire.wire_scope() as seen:
+            seen_holder.append(seen)
+            await embeddings.aembed_documents(["x"])
+
+    holder: list = []
+    task = asyncio.create_task(attempt(holder))
+    while not inside.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.2)
+    assert not task.done(), "the cancellation reached the caller while the request was still running"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert returned.is_set() and holder[0].requests == 1
+    query_task = asyncio.create_task(embeddings.aembed_query("q"))
+    await asyncio.sleep(0.01)
+    query_task.cancel()
+    with pytest.raises((asyncio.CancelledError, requests.exceptions.ConnectionError)):
+        await query_task

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import warnings
@@ -38,6 +37,7 @@ from tenacity import (
 from typing_extensions import Self
 
 from app.utils.logger import create_logger
+from app.utils.threaded import to_thread_settled  # noqa: E402
 
 logger = create_logger("custom_embeddings")
 
@@ -274,10 +274,10 @@ class VoyageEmbeddings(BaseModel, Embeddings):
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         """``embed_documents`` in a thread that keeps the caller's context (LangChain's default uses an executor that does
         not), so the request is admitted and counted by the wire scope of the gateway attempt that made it."""
-        return await asyncio.to_thread(self.embed_documents, texts)
+        return await to_thread_settled(lambda: self.embed_documents(texts))
 
     async def aembed_query(self, text: str) -> list[float]:
-        return await asyncio.to_thread(self.embed_query, text)
+        return await to_thread_settled(lambda: self.embed_query(text))
 
     def embed_query(self, text: str) -> List[float]:
         """Call out to Voyage Embedding endpoint for embedding query text.
