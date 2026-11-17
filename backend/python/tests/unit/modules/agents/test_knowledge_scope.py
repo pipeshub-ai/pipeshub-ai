@@ -188,7 +188,7 @@ class TestAdmitCallerProjectCollections:
     async def test_callers_hidden_project_collection_is_admitted(self) -> None:
         graph = _graph(apps={"proj-kb": HIDDEN}, roles={("proj-kb", "caller-key"): "READER"})
         assert await _admit(graph, ["proj-kb"]) == ["proj-kb"]
-        graph.get_user_by_user_id.assert_awaited_once_with("caller-user")
+        graph.get_user_by_user_id.assert_awaited_once_with("caller-user", org_id=ORG)
 
     async def test_visible_kb_is_not_admitted_even_with_access(self) -> None:
         graph = _graph(apps={"kb-v": {**HIDDEN, "isHidden": False}}, roles={("kb-v", "caller-key"): "OWNER"})

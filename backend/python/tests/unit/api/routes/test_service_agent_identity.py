@@ -73,11 +73,12 @@ class FakeGraph:
         return self._by_key.get(key)
 
     async def get_user_by_user_id(
-        self, user_id: str, *, raise_on_error: bool = False,
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> dict[str, Any] | None:
         if self.raised:
             raise RuntimeError("graph unavailable")
-        return self._by_user_id.get(user_id)
+        user = self._by_user_id.get(user_id)
+        return user if user is not None and org_id in (None, user.get("orgId")) else None
 
 
 def agent(**overrides: object) -> dict[str, Any]:

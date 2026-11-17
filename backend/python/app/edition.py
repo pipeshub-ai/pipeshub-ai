@@ -37,5 +37,7 @@ def check_runtime_settings() -> None:
 
 def extra_edge_schemas() -> dict[str, dict]:
     """Arango schemas (collection name -> schema) of edge collections this build adds to the shared
-    edge registry in ``app.schema.node_schema_registry``. None by default."""
+    edge registry in ``app.schema.node_schema_registry``. None by default.
+
+    This covers ArangoDB only: the Neo4j and PostgreSQL stores have no matching hook."""
     return {}

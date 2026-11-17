@@ -217,7 +217,7 @@ class IdentityMixin(PgBase):
     @_soft(None, flag=True)
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False,
                                   org_id: str | None = None) -> dict | None:
-        if not self._mine(org_id):
+        if org_id == "" or not self._mine(org_id):      # an empty org matches no user, as on the other stores
             return None
         org = current_org_id()
         if isinstance(user_id, str) and 0 < len(user_id) <= 200:      # the vetted read of graph_0004

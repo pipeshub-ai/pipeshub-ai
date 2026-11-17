@@ -7632,7 +7632,7 @@ class TestAccessibleNodeIds:
         )
         from app.utils.chat_helpers import accessible_node_ids
 
-        async def lookup(_user_id, *, raise_on_error=False) -> None:
+        async def lookup(_user_id, *, raise_on_error=False, org_id=None) -> None:
             if raise_on_error:
                 raise RuntimeError("graph down")
 
@@ -7645,7 +7645,7 @@ class TestAccessibleNodeIds:
     async def test_a_user_who_does_not_exist_reaches_nothing(self) -> None:
         from app.utils.chat_helpers import accessible_node_ids
 
-        async def lookup(_user_id, *, raise_on_error=False) -> None:
+        async def lookup(_user_id, *, raise_on_error=False, org_id=None) -> None:
             return None
 
         graph = self._graph(lookup)
@@ -7656,7 +7656,7 @@ class TestAccessibleNodeIds:
     async def test_a_found_user_is_checked_by_their_graph_key(self) -> None:
         from app.utils.chat_helpers import accessible_node_ids
 
-        async def lookup(_user_id, *, raise_on_error=False):
+        async def lookup(_user_id, *, raise_on_error=False, org_id=None):
             return {"_key": "uk1"}
 
         graph = self._graph(lookup)
@@ -7667,7 +7667,7 @@ class TestAccessibleNodeIds:
     async def test_enrichment_names_no_neighbour_when_the_lookup_failed(self) -> None:
         from app.utils.chat_helpers import accessible_node_ids_for_enrichment
 
-        async def lookup(_user_id, *, raise_on_error=False) -> None:
+        async def lookup(_user_id, *, raise_on_error=False, org_id=None) -> None:
             if raise_on_error:
                 raise RuntimeError("graph down")
 

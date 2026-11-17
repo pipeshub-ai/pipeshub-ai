@@ -222,7 +222,7 @@ def _permission_graph(edges=None):
 
     gp = AsyncMock()
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-1"}
+        side_effect=lambda user_id, **_: {"_key": f"key-{user_id}", "orgId": "org-1"}
     )
     gp.get_edge = AsyncMock(side_effect=_get_edge)
     # Every record here is a chat attachment of the grantor's org.
@@ -283,7 +283,7 @@ async def test_grant_attachment_permissions_skips_unknown_users_and_empty_payloa
 
     gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: None if user_id == "ghost" else {"_key": f"key-{user_id}", "orgId": "org-1"}
+        side_effect=lambda user_id, **_: None if user_id == "ghost" else {"_key": f"key-{user_id}", "orgId": "org-1"}
     )
 
     with patch.object(cr.logger, "warning", MagicMock()):
@@ -306,7 +306,7 @@ async def test_grant_attachment_permissions_skips_users_of_another_org() -> None
 
     gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-2" if user_id == "outsider" else "org-1"}
+        side_effect=lambda user_id, **_: {"_key": f"key-{user_id}", "orgId": "org-2" if user_id == "outsider" else "org-1"}
     )
 
     with patch.object(cr.logger, "warning", MagicMock()):

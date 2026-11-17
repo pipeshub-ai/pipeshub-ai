@@ -8534,6 +8534,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Get user by user ID; with ``org_id``, only a user of that organisation.
         Note: user_id is the userId field value, not the _key.
         """
+        if org_id == "":
+            return None  # an empty organisation matches no user
         try:
             scoped = org_id is not None
             org_filter = "FILTER user.orgId == @org_id" if scoped else ""

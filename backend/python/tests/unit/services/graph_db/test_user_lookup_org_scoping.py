@@ -1,20 +1,24 @@
-"""The user a permission query anchors on is matched by userId AND orgId.
+"""User lookups are bound to the organisation that is asking.
 
-The same external userId can exist as one User node per organisation, and the
-permission edges hang off the org-specific node. A match on the userId alone
-anchors on an arbitrary one of them: it can leak another organisation's records
-or hide the caller's own. Covered here, on each provider:
+Hardening: a lookup by userId alone matches the first user with that id, so a
+caller that knows its organisation binds the lookup to it, and a lookup can never
+resolve a user outside the asking organisation. Covered here, on each provider:
 
 * the virtual-record-id queries (knowledge bases and connectors) and the
   accessible-KB id lookup match the user within the org they were asked for;
 * ``get_user_by_user_id`` takes an optional ``org_id`` and, when given, only
-  returns a user of that organisation;
-* the reindex paths pass the org they were asked for to that lookup.
+  returns a user of that organisation; an empty ``org_id`` matches no user, on
+  every store;
+* the reindex paths pass the org they were asked for to that lookup;
+* every caller in ``app/`` that has the organisation in scope passes it on
+  (reverting any one of them fails ``TestEveryCallerWithTheOrgPassesIt``).
 """
 from __future__ import annotations
 
+import ast
 import logging
 import re
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -189,3 +193,205 @@ class TestCallSitesPassTheOrg:
         assert p.get_user_by_user_id.await_args.kwargs["org_id"] == "org-without-the-user"
         assert result["valid"] is False
         assert result["code"] == 404
+
+
+class TestEmptyOrgMatchesNoUser:
+    """``org_id=""`` is an organisation that has no users: all three stores answer None without a read."""
+
+    async def test_arango(self) -> None:
+        p = _arango()
+        assert await p.get_user_by_user_id(USER_ID, org_id="") is None
+        p.http_client.execute_aql.assert_not_awaited()
+
+    async def test_neo4j(self) -> None:
+        p = _neo4j()
+        assert await p.get_user_by_user_id(USER_ID, org_id="") is None
+        p.client.execute_query.assert_not_awaited()
+
+    async def test_postgres(self) -> None:
+        p = object.__new__(IdentityMixin)
+        p.logger = logging.getLogger("t")
+        p._one = AsyncMock(return_value={"node_id": "k", "doc": {"userId": USER_ID}})
+        with for_org(ORG_A, job="t"):
+            assert await p.get_user_by_user_id(USER_ID, org_id="") is None
+        p._one.assert_not_awaited()
+
+
+_APP = Path(__file__).resolve().parents[4] / "app"
+_ORG_NAMES = {"org_id", "orgId", "organization_id"}
+# These derive the organisation from the requester's own user, and their routers hand them no organisation to bind to.
+# This one reads the identity first and refuses a wrong-org identity itself, with its own error.
+_ORG_CHECKED_AFTER_THE_LOOKUP = {
+    ("api/routes/agent.py", "_enrich_user_info_for_service_account_agent_chat"),
+    # Takes no organisation: the record's own is only read to stamp the event it writes.
+    ("services/graph_db/arango/arango_http_provider.py", "delete_knowledge_base_record"),
+}
+_ORG_DERIVED_FROM_THE_LOOKUP = {("connectors/sources/localKB/handlers/kb_service.py", "update_kb_permission"),
+                                ("connectors/sources/localKB/handlers/kb_service.py", "remove_kb_permission")}
+
+
+_LOOKUPS = {"get_user_by_user_id", "get_caller_user"}
+
+
+def _names_an_org(node: ast.AST) -> bool:
+    """A local, an argument, an attribute (``self.org_id``, ``actor.org_id``) or a payload key (``payload["orgId"]``,
+    ``user.get("orgId")``) that carries an organisation."""
+    if isinstance(node, ast.arg | ast.Attribute | ast.Name):
+        return (getattr(node, "arg", None) or getattr(node, "attr", None) or getattr(node, "id", None)) in _ORG_NAMES
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.slice, ast.Constant) and node.slice.value in _ORG_NAMES
+    if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "get" and node.args:
+        return isinstance(node.args[0], ast.Constant) and node.args[0].value in _ORG_NAMES
+    return False
+
+
+def _spread_is_empty(fn: ast.AST, value: ast.expr) -> bool:
+    """``**{}``, or ``**name`` where every assignment to the name in the function is an empty dict."""
+    if isinstance(value, ast.Dict):
+        return not value.keys
+    if isinstance(value, ast.Name):
+        assigned = [
+            n.value
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == value.id for t in n.targets)
+        ]
+        return bool(assigned) and all(isinstance(v, ast.Dict) and not v.keys for v in assigned)
+    return False
+
+
+def _scopes_the_lookup(fn: ast.AST, call: ast.Call) -> bool:
+    for k in call.keywords:
+        if k.arg == "org_id":
+            # ``org_id=None`` is the unscoped lookup, spelled out.
+            if not (isinstance(k.value, ast.Constant) and k.value.value is None):
+                return True
+        elif k.arg is None and not _spread_is_empty(fn, k.value):
+            # ``**scope`` is the optional-org spread used by wrappers that keep their old call shape.
+            return True
+    return False
+
+
+def _unscoped_lookups_with_the_org_in_scope() -> list[str]:
+    found = []
+    for path in sorted(_APP.rglob("*.py")):
+        rel = path.relative_to(_APP).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if (rel, fn.name) in _ORG_DERIVED_FROM_THE_LOOKUP | _ORG_CHECKED_AFTER_THE_LOOKUP or not any(_names_an_org(n) for n in ast.walk(fn)):
+                continue
+            for call in ast.walk(fn):
+                if not isinstance(call, ast.Call):
+                    continue
+                if (getattr(call.func, "attr", None) or getattr(call.func, "id", "")) not in _LOOKUPS:
+                    continue
+                if not _scopes_the_lookup(fn, call):
+                    found.append(f"{rel}:{call.lineno} in {fn.name}")
+    return found
+
+
+class TestEveryCallerWithTheOrgPassesIt:
+    def test_no_lookup_with_the_org_in_scope_is_left_unscoped(self) -> None:
+        assert _unscoped_lookups_with_the_org_in_scope() == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            # the org is a local or an argument
+            "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id)\n",
+            # the wrapper counts as a lookup
+            "async def f(p, user_id, org_id):\n    return await get_caller_user(p, user_id)\n",
+            # the org is an attribute, a payload key or a dict read
+            "async def f(self, user_id):\n    return await get_caller_user(self.p, user_id) if self.org_id else None\n",
+            "async def f(p, payload):\n    x = payload['orgId']\n    return await p.get_user_by_user_id(payload['userId'])\n",
+            "async def f(p, user, uid):\n    o = user.get('orgId')\n    return await p.get_user_by_user_id(uid)\n",
+            # an org that is None, or a spread that is always empty, scopes nothing
+            "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id, org_id=None)\n",
+            "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id, **{})\n",
+            "async def f(p, user_id, org_id):\n    scope = {}\n    return await p.get_user_by_user_id(user_id, **scope)\n",
+        ],
+    )
+    def test_the_scan_sees_an_unscoped_lookup(self, tmp_path, monkeypatch, source) -> None:
+        """The scan itself works: it flags a lookup that drops the org, whatever way the org is in scope."""
+        (tmp_path / "m.py").write_text(source)
+        monkeypatch.setattr(f"{__name__}._APP", tmp_path)
+        assert len(_unscoped_lookups_with_the_org_in_scope()) == 1
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id, org_id=org_id)\n",
+            "async def f(p, user_id, org_id):\n    scope = {} if org_id is None else {'org_id': org_id}\n    return await get_caller_user(p, user_id, **scope)\n",
+            "async def f(p, user_id):\n    return await p.get_user_by_user_id(user_id)\n",
+        ],
+    )
+    def test_the_scan_accepts_a_scoped_lookup_and_one_with_no_org(self, tmp_path, monkeypatch, source) -> None:
+        (tmp_path / "m.py").write_text(source)
+        monkeypatch.setattr(f"{__name__}._APP", tmp_path)
+        assert _unscoped_lookups_with_the_org_in_scope() == []
+
+
+class TestHandlersPassTheOrg:
+    async def test_a_user_added_event_looks_the_user_up_in_its_own_org(self) -> None:
+        from tests.unit.services.messaging.test_entity_handler import (
+            _make_entity_service,
+        )
+
+        svc = _make_entity_service()
+        svc._adopt_existing_person = AsyncMock()
+        svc._get_or_create_knowledge_base = AsyncMock()
+        svc._get_or_create_all_team_and_add_user = AsyncMock()
+        svc._schedule_connector_link = MagicMock()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
+        svc.graph_provider.get_document = AsyncMock(return_value={"_key": ORG_B})
+        await svc._handle_user_added({"orgId": ORG_B, "userId": USER_ID, "email": "a@test.com"})
+        assert svc.graph_provider.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B
+
+    async def test_a_user_updated_event_looks_the_user_up_in_its_own_org(self) -> None:
+        from tests.unit.services.messaging.test_entity_handler import (
+            _make_entity_service,
+        )
+
+        svc = _make_entity_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        await svc._handle_user_updated({"orgId": ORG_B, "userId": USER_ID, "email": "a@test.com"})
+        assert svc.graph_provider.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B
+
+    async def test_the_graph_transaction_store_hands_the_org_to_the_provider(self) -> None:
+        from app.connectors.core.base.data_store.graph_data_store import (
+            GraphTransactionStore,
+        )
+
+        store = object.__new__(GraphTransactionStore)
+        store.graph_provider = MagicMock(get_user_by_user_id=AsyncMock(return_value=None))
+        await store.get_user_by_user_id(USER_ID, org_id=ORG_B)
+        assert store.graph_provider.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B
+        store.graph_provider.get_user_by_user_id.reset_mock()
+        await store.get_user_by_user_id(USER_ID)
+        assert "org_id" not in store.graph_provider.get_user_by_user_id.await_args.kwargs
+
+    async def test_the_entities_processor_hands_the_org_to_the_store(self) -> None:
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
+
+        tx = MagicMock(get_user_by_user_id=AsyncMock(return_value=None))
+        provider = MagicMock()
+        provider.transaction.return_value.__aenter__ = AsyncMock(return_value=tx)
+        provider.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+        processor = object.__new__(DataSourceEntitiesProcessor)
+        processor.data_store_provider = provider
+        await processor.get_user_by_user_id(USER_ID, org_id=ORG_B)
+        assert tx.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B
+        tx.get_user_by_user_id.reset_mock()
+        await processor.get_user_by_user_id(USER_ID)
+        assert "org_id" not in tx.get_user_by_user_id.await_args.kwargs
+
+    async def test_the_cached_user_info_is_fetched_in_the_asked_org(self) -> None:
+        from app.utils import cache_helpers
+
+        provider = MagicMock(get_user_by_user_id=AsyncMock(return_value=None), get_document=AsyncMock(return_value=None))
+        await cache_helpers.get_cached_user_info(provider, "cache-miss-user", ORG_B)
+        assert provider.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B

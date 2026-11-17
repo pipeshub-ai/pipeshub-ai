@@ -3684,7 +3684,8 @@ class IGraphDBProvider(ABC):
             user_id (str): Internal user ID
             raise_on_error: raise when the lookup fails. Without it a failed
                 lookup returns None, the same as a user that does not exist.
-            org_id: when given, only a user of this organisation matches.
+            org_id: when given, only a user of this organisation matches;
+                an empty string matches no user.
 
         Returns:
             Optional[Dict]: User data if found, None otherwise

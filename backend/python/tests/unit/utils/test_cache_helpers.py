@@ -85,7 +85,7 @@ class TestGetCachedUserInfoMiss:
 
         assert result_user == user_info
         assert result_org == org_info
-        gp.get_user_by_user_id.assert_awaited_once_with("u1")
+        gp.get_user_by_user_id.assert_awaited_once_with("u1", org_id="o1")
 
     @pytest.mark.asyncio
     async def test_cache_populated_after_miss(self):
@@ -390,7 +390,7 @@ class TestGetCachedUserInfoCacheMissExplicit:
         result_user, result_org = await get_cached_user_info(gp, "fresh", "org_fresh")
         assert result_user == {"_key": "fresh"}
         assert result_org == {"_key": "org_fresh"}
-        gp.get_user_by_user_id.assert_awaited_once_with("fresh")
+        gp.get_user_by_user_id.assert_awaited_once_with("fresh", org_id="org_fresh")
 
     @pytest.mark.asyncio
     async def test_different_key_is_cache_miss(self):
