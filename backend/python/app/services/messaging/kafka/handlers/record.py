@@ -32,7 +32,11 @@ from app.connectors.services.entity_cleanup_intents import clear_pending_entity_
 from app.core.org_context import current_org_id
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
-from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.exceptions.indexing_exceptions import (
+    IndexingError,
+    ProcessingError,
+    ProviderRateLimitedTooLongError,
+)
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
 from app.models.record_convert import convert_record_dict_to_record
@@ -73,10 +77,15 @@ from app.modules.indexing.parse_now_marker import (
     store_only_active,
 )
 from app.modules.indexing.rate_limit_deferral import (
+    DEFERRED_UNTIL_FIELD,
+    RATE_LIMITED_SINCE_MS_FIELD,
     cleared_deferral,
     deferral_updates,
+    handback_delay_s,
+    handback_wait_ms,
     is_deferred,
     plan_deferral,
+    provider_rate_limit_wait,
     rate_limit_retry_after,
 )
 from app.modules.pipeline.parse_now import (
@@ -112,6 +121,7 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
@@ -842,6 +852,111 @@ class RecordEventHandler(BaseEventService):
                 details={"record_id": record_id},
             )
 
+    @staticmethod
+    def _rate_limited_since_ms(record: dict | None) -> int | None:
+        """When this record was first handed back for a model provider's rate limit (ms), or None (a record from before the
+        field, or never handed back: the field is read tolerating its absence)."""
+        value = (record or {}).get(RATE_LIMITED_SINCE_MS_FIELD)
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+    def _rate_limited_too_long(
+        self, record_id: str, record: dict | None, wait_s: float
+    ) -> ProviderRateLimitedTooLongError | None:
+        """The error that ends the record when one more hand-back for ``wait_s`` would carry it past ``RATE_LIMIT_MAX_WAIT_S`` of
+        wall time since its first hand-back; None while it is within the limit (or has never been handed back)."""
+        since = self._rate_limited_since_ms(record)
+        limit_s = messaging_env.rate_limit_max_wait_seconds
+        # The first hand-back has no start time yet: its own wait is compared with the whole allowance.
+        elapsed_s = ((self._handback_clock_ms(record) - since) / 1000.0 if since is not None else 0.0) + wait_s
+        if elapsed_s <= limit_s:
+            return None
+        hours = limit_s / 3600.0
+        self.logger.warning(
+            f"Record {record_id} has been rate-limited by its model provider for {elapsed_s / 3600.0:.1f} h "
+            f"(limit {hours:g} h): failing it"
+        )
+        return ProviderRateLimitedTooLongError(
+            f"The model provider kept rate limiting this file for over {hours:g} hours, so PipesHub stopped trying. "
+            f"Reindex it later.",
+            doc_id=record_id,
+        )
+
+    async def _hand_back_for_provider_wait(self, record_id: str, record: dict | None, wait_s: float) -> bool:
+        """Store the wait a record is handed back for (``deferredUntilMs``: the recovery scans leave it alone until then) and
+        the time of its first hand-back (``rateLimitedSinceMs``, set once, never moved: what bounds the hand-backs). False,
+        and nothing to hand back, when the fields are not written in this release (``RECORD_DEFERRAL_FIELDS_WRITE`` off) or
+        the write fails: the failure stays an ordinary one, counted by its delivery attempts, because nothing would bound it."""
+        if not messaging_env.record_deferral_fields_write:
+            return False
+        # The deadline is measured from the later of now and the previous deadline, so the chain of deadlines advances by at
+        # least each wait whatever this consumer's clock says (the elapsed time read from it never shrinks).
+        now = get_epoch_timestamp_in_ms()
+        base = self._handback_clock_ms(record)
+        try:
+            stored = await self.event_processor.graph_provider.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                {
+                    DEFERRED_UNTIL_FIELD: base + handback_wait_ms(wait_s),
+                    RATE_LIMITED_SINCE_MS_FIELD: self._rate_limited_since_ms(record) or now,
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(f"Could not record the rate-limit wait of record {record_id}; not handing it back: {exc}")
+            return False
+        if not stored:
+            # A store answers False for an update it did not apply: the bound is not there, so nothing would bound the record.
+            self.logger.warning(f"The rate-limit wait of record {record_id} was not stored; not handing it back")
+            return False
+        return True
+
+    async def _end_provider_rate_limit_total(self, record_id: str, record: dict | None) -> None:
+        """The record ended (indexed or failed): the time it spent rate-limited starts from zero next time (best effort). Not
+        written at all while ``RECORD_DEFERRAL_FIELDS_WRITE`` is off: an older record schema refuses the field."""
+        if not messaging_env.record_deferral_fields_write:
+            return
+        if not record or record.get(RATE_LIMITED_SINCE_MS_FIELD) is None:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {RATE_LIMITED_SINCE_MS_FIELD: None}
+            )
+        except Exception as exc:
+            self.logger.warning(f"Could not clear the rate-limit total of record {record_id}: {exc}")
+
+    @staticmethod
+    def _handback_clock_ms(record: dict | None) -> int:
+        """The time to measure a record's rate-limited time against: now, but never earlier than the end of its last
+        hand-back's wait. Both stamps came from some consumer's clock; one running behind the writer's would otherwise make the
+        elapsed time (and so the backoff) shrink. Derived only from what the record carries, so it never goes back."""
+        now = get_epoch_timestamp_in_ms()
+        until = (record or {}).get(DEFERRED_UNTIL_FIELD)
+        return max(now, int(until)) if isinstance(until, (int, float)) and not isinstance(until, bool) else now
+
+    @staticmethod
+    def _handback_remaining_s(record: dict | None) -> float | None:
+        """Seconds left of the wait a record was handed back for (``deferredUntilMs``), or None when there is none or it is
+        over. Only read while ``RECORD_DEFERRAL_FIELDS_WRITE`` is on."""
+        if not messaging_env.record_deferral_fields_write or not record:
+            return None
+        until = record.get(DEFERRED_UNTIL_FIELD)
+        if not isinstance(until, (int, float)) or isinstance(until, bool):
+            return None
+        remaining_ms = until - get_epoch_timestamp_in_ms()
+        return remaining_ms / 1000.0 if remaining_ms > 0 else None
+
+    async def _clear_handed_back_wait(self, record_id: str, record: dict | None) -> None:
+        """The record is being processed again: the wait it was handed back for is over (best effort). Not written while
+        ``RECORD_DEFERRAL_FIELDS_WRITE`` is off."""
+        if not messaging_env.record_deferral_fields_write or not record or record.get(DEFERRED_UNTIL_FIELD) is None:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {DEFERRED_UNTIL_FIELD: None}
+            )
+        except Exception as exc:
+            self.logger.warning(f"Could not clear the rate-limit wait of record {record_id}: {exc}")
+
     async def _enrichment_still_cut_short(self, record_id: str, *, unreadable: bool = True) -> bool:
         """Whether the record is indexed with its enrichment still running.
 
@@ -877,6 +992,8 @@ class RecordEventHandler(BaseEventService):
                 record_id, ENRICHMENT_FAILED, extraction_status=ProgressStatus.FAILED.value
             )
             await self._release_queued_copies(record_id)
+            # Best effort and nested: a failed write must not change the retry path below.
+            await self._end_provider_rate_limit_total(record_id, {RATE_LIMITED_SINCE_MS_FIELD: 1})
             return
         except Exception as e:
             self.logger.error(
@@ -1607,6 +1724,8 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         last_exception: Exception | None = None
         cancelled = False
+        # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
+        handed_back = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         record = None
@@ -1962,6 +2081,12 @@ class RecordEventHandler(BaseEventService):
             # Known before the read below, as is whether this is a stage re-run: the finally block
             # keys on both if that read fails.
             resuming_enrichment = record_resuming_enrichment(record)
+            if (remaining := self._handback_remaining_s(record)) is not None:
+                # A duplicate delivery during a provider's wait: the wait is kept and the delivery is handed back for the rest
+                # of it, without an attempt. Clearing it here would let this event call the provider early.
+                handed_back = True
+                raise ProviderRateLimitRequeue(f"{record_id}: handed back for a provider's rate limit", delay_s=remaining)
+            await self._clear_handed_back_wait(record_id, record)
             stages = payload.get("stages")
             stage_ingress = self.event_processor.stage_ingress
             stage_redrive = bool(
@@ -2045,6 +2170,10 @@ class RecordEventHandler(BaseEventService):
             # Decided before anything is taken out of the vector store: an event that is
             # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
+            if (remaining := self._handback_remaining_s(doc)) is not None:
+                handed_back = True
+                raise ProviderRateLimitRequeue(f"{record_id}: handed back for a provider's rate limit", delay_s=remaining)
+            await self._clear_handed_back_wait(record_id, doc)
             idle = already_indexed(event_type, payload, doc)
             if replayed or (idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc))):
                 # The finally block releases queued copies from here, and that is a write, so a
@@ -2472,6 +2601,18 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
+            if (wait := provider_rate_limit_wait(ie)) is not None:
+                # One draw of the jitter, used for the limit check and the stored deadline alike.
+                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
+                too_long = self._rate_limited_too_long(record_id, record, delay)
+                if too_long is not None:
+                    last_exception, error_msg = too_long, str(too_long)
+                    raise too_long from ie
+                # The hand-back is bounded by the time of its first hand-back, stored here (the broker's own budget is not used),
+                # so it is only made when that was stored: otherwise this stays an ordinary failure, counted by its attempts.
+                if await self._hand_back_for_provider_wait(record_id, record, delay):
+                    handed_back = True
+                    raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=delay) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
             # Not a failure: the consumer hands the message back, and nothing is written for it.
@@ -2481,6 +2622,20 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(e)
             last_exception = e
+            if (wait := provider_rate_limit_wait(e)) is not None:
+                # The provider said when it can serve again: come back then, with no attempt spent on the wait, until the
+                # time the record has spent rate-limited passes the limit.
+                # One draw of the jitter, used for the limit check and the stored deadline alike.
+                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
+                too_long = self._rate_limited_too_long(record_id, record, delay)
+                if too_long is not None:
+                    last_exception, error_msg = too_long, str(too_long)
+                    raise too_long from e
+                # The hand-back is bounded by the time of its first hand-back, stored here (the broker's own budget is not used),
+                # so it is only made when that was stored: otherwise this stays an ordinary failure, counted by its attempts.
+                if await self._hand_back_for_provider_wait(record_id, record, delay):
+                    handed_back = True
+                    raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=delay) from e
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
             # only once, when this turns out to be the final attempt.
@@ -2531,7 +2686,13 @@ class RecordEventHandler(BaseEventService):
                         f"defaulting to True (safe fail-fast). This may indicate a bug in the consumer."
                     )
                     is_final = True
-                    
+
+                if handed_back:
+                    # A provider's rate limit is not a verdict on the record, even on its last attempt: it goes back in line
+                    # like a transient failure (QUEUED, no processing start), so the broker's delay is the only wake-up and
+                    # the stale-record scan does not mistake the wait for a crash and call the provider again.
+                    is_final = False
+
                 if cancelled:
                     # Checked before is_final: a cancellation is not a verdict
                     # on the record. The broker entry was never acknowledged
@@ -2674,11 +2835,14 @@ class RecordEventHandler(BaseEventService):
                         # Preserve the exception already propagating (e.g. a
                         # CancelledError during shutdown) instead of masking
                         # it with a new one raised from this cleanup step.
-                        if last_exception is not None:
-                            raise last_exception from revert_exc
-                        raise RuntimeError(
-                            f"Failed to clear transient IN_PROGRESS status for {record_id}"
-                        ) from revert_exc
+                        # A hand-back is that exception: it carries the provider's wait to the consumer, which a
+                        # re-raised original error would replace with the ordinary retry.
+                        if not handed_back:
+                            if last_exception is not None:
+                                raise last_exception from revert_exc
+                            raise RuntimeError(
+                                f"Failed to clear transient IN_PROGRESS status for {record_id}"
+                            ) from revert_exc
 
                     if reverted:
                         self.logger.info(
@@ -2692,6 +2856,7 @@ class RecordEventHandler(BaseEventService):
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value and not store_only:
                 # Update queued duplicates for ALL record types (not just FILE)
                 await self._release_queued_copies(record_id)
+                await self._end_provider_rate_limit_total(record_id, record)
 
             # Outside both branches above, because a repo's last file is as
             # likely to end FAILED or EMPTY as COMPLETED and only the success
@@ -2741,6 +2906,8 @@ class RecordEventHandler(BaseEventService):
             # Each of these statuses ends a record's wait on a rate limit.
             if is_deferred(record) and not store_only_active():
                 updates.update(cleared_deferral())
+            if messaging_env.record_deferral_fields_write and record.get(RATE_LIMITED_SINCE_MS_FIELD) is not None:
+                updates[RATE_LIMITED_SINCE_MS_FIELD] = None
 
             success = await self.event_processor.graph_provider.update_node(
                 record_id,

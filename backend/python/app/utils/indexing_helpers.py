@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.jinja_templates import compiled_template
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
@@ -51,7 +52,9 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
     """
     try:
         # Get LLM
-        llm, _ = await get_llm_for_role(config, "indexing", reasoning_effort="low")
+        llm, _ = await get_llm_for_role(
+            config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
 
         # Convert table data to text representation
         if isinstance(table_data, list):
