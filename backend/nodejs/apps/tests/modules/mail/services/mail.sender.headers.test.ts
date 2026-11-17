@@ -109,6 +109,45 @@ describe('MailSenderService custom headers', () => {
     expect(sendMail.called).to.equal(false);
   });
 
+  it('refuses a Message-ID with an empty dot-separated part on either side', async () => {
+    for (const id of [
+      '<a..b@example.com>',
+      '<.a@example.com>',
+      '<a.@example.com>',
+      '<a@example..com>',
+      '<a@.example.com>',
+      '<a@example.com.>',
+      '<.@example.com>',
+      '<a@.>',
+    ]) {
+      const result = await sender.send(body, smtp, undefined, {
+        'Message-ID': id,
+      });
+      expect(result.status, id).to.equal('permanent');
+    }
+    expect(sendMail.called).to.equal(false);
+  });
+
+  it('accepts dotted Message-IDs within the length bounds, and refuses one past them', () => {
+    for (const id of [
+      '<a.b.c@mail.example.com>',
+      '<x@localhost>',
+      `<${'a'.repeat(200)}@${'b'.repeat(253)}>`,
+    ]) {
+      expect(buildMailHeaders({ 'Message-ID': id }), id).to.deep.equal({
+        messageId: id,
+      });
+    }
+    for (const id of [
+      `<${'a'.repeat(201)}@example.com>`,
+      `<a@${'b'.repeat(254)}>`,
+    ]) {
+      expect(buildMailHeaders({ 'Message-ID': id }), id).to.have.property(
+        'error',
+      );
+    }
+  });
+
   it('builds nothing for an absent set', () => {
     expect(buildMailHeaders(undefined)).to.deep.equal({});
     expect(buildMailHeaders({})).to.deep.equal({});

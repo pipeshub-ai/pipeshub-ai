@@ -71,7 +71,10 @@ const ALLOWED_MAIL_HEADERS = [
   'Auto-Submitted',
 ] as const;
 const MAX_HEADER_VALUE_LENGTH = 998;
-const MESSAGE_ID_PATTERN = /^<[A-Za-z0-9._%+=-]{1,200}@[A-Za-z0-9.-]{1,253}>$/;
+// `<left@right>`, each side a dot-atom (RFC 5322 3.6.4): one or more nonempty atoms joined by single dots, so `a..b`, `.a` and `a.` are refused.
+// The lookaheads keep the length bounds: the left side at most 200 characters, the right side at most 253.
+const MESSAGE_ID_PATTERN =
+  /^<(?=[^@>]{1,200}@)[A-Za-z0-9_%+=-]+(?:\.[A-Za-z0-9_%+=-]+)*@(?=[^>]{1,253}>$)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*>$/;
 
 /** The nodemailer options for the extra headers, or the reason they are refused. */
 export function buildMailHeaders(
