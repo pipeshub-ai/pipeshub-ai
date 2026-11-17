@@ -577,8 +577,9 @@ def extract_tar_stream(
                 try:
                     if spooled is not None:
                         # The member's bytes were read while comparing them.
+                        # The bytes changed, so the old mtime is not put back:
+                        # the file must read as new to whoever lists changes.
                         os.chmod(spooled, (member.mode & 0o755) | 0o600)
-                        os.utime(spooled, (member.mtime, member.mtime))
                         os.replace(spooled, target)
                         _discard_spool.remove(spooled)
                     else:

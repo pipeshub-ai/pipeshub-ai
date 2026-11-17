@@ -24,9 +24,10 @@ class TestSameSizeAndMtimeRewrites:
         await sandbox.upload_file("output/report.txt", b"AAA")
         mtime = os.path.getmtime(tmp_path / "wd" / "output" / "report.txt")
         archive = _tar([("output", None, mtime), ("output/report.txt", b"BBB", mtime)])
-        await _run(sandbox, {"/output": archive})
+        result, _ = await _run(sandbox, {"/output": archive})
 
         assert (tmp_path / "wd" / "output" / "report.txt").read_bytes() == b"BBB"
+        assert result.artifacts == ["output/report.txt"]
         assert not [p for p in (tmp_path / "wd" / "output").iterdir() if p.name.startswith(".sandbox-")]
 
     async def test_a_staged_input_rewritten_with_its_old_size_and_mtime_is_collected(self, tmp_path) -> None:
