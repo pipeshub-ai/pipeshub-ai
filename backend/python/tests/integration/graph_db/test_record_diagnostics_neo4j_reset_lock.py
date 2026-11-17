@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.integration.graph_db.record_diagnostics_support import RECORDS, Store, new_org
+from tests.integration.graph_db.record_diagnostics_support import (
+    RECORDS,
+    Store,
+    new_org,
+)
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
 if TYPE_CHECKING:

@@ -8,13 +8,13 @@ import random
 import uuid
 
 import asyncpg
-
 import pytest
 
 from tests.integration.graph_db.record_diagnostics_conformance_support import (
     CASES,
     CONTROL_STORE,
     CONTROLS,
+    Controls,
     PostgresRunner,
     generate,
     mismatches,
@@ -48,14 +48,27 @@ async def test_fragment_equals_reference(runner) -> None:
     assert report == [], f"postgres: fragment and reference differ: {report}"
 
 
-@pytest.mark.parametrize("control", sorted(c for c, store in CONTROL_STORE.items() if store == "postgres"))
-async def test_a_rule_with_a_part_left_out_is_seen_to_differ(runner, control: str) -> None:
+async def _defects_seen(runner, controls) -> int:  # noqa: ANN001
+    """Records the control's statement got wrong, plus the statements the server refused for the one defect these controls make: a
+    number test left out, so a stored string reaches a ``::numeric`` cast (22P02). Any other database error (a syntax error in the
+    control, a missing column) is a broken test, not a defect seen, and is raised."""
     stored = generate(random.Random(_seed()), N)
     seen = 0
     for case in CASES:
         await runner.load(stored)
         try:
-            seen += len(mismatches(stored, await runner.apply(case, CONTROLS[control]), case))
-        except asyncpg.PostgresError:  # a defect that the server itself refuses is a defect seen; a dropped connection or a typo is not
+            seen += len(mismatches(stored, await runner.apply(case, controls), case))
+        except asyncpg.exceptions.InvalidTextRepresentationError:
             seen += 1
-    assert seen > 0, f"{control}: the comparison did not see the defect"
+    return seen
+
+
+@pytest.mark.parametrize("control", sorted(c for c, store in CONTROL_STORE.items() if store == "postgres"))
+async def test_a_rule_with_a_part_left_out_is_seen_to_differ(runner, control: str) -> None:
+    assert await _defects_seen(runner, CONTROLS[control]) > 0, f"{control}: the comparison did not see the defect"
+
+
+async def test_a_control_with_malformed_sql_fails_the_test_instead_of_counting_as_seen(runner) -> None:
+    broken = Controls(sql=lambda patch: patch + " )) not sql")
+    with pytest.raises(asyncpg.exceptions.PostgresSyntaxError):
+        await _defects_seen(runner, broken)

@@ -353,7 +353,7 @@ class _BatchSession:
         self.posts: list[list[str]] = []
         self.writes: dict[str, int] = {}
 
-    def post(self, url: str, json: list[dict[str, Any]], params: dict[str, str], headers: dict[str, str]) -> _Response:  # noqa: A002
+    def post(self, url: str, json: list[dict[str, Any]], params: dict[str, str], headers: dict[str, str]) -> _Response:
         self.posts.append([d["_key"] for d in json])
         answers: list[dict[str, Any]] = []
         for doc in json:
