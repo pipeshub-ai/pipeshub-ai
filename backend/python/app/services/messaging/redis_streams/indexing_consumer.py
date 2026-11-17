@@ -999,10 +999,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
-        Only connectors whose next record could be dispatched now count as
-        waiting (``can_dispatch`` is the dispatch phase's own check). One
-        whose head is waiting out a retry backoff cannot take a slot, so it
-        must not shrink anyone else's share."""
+        A connector counts as waiting in two cases. Its next buffered record
+        could be dispatched now (``can_dispatch`` is the dispatch phase's own
+        check): one whose head is waiting out a retry backoff cannot take a
+        slot, so it must not shrink anyone else's share. Or it has a
+        dispatched record that has not reached the gate yet (``started`` but
+        not ``admitted``, counted by ``SlotShare.plan``): that record holds
+        no earlier place in the gate's arrival order, so without counting it
+        another connector would get no cap and fill the gate ahead of it."""
         scheduler = self._scheduler
         slot_share = self._slot_share
         if scheduler is None or slot_share is None:
