@@ -35,6 +35,8 @@ class config_node_constants(Enum):
     # Org-wide rules for which identity fields may be sent to a model gateway.
     # Written by the Node admin API; read-only from Python.
     AI_GATEWAY_IDENTITY_POLICY = "/services/aiGateway/identityPolicy"
+    # Cooldown claims of the code sandbox load alerts, one key per scope and level.
+    SANDBOX_ALERTS = "/services/sandbox/alerts"
 
 
     # Non-service paths
