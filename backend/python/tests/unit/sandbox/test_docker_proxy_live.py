@@ -24,6 +24,9 @@ from ..agent_loop_lib.sandbox.contract.conftest import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
+
+    from app.agent_loop_lib.sandbox.coding.base import CodeResult
 
 pytestmark = [pytest.mark.docker, pytest.mark.timeout(600, method="thread")]
 
@@ -55,7 +58,7 @@ def proxy_host(monkeypatch) -> Iterator[str]:
     thread.join(timeout=5)
 
 
-async def _run_code_through_proxy(proxy_host: str, tmp_path, code: str):
+async def _run_code_through_proxy(proxy_host: str, tmp_path: Path, code: str) -> CodeResult:
     from app.agent_loop_lib.sandbox.coding.base import CodeRequest
     from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
     from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider

@@ -592,7 +592,10 @@ class TestLiveRunSafety:
 
 class TestLiveCapacity:
     async def test_the_machine_is_read_from_the_daemon(self) -> None:
-        from app.agent_loop_lib.sandbox.capacity import CapacitySettings, read_machine_size
+        from app.agent_loop_lib.sandbox.capacity import (
+            CapacitySettings,
+            read_machine_size,
+        )
 
         _require_docker()
         machine, info = await read_machine_size("compose", CapacitySettings())

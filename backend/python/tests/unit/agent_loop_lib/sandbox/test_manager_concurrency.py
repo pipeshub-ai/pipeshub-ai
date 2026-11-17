@@ -4,8 +4,7 @@ idempotent teardown, and the register_backend (factory) path."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -25,6 +24,10 @@ from app.agent_loop_lib.sandbox.manager import (
     SandboxType,
     UnknownSandboxError,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 class _FakeBackend:
