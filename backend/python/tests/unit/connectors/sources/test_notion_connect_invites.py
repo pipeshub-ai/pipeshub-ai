@@ -138,6 +138,28 @@ class TestRemovalAcrossProcesses:
         assert await user_access.get_connection(store, "c1", "u1") is not None
 
 
+    async def test_undoing_a_stale_write_spares_a_newer_connection_stored_meanwhile(self) -> None:
+        store = _Store()
+        await user_access.mark_removed(store, "c1", "u1", now_ms=200)
+        stale = user_access.UserConnection(user_id="u1", email="a@acme.com", token="old", source_user_id="n1",
+                                           source_email="a@acme.com", workspace_id="ws", connected_at=100)
+        fresh = user_access.UserConnection(user_id="u1", email="a@acme.com", token="new", source_user_id="n1",
+                                           source_email="a@acme.com", workspace_id="ws", connected_at=300)
+        real_get = store.get_config
+        calls = {"n": 0}
+
+        async def get_config(key: str, *a: object, **kw: object) -> object:
+            # The stale writer read the marker; another process connects before its cleanup runs.
+            if key == user_access.connection_path("c1", "u1") and calls["n"] == 0:
+                calls["n"] += 1
+                await store.set_config(key, fresh.to_dict())
+            return await real_get(key, *a, **kw)
+
+        store.get_config = get_config
+        assert await user_access.save_connection(store, "c1", stale) is False
+        kept = await user_access.get_connection(store, "c1", "u1")
+        assert kept is not None and kept.token == "new"
+
     async def test_a_stale_connection_a_crash_left_behind_is_not_read(self) -> None:
         store = _Store()
         stale = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",

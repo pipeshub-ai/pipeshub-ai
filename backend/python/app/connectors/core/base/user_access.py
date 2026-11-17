@@ -200,7 +200,13 @@ async def save_connection(
     ):
         raise RuntimeError(f"Could not save the connection of user {connection.user_id} to {connector_id}")
     if _removed(connection, await _removed_at(config_service, connector_id, connection.user_id)):
-        await delete_connection(config_service, connector_id, connection.user_id)
+        # Every read skips it already; the delete only clears the credential, and only while it is still this
+        # write's (a newer connection another process stored meanwhile stays). A failed delete leaves it unread.
+        stored = await config_service.get_config(
+            connection_path(connector_id, connection.user_id), use_cache=False, keep_in_cache=False
+        )
+        if isinstance(stored, dict) and int(stored.get("connectedAt") or 0) == connection.connected_at:
+            await delete_connection(config_service, connector_id, connection.user_id)
         return False
     return True
 
