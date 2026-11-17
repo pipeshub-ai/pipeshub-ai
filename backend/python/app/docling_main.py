@@ -257,7 +257,7 @@ async def health_check() -> JSONResponse:
 def run(host: str | None = None, port: int | None = None, *, reload: bool = False) -> None:
     """Run the Docling service"""
     host = host or bind_host()
-    port = port or bind_port(8081)
+    port = port if port is not None else bind_port(8081)
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         workers = 1

@@ -131,10 +131,14 @@ def bind_host() -> str:
     return (os.getenv("PIPESHUB_BIND_HOST") or "").strip() or "0.0.0.0"
 
 
-def bind_port(default: int) -> int:
-    """Port a service listens on: ``PIPESHUB_BIND_PORT`` (one per process, so a supervisor can pick it), else ``default``."""
-    port = env_int("PIPESHUB_BIND_PORT")
-    return port if port is not None and 0 < port < 65536 else default
+def bind_port(default: int, service_var: str | None = None) -> int:
+    """Port a service listens on: ``PIPESHUB_BIND_PORT`` (one per process, so a supervisor can pick it), else the service's own
+    port variable, else ``default``. A blank or malformed value counts as unset, so it never stops the service."""
+    for name in ("PIPESHUB_BIND_PORT", service_var):
+        port = env_int(name) if name else None
+        if port is not None and 0 < port < 65536:
+            return port
+    return default
 
 
 __all__ = ["bind_host", "bind_port", "env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]

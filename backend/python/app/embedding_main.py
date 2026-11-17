@@ -1577,9 +1577,7 @@ def run(
     reload: bool = False,
 ) -> None:
     host = host or bind_host()
-    resolved_port = port or bind_port(int(
-        os.getenv("EMBEDDING_SERVER_PORT", str(EMBEDDING_SERVER_PORT))
-    ))
+    resolved_port = port if port is not None else bind_port(EMBEDDING_SERVER_PORT, "EMBEDDING_SERVER_PORT")
     uvicorn.run(
         "app.embedding_main:app",
         host=host,

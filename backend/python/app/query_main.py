@@ -647,7 +647,7 @@ def run(host: str | None = None, port: int | None = None, *, workers: int | None
 
     from app.utils.env_utils import bind_host, bind_port
     host = host or bind_host()
-    port = port or bind_port(8000)
+    port = port if port is not None else bind_port(8000)
     workers = workers or configured_worker_count()
     if reload and workers > 1:
         warnings.warn(

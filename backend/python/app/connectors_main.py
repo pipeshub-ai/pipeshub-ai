@@ -1756,7 +1756,7 @@ def run(host: str | None = None, port: int | None = None, workers: int | None = 
     )
 
     host = host or bind_host()
-    port = port or bind_port(8088)
+    port = port if port is not None else bind_port(8088)
     uvicorn.run(
         "app.connectors_main:app",
         host=host,

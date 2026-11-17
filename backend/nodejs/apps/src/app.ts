@@ -933,11 +933,18 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        // listen reports a bind failure (port in use, address not available) as an 'error' event, not a throw.
+        const onError = (error: Error): void => {
+          this.server.off('error', onError);
+          reject(error);
+        };
         const onListening = (): void => {
+          this.server.off('error', onError);
           this.logger.info(`Server started on port ${this.port}`);
           resolve();
         };
+        this.server.once('error', onError);
         // Every interface unless told otherwise (right inside a container); a process outside one sets loopback.
         const host = process.env.PIPESHUB_BIND_HOST?.trim();
         if (host) this.server.listen(this.port, host, onListening);

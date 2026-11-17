@@ -492,7 +492,7 @@ def run(host: str | None = None, port: int | None = None, workers: int | None = 
     claiming the whole box's resources (see ``lifespan``).
     """
     host = host or bind_host()
-    port = port or bind_port(int(os.getenv("PARSING_SERVICE_PORT", "8092")))
+    port = port if port is not None else bind_port(8092, "PARSING_SERVICE_PORT")
     workers = workers or max(1, int(os.getenv("PARSING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         logger.warning(

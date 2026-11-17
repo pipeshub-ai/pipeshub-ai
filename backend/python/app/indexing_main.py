@@ -3422,7 +3422,7 @@ async def health_check(request: Request) -> JSONResponse:
 def run(host: str | None = None, port: int | None = None, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
     host = host or bind_host()
-    port = port or bind_port(8091)
+    port = port if port is not None else bind_port(8091)
     import warnings
     workers = workers or indexing_worker_count()
     if reload and workers > 1:

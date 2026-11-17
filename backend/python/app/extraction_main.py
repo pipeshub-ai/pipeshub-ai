@@ -9,7 +9,6 @@ departments and passes them in the request body.
 """
 import asyncio
 import logging
-import os
 import signal
 import sys
 import types
@@ -151,7 +150,7 @@ def run(host: str | None = None, port: int | None = None, *, reload: bool = Fals
     uvicorn.run(
         "app.extraction_main:app",
         host=host or bind_host(),
-        port=port or bind_port(int(os.getenv("EXTRACTION_SERVICE_PORT", "8093"))),
+        port=port if port is not None else bind_port(8093, "EXTRACTION_SERVICE_PORT"),
         log_level="info",
         reload=reload,
     )
