@@ -31,7 +31,7 @@ describe('plaintextRemoteWarning', () => {
     url('localhost/x'),
     url('127.0.0.1/x'),
     url('[::1]/x'),
-    url('/x?host=/var/run/postgresql'),
+    url('db.example.com/x?host=/var/run/postgresql'),
     url('db.example.com/x?sslmode=verify-full'),
     url('db.example.com/x?sslmode=require'),
     'not a url',
@@ -79,7 +79,7 @@ describe('createPgPool TLS warning', () => {
 
   it('is silent for localhost, a socket host or TLS', async () => {
     await open('silent', 'localhost/x');
-    await open('silent', '/x?host=/var/run/postgresql');
+    await open('silent', 'db.example.com/x?host=/var/run/postgresql');
     await open('silent', 'db.example.com/x?sslmode=require');
     await open('silent', 'db.example.com/x?sslmode=verify-full');
     expect(tlsWarnings()).to.have.length(0);
