@@ -164,6 +164,12 @@ export interface Steps { current?: ChildProcess; cancelled: boolean; onSpawn?: (
 /** A start that a stop interrupted: not an error to report. */
 export class Cancelled extends Error {}
 
+/** A start-up failure with its own error code (port_in_use, ...). */
+class StartError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) { super(message); this.code = code; }
+}
+
 /** Run a command to completion in its own process group, output to logs/<name>.log; on failure throw with the tail of the log, secrets masked. */
 function runStep(c: Ctx, steps: Steps, name: string, cmd: string, args: string[], env: Record<string, string>, cwd: string): Promise<void> {
   if (steps.cancelled) return Promise.reject(new Cancelled());
@@ -273,25 +279,17 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     return 1;
   }
   const held = lock;
-  const fail = (code: string, message: string) => { emit({ event: "error", code, message }); held.release(); return 1; };
-  await reapLeftovers(dataDir, lay);
-  const saved = readJson<Ports>(join(dataDir, "ports.json"));
-  // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
-  // must not move for the life of the data folder: a taken port is reported instead of quietly replaced.
-  if (saved?.api && existsSync(join(lay.pgData, "PG_VERSION")) && !(await isFree(saved.api))) {
-    return fail("port_in_use", `port ${saved.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
-  }
-  let secrets: Secrets;
-  try { secrets = loadSecrets(dataDir); } catch (e) { return fail("start_failed", (e as Error).message); }
-  const ports = await pickPorts(saved, o.portBase);
-  writeJson(join(dataDir, "ports.json"), ports);
-  const c: Ctx = { layout: lay, ports, secrets };
+  // This start is on record (and answers SIGTERM) before it cleans up what a crashed launcher left, which can take a while:
+  // a stop issued meanwhile finds it and stops it instead of timing out.
+  const previous = readState(dataDir);
   const state: State = {
     pid: process.pid, pidId: procIdentity(process.pid), bootId: bootId(), phase: "starting", startedAt: t0, bundle, dataDir,
-    url: apiUrl(c), ports, services: {}, serviceIds: {},
+    url: "", ports: {} as Ports, services: {}, serviceIds: {},
   };
   const save = () => writeJson(statePath(dataDir), state);
   save();
+  let secrets: Secrets | undefined;
+  const mask = (text: string) => (secrets ? redact(text, secrets) : text);
 
   const procs = new Map<ProcessName, ChildProcess>();
   // The step's pid is written down before it is awaited: if this launcher is killed, stop can still end that step.
@@ -328,7 +326,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     // A binary that is missing or cannot run fails here, often with no exit event after it.
     p.once("error", (e) => {
       if (stopping) return;
-      emit({ event: "error", code: "start_failed", message: redact(`${name} could not start: ${e.message}`, secrets) });
+      emit({ event: "error", code: "start_failed", message: mask(`${name} could not start: ${e.message}`) });
       requestStop(1);
     });
     p.once("exit", (code, sig) => {
@@ -339,6 +337,19 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   };
 
   try {
+    await reapLeftovers(dataDir, lay, previous, false);
+    if (stopping) throw new Cancelled();
+    const saved = readJson<Ports>(join(dataDir, "ports.json"));
+    // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
+    // must not move for the life of the data folder: a taken port is reported instead of quietly replaced.
+    if (saved?.api && existsSync(join(lay.pgData, "PG_VERSION")) && !(await isFree(saved.api))) {
+      throw new StartError("port_in_use", `port ${saved.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
+    }
+    secrets = loadSecrets(dataDir);
+    const ports = await pickPorts(saved, o.portBase);
+    writeJson(join(dataDir, "ports.json"), ports);
+    const c: Ctx = { layout: lay, ports, secrets };
+    state.ports = ports; state.url = apiUrl(c); save();
     await startPostgres(c, emit, steps);
     state.postgresPid = postmasterPid(lay); save();
     await prepareSchema(c, emit, steps);
@@ -357,7 +368,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
       emit({ event: "ready", url: state.url, ports, healthy_after_s: state.healthyAfterS, pid: process.pid, data_dir: dataDir });
     }
   } catch (e) {
-    if (!(e instanceof Cancelled) && !stopping) emit({ event: "error", code: "start_failed", message: redact((e as Error).message, secrets) });
+    if (!(e instanceof Cancelled) && !stopping) emit({ event: "error", code: e instanceof StartError ? e.code : "start_failed", message: mask((e as Error).message) });
     requestStop(stopping ? exitCode : 1);
   }
   await stopRequested;
@@ -380,8 +391,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
 
 /** Processes a crashed launcher left behind: their groups are ended, so the new run owns every port and the database. */
 /** Call with the data folder's lock held, so it never acts on a successor's processes. */
-export async function reapLeftovers(dataDir: string, lay: Layout): Promise<void> {
-  const s = readState(dataDir);
+export async function reapLeftovers(dataDir: string, lay: Layout, s: State | undefined = readState(dataDir), removeState = true): Promise<void> {
   if (s && sameProcess(s.pid, s.pidId)) return;
   // Processes recorded in an earlier boot are all gone; their pids may belong to anything now.
   const sameBoot = !!s && (s.bootId === undefined || s.bootId === bootId());
@@ -400,7 +410,7 @@ export async function reapLeftovers(dataDir: string, lay: Layout): Promise<void>
   }
   // The server is not one of the services: pg_ctl started it, so it outlives a killed launcher.
   await stopPostgres(lay);
-  rmSync(statePath(dataDir), { force: true });
+  if (removeState) rmSync(statePath(dataDir), { force: true });
 }
 
 export async function stop(o: Options, emit: Emit): Promise<number> {
