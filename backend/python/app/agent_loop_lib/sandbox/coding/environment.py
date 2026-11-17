@@ -75,11 +75,17 @@ def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
 
 async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
     """Kill the whole process group (not just `proc` itself) so a
-    fork-bombing or backgrounding script can't outlive the timeout."""
+    fork-bombing or backgrounding script can't outlive the timeout.
+
+    Every caller starts *proc* with ``start_new_session=True``, so its group
+    id is its pid. Killing that group directly also works once *proc* itself
+    has exited and been reaped while a child it started still holds the
+    output pipes; ``getpgid`` would fail for the reaped pid and skip the
+    kill."""
     try:
         if sys.platform != "win32":
             import signal
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGKILL)
         else:
             proc.kill()
     except ProcessLookupError:
