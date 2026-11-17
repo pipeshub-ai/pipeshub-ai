@@ -42,6 +42,10 @@ from app.utils.threaded import to_thread_settled
 
 logger = create_logger("custom_embeddings")
 
+# (connect, read) seconds for a Jina request: a server that accepts the connection and never answers must not hold a thread
+# (and, through ``to_thread_settled``, a cancelled caller) for ever.
+JINA_REQUEST_TIMEOUT_S: tuple[float, float] = (10.0, 120.0)
+
 
 def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any]:
     min_seconds = 4
@@ -561,7 +565,11 @@ def _build_jina_embeddings() -> type:
             wire.admit_request()
             wire.note_request_sent()
             try:
-                response = self.session.post(JINA_API_URL, json={"input": input, "model": self.model_name})
+                response = self.session.post(
+                JINA_API_URL,
+                json={"input": input, "model": self.model_name},
+                timeout=JINA_REQUEST_TIMEOUT_S,
+            )
             except requests.exceptions.RequestException as exc:
                 wire.note_error(type(exc).__name__)
                 raise
@@ -570,6 +578,8 @@ def _build_jina_embeddings() -> type:
                 payload = response.json()
             except ValueError:  # an outage page is not JSON: the status still says what it was
                 payload = {"detail": (response.text or "")[:200]}
+            if not isinstance(payload, dict):  # `null`, a list or a string is no embedding reply either
+                payload = {"detail": json.dumps(payload)[:200]}
             if "data" not in payload:
                 raise JinaAPIError(
                     f"Jina API Error. Message: {payload.get('detail', json.dumps(payload))}",

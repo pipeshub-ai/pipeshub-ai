@@ -394,13 +394,14 @@ async def test_the_limit_check_takes_no_draw_of_its_own(monkeypatch: pytest.Monk
     monkeypatch.setattr(record_module, "handback_delay_s", draw)
     harness = Harness(_record(indexingStatus="QUEUED"))
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
-    before = int(time.time() * 1000)
+    now_ms = 1_800_000_000_000
+    monkeypatch.setattr(record_module, "get_epoch_timestamp_in_ms", lambda: now_ms)  # a fixed clock: no wall-clock race
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert calls == [1], "the limit check took a second draw"
     assert raised.value.delay_s == 290.0
     stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
-    assert before + 290_000 <= stored <= before + 291_000
+    assert stored == now_ms + 290_000
 
 
 async def test_a_consumer_whose_clock_runs_behind_does_not_shorten_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:

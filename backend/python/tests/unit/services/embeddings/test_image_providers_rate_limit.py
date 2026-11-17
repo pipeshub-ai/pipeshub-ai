@@ -544,3 +544,43 @@ def test_importing_custom_embeddings_does_not_import_the_community_jina_module()
     )
     result = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stderr[-2000:]
+
+
+def test_jina_requests_carry_a_finite_connect_and_read_timeout() -> None:
+    """``requests`` waits for ever without a timeout; a stalled Jina server would hold the thread of a cancelled call."""
+    from app.utils.custom_embeddings import JinaEmbeddings
+
+    seen: dict[str, Any] = {}
+
+    class Session:
+        def post(self, *_: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            seen.update(kwargs)
+            raise RuntimeError("stop here")
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    with pytest.raises(RuntimeError):
+        embeddings.embed_documents(["x"])
+    connect, read = seen["timeout"]
+    assert 0 < connect < float("inf") and 0 < read < float("inf")
+
+
+@pytest.mark.parametrize("body", ["null", "[]", '"oops"', "42"])
+def test_a_jina_reply_that_is_not_an_object_still_carries_its_status(body: str) -> None:
+    """The retry decision reads the status and response from the raised error, so no reply shape may bypass ``JinaAPIError``."""
+    import requests
+
+    from app.utils.custom_embeddings import JinaAPIError, JinaEmbeddings
+
+    response = requests.Response()
+    response.status_code, response._content = 503, body.encode()
+
+    class Session:
+        def post(self, *_: Any, **__: Any) -> Any:  # noqa: ANN401
+            return response
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    with pytest.raises(JinaAPIError) as raised:
+        embeddings.embed_documents(["x"])
+    assert raised.value.status_code == 503 and raised.value.response is response
