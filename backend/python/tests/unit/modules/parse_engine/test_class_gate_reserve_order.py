@@ -173,3 +173,40 @@ async def test_a_fresh_unbounded_head_still_waits_for_the_running_work_and_then_
     assert not head.done()  # one place, held by small work
     small.release()
     (await asyncio.wait_for(head, 2)).release()  # served by the ordinary rules once the place is free
+
+
+async def test_the_age_bound_is_used_only_where_the_ordinary_rules_cannot_grant() -> None:
+    """At a capacity of 4 a backlog of aged unsplittable heads is not served by the age bound ahead of small work."""
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.05), capacity=lambda: PoolCapacity(4))
+    running = [await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=1) for _ in range(4)]
+    heads = [asyncio.create_task(gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=3)) for _ in range(2)]
+    smalls = [asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=3)) for _ in range(3)]
+    await asyncio.sleep(0.2)  # the heads have aged
+    for p in running:
+        p.release()
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.2)
+    assert all(g.rule != "A5" for g in gate.grants), [g.rule for g in gate.grants]
+    for t in (*heads, *smalls):
+        t.cancel()
+    await asyncio.gather(*heads, *smalls, return_exceptions=True)
+
+
+async def test_a_priority_waiter_goes_before_an_aged_unsplittable_head() -> None:
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.05), capacity=lambda: PoolCapacity(1))
+    running = await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=1)
+    head = asyncio.create_task(gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=3))
+    small = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=3))
+    await asyncio.sleep(0.2)  # the head has aged and small work waits
+    urgent = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=1.0, priority=True), deadline_s=3))
+    await settle()
+    running.release()
+    first = await asyncio.wait({urgent, head}, return_when=asyncio.FIRST_COMPLETED, timeout=2)
+    assert urgent in first[0] and head not in first[0]  # parse-now first, then the aged head
+    (await urgent).release()
+    (await asyncio.wait_for(head, 2)).release()
+    (await asyncio.wait_for(small, 2)).release()

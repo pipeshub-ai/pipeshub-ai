@@ -419,9 +419,15 @@ async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
     from app.modules.parse_engine import wiring
     from app.services.resource_governor.kinds import ParseKind
 
+    from concurrent.futures import ThreadPoolExecutor
+
     monkeypatch.setenv("PARSE_ADMISSION", "classes")
     wiring.reset_for_tests()
     install_budget(monkeypatch, tmp_path / "l", c=32, mem=8 * GIB)
+    # The thread fallback runs on the loop's default executor, whose size depends on the host's CPU count (8 on a
+    # 4-CPU runner): pin it, so only the ledger can limit how many inspections run at once.
+    executor = ThreadPoolExecutor(max_workers=16)
+    asyncio.get_running_loop().set_default_executor(executor)
     running = 0
     peak = 0
     lock = threading.Lock()
@@ -436,5 +442,8 @@ async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
             running -= 1
         return 1
 
-    await asyncio.gather(*(parse_pool.submit(inspect, kind=ParseKind.INSPECT, size=1 << 20) for _ in range(12)))
+    try:
+        await asyncio.gather(*(parse_pool.submit(inspect, kind=ParseKind.INSPECT, size=1 << 20) for _ in range(12)))
+    finally:
+        executor.shutdown(wait=True)
     assert peak == 12  # at 1.25 GiB each only 6 fit an 8 GiB ledger
