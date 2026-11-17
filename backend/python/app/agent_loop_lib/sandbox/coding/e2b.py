@@ -336,6 +336,28 @@ class E2BCodingSandbox(CodingSandboxBackend):
         content = await self._sbx.files.read(full_path, format="bytes")
         return bytes(content)
 
+    async def read_file_head(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        """At most ``max_bytes`` of a file, streamed so a large file is
+        never read whole."""
+        if self._sbx is None:
+            await self.provision()
+        max_bytes = max(0, int(max_bytes))
+        stream = await self._sbx.files.read(self._resolve_path(path), format="stream")
+        buf = bytearray()
+        try:
+            async for chunk in stream:
+                buf += chunk
+                if len(buf) > max_bytes:
+                    break
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
+        return bytes(buf[:max_bytes]), len(buf) > max_bytes
+
     async def file_size(self, path: str) -> int | None:
         if self._sbx is None:
             await self.provision()

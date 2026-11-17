@@ -1163,9 +1163,10 @@ async def _fetch_within_cap(
     backend: CodingSandboxBackend, rel_paths: list[str], registry: object, sandbox_id: str,
 ) -> tuple[list[tuple[str, bytes]], list[dict[str, str]]]:
     """Download each path whose size is within the artifact cap. A file
-    over the cap is never read (its size is checked first), so a huge or
-    sparse output file cannot fill this process's memory; it is reported in
-    the second list instead, in the `artifact_errors` shape."""
+    over the cap is never read whole (its size is checked first, or when the
+    backend cannot tell, at most one byte past the cap is read), so a huge
+    or sparse output file cannot fill this process's memory; it is reported
+    in the second list instead, in the `artifact_errors` shape."""
     cap = _artifact_cap(registry)
     fetched: list[tuple[str, bytes]] = []
     oversized: list[dict[str, str]] = []
@@ -1185,7 +1186,23 @@ async def _fetch_within_cap(
             })
             continue
         try:
-            content = await backend.download_file(rel_path)
+            read_head = getattr(backend, "read_file_head", None)
+            if (isinstance(size, int) and not isinstance(size, bool)) or read_head is None:
+                content = await backend.download_file(rel_path)
+            else:
+                # Size unknown: read at most one byte past the cap, so an
+                # oversized file is never read whole.
+                content, more = await read_head(rel_path, cap)
+                if more:
+                    logger.warning(
+                        "artifact %r in sandbox %s is over the %d-byte cap; not collected",
+                        rel_path, sandbox_id, cap,
+                    )
+                    oversized.append({
+                        "file": redact_sandbox_paths(os.path.basename(rel_path)),
+                        "error": f"FileTooLarge: larger than the {cap}-byte cap; not collected",
+                    })
+                    continue
         except Exception:
             logger.warning(
                 "artifact download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
