@@ -20,8 +20,10 @@ from app.services.resource_governor.shared_slots import SharedSlots
 if TYPE_CHECKING:
     from pathlib import Path
 
-# One pass over 1024 files takes about 1 ms here; allow for a loaded machine.
-_SLOW_S = 0.025
+# One pass over 1024 files takes about 1-2 ms; the bound is loose so a loaded
+# CI machine passes, and still catches a spin or a blocking lock (which wait
+# up to a second).
+_SLOW_S = 0.1
 
 
 class _SlowSteps(logging.Handler):
