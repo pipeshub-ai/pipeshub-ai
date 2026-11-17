@@ -21,8 +21,8 @@ from app.config.constants.ai_models import (
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
     PARSE_CLASS_HEADER,
 )
-from app.modules.parse_engine.pools import current_class
 from app.exceptions.indexing_exceptions import EmbeddingPrecisionUnknownError
+from app.modules.parse_engine.pools import current_class
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.utils.embedding_gate import BulkGate, get_bulk_gate
 from app.utils.embedding_retry import await_with_retry, call_with_retry

@@ -14,7 +14,7 @@ from app.services.messaging.precision_flip import FenceMoved, PrecisionFlip
 from app.services.vector_db.collection_epoch import CollectionEpochs
 from app.services.vector_db.collection_pin import FP32, INT8
 from app.services.vector_db.precision_guard import PrecisionUnreadable
-from tests.unit.modules.transformers.test_fence_writers import _with_epoch  # noqa: F401
+from tests.unit.modules.transformers.test_fence_writers import _with_epoch
 from tests.unit.modules.transformers.test_vectorstore_precision_records import (  # noqa: F401  (the fixture is used by name)
     ORG,
     VRID,
@@ -136,7 +136,7 @@ async def test_an_int8_record_batch_beside_an_fp32_claim_with_an_unreadable_pin_
 
 # -- entities --------------------------------------------------------------------------------------------------------
 
-def _entity_unreadable(world):  # noqa: ANN001, ANN202
+def _entity_unreadable(world) -> dict:  # noqa: F811
     written = {"yes": False}
     real = world.vdb.upsert_points
 
@@ -149,7 +149,7 @@ def _entity_unreadable(world):  # noqa: ANN001, ANN202
     return written
 
 
-def _entity_points(world) -> list:  # noqa: ANN001
+def _entity_points(world) -> list:  # noqa: F811
     return [p for p in world.vdb.points[ENTITIES] if p.get("entityId") == _entity().entity_id]
 
 

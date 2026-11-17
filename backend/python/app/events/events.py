@@ -114,9 +114,9 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
-from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.paid_cache.run import refresh_requested
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError

@@ -127,6 +127,8 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.messaging.precision_check import active_verdict
+from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
@@ -134,8 +136,6 @@ from app.services.paid_cache.cache import RefreshPurgeInProgress
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
-from app.services.messaging.precision_check import active_verdict
-from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
 from app.services.vector_db.membership import mark_scope_stale
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
