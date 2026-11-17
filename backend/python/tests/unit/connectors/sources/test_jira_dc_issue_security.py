@@ -17,6 +17,7 @@ from app.connectors.sources.atlassian.jira_data_center_personal.connector import
     JiraDataCenterPersonalConnector,
 )
 from app.models.entities import AppUser, RecordType, TicketRecord
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _connector(cls=JiraDataCenterConnector) -> JiraDataCenterConnector:
@@ -395,6 +396,24 @@ class TestWithdrawnAccounts:
             "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
         grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, {"bob-key": _user("bob-key", "")})
         assert [(g.email, g.external_id) for g in grants] == [(None, "bob-key")]  # by account, reaching that user
+
+    @pytest.mark.parametrize("listed", [True, False], ids=["listed", "not_listed"])
+    def test_a_linked_account_stored_without_an_email_is_in_the_directory_a_sync_resolves_against(self, listed: bool) -> None:
+        """The active-user list shows bob-key, linked but stored without an email, so the directory a sync builds does not
+        hold it; the level names it with an email: it is granted by account when the list shows it active."""
+        c = _connector()
+        c._stored_app_users = [_user("bob-key", "")]
+        c._listed_user_keys = {"alice-key"} | ({"bob-key"} if listed else set())  # a complete read, bob shown or not
+        c._seen_user_keys = {"alice-key", "bob-key"}
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "bob-key",
+                                     "user": {"key": "bob-key", "emailAddress": "bob@example.com"}}]},
+        )
+        users = c._grant_directory({})
+        grants = c._directory_grants(
+            [Permission(entity_type=EntityType.USER, external_id="bob-key", type=PermissionType.READ)], {})
+        assert ("bob-key" in users) is listed and bool(grants) is listed
 
     def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
         """"left" has no access in Jira (not in the directory) but carries alice's email: alice must not get left's level."""

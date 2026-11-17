@@ -2845,10 +2845,24 @@ class JiraConnector(BaseConnector):
             return []
         return [u for u in self._stored_app_users if u.source_user_id not in self._seen_account_ids]
 
+    def _listed_without_email(self) -> list[AppUser]:
+        """The linked accounts the user list shows active and with product access whose email is hidden: synced, yet
+        left out of the directory a sync builds (it keeps a cached account only with an email), so held by account."""
+        licensed = self._licensed_account_ids
+        if licensed is None:
+            return []  # product access unknown: no one is granted (``_keep_licensed_users``)
+        return [u for u in self._stored_app_users
+                if u.source_user_id and not u.email and u.source_user_id in self._listed_account_ids and u.source_user_id in licensed]
+
+    def _directory_extra(self) -> list[AppUser]:
+        """The linked accounts an issue's people also resolve against: on a user list not read in full, those it did not
+        show (the last complete state); and those it listed whose email the directory does not hold."""
+        return [*self._linked_not_read(), *self._listed_without_email()]
+
     def _grant_directory(self, user_by_account_id: dict[str, AppUser]) -> dict[str, AppUser]:
-        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
-        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
-        linked = self._linked_not_read()
+        """The accounts an issue's people resolve against: the synced directory and the linked accounts
+        ``_directory_extra`` adds (as ``_directory_grants`` counts them)."""
+        linked = self._directory_extra()
         return {**{u.source_user_id: u for u in linked if u.source_user_id}, **user_by_account_id} if linked else user_by_account_id
 
     def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
@@ -2861,7 +2875,7 @@ class JiraConnector(BaseConnector):
             self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
         listed = self._listed_emails[1]
         accounts = set(user_by_account_id)
-        if linked := self._linked_not_read():
+        if linked := self._directory_extra():
             listed = listed | {u.email.lower() for u in linked if u.email}
             accounts |= {u.source_user_id for u in linked if u.source_user_id}
         # A grant by account (the directory holds no email for it) is kept when that account is listed.
