@@ -136,6 +136,16 @@ class TestReviewInput(unittest.TestCase):
         self.assertIn("inputs.review && inputs.use_model && secrets.ANTHROPIC_API_KEY", pipeline)
 
 
+class TestHistoryPublish(unittest.TestCase):
+    def test_the_nightly_history_step_parses(self) -> None:
+        import shlex
+        text = (WORKFLOWS / "qa.yml").read_text(encoding="utf-8")
+        args = shlex.split(re.search(r"args=\((.*?)\n\s+--started-at", text, re.S).group(1))
+        call = shlex.split(re.search(r"python3 scripts/qa (.*history publish)", text).group(1))
+        parsed = qa_main.parser().parse_args(call + args + ["--started-at", "2026-01-01T00:00:00Z"])
+        self.assertEqual((parsed.out, parsed.action), ("qa-out", "publish"))
+
+
 class TestSkills(unittest.TestCase):
     def test_qa_skills_name_real_commands(self) -> None:
         root = Path(__file__).resolve().parents[2]

@@ -251,7 +251,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          args=(--out qa-out --remote origin --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
+          args=(--remote origin --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
                 --started-at "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)")
           # shadow fetch writes no file when no workflow run failed; publish rejects a missing --shadow file.
           if [[ -f qa-out/shadow-new.jsonl ]]; then args+=(--shadow qa-out/shadow-new.jsonl); fi
@@ -260,4 +260,5 @@ jobs:
             suite=${f#cov/}; suite=${suite%%-coverage-report-*}
             args+=(--coverage "$suite=$f")
           done < <(find cov -name coverage-summary.json 2>/dev/null | sort)
-          python3 scripts/qa history publish "${args[@]}"
+          # --out belongs before the subcommand; history does not accept it after.
+          python3 scripts/qa --out qa-out history publish "${args[@]}"
