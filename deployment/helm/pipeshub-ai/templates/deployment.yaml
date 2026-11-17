@@ -123,9 +123,11 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- range $name, $key := dict "SANDBOX_MAX_PER_ORG" "maxPerOrg" "SANDBOX_MAX_PER_REQUEST" "maxPerRequest" "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_SLOT_WAIT_S" "slotWaitSeconds" "SANDBOX_HOST_PID_LIMIT" "pidLimit" "SANDBOX_MEMORY_OVERCOMMIT" "memoryOvercommit" }}
-            {{- with (index $.Values.sandbox.capacity $key) }}
+            {{- /* Not `with`: a numeric 0 is a setting, not an empty value. */}}
+            {{- $value := index $.Values.sandbox.capacity $key }}
+            {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") }}
             - name: {{ $name }}
-              value: {{ . | toString | quote }}
+              value: {{ $value | toString | quote }}
             {{- end }}
             {{- end }}
             # Each pod has its own sandboxes and load alert evaluator, so each

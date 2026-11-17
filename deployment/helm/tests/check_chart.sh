@@ -75,6 +75,7 @@ VARIANTS=(
   "external-daemon-max-total|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
   "external-daemon-max-total-0|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=0"
   "dind-max-total-0|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set-string sandbox.capacity.maxTotal=0 --set sandbox.proxy.reapUnlabeled=true"
+  "dind-capacity-zeros|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.capacity.slotWaitSeconds=0 --set sandbox.capacity.maxPerOrg=0"
   "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
   "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
@@ -411,6 +412,10 @@ for pair in defaults-dind:false dind-max-total-0:true; do
   if [[ "$got" == "$want" ]]; then echo "ok $v: DOCKER_PROXY_REAP_UNLABELED = $want"; else echo "!! $v: DOCKER_PROXY_REAP_UNLABELED is $got, expected $want"; failed=1; fi
 done
 expect_env external-daemon-1-pod SANDBOX_CAPACITY_DIVISOR missing
+# A numeric 0 is passed on, like a quoted one; an empty value is left out.
+expect_env dind-capacity-zeros SANDBOX_SLOT_WAIT_S '"0"'
+expect_env dind-capacity-zeros SANDBOX_MAX_PER_ORG '"0"'
+expect_env defaults-dind SANDBOX_SLOT_WAIT_S missing
 expect_env external-daemon-autoscaled SANDBOX_CAPACITY_DIVISOR '"3"'
 
 # Live limit: on the dind sidecar the app reads the sidecar's own cgroup,
