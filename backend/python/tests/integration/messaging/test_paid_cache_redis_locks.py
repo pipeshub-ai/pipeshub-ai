@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
 
+@pytest.fixture(autouse=True)
+def _paid_cache_writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+
+
 @pytest.fixture
 def org() -> str:
     """An org of this test alone: parallel workers share one Redis, so no test touches another's locks."""

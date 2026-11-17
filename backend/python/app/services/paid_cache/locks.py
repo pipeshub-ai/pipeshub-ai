@@ -5,6 +5,7 @@ delete markers ``<ns>:pc:deleted:{<org>:<record>}`` that fence a deleted record'
 that dies simply lapses. Redis holds nothing else for the cache: results live in the blob store.
 """
 
+import math
 import secrets
 import threading
 import time
@@ -65,6 +66,17 @@ def stage_deadline_s() -> float:
 MAX_RECORD_BUDGET_S = 7 * 24 * 3600.0
 
 
+def valid_record_budget(record_budget_s: object) -> float | None:
+    """The record budget a caller sent, when it is a usable duration (finite, positive, at most a week), else None."""
+    if isinstance(record_budget_s, bool) or not isinstance(record_budget_s, int | float):
+        return None
+    try:
+        budget = float(record_budget_s)
+    except OverflowError:
+        return None
+    return budget if math.isfinite(budget) and 0 < budget <= MAX_RECORD_BUDGET_S else None
+
+
 def stage_deadline_for(record_budget_s: float | None) -> float:
     """The stage deadline for a record whose budget the caller sent with its request.
 
@@ -72,12 +84,8 @@ def stage_deadline_for(record_budget_s: float | None) -> float:
     for, whatever its own environment says. An absent or unusable figure (an older client during a rollout) falls
     back to the service's own settings (``stage_deadline_s()``).
     """
-    if (
-        isinstance(record_budget_s, int | float) and not isinstance(record_budget_s, bool)
-        and 0 < record_budget_s <= MAX_RECORD_BUDGET_S
-    ):
-        return max(float(STAGE_DEADLINE_S), float(record_budget_s))
-    return stage_deadline_s()
+    budget = valid_record_budget(record_budget_s)
+    return max(float(STAGE_DEADLINE_S), budget) if budget is not None else stage_deadline_s()
 
 
 def admission_window_s() -> float:

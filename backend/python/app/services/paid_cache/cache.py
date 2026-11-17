@@ -58,6 +58,13 @@ def enabled() -> bool:
     return os.getenv("PAID_CACHE", "on").strip().lower() not in ("off", "0", "false", "no")
 
 
+def writes_enabled() -> bool:
+    """``PAID_CACHE_WRITE=true`` lets the cache store results and manifests; off by default for the release that
+    first ships it, so a record a consumer of the previous release deletes (which purges nothing) never leaves a
+    stored result behind. Reads and the purge are always on."""
+    return os.getenv("PAID_CACHE_WRITE", "off").strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True, slots=True)
 class NotCached(Generic[T]):
     """A result to return to the caller but never store (empty, truncated, reflection-failed, degraded)."""
@@ -200,6 +207,8 @@ class PaidResultCache:
         if not (enabled() and PAID_RESULT_ROUTES.available):
             return _plain(await compute())
         path = key.relative_path()
+        if not writes_enabled():
+            return await self._read_only(key, path, compute, scope, validate)
         # A refresh run does not share a normal run's in-flight work: that one may return the stored result the
         # refresh exists to replace.
         flight = (id(asyncio.get_running_loop()), key.path(), scope is not None and scope.refresh)
@@ -231,6 +240,20 @@ class PaidResultCache:
         self._inflight.pop(flight, None)
         future.set_result(value)
         return value
+
+    async def _read_only(
+        self, key: CacheKey, path: str, compute: Callable[[], Awaitable[Any]], scope: RunScope | None,
+        validate: Callable[[Any], object] | None,
+    ) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
+        """Writes are off: a stored result is reused when there is one, otherwise the call is made and nothing is stored
+        (no object, no manifest, no lock), exactly as before the cache existed."""
+        if not (scope is not None and scope.refresh):
+            found, value, _ = await self._lookup(key, path, validate)
+            if found:
+                self._count(key, "hit")
+                return value
+        self._count(key, "miss")
+        return _plain(await compute())
 
     async def purge_record(self, org_id: str, record_id: str) -> None:
         """Removes every stored result of the record (a refresh; the record goes on). Raises on a storage failure."""
@@ -450,7 +473,7 @@ class PaidResultCache:
             self._storage_error(key, "write", exc)
 
     async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> None:
-        if scope is None:
+        if scope is None or not writes_enabled():
             return
         try:
             await scope.note(self._store, path, opens=stored)

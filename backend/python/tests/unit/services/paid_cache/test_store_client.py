@@ -310,3 +310,10 @@ async def test_a_malformed_url_error_hides_its_context_too(storage: FakePaidResu
     with pytest.raises(PaidResultStoreError) as raised:
         await _store(storage).put_to(_entry(), b"x")                  # type: ignore[arg-type]
     assert raised.value.__cause__ is None and raised.value.__suppress_context__ is True
+
+
+async def test_a_412_is_a_lost_race_answered_after_one_request(storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _ScriptedSession(_FakeResponse(412, b"<Error><Code>PreconditionFailed</Code></Error>"))
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+    assert await _store(storage).put_to(_entry(), b"x") is False      # type: ignore[arg-type]
+    assert session.calls == 1                                         # a 412 is never retried

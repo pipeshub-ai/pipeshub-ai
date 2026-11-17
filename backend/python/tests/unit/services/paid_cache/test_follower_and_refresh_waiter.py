@@ -245,3 +245,61 @@ async def test_a_failed_read_of_the_earlier_manifest_does_not_replace_it() -> No
 
     assert store.files[(ORG, REC, "manifests/rev1/parse.open.json")][0] == before
     assert len(json.loads(before)["keys"]) == 2
+
+
+async def test_a_run_past_its_own_stage_bound_stores_nothing_even_when_the_process_bound_is_larger() -> None:
+    """A conversion thread that outlives its 504 keeps calling the cache: the bound is the run's (the client's budget)."""
+    import time
+
+    store = MemoryResultStore()
+    cache = PaidResultCache(store, InProcessLocks())
+    scope = begin_run(ORG, REC, "rev1", "parse", stage_deadline_s=30.0)
+    scope.started_ms -= 31_000                                     # the stage began 31 s ago; the process bound is 2400+
+    assert time.time() > 0
+
+    async def paid() -> str:
+        return "late"
+
+    try:
+        with record_in_flight(ORG, REC):
+            assert await cache.get_or_compute(KEY, paid) == "late"
+    finally:
+        clear_run()
+    assert store.paths(ORG, REC) == []
+
+
+async def test_two_runs_of_one_revision_finish_without_unlisting_each_others_keys() -> None:
+    """An orphaned parse and its retry share the manifest path: the later finisher keeps the earlier one's keys."""
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    def keys(*names: str) -> list[str]:
+        return [f"ocr_page/{n * 64}.json" for n in names]
+
+    for order in ((0, 1), (1, 0)):
+        store = MemoryResultStore()
+        orphan, retry = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+        for run, names in ((orphan, "ab"), (retry, "bc")):
+            for key in keys(*names):
+                await run.note(store, key, opens=True)
+        for index in order:
+            await (orphan, retry)[index].finish(store)
+        final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
+        assert set(final) == set(keys("a", "b", "c")), order
+
+
+async def test_an_orphans_later_flush_keeps_the_keys_its_retry_listed() -> None:
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    orphan, retry = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+    await orphan.note(store, "ocr_page/" + "a" * 64 + ".json", opens=True)
+    await retry.note(store, "ocr_page/" + "b" * 64 + ".json", opens=True)
+    orphan._keys.append("ocr_page/" + "c" * 64 + ".json")          # the orphan pays one more page
+    orphan._unflushed += 1
+    await orphan.flush(store)
+    listed = json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]
+    assert {k[10] for k in listed} == {"a", "b", "c"}

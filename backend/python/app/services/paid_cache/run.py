@@ -120,8 +120,7 @@ class RunScope:
             # write that waited behind another one finds nothing left to write.
             if self.finished or self.past_deadline() or (self._opened and self._unflushed == 0):
                 return
-            if not self._opened:
-                await self._adopt_failed_attempt(store)
+            await self._adopt(store, open_manifest_path(self.content_rev, self.writer))
             body, noted = self._body(), self._unflushed
             async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
                 await store.replace(
@@ -131,24 +130,24 @@ class RunScope:
             self._unflushed = max(self._unflushed - noted, 0)
             self._last_flush = self._clock()
 
-    async def _adopt_failed_attempt(self, store: _ManifestStore) -> None:
-        """A retry replaces the open manifest of the attempt that failed: its keys stay listed.
+    async def _adopt(self, store: _ManifestStore, path: str) -> None:
+        """Keeps the keys an earlier attempt (or a parse that outlived its client, still running beside its retry)
+        listed in the manifest at ``path``, which both write: one revision and writer, one path.
 
-        Both attempts work on the same revision and writer, so one path holds them; a retry that fails after noting
-        fewer keys would otherwise unlist results the first attempt paid for, and a sweep could delete them.
+        A manifest replaced with this run's keys alone would unlist results the other run paid for, and a sweep
+        could delete them. An absent manifest is ``None`` and adds nothing. A failed or undecodable read raises
+        out of the write, so the manifest is not replaced with this run's keys alone.
         """
         reader = getattr(store, "get", None)
         if reader is None:
             return
-        # An absent manifest is ``None`` and adds nothing. A failed or undecodable read raises out of the write, so
-        # the manifest is not replaced with this attempt's keys alone and the earlier references stay in place.
         async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
-            raw = await reader(self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer))
+            raw = await reader(self.org_id, self.record_id, path)
         previous = json.loads(raw).get("keys", []) if raw else []
-        for path in previous if isinstance(previous, list) else []:
-            if isinstance(path, str) and path not in self._seen:
-                self._seen.add(path)
-                self._keys.append(path)
+        for key in previous if isinstance(previous, list) else []:
+            if isinstance(key, str) and key not in self._seen:
+                self._seen.add(key)
+                self._keys.append(key)
                 self._unflushed += 1
 
     async def flush(self, store: _ManifestStore) -> None:
@@ -160,6 +159,7 @@ class RunScope:
         async with self._write_lock:
             if self.finished or self.past_deadline() or (not self._keys and not self._opened):
                 return
+            await self._adopt(store, final_manifest_path(self.content_rev, self.writer))
             async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
                 await store.replace(
                     self.org_id, self.record_id, final_manifest_path(self.content_rev, self.writer),

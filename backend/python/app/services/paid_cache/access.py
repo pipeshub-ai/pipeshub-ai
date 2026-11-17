@@ -18,6 +18,7 @@ from app.services.paid_cache.cache import (
     NullPaidResultCache,
     PaidResultCache,
     enabled,
+    writes_enabled,
 )
 from app.services.paid_cache.keys import (
     CacheKey,
@@ -229,7 +230,7 @@ async def complete_run(
     Best effort: a manifest or sweep that cannot be written is retried by the next completed revision and
     never fails the record.
     """
-    if run is None or config_service is None:
+    if run is None or config_service is None or not writes_enabled():
         return
     log = logger or logging.getLogger(__name__)
     cache = paid_cache_for(config_service, log)
@@ -244,6 +245,22 @@ async def complete_run(
         spawn_detached(_sweep(cache, run, log), name="paid-cache-sweep")
 
 
+async def claim_refresh(config_service: "ConfigurationService", token: str, logger: logging.Logger | None = None) -> bool:
+    """True when this request is the first to ask for the refresh named by ``token``; False for a retry of it.
+
+    The parsing client retries a failed request with the same form: the retry must reuse the pages the first attempt
+    paid for and stored, not purge-and-pay again. Without a token or an identity the request is a refresh.
+    """
+    identity = ambient_identity()
+    if not token or identity is None or config_service is None:
+        return True
+    cache = paid_cache_for(config_service, logger or logging.getLogger(__name__))
+    if not await cache.refresh_purge_needed(identity[0], identity[1], token):
+        return False
+    await cache.mark_refresh_purged(identity[0], identity[1], token)
+    return True
+
+
 async def abandon_run(
     run: RunScope | None, config_service: "ConfigurationService", logger: logging.Logger | None = None,
 ) -> None:
@@ -251,7 +268,7 @@ async def abandon_run(
 
     Best effort and bounded by the write deadline; never raises (the failure being handled is the one that matters).
     """
-    if run is None or config_service is None or run.finished:
+    if run is None or config_service is None or run.finished or not writes_enabled():
         return
     log = logger or logging.getLogger(__name__)
     try:
