@@ -13,6 +13,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from app.telemetry import ops_exporter as ox
@@ -20,8 +21,6 @@ from tests.support.free_port import bind_on_free_port
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 HOST = "127.0.0.1"
 PER_SCRAPER = 3  # requests each of the 32 flood scrapers makes; the whole flood must fit the 30 s hang guard on a busy host
@@ -486,8 +485,7 @@ def test_a_queued_connection_whose_client_left_while_it_waited_never_takes_the_f
         real_take = server._take_slot_locked
         server._take_slot_locked = lambda sock, addr: took.append(sock) or real_take(sock, addr)  # type: ignore[method-assign]
         hold.set()  # every slot frees
-        assert _wait_until(lambda: not server._queue, 5)
-        assert c.fileno() == -1
+        assert _wait_until(lambda: not server._queue and c.fileno() == -1, 5)  # off the queue, then closed
         assert took == [], "a connection that had left was given a slot"
     finally:
         hold.set()
@@ -603,5 +601,62 @@ def test_a_client_that_sent_nothing_by_the_deadline_is_told_503_before_it_is_clo
     try:
         with socket.create_connection((HOST, exporter._port), timeout=10) as silent:
             assert silent.recv(100).startswith(b"HTTP/1.1 503")
+    finally:
+        _close(exporter)
+
+
+@pytest.mark.parametrize("payload", [b"GET /metrics HTTP/1.1\r\n", b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n"], ids=["request-line", "whole-request"])
+def test_a_refusal_is_never_followed_by_an_answer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
+    """The client's bytes are in the socket but its handler has not read them yet (starved). Evicting it must not
+    send a 503 and then let the handler answer: one response, the answer."""
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
+    entered = threading.Event()
+    original = ox._Handler.handle
+
+    def late_handle(self: ox._Handler) -> None:
+        entered.set()
+        time.sleep(0.5)  # the handler thread is starved before it reads what is already in the socket
+        original(self)
+
+    monkeypatch.setattr(ox._Handler, "handle", late_handle)
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    server._max = 2
+    socks = []
+    try:
+        waiting = socket.create_connection((HOST, exporter._port), timeout=10)
+        socks.append(waiting)
+        waiting.sendall(payload)  # in the socket, not yet read by the starved handler
+        assert entered.wait(5)
+        socks.append(socket.create_connection((HOST, exporter._port)))
+        assert _wait_until(lambda: len(server._live) == 2, 5)
+        socks.append(socket.create_connection((HOST, exporter._port)))  # queues and evicts the oldest: this one
+        data = b""
+        while chunk := waiting.recv(65536):
+            data += chunk
+        assert data.count(b"HTTP/1.") == 1, f"two responses on one connection: {data[:200]!r}"
+        assert data.startswith(b"HTTP/1.0 200"), data[:60]
+    finally:
+        for s in socks:
+            s.close()
+        _close(exporter)
+
+
+def test_a_silent_client_is_told_503_exactly_once_by_the_reaper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.2)
+    sent = []
+    real = ox.BoundedServer._send_refusal
+    monkeypatch.setattr(ox.BoundedServer, "_send_refusal", staticmethod(lambda sock: sent.append(1) or real(sock)))
+    handle = ox._Handler.handle
+    monkeypatch.setattr(ox._Handler, "handle", lambda self: (time.sleep(0.8), handle(self))[1])  # slow to leave: several reaper ticks pass
+    exporter = _exporter(tmp_path)
+    try:
+        with socket.create_connection((HOST, exporter._port), timeout=10) as silent:
+            data = b""
+            while chunk := silent.recv(65536):
+                data += chunk
+        assert data.count(b"HTTP/1.1 503") == 1 and data.count(b"HTTP/1.") == 1, data
+        assert len(sent) == 1, f"the refusal was attempted {len(sent)} times"
     finally:
         _close(exporter)

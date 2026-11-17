@@ -966,18 +966,36 @@ class BoundedServer(HTTPServer):
             now = time.monotonic()
             with self._lock:
                 late = [(s, not (len(entry) > 2 and entry[2])) for s, entry in self._conns.items()
-                        if not entry[1] and now - entry[0] > self._deadline]
+                        if not entry[1] and now - entry[0] > self._deadline and s not in self._cut_socks]
+                self._cut_socks.update(s for s, _silent in late)  # once: the handler is on its way out
             for sock, silent in late:
-                if silent:
-                    self._send_refusal(sock)  # it has sent nothing in all this time: told, not just closed on
-                self._cut(sock, read_side_only=True)  # a request that has arrived is still answered, however late
+                self._dismiss(sock, silent=silent)
+
+    def _dismiss(self, sock: socket.socket, *, silent: bool) -> None:
+        """Make the handler of an unanswered connection leave.
+
+        A client that has sent nothing, with nothing of a request waiting in the socket, is told ``503`` and
+        cut on both sides, so that no answer can follow the refusal. Anything else (bytes already read by the
+        handler, or still waiting in the socket, a whole request or a part of one) gets only its read side
+        ended: what has arrived is still delivered to the handler and answered, then the handler leaves.
+        """
+        if silent and self._send_refusal(sock):
+            self._cut(sock)
+        else:
+            self._cut(sock, read_side_only=True)
 
     @staticmethod
-    def _send_refusal(sock: socket.socket) -> None:
-        """The 503, if the socket can take it right now (never waits, whatever the socket's timeout)."""
-        with contextlib.suppress(OSError, ValueError):
-            if select.select([], [sock], [], 0)[1]:
-                sock.send(_REFUSAL, socket.MSG_DONTWAIT)
+    def _send_refusal(sock: socket.socket) -> bool:
+        """Send the 503 if nothing of a request is waiting in the socket and it can take the reply right now
+        (never waits, whatever the socket's timeout). True when it was sent."""
+        try:
+            readable, writable, _ = select.select([sock], [sock], [], 0)
+            if readable or not writable:
+                return False  # bytes (or an EOF) are waiting, or the socket cannot take a reply: no 503
+            sock.send(_REFUSAL, socket.MSG_DONTWAIT)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def _refuse(self, sock: socket.socket) -> None:
         """A short reply and a close, never a wait: the socket is non-blocking."""
@@ -1029,9 +1047,7 @@ class BoundedServer(HTTPServer):
         if waiting:
             sent_something, _at, victim = min(waiting, key=lambda item: (item[0], item[1]))  # the silent ones first
             self._cut_socks.add(victim)
-            if not sent_something:
-                self._send_refusal(victim)  # it is told, not just closed on: its request may be on its way
-            self._cut(victim, read_side_only=True)  # a request that has already arrived is still answered
+            self._dismiss(victim, silent=not sent_something)
 
     def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         """Runs on the acceptor thread: it never waits."""
