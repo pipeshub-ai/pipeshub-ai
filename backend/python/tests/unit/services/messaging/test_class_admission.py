@@ -452,3 +452,79 @@ def test_a_gate_waiter_of_a_cost_class_leaves_the_backlog_clean() -> None:
         return sum(h.admission_backlog.totals()[ParseTier.HEAVY].values())
 
     assert asyncio.run(run()) == 0
+
+
+def test_inspection_moves_the_download_place_to_the_new_class_so_the_next_small_download_is_not_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Four small places by default: a PDF that inspection turns into a huge one must stop holding one of them."""
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD_SMALL", "1")
+
+    async def run() -> tuple[bool, bool]:
+        h = host()
+        ctx = wiring.class_context(msg("pdf").payload)  # no size in the event: it starts as small
+        first = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=1 * MIB)
+        blocked = False
+        try:
+            await cc.acquire_download_slot(h, L, timeout=0.1, ctx=ctx, size_bytes=1 * MIB)  # the one small place is taken
+        except cc.ParseAdmissionTimeout:
+            blocked = True
+        inspected = ctx.inspected(1000, scanned=False)  # a thousand pages: huge
+        moved = await cc.reclass_download_slot(first, inspected, 80 * MIB, 0.5)
+        second = await cc.acquire_download_slot(h, L, timeout=0.3, ctx=ctx, size_bytes=1 * MIB)  # a small place is free again
+        cc.release_admission(second)
+        cc.release_admission(moved)
+        return blocked, moved is not first
+
+    blocked, moved = asyncio.run(run())
+    assert blocked and moved
+
+
+def test_a_download_place_whose_class_did_not_change_stays_where_it_is() -> None:
+    async def run() -> bool:
+        h = host()
+        ctx = wiring.class_context(msg("pdf").payload)
+        first = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=1 * MIB)
+        same = await cc.reclass_download_slot(first, ctx, 1 * MIB, 0.5)
+        cc.release_admission(same)
+        return same is first
+
+    assert asyncio.run(run())
+
+
+def test_with_a_remote_parsing_service_a_light_format_record_takes_its_place_in_the_same_remote_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One owner for the configured concurrency: heavy and light remote parses together never exceed it."""
+    from app.services.parsing import remote_concurrency as rc
+
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "2")
+
+    async def run() -> tuple[int, int]:
+        rc.reset_remote_parse_slots()
+        h = host()
+        in_flight = 0
+        peak = 0
+
+        async def one(payload: dict, tier: ParseTier, size: int) -> None:
+            nonlocal in_flight, peak
+            ctx = wiring.class_context(payload)
+            admission = await cc.acquire_parsing_slot(h, tier, size, timeout=5, ctx=ctx)
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.05)
+            in_flight -= 1
+            cc.release_admission(admission)
+
+        light = {"extension": "txt", "mimeType": "text/plain", "orgId": "o"}
+        heavy = {"extension": "pdf", "mimeType": "application/pdf", "orgId": "o"}
+        await asyncio.gather(
+            *(one(light, ParseTier.LIGHT, 1 * MIB) for _ in range(4)), *(one(heavy, ParseTier.HEAVY, 150 * MIB) for _ in range(4))
+        )
+        return peak, rc.remote_parse_slots(2)._free
+
+    peak, fifo_free = asyncio.run(run())
+    assert peak <= 2  # the configured concurrency, held once
+    assert fifo_free == 2  # the FIFO pool was never entered with classes on

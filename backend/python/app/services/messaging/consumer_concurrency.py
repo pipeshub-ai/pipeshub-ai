@@ -1800,10 +1800,38 @@ async def acquire_download_slot(
     if governor is None or _lane(host) is not None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
         return None
     # PARSE_ADMISSION=classes: places per class, so a small record's download is not held behind big ones.
-    ahead = wiring.download_ahead(wiring.class_of(ctx, size_bytes)) if ctx is not None else governor.download_ahead
+    level = wiring.class_of(ctx, size_bytes) if ctx is not None else None
+    ahead = wiring.download_ahead(level) if level is not None else governor.download_ahead
     if not await ahead.acquire(timeout):
         raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
-    return Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    admission = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    admission.download_class = level  # type: ignore[attr-defined]
+    return admission
+
+
+async def reclass_download_slot(
+    admission: "Admission | None", ctx: "wiring.ClassContext | None", size_bytes: int | None, timeout: float | None
+) -> "Admission | None":
+    """Move a record's download place to the class its inspection now says. Returns the admission to hold from here on.
+
+    A small PDF that inspection turns into a huge one keeps holding a place of the small pool while it waits for its
+    parse slot, which blocks the next small PDF's download. The place in the new class's pool is taken first (the
+    record's content is already in hand, so the places stay bounded) and the old one given back after; if no new place
+    comes free in *timeout*, ``ParseAdmissionTimeout`` is raised and the old place is still the caller's to release.
+    A no-op without ``PARSE_ADMISSION=classes`` or when the class did not change."""
+    if admission is None or admission.released or ctx is None:
+        return admission
+    old = getattr(admission, "download_class", None)
+    new = wiring.class_of(ctx, size_bytes)
+    if old is None or new is old:
+        return admission
+    ahead = wiring.download_ahead(new)
+    if not await ahead.acquire(timeout):
+        raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
+    moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    moved.download_class = new  # type: ignore[attr-defined]
+    release_admission(admission)
+    return moved
 
 
 async def acquire_parsing_slot(
@@ -1837,13 +1865,12 @@ async def acquire_parsing_slot(
         # The parse runs in the parsing service, so this process's CPUs do not bound it: the
         # configured concurrency does. Memory reserved for the record and the download gates
         # were taken before this call and still apply.
-        if ctx is not None and (tier is None or tier is ParseTier.HEAVY):
+        if ctx is not None:
+            # PARSE_ADMISSION=classes: the remote places are ordered by class (small first, large keeps its share
+            # and ages up, the priority lane ahead). EVERY remote parse takes its one place here (a light format as
+            # small work), so the configured concurrency is held once: the FIFO pool below is not entered.
             est = wiring.estimate_for(ctx.extension, ctx.mime_type, size_bytes, **ctx.facts())
-            if est is not None:
-                # PARSE_ADMISSION=classes: the remote places are ordered by class (small first, large keeps its share
-                # and ages up, the priority lane ahead). This is the parse step's one place: the FIFO pool below is
-                # not entered, so nothing is held while waiting for the other.
-                return await _acquire_remote_by_class(host, tier, est, ctx, remote, timeout)
+            return await _acquire_remote_by_class(host, tier, est, ctx, remote, timeout)
         slots = remote_parse_slots(remote)
         if not await slots.acquire(timeout, priority=_lane(host) is not None):
             raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
@@ -1934,20 +1961,29 @@ async def acquire_parsing_slot(
 async def _acquire_remote_by_class(
     host: ConcurrencyHost,
     tier: ParseTier | None,
-    est: "CostEstimate",
+    est: "CostEstimate | None",
     ctx: "wiring.ClassContext",
     remote: int,
     timeout: float | None,
 ) -> "Admission":
-    """A remote parse's place, ordered by class over ``PARSING_SERVICE_CONCURRENCY`` places."""
+    """A remote parse's place, ordered by class over ``PARSING_SERVICE_CONCURRENCY`` places. A record with no heavy-format
+    estimate (a light format) is small work."""
     from app.modules.parse_engine.budget_port import AdmissionTimeout
+    from app.modules.parse_engine.class_gate import GateRequest
 
     await wiring.refresh_numbers()
     gate = wiring.remote_gate(remote)
-    request = wiring.request_for(ctx, est, family=Family.PARSE, cpu=1, tokens=1)
+    if est is not None:
+        request = wiring.request_for(ctx, est, family=Family.PARSE, cpu=1, tokens=1)
+    else:
+        request = GateRequest(
+            cls=CostClass.SMALL, family=Family.PARSE, cpu=1, tokens=1, org=ctx.org, priority=ctx.priority,
+            first_seen_s=ctx.first_seen_s(),
+        )
     request = dataclasses.replace(request, mem_bytes=0, priority=request.priority or _lane(host) is not None)
     started = time.monotonic()
-    big = est.cls in BIG_CLASSES
+    cls = est.cls if est is not None else CostClass.SMALL
+    big = cls in BIG_CLASSES
     if big:
         bound = wiring.big_wait_seconds()
         timeout = bound if timeout is None else min(timeout, bound)
@@ -1960,7 +1996,7 @@ async def _acquire_remote_by_class(
                 "remote_parsing", waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
             ) from None
         raise ParseAdmissionTimeout("remote_parsing", waited) from None
-    class_pools.set_class(est.cls, est.est_seconds)  # the embedding request reads it; it ends with the task
+    class_pools.set_class(cls, est.est_seconds if est is not None else None)  # the embedding request reads it
     return Admission(tier=tier, cost=1, _release=ticket.release)
 
 
