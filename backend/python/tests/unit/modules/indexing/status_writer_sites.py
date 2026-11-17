@@ -64,7 +64,7 @@ SITES: dict[tuple[str, str, str], str] = {
     ("events/events.py", "EventProcessor.update_record_fields", "write_attempt_start"): ATTEMPT_START,
     ("events/events.py", "EventProcessor._check_duplicate_by_md5", "update_record_fields"): QUEUE,
     ("events/events.py", "EventProcessor._attach_to_finished_twin", "update_record_fields"): NO_RUN_FIELDS,
-    ("events/events.py", "EventProcessor.on_event", "update_record_fields"): ATTEMPT_START,
+    ("events/events.py", "EventProcessor._dispatch_event", "update_record_fields"): ATTEMPT_START,
     ("indexing_main.py", "_sweep_queued_records_for_inactive_connectors", "update_node"): NO_RUN_FIELDS,
     ("migrations/file_type_requeue/migration.py", "_walk_connector", "transition_unsupported"): STATUS_VAR,
     ("migrations/file_type_requeue/migration.py", "_move_and_send", "transition_unsupported"): STATUS_VAR,
