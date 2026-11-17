@@ -1051,12 +1051,22 @@ class BoundedServer(HTTPServer):
             return
         now = time.monotonic()
         min_age = self._deadline / 2  # a connection that has sent nothing is not given up on before this
-        waiting = [(len(e) > 2 and bool(e[2]), e[0], s) for s, e in self._conns.items()
-                   if not e[1] and s not in self._cut_socks and ((len(e) > 2 and e[2]) or now - e[0] >= min_age)]
-        if waiting:
-            sent_something, _at, victim = min(waiting, key=lambda item: (item[0], item[1]))  # the silent ones first
-            self._cut_socks.add(victim)
-            self._dismiss(victim, silent=not sent_something)
+        unanswered = [(len(e) > 2 and bool(e[2]), e[0], s) for s, e in self._conns.items() if not e[1] and s not in self._cut_socks]
+        silent = [(at, s) for started, at, s in unanswered if not started]
+        silent_old = [(at, s) for at, s in silent if now - at >= min_age]
+        if silent_old:
+            _at, victim = min(silent_old, key=lambda item: item[0])
+            silent_victim = True
+        elif silent:
+            return  # a silent holder is still young: nobody is evicted, the new connection waits its turn
+        else:
+            partial = [(at, s) for started, at, s in unanswered if started]
+            if not partial:
+                return
+            _at, victim = min(partial, key=lambda item: item[0])  # every holder has sent a byte: tricklers do not keep the slots
+            silent_victim = False
+        self._cut_socks.add(victim)
+        self._dismiss(victim, silent=silent_victim)
 
     def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         """Runs on the acceptor thread: it never waits."""
