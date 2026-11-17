@@ -4,10 +4,11 @@ Each test fails when the line it names is removed or changed (scratch reverts in
 """
 from __future__ import annotations
 
+import contextlib
 import random
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import pytest_asyncio
 
 from app.core import org_context
@@ -35,10 +36,6 @@ from tests.support.index_world import (
     record_of,
     run,
 )
-
-if TYPE_CHECKING:
-    import pytest
-
 
 WORDS = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau".split()
 
@@ -220,8 +217,9 @@ async def test_a_block_whose_point_was_lost_is_embedded_not_counted_as_moved(db)
     del db.collections[COLL][lost]                      # an interrupted index left this block without its point
     store = make_store(db)
     await run(store, blob, _text_container(paras))
-    assert [list(c.args[0]) for c in store._embed_documents_with_retry.await_args_list] == [[paras[4]]]
-    assert {p.payload["page_content"] for p in db.collections[COLL].values()} == set(paras)
+    embedded = [t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]
+    assert sorted(embedded) == sorted(paras), "a record that does not verify is embedded whole, never moved in part"
+    assert {p.payload["page_content"] for p in db.collections[COLL].values()} == set(paras) and len(db.collections[COLL]) == len(paras)
 
 
 async def test_a_block_that_never_had_a_point_is_not_embedded(db) -> None:
@@ -325,7 +323,7 @@ async def test_a_point_sharing_a_row_with_a_point_that_cannot_move_does_not_move
 
 
 async def test_a_row_split_across_points_is_embedded_when_the_read_of_its_own_point_failed(db, monkeypatch) -> None:
-    """Row R1 is listed by a point anchored at R0 (read fine) and has a point of its own, anchored at R1, in a batch whose read fails.
+    """(All or nothing per record.) Row R1 is listed by a point anchored at R0 (read fine) and has a point of its own, anchored at R1, in a batch whose read fails.
     Moving the first point would leave R1's own text to be deleted unembedded: the first point cannot move either."""
     from app.modules.transformers import vectorstore
 
@@ -356,6 +354,68 @@ async def test_a_row_split_across_points_is_embedded_when_the_read_of_its_own_po
     db.scroll_with_vectors = second_read_fails
     store = make_store(db)
     to_index, to_delete = await store._move_points_to_new_ids(record_of(new), new_ids, set(), set())
-    assert {new_ids[old[0]], new_ids[old[1]]} <= to_index, "both rows of the point that lists the split row are embedded again"
-    assert new_ids[old[2]] not in to_index, "the point of the third row moved"
-    assert {old[0], old[1]} <= to_delete
+    assert {new_ids[o] for o in old} == to_index, "a read that failed: the whole record is embedded, none of it is moved"
+    assert set(old) <= to_delete
+
+
+def _numbered(n: int, edited: tuple[int, ...] = ()) -> list[str]:
+    rng = random.Random(99)
+    return [(f"Edited {i}. " if i in edited else f"P{i}. ") + " ".join(rng.choice(WORDS) for _ in range(6)) + "." for i in range(n)]
+
+
+@pytest.mark.parametrize("crash", ["embed_of_changed_blocks", "metadata_not_saved"])
+async def test_a_retry_after_a_failed_run_continues_the_move_and_embeds_only_the_changed_blocks(db, monkeypatch, crash) -> None:
+    """600 paragraphs, 5 edited; the first run moves the 595 and then fails (the provider refuses the 5 embeds, or the metadata is
+    not saved). Its points already sit under the new ids: the retry recognises them and embeds the 5, not the 600."""
+    monkeypatch.setenv("EMBED_POINT_POLICY", "A")
+    monkeypatch.setenv("EMBED_SENTENCE_MIN_WORDS", "1000")
+    paras, edited = _numbered(600), _numbered(600, edited=(3, 77, 150, 300, 599))
+    _, blob = await legacy_record(db, _text_container(paras))
+    saved = dict(blob.saved)
+    store = make_store(db)
+    if crash == "embed_of_changed_blocks":
+        store._embed_documents_with_retry.side_effect = RuntimeError("provider 429")
+    with contextlib.suppress(Exception):
+        await run(store, blob, _text_container(edited))
+    blob.saved = saved                                    # the first run did not finish: its metadata is not stored
+    assert set(paras) & set(edited) <= {p.payload["page_content"] for p in db.collections[COLL].values()}, "no unchanged point lost"
+    retry = make_store(db)
+    await run(retry, blob, _text_container(edited))
+    embedded = [t for c in retry._embed_documents_with_retry.await_args_list for t in c.args[0]]
+    assert set(edited) <= {p.payload["page_content"] for p in db.collections[COLL].values()}
+    assert len(db.collections[COLL]) == 600 and all("Edited" in t for t in embedded) and len(embedded) == 5
+
+
+async def _peak_of_a_move(points: int, monkeypatch: pytest.MonkeyPatch) -> float:
+    import tracemalloc
+
+    monkeypatch.setenv("EMBED_POINT_POLICY", "A")
+    monkeypatch.setenv("EMBED_SENTENCE_MIN_WORDS", "1000")
+    big = InMemoryVectorDBService()
+    await big.create_collection(COLL, CollectionConfig(embedding_size=1024))
+    paras = _numbered(points)
+    await legacy_record(big, _text_container(paras), dim=1024)
+    new = _text_container(paras)
+    BlockIdentity.assign(new, ORG, VRID)
+    by_index = {p.payload["metadata"]["blockIndex"]: p.payload["metadata"]["blockId"] for p in big.collections[COLL].values()}
+    rekey = {by_index[b.index]: b.id for b in new.blocks}
+    store = make_store(big, dim=1024)
+
+    async def discard(_collection: str, _points: object) -> None:
+        """The store keeps what is written (and a mock keeps its call arguments): that growth is not the move's."""
+
+    big.upsert_points = discard  # type: ignore[method-assign]
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+    base = tracemalloc.get_traced_memory()[0]
+    await store._move_points_to_new_ids(record_of(new), rekey, set(), set())
+    peak = tracemalloc.get_traced_memory()[1] - base
+    tracemalloc.stop()
+    return peak
+
+
+@pytest.mark.timeout(240)
+async def test_the_move_holds_a_window_of_vectors_not_the_record(monkeypatch) -> None:
+    """The peak memory of the move does not grow with the record (it was linear: 20 MB at 1,000 points and 80 MB at 4,000)."""
+    small, large = await _peak_of_a_move(800, monkeypatch), await _peak_of_a_move(2400, monkeypatch)
+    assert large < 1.5 * small + 1e6, f"800 points peaked at {small / 1e6:.1f} MB, 2,400 at {large / 1e6:.1f} MB"

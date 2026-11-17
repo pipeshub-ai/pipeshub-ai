@@ -256,3 +256,17 @@ async def test_a_refused_pass_publishes_no_resume_point_and_the_next_pass_still_
         if resume is None:
             break
     assert _ids(db) == set(), "the first window's strays were not skipped"
+
+
+async def test_the_store_asks_again_before_each_delete_batch_not_only_before_the_listing(db, monkeypatch) -> None:
+    """The record changes revision after the pre-check: the batches still to go are not deleted (the wiring of may_delete)."""
+    monkeypatch.setattr(stray_sweep, "_DELETE_BATCH", 5)
+    await db.upsert_points(COLL, [_point(f"s-{i:02d}", f"stray-{i:02d}") for i in range(12)])
+    store = _store(db)
+    record = _record(["b0"])
+    record.id, record.md5_hash = "rec-1", "md5-of-this-run"
+    same = {"_key": "rec-1", "virtualRecordId": VRID, "md5Checksum": "md5-of-this-run"}
+    other = {**same, "md5Checksum": "md5-of-a-newer-run"}
+    store.graph_provider.get_document = AsyncMock(side_effect=[same, same, other, other, other])   # pre-check, batch 1, then superseded
+    await store._sweep_stray_points(record, record.block_containers)
+    assert len(_ids(db)) == 7, "one batch of 5 went; the record was on another revision before the next"

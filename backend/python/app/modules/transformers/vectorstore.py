@@ -26,7 +26,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Tuple
 
 import openai
 from langchain_core.documents import Document
@@ -91,6 +91,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway import wire
 from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.config import messaging_env
 from app.services.messaging.error_classifier import format_exception_chain
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
@@ -140,6 +141,9 @@ _REKEY_BLOCKS_PER_READ = 100
 _REKEY_PAGE = 500
 # Records whose stray sweep stopped at its bound, with where to resume (per process; losing it only restarts that record's sweep).
 _SWEEP_RESUME_RECORDS = 2048
+if TYPE_CHECKING:
+    from app.modules.pipeline.leases import RecordLeases
+
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
 
@@ -1024,6 +1028,10 @@ def _is_code_block(block: object) -> bool:
     return str(getattr(kind, "value", kind)).lower() == BlockType.CODE.value
 
 
+async def _always_current() -> bool:
+    return True
+
+
 def _has_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -1255,7 +1263,23 @@ class VectorStore(Transformer):
     # Transformer protocol
     # ------------------------------------------------------------------
 
+    #: Bound by the indexing service to its ``RecordLeases``: records that share a virtual record take one lease on it for the whole of
+    #: their write (the embed, the delete of replaced blocks, the stray sweep), so they serialise. The record's own lease is per
+    #: record id, and the points of a virtual record are shared by every record that reuses it. Unbound (tests, a single process
+    #: without a lease manager) nothing is held.
+    vrid_leases: ClassVar["RecordLeases | None"] = None
+
     async def apply(self, ctx: TransformContext) -> bool | None:
+        leases, record = type(self).vrid_leases, ctx.record
+        if leases is None or not leases.bound or not record.org_id or not record.virtual_record_id:
+            return await self._apply_locked(ctx)
+        async with leases.hold(
+            f"vrid:{record.org_id}:{record.virtual_record_id}", owner=f"index:{record.id}",
+            wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
+        ):
+            return await self._apply_locked(ctx)
+
+    async def _apply_locked(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
         record_id = record.id
         virtual_record_id = record.virtual_record_id
@@ -1330,13 +1354,17 @@ class VectorStore(Transformer):
         blocks_to_index_ids: set[str],
         block_ids_to_delete: set[str],
     ) -> tuple[set[str], set[str]]:
-        """Move the points of unchanged blocks from their old ids to their content-derived ids, with the stored vectors.
+        """Move the points of unchanged blocks from their old ids to their content-derived ids, with the stored vectors: all or nothing.
 
         A record indexed before block ids followed content has its points under random block ids. Its blocks of unchanged content
-        keep their vectors: each stored point is read back whole (``scroll_with_vectors``), written under the new block id (and the
-        point id that follows from it), and the old id's points are deleted. Only a block whose points cannot be moved (the store
-        cannot return vectors, the read failed, a point lists rows that are not all moving) goes back into the set to embed, and is
-        counted. Returns the updated ``(blocks_to_index_ids, block_ids_to_delete)``.
+        keep their vectors, but only if the move can be shown complete first. Pass one reads every stored point of the record's blocks
+        (under their old ids, and under their new ids when an earlier run already moved some), window by window and verified against
+        the store's count, and checks that every point can move (it has a vector, and lists only rows of this revision) and that every
+        block that gets a point has one. Anything short of that (a read that fails or does not verify, a store that cannot return
+        vectors, a point that cannot move, a block whose point is gone) and the whole record is embedded instead: a record is never
+        moved in part. Pass two reads the windows again with their vectors, writes the points under the new ids, and only then deletes
+        the old ids. Points already under their new id (a retry after a failed run) are recognised, so a retry continues the move.
+        Returns the updated ``(blocks_to_index_ids, block_ids_to_delete)``.
         """
         vrid, org_id = record.virtual_record_id, org_for_filter(record.org_id, match_bound=True)
         new_by_old = dict(rekey_ids)
@@ -1345,89 +1373,81 @@ class VectorStore(Transformer):
             if new in blocks_to_index_ids:
                 block_ids_to_delete.add(old)
                 del new_by_old[old]
-        index_of = {b.id: b.index for b in record.block_containers.blocks}
-        group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
+        if not new_by_old:
+            return blocks_to_index_ids, block_ids_to_delete
+        old_by_new = {new: old for old, new in new_by_old.items()}
         collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
         blocks_by_id: dict[str, Block | BlockGroup] = {b.id: b for b in record.block_containers.blocks}
         blocks_by_id.update({g.id: g for g in record.block_containers.block_groups})
         old_ids = sorted(new_by_old)
-        read: list[VectorPoint] = []                      # every stored point of the blocks, from the batches that read fine
-        failed: dict[str, str] = {}                       # old id -> reason it is embedded again
-        for start in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ):
-            batch = old_ids[start:start + _REKEY_BLOCKS_PER_READ]
-            try:
-                read.extend(await self._read_points_whole(collection_name, org_id, vrid, batch))
-            except VectorsNotFetchable:
-                failed.update(dict.fromkeys(batch, "unsupported"))
-            except Exception as e:  # a partial read, a store that pages only so far, any failure: embedding is always correct
-                self.logger.warning(f"Re-key read of {vrid} failed, embedding those blocks instead: {e}")
-                failed.update(dict.fromkeys(batch, "error"))
+        windows = [old_ids[i:i + _REKEY_BLOCKS_PER_READ] for i in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ)]
+
+        def embed_whole_record(reason: str) -> tuple[set[str], set[str]]:
+            for old in old_ids:
+                rekey_metrics.REKEY_FALLBACK.inc(reason)
+                blocks_to_index_ids.add(new_by_old[old])
+                block_ids_to_delete.add(old)
+            return blocks_to_index_ids, block_ids_to_delete
+
+        def window_ids(window: list[str]) -> list[str]:
+            return [*window, *(new_by_old[o] for o in window)]
+
+        def is_old(point: VectorPoint) -> bool:
+            return (point.payload.get("metadata") or {}).get("blockId") in new_by_old
 
         def rows_of(point: VectorPoint) -> list[str]:
             meta = point.payload.get("metadata") or {}
             return [meta.get("blockId"), *(meta.get("rowBlockIds") or ())]
 
-        # A grouped point holds the text of every row it lists, under its first row's id; consecutive windows of one oversized table can
-        # share a row. A point is moved whole or not at all, and a row that is embedded again must not stay in a point that moves: so the
-        # rows of every point that cannot move are embedded, and any other point that shares one of them cannot move either.
-        def movable(point: VectorPoint) -> bool:
-            return point.dense_vector is not None and all(r in new_by_old for r in rows_of(point))
-
-        embed_rows: set[str] = set(failed)  # the blocks of a read that failed are embedded: a moving point must hold none of their rows
-        for point in read:
-            if not movable(point):
-                embed_rows.update(r for r in rows_of(point) if r in new_by_old)
-        unmoving = {id(p) for p in read if not movable(p)}
-        changed = True
-        while changed:
-            changed = False
-            for point in read:
-                if id(point) not in unmoving and embed_rows.intersection(rows_of(point)):
-                    unmoving.add(id(point))
-                    embed_rows.update(r for r in rows_of(point) if r in new_by_old)
-                    changed = True
-        for row in embed_rows - failed.keys():
-            failed[row] = "unmovable"
-
-        writes: list[VectorPoint] = []
-        covered: set[str] = set()  # old ids a point that moves speaks for: as its blockId or in rowBlockIds
-        for point in read:
-            if id(point) in unmoving:
-                continue
-            payload = point.payload
-            meta = dict(payload.get("metadata") or {})
-            old_block, row_ids = meta.get("blockId"), meta.get("rowBlockIds")
-            new_block = new_by_old[old_block]
-            meta["blockId"] = new_block
-            if new_block in group_index_of:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
-                meta["blockGroupIndex"] = group_index_of[new_block]
-            elif new_block in index_of:
-                meta["blockIndex"] = index_of[new_block]
-            if row_ids:
-                meta["rowBlockIds"] = [new_by_old[r] for r in row_ids]
-            covered.update(rows_of(point))
-            writes.append(VectorPoint(
-                id=deterministic_point_id(meta, payload.get("page_content", "")),
-                dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload={**payload, "metadata": meta},
-            ))
-        for start in range(0, len(writes), _REKEY_PAGE):
-            await self.vector_db_service.upsert_points(collection_name, writes[start:start + _REKEY_PAGE])
-
-        # The rule: a row counts as moved only if a point that moves holds it, and a moving point holds no row that is embedded again (above).
-        # A block or group with embeddable content that no moving point holds lost its point (an interrupted index) and is embedded, while
-        # one that never had a point (no text, an image with no uri) is left.
-        candidates = set(old_ids) - failed.keys()
-        for old in candidates - covered:
-            if _embeds_a_point(blocks_by_id.get(new_by_old[old])):
-                failed[old] = "missing"
-        for old, reason in failed.items():
-            rekey_metrics.REKEY_FALLBACK.inc(reason)
-            blocks_to_index_ids.add(new_by_old[old])
-            block_ids_to_delete.add(old)
-        gone = candidates - failed.keys()
-        if gone:
-            await self.delete_blocks_by_ids(gone, vrid, collection_name, org_id=org_id)
-            rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(gone)))
+        try:
+            # Pass one: verify. Only ids are kept; the vectors of a window are dropped with it.
+            covered: set[str] = set()  # old ids some stored point speaks for: as its blockId or in rowBlockIds
+            counts: list[int] = []
+            for window in windows:
+                points = await self._read_points_whole(collection_name, org_id, vrid, window_ids(window))
+                counts.append(sum(is_old(p) for p in points))
+                for point in points:
+                    if is_old(point):
+                        if point.dense_vector is None or any(r not in new_by_old for r in rows_of(point)):
+                            return embed_whole_record("unmovable")
+                        covered.update(rows_of(point))
+                    else:  # already under its new id: an earlier run moved it
+                        covered.update(old_by_new[r] for r in rows_of(point) if r in old_by_new)
+            if any(old not in covered and _embeds_a_point(blocks_by_id.get(new_by_old[old])) for old in old_ids):
+                return embed_whole_record("missing")
+            # Pass two: move, window by window.
+            index_of = {b.id: b.index for b in record.block_containers.blocks}
+            group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
+            for window, expected in zip(windows, counts, strict=True):
+                moving = [p for p in await self._read_points_whole(collection_name, org_id, vrid, window_ids(window)) if is_old(p)]
+                if len(moving) != expected:
+                    return embed_whole_record("error")  # the store changed between the passes: nothing is trusted
+                writes: list[VectorPoint] = []
+                for point in moving:
+                    payload = point.payload
+                    meta = dict(payload.get("metadata") or {})
+                    new_block = new_by_old[meta["blockId"]]
+                    meta["blockId"] = new_block
+                    if new_block in group_index_of:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
+                        meta["blockGroupIndex"] = group_index_of[new_block]
+                    elif new_block in index_of:
+                        meta["blockIndex"] = index_of[new_block]
+                    if meta.get("rowBlockIds"):
+                        meta["rowBlockIds"] = [new_by_old[r] for r in meta["rowBlockIds"]]
+                    writes.append(VectorPoint(
+                        id=deterministic_point_id(meta, payload.get("page_content", "")),
+                        dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload={**payload, "metadata": meta},
+                    ))
+                for start in range(0, len(writes), _REKEY_PAGE):
+                    await self.vector_db_service.upsert_points(collection_name, writes[start:start + _REKEY_PAGE])
+        except VectorsNotFetchable:
+            return embed_whole_record("unsupported")
+        except Exception as e:  # a read that failed or does not verify: embedding the record is always correct
+            self.logger.warning(f"Re-key of {vrid} could not be verified, embedding the record instead: {e}")
+            return embed_whole_record("error")
+        for start in range(0, len(old_ids), _REKEY_PAGE):
+            await self.delete_blocks_by_ids(set(old_ids[start:start + _REKEY_PAGE]), vrid, collection_name, org_id=org_id)
+        rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(old_ids)))
         return blocks_to_index_ids, block_ids_to_delete
 
     async def _read_points_whole(
