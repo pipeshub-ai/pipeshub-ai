@@ -519,12 +519,13 @@ class DockerExecutor(BaseExecutor):
                 )
 
             # Pull output artifacts from the container into the local output_dir.
-            _extract_container_dir(container, "/output", output_dir)
+            budget = _extract_container_dir(container, "/output", output_dir)
 
             return ExecutionResult(
                 success=exit_code == 0,
                 stdout=stdout,
-                stderr=stderr,
+                # Tells the caller which outputs were left out, and why.
+                stderr=stderr + budget.note(),
                 exit_code=exit_code,
             )
         except Exception as exc:
