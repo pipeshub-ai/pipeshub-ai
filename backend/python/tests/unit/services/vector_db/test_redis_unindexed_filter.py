@@ -244,6 +244,12 @@ class _Server:
         if cmd == "HSET":
             self.hashes.setdefault(str(args[1]), {})[str(args[2])] = str(args[3])
             return 1
+        if cmd == "EVAL":  # the compare-and-delete of a withdrawn entry
+            h = self.hashes.setdefault(str(args[3]), {})
+            if h.get(str(args[4])) == str(args[5]):
+                del h[str(args[4])]
+                return 1
+            return 0
         if cmd == "HSETNX":
             h = self.hashes.setdefault(str(args[1]), {})
             if str(args[2]) in h:
@@ -374,6 +380,26 @@ class TestBackfill:
         with pytest.raises(ResponseError):
             await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
         assert server.hashes["col_idx:pending_alter"] == {}
+
+    async def test_duplicate_alters_made_while_a_scan_runs_do_not_make_their_fields_wait(self) -> None:
+        """A start-up ensure repeats every field it needs; those the index already holds add nothing and owe no scan, whatever else is scanning."""
+        server = _Server(*self.FIELDS)
+        svc = server.store()
+        server.scan_polls = 10**6  # another field's scan is running
+        for field in ("metadata.orgId", "metadata.virtualRecordId"):
+            await svc.create_index("col", field, {"type": "keyword"})
+        assert server.hashes["col_idx:pending_alter"] == {}
+        await svc.delete_points("col", self._record_filter())  # names only those two fields
+        assert server.searched()
+
+    async def test_a_duplicate_alter_does_not_erase_the_entry_another_process_marked_started(self) -> None:
+        server = _Server("metadata_orgId")
+        a, b = server.store(), server.store()
+        # a wrote its entry, then b's ALTER (which found a's entry) added the field and marked it started, then a's ALTER found it there
+        await a._record_pending_alter("col_idx", "metadata_virtualRecordId")
+        await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
+        await a._withdraw_pending_alter("col_idx", "metadata_virtualRecordId", "whatever a wrote")
+        assert server.hashes["col_idx:pending_alter"] == {"metadata_virtualRecordId": "started"}
 
     async def test_an_alter_that_adds_nothing_leaves_no_pending_record(self) -> None:
         server = _Server("metadata_orgId")

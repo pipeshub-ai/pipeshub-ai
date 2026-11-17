@@ -607,7 +607,7 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         redis_alias = field_name.replace(".", "_")
         field_type = {"keyword": "TAG", "integer": "NUMERIC"}.get(field_schema.get("type"), "TEXT")
-        recorded = False
+        recorded: str | None = None
         try:
             # Recorded before the ALTER, where every process can read it: the scan that follows is what makes the field complete.
             recorded = await self._record_pending_alter(idx, redis_alias)
@@ -620,9 +620,8 @@ class RedisVectorService(IVectorDBService):
                     "SCHEMA", "ADD",
                     redis_alias, field_type, *case,
                 )
-                if recorded:
-                    # The scan has started: from here a check that finds the index idle may clear the entry.
-                    await self.client.execute_command("HSET", self._pending_key(idx), redis_alias, _ALTER_STARTED)  # type: ignore
+                # The scan has started: from here a check that finds the index idle may clear the entry.
+                await self.client.execute_command("HSET", self._pending_key(idx), redis_alias, _ALTER_STARTED)  # type: ignore
             finally:
                 self._schema_fields.pop(idx, None)
         except Exception as e:
@@ -633,16 +632,12 @@ class RedisVectorService(IVectorDBService):
             if "already exists" in err or "duplicate field" in err:
                 # Nothing was added, so no scan is owed for it. An entry someone else wrote stays; one written for this attempt goes,
                 # unless a scan is running (it could be that other process's for this very field; the check that sees it end clears it).
-                if recorded is True:
-                    read = await self._read_index(idx)
-                    if read is not None and not read[2]:
-                        await self.client.execute_command("HDEL", self._pending_key(idx), redis_alias)  # type: ignore
-                    else:
-                        await self.client.execute_command("HSET", self._pending_key(idx), redis_alias, _ALTER_STARTED)  # type: ignore
+                if recorded is not None:
+                    await self._withdraw_pending_alter(idx, redis_alias, recorded)
                 return
-            if recorded is True:  # nothing was added
+            if recorded is not None:  # nothing was added
                 with contextlib.suppress(Exception):
-                    await self.client.execute_command("HDEL", self._pending_key(idx), redis_alias)  # type: ignore
+                    await self._withdraw_pending_alter(idx, redis_alias, recorded)
             raise
 
     # ------------------------------------------------------------------
@@ -1626,9 +1621,19 @@ class RedisVectorService(IVectorDBService):
         """The hash beside the index (``<index>:pending_alter``: field -> time of its FT.ALTER). Not under the index's document prefix."""
         return f"{idx}:pending_alter"
 
-    async def _record_pending_alter(self, idx: str, alias: str) -> bool:
-        """Note the field before the ALTER, without overwriting another process's entry. True when this call wrote it."""
-        return bool(await self.client.execute_command("HSETNX", self._pending_key(idx), alias, f"pending:{time.time()!r}"))  # type: ignore
+    async def _record_pending_alter(self, idx: str, alias: str) -> str | None:
+        """Note the field before the ALTER, without overwriting another process's entry. The value written, or None when one was there."""
+        value = f"pending:{time.time()!r}"
+        wrote = await self.client.execute_command("HSETNX", self._pending_key(idx), alias, value)  # type: ignore
+        return value if wrote else None
+
+    async def _withdraw_pending_alter(self, idx: str, alias: str, value: str) -> None:
+        """Drop this attempt's entry when it added nothing (the field was there, or the ALTER failed): only if it still holds what this
+        attempt wrote, so an entry another process marked started for a scan of its own stays. One atomic compare-and-delete."""
+        await self.client.execute_command(  # type: ignore
+            "EVAL", "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end return 0",
+            "1", self._pending_key(idx), alias, value,
+        )
 
     async def _pending_alters(self, idx: str) -> dict[str, str]:
         """Fields any process added with FT.ALTER whose scan was not yet seen to finish (field -> ``started`` or ``pending:<time>``).
