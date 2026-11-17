@@ -69,6 +69,9 @@ _DELEGATION_STUB = ("this edition has no delegation: modules/oauth_provider/rout
 STATUS_EXCEPTIONS: dict[str, tuple[tuple[int, ...], str]] = {
     "listServiceAccountDelegations": ((401, 501), _DELEGATION_STUB),
     "listServiceAccountDelegationEvents": ((401, 501), _DELEGATION_STUB),
+    # The browser leg of the OAuth authorization flow: with no live session it sends the user to sign in
+    # (oauth_provider/middlewares/oauth.redirect.middleware.ts), as the spec documents, and returns no data.
+    "oauthAuthorize": ((302,), "redirects to the sign-in page when there is no live session"),
 }
 
 _extensions = suite_extensions.modules("read_route_table")
