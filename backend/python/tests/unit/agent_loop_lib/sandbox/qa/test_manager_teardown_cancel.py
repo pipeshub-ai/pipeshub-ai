@@ -13,7 +13,11 @@ import asyncio
 import pytest
 
 from app.agent_loop_lib.sandbox.governor import GovernorLimits, SandboxResourceGovernor
-from app.agent_loop_lib.sandbox.manager import SandboxLimits, SandboxManager, SandboxType
+from app.agent_loop_lib.sandbox.manager import (
+    SandboxLimits,
+    SandboxManager,
+    SandboxType,
+)
 
 
 class _SlowDestroy:

@@ -14,10 +14,14 @@ import threading
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.sandbox.capacity import FixedLimit, SandboxCapacity
-from app.agent_loop_lib.sandbox.governor import SandboxLimitExceeded, SandboxResourceGovernor
+from app.agent_loop_lib.sandbox.governor import (
+    SandboxLimitExceeded,
+    SandboxResourceGovernor,
+)
 from app.services.resource_governor.shared_slots import SharedSlots
 
 if TYPE_CHECKING:
+    from collections import Counter
     from pathlib import Path
 
 # One pass over 1024 files takes about 1-2 ms; the bound is loose so a loaded
@@ -54,7 +58,7 @@ def test_hundreds_of_waiters_on_1024_files_never_stall_the_loop(tmp_path: Path, 
     spins: list[float] = []
     original = SharedSlots.held_by_tag
 
-    def watched(self, budget: float = 0.0):
+    def watched(self: SharedSlots, budget: float = 0.0) -> Counter[bytes]:
         if budget > 0 and threading.get_ident() in loop_thread:
             spins.append(budget)
         return original(self, budget)

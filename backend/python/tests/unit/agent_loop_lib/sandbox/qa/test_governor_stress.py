@@ -38,6 +38,9 @@ from app.services.resource_governor.shared_slots import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from app.agent_loop_lib.sandbox.capacity import MachineSize
+    from app.services.resource_governor.shared_slots import SlotHold
+
 
 class _Outcomes:
     def __init__(self) -> None:
@@ -90,7 +93,7 @@ def opened() -> list[Any]:
 
 
 def _gov(
-    slots: Any, *, limit: int, per_org: int | None = None, poll_s: float = 0.02,
+    slots: SharedSlots | LocalTaggedSlots, *, limit: int, per_org: int | None = None, poll_s: float = 0.02,
     observers: tuple[Any, ...] = (), provider: type[FixedLimit] = FixedLimit,
 ) -> SandboxResourceGovernor:
     capacity = SandboxCapacity.fixed(limit, per_org, slot_files=slots.capacity)
@@ -205,7 +208,9 @@ class _ScriptedSlots(LocalTaggedSlots):
         self.busy = False
         self.error: OSError | None = None
 
-    def try_acquire_tagged(self, limit: int, *, tag: bytes, tag_limit: int | None):
+    def try_acquire_tagged(
+        self, limit: int, *, tag: bytes, tag_limit: int | None,
+    ) -> SlotHold | SlotDenied:
         if self.error is not None:
             raise self.error
         if self.busy:
@@ -225,7 +230,9 @@ class TestCancelAtEveryAwait:
         assert recorder.outcomes == [("cancelled", recorder.outcomes[0][1])]
         assert provider.ended == (1 if waited else 0)
 
-    def _make(self, limit: int = 1):
+    def _make(
+        self, limit: int = 1,
+    ) -> tuple[SandboxResourceGovernor, _ScriptedSlots, _Outcomes, _Provider]:
         recorder = _Outcomes()
         slots = _ScriptedSlots(4)
         governor = _gov(slots, limit=limit, observers=(recorder,), provider=_Provider)
@@ -235,7 +242,7 @@ class TestCancelAtEveryAwait:
         recorder = _Outcomes()
         sizing = asyncio.Event()
 
-        async def never_answers():
+        async def never_answers() -> tuple[MachineSize, None]:
             await sizing.wait()
 
         capacity = SandboxCapacity("compose", machine_reader=never_answers, slot_files=4)
@@ -327,7 +334,7 @@ class TestSlotErrors:
         opened.append(slots)
         governor = _gov(slots, limit=2)
 
-        def no_space(*args: Any) -> int:
+        def no_space(*args: object) -> int:
             raise OSError(errno.ENOSPC, "No space left on device")
 
         monkeypatch.setattr(shared_slots.os, "pwrite", no_space)

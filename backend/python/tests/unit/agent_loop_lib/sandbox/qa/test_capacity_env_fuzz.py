@@ -7,6 +7,8 @@ per-org cap is within [1, limit] or none.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -32,8 +34,12 @@ from app.agent_loop_lib.sandbox.capacity import (
 )
 from app.services.resource_governor.shared_slots import sandbox_state_directory
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
 @pytest.fixture(autouse=True, scope="module")
-def _forget_warnings():
+def _forget_warnings() -> Iterator[None]:
     """The warn-once sets are process-wide: leave them as they were, so other
     tests that look for a first warning still see it."""
     from app.agent_loop_lib.sandbox import capacity

@@ -17,7 +17,11 @@ from app.agent_loop_lib.sandbox.governor import (
     SandboxLimitExceeded,
     SandboxResourceGovernor,
 )
-from app.agent_loop_lib.sandbox.manager import SandboxCallStopped, SandboxManager, SandboxType
+from app.agent_loop_lib.sandbox.manager import (
+    SandboxCallStopped,
+    SandboxManager,
+    SandboxType,
+)
 
 
 class _PerCall:

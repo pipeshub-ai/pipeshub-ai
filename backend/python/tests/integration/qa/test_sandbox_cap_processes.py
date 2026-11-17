@@ -7,6 +7,7 @@ event loop and governor on one slot directory, as uvicorn's workers are.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import multiprocessing
@@ -23,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from multiprocessing.queues import Queue
     from multiprocessing.synchronize import Event
 
@@ -38,13 +40,13 @@ class _Outcomes:
     def __init__(self) -> None:
         self.outcomes: list[str] = []
 
-    def wait_start(self, reason: Any) -> None:
+    def wait_start(self, reason: object) -> None:
         pass
 
-    def wait_reason(self, reason: Any) -> None:
+    def wait_reason(self, reason: object) -> None:
         pass
 
-    def outcome(self, outcome: str, waited_s: float, reason: Any) -> None:
+    def outcome(self, outcome: str, waited_s: float, reason: object) -> None:
         self.outcomes.append(outcome)
 
 
@@ -151,7 +153,7 @@ def _holder_with_child(directory: str, ready: Queue[int]) -> None:
     asyncio.run(main())
 
 
-def _start(target: Any, args: tuple[Any, ...], ready: Queue[int]) -> tuple[Any, int]:
+def _start(target: Callable[..., None], args: tuple[Any, ...], ready: Queue[int]) -> tuple[Any, int]:
     proc = _CTX.Process(target=target, args=(*args, ready))
     proc.start()
     return proc, ready.get(timeout=60)
@@ -166,7 +168,7 @@ def _most_at_once(intervals: list[tuple[float, float, str]]) -> int:
     return peak
 
 
-def _run_all(tmp_path: Path, target: Any, per_worker: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+def _run_all(tmp_path: Path, target: Callable[..., None], per_worker: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
     ready, go = _CTX.Queue(), _CTX.Event()
     outs = [tmp_path / f"w{i}.json" for i in range(len(per_worker))]
     procs = [
@@ -271,10 +273,8 @@ def test_a_killed_workers_subprocess_does_not_keep_its_slots(tmp_path: Path) -> 
         assert governor.snapshot()["per_org"] == {}
     finally:
         governor.close()
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.kill(child_pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
         if proc.is_alive():
             proc.kill()
 

@@ -48,7 +48,7 @@ async def test_a_nan_or_negative_wait_refuses_at_once_without_spinning(wait_s: f
     tries = 0
     original = governor._slots.try_acquire_tagged
 
-    def counted(*args, **kwargs):
+    def counted(*args: object, **kwargs: object) -> object:
         nonlocal tries
         tries += 1
         return original(*args, **kwargs)

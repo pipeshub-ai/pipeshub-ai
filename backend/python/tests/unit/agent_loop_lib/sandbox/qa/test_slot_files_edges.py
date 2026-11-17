@@ -31,7 +31,9 @@ def opened() -> list[SharedSlots]:
         s.close()
 
 
-def _gov(directory: Path, opened: list, *, limit: int = 3, per_org: int | None = 2, files: int = 4):
+def _gov(
+    directory: Path, opened: list, *, limit: int = 3, per_org: int | None = 2, files: int = 4,
+) -> tuple[SandboxResourceGovernor, SharedSlots]:
     slots = SharedSlots(directory, files)
     opened.append(slots)
     capacity = SandboxCapacity.fixed(limit, per_org, slot_files=files)
