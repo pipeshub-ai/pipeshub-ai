@@ -104,7 +104,8 @@ class LiveSettings:
         env = os.environ if env is None else env
         high = _float_in(env, ENV_SIDECAR_MEM_HIGH, DEFAULT_SIDECAR_MEM_HIGH, 0.50, 0.97)
         hard = _float_in(env, ENV_SIDECAR_MEM_HARD, DEFAULT_SIDECAR_MEM_HARD, 0.51, 0.99)
-        if hard < high + 0.01:
+        # The tolerance keeps a gap of exactly 0.01 valid despite float rounding (0.93 + 0.01 > 0.94).
+        if hard < high + 0.01 - 1e-9:
             _warn_once(
                 ENV_SIDECAR_MEM_HARD, f"{high}/{hard}",
                 "%s=%g must be at least %s + 0.01 (%g); using %g and %g", ENV_SIDECAR_MEM_HARD, hard,
