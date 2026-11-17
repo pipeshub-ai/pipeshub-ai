@@ -476,3 +476,37 @@ async def test_a_point_that_goes_between_the_two_passes_embeds_the_whole_record(
     embedded = [t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]
     assert sorted(embedded) == sorted(paras), "the whole record was embedded"
     assert {p.payload["page_content"] for p in db.collections[COLL].values()} == set(paras)
+
+
+def _image_record(described: bool) -> BlocksContainer:
+    from app.models.blocks import ImageMetadata
+
+    image = Block(index=5, type=BlockType.IMAGE, format=DataFormat.BASE64, data={"uri": "data:image/png;base64,AAAA"})
+    if described:
+        image.image_metadata = ImageMetadata(description="A bar chart of revenue by quarter.")
+    return BlocksContainer(blocks=[*_text_container(_paragraphs(5)).blocks, image])
+
+
+async def test_a_described_images_lost_point_is_embedded_not_counted_as_moved(db) -> None:
+    """On a text model a described image has a point: if it is gone, the record is embedded (an image is counted, W11)."""
+    _, blob = await legacy_record(db, _image_record(True))
+    image_point = next(pid for pid, p in db.collections[COLL].items() if "bar chart" in p.payload["page_content"])
+    del db.collections[COLL][image_point]
+    store = make_store(db)
+    await run(store, blob, _image_record(True))
+    embedded = [t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]
+    assert any("bar chart" in t for t in embedded), "the image's description is embedded again"
+
+
+@pytest.mark.parametrize("described", [False, True])
+async def test_on_a_multimodal_model_an_image_is_not_counted(db, described: bool) -> None:
+    """Whether an image has a point there depends on the provider returning an embedding for it, which nothing stored says: a provider
+    that skipped it must not make the whole record embed again."""
+    _, blob = await legacy_record(db, _image_record(described))
+    store = make_store(db)
+    store.get_embedding_model_instance = AsyncMock(return_value=True)
+    victim = [pid for pid, p in db.collections[COLL].items() if "bar chart" in p.payload["page_content"]]
+    for pid in victim:
+        del db.collections[COLL][pid]            # the image has no point (the provider returned nothing for it)
+    await run(store, blob, _image_record(described))
+    assert store._embed_documents_with_retry.await_count == 0

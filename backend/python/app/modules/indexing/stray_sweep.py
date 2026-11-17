@@ -18,6 +18,7 @@ It is a backstop, never the mechanism, so:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from app.services.vector_db.models import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
+    from contextlib import AbstractAsyncContextManager
 
     from app.services.vector_db.interface.vector_db import IVectorDBService
 
@@ -71,12 +73,14 @@ async def sweep_stray_points(
     max_points: int | None = None,
     resume: str | None = None,
     may_delete: Callable[[], Awaitable[bool]] | None = None,
+    fence: Callable[[], AbstractAsyncContextManager[None]] | None = None,
 ) -> SweepResult:
     """Delete the points of *virtual_record_id* whose block id is not in *keep_block_ids*.
 
     A pass lists at most *max_points* points. When the record has more, ``SweepResult.next_offset`` is where the listing stopped (moved
     back by the points the pass deleted before it, for a store whose cursor is a position): pass it as *resume* to continue there.
-    *may_delete* is asked before each delete batch (the listing can be long): when it says no, nothing more is deleted.
+    *may_delete* is asked before each delete batch (the listing can be long): when it says no, nothing more is deleted. *fence* wraps
+    each delete call (the caller keeps its lease confirmed while the call is in flight).
     """
     if not org_id or not virtual_record_id:
         return SweepResult()
@@ -124,7 +128,8 @@ async def sweep_stray_points(
         batch: list[str | int | float | bool] = [*ordered[start:start + _DELETE_BATCH]]
         must: dict[str, FilterValue] = {"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": batch}
         delete_filter = await vector_db.filter_collection(must=must)
-        await vector_db.delete_points(collection_name, delete_filter)
+        async with fence() if fence is not None else contextlib.nullcontext():
+            await vector_db.delete_points(collection_name, delete_filter)
         removed += len(batch)
     if refused:
         # Strays that were listed and not deleted sit before any resume point: the next pass starts over.

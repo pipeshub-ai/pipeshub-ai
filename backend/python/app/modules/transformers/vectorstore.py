@@ -25,7 +25,7 @@ import math
 import os
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Tuple
 
@@ -34,7 +34,12 @@ from langchain_core.documents import Document
 
 from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import MissingOrgContext, current_or_system, for_org
+from app.core.org_context import (
+    MissingOrgContext,
+    current_or_system,
+    for_org,
+    spawn_detached,
+)
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
     DocumentProcessingError,
@@ -1054,6 +1059,40 @@ async def _require_lease(what: str) -> None:
         raise LeaseLost(f"the lease on the virtual record is no longer held; {what} was not done")
 
 
+@contextlib.asynccontextmanager
+async def _fenced(what: str) -> AsyncIterator[None]:
+    """Around a delete: confirm the lease before the call, and keep confirming it while the call is in flight (a delete slower than a
+    lease term must not land after the lease is lost: the call is cancelled and the delivery handed back instead)."""
+    handle = _HELD_LEASE.get()
+    if handle is None:
+        yield
+        return
+    await _require_lease(what)
+    task = asyncio.current_task()
+    lost: list[bool] = []
+
+    async def beat() -> None:
+        while True:
+            await asyncio.sleep(handle.beat_s)
+            if not await handle.confirm():
+                lost.append(True)
+                if task is not None:
+                    _ = task.cancel()
+                return
+
+    heartbeat = spawn_detached(beat())
+    try:
+        yield
+    except asyncio.CancelledError:
+        if lost:
+            if task is not None:
+                _ = task.uncancel()
+            raise LeaseLost(f"the lease on the virtual record was lost while {what} was in flight") from None
+        raise
+    finally:
+        _ = heartbeat.cancel()
+
+
 async def _always_current() -> bool:
     return True
 
@@ -1086,7 +1125,10 @@ def _embeds_a_point(item: Block | BlockGroup | None, *, code_unit_ids: frozenset
     if kind in ("table", "table_cell"):
         return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
     if kind in ("image", "drawing"):
-        return isinstance(data, dict) and bool(data.get("uri")) and (multimodal or bool(VectorStore._image_block_description(item)))
+        # On a text model an image has a point exactly when it has a description. On a multimodal model whether it has one depends on
+        # whether the provider returned an embedding for it, which nothing stored says: it is not counted (a lost image point is not
+        # told from one the provider never gave).
+        return isinstance(data, dict) and bool(data.get("uri")) and not multimodal and bool(VectorStore._image_block_description(item))
     if kind == "table_row":
         return isinstance(data, dict) and any(_has_text(v) for k, v in data.items() if k != "row_number")
     if kind in ("text", "paragraph", "textsection", "heading", "quote"):
@@ -1302,22 +1344,31 @@ class VectorStore(Transformer):
     #: without a lease manager) nothing is held.
     vrid_leases: ClassVar["RecordLeases | None"] = None
 
-    async def apply(self, ctx: TransformContext) -> bool | None:
-        leases, record = type(self).vrid_leases, ctx.record
-        if leases is None or not leases.bound or not record.org_id or not record.virtual_record_id:
-            return await self._apply_locked(ctx)
+    @contextlib.asynccontextmanager
+    async def _vrid_lease(self, owner: str, org_id: str | None, virtual_record_id: str | None) -> AsyncIterator[None]:
+        """Hold the lease on the virtual record for the body (unless this task already holds it, or none is bound), with the handle
+        published so every delete under it confirms the lease. A wait past the limit, or a lost lease, is a ``VirtualRecordBusy``."""
+        leases = type(self).vrid_leases
+        if _HELD_LEASE.get() is not None or leases is None or not leases.bound or not org_id or not virtual_record_id:
+            yield
+            return
         try:
             async with leases.hold(
-                f"vrid:{record.org_id}:{record.virtual_record_id}", owner=f"index:{record.id}",
+                f"vrid:{org_id}:{virtual_record_id}", owner=owner,
                 wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
             ) as handle:
                 token = _HELD_LEASE.set(handle)
                 try:
-                    return await self._apply_locked(ctx)
+                    yield
                 finally:
                     _HELD_LEASE.reset(token)
         except RecordBusy as e:  # the lease stayed busy past the wait, or was lost: not a failure of this record
-            raise VirtualRecordBusy(f"the virtual record {record.virtual_record_id} is being written by another record: {e}") from e
+            raise VirtualRecordBusy(f"the virtual record {virtual_record_id} is being written by another record: {e}") from e
+
+    async def apply(self, ctx: TransformContext) -> bool | None:
+        record = ctx.record
+        async with self._vrid_lease(f"index:{record.id}", record.org_id, record.virtual_record_id):
+            return await self._apply_locked(ctx)
 
     async def _apply_locked(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
@@ -1585,6 +1636,7 @@ class VectorStore(Transformer):
                 org_id=org_for_filter(record.org_id, match_bound=True), virtual_record_id=vrid, keep_block_ids=keep,
                 resume=self._sweep_resume.pop(where, None),
                 may_delete=lambda: self._still_current(record),
+                fence=lambda: _fenced("the stray sweep"),
             )
             if result.next_offset is not None:
                 self._sweep_resume[where] = result.next_offset
@@ -1963,6 +2015,7 @@ class VectorStore(Transformer):
                 )
                 # Deletes only when no record references the VRID, behind its own
                 # confirming re-read.
+                await _require_lease("the release of an orphaned virtual record")
                 await rewrite_or_delete_virtual_record(
                     self.vector_db_service,
                     self.collection_locator,
@@ -1979,6 +2032,8 @@ class VectorStore(Transformer):
                 virtual_record_id,
                 self.logger,
             )
+        except LeaseLost:
+            raise
         except Exception as e:
             # Loud but non-fatal: the points are already written and correct
             # apart from membership, so failing the whole index would discard
@@ -2225,6 +2280,7 @@ class VectorStore(Transformer):
         # deployments). rewrite_or_delete_virtual_record re-checks the graph
         # for *any* remaining record on this VRID and only deletes when none
         # is left, rewriting membership otherwise.
+        await _require_lease("the release of an orphaned virtual record")
         await rewrite_or_delete_virtual_record(
             self.vector_db_service,
             self.collection_locator,
@@ -2239,17 +2295,19 @@ class VectorStore(Transformer):
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
-        await _require_lease("a delete of replaced blocks")
         org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
-            await self.vector_db_service.delete_points(collection_name, filter_dict)
+            async with _fenced("a delete of replaced blocks"):
+                await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
                 f"✅ Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
             )
+        except LeaseLost:
+            raise
         except Exception as e:
             self.logger.error(f"Error deleting blocks by IDs: {e}")
             raise VectorStoreError(
@@ -2261,16 +2319,18 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     async def delete_embeddings(self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None) -> None:
-        await _require_lease("a delete of the record's embeddings")
         org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "virtualRecordId": virtual_record_id}
             )
-            await self.vector_db_service.delete_points(collection_name, filter_dict)
+            async with _fenced("a delete of the record's embeddings"):
+                await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
                 f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
             )
+        except LeaseLost:
+            raise
         except Exception as e:
             self.logger.error(f"Error deleting embeddings: {e}")
             raise VectorStoreError(
@@ -2283,7 +2343,8 @@ class VectorStore(Transformer):
         """Delete all vector points for a record, resolving the collection internally."""
         ctx = self._record_context(org_id, record)
         collection_name = self.collection_registry.resolve_write_collection(ctx)
-        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+        async with self._vrid_lease(f"purge:{virtual_record_id}", org_id, virtual_record_id):
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -2853,7 +2914,8 @@ class VectorStore(Transformer):
                     must={"orgId": org, "virtualRecordId": virtual_record_id},
                     must_not={field: value},
                 )
-                await self.vector_db_service.delete_points(collection_name, stale)
+                async with _fenced("the fence of a resumed run"):
+                    await self.vector_db_service.delete_points(collection_name, stale)
         wanted = list(dict.fromkeys(point_ids))
         with stage("vector.exists"):
             present = await self._existing_ids(collection_name, wanted)
@@ -3402,8 +3464,8 @@ class VectorStore(Transformer):
                 await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
-        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError):
-            raise
+        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError, RecordBusy):
+            raise  # a lost or busy lease (RecordBusy) is handed back by apply, not counted as a failed attempt
         except Exception as e:
             raise IndexingError(
                 "Unexpected error during indexing",

@@ -171,3 +171,20 @@ async def test_a_run_that_lost_the_lease_does_not_delete_replaced_blocks_or_embe
     with pytest.raises(VirtualRecordBusy):
         await store.apply(_apply_args("rec-A"))
     assert len(deleted) == lost_at[0], "no delete went out after the lease was lost"
+
+
+async def test_a_lost_lease_inside_the_reconcile_is_a_hand_back_not_a_failed_attempt(db, manager) -> None:
+    """The first delete of a full replace runs inside index_documents, whose catch-all wraps unexpected errors as IndexingError: a lost
+    lease must still come out as VirtualRecordBusy (a hand-back), not as a failure counted against the record."""
+    store = make_store(db)
+    real = store._apply_locked
+
+    async def lapsed(ctx) -> object:
+        manager.take_away()
+        return await real(ctx)
+
+    store._apply_locked = lapsed
+    ctx = _apply_args("rec-A")
+    ctx.event_type = EventTypes.UPDATE_RECORD.value
+    with pytest.raises(VirtualRecordBusy):
+        await store.apply(ctx)

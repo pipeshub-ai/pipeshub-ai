@@ -36,6 +36,8 @@ class LeaseHandle:
 
     def __init__(self, manager: IDistributedLeaseManager | None, pool: str, holder: str, lease_s: float) -> None:
         self._manager, self._pool, self._holder, self._lease_s = manager, pool, holder, lease_s
+        # How often a long call under the lease (a delete) re-confirms it while the call is in flight.
+        self.beat_s = max(_MIN_RENEW_S, lease_s / 3)
 
     async def confirm(self) -> bool:
         """Compare-and-renew on the holder's own token: True only when the manager still has this holder as the owner (and the term is
