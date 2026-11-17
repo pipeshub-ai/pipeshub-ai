@@ -726,11 +726,12 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(org, u._id))!._id).to.equal(u._id);
       expect(await users.getLive(await fx.newOrg(), u._id)).to.equal(null);
       expect((await users.getLiveById(u._id))!.orgId).to.equal(org);
-      expect(await users.getAccountState(u._id)).to.include({ kind: 'human', isDisabled: false });
+      // exact shape: a store that adds a field (MongoDB's default `_id` in a projection) shows as a shadow-read difference
+      expect(await users.getAccountState(u._id)).to.deep.equal({ kind: 'human', isDisabled: false });
       const snap = await users.getAuthSnapshot(org, u._id);
       expect(snap).to.include({ email: u.email, role: 'admin' });
       expect(await users.getAuthSnapshot(await fx.newOrg(), u._id)).to.equal(null);
-      expect(await users.getRoleSnapshot(org, u._id)).to.include({ role: 'admin' });
+      expect(await users.getRoleSnapshot(org, u._id)).to.deep.equal({ role: 'admin', kind: 'human' });
       await users.markDeleted(org, u._id);
       expect(await users.getLive(org, u._id)).to.equal(null);
       expect(await users.getLiveById(u._id)).to.equal(null);
