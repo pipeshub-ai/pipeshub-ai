@@ -2,7 +2,9 @@
 24 clients that connect, wait 0.2 s and close, in a loop, with threads burning the exporter's GIL and processes
 burning the CPUs. The exporter runs in its own process, as in the indexing service.
 
-Needs no service; the port comes from the kernel. Three runs, each a few seconds.
+A probabilistic load test, so it is a `stress` test: it runs with `-m stress` (or `RUN_STRESS_TESTS=1`) in a stress job
+or by hand, and the unit job skips it. The deterministic guards for the same defect are in test_ops_exporter_acceptor.py
+(the backlog follows the cap; a client that left takes no slot). Needs no service; three runs, a few seconds each.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ PY = Path(__file__).resolve().parents[3]
 SCRAPE_TIMEOUT_S = 10.0  # the chart's metrics.podMonitor.scrapeTimeout
 BURNERS = max(2, min(4, os.cpu_count() or 2))
 
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a Linux load test")
+pytestmark = [pytest.mark.stress, pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a Linux load test")]
 
 EXPORTER = textwrap.dedent(
     """

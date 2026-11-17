@@ -202,6 +202,7 @@ def test_the_sampling_decision_itself_counts_the_entry() -> None:
     import logging
 
     from app.services.resource_governor import ResourceGovernor
+    from app.services.resource_governor.feedback import DownstreamFeedback
     from app.services.resource_governor.models import ResourceSnapshot
 
     level = [0.1]
@@ -212,7 +213,8 @@ def test_the_sampling_decision_itself_counts_the_entry() -> None:
             return ResourceSnapshot(cpu_quota=4.0, cpu_utilisation=0.1, cpu_throttled_ratio=0.0, cpu_pressure=0.0,
                                     mem_limit_bytes=limit, mem_working_set_bytes=int(limit * level[0]), source="test")
 
-    governor = ResourceGovernor(logger=logging.getLogger("test.brake"), env_index=24, worker_count=1, probe=_Probe())
+    governor = ResourceGovernor(logger=logging.getLogger("test.brake"), env_index=24, worker_count=1, probe=_Probe(),
+                                feedback=DownstreamFeedback())  # not the process-wide one: other tests leave symptoms in it
     try:
         asyncio.run(governor._sample_once())
         assert _entries(governor) == {}
