@@ -502,11 +502,13 @@ Below that cap, the app also holds new runs back while the Docker host is short 
 - **Hard floor.** When free memory falls below a floor (`SANDBOX_HOST_MEM_FLOOR_MB`; default 5 %, 1–8 GB) plus one run, or on memory pressure, it halves. Each run also checks free memory itself before it starts: one that would leave less than the floor gives its slot back and waits. That check is the only thing that holds back the minimum's runs.
 - **CPU.** It drops by one per sample after two samples above 90 % CPU (`SANDBOX_HOST_CPU_BRAKE`) or CPU pressure above 0.75 (`SANDBOX_HOST_CPU_PSI_BRAKE`). Indexing brakes on CPU earlier (85 % / 0.60), so it yields CPU first.
 - **Growth.** It grows back, by doubling steps up to what memory holds, only while runs wait for it.
-- **Indexing slows down first for memory.** When a run has waited 3 s for memory, query asks indexing to slow down: indexing takes a quarter off its in-flight records and one heavy parse per sample, down to its floor, and once runs stop waiting (`SANDBOX_YIELD_TTL_S`, 20 s) waits 60 s before it grows back one step per sample. Heavy parse waits twice as long each time runs start waiting again within 4 minutes of it growing back, up to 16 minutes. Records already in flight are never cancelled. A CPU-only hold does not slow indexing. `SANDBOX_YIELD_INDEXING=off` turns this off.
+- **Indexing slows down first for memory.** When a run has waited 3 s for memory, query asks indexing to slow down: indexing takes a quarter off its in-flight records and one heavy parse per sample, down to its floor, and once runs stop waiting (`SANDBOX_YIELD_TTL_S`, 20 s) waits 60 s before it grows back one step per sample. Heavy parse waits twice as long each time runs start waiting again within 4 minutes of it growing back, up to 16 minutes. Records already in flight are never cancelled. With several indexing workers, their heavy parses together are held to what one worker would keep until that wait is over. A CPU-only hold does not slow indexing. `SANDBOX_YIELD_INDEXING=off` turns this off.
+
+**Minimum host size.** In a simulation of the live limit and indexing together (not a measurement), a 4 GB host running a sync never had the hard floor plus one run free, so code runs waited until indexing was idle and timed out while it ran. A 16 GB host served chat with a p95 wait of a few seconds during a sync. For code runs while indexing is busy, plan on 8–16 GB or more. A `SANDBOX_HOST_MEM_FLOOR_MB` that leaves no room for one run below the host's memory is logged once as an error.
 
 The query log shows each change as `sandbox live limit` and `asking indexing to slow down` / `indexing back-off released`; the indexing log shows `limits changed: … yield=on`. `SANDBOX_LIVE_LIMIT=off` turns the live limit off and keeps the fixed cap. A daemon on another machine (`DOCKER_HOST` remote) gets no live limit. The docker proxy proves the daemon shares the app's machine through `/_pipeshub/host`; with an older proxy image that lacks it, or no proxy, the app falls back to comparing the daemon's memory total and kernel version with its own, which two identical machines would also pass, so set `SANDBOX_LIVE_LIMIT=off` (or upgrade the proxy) when the daemon may be on another machine.
 
-**Over-commit** is off by default. `SANDBOX_MEMORY_OVERCOMMIT=N` (up to 4) counts each run at 1/N of its 512 MB, which raises a memory-bound cap; it applies only while the live limit reads the Docker host, since that reading is what catches a burst of heavy runs.
+**Over-commit** is off by default. `SANDBOX_MEMORY_OVERCOMMIT=N` (up to 4) counts each run at 1/N of its 512 MB for the cap and the live limit, which raises a memory-bound cap. It applies only while the live limit reads the Docker host. Each run's own check before it starts still counts its full 512 MB, so a burst of runs that use all of it cannot take free memory below the hard floor.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -516,7 +518,7 @@ The query log shows each change as `sandbox live limit` and `asking indexing to 
 | `SANDBOX_HOST_MEM_SOFT_MB` | 15 % (2–24 GB) | Free memory the limit keeps above. |
 | `SANDBOX_HOST_CPU_BRAKE` | 0.90 | Host CPU use that brakes. |
 | `SANDBOX_HOST_CPU_PSI_BRAKE` | 0.75 | Host CPU pressure (PSI some avg10) that brakes. |
-| `SANDBOX_MEMORY_OVERCOMMIT` | 1.0 (off) | Count each run at 1/N of its memory (1.0–4.0). |
+| `SANDBOX_MEMORY_OVERCOMMIT` | 1.0 (off) | Count each run at 1/N of its memory for the cap (1.0–4.0); the per-run check uses its full memory. |
 | `SANDBOX_YIELD_INDEXING` | on | Runs waiting for memory slow indexing down. |
 | `SANDBOX_YIELD_TTL_S` | 20 | How long one request lasts once runs stop waiting (10–120). |
 
