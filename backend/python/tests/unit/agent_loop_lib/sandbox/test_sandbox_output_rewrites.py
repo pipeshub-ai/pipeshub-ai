@@ -12,7 +12,7 @@ from .test_docker_coding_sandbox import (  # noqa: F401  (fixtures)
     _fake_docker_module,
     _fresh_docker_provider,
 )
-from .test_sandbox_output_retention import _env, _client, _run, _tar  # noqa: F401  (fixture)
+from .test_sandbox_output_retention import _client, _env, _run, _tar  # noqa: F401  (fixture)
 
 KiB = 1024
 MiB = 1024 * 1024
