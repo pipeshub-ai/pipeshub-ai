@@ -135,7 +135,13 @@ describe('the record stream proxy when the client leaves', function () {
     errorLog.restore()
     process.off('unhandledRejection', onUnhandled)
   })
-  const errorLines = () => errorLog.getCalls().map((c) => `${c.args[0]} ${JSON.stringify(c.args[1] ?? {})}`)
+  // Only the proxy's own logger counts: background workers started elsewhere in the process log on their own.
+  const STREAM_LOGGER = 'Knowledge Base Controller'
+  const errorLines = () =>
+    errorLog
+      .getCalls()
+      .filter((c) => (c.thisValue as { defaultMeta?: { service?: string } })?.defaultMeta?.service === STREAM_LOGGER)
+      .map((c) => `${c.args[0]} ${JSON.stringify(c.args[1] ?? {})}`)
 
   it('before the upstream answers: the upstream request closes when the client leaves, not when the upstream answers', async () => {
     const { st, up } = upstream(200, 1500)
