@@ -108,6 +108,33 @@ def _refresh(self: Any, request: Any) -> None:  # noqa: ANN401
 
 service_account.Credentials.refresh = _refresh  # type: ignore[method-assign]
 
+
+
+def _offline_tokenizer() -> None:
+    """langchain-openai tokenises every embedding input with tiktoken, which downloads its vocabulary (a ``requests`` call to a
+    blob store) when the machine has none cached. That download is not a provider request: on a cold cache it was counted as
+    the one request of the row (and the real embedding request never left), so the probe's answer depended on the machine.
+    A stand-in encoder keeps the probe offline and makes every counted request the provider's own."""
+    import tiktoken
+
+    class _Encoding:
+        name = "probe"
+
+        def encode(self, text: str, **_: Any) -> list[int]:  # noqa: ANN401
+            return [ord(c) for c in text]
+
+        def encode_ordinary(self, text: str) -> list[int]:
+            return [ord(c) for c in text]
+
+        def decode(self, tokens: list[int]) -> str:
+            return "".join(chr(t) for t in tokens)
+
+    tiktoken.encoding_for_model = lambda *_a, **_k: _Encoding()  # type: ignore[assignment]
+    tiktoken.get_encoding = lambda *_a, **_k: _Encoding()  # type: ignore[assignment]
+
+
+_offline_tokenizer()
+
 os.environ.setdefault("LLM_WIRE_HOOKS_REQUIRED", "false")
 os.environ["AWS_EC2_METADATA_DISABLED"] = "true"  # no instance-metadata lookup: static credentials only
 
