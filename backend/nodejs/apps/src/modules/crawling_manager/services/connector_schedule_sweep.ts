@@ -244,6 +244,7 @@ export class ConnectorScheduleSweepService {
     let snapshot: Awaited<
       ReturnType<CrawlingSchedulerService['listRepeatableSchedules']>
     >;
+    let live: typeof snapshot;
     try {
       // Snapshot before fetching: a schedule a user creates mid-sweep is not in
       // it, so it can never be mistaken for an orphan.
@@ -253,6 +254,9 @@ export class ConnectorScheduleSweepService {
       );
       desired = listing.items;
       listingPartial = listing.partial;
+      // Read again for the per-connector match: the listing can wait minutes for the
+      // connector service, and a schedule lost meanwhile must still be recreated.
+      live = await this.scheduler.listRepeatableSchedules();
     } catch (error) {
       this.logger.error('Connector schedule sweep aborted; nothing changed', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -287,7 +291,7 @@ export class ConnectorScheduleSweepService {
         const every = Math.floor(intervalMinutes) * 60_000;
         // `every` only: BullMQ ignores tz for interval jobs, and comparing it
         // would reschedule on every sweep whenever the stored tz is normalised.
-        const current = snapshot.filter((r) => r.name === name);
+        const current = live.filter((r) => r.name === name);
         const matching = current.filter((r) => Number(r.every) === every);
         const stale = current.filter((r) => Number(r.every) !== every);
 

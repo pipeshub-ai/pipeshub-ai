@@ -153,6 +153,26 @@ describe('ConnectorScheduleSweepService', () => {
     expect(schedulesFor('c1')).to.have.length(1)
   })
 
+  it('recreates a schedule that disappeared while the startup run waited', async () => {
+    const clock = sinon.useFakeTimers()
+    await seed(record('c1'))
+    fetchAll.resetHistory()
+    fetchAll.onCall(0).rejects(new Error('connect ECONNREFUSED'))
+    fetchAll.onCall(1).resolves(listed([record('c1')]))
+
+    const done = (sweeper as any).runJob({ id: 'sweep-startup' })
+    await clock.tickAsync(0)
+    // the schedule store is emptied during the wait (for example a Redis flush)
+    store.repeatables.clear()
+    store.jobs.clear()
+    await clock.tickAsync(10_000)
+    const summary = await done
+
+    expect(fetchAll.callCount).to.equal(2)
+    expect(summary.repaired).to.equal(1)
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
   it('closing the service ends the startup wait at once and changes nothing', async () => {
     const clock = sinon.useFakeTimers()
     await seed(record('c1'))
