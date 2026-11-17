@@ -211,6 +211,12 @@ fi
 # unused when a hosted embedding model is configured.
 echo "${LOG_PREFIX}: services $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"])' "$WORK/health.json")"
 
+# The app pod. `deploy/${RELEASE}` is ambiguous: the Arango pod carries the
+# deployment's selector labels too, so kubectl may pick it.
+APP_POD="$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=main" \
+  --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')"
+[[ -n "$APP_POD" ]] || die "no running app pod"
+
 # Runs a script from stdin with the app container's Python; images differ in
 # whether they name it python3 or python.
 APP_PYTHON='p=$(command -v python3 || command -v python || ls /usr/local/bin/python3 /app/.venv/bin/python 2>/dev/null | head -n1); [ -n "$p" ] || { echo "no python in the app container (PATH=$PATH)" >&2; exit 127; }; exec "$p" -'
@@ -223,7 +229,7 @@ if [[ "$VARIANT" == "eks" ]]; then
     --password "$(kubectl get secret -n "$NAMESPACE" "${RELEASE}-secrets" -o jsonpath='{.data.mongodb-password}' | base64 -d)" \
     --authenticationDatabase admin --eval 'const s=rs.status(); if (s.members.filter(m => m.health===1).length < 3) quit(1)' \
     || die "mongo replica set does not have 3 healthy members"
-  kubectl exec -n "$NAMESPACE" "deploy/${RELEASE}" -c pipeshub-ai -- python -c '
+  kubectl exec -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- python -c '
 import json, os, urllib.request
 key = os.environ["QDRANT_API_KEY"]
 req = urllib.request.Request("http://pipeshub-ai-qdrant:6333/cluster", headers={"api-key": key})
@@ -233,7 +239,7 @@ print("peers", len(peers))
 if len(peers) < 3:
     raise SystemExit(1)
 ' || die "qdrant does not have 3 peers"
-  kubectl exec -n "$NAMESPACE" "deploy/${RELEASE}" -c pipeshub-ai -- python -c '
+  kubectl exec -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- python -c '
 import json, os, urllib.request
 key = os.environ["QDRANT_API_KEY"]
 create = urllib.request.Request(
@@ -256,7 +262,7 @@ if params.get("replication_factor") != 2:
 fi
 
 if [[ "$VARIANT" == "eks" || "$VARIANT" == "arangodb-redis" ]]; then
-  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -c pipeshub-ai -- sh -c "$APP_PYTHON" <<'PY' || die "sandbox run_code via DinD and docker-proxy failed"
+  kubectl exec -i -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- sh -c "$APP_PYTHON" <<'PY' || die "sandbox run_code via DinD and docker-proxy failed"
 import os
 os.environ.setdefault("DOCKER_HOST", "tcp://127.0.0.1:2375")
 import docker
@@ -285,7 +291,7 @@ if not os.environ.get("SANDBOX_HOST_MEMORY_BYTES", "").isdigit():
     raise SystemExit("SANDBOX_HOST_MEMORY_BYTES is not the dind memory limit")
 PY
   # The live limit reads the sidecar's own cgroup through docker-proxy.
-  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -c pipeshub-ai -- env SMOKE_REQUIRE_USAGE="${SMOKE_REQUIRE_USAGE:-0}" sh -c "$APP_PYTHON" <<'PY' \
+  kubectl exec -i -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- env SMOKE_REQUIRE_USAGE="${SMOKE_REQUIRE_USAGE:-0}" sh -c "$APP_PYTHON" <<'PY' \
     || die "docker-proxy /_pipeshub/usage did not report the dind sidecar"
 import json, os, time, urllib.error, urllib.request
 host = os.environ.get("DOCKER_HOST", "tcp://127.0.0.1:2375").replace("tcp://", "http://")
