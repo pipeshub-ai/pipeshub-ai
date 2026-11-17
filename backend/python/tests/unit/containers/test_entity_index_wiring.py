@@ -5,10 +5,10 @@ import inspect
 from unittest.mock import MagicMock
 
 from app import indexing_main
-from app.edition_containers import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
 from app.containers.utils.utils import ContainerUtils
+from app.edition_containers import ConnectorAppContainer
 from tests.support.edition_defaults import connector_service_keeps_an_entity_store
 
 
