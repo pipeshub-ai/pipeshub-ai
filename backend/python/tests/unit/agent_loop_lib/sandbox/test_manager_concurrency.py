@@ -420,3 +420,161 @@ class TestMeteredSlots:
         await asyncio.wait_for(waiting, 1)
         await mgr.destroy_all()
         assert gov.snapshot()["total"] == 0
+
+
+class TestCancelSafety:
+    """Stop cancels inside the slot and provisioning code routinely, so a
+    cancel at any await there must not leak a slot or a backend."""
+
+    def _manager(self, gov: SandboxResourceGovernor, **kwargs) -> SandboxManager:
+        mgr = SandboxManager(governor=gov, slot_wait_s=5, **kwargs)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        return mgr
+
+    async def test_stop_during_the_slot_wait_leaves_at_once_and_clears_the_note(self) -> None:
+        from app.agent_loop_lib.core.context import CancellationToken
+        from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
+
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        notes: list[bool] = []
+
+        async def note(tool: str, waiting: bool) -> None:
+            notes.append(waiting)
+
+        token = CancellationToken()
+        mgr = self._manager(gov, on_slot_wait=note, stop_token=token)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+
+        async def wait_for_slot() -> None:
+            async with mgr.slot(SandboxType.CODING, sid2):
+                raise AssertionError("must not get the slot")
+
+        async with mgr.slot(SandboxType.CODING, sid1):
+            task = asyncio.ensure_future(mgr.unless_stopped(wait_for_slot, tool="run_code"))
+            await asyncio.sleep(0.02)
+            loop = asyncio.get_running_loop()
+            stopped_at = loop.time()
+            token.cancel()
+            with pytest.raises(SandboxCallStopped):
+                await task
+            assert loop.time() - stopped_at < 0.05
+            assert gov.snapshot()["total"] == 1
+        assert notes == [True, False]
+        assert gov.snapshot()["total"] == 0
+
+    async def test_cancel_while_clearing_the_note_after_a_grant_releases_the_slot(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        clearing = asyncio.Event()
+
+        async def note(tool: str, waiting: bool) -> None:
+            if not waiting:
+                clearing.set()
+                await asyncio.sleep(60)  # a full SSE queue
+
+        mgr = self._manager(gov, on_slot_wait=note)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        first_done = asyncio.Event()
+
+        async def first() -> None:
+            async with mgr.slot(SandboxType.CODING, sid1):
+                await first_done.wait()
+
+        t1 = asyncio.ensure_future(first())
+        await asyncio.sleep(0.01)
+        waiter = asyncio.ensure_future(mgr.slot(SandboxType.CODING, sid2).__aenter__())
+        await asyncio.sleep(0.02)
+        first_done.set()
+        await t1
+        await asyncio.wait_for(clearing.wait(), 1)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await asyncio.sleep(0.01)
+        assert gov.snapshot()["total"] == 0
+
+    async def test_cancel_during_a_contended_release_still_releases(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=2))
+        mgr = self._manager(gov)
+        sid, _ = await mgr.get_or_create(SandboxType.CODING)
+        inside = asyncio.Event()
+
+        async def call() -> None:
+            async with mgr.slot(SandboxType.CODING, sid):
+                inside.set()
+                await asyncio.sleep(0.05)
+
+        task = asyncio.ensure_future(call())
+        await inside.wait()
+        async with gov._lock:  # the release has to wait for this lock
+            await asyncio.sleep(0.08)  # the body returns and the release blocks here
+            task.cancel()
+            await asyncio.sleep(0.01)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.01)
+        assert gov.snapshot()["total"] == 0
+
+    async def test_cancel_during_a_metered_provision_destroys_it_and_frees_the_slot(self) -> None:
+        destroyed = 0
+        provisioning = asyncio.Event()
+
+        class _SlowMetered(_FakeBackend):
+            async def provision(self) -> None:
+                provisioning.set()
+                await asyncio.sleep(60)
+
+            async def destroy(self) -> None:
+                nonlocal destroyed
+                destroyed += 1
+
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = SandboxManager(governor=gov)
+        mgr.register_backend_factory(SandboxType.CODING, _SlowMetered)
+        task = asyncio.ensure_future(mgr.get_or_create(SandboxType.CODING))
+        await provisioning.wait()
+        assert gov.snapshot()["total"] == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert destroyed == 1
+        assert gov.snapshot()["total"] == 0
+        assert mgr._instances == {}
+
+    async def test_after_stop_the_next_waiter_is_granted_only_once_cleanup_finished(self) -> None:
+        from app.agent_loop_lib.core.context import CancellationToken
+        from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
+
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        token = CancellationToken()
+        stopped_mgr = self._manager(gov, stop_token=token)
+        other_mgr = self._manager(gov)
+        sid1, _ = await stopped_mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await other_mgr.get_or_create(SandboxType.CODING)
+        events: list[str] = []
+        running = asyncio.Event()
+
+        async def run() -> None:
+            async with stopped_mgr.slot(SandboxType.CODING, sid1):
+                running.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.2)  # the container being removed
+                    events.append("cleanup done")
+                    raise
+
+        async def other() -> None:
+            async with other_mgr.slot(SandboxType.CODING, sid2):
+                events.append("other granted")
+
+        stopped = asyncio.ensure_future(stopped_mgr.unless_stopped(run, tool="run_code"))
+        await running.wait()
+        waiter = asyncio.ensure_future(other())
+        await asyncio.sleep(0.02)
+        token.cancel()
+        with pytest.raises(SandboxCallStopped):
+            await stopped
+        await asyncio.wait_for(waiter, 1)
+        assert events == ["cleanup done", "other granted"]

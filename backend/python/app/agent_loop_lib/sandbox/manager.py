@@ -8,11 +8,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
+from app.agent_loop_lib.core.tasks import wait_owned
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.context import CancellationToken
     from app.agent_loop_lib.sandbox.coding.base import SandboxContext, SandboxRef
     from app.agent_loop_lib.sandbox.coding.registry import SandboxBackendFactory
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
@@ -50,10 +52,17 @@ __all__ = [
     "SandboxManagerError",
     "UnknownSandboxError",
     "SandboxLimitExceeded",
+    "SandboxCallStopped",
     "SandboxLifecycle",
 ]
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# How long a stopped call waits for the backend to clean up after its cancel:
+# the Docker backend's own 30 s bound for removing the container, plus a margin.
+_STOP_DRAIN_S = 35.0
 
 
 class SandboxType(str, Enum):
@@ -75,6 +84,10 @@ class UnknownSandboxError(SandboxManagerError):
 class SandboxLimitExceeded(SandboxManagerError):
     """Raised when creating a new sandbox would exceed the configured
     `max_concurrent` for its type."""
+
+
+class SandboxCallStopped(SandboxManagerError):
+    """The run was stopped by its user while this sandbox call was in flight."""
 
 
 @runtime_checkable
@@ -149,6 +162,7 @@ class SandboxManager:
         governor: "SandboxResourceGovernor | None" = None,
         slot_wait_s: float = 0.0,
         on_slot_wait: Callable[..., Awaitable[None]] | None = None,
+        stop_token: "CancellationToken | None" = None,
     ) -> None:
         self._factories: dict[SandboxType, _FactoryEntry] = {}
         self._instances: dict[tuple[SandboxType, str], _InstanceRecord] = {}
@@ -158,6 +172,9 @@ class SandboxManager:
         # the wait ends (e.g. show and clear a note for the user).
         self._slot_wait_s = slot_wait_s
         self._on_slot_wait = on_slot_wait
+        # The run's Stop signal. Calls made through `unless_stopped` end as
+        # soon as it is set, instead of running to completion.
+        self._stop_token = stop_token
         self._lock = asyncio.Lock()
         # Creations that have reserved a slot but not yet finished
         # provisioning. `_instances` alone cannot bound concurrency: a
@@ -269,6 +286,12 @@ class SandboxManager:
                 lease = await self._acquire_slot(org_id, tool)
             started = time.monotonic()
             backend = await self._provision(backend, entry.limits, type)
+        except asyncio.CancelledError:
+            # A cancel during the slot wait or the provision would otherwise
+            # leak the half-made backend (a remote VM keeps running) and its slot.
+            await asyncio.shield(self._safe_destroy(backend))
+            await asyncio.shield(self._release_lease(lease))
+            raise
         except Exception:
             await self._release_lease(lease)
             raise
@@ -347,7 +370,9 @@ class SandboxManager:
         try:
             yield
         finally:
-            await self._release_lease(lease)
+            # Shielded: a cancel landing while the release waits for the
+            # governor's lock must not leave the slot counted.
+            await asyncio.shield(self._release_lease(lease))
 
     async def _acquire_slot(self, org_id: str | None, tool: str) -> Any:
         """A governor slot, waiting up to `slot_wait_s`; the wait note is
@@ -361,15 +386,85 @@ class SandboxManager:
             if notify is not None:
                 await notify(tool, waiting=True)
 
+        lease = None
         try:
-            return await self._governor.acquire(org_id=org_id, wait_s=self._slot_wait_s, on_wait=on_wait)
+            lease = await self._governor.acquire(org_id=org_id, wait_s=self._slot_wait_s, on_wait=on_wait)
+            return lease
         finally:
             # Granted, timed out or cancelled: the note is taken down either way.
             if shown and notify is not None:
                 try:
                     await notify(tool, waiting=False)
+                except asyncio.CancelledError:
+                    # The slot was granted but the caller will never see it.
+                    if lease is not None:
+                        await asyncio.shield(self._release_lease(lease))
+                    raise
                 except Exception:
                     logger.warning("clearing the slot-wait note failed", exc_info=True)
+
+    async def unless_stopped(self, fn: Callable[[], Awaitable[T]], *, tool: str) -> T:
+        """Run `fn()` until it finishes or the run is stopped, whichever is first.
+
+        On Stop, `fn` gets one asyncio cancel. Backends turn that into
+        "stop the container or process, release the slot, re-raise", and
+        this waits for that cleanup (see `_drain`) before raising
+        `SandboxCallStopped`. If `fn` finished in the same tick as the Stop,
+        its real result (or exception) wins. A Stop that was already set
+        means `fn` is never started. A cancel of the calling task itself
+        (a disconnect, shutdown) still cancels `fn` and raises
+        `CancelledError`, as before.
+
+        `fn` is a callable rather than a coroutine so that a call that never
+        starts leaves no un-awaited coroutine behind.
+        """
+        token = self._stop_token
+        if token is None:
+            return await fn()
+        if token.is_cancelled:
+            raise SandboxCallStopped(tool)
+        call = asyncio.ensure_future(fn())
+        stop = asyncio.ensure_future(token.wait())
+        try:
+            await wait_owned({call, stop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop.cancel()
+        if call.done():
+            return call.result()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        call.cancel()
+        await self._drain(call)
+        logger.info(
+            "sandbox call stopped by the user: tool=%s cleanup_s=%.1f", tool, loop.time() - started,
+        )
+        raise SandboxCallStopped(tool)
+
+    @staticmethod
+    async def _drain(call: asyncio.Future[Any]) -> None:
+        """Wait for a cancelled call to finish its cleanup, at most
+        `_STOP_DRAIN_S`. A second cancel of this task is remembered and
+        re-raised at the end: it must not let the tool return while the
+        call still holds its slot."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STOP_DRAIN_S
+        cancelled_again = False
+        while not call.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning("sandbox call did not finish within %gs of Stop", _STOP_DRAIN_S)
+                break
+            try:
+                await asyncio.wait({call}, timeout=remaining)
+            except asyncio.CancelledError:
+                cancelled_again = True
+        if call.done():
+            if not call.cancelled() and call.exception() is not None:
+                logger.debug("stopped sandbox call ended with an error", exc_info=call.exception())
+        else:
+            call.add_done_callback(lambda f: f.cancelled() or f.exception())
+        if cancelled_again:
+            raise asyncio.CancelledError
 
     async def _release_lease(self, lease: Any | None) -> None:
         if lease is None:

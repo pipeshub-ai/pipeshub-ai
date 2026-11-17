@@ -15,6 +15,7 @@ from app.agent_loop_lib.sandbox.coding.base import (
     ErrorCategory,
 )
 from app.agent_loop_lib.sandbox.manager import (
+    SandboxCallStopped,
     SandboxLimitExceeded,
     SandboxManager,
     SandboxType,
@@ -56,6 +57,7 @@ __all__ = [
     "InstallPackagesTool",
     "ReadSandboxFileTool",
     "detect_language_mismatch",
+    "stopped_output",
 ]
 
 _LANGUAGE_ENUM = ["typescript", "python"]
@@ -130,6 +132,23 @@ def _at_cap_suggestion(cap: float) -> str:
     )
 
 
+_STOPPED_ERROR = (
+    "Stopped by the user before this run finished. The run was ended; files it "
+    "was writing may be incomplete."
+)
+
+
+def stopped_output() -> ToolOutput:
+    """The result of a sandbox call the user stopped mid-way. The run then
+    ends as cancelled at its next turn, so the model does not act on it in
+    this run; the wording is safe for it to read in a later turn."""
+    return ToolOutput(
+        success=False,
+        error=_STOPPED_ERROR,
+        end_fields={"reason": "stopped", "error_class": "cancelled"},
+    )
+
+
 def _run_outcome(result: CodeResult) -> str:
     """The `outcome=` value of the `run_code finished` log line."""
     if result.success:
@@ -152,7 +171,7 @@ def _log_run_finished(
         "run_code finished: outcome=%s exit_code=%d duration_ms=%.0f timeout_s=%g "
         "timeout_capped=%s backend=%s",
         outcome, exit_code, duration_ms, timeout_s, timeout_capped,
-        getattr(backend, "backend_name", type(backend).__name__),
+        "-" if backend is None else getattr(backend, "backend_name", type(backend).__name__),
     )
 
 
@@ -519,14 +538,25 @@ class CodingSandboxTool(Tool):
             language, packages, sandbox_id, is_fresh_sandbox,
             self._allow_network, len(code),
         )
+        # Raced against Stop: for a metered backend this is where the slot
+        # wait and the VM creation happen.
         try:
-            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name)
+            resolved_id, backend = await self._manager.unless_stopped(
+                lambda: self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name),
+                tool=self.name,
+            )
         except UnknownSandboxError as e:
             _logger.error("CodingSandboxTool.execute: unknown sandbox %s: %s", sandbox_id, e)
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
         except SandboxLimitExceeded as e:
             _logger.warning("CodingSandboxTool.execute: capacity denied: %s", e)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except SandboxCallStopped:
+            _log_run_finished(
+                "stopped", exit_code=-1, duration_ms=0.0, timeout_s=0.0,
+                timeout_capped=False, backend=None,
+            )
+            return stopped_output()
 
         _logger.info(
             "CodingSandboxTool.execute: resolved sandbox_id=%s backend=%s "
@@ -561,13 +591,23 @@ class CodingSandboxTool(Tool):
             packages=packages or [],
             allow_network=self._allow_network,
         )
+        async def _run() -> CodeResult:
+            async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                return await backend.execute(request)
+
         started = time.monotonic()
         try:
-            async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
-                result = await backend.execute(request)
+            # Raced against Stop: covers the slot wait and the run itself.
+            result = await self._manager.unless_stopped(_run, tool=self.name)
         except SandboxLimitExceeded as e:
             _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except SandboxCallStopped:
+            _log_run_finished(
+                "stopped", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
+                timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
+            )
+            return stopped_output()
         except asyncio.CancelledError:
             _log_run_finished(
                 "cancelled", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
@@ -684,11 +724,16 @@ class InstallPackagesTool(Tool):
         sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         try:
-            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name)
+            resolved_id, backend = await self._manager.unless_stopped(
+                lambda: self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name),
+                tool=self.name,
+            )
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
         except SandboxLimitExceeded as e:
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except SandboxCallStopped:
+            return stopped_output()
 
         # Same staged-input upload `run_code` does on a fresh sandbox —
         # a child that pre-warms its environment with install_packages
@@ -701,11 +746,16 @@ class InstallPackagesTool(Tool):
         if is_fresh_sandbox:
             uploaded_inputs = await _upload_staged_files(backend)
 
-        try:
+        async def _install() -> Any:
             async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
-                result = await backend.install_packages(packages, language)
+                return await backend.install_packages(packages, language)
+
+        try:
+            result = await self._manager.unless_stopped(_install, tool=self.name)
         except SandboxLimitExceeded as e:
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except SandboxCallStopped:
+            return stopped_output()
         data = {**result.model_dump(), "sandbox_id": resolved_id}
         if uploaded_inputs:
             data["input_files"] = sorted(uploaded_inputs)

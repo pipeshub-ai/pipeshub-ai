@@ -11,17 +11,22 @@ threads `allow_network` into the `CodeRequest` the backend receives.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from app.agent_loop_lib.core.types import ToolResult
-from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult, InstallResult
+from app.agent_loop_lib.sandbox.coding.base import (
+    CodeRequest,
+    CodeResult,
+    InstallResult,
+)
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType
+from app.agent_loop_lib.tools.builtin.sandbox import input_staging
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
     CodingSandboxTool,
     InstallPackagesTool,
     detect_language_mismatch,
 )
-from app.agent_loop_lib.tools.builtin.sandbox import input_staging
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
     add_staged_skill_resources,
@@ -582,3 +587,145 @@ def test_manager_reports_the_registered_run_timeout_cap() -> None:
         SandboxType.CODING, _CapturingBackend, limits=SandboxLimits(max_run_timeout_s=120),
     )
     assert manager.run_timeout_cap(SandboxType.CODING) == 120
+
+
+class _BlockingBackend(_UploadCapturingBackend):
+    """Not metered (like Docker). `execute` and `install_packages` block
+    until cancelled, then take a moment to clean up, as 1.4's container
+    removal does."""
+
+    class capabilities:  # stands in for SandboxCapabilities
+        is_metered = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.saw_cancel = False
+        self.cleaned_up = False
+
+    async def _block(self) -> None:
+        self.started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            self.saw_cancel = True
+            await asyncio.sleep(0.05)
+            self.cleaned_up = True
+            raise
+
+    async def execute(self, request: CodeRequest) -> CodeResult:
+        self.last_request = request
+        await self._block()
+        raise AssertionError("unreachable")
+
+    async def install_packages(self, packages: list[str], language: str) -> InstallResult:
+        await self._block()
+        raise AssertionError("unreachable")
+
+    async def destroy(self) -> None:
+        return None
+
+
+def _stoppable(backend_cls: type = _BlockingBackend, **manager_kwargs: object) -> tuple:
+    from app.agent_loop_lib.core.context import CancellationToken
+    from app.agent_loop_lib.sandbox.governor import (
+        GovernorLimits,
+        SandboxResourceGovernor,
+    )
+
+    token = CancellationToken()
+    gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=5))
+    backends: list = []
+
+    def make() -> object:
+        backends.append(backend_cls())
+        return backends[-1]
+
+    manager = SandboxManager(governor=gov, stop_token=token, slot_wait_s=5, **manager_kwargs)
+    manager.register_backend_factory(SandboxType.CODING, make)
+    return manager, token, gov, backends
+
+
+async def _stop_when_started(token: object, backends: list, count: int = 1) -> None:
+    for _ in range(200):
+        if len(backends) >= count and all(b.started.is_set() for b in backends[:count]):
+            break
+        await asyncio.sleep(0.01)
+    token.cancel()
+
+
+class TestStopInterruptsSandboxCalls:
+    async def test_run_code_stopped_mid_run(self, caplog) -> None:
+        import logging
+        from unittest.mock import patch
+
+        manager, token, gov, backends = _stoppable()
+        tool = CodingSandboxTool(manager, artifact_output_dir="/tmp/unused")
+        with patch(
+            "app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox._save_artifacts",
+        ) as save, caplog.at_level(logging.INFO):
+            stopper = asyncio.ensure_future(_stop_when_started(token, backends))
+            result = await tool.execute(code="while True: pass", language="python", timeout=60)
+            await stopper
+
+        assert result.success is False
+        assert result.error.startswith("Stopped by the user")
+        assert dict(result.end_fields) == {"reason": "stopped", "error_class": "cancelled"}
+        assert backends[0].cleaned_up
+        save.assert_not_called()
+        assert gov.snapshot()["total"] == 0
+        assert "run_code finished: outcome=stopped" in caplog.text
+
+    async def test_install_packages_stopped(self) -> None:
+        manager, token, gov, backends = _stoppable()
+        tool = InstallPackagesTool(manager)
+        stopper = asyncio.ensure_future(_stop_when_started(token, backends))
+        result = await tool.execute(packages=["pandas"], language="python")
+        await stopper
+
+        assert result.success is False
+        assert result.error.startswith("Stopped by the user")
+        assert backends[0].saw_cancel
+        assert gov.snapshot()["total"] == 0
+
+    async def test_stop_while_the_sandbox_is_being_created(self) -> None:
+        provisioning = asyncio.Event()
+
+        class _SlowProvision(_BlockingBackend):
+            async def provision(self) -> None:
+                provisioning.set()
+                await asyncio.sleep(60)
+
+        manager, token, _gov, backends = _stoppable(_SlowProvision)
+        tool = CodingSandboxTool(manager)
+        task = asyncio.ensure_future(tool.execute(code="print(1)", language="python"))
+        await provisioning.wait()
+        token.cancel()
+        result = await task
+
+        assert result.error.startswith("Stopped by the user")
+        assert backends[0].last_request is None
+
+    async def test_stop_before_the_call_takes_no_slot_and_uploads_nothing(self) -> None:
+        manager, token, gov, backends = _stoppable()
+        token.cancel()
+        tool = CodingSandboxTool(manager)
+        with stage_input_files({PARENT_RESULTS_INPUT_PATH: b"{}"}):
+            result = await tool.execute(code="print(1)", language="python")
+
+        assert result.error.startswith("Stopped by the user")
+        assert backends == []
+        assert gov.snapshot()["total"] == 0
+
+    async def test_parallel_calls_all_stop_and_free_their_slots(self) -> None:
+        manager, token, gov, backends = _stoppable()
+        tool = CodingSandboxTool(manager)
+        stopper = asyncio.ensure_future(_stop_when_started(token, backends, count=3))
+        results = await asyncio.gather(*(
+            tool.execute(code="while True: pass", language="python") for _ in range(3)
+        ))
+        await stopper
+
+        assert all(r.error.startswith("Stopped by the user") for r in results)
+        assert all(b.cleaned_up for b in backends)
+        assert gov.snapshot()["total"] == 0

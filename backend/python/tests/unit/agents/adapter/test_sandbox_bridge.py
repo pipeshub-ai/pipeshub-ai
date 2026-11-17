@@ -191,6 +191,28 @@ class TestBuildCodingSandboxManager:
         assert entry.limits.max_concurrent == 3
         assert entry.limits.max_lifetime_s == 60.0
 
+    async def test_the_runs_stop_token_reaches_the_manager(self, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from app.agent_loop_lib.core.context import CancellationToken
+
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        token = CancellationToken()
+        ctx = SimpleNamespace(org_id="o", user_id="u", conversation_id="c", cancellation_token=token)
+        manager = await build_coding_sandbox_manager(ctx=ctx)
+        assert manager._stop_token is token
+
+        without = SimpleNamespace(org_id="o", user_id="u", conversation_id="c")
+        assert (await build_coding_sandbox_manager(ctx=without))._stop_token is None
+
+    async def test_run_timeout_cap_comes_from_settings(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        monkeypatch.setenv("SANDBOX_MAX_RUN_TIMEOUT_S", "120")
+        manager = await build_coding_sandbox_manager()
+        assert manager.run_timeout_cap(SandboxType.CODING) == 120
+
     async def test_local_factory_produces_real_local_sandbox_instance(
         self, monkeypatch,
     ) -> None:

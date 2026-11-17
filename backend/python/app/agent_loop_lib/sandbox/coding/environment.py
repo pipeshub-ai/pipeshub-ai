@@ -73,6 +73,34 @@ def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
     return env
 
 
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the whole process group (not just `proc` itself) so a
+    fork-bombing or backgrounding script can't outlive the timeout."""
+    try:
+        if sys.platform != "win32":
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def _communicate_or_kill(proc: asyncio.subprocess.Process) -> tuple[bytes, bytes]:
+    """`proc.communicate()`, killing the process group if the caller is
+    cancelled. Without it a stopped pip or npm install keeps running after
+    the call that started it has given its slot back."""
+    try:
+        return await proc.communicate()
+    except asyncio.CancelledError:
+        await asyncio.shield(_kill_process_tree(proc))
+        raise
+
+
 class EnvironmentManager:
     """Manages the Node and Python environments living inside one sandbox
     working directory. A sandbox can host both lazily — `ensure_typescript_runtime()`/
@@ -152,8 +180,9 @@ class EnvironmentManager:
             cwd=self._working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=sys.platform != "win32",
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout_bytes, stderr_bytes = await _communicate_or_kill(proc)
         if proc.returncode != 0:
             # Debian's venv explains a missing ensurepip (python3-venv) on stdout, leaving stderr empty
             detail = (stderr_bytes + stdout_bytes).decode(errors="replace").strip()
@@ -220,8 +249,9 @@ class EnvironmentManager:
             env=sanitized_subprocess_env(self._working_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=sys.platform != "win32",
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout_bytes, stderr_bytes = await _communicate_or_kill(proc)
         return ExecResult(
             stdout=stdout_bytes.decode(errors="replace"),
             stderr=stderr_bytes.decode(errors="replace"),

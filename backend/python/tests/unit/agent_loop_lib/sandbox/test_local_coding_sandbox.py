@@ -169,3 +169,38 @@ class TestResourceLimitMessages:
         assert result.error_analysis.message.startswith(
             "[sandbox] The program used up its CPU time limit (1 s of CPU)."
         )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+class TestInstallSubprocessIsKilledOnCancel:
+    async def test_cancelled_confined_command_kills_its_process_group(self, tmp_path, monkeypatch) -> None:
+        import asyncio
+
+        from app.agent_loop_lib.sandbox.coding import environment as env_mod
+
+        monkeypatch.setattr(env_mod, "confine_command", lambda cmd, *_a, **_k: cmd)
+        spawned: list[asyncio.subprocess.Process] = []
+        real_exec = asyncio.create_subprocess_exec
+
+        async def _recording_exec(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+            proc = await real_exec(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(env_mod.asyncio, "create_subprocess_exec", _recording_exec)
+        manager = env_mod.EnvironmentManager(str(tmp_path))
+        task = asyncio.ensure_future(
+            manager._run_confined([sys.executable, "-c", "import time; time.sleep(60)"], allow_network=False)
+        )
+        for _ in range(100):
+            if spawned:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.2)
+        pgid = os.getpgid(spawned[0].pid)
+        assert pgid != os.getpgid(0)  # its own session, so the kill cannot reach this process
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)

@@ -251,7 +251,10 @@ async def build_coding_sandbox_manager(
     ``ctx`` is the PipesHub ``AgentContext``. Its ids reach the backend as a
     ``SandboxContext``: the governor needs ``org_id`` for the per-org cap, and
     remote backends tag the provider-side resource with it so an orphaned
-    sandbox can be traced back to an org after this process is gone.
+    sandbox can be traced back to an org after this process is gone. Its
+    ``cancellation_token`` is the run's Stop signal: a running ``run_code`` or
+    ``install_packages`` call (of this agent or any sub-agent sharing the
+    manager) is interrupted when it is set.
     """
     sandbox_ctx = SandboxContext(
         org_id=ctx.org_id if ctx else None,
@@ -277,6 +280,7 @@ async def build_coding_sandbox_manager(
         )),
         slot_wait_s=settings.slot_wait_s,
         on_slot_wait=_slot_wait_notice(ctx),
+        stop_token=getattr(ctx, "cancellation_token", None),
     )
 
     network_enabled = allow_network

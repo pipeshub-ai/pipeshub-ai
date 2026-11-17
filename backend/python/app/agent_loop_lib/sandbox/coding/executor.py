@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult
 from app.agent_loop_lib.sandbox.coding.environment import (
     EnvironmentManager,
+    _kill_process_tree,
     sanitized_subprocess_env,
 )
 from app.agent_loop_lib.sandbox.confinement import confine_command
@@ -135,23 +136,6 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
                 continue  # best-effort — some rlimits are unavailable in containers/CI
 
     return _preexec
-
-
-async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill the whole process group (not just `proc` itself) so a
-    fork-bombing or backgrounding script can't outlive the timeout."""
-    try:
-        if sys.platform != "win32":
-            import signal
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:
-            proc.kill()
-    except ProcessLookupError:
-        pass
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except asyncio.TimeoutError:
-        pass
 
 
 class CodeExecutor:
