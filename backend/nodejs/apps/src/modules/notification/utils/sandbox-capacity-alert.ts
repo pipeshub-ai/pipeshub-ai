@@ -20,6 +20,14 @@ export const SANDBOX_ALERT_TYPES = {
 } as const;
 
 export type SandboxAlertType = keyof typeof SANDBOX_ALERT_TYPES;
+
+/** The accepted type names, as a set so a prototype name (`constructor`, `__proto__`) never matches. */
+const SANDBOX_ALERT_TYPE_NAMES: ReadonlySet<string> = new Set(
+  Object.keys(SANDBOX_ALERT_TYPES),
+);
+
+export const isSandboxAlertType = (value: unknown): value is SandboxAlertType =>
+  typeof value === 'string' && SANDBOX_ALERT_TYPE_NAMES.has(value);
 export type SandboxAlertKind = (typeof SANDBOX_ALERT_TYPES)[SandboxAlertType];
 export type SandboxAlertLevel = 'warning' | 'critical';
 export type SandboxAlertReason = 'memory' | 'cpu' | 'slots';
@@ -98,6 +106,25 @@ export type ParseResult =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** *key* of *obj* when it is the object's own property; an inherited one is never read. */
+const own = (obj: Record<string, unknown>, key: string): unknown =>
+  Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
+
+const NO_FIELDS: Readonly<Record<string, unknown>> = Object.freeze(
+  Object.create(null) as Record<string, unknown>,
+);
+
+/** The own fields of *value* in an object without a prototype, or null when it is not an object. */
+function ownFields(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const fields: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
+  for (const key of Object.keys(value)) fields[key] = value[key];
+  return fields;
+}
+
 /** A finite number in [low, high] (an integer when asked), else null. */
 function bounded(
   value: unknown,
@@ -161,14 +188,14 @@ export function parseSandboxCapacityAlert(
   if (!isRecord(raw)) return { ok: false, reason: 'not_an_object' };
   if (eventSize(raw) > MAX_EVENT_BYTES)
     return { ok: false, reason: 'too_large' };
-  const type = raw.type;
-  if (typeof type !== 'string' || !(type in SANDBOX_ALERT_TYPES)) {
+  const type = own(raw, 'type');
+  if (!isSandboxAlertType(type)) {
     return { ok: false, reason: 'unknown_type', type: safeLabel(type) };
   }
-  const alertType = type as SandboxAlertType;
+  const alertType = type;
   const kind = SANDBOX_ALERT_TYPES[alertType];
-  const p = raw.payload;
-  if (!isRecord(p) || p.v !== PAYLOAD_VERSION) {
+  const p = ownFields(own(raw, 'payload'));
+  if (!p || p.v !== PAYLOAD_VERSION) {
     return { ok: false, reason: 'bad_payload', type };
   }
   const alertId = matching(p.alertId, ALERT_ID_RE);
@@ -198,8 +225,8 @@ export function parseSandboxCapacityAlert(
     base + MAX_EXPIRY_MS,
   );
 
-  const limit = isRecord(p.limit) ? p.limit : {};
-  const counts = isRecord(p.reasonCounts) ? p.reasonCounts : null;
+  const limit = ownFields(p.limit) ?? NO_FIELDS;
+  const counts = ownFields(p.reasonCounts);
   const reasonCounts = counts
     ? {
         slots: count(counts.slots) ?? 0,
@@ -213,7 +240,7 @@ export function parseSandboxCapacityAlert(
     level,
     alertId,
     // Only an explicit `email: false` means in-app only; older events have no field.
-    email: kind !== 'resolved' && raw.email !== false,
+    email: kind !== 'resolved' && own(raw, 'email') !== false,
     firedAt,
     expiresAtMs,
     host: matching(p.host, HOST_RE),

@@ -29,15 +29,41 @@ export type PlatformAdminRecipientsResolver = () => Promise<
 >;
 
 const HOUR_MS = 3600_000;
-/** Alerts of one level whose emails are queued per hour, across all events; later ones are in-app only. */
+/**
+ * Alert emails of one level queued per hour for one budget scope (see
+ * `budgetScope`); later alerts are in-app only.
+ */
 export const MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR = 4;
-/** Alerts of one type delivered per hour, across all events; later ones are dropped. */
+/** Alert emails of one level queued per hour across all scopes. */
+export const MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR_ALL_SCOPES = 12;
+/** Alerts of one type delivered per hour for one budget scope; later ones are dropped. */
 export const MAX_ALERTS_PER_TYPE_PER_HOUR = 30;
+/** Alerts of one type delivered per hour across all scopes. */
+export const MAX_ALERTS_PER_TYPE_PER_HOUR_ALL_SCOPES = 120;
 /** Alert ids remembered, so an event the broker delivers again is not delivered twice. */
 export const DELIVERED_IDS_KEPT = 1000;
 const DELIVERED_IDS_TTL_MS = 24 * HOUR_MS;
 /** A skipped-event warning of one kind is logged at most this often (DEBUG in between). */
 const SKIP_WARNING_EVERY_MS = 10 * 60_000;
+
+/** The alert id the AI service's publisher writes: a lowercase random UUID. */
+const PUBLISHER_ALERT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** Scope of events whose id is not in the publisher's format. Not a valid host. */
+export const OTHER_IDS_SCOPE = '~other-ids';
+/** Scope of publisher-format events without a host. Not a valid host. */
+const NO_HOST_SCOPE = '~no-host';
+
+/**
+ * The rate budget an alert draws from: its host when the id has the
+ * publisher's format, else one shared scope for every other id. Events are
+ * not signed, so this cannot stop a sender that copies the host and the id
+ * format; it only keeps malformed or other-host floods off a host's budget.
+ */
+export function budgetScope(alert: SandboxCapacityAlert): string {
+  if (!PUBLISHER_ALERT_ID_RE.test(alert.alertId)) return OTHER_IDS_SCOPE;
+  return alert.host ?? NO_HOST_SCOPE;
+}
 
 export function isPlatformAudience(raw: unknown): boolean {
   return (
@@ -78,18 +104,58 @@ export function logIfPlatformAlertsBlocked(logger: Logger): void {
   );
 }
 
-/** At most *max* events per key in any hour. */
-class HourlyLimit {
-  private readonly seen = new Map<string, number[]>();
+/** A token taken from an `HourlyBudget`, to give back if the delivery fails. */
+interface BudgetToken {
+  group: string;
+  scope: string;
+  at: number;
+}
 
-  constructor(private readonly max: number) {}
+/**
+ * At most *perScope* tokens per (group, scope) and *perGroup* per group in
+ * any hour. A token is given back when what it paid for did not happen.
+ */
+class HourlyBudget {
+  private readonly used = new Map<string, number[]>();
 
-  allow(key: string, now: number): boolean {
-    const recent = (this.seen.get(key) ?? []).filter((t) => now - t < HOUR_MS);
-    const ok = recent.length < this.max;
-    if (ok) recent.push(now);
-    this.seen.set(key, recent);
-    return ok;
+  constructor(
+    private readonly perScope: number,
+    private readonly perGroup: number,
+  ) {}
+
+  private recent(key: string, now: number): number[] {
+    const times = (this.used.get(key) ?? []).filter((t) => now - t < HOUR_MS);
+    if (times.length === 0) this.used.delete(key);
+    else this.used.set(key, times);
+    return times;
+  }
+
+  private static keys(group: string, scope: string): [string, string] {
+    // A group is a fixed type or level name, so `|` cannot appear in it.
+    return [`${group}|${scope}`, `${group}|`];
+  }
+
+  /** A token, or null (nothing taken) when the scope or the group is used up. */
+  take(group: string, scope: string, now: number): BudgetToken | null {
+    const [scopeKey, groupKey] = HourlyBudget.keys(group, scope);
+    const inScope = this.recent(scopeKey, now);
+    const inGroup = this.recent(groupKey, now);
+    if (inScope.length >= this.perScope || inGroup.length >= this.perGroup) {
+      return null;
+    }
+    this.used.set(scopeKey, [...inScope, now]);
+    this.used.set(groupKey, [...inGroup, now]);
+    return { group, scope, at: now };
+  }
+
+  refund(token: BudgetToken): void {
+    for (const key of HourlyBudget.keys(token.group, token.scope)) {
+      const times = this.used.get(key);
+      if (!times) continue;
+      const i = times.lastIndexOf(token.at);
+      if (i >= 0) times.splice(i, 1);
+      if (times.length === 0) this.used.delete(key);
+    }
   }
 }
 
@@ -103,13 +169,23 @@ class HourlyLimit {
  * text and the link are built here. An alert id already delivered is skipped,
  * and deliveries and emails are capped per hour, so a flood of events cannot
  * fill the inbox or the mail queue.
+ *
+ * Only a valid, unexpired, new alert takes a token, and a token is given back
+ * when nothing was stored (a store error, no recipients) or no email was
+ * queued, so a failure or a redelivery does not use up the hour. Budgets are
+ * kept per type (deliveries) and per level (emails), each split by
+ * `budgetScope`. The caps live in this process's memory.
  */
 @injectable()
 export class PlatformAlertHandler {
   private readonly delivered = new Map<string, number>();
-  private readonly deliveries = new HourlyLimit(MAX_ALERTS_PER_TYPE_PER_HOUR);
-  private readonly emails = new HourlyLimit(
+  private readonly deliveries = new HourlyBudget(
+    MAX_ALERTS_PER_TYPE_PER_HOUR,
+    MAX_ALERTS_PER_TYPE_PER_HOUR_ALL_SCOPES,
+  );
+  private readonly emails = new HourlyBudget(
     MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR,
+    MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR_ALL_SCOPES,
   );
   private readonly warnedAt = new Map<string, number>();
 
@@ -186,52 +262,68 @@ export class PlatformAlertHandler {
       });
       return;
     }
-    if (!this.deliveries.allow(type, now)) {
+    const scope = budgetScope(alert);
+    const token = this.deliveries.take(type, scope, now);
+    if (!token) {
       this.warnLimited(
-        `rate:${type}`,
+        `rate:${type}:${scope}`,
         'Platform alert skipped: too many this hour',
-        { type, alertId, maxPerHour: MAX_ALERTS_PER_TYPE_PER_HOUR },
+        { type, alertId, scope, maxPerHour: MAX_ALERTS_PER_TYPE_PER_HOUR },
       );
       return;
     }
 
-    const orgs = await this.resolveRecipients();
-    if (orgs.length === 0) {
+    let orgs: PlatformRecipientOrg[];
+    let recipients = 0;
+    try {
+      orgs = await this.resolveRecipients();
+      for (const org of orgs) {
+        const delivered = await deliverToOrg(
+          this.orgEvent(alert, org),
+          this.notificationService,
+          this.logger,
+        );
+        recipients += delivered;
+        this.logger.debug('Platform alert delivered to org', {
+          type,
+          alertId,
+          orgId: org.orgId,
+          recipients: delivered,
+        });
+      }
+    } catch (error) {
+      this.deliveries.refund(token);
+      throw error;
+    }
+    if (recipients === 0) {
+      this.deliveries.refund(token);
       this.logger.warn('Platform alert not delivered: no recipients', {
         type,
         alertId,
+        orgs: orgs.length,
       });
       return;
-    }
-
-    let recipients = 0;
-    for (const org of orgs) {
-      const delivered = await deliverToOrg(
-        this.orgEvent(alert, org),
-        this.notificationService,
-        this.logger,
-      );
-      recipients += delivered;
-      this.logger.debug('Platform alert delivered to org', {
-        type,
-        alertId,
-        orgId: org.orgId,
-        recipients: delivered,
-      });
     }
     this.remember(alertId, now);
 
     let emailQueued = 0;
     if (alert.email) {
-      if (this.emails.allow(alert.kind, now)) {
+      const emailToken = this.emails.take(alert.kind, scope, now);
+      if (emailToken) {
         for (const org of orgs) {
           emailQueued += await this.queueEmail(alert, org);
         }
+        if (emailQueued === 0) this.emails.refund(emailToken);
       } else {
         this.warnLimited(
-          `email-rate:${alert.kind}`,
+          `email-rate:${alert.kind}:${scope}`,
           'Platform alert email skipped: too many this hour',
-          { type, alertId, maxPerHour: MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR },
+          {
+            type,
+            alertId,
+            scope,
+            maxPerHour: MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR,
+          },
         );
       }
     }
