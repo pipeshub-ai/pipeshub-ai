@@ -21,11 +21,13 @@ SPEND_PATHS = [
 ]
 
 
-def _collect(*extra: str) -> list[str]:
+def _collect(*extra: str, extra_env: dict[str, str] | None = None) -> list[str]:
     env = {k: v for k, v in os.environ.items() if k != "PYTEST_XDIST_WORKER"}
+    env.update(extra_env or {})
     out = subprocess.run(
         [sys.executable, "-m", "pytest", *SPEND_PATHS, "-m", "not live_smoke", "--collect-only", "-p", "no:cacheprovider",
-         "-p", "tests.support.shard_plugin", *extra],
+         "-p", "tests.support.shard_plugin",
+         "--verbosity=-1", *extra],
         cwd=PYTHON_ROOT, env=env, capture_output=True, text=True, check=True, timeout=300,
     ).stdout
     return [line for line in out.splitlines() if "::" in line]
@@ -42,6 +44,12 @@ def test_every_spend_test_lands_in_exactly_one_shard() -> None:
     assert all(expected), "no shard may be empty"
     # and the plugin really selects that slice
     assert _collect("--shard=2/3") == expected[1]
+
+
+@pytest.mark.timeout(300)
+def test_an_inherited_verbosity_does_not_change_what_collection_prints() -> None:
+    """A contributor's ``PYTEST_ADDOPTS=-v`` must not turn the collected ids into a tree."""
+    assert len(_collect("--shard=1/3", extra_env={"PYTEST_ADDOPTS": "-v"})) > 20
 
 
 def test_the_workflow_runs_every_shard_of_the_matrix() -> None:

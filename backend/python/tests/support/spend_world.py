@@ -46,16 +46,21 @@ def worker_redis_url(url: str) -> str:
     """The Redis URL with the logical database moved up by this xdist worker's index, so parallel workers never share a
     keyspace (and one worker's cleanup scan never walks another's keys). A plain run keeps the URL as given. Redis has 16
     databases by default; a run with more workers than that fails here instead of sharing one."""
-    from urllib.parse import urlsplit, urlunsplit
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
     index = _worker_index()
     if not index:
         return url
     parts = urlsplit(url)
-    base = int(parts.path.lstrip("/") or 0)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    # redis-py gives ``?db=`` precedence over the path, so the effective database is read the same way and written back to
+    # both places, or the query parameter would undo the offset.
+    base = int(query.get("db") or parts.path.lstrip("/") or 0)
     if base + index > 15:
         raise RuntimeError(f"worker gw{index} needs Redis database {base + index}; use fewer workers or a lower base database")
-    return urlunsplit(parts._replace(path=f"/{base + index}"))
+    if "db" in query:
+        query["db"] = str(base + index)
+    return urlunsplit(parts._replace(path=f"/{base + index}", query=urlencode(query)))
 
 
 async def _client():  # noqa: ANN202
