@@ -13,6 +13,8 @@ PROBE = textwrap.dedent(
     """
     import sys
     from app.telemetry.backend import PrometheusBackend
+    from app.telemetry.flag import set_collection_consent
+    set_collection_consent(True)  # recording needs the admin's consent, whose default follows the edition
     if sys.argv[1] == "on":
         from app.telemetry import ops_exporter  # noqa: F401  (imported; a collector is registered below)
         import tempfile
