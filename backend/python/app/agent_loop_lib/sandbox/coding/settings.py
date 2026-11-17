@@ -164,14 +164,26 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+_warned_float_values: set[tuple[str, str]] = set()
+
+
 def _env_float(key: str, default: float) -> float:
+    """A duration in seconds. Not a number, not finite or below 0 is the
+    default, with one warning: ``nan`` would make a slot wait never end and
+    spin, and a negative timeout would fail every call."""
     raw = os.environ.get(key)
-    if raw is None:
+    if raw is None or not raw.strip():
         return default
     try:
-        return float(raw.strip())
+        value = float(raw.strip())
     except ValueError:
-        return default
+        value = math.nan
+    if math.isfinite(value) and value >= 0:
+        return value
+    if (key, raw) not in _warned_float_values:
+        _warned_float_values.add((key, raw))
+        logger.warning("Ignoring %s=%r: use a number of seconds, 0 or more; using %g", key, raw, default)
+    return default
 
 
 ENV_MAX_RUN_TIMEOUT_S = "SANDBOX_MAX_RUN_TIMEOUT_S"

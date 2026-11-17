@@ -236,6 +236,8 @@ class SandboxResourceGovernor:
         # shortcut: waiters are woken all at once and re-check, not served in
         # arrival order, and a call arriving just as a slot frees can take it
         # before them; add a FIFO queue if waits near slot_wait_s show up.
+        if not wait_s >= 0:  # NaN or negative: a NaN deadline never passes, and spins
+            wait_s = 0.0
         tag = org_tag(org_id)
         start = self._clock()
         told = on_wait is None
