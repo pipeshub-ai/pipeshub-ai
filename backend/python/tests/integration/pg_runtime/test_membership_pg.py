@@ -29,13 +29,8 @@ from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
 from app.services.messaging.postgres.queue import PgQueue
 from tests.integration.pg_runtime.test_roles import _config_as
-from tests.unit.modules.artifacts.test_stored_retention import (
-    GR,
-    NOW,
-    FakeBlob,
-    FakeGraph,
-    _retired,
-)
+from tests.support.stored_retention_fakes import GR, NOW, FakeBlob, FakeGraph
+from tests.support.stored_retention_fakes import retired_entry as _retired
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
