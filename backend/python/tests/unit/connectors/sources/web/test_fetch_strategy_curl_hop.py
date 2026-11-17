@@ -7,8 +7,10 @@ transfer ends before its done-callback is attached. The hop no longer streams.
 
 import asyncio
 import concurrent.futures
+import contextlib
 import ipaddress
 import logging
+import socket
 import threading
 import time
 from collections.abc import Iterator
@@ -108,11 +110,19 @@ def _hop(port: int, path: str, max_bytes: int | None = None) -> fetch_strategy._
         session.close()
 
 
-def _closed_port() -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
-    number = server.server_port
-    server.server_close()
-    return number
+@contextlib.contextmanager
+def _refusing_port() -> Iterator[int]:
+    """A loopback port that refuses every connection for as long as it is held: bound, never listening.
+
+    A port closed again at once is free, and over 2000 requests another test worker's server could take it and answer
+    (CI: 1997 of 2000 refused). Held, nothing else can bind it and no connection can use it as its own source port.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        yield sock.getsockname()[1]
+    finally:
+        sock.close()
 
 
 def test_a_page_within_the_limit_comes_back_whole(port: int) -> None:
@@ -180,13 +190,13 @@ def test_a_redirect_is_handed_back_not_followed(port: int) -> None:
 
 def test_requests_refused_before_any_headers_fail_cleanly_every_time() -> None:
     # The streamed hop aborted this process within 2000 of these (glibc: double free / heap corruption).
-    port = _closed_port()
     failures = 0
-    for _ in range(2000):
-        try:
-            _hop(port, "/")
-        except Exception:
-            failures += 1
+    with _refusing_port() as port:
+        for _ in range(2000):
+            try:
+                _hop(port, "/")
+            except Exception:
+                failures += 1
     assert failures == 2000
 
 
