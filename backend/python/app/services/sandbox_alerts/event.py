@@ -7,6 +7,7 @@ true, an email built from ``payload``. The text is English and stored as is.
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -87,11 +88,14 @@ def indexing_text(decision: AlertDecision, sandbox_mode: str) -> str | None:
 
 
 def slot_wait_seconds(env: dict[str, str] | None = None) -> int:
+    """The wait the sandbox settings use: blank, not a number, not finite or
+    below 0 is the 120 s default."""
     raw = ((os.environ if env is None else env).get("SANDBOX_SLOT_WAIT_S") or "").strip()
     try:
-        return round(float(raw)) if raw else 120
+        value = float(raw) if raw else math.nan
     except ValueError:
-        return 120
+        value = math.nan
+    return round(value) if math.isfinite(value) and value >= 0 else 120
 
 
 def build_alert_event(
