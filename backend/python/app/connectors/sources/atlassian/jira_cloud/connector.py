@@ -2720,22 +2720,25 @@ class JiraConnector(BaseConnector):
                     self._app_roles_unread = True
                     continue
                 group_details = role.get("groupDetails", [])
+                role_outside_groups = False
                 if not group_details and isinstance(role.get("userCount"), int) and role["userCount"] > 0:
                     # Users count against this role's licence, but no group grants it: who they are is not read here.
                     # ApplicationRole.userCount: "The number of users counting against your license."; groupDetails:
                     # "The groups associated with the application role." The docs name no other source of product
                     # access, so a role with users and no group leaves access unknown (fail closed).
                     # (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json)
-                    access_outside_groups = True
+                    role_outside_groups = True
                 named = role.get("groups") if isinstance(role.get("groups"), list) else []
                 identified = [g for g in group_details if isinstance(g, dict) and g.get("groupId")]
                 if len(identified) < max(len(named), len(group_details)):
                     # ApplicationRole.groups: "The groups associated with the application role. As a group's name can
                     # change, use of `groupDetails` is recommended to identify a groups." A group the role names but its
                     # groupDetails do not identify by id licenses people this read cannot name (fail closed).
-                    access_outside_groups = True
+                    role_outside_groups = True
+                # Not mapped: a grant to it reads as unread (stored access kept), not as the groups that were read.
+                access_outside_groups = access_outside_groups or role_outside_groups
 
-                if role_key and group_details:
+                if role_key and group_details and not role_outside_groups:
                     mapping[role_key] = [
                         {"groupId": g.get("groupId"), "name": g.get("name")}
                         for g in group_details
@@ -2746,6 +2749,10 @@ class JiraConnector(BaseConnector):
             if self._app_roles_unread:
                 self.logger.warning("⚠️ Application roles response has an entry that is not a readable role")
             self._app_roles_read = bool(roles_data) and not self._app_roles_unread and not access_outside_groups
+            if access_outside_groups:
+                # A role licenses people its groups do not show: a Browse grant to it is unread, not the groups read,
+                # so the projects that name it keep their stored access.
+                self._app_roles_unread = True
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -2787,8 +2794,11 @@ class JiraConnector(BaseConnector):
         if not self._app_roles_read:
             return None
         licensed: set[str] = set()
-        role_groups = {g["name"]: g["groupId"] for groups in app_roles_mapping.values() for g in groups if g.get("name")}
-        for name, group_id in role_groups.items():
+        # By id: GroupName.groupId "uniquely identifies the group across all Atlassian products" and its name is
+        # optional (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json); /group/member reads by id.
+        role_groups = {g["groupId"]: g.get("name") or g["groupId"]
+                       for groups in app_roles_mapping.values() for g in groups if g.get("groupId")}
+        for group_id, name in role_groups.items():
             members, ok = await self._fetch_group_members(group_id, name)
             if not ok:
                 self.logger.warning("⚠️ Could not read the members of product group %s", name)
@@ -3321,8 +3331,9 @@ class JiraConnector(BaseConnector):
                 self.logger.debug(f"  {project_key}: User permission skipped - account '{holder_param}' is inactive")
                 return grant_permissions
             elif (
+                # Product access unknown (None) is not access: the project's stored access is kept instead.
                 user_email and self._user_read_unfinished
-                and (self._licensed_account_ids is None or holder_param in self._licensed_account_ids)
+                and self._licensed_account_ids is not None and holder_param in self._licensed_account_ids
                 and user_data.get("accountType", "atlassian") == "atlassian"
             ):
                 # Only a user list cut short leaves out a licensed account. After a complete read,
