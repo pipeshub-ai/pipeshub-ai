@@ -324,14 +324,12 @@ async def test_a_retried_refresh_request_pays_no_page_again_that_the_first_attem
     assert len(paid) == 3, f"the retry paid again for {len(paid) - 3} page(s)"
 
 
-async def test_a_refresh_delivery_that_overlaps_a_purge_is_handed_back_and_runs_nothing(
+async def test_a_refresh_delivery_that_overlaps_a_purge_is_handed_back_without_an_attempt_and_runs_nothing(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services.messaging.error_classifier import (
-        MessageErrorClassifier,
-        MessageErrorType,
-    )
+    from app.services.messaging.consumer_concurrency import RefreshPurgeHeld, RequeueWithoutAttempt
     from app.services.paid_cache import cache as cache_module
+    from app.services.paid_cache.locks import refresh_name
 
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.05)
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
@@ -339,13 +337,52 @@ async def test_a_refresh_delivery_that_overlaps_a_purge_is_handed_back_and_runs_
     handler = _handler()
     cache = access.paid_cache_for(MagicMock())
     backend = await cache._backend()
-    from app.services.paid_cache.locks import refresh_name
-
     assert await backend.acquire(refresh_name(ORG, REC, "evt-7") + ":lease", 60_000)      # another delivery's live lease
 
-    with pytest.raises(cache_module.RefreshPurgeInProgress) as raised:
+    with pytest.raises(RefreshPurgeHeld) as raised:
         await _events(handler, EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-7"})
 
-    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT       # redelivered later
+    assert isinstance(raised.value, RequeueWithoutAttempt) and raised.value.counts_toward_backstop is False
+    assert raised.value.delay_s and raised.value.delay_s > 0                                # held back, then redelivered
     assert current_run() is None                                                        # no reuse run opened
     assert store.paths(ORG, REC) != []                                                  # nothing purged by this delivery
+
+
+async def test_a_long_purge_and_its_duplicate_both_end_with_the_record_completed(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The holder purges for a long time (an event stands in for 180 s); the duplicate is handed back again and again
+    without an attempt being spent, and once the holder has marked it reuses and completes."""
+    import asyncio
+
+    from app.services.messaging.consumer_concurrency import RefreshPurgeHeld
+    from app.services.paid_cache import cache as cache_module
+
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.02)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.005)
+    _seed(store)
+    holder_handler, duplicate_handler = _handler(), _handler()
+    cache = access.paid_cache_for(MagicMock())
+    release_purge = asyncio.Event()
+    real_purge = cache.purge_record
+
+    async def slow_purge(org: str, rec: str) -> None:
+        await release_purge.wait()                                 # the purge is still running
+        await real_purge(org, rec)
+
+    cache.purge_record = slow_purge  # type: ignore[method-assign]
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-180"}
+
+    holder = asyncio.ensure_future(_events(holder_handler, EventTypes.REINDEX_RECORD.value, dict(payload)))
+    await asyncio.sleep(0.05)                                      # the holder has its lease
+    handed_back = 0
+    for _ in range(8):                                             # far more than the 3-attempt budget
+        with pytest.raises(RefreshPurgeHeld):
+            await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+        handed_back += 1
+    release_purge.set()
+    holder_events = await holder
+    assert holder_events, "the holder did not run to its end"                                  # the holder completes
+    await _reindex(duplicate_handler, dict(payload))               # the duplicate, delivered again, now completes
+    run = current_run()
+    assert handed_back == 8 and run is not None and run.reuse_prior_attempt

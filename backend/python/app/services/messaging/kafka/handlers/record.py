@@ -32,6 +32,8 @@ from app.connectors.core.base.data_processor.storage_cleanup import StorageClean
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.core.org_context import current_org_id
 from app.core.org_context import peek as peek_org_context
+from app.services.messaging.consumer_concurrency import RefreshPurgeHeld
+from app.services.paid_cache.cache import RefreshPurgeInProgress
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
     IndexingError,
@@ -224,6 +226,10 @@ _PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 
 
 _DISABLED_TYPES_TTL_SECONDS = 60.0
+
+
+#: How long the broker holds a refresh event handed back because another delivery is purging.
+REFRESH_HANDBACK_DELAY_S = 30.0
 
 
 class RecordEventHandler(BaseEventService):
@@ -2338,10 +2344,14 @@ class RecordEventHandler(BaseEventService):
                 if refresh_org:
                     paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
                     event_id = payload.get(replay_set.EVENT_ID_KEY)
-                    async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
-                        if must_purge:
-                            # A failure raises out of the block: no marker is written, and the redelivery purges.
-                            await paid_cache.purge_record(refresh_org, record_id)
+                    try:
+                        async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
+                            if must_purge:
+                                # A failure raises out of the block: no marker is written, and the redelivery purges.
+                                await paid_cache.purge_record(refresh_org, record_id)
+                    except RefreshPurgeInProgress as exc:
+                        # Queue time, not a failure: handed back after a delay without counting an attempt.
+                        raise RefreshPurgeHeld(str(exc), delay_s=REFRESH_HANDBACK_DELAY_S) from exc
                     # A redelivery of the same event (must_purge False) still refreshes: it reuses only what its first
                     # delivery stored, as that delivery's manifest lists it, and pays for the rest. The event id names
                     # the refresh for the parsing service too.

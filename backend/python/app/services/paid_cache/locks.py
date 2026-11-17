@@ -66,8 +66,15 @@ def _clamped(name: str, default: float) -> float:
     return value
 
 
+def _raw_budgets() -> tuple[float, float]:
+    """(general record budget, longest budget of any record type), from the environment, live, as configured: the
+    indexing consumer admits under these, whatever the stage deadline is clamped to."""
+    record = env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
+    return record, max(record, env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
+
+
 def _budgets() -> tuple[float, float]:
-    """(general record budget, longest budget of any record type), from the environment, live, clamped."""
+    """The same, clamped to the protection window (for the stage deadline); warns once per variable when it clamps."""
     record = _clamped("RECORD_PROCESSING_TIMEOUT", 1800.0)
     return record, max(record, _clamped("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
 
@@ -122,7 +129,7 @@ def admission_window_s() -> float:
     the request is sent within the whole longest budget; the parsing route can then hold it for the admission gate and
     the memory wait before ``parse`` starts.
     """
-    record, longest = _budgets()
+    record, longest = _raw_budgets()
     window = PARSE_SLOT_WAITS * record + longest + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
     return float(-(-window // REPURGE_MARGIN_S) * REPURGE_MARGIN_S)
 
@@ -130,7 +137,10 @@ def admission_window_s() -> float:
 def repurge_horizon_s() -> float:
     """The chain ends once this long has passed since the delete, computed from the live configuration: the latest a
     stage can begin, the longest it may run, the last write's deadline, a lock's life and a margin."""
-    return admission_window_s() + stage_deadline_s() + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
+    # The unclamped budgets: the consumer admits (and a write can land) under what is configured, so the horizon
+    # covers that even where the stage deadline is clamped.
+    longest = max(float(STAGE_DEADLINE_S), _raw_budgets()[1])
+    return admission_window_s() + longest + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
 
 
 def lock_name(org_id: str, record_id: str, digest: str) -> str:
