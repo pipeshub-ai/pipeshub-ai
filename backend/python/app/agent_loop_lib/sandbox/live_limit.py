@@ -411,6 +411,7 @@ class LiveLimit:
         self._admit_reading: tuple[float, int | None, int | None] | None = None
         self._last_held = 0
         self._unknown_logged_at: float | None = None
+        self._admit_error_logged_at: float | None = None
         self._task: asyncio.Task[None] | None = None
         # Called (on the event loop, never blocking) while a run waits for
         # memory where indexing shares it; see ``waiting()``.
@@ -583,7 +584,7 @@ class LiveLimit:
 
     def _stale(self, rec: LiveRecord, now: float) -> bool:
         age = now - rec.stamp
-        if age > STALE_S or age < -STALE_S:
+        if age > STALE_S or age < -CLOCK_SLACK_S:
             return True
         return age > DEAD_OWNER_S and not pid_alive(rec.owner_pid)
 
@@ -616,6 +617,9 @@ class LiveLimit:
         with self._ledger.transaction(STEP_LOCK_BUDGET) as txn:
             if txn is None:
                 return None
+            # Read under the lock, so no record holds a stamp later than a
+            # later stepper's clock: one further ahead predates a reboot.
+            now = self._clock()
             rec = txn.read()
             if self._fresh_step(rec, now):
                 return None
@@ -726,7 +730,16 @@ class LiveLimit:
     async def admit_and_charge(self, *, held: int) -> HoldReason | None:
         if not self._mode.on:
             return None
-        return await asyncio.to_thread(self._admit_locked)
+        try:
+            return await asyncio.to_thread(self._admit_locked)
+        except Exception:
+            # Like an unreadable floor: admit, or a failing reading or record
+            # write would fail every run instead of only skipping the check.
+            now = self._clock()
+            if self._admit_error_logged_at is None or now - self._admit_error_logged_at >= UNKNOWN_LOG_EVERY_S:
+                self._admit_error_logged_at = now
+                logger.warning("sandbox live limit: the per-run memory check failed; admitting", exc_info=True)
+            return None
 
     def _memory_now(self, now: float) -> tuple[int | None, int | None]:
         mode, profile = self._mode, self._profile
@@ -778,8 +791,10 @@ class LiveLimit:
             with self._ledger.transaction(0.0) as txn:
                 rec = txn.read() if txn is not None else None
                 if txn is not None and rec is not None and rec.initialised:
-                    txn.write(replace(rec, wait_events=rec.wait_events + 1, **{field: now}))
-                    self._stamped[field] = now
+                    # A failed write only loses this stamp; it must not fail the waiting run.
+                    with contextlib.suppress(OSError):
+                        txn.write(replace(rec, wait_events=rec.wait_events + 1, **{field: now}))
+                        self._stamped[field] = now
         callback = self.on_memory_wait
         if callback is not None and self.waits_for_memory(reason):
             try:

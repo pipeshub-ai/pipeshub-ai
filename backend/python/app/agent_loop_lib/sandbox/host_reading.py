@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import sys
 import threading
 from dataclasses import dataclass
@@ -230,7 +231,12 @@ class CgroupReader:
 
 
 def _num(value: object) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    """A finite number from a JSON value, else ``None``. JSON from the proxy
+    may hold ``NaN`` or ``Infinity``, which ``int()`` would raise on."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 class SidecarReader:
