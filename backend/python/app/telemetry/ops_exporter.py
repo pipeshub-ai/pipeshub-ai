@@ -24,6 +24,7 @@ import ipaddress
 import json
 import logging
 import os
+import select
 import socket
 import threading
 import time
@@ -47,6 +48,7 @@ from app.services.resource_governor.probe import memory_domain_id, read_pressure
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping
+    from typing import BinaryIO
 
     from app.services.resource_governor import ResourceGovernor
 
@@ -835,9 +837,34 @@ class SingleFlight:
         return flight.value
 
 
+class _MarkingReader:
+    """The request reader: tells the server, as soon as a byte of the request has been read, that this client
+    has sent something (an idle or not-yet-sending client has not)."""
+
+    def __init__(self, inner: BinaryIO, started: Callable[[], None]) -> None:
+        self._inner = inner
+        self._started: Callable[[], None] | None = started
+
+    def readline(self, limit: int = -1) -> bytes:
+        data = self._inner.readline(limit)
+        if data and self._started is not None:
+            started, self._started = self._started, None  # once
+            started()
+        return data
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
 class _Handler(BaseHTTPRequestHandler):
     registry: CollectorRegistry
     timeout = CONNECTION_TIMEOUT_S  # StreamRequestHandler applies it to the socket
+
+    def setup(self) -> None:
+        super().setup()
+        mark = getattr(self.server, "mark_started", None)
+        if mark is not None:
+            self.rfile = _MarkingReader(self.rfile, lambda: mark(self.request))
 
     def do_GET(self) -> None:
         mark = getattr(self.server, "mark_serving", None)
@@ -892,7 +919,7 @@ class BoundedServer(HTTPServer):
         self._max = max_connections
         self.request_queue_size = max_connections  # the listen backlog follows this server's cap
         self._deadline = REQUEST_DEADLINE_S if request_deadline is None else request_deadline
-        self._conns: dict[socket.socket, list[Any]] = {}  # socket -> [accepted at, being answered]
+        self._conns: dict[socket.socket, list[Any]] = {}  # socket -> [accepted at, being answered, has sent a byte]
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
         self._live: set[threading.Thread] = set()  # handler threads that have not yet exited: the real slot count
@@ -909,6 +936,13 @@ class BoundedServer(HTTPServer):
     def render(self, registry: CollectorRegistry) -> bytes:
         return self._flight.run(lambda: generate_latest(registry))
 
+    def mark_started(self, sock: socket.socket) -> None:
+        # No lock: a dict read and a list store are atomic, and a handler that waited on the server lock for
+        # every line of every request would queue behind whichever thread the GIL has parked while holding it.
+        entry = self._conns.get(sock)
+        if entry is not None and len(entry) > 2:
+            entry[2] = True
+
     def mark_serving(self, sock: socket.socket) -> None:
         with self._lock:
             entry = self._conns.get(sock)
@@ -916,18 +950,34 @@ class BoundedServer(HTTPServer):
                 entry[1] = True
 
     @staticmethod
-    def _cut(sock: socket.socket) -> None:
+    def _cut(sock: socket.socket, *, read_side_only: bool = False) -> None:
+        """Wake the handler blocked in ``recv`` so that it leaves and frees its slot.
+
+        ``read_side_only`` ends the reading only: bytes already received (a whole request the handler has not
+        parsed yet, whatever the load) are still delivered to it and answered, then it leaves; a client that
+        sent nothing, or part of a line, gets EOF and the handler leaves at once.
+        """
         with contextlib.suppress(OSError):
-            sock.shutdown(socket.SHUT_RDWR)  # wakes the thread blocked in recv; it closes the socket
+            sock.shutdown(socket.SHUT_RD if read_side_only else socket.SHUT_RDWR)
 
     def _reap(self) -> None:
         tick = max(0.05, min(0.25, self._deadline / 4))
         while not self._closing.wait(tick):
             now = time.monotonic()
             with self._lock:
-                late = [s for s, (at, serving) in self._conns.items() if not serving and now - at > self._deadline]
-            for sock in late:
-                self._cut(sock)
+                late = [(s, not (len(entry) > 2 and entry[2])) for s, entry in self._conns.items()
+                        if not entry[1] and now - entry[0] > self._deadline]
+            for sock, silent in late:
+                if silent:
+                    self._send_refusal(sock)  # it has sent nothing in all this time: told, not just closed on
+                self._cut(sock, read_side_only=True)  # a request that has arrived is still answered, however late
+
+    @staticmethod
+    def _send_refusal(sock: socket.socket) -> None:
+        """The 503, if the socket can take it right now (never waits, whatever the socket's timeout)."""
+        with contextlib.suppress(OSError, ValueError):
+            if select.select([], [sock], [], 0)[1]:
+                sock.send(_REFUSAL, socket.MSG_DONTWAIT)
 
     def _refuse(self, sock: socket.socket) -> None:
         """A short reply and a close, never a wait: the socket is non-blocking."""
@@ -942,10 +992,15 @@ class BoundedServer(HTTPServer):
     def _peer_gone(sock: socket.socket) -> bool:
         """True when the client has already closed (or reset) the connection: it needs no slot and no answer."""
         try:
+            # select first: an accepted socket inherits the process's default timeout, and recv on such a
+            # socket waits for readability before it looks at MSG_DONTWAIT. Nothing here may wait.
+            readable, _, _ = select.select([sock], [], [], 0)
+            if not readable:
+                return False  # open, nothing sent yet
             return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
         except (BlockingIOError, InterruptedError):
-            return False  # open, nothing sent yet
-        except OSError:
+            return False
+        except (OSError, ValueError):
             return True
 
     def _free_slots_locked(self) -> int:
@@ -956,7 +1011,7 @@ class BoundedServer(HTTPServer):
         """Give *sock* a slot and start its handler, under the lock so the slot count never counts a thread
         that is registered but not yet started. False when the thread cannot start."""
         thread = threading.Thread(target=self._serve, args=(sock, client_address), name="ops-exporter-conn", daemon=True)
-        self._conns[sock] = [time.monotonic(), False]
+        self._conns[sock] = [time.monotonic(), False, False]  # accepted at, being answered, has sent a byte
         self._live.add(thread)
         try:
             thread.start()
@@ -970,11 +1025,13 @@ class BoundedServer(HTTPServer):
         """Cut the oldest incomplete request, once per queued connection (one slot is enough for each)."""
         if len(self._cut_socks) >= len(self._queue):
             return
-        waiting = [(at, s) for s, (at, serving) in self._conns.items() if not serving and s not in self._cut_socks]
+        waiting = [(len(e) > 2 and bool(e[2]), e[0], s) for s, e in self._conns.items() if not e[1] and s not in self._cut_socks]
         if waiting:
-            victim = min(waiting, key=lambda item: item[0])[1]
+            sent_something, _at, victim = min(waiting, key=lambda item: (item[0], item[1]))  # the silent ones first
             self._cut_socks.add(victim)
-            self._cut(victim)
+            if not sent_something:
+                self._send_refusal(victim)  # it is told, not just closed on: its request may be on its way
+            self._cut(victim, read_side_only=True)  # a request that has already arrived is still answered
 
     def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         """Runs on the acceptor thread: it never waits."""

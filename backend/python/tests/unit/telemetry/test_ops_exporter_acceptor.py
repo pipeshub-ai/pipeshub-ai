@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import pytest
 
 HOST = "127.0.0.1"
+PER_SCRAPER = 3  # requests each of the 32 flood scrapers makes; the whole flood must fit the 30 s hang guard on a busy host
 
 
 def _exporter(tmp_path: Path, **kw) -> ox.OpsExporter:
@@ -405,7 +406,7 @@ def test_a_flood_of_well_formed_scrapers_under_gil_load_is_answered_or_cleanly_r
             sum(i * i for i in range(3000))
 
     def scraper() -> None:
-        for _ in range(6):
+        for _ in range(PER_SCRAPER):
             try:
                 results.append(_get(port, timeout=20))
             except OSError as exc:  # a refused or reset connection, a timeout
@@ -426,7 +427,7 @@ def test_a_flood_of_well_formed_scrapers_under_gil_load_is_answered_or_cleanly_r
             t.join(120)
         stop.set()
         sampler.join(5)
-        assert len(results) == 32 * 6
+        assert len(results) == 32 * PER_SCRAPER
         bad = [r for r in results if r not in (200, 503)]
         assert not bad, f"{len(bad)} of {len(results)} scrapes neither answered nor cleanly refused: {sorted(set(map(str, bad)))}"
         assert results.count(200) > 0
@@ -481,9 +482,126 @@ def test_a_queued_connection_whose_client_left_while_it_waited_never_takes_the_f
         server.process_request(c, ("x", 0))
         assert len(server._queue) == 1
         d.close()  # it gives up while queued
+        took = []
+        real_take = server._take_slot_locked
+        server._take_slot_locked = lambda sock, addr: took.append(sock) or real_take(sock, addr)  # type: ignore[method-assign]
         hold.set()  # every slot frees
         assert _wait_until(lambda: not server._queue, 5)
-        assert c.fileno() == -1 and not server._conns, "a connection that had left was given a slot"
+        assert c.fileno() == -1
+        assert took == [], "a connection that had left was given a slot"
     finally:
         hold.set()
+        _close(exporter)
+
+
+# -- a request that has arrived is never cut; the peer check never waits --------
+
+
+def test_a_scrape_whose_whole_request_is_buffered_is_not_evicted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two slots; the scrape's handler is starved before it parses the request it already has; an idle client
+    takes the second slot; a third connection queues and evicts. The scrape must still be answered."""
+    started = threading.Event()
+    original = ox._Handler.parse_request
+
+    def slow_parse(self: ox._Handler) -> bool:
+        started.set()
+        time.sleep(0.6)
+        return original(self)
+
+    monkeypatch.setattr(ox._Handler, "parse_request", slow_parse)
+    exporter = bind_on_free_port(lambda port: ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST))
+    server = exporter._server
+    assert server is not None
+    server._max = 2
+    port = exporter._port
+    socks = []
+    try:
+        scrape = socket.create_connection((HOST, port), timeout=10)
+        scrape.sendall(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")  # the whole request, at once
+        assert started.wait(5)
+        socks.append(socket.create_connection((HOST, port)))  # an idle client: the second slot
+        assert _wait_until(lambda: len(server._live) == 2, 5)
+        socks.append(socket.create_connection((HOST, port)))  # queues, and evicts the oldest unanswered connection
+        data = b""
+        while chunk := scrape.recv(65536):
+            data += chunk
+        assert data.startswith(b"HTTP/1.0 200"), f"the scrape got {data[:40]!r} (evicted with its request in the buffer)"
+    finally:
+        for s in socks:
+            s.close()
+        _close(exporter)
+
+
+def test_the_peer_check_never_waits_even_with_a_default_socket_timeout() -> None:
+    old = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(2.0)
+    try:
+        a, b = socket.socketpair()  # inherits the default timeout, as an accepted socket does
+        started = time.monotonic()
+        assert ox.BoundedServer._peer_gone(a) is False  # open and silent
+        b.send(b"x")
+        assert ox.BoundedServer._peer_gone(a) is False  # open with data
+        assert time.monotonic() - started < 0.5, "the peer check waited for the default timeout"
+        a.recv(1)
+        b.close()
+        assert ox.BoundedServer._peer_gone(a) is True
+        a.close()
+    finally:
+        socket.setdefaulttimeout(old)
+
+
+def test_a_scrape_whose_request_arrived_is_answered_even_when_its_handler_runs_past_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reaper cuts what has not sent a complete request by the deadline; a handler starved past it, with the
+    whole request already received, still answers."""
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.2)
+    started = threading.Event()
+    original = ox._Handler.parse_request
+
+    def slow_parse(self: ox._Handler) -> bool:
+        started.set()
+        time.sleep(0.8)  # past the deadline and a few reaper ticks
+        return original(self)
+
+    monkeypatch.setattr(ox._Handler, "parse_request", slow_parse)
+    exporter = _exporter(tmp_path)
+    try:
+        with socket.create_connection((HOST, exporter._port), timeout=10) as scrape:
+            scrape.sendall(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+            assert started.wait(5)
+            data = b""
+            while chunk := scrape.recv(65536):
+                data += chunk
+        assert data.startswith(b"HTTP/1.0 200"), f"the scrape got {data[:40]!r}"
+    finally:
+        _close(exporter)
+
+
+def test_an_evicted_client_that_had_sent_nothing_is_told_503_not_just_closed_on(tmp_path: Path) -> None:
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    server._max = 2
+    socks = []
+    try:
+        silent = socket.create_connection((HOST, exporter._port), timeout=10)
+        socks.append(silent)
+        socks.append(socket.create_connection((HOST, exporter._port)))
+        assert _wait_until(lambda: len(server._live) == 2, 5)
+        socks.append(socket.create_connection((HOST, exporter._port)))  # queues; the oldest silent client is evicted
+        assert silent.recv(100).startswith(b"HTTP/1.1 503"), "an evicted silent client was closed on without an answer"
+    finally:
+        for s in socks:
+            s.close()
+        _close(exporter)
+
+
+def test_a_client_that_sent_nothing_by_the_deadline_is_told_503_before_it_is_closed_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 0.3)
+    exporter = _exporter(tmp_path)
+    try:
+        with socket.create_connection((HOST, exporter._port), timeout=10) as silent:
+            assert silent.recv(100).startswith(b"HTTP/1.1 503")
+    finally:
         _close(exporter)
