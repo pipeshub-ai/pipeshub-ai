@@ -79,7 +79,7 @@ class _Hub:
             "app": [{"handle": "apps/app1", "opens": opens}],
             "declared": ["recordGroups/g1"],
             "group_scope": [["recordGroups/g1", False]],
-            "seeds": ["records/s1"],
+            "seeds": [["records/s1", True]],
             "chain_top_groups": [{"ownGroups": ["g9"], "ids": ["s1"]}],
             "chain_top_details": [{"id": "s1", "handle": "records/s1", "parents": ["p9"],
                                    "ownGroups": [{"id": "g9", "deleted": False}]}],
