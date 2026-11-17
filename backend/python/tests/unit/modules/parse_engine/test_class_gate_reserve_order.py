@@ -210,3 +210,23 @@ async def test_a_priority_waiter_goes_before_an_aged_unsplittable_head() -> None
     (await urgent).release()
     (await asyncio.wait_for(head, 2)).release()
     (await asyncio.wait_for(small, 2)).release()
+
+
+async def test_a_priority_unsplittable_head_is_served_at_capacity_one_and_goes_before_an_older_one() -> None:
+    """A parse-now Office document over the unit budget is an aged, unsplittable, priority head: the ordinary rules never
+    grant it at a capacity of 1 while small work waits, so the age bound must, and ahead of an older non-priority head."""
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.05), capacity=lambda: PoolCapacity(1))
+    running = await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=1)
+    older = asyncio.create_task(gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=3))
+    await settle()
+    urgent = asyncio.create_task(gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False, priority=True), deadline_s=3))
+    small = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=3))
+    await asyncio.sleep(0.2)  # both heads have aged; small work waits
+    running.release()
+    done, _ = await asyncio.wait({older, urgent, small}, return_when=asyncio.FIRST_COMPLETED, timeout=2)
+    assert urgent in done and older not in done, [t is urgent for t in done]  # the priority head, not the older one
+    (await urgent).release()
+    (await asyncio.wait_for(older, 2)).release()
+    (await asyncio.wait_for(small, 2)).release()

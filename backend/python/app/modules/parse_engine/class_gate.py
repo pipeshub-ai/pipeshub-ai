@@ -390,13 +390,19 @@ class ClassGate:
     def _aged_unbounded_head(self, now: float, aging_s: float, skipped: set[_Waiter]) -> _Waiter | None:
         """The oldest waiting big record that cannot be split into bounded units, if it has waited ``aging_s``.
 
-        ``_unbounded`` is ordered by arrival, so only the first one not skipped is looked at: constant work for the
-        usual case of none."""
+        ``_unbounded`` is ordered by arrival, so the aged ones are a prefix and nothing is scanned when there are none.
+        A priority waiter among the aged goes first, then the oldest."""
+        best: _Waiter | None = None
         for w in self._unbounded:
             if w in skipped:
                 continue
-            return w if now - w.first_seen >= aging_s else None
-        return None
+            if now - w.first_seen < aging_s:
+                break
+            if w.req.priority:
+                return w
+            if best is None:
+                best = w
+        return best
 
     def _pump_grants(self) -> None:
         numbers = self._numbers()
@@ -417,12 +423,12 @@ class ClassGate:
                 aged is not None
                 and P < 2
                 and demand[CostClass.SMALL].waiting
-                and not any(self._prio[c] for c in CostClass)
+                and not self._prio[CostClass.SMALL]  # a priority small record is served by the ordinary rules, first
             ):
                 # A5, for the one case the ordinary rules cannot grant: at a capacity under 2, A1 (which needs room for
                 # two while small work waits) never admits a big record that cannot be split, and a steady small stream
-                # would starve it. Once it has aged it is served next; a priority waiter still goes first, and when it
-                # does not fit yet the other rules go on.
+                # would starve it. Once it has aged it is served next (a priority one among the aged first); a priority small
+                # waiter still goes first, and when it does not fit yet the other rules go on.
                 used_now = sum(self._running.values())
                 if not used_now or used_now + aged.req.cpu <= P:
                     g = Grant(aged.req.cls, "A5")
