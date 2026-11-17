@@ -205,3 +205,22 @@ async def test_a_read_that_repeats_one_point_and_skips_another_is_not_taken_for_
     await run(store, blob, _text_container(paras))
     assert len(store._embed_documents_with_retry.await_args_list[0].args[0]) == len(paras), "every block was embedded again"
     assert {p.payload["page_content"] for p in db.collections[COLL].values()} == set(paras)
+
+
+async def test_a_block_whose_point_was_lost_is_embedded_not_counted_as_moved(db) -> None:
+    paras = _paragraphs(10)
+    _, blob = await legacy_record(db, _text_container(paras))
+    lost = next(pid for pid, p in db.collections[COLL].items() if p.payload["page_content"] == paras[4])
+    del db.collections[COLL][lost]                      # an interrupted index left this block without its point
+    store = make_store(db)
+    await run(store, blob, _text_container(paras))
+    assert [list(c.args[0]) for c in store._embed_documents_with_retry.await_args_list] == [[paras[4]]]
+    assert {p.payload["page_content"] for p in db.collections[COLL].values()} == set(paras)
+
+
+async def test_a_block_that_never_had_a_point_is_not_embedded(db) -> None:
+    paras = _paragraphs(6)
+    _, blob = await legacy_record(db, _text_container([*paras, ""]))   # a blank block has nothing to embed
+    store = make_store(db)
+    await run(store, blob, _text_container([*paras, ""]))
+    assert store._embed_documents_with_retry.await_count == 0

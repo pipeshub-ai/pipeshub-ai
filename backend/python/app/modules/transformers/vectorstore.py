@@ -1020,6 +1020,18 @@ def _is_code_block(block: object) -> bool:
     return str(getattr(kind, "value", kind)).lower() == BlockType.CODE.value
 
 
+def _embeds_a_point(block: Block | None) -> bool:
+    """Whether indexing writes a point for *block* itself: text-like and code blocks with text, images with a uri, table rows."""
+    if block is None:
+        return False
+    kind = str(getattr(block.type, "value", block.type)).lower()
+    if kind in ("text", "paragraph", "textsection", "heading", "quote", "code"):
+        return isinstance(block.data, str) and bool(block.data.strip())
+    if kind in ("image", "drawing"):
+        return isinstance(block.data, dict) and bool(block.data.get("uri"))
+    return kind == "table_row"
+
+
 def code_residue_block_id(virtual_record_id: str) -> str:
     """The residue unit's ``blockId``: one per record, like the summary's, so a reconcile can replace it."""
     return f"{virtual_record_id}{CODE_RESIDUE_BLOCK_ID_SUFFIX}"
@@ -1315,7 +1327,9 @@ class VectorStore(Transformer):
         index_of = {b.id: b.index for b in record.block_containers.blocks}
         group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
         collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
+        blocks_by_id = {b.id: b for b in record.block_containers.blocks}
         old_ids = sorted(new_by_old)
+        covered: set[str] = set()  # old ids some stored point speaks for: as its blockId or in rowBlockIds
         moved: set[str] = set()
         failed: dict[str, str] = {}  # old id -> reason
         for start in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ):
@@ -1336,6 +1350,7 @@ class VectorStore(Transformer):
                 meta = dict(payload.get("metadata") or {})
                 old_block = meta.get("blockId")
                 row_ids = meta.get("rowBlockIds")
+                covered.update([old_block, *(row_ids or ())])
                 if old_block not in new_by_old or point.dense_vector is None or (
                         row_ids and any(r not in new_by_old for r in row_ids)):
                     unmovable.add(old_block)
@@ -1361,6 +1376,11 @@ class VectorStore(Transformer):
             if writes:
                 await self.vector_db_service.upsert_points(collection_name, writes)
             moved.update(old for old in batch if old not in failed)
+        # A block with embeddable text that no stored point speaks for lost its point (an interrupted index): moving nothing would leave
+        # it out of search for good, so it is embedded. A block that never had a point (no text, an image with no uri) is left as it is.
+        for old in moved - failed.keys() - covered:
+            if _embeds_a_point(blocks_by_id.get(new_by_old[old])):
+                failed[old] = "missing"
         for old, reason in failed.items():
             rekey_metrics.REKEY_FALLBACK.inc(reason)
             blocks_to_index_ids.add(new_by_old[old])
