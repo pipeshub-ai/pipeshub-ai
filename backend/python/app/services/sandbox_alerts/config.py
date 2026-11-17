@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -38,6 +39,8 @@ def _number(env: Mapping[str, str], key: str, default: float, low: float, high: 
     try:
         value = float(raw)
     except ValueError:
+        value = math.nan
+    if not math.isfinite(value):
         logger.warning("Ignoring %s=%r: not a number; using %s", key, raw, _fmt(default))
         return default
     clamped = max(low, value if high is None else min(high, value))

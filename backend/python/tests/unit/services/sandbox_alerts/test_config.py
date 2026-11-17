@@ -38,6 +38,21 @@ def test_out_of_range_values_are_clamped_with_one_warning(
     assert sum(key in r.getMessage() for r in caplog.records) == 1
 
 
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "1e999"])
+@pytest.mark.parametrize(
+    ("key", "field"),
+    [("SANDBOX_ALERT_WARN_MIN_WAITED", "warn_min_waited"), ("SANDBOX_ALERT_WINDOW_S", "window_s"),
+     ("SANDBOX_ALERT_WARN_BUSY_PCT", "warn_busy_pct")],
+)
+def test_a_value_that_is_not_finite_uses_the_default_with_one_warning(
+    caplog: pytest.LogCaptureFixture, key: str, field: str, raw: str,
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        settings = AlertSettings.from_env({key: raw})
+    assert getattr(settings, field) == getattr(AlertSettings(), field)
+    assert sum(key in r.getMessage() for r in caplog.records) == 1
+
+
 @pytest.mark.parametrize("raw", ["false", "off", "0", "FALSE"])
 def test_alerts_can_be_turned_off(raw: str) -> None:
     assert AlertSettings.from_env({"SANDBOX_ALERTS": raw}).enabled is False
