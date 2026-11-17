@@ -72,3 +72,26 @@ def test_no_service_hardcodes_its_host() -> None:
     for module_name, _ in SERVICES:
         source = inspect.getsource(importlib.import_module(module_name))
         assert 'host="0.0.0.0"' not in source, module_name
+
+
+@pytest.mark.parametrize(("module_name", "port"), SERVICES)
+def test_an_explicit_port_zero_is_kept(monkeypatch, module_name, port) -> None:
+    # uvicorn binds port 0 to a free port; 0 is a choice, not "unset"
+    monkeypatch.setenv("PIPESHUB_BIND_PORT", "45678")
+    module = importlib.import_module(module_name)
+    with patch.object(module.uvicorn, "run") as uvicorn_run:
+        module.run(port=0, reload=False)
+    assert uvicorn_run.call_args.kwargs["port"] == 0
+
+
+@pytest.mark.parametrize("var", PORT_VARS)
+def test_a_blank_service_port_variable_never_stops_the_service(monkeypatch, var) -> None:
+    module_name = {"EMBEDDING_SERVER_PORT": "app.embedding_main", "PARSING_SERVICE_PORT": "app.parsing_main",
+                   "EXTRACTION_SERVICE_PORT": "app.extraction_main"}[var]
+    default = dict(SERVICES)[module_name]
+    for value in ("", "not-a-port"):
+        monkeypatch.setenv(var, value)
+        monkeypatch.setenv("PIPESHUB_BIND_PORT", "9300")
+        assert _bound(module_name)[1] == 9300
+        monkeypatch.delenv("PIPESHUB_BIND_PORT")
+        assert _bound(module_name)[1] == default
