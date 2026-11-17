@@ -504,3 +504,101 @@ async def test_a_holder_that_renews_for_ever_is_cut_off_and_when_it_resumes_it_r
     assert current_run() is None, "the lost-lease holder opened a run"
     async with cache.refresh_purge(ORG, REC, "evt-9") as redelivery:        # and it wrote no marker: the duplicate's stands
         assert redelivery is False
+
+
+async def test_a_delete_in_flight_longer_than_the_lease_keeps_it_renewed_so_the_duplicate_waits_for_it(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One storage DELETE can take as long as the lease (120 s read limit): the heartbeat renews through the call."""
+    import asyncio
+
+    from app.services.paid_cache import cache as cache_module
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+
+    monkeypatch.setattr(cache_module, "LOCK_TTL_MS", 150)                  # the lease is shorter than the call
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.02)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.005)
+    _seed(store)
+    holder_handler, duplicate_handler = _handler(), _handler()
+    cache = access.paid_cache_for(MagicMock())
+    real_purge = cache.purge_record
+    calls: list[str] = []
+
+    async def purge(org: str, rec: str, *, before_ms: int | None = None) -> None:
+        calls.append("purge")
+        await asyncio.sleep(0.6)                                           # a call far longer than the lease, under the deadline
+        await real_purge(org, rec, before_ms=before_ms)
+
+    cache.purge_record = purge  # type: ignore[method-assign]
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-slow"}
+    holder = asyncio.ensure_future(_events(holder_handler, EventTypes.REINDEX_RECORD.value, dict(payload)))
+    await asyncio.sleep(0.05)
+    for _ in range(5):                                                     # while the call is in flight
+        with pytest.raises(RefreshPurgeHeld):
+            await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+        await asyncio.sleep(0.04)
+    await holder
+    await _reindex(duplicate_handler, dict(payload))                       # the marker stands: the duplicate reuses
+    assert calls == ["purge"]                                              # one purge only
+
+
+async def test_after_the_holders_deadline_the_pages_are_paid_once_not_twice(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+    from app.services.paid_cache import cache as cache_module
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+    from tests.support.paid_cache import record_in_flight
+
+    monkeypatch.setattr(cache_module, "LOCK_TTL_MS", 150)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_MAX_AGE_S", 0.3)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.02)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.005)
+    _seed(store)
+    holder_handler, duplicate_handler = _handler(), _handler()
+    cache = access.paid_cache_for(MagicMock())
+    resume = asyncio.Event()
+    real_purge = cache.purge_record
+    n = 0
+
+    async def purge(org: str, rec: str, *, before_ms: int | None = None) -> None:
+        nonlocal n
+        n += 1
+        if n == 1:
+            await resume.wait()                                            # the holder's DELETE runs on and on
+        await real_purge(org, rec, before_ms=before_ms)
+
+    cache.purge_record = purge  # type: ignore[method-assign]
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-20m"}
+    paid: list[str] = []
+    keys = [CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", f"page{i}") for i in range(3)]
+
+    async def pay_pages() -> None:
+        for key in keys:
+            async def compute(page: str = key.input_digest) -> str:
+                paid.append(page)
+                return "text"
+
+            await cache.get_or_compute(key, compute)
+
+    holder = asyncio.ensure_future(_events(holder_handler, EventTypes.REINDEX_RECORD.value, dict(payload)))
+    await asyncio.sleep(0.05)
+    with record_in_flight(ORG, REC):
+        for _ in range(200):                                              # until the holder is cut off: the duplicate runs
+            try:
+                await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+                break
+            except RefreshPurgeHeld:
+                await asyncio.sleep(0.02)
+        run = current_run()
+        assert run is not None and run.refresh
+        await pay_pages()                                                 # the duplicate's run pays the three pages
+        store.now_ms = int(time.time() * 1000) + 60_000
+        resume.set()                                                      # the holder's late DELETE lands
+        with pytest.raises(RequeueWithoutAttempt):                         # it lost its lease: no marker, no paid run
+            await holder
+    assert len(paid) == 3, f"{len(paid)} paid calls for 3 pages"
