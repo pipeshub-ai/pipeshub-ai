@@ -15,6 +15,7 @@ from reportlab.lib import pdfencrypt
 from reportlab.pdfgen import canvas
 
 from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers.pdf import untrusted_pdf
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.services.parsing.providers.smart_pdf_parser import (
     _detect_needs_ocr,
@@ -38,10 +39,15 @@ def _pdf(pages: int, *, text: bool = True, user: str | None = None) -> bytes:
     return buffer.getvalue()
 
 
-def _damaged(pages: int) -> bytes:
-    """The cross-reference table and trailer cut off: pdfplumber cannot open it as it is."""
-    data = _pdf(pages)
-    return data[: data.rindex(b"xref")]
+REWRITTEN = "rewritten by pdfium"
+
+
+@pytest.fixture(autouse=True)
+def _pdfium_rewrites_the_one_that_is_named_for_it(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The file is sound, but the first reader is told it is not, so the pdfium rewrite always runs. A damaged file made by cutting bytes
+    is read by pdfminer's fallback on some machines and not on others, which made the rewrite depend on the machine."""
+    if REWRITTEN in request.node.name:
+        monkeypatch.setattr(untrusted_pdf, "_sound", lambda structure: False)
 
 
 CORPUS = {
@@ -49,7 +55,7 @@ CORPUS = {
     "seven text pages": _pdf(7),
     "forty text pages": _pdf(40),
     "a scan with no text layer": _pdf(3, text=False),
-    "damaged, rewritten by pdfium": _damaged(5),
+    REWRITTEN: _pdf(5),
 }
 
 
@@ -65,12 +71,12 @@ async def test_the_in_process_count_equals_the_service_count_for_the_bytes_that_
     assert in_process == service
 
 
-@pytest.mark.parametrize(("name", "pages"), [("seven text pages", 7), ("damaged, rewritten by pdfium", 5)])
+@pytest.mark.parametrize(("name", "pages"), [("seven text pages", 7), (REWRITTEN, 5)])
 async def test_the_count_is_the_files_page_count_also_when_pdfium_rewrote_it(name: str, pages: int) -> None:
     inspected = await inspect_untrusted_pdf(CORPUS[name], label=name)
 
     assert inspected.page_count == pages
-    assert inspected.repaired is (name != "seven text pages")
+    assert inspected.repaired is (name == REWRITTEN)
 
 
 async def test_an_encrypted_pdf_raises_before_any_count_is_taken() -> None:
