@@ -47,6 +47,18 @@ const num = (value: unknown): number | null =>
 const text = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() !== '' ? value : null;
 
+/** An http(s) link, or `null`: the email puts it in an `href`, where escaping does not stop `javascript:`. */
+function webUrl(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 function actionsFor(reason: unknown, sidecar: boolean): string[] {
   switch (reason) {
     case 'memory':
@@ -165,7 +177,7 @@ export function buildSandboxCapacityMail(
     reasonText,
     actions: actionsFor(payload.reason, sidecar),
     stats: statsFor(level, payload, sidecar),
-    docsUrl: text(event.redirectLink) ?? DEFAULT_DOCS_URL,
+    docsUrl: webUrl(event.redirectLink) ?? DEFAULT_DOCS_URL,
   };
   if (indexingText) templateData.indexingText = indexingText;
   return {
