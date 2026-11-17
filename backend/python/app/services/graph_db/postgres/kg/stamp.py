@@ -395,7 +395,9 @@ def _scope(n: StampNode, f: StampApp, has_child: bool) -> tuple[bool, bool, bool
     if not (has_child if n.deleted else (bad or breaks or n.granted)):
         return None
     special = f.opens or f.has_group_level
-    return (n.deleted or bad or breaks, n.deleted or bad, n.deleted or (not special and (bad or not inherits_a_parent)), n.deleted)
+    # A STRICT_OR_GRANT node is read from the App as a STRICT one is, so no grant of its own is needed to read it.
+    needs_own = bad and n.rule != "STRICT_OR_GRANT"
+    return (n.deleted or bad or breaks, n.deleted or bad, n.deleted or (not special and (needs_own or not inherits_a_parent)), n.deleted)
 
 
 def _after(cursor: str | None) -> tuple[str | None, str | None]:

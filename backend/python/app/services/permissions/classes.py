@@ -6,9 +6,9 @@ per row). Every clause also needs the gate of the record's app (R4). The arms mi
 - R12 member of an app that opens: the empty clause;
 - R8 declared: for each live record-group-level group g of the app at or above the record's own groups: ``{g}`` or the R7 clauses of g;
 - R7 walk: OR over hierarchy paths to the app (at most 50 hops, record-group-level parents of the app skipped) of AND over hops, where a hop c -> p is always true (the app
-  opens; or the rule is OPEN/STRICT and c inherits p), a literal c (OPEN/STRICT not inheriting; RESTRICTED or PARENT_AND_GRANT inheriting) or never true (deleted;
+  opens; or the rule is OPEN/STRICT/STRICT_OR_GRANT and c inherits p), a literal c (those not inheriting; RESTRICTED or PARENT_AND_GRANT inheriting) or never true (deleted;
   RESTRICTED or PARENT_AND_GRANT not inheriting; any other rule). A literal on a node with no grant at all can never be held, so the hop never passes;
-- R9 seed: ``{SELF}`` for an OPEN live granted record or group;
+- R9 seed: ``{SELF}`` for an OPEN live granted record or group; the same clause for a STRICT_OR_GRANT one (its own grant), which is no seed;
 - R10 below a seed: ``{s}`` plus the literals of the stretch, for each OPEN live granted ancestor s of the app reached over live nodes that pass ``seed_hop`` (OPEN
   inheriting or granted; PARENT_AND_GRANT inheriting and granted). This is the
   monotone form: exact where the oracle's "no other arm admits s" cannot change the answer, i.e. in an app without record-group-level groups (reaching s from the app then implies
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 SELF = "@self"
 PAG = "PARENT_AND_GRANT"
+SOG = "STRICT_OR_GRANT"
 MAX_HOPS = 50
 MAX_CLAUSES = 16
 
@@ -97,7 +98,7 @@ class Compiler:
             return frozenset()
         inh = p in cn.inherits
         rule = cn.rule or "OPEN"
-        if rule in ("OPEN", "STRICT"):
+        if rule in ("OPEN", "STRICT", SOG):
             if inh:
                 return frozenset()
         elif rule in ("RESTRICTED", PAG):
@@ -351,8 +352,8 @@ class Compiler:
             if self.rgl:
                 clauses |= self.declared(t)
             clauses |= set(self.walk(t, t, MAX_HOPS))
-            if (tn.rule or "OPEN") == "OPEN" and tn.granted:
-                clauses.add(frozenset({SELF}))                     # R9
+            if (tn.rule or "OPEN") in ("OPEN", SOG) and tn.granted:
+                clauses.add(frozenset({SELF}))                     # R9 (a seed, or STRICT_OR_GRANT's own grant)
             seeds = self.below_seed(t)
             if seeds:
                 merged = _absorb(clauses | seeds)

@@ -6,7 +6,8 @@ disagreement with a graph provider is a finding. It answers what
 reason code naming the rule or hop that decided it.
 
 Rules: R1 principals, R2 access rule (absent reads OPEN, unknown fails closed; PARENT_AND_GRANT hops as
-RESTRICTED and passes below a seed as OPEN does, with its own grant required),
+RESTRICTED and passes below a seed as OPEN does, with its own grant required; STRICT_OR_GRANT hops as STRICT, never passes below a
+seed, and is also read by its own grant alone, R9's own-grant arm, which opens nothing below it),
 R3 grant edges, R4 gate, R5 granted set, R6 hop, R7 walk up the hierarchy,
 R8 declared record-group-level arm, R9 seed, R10 below a seed, R11 target
 guards, R12 open apps (APP_LEVEL / KB), R13 unattached uploads. Inheritance
@@ -30,6 +31,7 @@ ORG_SHARE_TYPES = {"ORG", "ORGANIZATION"}
 RGL = "RECORD_GROUP_LEVEL"
 MAX_HOPS = 50
 PAG = "PARENT_AND_GRANT"
+SOG = "STRICT_OR_GRANT"
 SEARCHABLE = {"COMPLETED"}
 
 
@@ -154,7 +156,7 @@ def hop_failure(s: Store, v: Viewer, c: str, p: str, opens: bool) -> str | None:
     if opens:
         return None
     r, g, i = _rule(s, c), c in v.granted, _inherits(s, c, p)
-    if r in ("OPEN", "STRICT"):
+    if r in ("OPEN", "STRICT", SOG):
         return None if i or g else f"R6:{r}-no-inherit-no-grant@{c}"
     if r == "RESTRICTED":
         if i and g:
@@ -238,6 +240,12 @@ def _seed(s: Store, v: Viewer, n: str, app: str) -> bool:
         and not _deleted(s, n) and _rule(s, n) == "OPEN" and n in v.granted
 
 
+def _own_grant(s: Store, v: Viewer, n: str, app: str) -> bool:
+    """R9 own grant: a STRICT_OR_GRANT live record/group of this connector granted directly. Not a seed: it opens only itself."""
+    return s.kind(n) in ("Record", "RecordGroup") and s.p(n).get("connectorId") == app \
+        and not _deleted(s, n) and _rule(s, n) == SOG and n in v.granted
+
+
 def _below_seed_hop(s: Store, v: Viewer, c: str, p: str) -> bool:
     """The hop c -> p below a seed: a live OPEN node that inherits or is granted, or a live PARENT_AND_GRANT node that inherits and is granted."""
     if _deleted(s, c):
@@ -301,6 +309,8 @@ def verdict(s: Store, v: Viewer, t: str) -> Verdict:
             return Verdict(True, "R12:walk-in-open-app" if opens else "R7:walk")
         if _seed(s, v, t, app):
             return Verdict(True, "R9:seed")
+        if _own_grant(s, v, t, app):
+            return Verdict(True, "R9:own-grant")
         if below_seed(s, v, t, app, opens):
             return Verdict(True, "R10:below-seed")
     if s.kind(t) == "Record" and tp.get("origin") not in (None, "CONNECTOR") \

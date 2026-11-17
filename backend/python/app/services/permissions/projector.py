@@ -68,6 +68,21 @@ def _hides_below(n: StampNode) -> bool:
     return n.kind != "app" and (n.deleted or n.rule not in (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT") or _breaks(n))
 
 
+def _own_grant_only(nodes: Mapping[str, StampNode], rid: str) -> bool:
+    """A STRICT_OR_GRANT node on the record's hierarchy path or record-group chains (the record itself included)."""
+    seen, stack = set(), [rid]
+    while stack:
+        i = stack.pop()
+        if i in seen or i not in nodes:
+            continue
+        seen.add(i)
+        n = nodes[i]
+        if n.rule == "STRICT_OR_GRANT":
+            return True
+        stack += [*n.parents, *n.groups]
+    return False
+
+
 def _is_scope(n: StampNode) -> bool:
     """An app is gated by its grants: the outermost container, never a scope of its own."""
     return n.kind != "app" and (n.granted or _restricted(n))
@@ -135,6 +150,10 @@ class ScopeProjector:
             # the graph check walks up to the app; a record that never reaches it is read only by a direct grant or a
             # declared group, which no path field can express
             return Projection(rid, ScopeFields.legacy(), refused=True, reason=f"{app.connector_type!r}: the path does not reach the app")
+        if _own_grant_only(nodes, rid):
+            # Its own grant reads a STRICT_OR_GRANT node and nothing below it, which neither a path nor an acl field says.
+            return Projection(rid, ScopeFields.legacy(), refused=True,
+                              reason=f"{app.connector_type!r}: a STRICT_OR_GRANT node on the path is read by its own grant alone")
         rule = Rule.CONTAINER if app.opens else rule_for(app.connector_type)
         equals = self._equals_group(nodes, rid, path, app, app_id)
         try:

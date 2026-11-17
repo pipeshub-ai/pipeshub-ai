@@ -129,7 +129,7 @@ def _hop_failure(f: _Facts, c: StampNode, p: str) -> tuple[_Why, str] | None:
     if f.opens:
         return None
     rule, grant, inherits = _rule(c), c.id in f.granted, p in c.inherits
-    if rule in ("OPEN", "STRICT"):
+    if rule in ("OPEN", "STRICT", "STRICT_OR_GRANT"):
         return None if inherits or grant else ("restricted", c.id)
     if rule in ("RESTRICTED", "PARENT_AND_GRANT"):
         return None if inherits and grant else ("restricted", c.id)
@@ -205,6 +205,11 @@ def _seed(f: _Facts, n: StampNode) -> bool:
     return n.kind in ("record", "group") and n.connector_id == f.app_id and not n.deleted and _rule(n) == "OPEN" and n.id in f.granted
 
 
+def _own_grant(f: _Facts, n: StampNode) -> bool:
+    """A live STRICT_OR_GRANT record or group of this connector that is granted directly: it opens itself only."""
+    return n.kind in ("record", "group") and n.connector_id == f.app_id and not n.deleted and _rule(n) == "STRICT_OR_GRANT" and n.id in f.granted
+
+
 def _below_seed(f: _Facts, t: str) -> bool:
     """`t` hangs, over live nodes that each pass the hop below a seed (OPEN: inherits or is granted; PARENT_AND_GRANT: inherits and is
     granted), under a seed that no other arm admits."""
@@ -257,7 +262,7 @@ def _walk(f: _Facts, t: StampNode, app_node: StampNode | None) -> _Walk:
         if f.opens and t.kind == "record" and t.belongs_app:
             return _Walk(True, GRANTED)
         trace: list[tuple[_Why, str]] = []
-        if _declared(f, t) or _from_app(f, t.id, trace) or _seed(f, t) or _below_seed(f, t.id):
+        if _declared(f, t) or _from_app(f, t.id, trace) or _seed(f, t) or _own_grant(f, t) or _below_seed(f, t.id):
             return _Walk(True, GRANTED)
         return _denied(f, t, trace)
     if t.kind == "record" and t.origin not in (None, "CONNECTOR") and (app_node is None or app_node.kind != "app"):

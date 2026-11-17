@@ -36,7 +36,7 @@ FOR n IN {{collection}}
     : (bad OR breaks OR LENGTH(FOR p IN {_PERM} FILTER p._to == n._id LIMIT 1 RETURN 1) > 0)
   FILTER keep
   RETURN {{id: n._key, connector: n.connectorId, restricted: deleted OR bad OR breaks,
-          needsGrant: deleted OR (NOT @special AND (bad OR LENGTH(
+          needsGrant: deleted OR (NOT @special AND ((bad AND n.accessRule != "STRICT_OR_GRANT") OR LENGTH(
             FOR h IN {_REL} FILTER h._to == n._id AND h.relationshipType IN {_HIER}
               FILTER LENGTH(FOR i IN {_INH} FILTER i._from == n._id AND i._to == h._from LIMIT 1 RETURN 1) > 0
               LIMIT 1 RETURN 1) == 0)),

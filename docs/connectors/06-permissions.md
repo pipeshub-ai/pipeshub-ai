@@ -29,8 +29,10 @@ A user can read a node when all of these hold:
 | `OPEN` (default) | it inherits from a readable parent, **or** the user has a grant on it. A direct grant opens it even if nothing above it is readable (a file shared with you inside a folder you cannot open). |
 | `STRICT` | it inherits from a readable parent, or the user has a grant on it, **and** every ancestor up to the App is readable. A direct grant does not open it on its own. |
 | `RESTRICTED` | it inherits from a readable parent **and** the user has a grant on it. |
+| `PARENT_AND_GRANT` | it inherits from its parent, the parent is readable (by its own rule, so a parent opened only by a direct grant counts), **and** the user has a grant on it. |
+| `STRICT_OR_GRANT` | it is readable as `STRICT`, **or** the user has a grant on it. That grant opens only this node: nothing below it, and a direct grant on an ancestor never opens it. |
 
-A missing `access_rule` reads as `OPEN`. An unrecognised value hides the node. A `RESTRICTED` node with `inherit_permissions=False` is never readable. Below a node opened only by a direct grant, only `OPEN` descendants are readable.
+A missing `access_rule` reads as `OPEN`. An unrecognised value hides the node. A `RESTRICTED` node with `inherit_permissions=False` is never readable. Below a node opened only by a direct grant, only `OPEN` descendants are readable, and `PARENT_AND_GRANT` ones with their own grant.
 
 Two shortcuts skip the per-node rule:
 
@@ -99,6 +101,7 @@ Decide per object type, from the source's sharing model:
 | The item can only narrow what the container allows (a restriction, as in Confluence page restrictions) | `inherit_permissions=True`, the allowed people as grants, `access_rule=RESTRICTED`. |
 | The item has its own ACL that replaces inheritance ("unique permissions", broken inheritance) | `inherit_permissions=False`, only the grants on the item itself. Do not copy inherited grants onto it. |
 | The item is visible only if its parents are (no direct sharing that bypasses the tree) | `access_rule=STRICT`. |
+| The item is visible to the container's readers and to its own named people, but not to the people named on the item it hangs under (a Jira sub-task's own assignee) | `inherit_permissions=True`, the named people as grants, `access_rule=STRICT_OR_GRANT`. What hangs below the item does not open to its named people. |
 | Anyone in the connector's org can see it | an `ORG` grant on the node, or `APP_LEVEL` if it holds for everything. |
 | You could not read the ACL (403 on the permissions endpoint, missing scope) | Keep what is stored, and open nothing new. **Groups:** hold the group back from `on_new_record_groups` and call `has_stored_permissions("record_group", connector_id, external_id, keep=True)` so the full-sync cleanup keeps its stored access (Jira Cloud does this for projects whose permission scheme is unreadable); or, if you must write it, set `inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(CollectionNames.RECORD_GROUPS.value, stored_id)`, keep it non-`OPEN`, and pass `None`. **Records:** set `inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(CollectionNames.RECORDS.value, stored_id)`, which keeps a stored inheritance edge and gives a new record none. Do not send an existing record through `on_new_records` during a full sync (its first write there replaces the grants with the list you pass); write content and metadata with `on_record_content_update` / `on_record_metadata_update`, which leave grants alone, and keep it with `note_kept_records` (Google Drive team does this). Never write `[]` with inheritance on as a stand-in for "unknown". Log the reason. |
 

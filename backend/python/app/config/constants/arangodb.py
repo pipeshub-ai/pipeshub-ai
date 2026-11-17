@@ -137,6 +137,12 @@ class AccessRule(Enum):
     ``OPEN``, a parent read only through its own direct grant counts. For
     content only some readers of its parent may see (a comment restricted to
     a group). The node is never readable through its grant alone.
+    ``STRICT_OR_GRANT``: readable as ``STRICT`` (every ancestor up to the App
+    accessible), or by a user with a grant on the node itself. That grant opens
+    only the node: it is never a seed, so it opens nothing below it, and a seed
+    above it (an ancestor read only through its own direct grant) never opens
+    it. For an item the container's readers see, plus its own named people, but
+    not the people of the item it hangs under (a Jira sub-task's own assignee).
 
     A missing value reads as ``OPEN`` (a connector that declares nothing gets
     the permissive reading), but an *unrecognised* value reads as
@@ -148,6 +154,7 @@ class AccessRule(Enum):
     STRICT = "STRICT"
     RESTRICTED = "RESTRICTED"
     PARENT_AND_GRANT = "PARENT_AND_GRANT"
+    STRICT_OR_GRANT = "STRICT_OR_GRANT"
 
 
 class AppGroups(Enum):

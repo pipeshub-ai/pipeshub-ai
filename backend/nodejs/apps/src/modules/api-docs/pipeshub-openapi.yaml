@@ -6379,7 +6379,7 @@ components:
                 connectors that do not set it.
             accessRule:
               type: string
-              enum: [OPEN, STRICT, RESTRICTED, PARENT_AND_GRANT]
+              enum: [OPEN, STRICT, RESTRICTED, PARENT_AND_GRANT, STRICT_OR_GRANT]
               description: |
                 How this record's own permissions combine with its ancestors'.
                 OPEN: an accessible parent, or a direct grant, is enough.
@@ -6390,6 +6390,9 @@ components:
                 STRICT may consult its ancestors), and the record must carry its
                 own grant. The rule adds no requirement of its own on the
                 ancestors above the parent.
+                STRICT_OR_GRANT: readable as STRICT, or by a grant on the record
+                itself. That grant opens only the record: nothing below it, and
+                a direct grant on an ancestor never opens the record.
                 Absent on records written before the field existed; read as OPEN.
             uploadedBy:
               type: string
