@@ -20,7 +20,13 @@ default):
     Most bytes collected from one run, all files together. Collection stops
     there with a note.
 ``SANDBOX_OUTPUT_MAX_FILES`` (2000)
-    Most archive entries read from one run.
+    Most archive entries (files, directories and links alike) read from one
+    run.
+``SANDBOX_OUTPUT_MAX_SANDBOX_BYTES`` (209715200) / ``SANDBOX_OUTPUT_MAX_SANDBOX_FILES`` (5000)
+    Most bytes and files one sandbox keeps from all its runs together. A
+    sandbox's files persist across its runs, so without this each run could
+    add the per-run total again. Past it, a run's new files are not kept
+    and the model is told.
 ``SANDBOX_DEPS_MAX_TOTAL_BYTES`` (2147483648)
     Most bytes taken back from one package install (``pip --target`` /
     ``node_modules``), and the largest single file in it.
@@ -34,12 +40,13 @@ import logging
 import os
 import sys
 import tarfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
     "ExtractBudget",
+    "SandboxRetention",
     "ExtractLimits",
     "HeadTail",
     "cap_text",
@@ -57,6 +64,8 @@ ENV_OUTPUT_MAX_FILE_BYTES = "SANDBOX_OUTPUT_MAX_FILE_BYTES"
 ENV_OUTPUT_MAX_TOTAL_BYTES = "SANDBOX_OUTPUT_MAX_TOTAL_BYTES"
 ENV_OUTPUT_MAX_FILES = "SANDBOX_OUTPUT_MAX_FILES"
 ENV_DEPS_MAX_TOTAL_BYTES = "SANDBOX_DEPS_MAX_TOTAL_BYTES"
+ENV_OUTPUT_MAX_SANDBOX_BYTES = "SANDBOX_OUTPUT_MAX_SANDBOX_BYTES"
+ENV_OUTPUT_MAX_SANDBOX_FILES = "SANDBOX_OUTPUT_MAX_SANDBOX_FILES"
 
 DEFAULT_STDIO_HEAD_BYTES = 192 * 1024
 DEFAULT_STDIO_TAIL_BYTES = 64 * 1024
@@ -64,6 +73,8 @@ DEFAULT_OUTPUT_MAX_FILE_BYTES = 25 * 1024 * 1024
 DEFAULT_OUTPUT_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 DEFAULT_OUTPUT_MAX_FILES = 2000
 DEFAULT_DEPS_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_OUTPUT_MAX_SANDBOX_BYTES = 200 * 1024 * 1024
+DEFAULT_OUTPUT_MAX_SANDBOX_FILES = 5000
 _DEPS_MAX_FILES = 200_000
 
 # Bytes of tar headers and padding allowed per entry on top of the data
@@ -244,24 +255,70 @@ class ExtractLimits:
         return cls(max_file_bytes=total, max_total_bytes=total, max_files=_DEPS_MAX_FILES)
 
 
+@dataclass(frozen=True)
+class SandboxRetention:
+    """What one sandbox may keep from all its runs together, and what it
+    already keeps. Files a run leaves persist on the host for the sandbox's
+    later runs, so a per-run cap alone lets every run add its total again."""
+
+    max_bytes: int
+    max_files: int
+    kept_bytes: int = 0
+    kept_files: int = 0
+
+    @classmethod
+    def from_env(cls, kept_bytes: int = 0, kept_files: int = 0) -> SandboxRetention:
+        return cls(
+            max_bytes=_env_int(ENV_OUTPUT_MAX_SANDBOX_BYTES, DEFAULT_OUTPUT_MAX_SANDBOX_BYTES, minimum=1),
+            max_files=_env_int(ENV_OUTPUT_MAX_SANDBOX_FILES, DEFAULT_OUTPUT_MAX_SANDBOX_FILES, minimum=1),
+            kept_bytes=kept_bytes,
+            kept_files=kept_files,
+        )
+
+    @property
+    def room_bytes(self) -> int:
+        return max(0, self.max_bytes - self.kept_bytes)
+
+    @property
+    def room_files(self) -> int:
+        return max(0, self.max_files - self.kept_files)
+
+
 @dataclass
 class ExtractBudget:
     """What one run may still collect, shared by every archive of the run.
 
-    ``stream_limit`` bounds the bytes read off the socket, including the
-    data of files that were skipped for being too large: a skipped file
-    still has to be read past, and a 50 GB file must not be."""
+    ``stream_limit`` bounds the data bytes read off the socket, including
+    the data of files that were skipped for being too large: a skipped file
+    still has to be read past, and a 50 GB file must not be.
+    ``read_bytes`` counts every byte read, headers included, across all the
+    run's archives, so the run's ``/output`` and ``/src`` share one read
+    allowance instead of each getting a fresh one.
+
+    ``retention``, when set, also caps what the run may add to its
+    sandbox's kept files. ``unchanged_allowance`` is how many extra bytes
+    may be read past for files the caller already has unchanged (restored
+    from earlier runs); those are not extracted and not counted as new."""
 
     limits: ExtractLimits
+    retention: SandboxRetention | None = None
+    unchanged_allowance: int = 0
     extracted_bytes: int = 0
     streamed_bytes: int = 0
+    read_bytes: int = 0
     entries: int = 0
+    kept_files: int = 0
     skipped: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
     @classmethod
-    def for_output(cls) -> ExtractBudget:
-        return cls(ExtractLimits.for_output())
+    def for_output(
+        cls, retention: SandboxRetention | None = None, *, unchanged_allowance: int = 0,
+    ) -> ExtractBudget:
+        return cls(
+            ExtractLimits.for_output(), retention=retention,
+            unchanged_allowance=max(0, unchanged_allowance),
+        )
 
     @classmethod
     def for_dependencies(cls) -> ExtractBudget:
@@ -270,6 +327,16 @@ class ExtractBudget:
     @property
     def stream_limit(self) -> int:
         return 2 * self.limits.max_total_bytes
+
+    @property
+    def read_limit(self) -> int:
+        """Every byte the run's archives may take off the socket together:
+        the data allowance, the unchanged files, and a header allowance per
+        entry."""
+        return (
+            self.stream_limit + self.unchanged_allowance
+            + (self.limits.max_files + 1) * _HEADER_ALLOWANCE + 1024 * 1024
+        )
 
     @property
     def stopped(self) -> bool:
@@ -293,6 +360,15 @@ class ExtractBudget:
             "[sandbox] Not all output was collected: " + "; ".join(parts)
             + ". Write smaller files (split, compress, or keep only what is needed).\n"
         )
+
+
+class _NoMembers(list):
+    """Stands in for ``TarFile.members`` while streaming: ``TarFile.next()``
+    appends every header it reads, so a stream of many small entries would
+    otherwise keep all of them in memory until the archive ends."""
+
+    def append(self, _item: Any) -> None:
+        return None
 
 
 class _ArchiveTooLarge(Exception):
@@ -359,18 +435,25 @@ def extract_tar_stream(
     budget: ExtractBudget,
     *,
     allow_symlinks: bool = False,
+    unchanged: Callable[[str, tarfile.TarInfo], bool] | None = None,
 ) -> None:
     """Extract the tar stream ``chunks`` (``get_archive`` of
     ``container_path``) into ``local_dir`` within ``budget``.
 
     Reads the stream as it arrives: nothing is spooled, at most one member
-    is being written at a time, and at most ``budget.stream_limit`` data
-    bytes (plus header allowance) are read off the socket.
+    is being written at a time, no member headers are kept, and at most
+    ``budget.read_limit`` bytes are read off the socket over all the
+    archives that share ``budget``.
 
+    - Every entry counts toward the entry cap, directories and links too.
     - Only regular files are extracted, plus symlinks when
       ``allow_symlinks``; hardlinks, devices and FIFOs are skipped.
     - A file larger than the per-file limit is skipped by name; once the
-      total or the entry count is reached, collection stops.
+      total, the entry count, or the sandbox's retention is reached,
+      collection stops.
+    - ``unchanged(name, member)`` True means the caller already has this
+      file as it is (restored from an earlier run): it is read past, not
+      extracted, and not counted as new output.
     - Sizes are the sizes in the tar header, which for a sparse file is its
       full apparent size, so a sparse file cannot expand past the limits.
     - Every member is sanitised by ``filter="data"``, and one whose own
@@ -378,28 +461,28 @@ def extract_tar_stream(
     """
     _warn_if_tar_filter_unpatched()
     limits = budget.limits
+    retention = budget.retention
     if budget.stopped:
+        _close(chunks)
         return
-    hard_limit = (
-        max(0, budget.stream_limit - budget.streamed_bytes)
-        + (limits.max_files + 1) * _HEADER_ALLOWANCE + 1024 * 1024
-    )
-    reader = _ChunkReader(chunks, hard_limit)
+    reader = _ChunkReader(chunks, max(0, budget.read_limit - budget.read_bytes))
     resolved_root = os.path.realpath(local_dir)
     prefix = os.path.basename(container_path.rstrip("/")) + "/"
     current_target: str | None = None
     try:
         with tarfile.open(fileobj=reader, mode="r|*") as tar:
+            tar.members = _NoMembers()
             for member in tar:
                 current_target = None
-                if member.isdir():
-                    continue
                 budget.entries += 1
                 if budget.entries > limits.max_files:
                     budget.stopped_reason = (
-                        f"collection stopped after {limits.max_files} files from {container_path}"
+                        f"collection stopped after {limits.max_files} files and directories "
+                        f"from {container_path}"
                     )
                     return
+                if member.isdir():
+                    continue
                 is_link = member.issym() or member.islnk()
                 if not member.isfile() and not (allow_symlinks and is_link):
                     logger.warning(
@@ -419,6 +502,13 @@ def extract_tar_stream(
                     )
                     continue
                 size = member.size if member.isfile() else 0
+                if member.isfile() and unchanged is not None:
+                    try:
+                        same = unchanged(member.name, member)
+                    except Exception:
+                        same = False
+                    if same:
+                        continue
                 shown = f"{container_path.rstrip('/')}/{member.name} ({_human(size)})"
                 if size > limits.max_file_bytes:
                     if budget.streamed_bytes + size > budget.stream_limit:
@@ -440,6 +530,19 @@ def extract_tar_stream(
                     )
                     logger.warning("sandbox output: total limit reached at %s", shown)
                     return
+                if retention is not None and (
+                    budget.kept_files + 1 > retention.room_files
+                    or budget.extracted_bytes + size > retention.room_bytes
+                ):
+                    budget.stopped_reason = (
+                        f"{shown} and any later files were not kept, because this sandbox "
+                        f"already keeps {_human(retention.kept_bytes + budget.extracted_bytes)} in "
+                        f"{retention.kept_files + budget.kept_files} files from its runs and keeps "
+                        f"at most {_human(retention.max_bytes)} or {retention.max_files} files "
+                        "across all runs"
+                    )
+                    logger.warning("sandbox output: sandbox retention limit reached at %s", shown)
+                    return
                 current_target = target
                 try:
                     # `data` filter rejects a link whose target escapes the
@@ -456,10 +559,11 @@ def extract_tar_stream(
                 current_target = None
                 budget.extracted_bytes += size
                 budget.streamed_bytes += size
+                budget.kept_files += 1
     except _ArchiveTooLarge:
         budget.stopped_reason = (
-            f"collection stopped because the archive of {container_path} went past "
-            f"the {_human(budget.stream_limit)} read limit"
+            f"collection stopped because the archives of this run went past "
+            f"the {_human(budget.read_limit)} read limit at {container_path}"
         )
         logger.warning("sandbox output: archive of %s went past the read limit", container_path)
         if current_target and os.path.lexists(current_target) and not os.path.isdir(current_target):
@@ -468,9 +572,14 @@ def extract_tar_stream(
             except OSError:
                 pass
     finally:
-        close = getattr(chunks, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+        budget.read_bytes += reader.consumed
+        _close(chunks)
+
+
+def _close(chunks: Any) -> None:
+    close = getattr(chunks, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass

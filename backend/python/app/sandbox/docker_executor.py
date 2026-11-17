@@ -45,9 +45,13 @@ import tempfile
 import time
 from uuid import uuid4
 
+from app.agent_loop_lib.sandbox.coding.docker import (
+    create_bounded_container,
+    disk_watch_note,
+    start_disk_watch,
+)
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
-    create_sandbox_container,
     ensure_egress_network_sync,
     firewall_unavailable,
     firewalled_container_kwargs,
@@ -311,7 +315,7 @@ class DockerExecutor(BaseExecutor):
         token: str,
     ) -> bytes:
         """Deps tar from one firewalled install container."""
-        container = create_sandbox_container(
+        container = create_bounded_container(
             client,
             purpose="install",
             image=SANDBOX_IMAGE,
@@ -329,8 +333,19 @@ class DockerExecutor(BaseExecutor):
             elif language == SandboxLanguage.TYPESCRIPT:
                 container.put_archive("/", _tar_empty_dir("install", mode=0o777))
             container.start()
-            exit_info = container.wait(timeout=timeout + 30)
+            # Same disk watch as the coding sandbox: where the daemon ignores
+            # the per-run quota, a run past it (or one whose size cannot be
+            # read) is stopped.
+            watch = start_disk_watch(client, container.id)
+            try:
+                exit_info = container.wait(timeout=timeout + 30)
+            finally:
+                if watch is not None:
+                    watch.stop()
             exit_code = exit_info.get("StatusCode", -1)
+            stopped = disk_watch_note(watch, install=True)
+            if stopped:
+                raise RuntimeError(stopped.strip())
             if exit_code != 0:
                 stderr = _capped_logs(container, stdout=False)
                 stdout = _capped_logs(container, stdout=True)
@@ -420,11 +435,12 @@ class DockerExecutor(BaseExecutor):
                 )
 
         container = None
+        watch = None
         try:
             mem_bytes = self.memory_limit_mb * 1024 * 1024
             nano_cpus = int(self.cpu_limit * 1e9)
 
-            container = create_sandbox_container(
+            container = create_bounded_container(
                 client,
                 image=image,
                 command=command,
@@ -455,6 +471,7 @@ class DockerExecutor(BaseExecutor):
                 container.put_archive(deps_target, deps_tar)
 
             container.start()
+            watch = start_disk_watch(client, container.id)
 
             def _blocking_wait():
                 exit_info = container.wait(timeout=timeout + 30)
@@ -469,6 +486,8 @@ class DockerExecutor(BaseExecutor):
                     timeout=timeout + 5,
                 )
             except (asyncio.TimeoutError, asyncio.CancelledError):
+                if watch is not None:
+                    watch.stop()
                 logger.warning("Container execution timed out after %ds, killing container", timeout)
                 try:
                     container.kill()
@@ -485,6 +504,18 @@ class DockerExecutor(BaseExecutor):
                     stderr=stderr,
                     exit_code=-1,
                     error=f"Execution timed out after {timeout}s",
+                )
+
+            if watch is not None:
+                watch.stop()
+            stopped = disk_watch_note(watch)
+            if stopped:
+                return ExecutionResult(
+                    success=False,
+                    stdout=stdout,
+                    stderr=stopped + stderr,
+                    exit_code=exit_code or 137,
+                    error=stopped.strip(),
                 )
 
             # Pull output artifacts from the container into the local output_dir.
@@ -504,6 +535,8 @@ class DockerExecutor(BaseExecutor):
                     pass
             raise
         finally:
+            if watch is not None:
+                watch.stop()
             if container:
                 try:
                     container.remove(force=True)
