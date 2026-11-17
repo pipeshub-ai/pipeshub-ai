@@ -1035,6 +1035,7 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
+                self._role_ids = {}  # no role read this sync: a comment naming a role by name alone grants nobody
             else:
                 await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
             await self._sync_project_lead_roles(raw_projects, jira_users)
@@ -2304,6 +2305,8 @@ class JiraConnector(BaseConnector):
             raw_projects = await self._list_projects_with_filter(*self._project_keys_filter())
             if groups_members_map is not None:
                 await self._sync_project_roles([p["key"] for p in raw_projects if p.get("key")], jira_users, groups_members_map)
+            else:
+                self._role_ids = {}  # no role read this sync: a comment naming a role by name alone grants nobody
             await self._sync_project_lead_roles(raw_projects, jira_users)
 
     async def _fetch_users(
@@ -3790,6 +3793,8 @@ class JiraConnector(BaseConnector):
 
         if groups_members_map is None:
             groups_members_map = {}
+        # Role names from this read only: one an earlier sync read may since belong to another role (renamed).
+        self._role_ids = {}
 
         self.logger.info(f"🔐 Syncing project roles for {len(project_keys)} projects...")
 
@@ -5035,9 +5040,15 @@ class JiraConnector(BaseConnector):
             # Attachment-only delete is safe: FILE records have no outgoing
             # PARENT_CHILD or ATTACHMENT edges, so only the files themselves are deleted.
             if delete_ids:
-                await self.data_entities_processor.on_records_deleted_cascade(
+                result = await self.data_entities_processor.on_records_deleted_cascade(
                     delete_ids, self.connector_id, cascade_children=False,
                 )
+                if not isinstance(result, dict) or not result.get("success", True) or result.get("failed_count"):
+                    # A stale restricted comment left behind would still be read by its old audience: this batch is not
+                    # written, so the project fails and its issues are read (and these records deleted) again.
+                    raise RuntimeError(
+                        f"{len(delete_ids)} record(s) the issues of {project_key} no longer hold could not be deleted: {result}"
+                    )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
@@ -6949,7 +6960,8 @@ class JiraConnector(BaseConnector):
         """A restricted comment's own content: its issue's title, then the comment."""
         issue_id = str(record.parent_external_record_id or "")
         comment_id = record.external_record_id.removeprefix(COMMENT_RECORD_PREFIX)
-        response = await self._get_issue_with_retry(issue_id=issue_id, fields=["summary", "attachment", "project"])
+        response = await self._get_issue_with_retry(
+            issue_id=issue_id, fields=["summary", "attachment", "project", "comment", "description"])
         if response.status == HttpStatusCode.NOT_FOUND.value:
             raise not_found_at_source(self.display_name)
         if response.status != HttpStatusCode.OK.value:
@@ -6970,6 +6982,20 @@ class JiraConnector(BaseConnector):
         comment = self._safe_json_parse(response, f"comment {comment_id} of issue {issue_id}")
         if not isinstance(comment, dict) or str(comment.get("id")) != comment_id:
             raise not_found_at_source(self.display_name)
+
+        # A file attached in a restricted comment takes that comment's restriction ("If attachments are added in private
+        # comments, the comment-level restriction will be applied", GET /rest/api/3/attachment/content/{id},
+        # https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json). One that another restricted comment
+        # shows, alone or with this one, may be restricted to other people, so it is not shown here (its record is left
+        # out the same way); a failure to read the comments fails the request.
+        fields = await self._with_every_comment(issue_id, issue_data.get("fields") or {})
+        hidden = await self._attachment_ids_hidden_by_comments(issue_id, fields)
+        fields = {k: v for k, v in fields.items() if k in ("summary", "attachment", "project")}
+        fields["attachment"] = [
+            a for a in fields.get("attachment") or []
+            if not (isinstance(a, dict) and str(a.get("id")) in hidden) or hidden[str(a.get("id"))] == {comment_id}
+        ]
+        issue_data = {**issue_data, "fields": fields}
 
         issue_key = issue_data.get("key", "")
         weburl = f"{self.site_url}/browse/{issue_key}" if self.site_url and issue_key else record.weburl

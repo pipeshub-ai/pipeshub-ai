@@ -275,6 +275,45 @@ async def test_a_comment_record_streams_its_issue_title_and_its_comment() -> Non
     assert [g["data"] for g in groups if g["source_group_id"] == "12"] == ["<p>admins only</p>"]
 
 
+@pytest.mark.parametrize(("shown_in", "offered"), [(("11", "12"), set()), (("12",), {"901"})],
+                         ids=["shown_by_two_restricted_comments", "shown_by_this_comment_alone"])
+async def test_a_comment_record_inlines_only_the_files_no_other_restricted_comment_shows(shown_in, offered) -> None:
+    """Jira applies a restricted comment's restriction to a file attached in it. A file another restricted comment
+    also shows may be restricted to other people, so this comment's content does not embed it."""
+    connector = _connector()
+    connector._rendered_description = AsyncMock(return_value="")
+    img = '<p><img src="/rest/api/3/attachment/content/901"/></p>'
+    comments = [{**c, "renderedBody": img if c["id"] in shown_in else "<p>no file</p>"} for c in (ROLE_COMMENT, GROUP_COMMENT)]
+    issue = {"id": "100", "key": "PROJ-1", "fields": {
+        "summary": "Broken login", "description": None, "project": {"id": "10000", "key": "PROJ"},
+        "attachment": [{"id": "901", "filename": "shot.png", "mimeType": "image/png"}],
+        "comment": {"comments": comments, "total": 2}}}
+    seen: list[set[str]] = []
+    parse = connector._parse_issue_to_blocks
+
+    async def spy(**kwargs):
+        seen.append({str(a["id"]) for a in kwargs["issue_data"]["fields"]["attachment"]})
+        return await parse(**kwargs)
+
+    connector._parse_issue_to_blocks = spy
+    connector._download_attachment_base64 = AsyncMock(return_value=None)
+    await _stream(connector, _comment_record(), issue, {**GROUP_COMMENT, "renderedBody": img})
+    assert seen == [offered]
+
+
+async def test_a_role_name_read_by_an_earlier_sync_is_not_kept_when_this_sync_could_not_list_roles() -> None:
+    """A role an earlier sync read as Administrators -> 10002 may since be renamed and the name given to another role:
+    a comment naming the role by name alone must then grant nobody (and be read again), not role 10002."""
+    connector = _connector()
+    connector.data_source = MagicMock()
+    connector.notify = AsyncMock()
+    connector.data_entities_processor.on_new_app_roles = AsyncMock()
+    connector._call_with_retry = AsyncMock(return_value=_response(500, {}))
+    assert connector._role_ids == {"Administrators": "10002"}
+    await connector._sync_project_roles(["PROJ"], [], {})
+    assert connector._role_ids == {}
+
+
 async def test_a_comment_record_of_a_moved_issue_is_not_served() -> None:
     connector = _connector()
     issue = {"id": "100", "key": "OPS-1", "fields": {"summary": "Broken login", "attachment": [],
