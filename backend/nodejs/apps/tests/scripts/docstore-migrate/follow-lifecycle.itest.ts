@@ -134,6 +134,20 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await foldRows(), 'organisation B\'s event is not the published one').to.deep.equal([String(ORG_B)]);
       });
 
+      it('a skipped event does not remove the row of another event of the same organisation under the same folded key', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const { a, b } = foldedPair();
+        await events.insertOne(outboxEvent(b, ORG_A, 'pending') as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows()).to.deep.equal([String(ORG_A)]);
+        await events.insertOne(outboxEvent(a, ORG_A, 'published') as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows(), 'the pending event keeps its row: the published one never had it').to.deep.equal([String(ORG_A)]);
+      });
+
       it('a delete event does not remove another organisation\'s row under the same folded key while that event is still in MongoDB', async () => {
         const js = await JobState.attach(w.rt);
         await followStart(w.rt, js);

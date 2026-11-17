@@ -93,7 +93,8 @@ describe('follow: deleting a document and what the stream asks for', () => {
       })
       const run = async (status: string) => {
         const { log, k } = record()
-        const rt = { jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => fn({ pgTx: { kernel: k } }, k) } as never
+        // MongoDB holds no other event under the key
+        const rt = { cfg: {}, db: () => ({ collection: () => ({ find: () => ({ toArray: async () => [] }) }) }), jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => fn({ pgTx: { kernel: k } }, k) } as never
         await replaceDocs(rt, mapping('outbox_events'), [event('6afcbfbe0d70d44bb8638f31', status)])
         return log.filter((l) => /DELETE FROM platform\.outbox WHERE/.test(l.sql))
       }
@@ -102,6 +103,36 @@ describe('follow: deleting a document and what the stream asks for', () => {
       expect(published[0]!.sql).to.match(/DELETE FROM platform\.outbox WHERE id = \$1::bigint AND org_id = \$2/)
       expect(published[0]!.params).to.deep.equal([outboxTableId('6afcbfbe0d70d44bb8638f31'), '6afcbe98f03c0c4c54f37bce'])
       expect(await run('pending')).to.have.length(0)
+    } finally {
+      setOutboxRepository()
+    }
+  })
+
+  it('the remove-and-insert fallback keeps the row of another event of the same organisation under the same folded key', async () => {
+    setOutboxRepository(new PgOutboxRepository())
+    try {
+      const org = '6afcbe98f03c0c4c54f37bce'
+      const event = (hex: string, status: string) => ({
+        _id: new ObjectId(hex), topic: 'entity-events', key: 'k', status, attempts: 0, createdAt: new Date('2026-11-17T20:57:34.349Z'),
+        value: JSON.stringify({ payload: { orgId: org } }),
+      })
+      const published = event('6afcbfbe0d70d44bb8638f31', 'published')
+      const neighbour = event('6afcbfbe1122334455638f31', 'pending')   // same second, same counter: the same table key, still copied
+      const { log, k } = record()
+      let first = true
+      const rt = {
+        cfg: {},
+        db: () => ({ collection: () => ({ find: () => ({ toArray: async () => [published, neighbour] }) }) }),
+        jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => {
+          if (first) {
+            first = false
+            throw Object.assign(new Error('unique'), { code: '23505' })
+          }
+          return fn({ pgTx: { kernel: k } }, k)
+        },
+      } as never
+      await replaceDocs(rt, mapping('outbox_events'), [published])
+      expect(log.filter((l) => /DELETE FROM platform\.outbox WHERE/.test(l.sql)), 'the neighbour holds the key under this organisation').to.have.length(0)
     } finally {
       setOutboxRepository()
     }

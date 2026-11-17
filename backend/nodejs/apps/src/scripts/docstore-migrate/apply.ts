@@ -197,12 +197,21 @@ export async function replaceDocs(
     });
   const own = (list: string[]): string[] =>
     folds(m) ? list.filter((id) => org.has(id)) : list;
+  // and not when another document still in MongoDB and copied holds the same key under the same organisation: the row is that one's
+  const notHeld = async (list: string[]): Promise<string[]> => {
+    const mine = own(list);
+    if (!folds(m) || mine.length === 0) return mine;
+    const held = await liveHolders(rt, m, mine);
+    return mine.filter(
+      (id) => !(held.get(id) ?? []).includes(org.get(id) as string),
+    );
+  };
   let followUps: Array<{ kind: string }> = [];
   const repo = repositoryFor(m);
   const write = async (inPlace: boolean): Promise<void> => {
     await rt.jobs(async (tx: Tx, k) => {
       if (inPlace) await deleteChildren(k, m, ids);
-      else await deleteDocs(k, m, own(ids), { org });
+      else await deleteDocs(k, m, await notHeld(ids), { org });
       const stats = await withUpsert(inPlace ? [m.table] : [], () =>
         repo.importBatch(m.collection, docs, tx),
       );
@@ -213,7 +222,9 @@ export async function replaceDocs(
         await deleteDocs(
           k,
           m,
-          own(stats.skipped.map((s) => s.id).filter((id) => ids.includes(id))),
+          await notHeld(
+            stats.skipped.map((s) => s.id).filter((id) => ids.includes(id)),
+          ),
           { org },
         );
     });
