@@ -291,6 +291,19 @@ def _reset_default_backpressure_coordinator():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_process_retry_budget() -> Iterator[None]:
+    """The retry budget (``spend_guard.retry_policy``) is one per process and shared by the LLM and embeddings gateways;
+    a test that fails many calls on purpose must not leave the next one with no retries to spend."""
+    from app.services.spend_guard.retry_policy import (
+        RETRY_BUDGET_CAPACITY,
+        process_retry_budget,
+    )
+
+    process_retry_budget().refund(RETRY_BUDGET_CAPACITY)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_narrow_access_memo() -> Iterator[None]:
     """Search remembers, per process, scopes its container filter could not
     serve. A scope marked in one test must not route another test's search."""

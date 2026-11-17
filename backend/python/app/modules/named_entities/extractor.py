@@ -217,9 +217,12 @@ async def indexing_llm(
     from app.agents.agent_loop.langchain_transport import LangChainTransport
     from app.agents.agent_loop.prompt_cache import family_cache_strategy
     from app.modules.named_entities.strategies.agent.transport import SlottedTransport
+    from app.utils.aimodels import INDEXING_SDK_RETRIES
     from app.utils.llm import get_llm_for_role
 
-    llm, config = await get_llm_for_role(config_service, "indexing", reasoning_effort="low")
+    llm, config = await get_llm_for_role(
+        config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+    )
     provider = str((config or {}).get("provider") or "indexing")
     configuration = (config or {}).get("configuration") or {}
     model = str(configuration.get("model") or (config or {}).get("modelKey") or "indexing")

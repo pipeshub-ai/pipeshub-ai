@@ -23,6 +23,8 @@ from app.services.llm_gateway.gateway import (
 from app.services.model_identity.transport.instrument import instrument_model
 from app.utils.aimodels import EmbeddingProvider, LLMProvider
 from tests.support.fake_llm_server import FakeLLMServer, Reply
+from tests.support.provider_configs import BASE
+from tests.support.provider_configs import service_account_json as _service_account_json
 
 pytestmark = pytest.mark.timeout(240)
 
@@ -157,29 +159,6 @@ def test_bedrock_is_built_with_a_ten_second_connect_timeout() -> None:
     client = _create_bedrock_client({"region": "us-east-1", "awsAccessKeyId": "x", "awsAccessSecretKey": "y"})
     assert client.meta.config.connect_timeout == 10
 
-
-def _service_account_json(email: str = "sa@p.iam.gserviceaccount.com") -> str:
-    """A throw-away service account key (never used against Google: nothing here sends a request to it)."""
-    import json
-
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    ).decode()
-    return json.dumps({
-        "type": "service_account", "project_id": "p", "private_key_id": "k", "private_key": pem,
-        "client_email": email, "client_id": "1", "token_uri": "https://oauth2.googleapis.com/token",
-    })
-
-
-BASE = {
-    "model": "m", "apiKey": "k", "endpoint": "https://gateway.example.com/v1", "deploymentName": "d",
-    "apiVersion": "2024-02-01", "region": "us-east-1", "awsAccessKeyId": "x", "awsAccessSecretKey": "y",
-    "project": "p", "location": "us-central1",
-}
 
 # Embedding providers whose models make no call through the indexing LLM gateway, so there is no breaker to feed:
 # local models, an embedding type the factory does not support, and SDKs that speak their own HTTP (not httpx).

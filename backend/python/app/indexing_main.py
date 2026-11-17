@@ -67,7 +67,10 @@ from app.modules.indexing.named_entity_persist_retry import (
     retry_pending_named_entity_persists,
 )
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
-from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.rate_limit_deferral import (
+    deferral_due,
+    is_deferred_until_later,
+)
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import (
     is_parked_duplicate,
@@ -383,6 +386,9 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
+                    if latest_record is not None and is_deferred_until_later(latest_record, get_epoch_timestamp_in_ms()):
+                        # Handed back for a provider's wait since the scan read it: not stuck, and not finished either.
+                        return None
                     if latest_record is None:
                         still_stuck = False
                     elif resume_enrichment:
@@ -630,6 +636,10 @@ async def recover_in_progress_records(
         page_size = max(1, messaging_env.stale_recovery_page_size)
 
         def is_stale(record: dict[str, Any]) -> bool:
+            if is_deferred_until_later(record, get_epoch_timestamp_in_ms()):
+                # Handed back to the broker for a wait (a model provider's rate limit): its delayed message is the
+                # wake-up, and a recovery event now would call the provider again before it said it can serve.
+                return False
             started_at = record.get("processingStartedAt")
             if started_at is None:
                 # Rows written before processingStartedAt was introduced are
@@ -1735,6 +1745,20 @@ async def _republish_stranded_records(
                     # Someone is working on it after all.
                     return False
 
+            # The scan's snapshot may be old: while it waited on other lookups the record can have been processed, handed
+            # back for a provider's wait and released. Read it again under the lease, before claiming or publishing.
+            try:
+                fresh = await graph_provider.get_document(
+                    record_key, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+            except Exception as exc:
+                # A read that failed is not "no wait": the delayed message may still be in the broker, and sending another
+                # now would call the provider before it said it can serve. Left for the next pass.
+                logger.warning("Could not re-read stranded record %s under its lease; skipping it this pass: %s", record_key, exc)
+                return False
+            if fresh is not None and is_deferred_until_later(fresh, get_epoch_timestamp_in_ms()):
+                return False
+
             # The marker is a durable claim written BEFORE the send, not
             # a receipt written after it. Written after, a Neo4j failure
             # following a successful Redis send left the record eligible
@@ -1901,6 +1925,8 @@ async def _republish_stranded_records(
                 # parked while its connector was off since then keeps the
                 # parked rules below (its turn-on clock), even if the wait's
                 # fields are still on it.
+                if is_deferred_until_later(record, pass_started_ms):
+                    continue
                 due = None if parked_while_off else deferral_due(record, pass_started_ms)
                 if due is not None:
                     if not due:
@@ -2238,6 +2264,17 @@ async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logge
         if redis is not None:
             with contextlib.suppress(Exception):
                 await redis.aclose()
+
+
+def warn_if_deferral_fields_write(logger: logging.Logger) -> None:
+    """Say at start-up that records are being given the deferral fields, and what that commits the deployment to."""
+    if messaging_env.record_deferral_fields_write:
+        logger.warning(
+            "RECORD_DEFERRAL_FIELDS_WRITE is on: records handed back for a model provider's rate limit are given "
+            "deferredUntilMs and rateLimitedSinceMs. Every process must run a release whose record schema lists them, and "
+            "the deployment must not be rolled back past this release (a record carrying them cannot be written on an "
+            "older schema)."
+        )
 
 
 async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
@@ -2836,6 +2873,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Indexing writes stage states and record fields declared by the connector service's schema
     # bootstrap, which may not have run yet (a first start, or an older connector image).
     await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
+    warn_if_deferral_fields_write(logger)
     await _check_redis_eviction_policy(app_container, logger)
 
     # One governor per process: derives parse/index ceilings from cgroup/CPU
