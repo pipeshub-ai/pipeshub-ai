@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -36,6 +37,7 @@ from app.modules.parsers.excel.limits import (
 )
 from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
+    RowDescriptions,
     TableHeaders,
     excel_header_detection_prompt,
     excel_header_generation_prompt,
@@ -55,12 +57,19 @@ from app.modules.parsers.excel.workbook_model import (
     load_workbook_model,
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.paid_cache.access import cached_model_call
+from app.services.paid_cache.keys import (
+    KIND_EXCEL_HEADERS,
+    KIND_TABLE_ROWS,
+    KIND_TABLE_SUMMARY,
+)
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.services.resource_governor.kinds import ParseKind
-from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.env_config import env_int, env_positive_int
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.is_truncated import is_truncated
 from app.utils.llm import get_llm_for_role
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
@@ -526,7 +535,9 @@ class ExcelParser:
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
             document_parser = self.new_document_parser()
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await get_llm_for_role(
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
             await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
@@ -1309,8 +1320,16 @@ class ExcelParser:
             )
 
             # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, ExcelHeaderDetection
+            parsed_response = await cached_model_call(
+                KIND_EXCEL_HEADERS,
+                llm=llm,
+                template=excel_header_detection_prompt,
+                rendered=rows_text,
+                params={"flow": "detect"},
+                call=lambda: invoke_with_structured_output_and_reflection(llm, messages, ExcelHeaderDetection),
+                encode=lambda detected: detected.model_dump(),
+                decode=ExcelHeaderDetection.model_validate,
+                config_service=self.config_service,
             )
 
             if parsed_response is not None:
@@ -1395,8 +1414,17 @@ class ExcelParser:
                     self.logger.info("Calling LLM for header generation (initial attempt)")
 
                 # Use centralized utility with reflection for parse errors
-                parsed_response = await invoke_with_structured_output_and_reflection(
-                    llm, messages, TableHeaders
+                parsed_response = await cached_model_call(
+                    KIND_EXCEL_HEADERS,
+                    llm=llm,
+                    template=excel_header_generation_prompt,
+                    rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                    params={"flow": "generate", "columns": column_count},
+                    call=functools.partial(invoke_with_structured_output_and_reflection, llm, messages, TableHeaders),
+                    encode=lambda generated: generated.model_dump(),
+                    decode=TableHeaders.model_validate,
+                    cacheable=lambda generated: len(generated.headers) == column_count,
+                    config_service=self.config_service,
                 )
 
                 if parsed_response is not None and parsed_response.headers:
@@ -1563,13 +1591,31 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             messages = self.table_summary_prompt.format_messages(
                 headers=[_cut_for_prompt(h, _PROMPT_SAMPLE_CHARS) for h in table["headers"]], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
-            response = await self._call_llm(messages)
-            # Gemini and similar return content as a list of blocks, not a string.
-            summary = coerce_message_content_to_text(response.content)
-            if '</think>' in summary:
-                summary = summary.split('</think>')[-1]
+            truncated = False
+
+            async def paid_summary() -> str:
+                nonlocal truncated
+                response = await self._call_llm(messages)
+                truncated = is_truncated(response)
+                # Gemini and similar return content as a list of blocks, not a string.
+                text = coerce_message_content_to_text(response.content)
+                if '</think>' in text:
+                    text = text.split('</think>')[-1]
+                return text
+
+            summary = await cached_model_call(
+                KIND_TABLE_SUMMARY,
+                llm=self.llm,
+                template=self.table_summary_prompt,
+                rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                call=paid_summary,
+                encode=lambda text: text,
+                decode=str,
+                cacheable=lambda text: bool(text.strip()) and not truncated,
+                config_service=self.config_service,
+            )
             self.logger.info("Table summary generated")
-            return summary
+            return summary or ""
 
         except NonRetryableError:
             raise
@@ -1621,8 +1667,18 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 del prompt_rows
 
                 # Use centralized utility with reflection and count validation
-                parsed_response = await invoke_with_row_descriptions_and_reflection(
-                    self.llm, messages, expected_count=len(rows_data)
+                parsed_response = await cached_model_call(
+                    KIND_TABLE_ROWS,
+                    llm=self.llm,
+                    template=row_text_prompt_for_csv,
+                    rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                    call=functools.partial(
+                        invoke_with_row_descriptions_and_reflection, self.llm, messages, expected_count=len(rows_data)
+                    ),
+                    encode=lambda parsed: parsed.model_dump(),
+                    decode=RowDescriptions.model_validate,
+                    cacheable=lambda parsed, expected=len(rows_data): len(parsed.descriptions) == expected,
+                    config_service=self.config_service,
                 )
                 del messages
             finally:

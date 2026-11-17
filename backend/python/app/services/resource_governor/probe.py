@@ -31,6 +31,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -691,6 +692,122 @@ def _cpu_pressure() -> float | None:
     if not sys.platform.startswith("linux"):
         return None
     return _read_psi_avg10(_resolve_cgroup_path("cpu", "cpu.pressure"))
+
+
+# Saturation, as the load signal reports it: the container is out of CPU when
+# stalls are frequent or the quota is nearly used, out of memory when the
+# working set is nearly the limit. Reported only; no limit reads them.
+CPU_SATURATED_PSI_AVG60 = 0.20
+CPU_SATURATED_UTILISATION = 0.90
+MEM_SATURATED_RATIO = 0.90
+
+
+@dataclass(frozen=True)
+class PressureSample:
+    """Kernel pressure readings of one tick, for observability only (no limit reads them).
+
+    Every field is ``None`` where the kernel does not expose it (macOS, cgroup v1, PSI disabled):
+    unknown is never zero.
+    """
+
+    cpu_psi_some_avg10: float | None = None
+    cpu_psi_some_avg60: float | None = None
+    cpu_psi_full_avg10: float | None = None
+    cpu_psi_full_avg60: float | None = None
+    mem_psi_some_avg10: float | None = None
+    mem_psi_some_avg60: float | None = None
+    mem_psi_full_avg10: float | None = None
+    mem_psi_full_avg60: float | None = None
+    oom_kills_total: int | None = None
+    """``oom_kill`` of the cgroup's ``memory.events``; every process of the container shares it."""
+    cpu_saturated: bool | None = None
+    mem_saturated: bool | None = None
+    """This tick's flags (cpu: PSI some avg60 at least 0.20 or utilisation at least 0.90; memory: the
+    working set at least 0.90 of the limit); ``None`` when none of the inputs is known."""
+
+
+def _read_psi(path: Path | None) -> dict[tuple[str, str], float]:
+    """``{("some" | "full", "avg10" | "avg60"): ratio}`` from a PSI file, with whatever parsed.
+
+    A missing file, a kernel without PSI, or garbage gives an empty dict (or fewer keys), never an error.
+    """
+    if path is None:
+        return {}
+    text = _read_text(path)
+    if not text:
+        return {}
+    out: dict[tuple[str, str], float] = {}
+    for line in text.splitlines():
+        kind, _, rest = line.partition(" ")
+        if kind not in ("some", "full"):
+            continue
+        for window in ("avg10", "avg60"):
+            # A whole number token (the kernel writes "12.34"), and a percentage: anything else, or a
+            # ratio outside 0..1, is not a reading and is left out (unknown, never invented).
+            match = re.search(rf"(?:^|\s){window}=(\d+(?:\.\d+)?)(?=\s|$)", rest)
+            if match:
+                ratio = float(match.group(1)) / 100.0
+                if 0.0 <= ratio <= 1.0:
+                    out[(kind, window)] = ratio
+    return out
+
+
+def _cgroup_oom_kills() -> int | None:
+    """Cumulative ``oom_kill`` of this container's memory cgroup, or ``None`` where it is not exposed."""
+    if not sys.platform.startswith("linux"):
+        return None
+    path = _resolve_cgroup_path("memory", "memory.oom_control", "memory.events")
+    text = _read_text(path) if path else None
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "oom_kill":
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
+def _saturation_flags(
+    cpu_utilisation: float | None, cpu_psi_some_avg60: float | None, mem_ratio: float | None
+) -> tuple[bool | None, bool | None]:
+    # NaN is no reading: it must not make the flag "known".
+    cpu_utilisation = None if cpu_utilisation is not None and cpu_utilisation != cpu_utilisation else cpu_utilisation
+    mem_ratio = None if mem_ratio is not None and mem_ratio != mem_ratio else mem_ratio
+    cpu_inputs = [v for v in (cpu_utilisation, cpu_psi_some_avg60) if v is not None]
+    cpu = (
+        None
+        if not cpu_inputs
+        else bool(
+            (cpu_utilisation is not None and cpu_utilisation >= CPU_SATURATED_UTILISATION)
+            or (cpu_psi_some_avg60 is not None and cpu_psi_some_avg60 >= CPU_SATURATED_PSI_AVG60)
+        )
+    )
+    mem = None if mem_ratio is None else mem_ratio >= MEM_SATURATED_RATIO
+    return cpu, mem
+
+
+def read_pressure(cpu_utilisation: float | None, mem_ratio: float | None) -> PressureSample:
+    """PSI (cpu and memory, some and full, avg10 and avg60), ``oom_kill`` and this tick's saturation flags."""
+    if sys.platform.startswith("linux"):
+        cpu = _read_psi(_resolve_cgroup_path("cpu", "cpu.pressure"))
+        mem = _read_psi(_resolve_cgroup_path("memory", "memory.pressure"))
+    else:
+        cpu, mem = {}, {}
+    cpu_saturated, mem_saturated = _saturation_flags(cpu_utilisation, cpu.get(("some", "avg60")), mem_ratio)
+    return PressureSample(
+        cpu_psi_some_avg10=cpu.get(("some", "avg10")),
+        cpu_psi_some_avg60=cpu.get(("some", "avg60")),
+        cpu_psi_full_avg10=cpu.get(("full", "avg10")),
+        cpu_psi_full_avg60=cpu.get(("full", "avg60")),
+        mem_psi_some_avg10=mem.get(("some", "avg10")),
+        mem_psi_some_avg60=mem.get(("some", "avg60")),
+        mem_psi_full_avg10=mem.get(("full", "avg10")),
+        mem_psi_full_avg60=mem.get(("full", "avg60")),
+        oom_kills_total=_cgroup_oom_kills(),
+        cpu_saturated=cpu_saturated,
+        mem_saturated=mem_saturated,
+    )
 
 
 # ---------------------------------------------------------------------------

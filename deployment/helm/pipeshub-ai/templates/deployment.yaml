@@ -77,7 +77,28 @@ spec:
             - name: indexing
               containerPort: 8081
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:{{ include "pipeshub-ai.appEnv" . }}
+            {{- if .Values.metrics.enabled }}
+            # The ops exporter of the indexing process (not the parsing Deployment's own /metrics).
+            - name: PIPESHUB_METRICS_ENABLED
+              value: "true"
+            - name: PIPESHUB_METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            {{- if eq (.Values.metrics.bind | toString) "podIP" }}
+            - name: PIPESHUB_METRICS_BIND
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- else }}
+            - name: PIPESHUB_METRICS_BIND
+              value: {{ .Values.metrics.bind | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.parsing.enabled }}
             # Parsing runs in its own Deployment: send every parse there.
             - name: USE_PARSING_SERVICE

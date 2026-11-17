@@ -269,3 +269,54 @@ class TestTableRows:
         assert [b.index for b in container.blocks] == list(range(len(kept)))
         assert [b.data["row_number"] for b in container.blocks] == [n for n, _ in kept]
         assert [b.data["row_natural_language_text"] for b in container.blocks] == [t for _, t in kept]
+
+
+class TestTableEnrichmentReachesThePaidResultCache:
+    async def test_the_table_prepass_makes_the_cache_ambient_before_the_model_is_called(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.services.paid_cache.access import ambient_cache, set_ambient_cache
+
+        seen: list[object] = []
+
+        async def enrich(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            seen.append(ambient_cache())
+            return [TableEnrichmentResult(summary="s", headers=["h"], descriptions=["x"]) for _ in grids]
+
+        sentinel = MagicMock(name="ambient cache")
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", enrich)
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "remember_cache", lambda *_a, **_k: set_ambient_cache(sentinel)
+        )
+        set_ambient_cache(None)
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["h"], ["x"]])
+        try:
+            await _processor().create_blocks([_page(region)])
+        finally:
+            set_ambient_cache(None)
+        assert seen == [sentinel]
+
+
+    async def test_the_inline_fallback_for_a_table_the_prepass_missed_also_reaches_the_cache(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        remembered: list[object] = []
+
+        async def prepass_finds_nothing(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            return []                                              # every table is missed: the walk enriches inline
+
+        async def inline(llm: object, grid: object, **_k: object) -> TableEnrichmentResult:
+            return TableEnrichmentResult(summary="s", headers=["h"], descriptions=[])
+
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", prepass_finds_nothing)
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_table_grid", inline)
+        monkeypatch.setattr(pdfplumber_opencv_processor, "remember_cache", lambda *a, **_k: remembered.append(a))
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["h"], ["x"]])
+        await _processor().create_blocks([_page(region)])
+        assert len(remembered) == 2                                # the pre-pass, then the inline fallback
