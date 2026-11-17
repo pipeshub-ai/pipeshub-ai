@@ -432,6 +432,17 @@ class TestWithdrawnAccounts:
         grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, c._users_with_usernames({}))
         assert [(g.email, g.external_id) for g in grants] == [(None, "bob-key")]
 
+    def test_a_synced_users_username_never_takes_the_key_of_a_linked_account(self) -> None:
+        """Alice's username is ``bob-key``, the key of Bob, linked with a hidden email: the key resolves to Bob."""
+        c = _connector()
+        alice, bob = _user("alice-key", "alice@x.com"), _user("bob-key", "")
+        c._stored_app_users = [bob]
+        c._listed_user_keys = {"alice-key", "bob-key"}
+        c._seen_user_keys = {"alice-key", "bob-key"}
+        c._dc_name_to_source_id = {"bob-key": "alice-key"}
+        directory = c._grant_directory(c._users_with_usernames({"alice-key": alice}))
+        assert directory["bob-key"] is bob and directory["alice-key"] is alice
+
     def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
         """"left" has no access in Jira (not in the directory) but carries alice's email: alice must not get left's level."""
         c = _connector()

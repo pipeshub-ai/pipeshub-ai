@@ -4703,8 +4703,14 @@ class JiraDataCenterConnector(BaseConnector):
         """The accounts an issue's people resolve against: the synced directory and the linked accounts
         ``_directory_extra`` adds (as ``_directory_grants`` counts them)."""
         linked = self._directory_extra()
-        # By username too: a level names its user holders either way, an account added here as much as a synced one.
-        return self._users_with_usernames({**{u.source_user_id: u for u in linked if u.source_user_id}, **users}) if linked else users
+        if not linked:
+            return users
+        # Aliases rebuilt over every account, the added ones too: a key always names its own account, never a username
+        # alias that ``users`` may carry for the same string.
+        return self._users_with_usernames({
+            **{u.source_user_id: u for u in linked if u.source_user_id},
+            **{key: u for key, u in users.items() if key == u.source_user_id},
+        })
 
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
         """Note the project and level of each issue read that may parent a story."""

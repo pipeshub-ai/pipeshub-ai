@@ -1309,6 +1309,11 @@ class TestFetchUsersPhases:
         assert await connector._note_newly_listed([]) == ["hidden"]
         points["people_reread"] = {"accounts": "[]"}  # handed on to every project
         assert await connector._note_newly_listed([]) == []
+        # Unknown again: issues written now leave its grant out, so the next sync that knows reads them again.
+        connector._licensed_account_ids = None
+        assert await connector._note_newly_listed([]) == []
+        connector._licensed_account_ids = {"hidden"}
+        assert await connector._note_newly_listed([]) == ["hidden"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cause", ["roles_unread", "members_unread"])
