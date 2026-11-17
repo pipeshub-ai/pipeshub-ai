@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.run_sql import run_sql
 
-revision = "platform_0008"
-down_revision = "platform_0007"
+revision = "platform_0009"
+down_revision = "platform_0008"
 branch_labels = None
 depends_on = None
 older_code_compatible = (

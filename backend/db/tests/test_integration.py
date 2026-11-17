@@ -725,7 +725,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0009", min_code=None):
+def _as_newer_build(cluster, name, revision="platform_0010", min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
@@ -835,7 +835,7 @@ KV_MATRIX = [
     ("connectors", "/services/mcp/credentials/i1/u1", True, True), ("connectors", "/services/api-toolsets/credentials/i1/u1", True, True),
     ("connectors", "/services/softDeletePurge/state", True, True), ("connectors", "/services/deployment", True, True),
     ("connectors", "/migrations/node_relation_v1", True, True), ("connectors", "state:lock:x:leader", True, True),
-    ("connectors", "/services/vectordb/embedding_epoch/records/current", True, True),      # the cleanup moves the epoch (platform_0009)
+    ("connectors", "/services/vectordb/embedding_epoch/records/current", True, True),      # the cleanup moves the epoch (platform_0010)
     ("connectors", "/services/vectordb/embedding_epoch/records/tokens/r1/issuing", True, True),
     ("connectors", "/services/vectordb/embedding_pin/records", True, False),               # pins are written by indexing and query
     ("connectors", "/services/vectordb/embedding_epochx", True, False), ("connectors", "/services/vectordb/collection_manifest", True, False),
@@ -992,10 +992,10 @@ def test_in_enforce_connectors_writes_the_epoch_keys_of_a_cleanup_and_no_pin_or_
         assert c.execute("SELECT count(*) FROM platform.kv_entries WHERE starts_with(key, %s)", (base + "/",)).fetchone()[0] == 4
 
 
-def test_platform_0009_downgrades_to_the_matrix_of_platform_0007_and_upgrades_again(kv_db):
+def test_platform_0010_downgrades_to_the_matrix_of_platform_0008_and_upgrades_again(kv_db):
     cluster, name = kv_db
     url = cluster.url(name, MIGRATE)
-    assert run_migrate(url, "downgrade", "platform_0008", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    assert run_migrate(url, "downgrade", "platform_0009", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
     _set_mode(cluster, name, True)
     with _as(cluster, name, "connectors") as c:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
