@@ -7,6 +7,7 @@ import { SearchResultsExtras } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SearchDegradedNote } from '../message-area/search-degraded-note';
 import { AccessNotices, readAccessNotices } from '@/app/components/feedback/access-notice';
+import { ConnectAccountBanner } from '@/app/(main)/workspace/connectors/components/user-access/connect-banner';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
 import { useCitationActions } from '../message-area/response-tabs/citations/use-citation-actions';
@@ -271,6 +272,8 @@ export function SearchResultsView() {
           (searchResponseMeta?.searchResponse as { searchDegraded?: boolean } | undefined)?.searchDegraded === true && (
             <SearchDegradedNote />
           )}
+
+        <ConnectAccountBanner />
 
         {!isSearching && !searchError && (
           <AccessNotices

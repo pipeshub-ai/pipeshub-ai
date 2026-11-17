@@ -31,6 +31,7 @@ import { LastRunSummary } from './last-run-summary';
 import { PermissionFreshness } from './permission-freshness';
 import { ActionItemsCallout } from './action-items-callout';
 import { AccessCheckDialog } from './access-check-dialog';
+import { ConnectedUsers } from '../user-access/connected-users';
 
 // ========================================
 // Props
@@ -427,6 +428,9 @@ export function OverviewTab({
         isLoading={isStopBusy}
         onConfirm={() => void handleConfirmStopSync()}
       />
+      {isAdmin === true && instance._key && instance.scope === 'team' ? (
+        <ConnectedUsers connectorId={instance._key} container={nestedModalHost} />
+      ) : null}
       {isAdmin === true && instance._key ? (
         <Flex>
           <AccessCheckDialog connectorId={instance._key} container={nestedModalHost} />

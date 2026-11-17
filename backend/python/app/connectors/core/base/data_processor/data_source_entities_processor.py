@@ -7699,6 +7699,40 @@ class DataSourceEntitiesProcessor:
             await self._access_changed([connector_id])
         return removed
 
+    async def get_user_granted_records(self, connector_id: str, user_node_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user (graph node id) holds a direct USER grant on. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_granted_records(connector_id, user_node_id)
+
+    @retry_on_deadlock()
+    async def remove_user_grants(self, connector_id: str, user_node_id: str, record_ids: list[str]) -> None:
+        """Delete the user's own direct grants on these records; everyone else's stay."""
+        if not record_ids:
+            return
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_delete_edges([
+                {
+                    "from_id": user_node_id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                }
+                for record_id in record_ids
+            ], collection=CollectionNames.PERMISSION.value)
+
+    @retry_on_deadlock()
+    async def withdraw_user_from_connector(self, connector_id: str, user_node_id: str) -> int:
+        """Take away everything the user holds on the connector directly: their grants and their link to it.
+        For a per-user connection that was revoked, went stale or was disconnected."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            removed = await tx_store.remove_user_access_to_connector(connector_id, user_node_id)
+            await tx_store.delete_edge(
+                user_node_id, CollectionNames.USERS.value,
+                connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            )
+        return removed
+
     @retry_on_deadlock()
     async def remove_user_access_to_record(
         self, connector_id: str, external_id: str, user_id: str

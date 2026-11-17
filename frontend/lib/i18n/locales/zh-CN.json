@@ -3655,6 +3655,116 @@
           "other": "此连接器的权限需要有人查看。",
           "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
         }
+      },
+      "userAccess": {
+        "title": "使用你自己账户的团队连接器",
+        "subtitle": "管理员已将这些连接器设置为每个人只能看到自己账户可以打开的内容。连接你的账户即可查看其中的结果。",
+        "connect": "连接",
+        "reconnect": "重新连接",
+        "disconnect": "断开连接",
+        "connected": "已连接",
+        "connectedAs": "已以 {{account}} 连接",
+        "lastSynced": "上次同步 {{time}}",
+        "notSyncedYet": "尚未同步",
+        "notConnected": "未连接。连接之前，你看不到此连接器中的任何内容。",
+        "needsReconnect": "需要重新连接",
+        "connectDialog": {
+          "title": "将你的账户连接到 {{name}}",
+          "description": "粘贴你自己的 {{source}} 账户中的个人访问令牌。PipesHub 只会向你显示你的账户可以打开的页面。",
+          "howTo": "如何创建个人访问令牌",
+          "tokenLabel": "个人访问令牌",
+          "submitting": "正在连接…",
+          "errorFallback": "无法连接你的账户，请重试。",
+          "descriptionSignIn": "使用你自己的 {{source}} 账户登录，并选择要共享的页面。PipesHub 只会向你显示这些页面。",
+          "signIn": "使用 {{source}} 登录",
+          "signInHint": "{{source}} 只列出你拥有完全访问权限的页面。所选页面的子页面（包括新建的）都会包含在内。之后如需添加更多页面，请重新登录。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登录未完成。请重试。",
+          "popupBlocked": "浏览器拦截了登录窗口。请允许此网站的弹出窗口后重试。",
+          "useToken": "改用个人访问令牌"
+        },
+        "disconnectDialog": {
+          "title": "断开你的账户？",
+          "message": "在重新连接之前，你将看不到来自 {{name}} 的结果。",
+          "confirming": "正在断开…"
+        },
+        "toasts": {
+          "connected": "账户已连接",
+          "connectedDescription": "你的页面会在下次同步后显示。",
+          "disconnected": "账户已断开",
+          "remindersOff": "已关闭提醒",
+          "remindersOn": "已重新开启提醒"
+        },
+        "admin": {
+          "title": "已连接的用户",
+          "description": "此连接器只向每个人显示其自己账户可以打开的内容。未连接的人看不到任何内容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的连接？",
+          "removeMessage": "在重新连接之前，对方将看不到此连接器的结果。",
+          "removing": "正在移除…",
+          "removed": "连接已移除",
+          "countItem": "{{label}}：{{count}}",
+          "status": {
+            "connected": "已连接",
+            "needs_reconnect": "需要重新连接",
+            "invited": "已邀请",
+            "not_invited": "未邀请",
+            "opted_out": "不希望收到提醒",
+            "no_account": "没有 PipesHub 账户"
+          },
+          "noAccountHint": "请先邀请他们加入 PipesHub",
+          "inviteAll_other": "邀请 {{count}} 人",
+          "invite": "邀请",
+          "remind": "提醒",
+          "sent_other": "已发送给 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的邮件未能发送；他们仍收到了应用内通知。",
+          "lastSent": "上次发送于 {{time}}",
+          "connectedAt": "连接于 {{time}}",
+          "membersUpdated": "成员列表上次读取于 {{time}}",
+          "membersPending": "成员列表将在下次同步后显示",
+          "queued_other": "正在发送给 {{count}} 人。他们会收到一条通知和一封邮件。",
+          "nothingSent": "未发送任何内容",
+          "skipReason": {
+            "connected": "已连接。",
+            "not_found": "已不是成员。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "过去一天内已发送过。",
+            "not_sent": "无法发送。请稍后重试。"
+          },
+          "inviteWho": "邀请 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的连接"
+        },
+        "dontRemind": "不再提醒我",
+        "banner": {
+          "notConnected": "你的结果中暂未包含 {{source}} 内容。",
+          "connect": "连接 {{source}}",
+          "revoked": "你的 {{source}} 连接已失效。",
+          "reconnect": "重新连接",
+          "dismiss": "关闭"
+        },
+        "link": {
+          "title": "连接你的 {{source}} 账户",
+          "forEmail": "适用于 {{email}}",
+          "continue": "继续前往 {{source}}",
+          "loading": "正在检查链接…",
+          "alreadyConnected": "你的 {{source}} 账户已连接。",
+          "openApp": "打开 PipesHub",
+          "expired": "此链接已过期或已被使用。请向管理员索取新链接，或在 PipesHub 的“您的个人连接器”中连接。",
+          "optedOut": "你将不会再收到此连接器的提醒。",
+          "error": "出了点问题。请一分钟后重试。",
+          "noSignIn": "此连接器使用个人访问令牌。请登录 PipesHub 粘贴你的令牌。",
+          "done": "{{name}} 已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "doneUnnamed": "你的账户已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "failedTitle": "无法连接",
+          "failedRetry": "请使用邮件中的链接重试。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "尝试次数过多，请一分钟后重试。",
+          "cancelled": "你取消了登录。",
+          "signInFailed": "登录未完成。请重试。"
+        },
+        "remindAgain": "重新提醒我"
       }
     },
     "mcpServers": {

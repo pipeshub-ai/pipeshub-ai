@@ -20,6 +20,7 @@ from uuid import uuid4
 from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.user_access import delete_all_connections
 from app.connectors.services.connector_intents import ConnectorIntentStore
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
@@ -98,7 +99,9 @@ async def delete_connector_credentials(
     """Whether the connector's credentials are gone. Never raises."""
     key = f"/services/connectors/{connector_id}/config"
     try:
-        if await delete_config_confirmed(config_service, key):
+        # Each user's own credential for a per-user connector goes with the connector's.
+        users_gone = await delete_all_connections(config_service, connector_id)
+        if await delete_config_confirmed(config_service, key) and users_gone:
             return True
     except Exception:
         logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)

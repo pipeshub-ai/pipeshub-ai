@@ -6,6 +6,13 @@ import { Flex } from '@radix-ui/themes';
 import { useAuthStore } from '@/config';
 import { LottieLoader } from './lottie-loader';
 import { getOrgExists } from '@/lib/api/org-exists-public';
+import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
+
+/** `/login`, carrying the page the user was opening (a link from an email or a notification) so sign-in returns there. */
+export function loginPathFor(current: string): string {
+  const returnTo = getSafeReturnTo(current);
+  return returnTo && !/^\/(chat\/?)?$/.test(returnTo) ? `/login?returnTo=${encodeURIComponent(returnTo)}` : '/login';
+}
 
 export function LoadingScreen() {
   return (
@@ -39,11 +46,12 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
       void getOrgExists()
         .then((response) => {
           if (cancelled) return;
-          router.replace(response.exists === false ? '/sign-up' : '/login');
+          const login = loginPathFor(`${window.location.pathname}${window.location.search}`);
+          router.replace(response.exists === false ? '/sign-up' : login);
         })
         .catch(() => {
           if (cancelled) return;
-          router.replace('/login');
+          router.replace(loginPathFor(`${window.location.pathname}${window.location.search}`));
         });
       return () => {
         cancelled = true;

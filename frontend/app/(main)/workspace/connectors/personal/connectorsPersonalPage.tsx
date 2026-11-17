@@ -33,6 +33,7 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { MyAccountConnections } from '../components/user-access/my-account-connections';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
@@ -623,6 +624,7 @@ function PersonalConnectorsPageContent() {
         tabs={personalTabs}
         activeTab={personalFilterTab}
         onTabChange={handleTabChange}
+        banner={<MyAccountConnections />}
         registryConnectors={registryConnectors}
         activeConnectors={activeConnectors}
         onSetup={handleSetup}

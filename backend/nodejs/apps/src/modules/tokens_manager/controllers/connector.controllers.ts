@@ -1777,6 +1777,143 @@ export const setPermissionFilter =
     }
   };
 
+/**
+ * Per-user access: a user's own source account on a team connector. Proxied as is; the
+ * connector service decides who may do what and never returns a credential.
+ */
+const proxyUserAccess =
+  (
+    appConfig: AppConfig,
+    method: HttpMethod,
+    operation: string,
+    suffix: (req: AuthenticatedUserRequest) => string = () => '',
+    // The route's validated body; only POST routes send one.
+    body: (req: AuthenticatedUserRequest) => unknown = () => undefined,
+  ) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/user-access${suffix(req)}`,
+        method,
+        buildProxyHeaders(req),
+        body(req),
+      );
+      handleConnectorResponse(response, res, operation, 'Connector not found');
+    } catch (error) {
+      next(handleBackendError(error, operation));
+    }
+  };
+
+/** The organisation's per-user connectors, each with whether the caller has connected. */
+export const listMyPerUserConnectors =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/user-access/mine`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+      handleConnectorResponse(response, res, 'list your connectable accounts', 'No data');
+    } catch (error) {
+      next(handleBackendError(error, 'list your connectable accounts'));
+    }
+  };
+
+export const getMyConnectorConnection = (appConfig: AppConfig) =>
+  proxyUserAccess(appConfig, HttpMethod.GET, 'get your connection');
+
+export const connectMyConnectorAccount = (appConfig: AppConfig) =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.POST,
+    'connect your account',
+    undefined,
+    (req) => ({ token: req.body.token }),
+  );
+
+/** The URL that signs the caller in with the source through the connector's OAuth app. */
+export const startMyConnectorSignIn = (appConfig: AppConfig) =>
+  proxyUserAccess(appConfig, HttpMethod.GET, 'start your sign-in', () => '/oauth/authorize');
+
+export const disconnectMyConnectorAccount = (appConfig: AppConfig) =>
+  proxyUserAccess(appConfig, HttpMethod.DELETE, 'disconnect your account');
+
+export const listConnectorUserConnections = (appConfig: AppConfig) =>
+  proxyUserAccess(appConfig, HttpMethod.GET, 'list connected users', () => '/users');
+
+export const removeConnectorUserConnection = (appConfig: AppConfig) =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.DELETE,
+    'remove a connected user',
+    (req) => `/users/${encodeURIComponent(req.params.userId as string)}`,
+  );
+
+/** Admin only: everyone who could connect, with their connection and invite state. */
+export const getConnectorUserRoster = (appConfig: AppConfig) =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.GET,
+    'list the connector roster',
+    () => '/roster',
+  );
+
+/** Admin only: notify people (by id, or everyone not yet connected) to connect their account. */
+export const inviteConnectorUsers = (appConfig: AppConfig) =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.POST,
+    'invite users to connect',
+    () => '/invites',
+    (req) => req.body,
+  );
+
+/** The caller turns reminders to connect this connector off or on. */
+export const setMyConnectorReminders = (appConfig: AppConfig) =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.POST,
+    'update your reminders',
+    () => '/reminders',
+    (req) => ({ optedOut: req.body.optedOut }),
+  );
+
+/**
+ * Public: the routes behind an emailed connect link. The link token is the only credential,
+ * so no caller identity is forwarded even if the browser sent one.
+ */
+export const proxyUserAccessLink =
+  (appConfig: AppConfig, name: 'info' | 'authorize' | 'complete' | 'opt-out') =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const operation = `connect link ${name}`;
+    try {
+      const headers = buildProxyHeaders(req);
+      delete headers.authorization;
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/user-access/link/${name}`,
+        HttpMethod.POST,
+        headers,
+        req.body,
+      );
+      handleConnectorResponse(response, res, operation, 'No data');
+    } catch (error) {
+      next(handleBackendError(error, operation));
+    }
+  };
+
 export const getConnectorStats =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

@@ -70,6 +70,7 @@ from app.connectors.core.sync.task_manager import (
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.api.permission_explain_router import permission_explain_router  # noqa: E402
+from app.connectors.api.user_access_router import user_access_router  # noqa: E402
 from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
 from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
@@ -1351,6 +1352,11 @@ EXCLUDE_PATHS = [
     "/drive/webhook",   # Google Drive webhook (has its own WebhookAuthVerifier)
     "/gmail/webhook",   # Gmail webhook (uses Google Pub/Sub authentication)
     "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
+    # Connect links from an email: the link token is the credential (user_access_router).
+    "/api/v1/connectors/user-access/link/info",
+    "/api/v1/connectors/user-access/link/authorize",
+    "/api/v1/connectors/user-access/link/complete",
+    "/api/v1/connectors/user-access/link/opt-out",
 ]
 
 @app.middleware("http")
@@ -1721,6 +1727,7 @@ app.add_middleware(LocalReposBodyLimit)
 app.include_router(local_repos_router)
 app.include_router(artifacts_router)
 app.include_router(permission_explain_router)
+app.include_router(user_access_router)
 if oauth_apps_router is not None:
     app.include_router(oauth_apps_router)
 if sharing_router is not None:

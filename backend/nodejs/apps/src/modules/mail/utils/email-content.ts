@@ -3,6 +3,7 @@ import { EmailTemplateType } from '../middlewares/types';
 import {
   accountCreation,
   appUserInvite,
+  connectorAccountConnect,
   domainLimitReached,
   emailChangeNotice,
   isEmailChangeNoticeData,
@@ -60,6 +61,9 @@ export function getEmailContent(
 
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
+
+    case EmailTemplateType.ConnectorAccountConnect:
+      return connectorAccountConnect(templateData);
 
     default:
       throw 'Unknown Template';

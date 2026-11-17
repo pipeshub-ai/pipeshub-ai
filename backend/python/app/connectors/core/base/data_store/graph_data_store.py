@@ -635,6 +635,9 @@ class GraphTransactionStore(TransactionStore):
     async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
         return await self.graph_provider.remove_unlinked_user_access_to_connector(connector_id, transaction=self.txn)
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
+        return await self.graph_provider.get_user_granted_records(connector_id, user_id, transaction=self.txn)
+
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 

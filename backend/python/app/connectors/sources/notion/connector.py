@@ -6,6 +6,7 @@ Authentication: OAuth 2.0
 
 import base64
 import bisect
+import contextlib
 import hashlib
 import math
 import mimetypes
@@ -13,7 +14,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Awaitable, Callable, Collection, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Collection, Dict, List, NoReturn, Optional, Tuple, Union
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
@@ -105,6 +106,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     SourcePerson,
+    User,
     WebpageRecord,
 )
 from app.models.permission import Permission
@@ -112,7 +114,36 @@ from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.sources.client.notion.notion import (
     NotionClient,
     NotionRESTClientViaOAuth,
+    NotionRESTClientViaToken,
     notion_api_base_url,
+)
+from app.connectors.core.base.user_access import (
+    ACCESS_MODE_FIELD,
+    ACCESS_MODE_PER_USER,
+    ACCESS_MODE_WORKSPACE,
+    STATUS_REVOKED,
+    UserConnection,
+    is_per_user,
+    get_connection,
+    list_connections,
+    delete_connection,
+    delete_invite,
+    delete_user_links,
+    get_invite,
+    list_invites,
+    save_connection,
+    save_invite,
+    save_members,
+)
+from app.connectors.core.base.user_access_invites import ConnectRequest, send_connect_request
+from app.connectors.core.registry.types import CustomField
+from app.connectors.sources.notion.per_user import (
+    GRANTED_TYPES,
+    acting_as,
+    active_connection,
+    refresh_connection,
+    user_grant,
+    with_user_grant,
 )
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
@@ -368,6 +399,22 @@ class UnconvertibleImageError(Exception):
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
+        .add_sync_custom_field(CustomField(
+            name=ACCESS_MODE_FIELD,
+            display_name="Who can see synced pages",
+            description=(
+                "Each user: every user connects their own Notion account and sees only the pages "
+                "Notion shows them. Everyone in the workspace: every page shared with the integration "
+                "is visible to every workspace member."
+            ),
+            field_type="SELECT",
+            default_value=ACCESS_MODE_WORKSPACE,
+            options=[ACCESS_MODE_WORKSPACE, ACCESS_MODE_PER_USER],
+            option_labels={
+                ACCESS_MODE_WORKSPACE: "Everyone in the workspace",
+                ACCESS_MODE_PER_USER: "Each user, through their own Notion account",
+            },
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters
         .add_filter_field(FilterField(
@@ -484,6 +531,10 @@ class NotionConnector(BaseConnector):
         # page id -> (revision, comments_by_block) the sync read; the stream indexing that
         # revision uses them instead of one comments call per block again.
         self._sync_comments: dict[str, tuple[str | None, dict[str, list[tuple[dict[str, Any], str]]]]] = {}
+        # Per-user mode (a team connector only): each user's own credential decides what they see.
+        self._per_user = False
+        # One client per user credential, so concurrent calls never share a mutable token.
+        self._user_clients: dict[str, NotionClient] = {}
 
     def _oauth_config_type(self) -> str:
         """Key this connector's shared OAuth apps are stored under.
@@ -709,6 +760,10 @@ class NotionConnector(BaseConnector):
     async def _refresh_after_unauthorized(self) -> bool:
         """After a 401: refresh an OAuth access token once (Zendesk does the same); False for an
         API token, or when there is nothing to refresh with."""
+        connection = active_connection()
+        if connection is not None:
+            # Reading as a connected user: refresh their sign-in, never the connector's own.
+            return await self._refresh_user_token(connection) is True
         client = self.notion_client.get_client() if self.notion_client else None
         if not isinstance(client, NotionRESTClientViaOAuth):
             return False
@@ -768,6 +823,10 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
             self._sync_incomplete = False
             self._failed_pages = set()
+
+            if await self._load_access_mode():
+                await self._run_per_user_sync()
+                return
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
@@ -836,6 +895,448 @@ class NotionConnector(BaseConnector):
                     "not updated. They are retried on the next sync."
                 ),
             )
+
+    # ==================== Per-user access ====================
+    #
+    # A team connector whose sync config says ``accessMode: per_user``. Each user connects their
+    # own Notion account (app.connectors.core.base.user_access); a page or data source reaches a
+    # user only when their own credential lists it, as a direct grant with no inheritance. The
+    # admin's credential only names the workspace. Nothing here widens access: a failed or partial
+    # read keeps what was there or takes access away, never adds it for someone else.
+
+    async def _load_access_mode(self) -> bool:
+        """Whether this connector runs in per-user mode, read from its config every time it matters."""
+        if self.scope != ConnectorScope.TEAM.value or self.connector_name != Connectors.NOTION:
+            self._per_user = False
+            return False
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config", raise_on_error=True
+        )
+        self._per_user = is_per_user(config if isinstance(config, dict) else None)
+        return self._per_user
+
+    def _client_for(self, token: str) -> NotionClient:
+        client = self._user_clients.get(token)
+        if client is None:
+            client = NotionClient(NotionRESTClientViaToken(token, resilience=self.resilience))
+            self._user_clients[token] = client
+        return client
+
+    async def _close_user_clients(self) -> None:
+        clients, self._user_clients = list(self._user_clients.values()), {}
+        for client in clients:
+            try:
+                await client.get_client().close()
+            except Exception as e:
+                self.logger.warning("Failed to close a per-user Notion client: %s", e)
+
+    @contextlib.asynccontextmanager
+    async def _as_a_reader_of(self, record: Record) -> AsyncIterator[None]:
+        """In per-user mode, read with the credential of a connected user who holds a grant on the
+        record (its page, for a file). Otherwise, or when nobody does, with the connector's own."""
+        connection = await self._reader_connection(record) if await self._load_access_mode() else None
+        if connection is None:
+            yield
+            return
+        with acting_as(connection):
+            yield
+
+    async def _reader_connection(self, record: Record) -> UserConnection | None:
+        target = record
+        if record.record_type not in GRANTED_TYPES and record.parent_external_record_id:
+            parent = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.parent_external_record_id
+            )
+            target = parent or record
+        if not target.id:
+            return None
+        readers = await self.data_entities_processor.get_users_with_permission_to_node(
+            target.id, CollectionNames.RECORDS.value
+        )
+        connections = {c.user_id: c for c in await list_connections(self.config_service, self.connector_id)}
+        for reader in readers:
+            connection = connections.get(reader.user_id or "")
+            if connection is not None and connection.active:
+                return connection
+        return None
+
+    async def _prepare_per_user_workspace(self) -> None:
+        """Make the workspace reach nobody by itself, and, after a switch from workspace mode, cut the
+        inheritance every page and data source had: a page another user cannot open must not reach them
+        through its parent or the workspace.
+
+        The workspace group's model is the marker: workspace mode keeps it RECORD_GROUP_LEVEL, and it is
+        set to RECORD_LEVEL only after every record stopped inheriting, so a run cut short strips again.
+        """
+        record_group = await self.data_entities_processor.get_record_group_by_external_id(
+            connector_id=self.connector_id, external_id=self.workspace_id
+        )
+        if record_group is None:
+            record_group = RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=self.workspace_name or self._DEFAULT_WORKSPACE_NAME,
+                external_group_id=self.workspace_id,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.NOTION_WORKSPACE,
+                created_at=get_epoch_timestamp_in_ms(),
+                updated_at=get_epoch_timestamp_in_ms(),
+            )
+        elif record_group.permission_model != PermissionModel.RECORD_LEVEL:
+            # Close the way in through the workspace first, then the one through each parent.
+            record_group.inherit_permissions = False
+            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
+            for record_type in GRANTED_TYPES:
+                for record in await self.data_entities_processor.get_records_by_record_type(
+                    self.connector_id, record_type
+                ):
+                    if record.id:
+                        await self.data_entities_processor.stop_inheriting_permissions(record.id, self.connector_id)
+        record_group.permission_model = PermissionModel.RECORD_LEVEL
+        record_group.inherit_permissions = False
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
+
+    async def _run_per_user_sync(self) -> None:
+        """One pass per connected user, in turn, each with that user's own credential."""
+        datasource = await self._get_fresh_datasource()
+        await self._assert_required_capabilities(datasource)
+        await self._ensure_workspace_from_bot(refresh=True)
+        if not self.workspace_id:
+            raise ConnectorInitError("Could not read the Notion workspace of this connector's integration.")
+        await self._prepare_per_user_workspace()
+        await self._load_bot_user_ids()
+        await self._save_member_list()
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "notion", self.connector_id, self.logger
+        )
+
+        now = get_epoch_timestamp_in_ms()
+        connected: list[tuple[UserConnection, User]] = []
+        for connection in await list_connections(self.config_service, self.connector_id):
+            user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
+            if user is None or not user.id:
+                # The user no longer exists in PipesHub: their credential has nobody to act for.
+                await self._forget_user(connection.user_id)
+                continue
+            try:
+                if user.is_active is False:
+                    # Deactivated: no access while away; the connection stays for when they come back.
+                    await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+                elif connection.active and connection.workspace_id and connection.workspace_id != self.workspace_id:
+                    await self._revoke_connection(connection, user, "The connector now syncs another Notion workspace.")
+                elif not connection.active:
+                    await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+                else:
+                    connected.append((connection, user))
+            except Exception as e:
+                # One user's failure must not stop everyone else's sync; this run is not complete.
+                self.logger.error("Notion per-user sync: could not update %s: %s", connection.email, e, exc_info=True)
+                self._sync_incomplete = True
+
+        await self._link_connected_users(connected)
+        await self._send_due_reminders({connection.user_id for connection, _ in connected})
+        if not connected:
+            self.logger.info("Notion per-user sync: nobody has connected a Notion account yet")
+            return
+
+        # Per-user clients stay open between runs: a stream may be reading with one right now.
+        # They are closed with the connector (_close_client).
+        all_complete = True
+        for connection, user in connected:
+            complete = await self._run_user_pass(connection, user)
+            if complete:
+                connection.last_complete_listing_at = now
+                connection.last_error = None
+                if not await self._update_connection(connection):
+                    # Disconnected while the pass ran: what it granted must not outlive the connection.
+                    await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+                    complete = False
+            elif connection.active and connection.stale(now):
+                # Its last complete view is too old to trust: no access until one completes.
+                self.logger.warning("Notion per-user sync: %s has no recent complete listing", connection.email)
+                await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+            all_complete = all_complete and complete
+        if all_complete:
+            await self._delete_records_nobody_sees([user for _, user in connected])
+        else:
+            self._sync_incomplete = True
+
+    async def _update_connection(self, connection: UserConnection) -> bool:
+        """Store a sync's update to a connection, unless the user disconnected or connected again
+        meanwhile: writing it back would undo that. False when the stored connection is not this one."""
+        current = await get_connection(self.config_service, self.connector_id, connection.user_id)
+        if current is None or current.connected_at != connection.connected_at:
+            return False
+        # The stored credential wins: a stream may have refreshed it while the pass ran.
+        current.status = connection.status
+        current.last_error = connection.last_error
+        current.last_complete_listing_at = connection.last_complete_listing_at
+        await save_connection(self.config_service, self.connector_id, current)
+        return True
+
+    async def _refresh_user_token(self, connection: UserConnection) -> bool | None:
+        """After Notion refused a user's token: see refresh_connection (True, False or None)."""
+        return await refresh_connection(
+            connection, connector_id=self.connector_id, config_service=self.config_service,
+            org_id=self.data_entities_processor.org_id, logger=self.logger,
+        )
+
+    async def _link_connected_users(self, connected: list[tuple[UserConnection, User]]) -> None:
+        """Link connected users to the connector and unlink everyone else (the connector gate)."""
+        if connected:
+            await self.data_entities_processor.on_new_app_users([
+                AppUser(
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    source_user_id=connection.source_user_id,
+                    org_id=self.data_entities_processor.org_id,
+                    email=user.email,
+                    full_name=user.full_name or user.email,
+                    is_active=True,
+                )
+                for connection, user in connected
+            ])
+        keep = {user.id for _, user in connected}
+        leavers = [u for u in await self.data_entities_processor.get_all_app_users(self.connector_id) if u.id not in keep]
+        if leavers:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, leavers)
+
+    async def _revoke_connection(self, connection: UserConnection, user: User, reason: str) -> None:
+        """A credential Notion refused, or one for another workspace: the user loses access now, and
+        is asked once (when it stops working) to connect again."""
+        was_active = connection.active
+        connection.status = STATUS_REVOKED
+        connection.last_error = reason
+        await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+        stored = await self._update_connection(connection)
+        self.logger.warning("Notion per-user access revoked for %s: %s", connection.email, reason)
+        if was_active and stored:
+            await self._ask_to_connect(connection.user_id, connection.email, reconnect=True)
+
+    # ==================== Asking people to connect ====================
+
+    async def _read_member_list(self) -> list[dict[str, Any]] | None:
+        """Every person the workspace lists with an email (``sourceUserId``, ``name``, ``email``), read
+        with the connector's own credential; None when the list could not be read to its end."""
+        members: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            response = await (await self._get_fresh_datasource()).list_users(
+                start_cursor=cursor, page_size=self._SYNC_PAGE_SIZE
+            )
+            if not response or not response.success:
+                return None
+            data = response.data.json() if response.data else {}
+            for person in data.get("results") or []:
+                email = ((person.get("person") or {}).get("email") or "").strip()
+                if person.get("type") == "person" and person.get("id") and email:
+                    members.append({"sourceUserId": person["id"], "name": person.get("name"), "email": email})
+            next_cursor = data.get("next_cursor")
+            if not data.get("has_more"):
+                return members
+            if not next_cursor or next_cursor == cursor:
+                return None
+            cursor = next_cursor
+
+    async def _save_member_list(self) -> None:
+        """Keep the member list for the admin's roster. Best effort: a list read short is not saved,
+        so the roster keeps the last whole one."""
+        try:
+            members = await self._read_member_list()
+            if members is not None:
+                await save_members(self.config_service, self.connector_id, members, get_epoch_timestamp_in_ms())
+        except Exception as e:
+            self.logger.warning("Notion per-user sync: could not read the member list: %s", e)
+
+    async def _send_due_reminders(self, connected_user_ids: set[str]) -> None:
+        """Remind people who were asked to connect and have not, 3 and 10 days after the first ask."""
+        try:
+            now = get_epoch_timestamp_in_ms()
+            for invite in (await list_invites(self.config_service, self.connector_id)).values():
+                if invite.user_id in connected_user_ids or not invite.reminder_due(now):
+                    continue
+                if await get_connection(self.config_service, self.connector_id, invite.user_id) is not None:
+                    continue  # connected (or waiting to reconnect, which has its own notice)
+                user = await self.data_entities_processor.get_user_by_user_id(invite.user_id)
+                if user is None or not user.email or user.is_active is False:
+                    continue
+                if await self._ask_to_connect(invite.user_id, user.email, reconnect=False):
+                    # Read again: the user may have opted out while the email went.
+                    current = await get_invite(self.config_service, self.connector_id, invite.user_id) or invite
+                    current.sent(now)
+                    await save_invite(self.config_service, self.connector_id, current)
+        except Exception as e:
+            self.logger.warning("Notion per-user sync: could not send reminders: %s", e)
+
+    async def _forget_user(self, user_id: str) -> None:
+        """A user deleted from PipesHub: drop their credential, invite and links."""
+        try:
+            await delete_connection(self.config_service, self.connector_id, user_id)
+            await delete_invite(self.config_service, self.connector_id, user_id)
+            await delete_user_links(self.config_service, self.connector_id, user_id)
+        except Exception as e:
+            self.logger.warning("Notion per-user sync: could not drop a deleted user's connection: %s", e)
+
+    async def _ask_to_connect(self, user_id: str, email: str, *, reconnect: bool) -> bool:
+        """An in-app notification and an email asking the user to connect. True when either went."""
+        try:
+            notified, emailed = await send_connect_request(
+                ConnectRequest(
+                    org_id=str(self.data_entities_processor.org_id), connector_id=self.connector_id,
+                    connector_name=self.display_name, source_name="Notion", user_id=user_id, email=email,
+                    reconnect=reconnect,
+                ),
+                config_service=self.config_service, notification_service=self._notification_service,
+                logger=self.logger, now_ms=get_epoch_timestamp_in_ms(),
+            )
+            return notified or emailed
+        except Exception as e:
+            self.logger.warning("Notion per-user sync: could not ask a user to connect: %s", e)
+            return False
+
+    async def _run_user_pass(self, connection: UserConnection, user: User) -> bool:
+        """Walk, reconcile and sweep with one user's credential. True when their listing was complete.
+
+        When Notion refuses the token, a sign-in is refreshed and the pass runs once more; a token
+        that cannot be refreshed is revoked. A refresh that could not be tried leaves the pass
+        incomplete, and the user keeps access until their listing goes stale."""
+        outer_incomplete = self._sync_incomplete
+        for attempt in (1, 2):
+            self._sync_incomplete = outer_incomplete  # a refused first attempt says nothing about the second
+            complete = await self._run_user_pass_once(connection, user)
+            if complete is not None:
+                return complete
+            refreshed = await self._refresh_user_token(connection) if attempt == 1 else False
+            if refreshed is None:
+                self._sync_incomplete = True
+                return False
+            if not refreshed:
+                reason = (
+                    "Your Notion sign-in has expired or was removed; sign in again."
+                    if connection.refresh_token else "Notion refused the token; connect again."
+                )
+                await self._revoke_connection(connection, user, reason)
+                return False
+        return False
+
+    async def _run_user_pass_once(self, connection: UserConnection, user: User) -> bool | None:
+        """One pass; None when Notion refused the token."""
+        outer_incomplete = self._sync_incomplete
+        self._sync_incomplete = False
+        complete: bool | None = False
+        with acting_as(connection):
+            try:
+                me = await (await self._get_fresh_datasource()).retrieve_bot_user()
+                if getattr(me, "status_code", None) == _UNAUTHORIZED_STATUS:
+                    complete = None
+                    return None
+                await self._sync_objects_by_type("data_source")
+                await self._sync_objects_by_type("page")
+                # shortcut: every sync lists each user's whole view (users x pages / 100 calls under one
+                # workspace rate limit); upgrade to a reconcile interval setting once workspaces outgrow the hour.
+                complete = await self._reconcile_user_view(connection, user)
+                try:
+                    await self._refresh_touched_data_sources()
+                except Exception as e:
+                    self.logger.error("Re-saving data sources whose rows changed failed: %s", e, exc_info=True)
+                try:
+                    await self._sweep_placeholder_records()
+                except Exception as e:
+                    self.logger.error("Placeholder sweep failed: %s", e, exc_info=True)
+            except Exception as e:
+                if self._is_unauthorized(e):
+                    complete = None
+                else:
+                    self.logger.error("Notion per-user pass for %s failed: %s", connection.email, e, exc_info=True)
+                    complete = False
+            finally:
+                self._sync_incomplete = outer_incomplete or self._sync_incomplete or not complete
+        return complete
+
+    async def _reconcile_user_view(self, connection: UserConnection, user: User) -> bool:
+        """Make the user's grants match what their credential lists now.
+
+        Listed and stored but not granted: granted (a page shared with them later, or access given
+        back after a stale or revoked spell). Granted but not listed: confirmed by id with their
+        credential, since search is not a complete inventory; only a 404 or a trashed page takes
+        the grant away, and only theirs. Returns True when every listing ran to its end and every
+        candidate was decided.
+        """
+        complete = True
+        granted = {
+            row["externalRecordId"]: row["id"]
+            for row in await self.data_entities_processor.get_user_granted_records(self.connector_id, user.id)
+            if row.get("externalRecordId") and row.get("id")
+        }
+        grant = user_grant(connection)
+        for object_type, record_type in (("data_source", RecordType.DATASOURCE), ("page", RecordType.WEBPAGE)):
+            listed = await self._list_visible_objects(object_type)
+            if listed is None:
+                complete = False
+                continue
+            live = {i: obj for i, obj in listed.items() if not (obj.get("archived") or obj.get("in_trash"))}
+            stored = {
+                r.external_record_id: r
+                for r in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
+                if r.external_record_id and not r.is_placeholder
+            }
+
+            missing = [obj for i, obj in live.items() if i not in stored]
+            batch: list[tuple[Record, list[Permission]]] = []
+            for obj in missing:
+                records = await self._records_for_search_object(obj, object_type)
+                if records:
+                    batch.extend(records)
+                elif records == []:
+                    complete = False
+            if batch:
+                await self._save_content_records(batch)
+            if object_type == "page":
+                await self._recheck_page_comments(live, set(stored))
+
+            for external_id in live:
+                record = stored.get(external_id)
+                if record is not None and external_id not in granted:
+                    await self.data_entities_processor.add_permission_to_record(record, [grant])
+
+            candidates = [stored[e] for e in granted if e in stored and e not in live]
+            verdicts = await gather_with_concurrency(
+                self._PLACEHOLDER_SWEEP_CONCURRENCY,
+                *[self._fetch_placeholder_object(r) for r in candidates],
+                return_exceptions=True,
+            )
+            lost: list[str] = []
+            for record, verdict in zip(candidates, verdicts):
+                if isinstance(verdict, BaseException) or verdict[0] == "unknown":
+                    complete = False  # not confirmed either way: the grant stays
+                elif verdict[0] == "gone":
+                    lost.append(granted[record.external_record_id])
+            if lost:
+                self.logger.info(
+                    "Notion per-user sync: %s can no longer open %d %s(s)", connection.email, len(lost), object_type
+                )
+                await self.data_entities_processor.remove_user_grants(self.connector_id, user.id, lost)
+        return complete
+
+    async def _delete_records_nobody_sees(self, users: list[User]) -> None:
+        """After every connected user's listing completed: delete pages and data sources none of them
+        holds a grant on. Their content is no longer anyone's to read; whoever connects later and
+        can open one has it synced again."""
+        held: set[str] = set()
+        for user in users:
+            held.update(
+                row["id"] for row in await self.data_entities_processor.get_user_granted_records(self.connector_id, user.id)
+            )
+        for record_type in GRANTED_TYPES:
+            doomed = [
+                r for r in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
+                if r.id and r.id not in held and not r.is_placeholder
+            ]
+            if doomed:
+                self.logger.info("Notion per-user sync: deleting %d %s record(s) no connected user can open",
+                                 len(doomed), record_type.value)
+                if not await self._delete_records(doomed):
+                    self._sync_incomplete = True
 
     # ==================== Reconciliation with the source ====================
 
@@ -1386,6 +1887,10 @@ class NotionConnector(BaseConnector):
                             )
                             if parent_record is not None and parent_record.is_placeholder:
                                 next_frontier.append(parent_record)
+                    elif verdict == "gone" and active_connection() is not None:
+                        # One user's 404: another user may still reach it. Stubs are never
+                        # visible, so leaving it costs nothing.
+                        untouched += 1
                     elif verdict == "gone":
                         moved = await self._detach_placeholder_children(stub)
                         await self.data_entities_processor.on_record_deleted(stub.id)
@@ -1398,6 +1903,9 @@ class NotionConnector(BaseConnector):
                     else:
                         untouched += 1
                 except _DatabaseGone:
+                    if active_connection() is not None:
+                        untouched += 1  # as for "gone" above: one user's view decides nothing here
+                        continue
                     moved = await self._detach_placeholder_children(stub)
                     await self.data_entities_processor.on_record_deleted(stub.id)
                     detached += 1
@@ -1472,7 +1980,9 @@ class NotionConnector(BaseConnector):
         if not indexing_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-        await self.data_entities_processor.on_new_records([(record, [])])
+        connection = active_connection()
+        row = with_user_grant(record, [], connection) if connection else (record, [])
+        await self.data_entities_processor.on_new_records([row])
         self.logger.info(
             "Placeholder sweep: resolved %s -> %r",
             stub.external_record_id, record.record_name,
@@ -1494,7 +2004,8 @@ class NotionConnector(BaseConnector):
         return await call()
 
     async def get_signed_url(self, record: Record) -> str | None:
-        return await self._retry_once_after_401(lambda: self._get_signed_url_once(record))
+        async with self._as_a_reader_of(record):
+            return await self._retry_once_after_401(lambda: self._get_signed_url_once(record))
 
     async def _get_signed_url_once(self, record: Record) -> Optional[str]:
         """
@@ -1673,7 +2184,9 @@ class NotionConnector(BaseConnector):
             yield fetched.content[i:i + 64 * 1024]
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        return await self._retry_once_after_401(lambda: self._stream_record_once(record))
+        # The content is read before the response is returned, so the reader's credential covers it.
+        async with self._as_a_reader_of(record):
+            return await self._retry_once_after_401(lambda: self._stream_record_once(record))
 
     async def _stream_record_once(self, record: Record) -> StreamingResponse:
         """
@@ -1844,6 +2357,13 @@ class NotionConnector(BaseConnector):
                 self.logger.info("No records to reindex")
                 return
 
+            if await self._load_access_mode():
+                # The source check below reads with one credential and deletes what it cannot
+                # see: in per-user mode that is one user's view, not the source's. The sync
+                # refreshes content; a reindex only queues the stored records again.
+                await self.data_entities_processor.reindex_existing_records(records)
+                return
+
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
             await self._ensure_workspace_from_bot()
             if not self._bot_ids_complete:  # a reindex before a complete user sync: a page's untyped bot must not read as a person
@@ -2003,6 +2523,7 @@ class NotionConnector(BaseConnector):
         HTTPClient holds a keep-alive pool; without this it outlives every
         disable / delete / credential change and every client rebuild.
         """
+        await self._close_user_clients()
         if getattr(self, 'notion_client', None):
             try:
                 await self.notion_client.get_client().close()
@@ -2371,9 +2892,12 @@ class NotionConnector(BaseConnector):
                 self._touched_data_sources.update((saved or {}).get("ids") or [])
                 self._persisted_touched = sorted(self._touched_data_sources)
 
-            # Get sync point key for this object type
+            # Get sync point key for this object type. In per-user mode each user's walk keeps its
+            # own checkpoint: what one user's token returned says nothing about another's.
+            connection = active_connection()
             sync_point_key = generate_record_sync_point_key(
-                RecordType.WEBPAGE.value, f"notion_{object_type}s", "global"
+                RecordType.WEBPAGE.value, f"notion_{object_type}s",
+                f"user_{connection.user_id}" if connection else "global",
             )
             last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
@@ -2591,6 +3115,9 @@ class NotionConnector(BaseConnector):
         """
         if not rows:
             return
+        connection = active_connection()
+        if connection is not None:
+            rows = [with_user_grant(record, permissions, connection) for record, permissions in rows]
         routed = []
         for record, permissions in rows:
             existing = await self.data_entities_processor.get_record_by_external_id(
@@ -2881,7 +3408,10 @@ class NotionConnector(BaseConnector):
         cursor = None
         page_size = 100
 
-        while True:
+        # Per-user mode: a database can hide rows from some members, and this table would be read
+        # with one user's credential and shown to everyone who can open the data source. Each row
+        # is its own page with its own grant, so the table keeps only its columns.
+        while not self._per_user:
             try:
                 query_body = {"page_size": page_size}
                 if cursor:
@@ -3620,6 +4150,11 @@ class NotionConnector(BaseConnector):
         """Children of a block. A synced block whose original lives on a page the integration
         cannot see gets a 404 for the original's children: it renders empty rather than failing
         the whole page."""
+        if self._per_user and children_block_id != block_id:
+            # A synced block shows its original's content, which lives on another page whose
+            # audience may differ: read with one user's credential, it would reach every reader
+            # of this page. Rendered empty instead.
+            return []
         try:
             return await self._process_blocks_recursive(children_block_id, *args)
         except HTTPException as e:
@@ -4635,6 +5170,12 @@ class NotionConnector(BaseConnector):
                     external_id=self.workspace_id,
                 )
             if existing:
+                if getattr(existing, "permission_model", None) == PermissionModel.RECORD_LEVEL:
+                    # Back from per-user mode: the workspace is everyone's again, and a later switch
+                    # to per-user mode sees it was left and cuts inheritance again.
+                    existing.permission_model = PermissionModel.RECORD_GROUP_LEVEL
+                    existing.inherit_permissions = True
+                    await self.data_entities_processor.on_new_record_groups([(existing, [])])
                 self.logger.info(
                     "Workspace record group already exists: %s", self.workspace_id
                 )
@@ -5635,6 +6176,10 @@ class NotionConnector(BaseConnector):
         """
         if not self.notion_client:
             raise connector_not_ready(self.display_name)
+
+        connection = active_connection()
+        if connection is not None:
+            return NotionDataSource(self._client_for(connection.token))
 
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"

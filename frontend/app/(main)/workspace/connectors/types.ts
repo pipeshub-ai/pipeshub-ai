@@ -729,3 +729,87 @@ export interface PermissionStatus {
     fix?: { vendor?: string; permission?: string } | null;
   }>;
 }
+
+/** A person's own source account on a team connector in per-user mode. The token is never returned. */
+export interface UserAccessConnection {
+  userId: string;
+  email: string;
+  sourceUserId: string;
+  sourceEmail: string;
+  workspaceId: string;
+  /** `revoked`: the source refused the token; the person must connect again. */
+  status: 'active' | 'revoked';
+  connectedAt: number;
+  /** When a sync last finished reading everything this account can open; null before the first. */
+  lastCompleteListingAt: number | null;
+  lastError: string | null;
+  /** `oauth`: signed in with the source; `token`: pasted a token. */
+  method?: 'token' | 'oauth';
+}
+
+/** GET /connectors/user-access/mine: a per-user team connector with the caller's own connection. */
+export interface UserAccessConnector {
+  connectorId: string;
+  name: string;
+  type: string;
+  connected: boolean;
+  connection: UserAccessConnection | null;
+  /** The connector has an OAuth app, so users can sign in with the source instead of pasting a token. */
+  signInAvailable?: boolean;
+  /** The caller asked not to be reminded to connect. */
+  optedOut?: boolean;
+  /** An admin asked the caller to connect. */
+  invited?: boolean;
+}
+
+export type UserAccessRosterStatus =
+  | 'connected'
+  | 'needs_reconnect'
+  | 'invited'
+  | 'not_invited'
+  | 'opted_out'
+  | 'no_account';
+
+/** GET /connectors/{id}/user-access/roster: everyone who could connect, admin only. */
+export interface UserAccessRoster {
+  /** When a sync last read the source's member list; null before the first. */
+  membersUpdatedAt: number | null;
+  people: Array<{
+    name: string | null;
+    email: string;
+    sourceUserId: string | null;
+    /** null when no PipesHub account has this email. */
+    userId: string | null;
+    status: UserAccessRosterStatus;
+    connection: UserAccessConnection | null;
+    /** `sendCount` 0 and null dates: opted out before any invite. */
+    invite: { firstSentAt: number | null; lastSentAt: number | null; sendCount: number; optedOut: boolean } | null;
+  }>;
+  counts: Record<UserAccessRosterStatus, number>;
+}
+
+export type UserAccessRosterPerson = UserAccessRoster['people'][number];
+
+export type UserAccessInviteSkipReason = 'connected' | 'not_found' | 'opted_out' | 'recently_sent' | 'not_sent';
+
+/**
+ * POST /connectors/{id}/user-access/invites. `{all: true}` runs in the background: `queued` true,
+ * `emailed` null, `sent` = people it will reach. `{userIds}` is synchronous: `emailed` < `sent`
+ * when mail failed (the in-app notice still went).
+ */
+export interface UserAccessInviteResult {
+  sent: number;
+  emailed: number | null;
+  queued: boolean;
+  skipped: Array<{ userId: string; reason: UserAccessInviteSkipReason }>;
+}
+
+/** POST /connectors/user-access/link/info: what an emailed connect link is for. No login. */
+export interface UserAccessLinkInfo {
+  connectorName: string;
+  sourceType: string;
+  email: string;
+  connected: boolean;
+  signInAvailable: boolean;
+  expiresAt: number;
+}
