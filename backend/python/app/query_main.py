@@ -641,9 +641,13 @@ def configured_worker_count() -> int:
     return 1
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, *, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
     import warnings
+
+    from app.utils.env_utils import bind_host, bind_port
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8000)
     workers = workers or configured_worker_count()
     if reload and workers > 1:
         warnings.warn(
