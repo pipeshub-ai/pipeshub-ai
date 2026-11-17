@@ -349,6 +349,12 @@ async def _authorization_url(request: Request, connector_id: str, user_id: str, 
         url = await provider.start_authorization(owner="user")
     finally:
         await provider.close()
+    # When this sign-in began: a connection it makes dates from here, so a removal after it began wins.
+    session = sign_in_path(connector_id, user_id)
+    stored = await config_service.get_config(session, use_cache=False, keep_in_cache=False, raise_on_error=True)
+    if isinstance(stored, dict):
+        await config_service.set_config(session, {**stored, "startedAt": get_epoch_timestamp_in_ms()},
+                                        keep_in_cache=False)
     parts = urlparse(url)
     query = parse_qs(parts.query)
     query["state"] = [_encode_sign_in_state(query["state"][0], connector_id, user_id if link_user else None)]
@@ -431,6 +437,8 @@ async def _complete_user_sign_in(
         if not stored_state or not hmac.compare_digest(stored_state, state):
             # Not this user's sign-in in progress: leave it (and theirs) alone.
             raise _SignInFailed("This sign-in has expired or was already used. Start again.")
+        # Dated from when the sign-in began, not this callback: a removal in between undoes it in any process.
+        started_at = int(stored.get("startedAt") or 0) or started_at
         try:
             try:
                 oauth_config = await user_oauth_config(

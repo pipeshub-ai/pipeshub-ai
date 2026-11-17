@@ -138,6 +138,39 @@ class TestRemovalAcrossProcesses:
         assert await user_access.get_connection(store, "c1", "u1") is not None
 
 
+    async def test_a_stale_connection_a_crash_left_behind_is_not_read(self) -> None:
+        store = _Store()
+        stale = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",
+                                           source_email="a@acme.com", workspace_id="ws", connected_at=100)
+        await user_access.mark_removed(store, "c1", "u1", now_ms=200)
+        # Written by a process that died before its own check could undo it.
+        store.data[user_access.connection_path("c1", "u1")] = stale.to_dict()
+        assert await user_access.get_connection(store, "c1", "u1") is None
+        assert await user_access.list_connections(store, "c1") == []
+
+    async def test_a_sign_in_begun_before_a_removal_in_another_process_is_undone(self) -> None:
+        routes = _routes()
+        store = _Store()
+        session = "/services/connectors/c1/sign-in/u1"
+        store.data[session] = {"oauth": {"state": "s1"}, "startedAt": 100}
+        await user_access.mark_removed(store, "c1", "u1", now_ms=200)  # another process; no lock shared
+        token = SimpleNamespace(access_token="at", refresh_token="rt")
+        provider = SimpleNamespace(handle_callback=AsyncMock(return_value=token), close=AsyncMock())
+        user = {"userId": "u1", "email": "a@acme.com", "id": "n1"}
+        with patch.object(routes, "_config_service", return_value=store), \
+                patch.object(routes, "_per_user_connector", new=AsyncMock(return_value={"type": "Notion"})), \
+                patch.object(routes, "OAuthProvider", return_value=provider), \
+                patch.object(routes, "user_oauth_config", new=AsyncMock()), \
+                patch.object(routes, "current_org_id", return_value="org-1"), \
+                patch.object(routes, "verify_token", new=AsyncMock(return_value=SimpleNamespace(
+                    user_id="p1", email="a@acme.com", workspace_id="ws"))), \
+                patch.object(routes, "_request_sync", new=AsyncMock()):
+            with pytest.raises(routes._SignInFailed):
+                await routes._complete_user_sign_in(
+                    MagicMock(), AsyncMock(), user, connector_id="c1", state="s1", code="code")
+        assert await user_access.get_connection(store, "c1", "u1") is None
+
+
 class TestRemovalDuringSignIn:
     async def test_a_sign_in_waiting_on_a_removal_finds_its_session_gone(self) -> None:
         routes = _routes()

@@ -171,7 +171,22 @@ async def get_connection(
     data = await config_service.get_config(
         connection_path(connector_id, user_id), use_cache=False, keep_in_cache=False, raise_on_error=True
     )
-    return UserConnection.from_dict(data) if isinstance(data, dict) and data.get("token") else None
+    connection = UserConnection.from_dict(data) if isinstance(data, dict) and data.get("token") else None
+    if connection is not None and _removed(connection, await _removed_at(config_service, connector_id, user_id)):
+        return None
+    return connection
+
+
+async def _removed_at(config_service: ConfigurationService, connector_id: str, user_id: str) -> int:
+    marker = await config_service.get_config(
+        removal_path(connector_id, user_id), use_cache=False, keep_in_cache=False, raise_on_error=True
+    )
+    return int(marker.get("removedAt") or 0) if isinstance(marker, dict) else 0
+
+
+def _removed(connection: UserConnection, removed_at: int) -> bool:
+    """Made before the user's last removal: a stale write a crash left behind (see save_connection)."""
+    return bool(removed_at) and removed_at >= connection.connected_at
 
 
 async def save_connection(
@@ -184,11 +199,7 @@ async def save_connection(
         connection_path(connector_id, connection.user_id), connection.to_dict(), keep_in_cache=False
     ):
         raise RuntimeError(f"Could not save the connection of user {connection.user_id} to {connector_id}")
-    marker = await config_service.get_config(
-        removal_path(connector_id, connection.user_id), use_cache=False, keep_in_cache=False, raise_on_error=True
-    )
-    removed_at = int(marker.get("removedAt") or 0) if isinstance(marker, dict) else 0
-    if removed_at and removed_at >= connection.connected_at:
+    if _removed(connection, await _removed_at(config_service, connector_id, connection.user_id)):
         await delete_connection(config_service, connector_id, connection.user_id)
         return False
     return True
@@ -210,11 +221,20 @@ async def delete_connection(config_service: ConfigurationService, connector_id: 
 async def list_connections(config_service: ConfigurationService, connector_id: str) -> list[UserConnection]:
     """Every user's connection to the connector. A failed read raises: an empty list is read as
     "nobody is connected", which takes everyone's access away."""
+    removed_users = {
+        key.removeprefix(removals_prefix(connector_id))
+        for key in await config_service.list_keys_in_directory(removals_prefix(connector_id))
+    }
     connections: list[UserConnection] = []
     for key in await config_service.list_keys_in_directory(connections_prefix(connector_id)):
         data = await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True)
         if isinstance(data, dict) and data.get("token"):
-            connections.append(UserConnection.from_dict(data))
+            connection = UserConnection.from_dict(data)
+            if connection.user_id in removed_users and _removed(
+                connection, await _removed_at(config_service, connector_id, connection.user_id)
+            ):
+                continue
+            connections.append(connection)
     return connections
 
 
