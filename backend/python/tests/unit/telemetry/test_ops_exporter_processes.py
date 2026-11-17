@@ -247,19 +247,24 @@ def _p99_ms(samples: list[float]) -> float:
     return samples[min(len(samples) - 1, int(0.99 * len(samples)))] * 1000
 
 
+def _late_s(samples: list[float]) -> float:
+    return sum(lag_s for lag_s in samples if lag_s > 0.25)
+
+
 def _flood_lag_problem(busy: list[float], idle: list[float]) -> str | None:
     """Why the loop-lag samples (sorted, seconds) of a flood are not acceptable, else None.
 
     A blocked loop is one late sample however long it blocks, so a count of slow samples cannot see it; the
     time the loop spent late can. The verdict bounds three things: the p99 (50 ms); the lag beyond 250 ms summed
-    over the window (2 s of the 5 s window, which one host hiccup of the 1.5 s seen on a shared runner stays
-    under and two do not); and the longest single stall (3 s, above that hiccup, below a frozen loop).
+    over the window, at 2 s plus three times what the idle phase of the same run was late (a host that stalls
+    while idle stalls under the flood too, and one hiccup of the 1.5 s seen on a shared runner stays under 2 s);
+    and the longest single stall (3 s, above that hiccup, below a frozen loop).
     """
     p99, idle_p99 = _p99_ms(busy), _p99_ms(idle)
-    late = sum(lag_s for lag_s in busy if lag_s > 0.25)
-    if p99 > 50.0 or late > 2.0 or busy[-1] > 3.0:
+    late, idle_late = _late_s(busy), _late_s(idle)
+    if p99 > 50.0 or late > 2.0 + 3 * idle_late or busy[-1] > 3.0:
         return (f"event loop lag under a scrape flood: p99 {p99:.1f} ms (idle {idle_p99:.1f}), {late:.2f} s late beyond "
-                f"250 ms over {len(busy)} samples, longest {busy[-1] * 1000:.1f} ms")
+                f"250 ms over {len(busy)} samples (idle phase {idle_late:.2f} s), longest {busy[-1] * 1000:.1f} ms")
     return None
 
 
@@ -267,11 +272,15 @@ def test_the_flood_lag_verdict_bounds_the_p99_the_time_the_loop_was_late_and_the
     quiet = sorted([0.001] * 400)
     assert _flood_lag_problem(quiet, quiet) is None
     assert _flood_lag_problem(sorted([0.001] * 400 + [1.5]), quiet) is None  # one host hiccup, as seen on a shared runner
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.5, 1.5]), quiet) is not None  # two of them: 3 s of a 5 s window
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.9]), quiet) is None  # a single 1.9 s stall is still one hiccup
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.9, 1.9]), quiet) is not None  # repeated: a collector that freezes the loop
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.0] * 3), quiet) is not None  # repeated 1 s freezes
     assert _flood_lag_problem(sorted([0.001] * 200 + [4.5]), quiet) is not None  # a frozen loop: one late sample, 4.5 s
     assert _flood_lag_problem(sorted([0.001] * 1000 + [30.0] * 10), quiet) is not None  # ten long stalls
     assert _flood_lag_problem(sorted([0.001] * 400 + [0.4] * 12), quiet) is not None  # many slow samples
-    assert _flood_lag_problem(sorted([0.06] * 400), quiet) is not None  # a slow loop (p99 over 50 ms)
+    assert _flood_lag_problem(sorted([0.15] * 400), quiet) is not None  # 150 ms per refresh: a slow loop (p99 over 50 ms)
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.5, 1.5]), sorted([0.001] * 400 + [1.0])) is None  # a stalling host: idle was late too
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.5, 1.5]), quiet) is not None  # the same under a quiet idle phase
 
 
 def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp_path: Path) -> None:
