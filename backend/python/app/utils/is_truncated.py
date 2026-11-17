@@ -48,4 +48,11 @@ def is_truncated(response: object) -> bool:
             value = extra.get(field)
             if value is not None and _normal(value) in reasons:
                 return True
+    # OpenAI's Responses API reports a cut-off answer as ``status == "incomplete"`` with the cause under
+    # ``incomplete_details.reason``; only the output-token causes count (not ``content_filter``).
+    details = meta.get("incomplete_details")
+    if isinstance(details, Mapping):
+        reason = details.get("reason")
+        if reason is not None and _normal(reason) in {"max_output_tokens", "max_tokens"}:
+            return True
     return False

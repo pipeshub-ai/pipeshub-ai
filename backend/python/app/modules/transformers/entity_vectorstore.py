@@ -63,6 +63,7 @@ from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
 from app.core import org_context
 from app.exceptions.indexing_exceptions import VectorStoreError
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -85,10 +86,12 @@ from app.services.vector_db.sparse_embeddings import (
 )
 from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import (
+    INDEXING_SDK_RETRIES,
     embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -692,11 +695,15 @@ class EntityVectorStore:
                     self._sparse_embedder = embedder
 
     async def _build_dense_embeddings(self, config: dict[str, Any]) -> Any:  # noqa: ANN401
-        return get_embedding_model(config["provider"], config)
+        return get_embedding_model(config["provider"], config, sdk_retries=INDEXING_SDK_RETRIES)
 
     async def _embedding_dimension(self) -> int:
-        sample = await asyncio.to_thread(self._dense_embeddings.embed_query, "test")
-        return len(sample)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            # Not paid, and its client keeps its own retry: it does not pass the gateway.
+            return len(await asyncio.to_thread(embeddings.embed_query, "test"))
+        # Paid like any embedding request: one retry layer, and the size is kept per provider key.
+        return await get_embedding_gateway().probe_dimension(embeddings)
 
     async def _init_collection(
         self, name: str | None = None, *, recreate: bool = False, create: bool = True,
@@ -969,7 +976,10 @@ class EntityVectorStore:
     # asyncio.to_thread rather than run_in_executor: it carries contextvars
     # (tracing) into the worker thread.
     async def _embed(self, texts: list[str]) -> list[list[float]]:
-        return await asyncio.to_thread(self._dense_embeddings.embed_documents, texts)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            return await asyncio.to_thread(embeddings.embed_documents, texts)
+        return await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_documents, texts))
 
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
         if not self._sparse_embedder:
@@ -2020,7 +2030,13 @@ class EntityVectorStore:
             self._query_vector_cache.move_to_end(text)
             return cached
         generation = self._generation
-        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, text)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            dense_vec = await asyncio.to_thread(embeddings.embed_query, text)
+        else:
+            # The model is built without SDK retries (it is shared with indexing): a remote provider's transient failure is
+            # repeated by the gateway, the one retry layer, instead of escaping from the first 503.
+            dense_vec = await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_query, text))
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
