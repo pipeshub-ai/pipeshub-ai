@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { forOrg } from '../../../libs/context/orgContext';
 import {
+  AgentRegistrationStatus,
   getOAuthTokenRepository,
   REFRESH_ROTATED,
   REFRESH_REUSE_DETECTED,
@@ -375,6 +376,25 @@ export class OAuthTokenService {
     return { assertion, expiresAt: new Date(exp * 1000) };
   }
 
+  /** False once the registration is revoked or gone; its row outlives every token it can issue. */
+  private async isAgentRegistrationLive(
+    registrationId: unknown,
+  ): Promise<boolean> {
+    if (
+      typeof registrationId !== 'string' ||
+      !registrationId.startsWith(REGISTRATION_ID_PREFIX)
+    ) {
+      return false;
+    }
+    const reg = await getOAuthTokenRepository().findAgentRegistrationById(
+      registrationId.slice(REGISTRATION_ID_PREFIX.length),
+    );
+    return (
+      reg?.status === AgentRegistrationStatus.CLAIMED ||
+      reg?.status === AgentRegistrationStatus.CONSUMED
+    );
+  }
+
   /** The registration id an assertion names; any defect is an invalid_grant. */
   verifyAgentAssertion(assertion: string): string {
     try {
@@ -425,6 +445,15 @@ export class OAuthTokenService {
       const storedToken = await getIdentityLookup().resolveToken(tokenHash);
 
       if (!storedToken) {
+        throw new InvalidTokenError('Token has been revoked');
+      }
+
+      // A registration's access tokens are not stored against it, so revoking the registration
+      // (by its owner, or with the agent app) only reaches them here.
+      if (
+        payload.agent_registration_id !== undefined &&
+        !(await this.isAgentRegistrationLive(payload.agent_registration_id))
+      ) {
         throw new InvalidTokenError('Token has been revoked');
       }
 
