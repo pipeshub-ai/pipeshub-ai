@@ -25,7 +25,7 @@ _HIER = "['PARENT_CHILD', 'ATTACHMENT']"
 GROUPS = "MATCH (g:RecordGroup) WHERE g.connectorId = $app AND g.orgId = $org RETURN g.id AS id"
 
 # A scope has an access list of its own: a grant, a rule other than OPEN/STRICT, or a hierarchy parent it does
-# not inherit from. A deleted node matters only as a gate above something, so it is listed (restricted) when it
+# not inherit from. A STRICT_OR_GRANT node needs no grant of its own: the walk from the App reads it as a STRICT one. A deleted node matters only as a gate above something, so it is listed (restricted) when it
 # has children.
 SCOPES = f"""
 MATCH (n:Record|RecordGroup)
@@ -38,7 +38,7 @@ WITH n, deleted, bad, EXISTS {{
 WHERE CASE WHEN deleted THEN EXISTS {{ MATCH (n)-[h:NODE_RELATION]->() WHERE h.relationshipType IN {_HIER} }}
            ELSE bad OR breaks OR EXISTS {{ ()-[:PERMISSION]->(n) }} END
 RETURN n.id AS id, n.connectorId AS connector, (deleted OR bad OR breaks) AS restricted,
-       (deleted OR (NOT $special AND (bad OR NOT EXISTS {{
+       (deleted OR (NOT $special AND ((bad AND n.accessRule <> 'STRICT_OR_GRANT') OR NOT EXISTS {{
            MATCH (n)-[:INHERIT_PERMISSIONS]->(p) MATCH (p)-[h:NODE_RELATION]->(n) WHERE h.relationshipType IN {_HIER}
        }}))) AS needsGrant,
        (deleted OR bad) AS ruleRestricted

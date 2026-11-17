@@ -871,6 +871,10 @@ PAGSEED = next(s for s in load_all() if s.id == "REGR-09").before_world()
 # anything below the story, though his level group is granted on each.
 PAGSTORY = next(s for s in load_all() if s.id == "REGR-10").before_world()
 
+# SOGSUB: regression REGR-11 before its change. The STRICT_OR_GRANT sub-task st under the issue i1: alice reads it from the App, dave (who reads i1
+# only by his own grant) does not, sam and gina read it by its own grant, and nothing below it opens to them through that grant.
+SOGSUB = next(s for s in load_all() if s.id == "REGR-11").before_world()
+
 # DECLPAG: a PARENT_AND_GRANT record c under k, a member of the declared group d that u reads. k is admitted by the declaration, so it is no seed even
 # though u is granted on it, and what hangs under it is not read through it: c is denied, as an OPEN child of k would be.
 DECLPAG = world_from_data(yaml.safe_load("""

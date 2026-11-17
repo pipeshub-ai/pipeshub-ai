@@ -56,6 +56,7 @@ from .kh_worlds import (
     PAGMEMBER,
     PAGSEED,
     PAGSTORY,
+    SOGSUB,
     REACHSTUB,
     SCOPEDSIDE,
     SCOPEDTWO,
@@ -608,3 +609,32 @@ async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release(worlds)
+
+
+async def test_a_strict_or_grant_record_is_read_from_the_app_or_by_its_own_grant_and_opens_nothing_below(graph_layers) -> None:
+    """SOGSUB: the STRICT_OR_GRANT sub-task st under the issue i1. alice reads it from the App, and what is below it; dave reads i1 only by his own
+    grant and not st; sam and gina read st by its own grant, and neither the file f1 nor the sub-task s2 below it through that grant (gina reads s2
+    by s2's own grant). By the access check, by browsing i1 and st, and by every listing ``check_world`` compares."""
+    oracle = OracleLayer()
+    expected = {
+        "alice": {"P", "i1", "st", "f1", "s2"},
+        "dave": {"i1"},
+        "sam": {"i1", "st"},
+        "gina": {"st", "s2"},
+    }
+    asked = ["P", "i1", "st", "f1", "s2", "s3"]
+    for who, want in expected.items():
+        assert await oracle.admitted(SOGSUB, who, asked) == want, who
+    for layer in graph_layers:
+        await layer.preload([SOGSUB])
+        try:
+            for who, want in expected.items():
+                assert await layer.admitted(SOGSUB, who, asked) == want, (layer.name, who)
+            assert await children_of(layer, SOGSUB, "alice", "i1", "record") == {"st": True}, layer.name
+            assert await children_of(layer, SOGSUB, "dave", "i1", "record") == {}, layer.name
+            assert await children_of(layer, SOGSUB, "sam", "i1", "record") == {"st": False}, layer.name
+            assert await children_of(layer, SOGSUB, "gina", "st", "record") == {"s2": False}, layer.name
+            bad = _bad(await check_world(layer, SOGSUB, "sog"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([SOGSUB])

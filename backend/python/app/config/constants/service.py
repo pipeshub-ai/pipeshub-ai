@@ -164,6 +164,11 @@ class Routes(Enum):
     STORAGE_ARTIFACTS_PRESIGN = "/api/v1/document/internal/artifacts/presign"
     STORAGE_ARTIFACT_SET = "/api/v1/document/internal/artifacts/{documentId}"
     STORAGE_ARTIFACT_READ_URLS = "/api/v1/document/internal/artifacts/{documentId}/read-urls"
+    # Paid-result cache: durable model outputs filed per (org, record).
+    STORAGE_PAID_RESULTS_PRESIGN = "/api/v1/document/internal/paid-results/presign"
+    STORAGE_PAID_RESULTS_ORG = "/api/v1/document/internal/paid-results/org"
+    STORAGE_PAID_RESULTS_RECORD = "/api/v1/document/internal/paid-results/{recordId}"
+    STORAGE_PAID_RESULTS_DELETE = "/api/v1/document/internal/paid-results/{recordId}/delete"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

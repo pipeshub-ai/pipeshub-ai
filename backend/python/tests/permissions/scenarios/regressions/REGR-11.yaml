@@ -1,0 +1,51 @@
+- id: REGR-11
+  title: 'STRICT_OR_GRANT: read from the App as STRICT, or by its own grant alone, which opens nothing below it; a seed above it never opens it'
+  source: an unleveled Jira sub-task, which Jira shows to the project's readers and to its own assignee and user-field holders, not to the parent's
+  rule: intersection
+  world:
+    principals:
+      - {id: alice}
+      - {id: dave}
+      - {id: sam}
+      - {id: gina}
+      - {id: g:field, kind: group}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: P, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i1, kind: record, connector: A, rule: OPEN, parents: [P], inherits: [P], belongs: [P]}
+      - {id: st, kind: record, connector: A, rule: STRICT_OR_GRANT, parents: [i1], inherits: [i1], belongs: [P]}
+      - {id: f1, kind: record, connector: A, rule: OPEN, parents: [{id: st, rel: ATTACHMENT}], inherits: [st], belongs: [P]}
+      - {id: s2, kind: record, connector: A, rule: STRICT_OR_GRANT, parents: [st], inherits: [st], belongs: [P]}
+      - {id: s3, kind: record, connector: A, rule: STRICT_OR_GRANT, parents: [i1], belongs: [P]}
+    grants:
+      - [alice, P]
+      - [dave, i1]
+      - [sam, st]
+      - [sam, i1]
+      - [g:field, st]
+      - [gina, s2]
+    memberships:
+      - [gina, g:field]
+    gates:
+      - [alice, A]
+      - [dave, A]
+      - [sam, A]
+      - [gina, A]
+  mutations:
+    - {kind: grant_removed, ref: sam, node: st}
+  expect:
+    before:
+      alice: {P: admit, i1: admit, st: admit, f1: admit, s2: admit, s3: deny}
+      dave: {i1: admit, st: deny, f1: deny, s2: deny, s3: deny, P: deny}
+      sam: {i1: admit, st: admit, f1: deny, s2: deny, P: deny}
+      gina: {st: admit, s2: admit, f1: deny, i1: deny, P: deny}
+    verdicts:
+      sam: {i1: admit, st: deny, f1: deny}
+      alice: {st: admit, f1: admit}
+  tags: [regression, seed, strict-or-grant]
+  comment: >-
+    P (the project) neither inherits from the App nor is granted to dave, so dave reads the issue i1 only as a seed (his own grant). The
+    sub-task st is STRICT_OR_GRANT: alice reads it from the App, as a STRICT node; dave does not, as no seed opens it; sam (its assignee,
+    who also holds the issue) and gina (by a group on a user field) read it by its own grant. Its own grant opens nothing below it: f1
+    (OPEN, inheriting st) and s2 stay closed to sam, and gina reads s2 only by s2's own grant. s3 does not inherit and has no grant, so no
+    one reads it. Withdrawing sam's grant on st hides st from him though he still reads its issue.

@@ -85,6 +85,8 @@ from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway import wire
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
 from app.services.permissions.mode import scope_fields_enabled
@@ -110,6 +112,7 @@ from app.services.vector_db.models import SparseVector, VectorChunkPayload, Vect
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
+    INDEXING_SDK_RETRIES,
     EmbeddingProvider,
     embedding_config_hash,
     get_default_embedding_model,
@@ -1785,12 +1788,18 @@ class VectorStore(Transformer):
             )
             provider = config["provider"]
             configuration = config["configuration"]
-            dense_embeddings = get_embedding_model(provider, config)
+            dense_embeddings = get_embedding_model(provider, config, sdk_retries=INDEXING_SDK_RETRIES)
             is_multimodal = config.get("isMultimodal")
 
         try:
-            sample = await dense_embeddings.aembed_query("test")
-            embedding_size = len(sample)
+            if isinstance(dense_embeddings, EmbeddingServerEmbeddings) or is_local_cpu_embedding_provider(
+                provider, (configuration or {}).get("endpoint")
+            ):
+                # The local embedding server is not paid and keeps its own client retry: it does not pass the gateway.
+                embedding_size = len(await dense_embeddings.aembed_query("test"))
+            else:
+                # Paid like any embedding request, so it goes through the gateway (one retry layer, kept per provider key).
+                embedding_size = await get_embedding_gateway().probe_dimension(dense_embeddings)
         except Exception as e:
             raise EmbeddingModelUnavailableError(
                 "Failed to get embedding model",
@@ -1970,6 +1979,7 @@ class VectorStore(Transformer):
             dense_embeddings=self.dense_embeddings,
             normalize_fn=self._normalize_image_to_base64,
             logger=self.logger,
+            sdk_retries=INDEXING_SDK_RETRIES,
         )
 
     def _build_image_points(
@@ -1978,8 +1988,9 @@ class VectorStore(Transformer):
         """Zip provider results back to their source chunk and build points.
 
         Skips any index that errored or came back without an embedding —
-        provider implementations always return one result per input index
-        (never raise), so this is the single place that decides what
+        provider implementations return one result per input index and do not
+        raise for a failed image (they do raise ``EmbeddingRateLimited``, a provider's wait
+        past the call's allowance, which hands the whole record back), so this is the single place that decides what
         "failed to embed" means for indexing purposes. Also skips any result
         whose dimension doesn't match the collection: mixing dimensions in
         one collection makes cosine similarity meaningless and some vector
@@ -2129,10 +2140,16 @@ class VectorStore(Transformer):
         # Read once: a config change can replace the field while a batch waits in the gate.
         embedder = self.dense_embeddings
         gate = embedder.bulk_gate() if isinstance(embedder, EmbeddingServerEmbeddings) else None
+        # A remote provider is paid per request: whether a failed one is sent again is the gateway's decision.
+        # The local embedding server is not paid and keeps its own retry.
+        gateway = None if self._is_local_cpu_embedding() else get_embedding_gateway()
+        slept_s = 0.0
 
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
             if progress is not None:
                 progress.call_start()
+            # What the attempt puts on the wire is counted: a failed request is a send of the stage job it runs in.
+            attempt_wire, attempt_token = wire.open_scope() if gateway is not None else (None, None)
             try:
                 # The stall timer is off while the call runs: attempt_timeout, which may be longer
                 # than the stall floor on local CPU, is what bounds a hung batch. The gate is per
@@ -2145,14 +2162,25 @@ class VectorStore(Transformer):
                 ):
                     # Gated: the client must not sleep through its own backoff while holding the permit;
                     # this loop retries, and sleeps below with the permit released.
-                    return await asyncio.wait_for(
+                    vectors = await asyncio.wait_for(
                         embedder.aembed_documents(texts, single_attempt=True)
                         if gate is not None
                         else embedder.aembed_documents(texts),
                         timeout=attempt_timeout,
                     )
+                    if gateway is not None:
+                        gateway.note_success()
+                    return vectors
+            except asyncio.CancelledError:
+                # The stage's deadline: what the attempt sent counts before the cancellation goes on, so the run that commits
+                # the job's sends pays for it.
+                if attempt_wire is not None:
+                    wire.charge_failed_sends(attempt_wire.requests)
+                raise
             except asyncio.TimeoutError as e:
                 last_error = e
+                if attempt_wire is not None:
+                    wire.charge_failed_sends(attempt_wire.requests)
                 # The gate has already reported its own fail-fast, once for all waiters.
                 if not isinstance(e, GateFailFast):
                     get_default_downstream_feedback().report_timeout(service_name)
@@ -2162,16 +2190,37 @@ class VectorStore(Transformer):
                     service_name=service_name,
                     coordinator=get_default_backpressure_coordinator(),
                 )
-                if not is_retriable_embedding_error(e):
+                # A remote provider's failure is classified by the gateway (a 500 is transient there); the local
+                # server keeps the narrower filter.
+                retriable = (
+                    gateway.retry_kind(e) is not None if gateway is not None else is_retriable_embedding_error(e)
+                )
+                if attempt_wire is not None:
+                    wire.charge_failed_sends(attempt_wire.requests)
+                if not retriable:
                     raise
                 last_error = e
             finally:
+                if attempt_token is not None:
+                    wire.close_scope(attempt_token)
                 if progress is not None:
                     progress.call_end()
 
+            decision = gateway.decide(attempt - 1, last_error, slept_s=slept_s) if gateway is not None and last_error is not None else None
+            if decision is not None and gateway is not None and last_error is not None and not decision.retry:
+                # The provider's wait goes to the caller even when this was the last attempt (the record is handed back).
+                limited = gateway.rate_limited(last_error, decision)
+                if limited is not None:
+                    raise limited from last_error
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
             delay = retry_delay_seconds(attempt)
+            if decision is not None:
+                if not decision.retry:
+                    break
+                # The gateway's full-jitter wait, already capped to the call's sleep allowance: no fixed floor.
+                delay = decision.delay_s
+                slept_s += delay
             # The chain, not str(): the OpenAI SDK reports every transport
             # failure as "Connection error." and keeps the httpx exception that
             # says which one as __cause__; a bare timeout's message is empty.

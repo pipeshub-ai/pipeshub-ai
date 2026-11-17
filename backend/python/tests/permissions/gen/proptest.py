@@ -26,8 +26,13 @@ INDEXING = ["COMPLETED", "COMPLETED", "COMPLETED", "QUEUED", "FAILED"]
 
 
 def with_parent_and_grant(name: str, rule: str | None) -> str | None:
-    """A third of the RESTRICTED nodes, picked by name, are PARENT_AND_GRANT: no draw of ``rng``, so the worlds of a seed keep their shape."""
-    return "PARENT_AND_GRANT" if rule == "RESTRICTED" and zlib.crc32(name.encode()) % 3 == 0 else rule
+    """A third of the RESTRICTED nodes, picked by name, are PARENT_AND_GRANT, and a third of the STRICT ones STRICT_OR_GRANT: no draw of ``rng``, so
+    the worlds of a seed keep their shape."""
+    if rule == "RESTRICTED" and zlib.crc32(name.encode()) % 3 == 0:
+        return "PARENT_AND_GRANT"
+    if rule == "STRICT" and zlib.crc32(name.encode()) % 3 == 1:
+        return "STRICT_OR_GRANT"
+    return rule
 
 
 def _shared_vrid(rng: random.Random, earlier: list[str]) -> str | None:

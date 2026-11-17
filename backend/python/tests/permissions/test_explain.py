@@ -41,6 +41,7 @@ REASON_MAP: list[tuple[str, str]] = [
     ("R8:declared", ex.GRANTED),
     ("R7:walk", ex.GRANTED),
     ("R9:seed", ex.GRANTED),
+    ("R9:own-grant", ex.GRANTED),
     ("R10:below-seed", ex.GRANTED),
     ("R13:unattached-grant", ex.GRANTED),
     ("R13:unattached-no-grant", ex.NO_GRANT),

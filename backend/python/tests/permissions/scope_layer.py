@@ -79,7 +79,8 @@ def scope_facts(s: oracle.Store, apps: set[str], org: str) -> tuple[set[str], li
         has_child = any(e["props"].get("relationshipType") in oracle.HIERARCHY for e in s.out[("NODE_RELATION", nid)])
         own_list = bad or breaks or bool(s.inc[("PERMISSION", nid)])
         inherits_a_parent = any(oracle._inherits(s, nid, parent) for parent in oracle._parents(s, nid))
-        needs_grant = deleted or (not special[p["connectorId"]] and (bad or not inherits_a_parent))
+        # A STRICT_OR_GRANT node is read from the App as a STRICT one is, so no grant of its own is needed to read it.
+        needs_grant = deleted or (not special[p["connectorId"]] and ((bad and rule != "STRICT_OR_GRANT") or not inherits_a_parent))
         if has_child if deleted else own_list:
             scopes.append(ScopeNode(nid, p["connectorId"], deleted or bad or breaks, needs_grant, deleted or bad))
     return groups, scopes
