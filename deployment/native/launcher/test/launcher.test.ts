@@ -7,7 +7,7 @@ import { relative } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { alive as aliveFn } from "../src/launcher.ts";
+import { alive as aliveFn, lockPath, takeLock } from "../src/launcher.ts";
 
 const root = mkdtempSync(join(tmpdir(), "psh-fake-"));
 const main = join(import.meta.dirname, "..", "src", "main.ts"), fakeApi = join(import.meta.dirname, "fake-api.mjs");
@@ -76,6 +76,26 @@ describe("alive", () => {
     assert.equal(aliveFn(c.pid), false);
     assert.equal(aliveFn(process.pid), true);
     assert.equal(aliveFn(undefined), false);
+  });
+});
+
+describe("lock", () => {
+  test("a stale lock is taken over by one start only, even when another start acts in the middle of the takeover", () => {
+    const d = mkdtempSync(join(root, "lock-"));
+    const dead = spawnSync("true").pid!;
+    writeFileSync(lockPath(d), String(dead));
+    let other: number | undefined | "not run" = "not run";
+    const mine = takeLock(d, { beforeBreak: () => { other = takeLock(d); } });
+    assert.equal(mine, undefined, "the first start holds the lock");
+    assert.notEqual(other, "not run", "the second start ran while the first was taking over");
+    assert.notEqual(other, undefined, "the second start must not hold the lock too");
+    assert.equal(readFileSync(lockPath(d), "utf8").trim(), String(process.pid));
+  });
+
+  test("a lock file still being written (empty) counts as held", () => {
+    const d = mkdtempSync(join(root, "lock-"));
+    writeFileSync(lockPath(d), "");
+    assert.notEqual(takeLock(d), undefined);
   });
 });
 
@@ -297,5 +317,33 @@ describe("launcher", () => {
     assert.equal(outs.find((o) => o.event === "error").code, "already_running");
     assert.match(readFileSync(join(d, "logs/launcher.log"), "utf8"), /"stage":"initdb"/);
     assert.equal((await cli(b, d, "stop")).code, 0);
+  });
+
+  test("killed after ready, then two starts at once over its stale lock: one runs, one is refused, initdb runs once", async () => {
+    const b = fakeBundle(), d = join(root, "data stalelock");
+    const a = launch(b, d, "start"); await a.until("ready");
+    a.p.kill("SIGKILL"); await a.exited;
+    assert.ok(existsSync(join(d, "launcher.lock")), "a killed launcher leaves its lock behind");
+    for (let round = 0; round < 3; round++) {
+      const [x, y] = [launch(b, d, "start"), launch(b, d, "start")];
+      const first = await Promise.race([x.exited.then(() => x), y.exited.then(() => y)]);
+      const other = first === x ? y : x;
+      assert.equal(first.events.find((e) => e.event === "error")?.code, "already_running");
+      await other.until("ready");
+      await cli(b, d, "stop"); assert.equal(await other.exited, 0);
+    }
+    assert.equal(readFileSync(join(b, "initdb-calls"), "utf8").trim().split("\n").length, 1);
+  });
+
+  test("killed during initdb, then stop: the initdb step is ended too", async () => {
+    const b = fakeBundle(), d = join(root, "data killinit");
+    writeFileSync(join(b, "slow-initdb"), "");
+    const a = launch(b, d, "start");
+    await untilFile(join(b, "initdb-calls"));
+    a.p.kill("SIGKILL"); await a.exited;
+    assert.equal(spawnSync("pgrep", ["-f", `${b}/pg/bin/initdb`]).status, 0, "the orphaned initdb is still running");
+    assert.equal((await cli(b, d, "stop")).code, 0);
+    await sleep(500);
+    assert.equal(spawnSync("pgrep", ["-f", `${b}/pg/bin/initdb`]).status, 1, "initdb still running after stop");
   });
 });
