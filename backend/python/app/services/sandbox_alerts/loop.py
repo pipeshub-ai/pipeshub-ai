@@ -211,8 +211,8 @@ class SandboxAlertRunner:
             return
         self._suppressed_logged_at[level] = now
         self._logger.info(
-            "sandbox load alert %s suppressed: sent within the last %d h",
-            level, max(1, round(self._settings.cooldown_s / 3600)),
+            "sandbox load alert %s suppressed: sent within the last %d s",
+            level, round(self._settings.cooldown_s),
         )
 
     async def close(self) -> None:

@@ -117,7 +117,7 @@ async def test_a_warning_is_claimed_and_published_once(env: Env, caplog: pytest.
     assert key == f"sandbox-capacity-{event['payload']['alertId']}"
     assert env.store.values[WARN_KEY]["alertId"] == event["payload"]["alertId"]
     assert any("sandbox load alert fired level=warning" in r.getMessage() for r in caplog.records)
-    assert any("suppressed: sent within the last 24 h" in r.getMessage() for r in caplog.records)
+    assert any("suppressed: sent within the last 86400 s" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_critical_alert_also_uses_up_the_warning(env: Env) -> None:
