@@ -288,4 +288,14 @@ describe("launcher", () => {
     assert.ok(l.events.some((e) => e.event === "stopped"));
     assert.ok(!existsSync(join(d, "pgdata/postmaster.pid")));
   });
+
+  test("two detached starts at once: one is ready, the other says already_running, and neither clobbers the other's log", async () => {
+    const b = fakeBundle(), d = join(root, "data detach");
+    const [x, y] = await Promise.all([cli(b, d, "start", "--detach"), cli(b, d, "start", "--detach")]);
+    const outs = [x, y].map((r) => r.out);
+    assert.deepEqual(outs.map((o) => o.event).sort(), ["error", "ready"]);
+    assert.equal(outs.find((o) => o.event === "error").code, "already_running");
+    assert.match(readFileSync(join(d, "logs/launcher.log"), "utf8"), /"stage":"initdb"/);
+    assert.equal((await cli(b, d, "stop")).code, 0);
+  });
 });
