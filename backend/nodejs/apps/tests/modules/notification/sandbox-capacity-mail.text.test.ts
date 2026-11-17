@@ -74,7 +74,8 @@ describe('sandbox capacity alert email: cooldown footer and plain-text part', ()
   });
 
   it('keeps the one-day footer for a job queued before the note existed', () => {
-    const { footerNote: _dropped, ...older } = templateData();
+    const older: Record<string, unknown> = { ...templateData() };
+    delete older.footerNote;
     const html = getEmailContent('sandboxCapacityAlert', older as never);
     expect(html).to.contain('at most once a day for each level');
   });

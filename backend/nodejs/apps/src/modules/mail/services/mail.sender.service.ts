@@ -364,8 +364,8 @@ export class MailSenderService {
         bodyData.templateData!,
       );
       textContent = getEmailText(
-        bodyData.emailTemplateType!,
-        bodyData.templateData!,
+        bodyData.emailTemplateType,
+        bodyData.templateData ?? {},
       );
     } catch (error) {
       const message =

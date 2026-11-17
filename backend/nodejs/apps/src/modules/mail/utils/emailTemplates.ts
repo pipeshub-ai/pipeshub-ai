@@ -128,7 +128,8 @@ export const isSandboxCapacityAlertData = (
     typeof record.heading === 'string' &&
     typeof record.intro === 'string' &&
     typeof record.reasonText === 'string' &&
-    (record.indexingText === undefined || typeof record.indexingText === 'string') &&
+    (record.indexingText === undefined ||
+      typeof record.indexingText === 'string') &&
     Array.isArray(record.actions) &&
     record.actions.every((action) => typeof action === 'string') &&
     Array.isArray(record.stats) &&
@@ -149,7 +150,13 @@ export const SANDBOX_CAPACITY_DEFAULT_FOOTER =
 export const sandboxCapacityAlertText = (
   data: SandboxCapacityAlertData,
 ): string => {
-  const lines: string[] = [data.heading, '', data.intro, '', `Why runs were held back: ${data.reasonText}`];
+  const lines: string[] = [
+    data.heading,
+    '',
+    data.intro,
+    '',
+    `Why runs were held back: ${data.reasonText}`,
+  ];
   if (data.indexingText) {
     lines.push(
       '',
@@ -163,6 +170,6 @@ export const sandboxCapacityAlertText = (
   lines.push('', data.footerNote ?? SANDBOX_CAPACITY_DEFAULT_FOOTER);
   return `${lines.join('\n')}\n`;
 };
-export const sandboxCapacityAlert = (templateData: SandboxCapacityAlertData): string => compileTemplate(sandboxCapacityAlertTemplate, templateData as unknown as Record<string, unknown>);
-
-
+export const sandboxCapacityAlert = (
+  templateData: SandboxCapacityAlertData,
+): string => compileTemplate(sandboxCapacityAlertTemplate, { ...templateData });

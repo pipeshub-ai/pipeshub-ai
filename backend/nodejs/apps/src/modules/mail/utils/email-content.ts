@@ -64,7 +64,7 @@ export function getEmailContent(
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
 
-    case EmailTemplateType.SandboxCapacityAlert:
+    case EmailTemplateType.SandboxCapacityAlert as string:
       if (!isSandboxCapacityAlertData(templateData)) {
         throw new BadRequestError(
           'sandboxCapacityAlert requires heading, intro, reasonText, actions, stats and docsUrl',
@@ -83,10 +83,10 @@ export function getEmailContent(
  */
 export function getEmailText(
   emailTemplateType: string,
-  templateData: Record<string, any>,
+  templateData: Record<string, unknown>,
 ): string | undefined {
   if (
-    emailTemplateType === EmailTemplateType.SandboxCapacityAlert &&
+    emailTemplateType === (EmailTemplateType.SandboxCapacityAlert as string) &&
     isSandboxCapacityAlertData(templateData)
   ) {
     return sandboxCapacityAlertText(templateData);

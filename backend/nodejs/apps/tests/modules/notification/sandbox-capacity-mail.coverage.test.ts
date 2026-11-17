@@ -43,7 +43,7 @@ describe('sandbox capacity mail: every wording branch is pinned', () => {
       ['critical', 'PipesHub: code runs in chat are being refused'],
     ];
     for (const [level, subject] of cases) {
-      it(`${level}`, () => {
+      it(level, () => {
         expect(mailFor({ level })?.subject).to.equal(subject);
       });
     }
@@ -361,6 +361,7 @@ describe('platform alert handler: errors that are not Error objects', () => {
       listLiveByIds: sinon.stub().resolves([{ _id: '507f1f77bcf86cd799439012', email: 'a@example.com' }]),
       serviceAccountIdsAmong: sinon.stub().resolves([]),
     } as never);
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the handler must log a non-Error rejection
     mailProducer.publishEvent.callsFake(() => Promise.reject('plain string'));
     await handler.handle(evt());
     expect(logger.error.calledWithMatch('Platform alert email not queued', { error: 'plain string' })).to.be.true;
@@ -369,6 +370,7 @@ describe('platform alert handler: errors that are not Error objects', () => {
 
   it('logs a thrown string from the user lookup and queues nothing', async () => {
     setUserRepository({
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the handler must log a non-Error rejection
       listLiveByIds: sinon.stub().callsFake(() => Promise.reject('lookup down')),
       serviceAccountIdsAmong: sinon.stub().resolves([]),
     } as never);
