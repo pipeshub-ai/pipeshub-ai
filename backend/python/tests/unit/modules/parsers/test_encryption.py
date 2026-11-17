@@ -11,6 +11,7 @@ from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.parsers import encryption as encryption_module
 from app.modules.parsers.encryption import (
     has_encrypted_package,
+    open_pdfium_document,
     pdfium_password_error,
     raise_if_password_protected_office,
     raise_if_pdf_needs_password,
@@ -220,3 +221,25 @@ class TestPdf:
             pypdfium2.PdfDocument(password_protected_pdf())
         except pypdfium2.PdfiumError as exc:
             assert pdfium_password_error(exc)
+
+
+class TestOpenPdfiumDocument:
+    def test_a_load_that_fails_without_an_error_is_not_read_as_a_password_after_a_locked_file(self) -> None:
+        import io
+
+        from reportlab.pdfgen import canvas
+
+        buffer = io.BytesIO()
+        canvas.Canvas(buffer).save()
+        no_pages = buffer.getvalue()
+        with pytest.raises(pypdfium2.PdfiumError) as locked:
+            open_pdfium_document(password_protected_pdf())
+        assert pdfium_password_error(locked.value)
+
+        with pytest.raises(pypdfium2.PdfiumError) as broken:
+            open_pdfium_document(no_pages)
+
+        assert not pdfium_password_error(broken.value)
+
+    def test_a_good_file_opens(self) -> None:
+        open_pdfium_document(text_pdf()).close()
