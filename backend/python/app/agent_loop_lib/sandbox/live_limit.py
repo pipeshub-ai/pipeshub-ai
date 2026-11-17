@@ -380,13 +380,13 @@ class LiveLimit:
     def profile(self) -> LiveProfile | None:
         return self._profile
 
-    def _profile_for(self, mode: LiveMode) -> LiveProfile | None:
+    def _profile_for(self, mode: LiveMode, *, log: bool) -> LiveProfile | None:
         if mode.profile == "host":
             return host_profile(self._settings)
         if mode.profile == "cgroup":
             return cgroup_profile(self._settings)
         if mode.profile == "sidecar":
-            if self._settings.host_tuned:
+            if log and self._settings.host_tuned:
                 logger.warning(
                     "sandbox live limit: SANDBOX_HOST_MEM_* / SANDBOX_HOST_CPU_* are ignored for the "
                     "Docker-in-Docker sidecar; use SANDBOX_SIDECAR_*",
@@ -395,25 +395,25 @@ class LiveLimit:
         return None
 
     def apply_mode(self, mode: LiveMode) -> None:
-        """Use *mode* from now on, logging the change."""
-        previous = self._mode
+        """Use *mode* from now on, logging a change. Never reads the machine:
+        it runs on the event loop."""
+        changed = mode.mode != self._mode.mode
         self._mode = mode
-        self._profile = self._profile_for(mode) if mode.on else None
-        self._overcommit = self._effective_overcommit(mode)
+        self._profile = self._profile_for(mode, log=changed) if mode.on else None
+        self._overcommit = self._effective_overcommit(mode, log=changed)
         self._resolved_at = self._clock()
         with self._lock:
             self._view = None
             self._admit_reading = None
-        if mode.mode == previous.mode:
+        if not changed:
             return
         if mode.on and mode.reason:
             logger.warning("sandbox live limit: %s", mode.reason)
         elif mode.on:
-            available, total = mode.reader.memory() if mode.reader is not None else (None, None)
             logger.info(
-                "sandbox live limit: on (source=%s, same machine: %s) mem_total=%s mem_available=%s "
-                "ceiling=%d floor=%d", mode.reader.source if mode.reader else "?", mode.note or "-",
-                _gib(total), _gib(available), self._ceiling(self._overcommit), self._capacity.floor(),
+                "sandbox live limit: on (source=%s, same machine: %s) ceiling=%d floor=%d",
+                mode.reader.source if mode.reader else "?", mode.note or "-",
+                self._ceiling(self._overcommit), self._capacity.floor(),
             )
         else:
             level = logging.INFO if mode.mode in ("off:disabled", "off:remote") else logging.WARNING
@@ -422,7 +422,7 @@ class LiveLimit:
                 mode.reason, self._capacity.ceiling(),
             )
 
-    def _effective_overcommit(self, mode: LiveMode) -> float:
+    def _effective_overcommit(self, mode: LiveMode, *, log: bool = True) -> float:
         wanted = self._settings.memory_overcommit
         if wanted <= 1.0:
             return 1.0
@@ -430,23 +430,25 @@ class LiveLimit:
             k = min(wanted, MAX_MEMORY_OVERCOMMIT)
         elif mode.mode == "on:sidecar" and self._capacity.mode == "helm_dind":
             k = min(wanted, HELM_MAX_OVERCOMMIT)
-            if k < wanted:
+            if log and k < wanted:
                 logger.warning(
                     "sandbox memory over-commit %.1fx is capped at %.1fx for the Docker-in-Docker sidecar",
                     wanted, k,
                 )
         else:
-            logger.warning(
-                "sandbox memory over-commit %.1fx forced to 1.0 (%s): it needs a live reading "
-                "of the whole machine", wanted, mode.mode,
-            )
+            if log:
+                logger.warning(
+                    "sandbox memory over-commit %.1fx forced to 1.0 (%s): it needs a live reading "
+                    "of the whole machine", wanted, mode.mode,
+                )
             return 1.0
         before, after = self._capacity.ceiling(), self._ceiling(k)
-        logger.info(
-            "sandbox memory over-commit %.1fx (%s, live limit on): ceiling %d->%d%s",
-            k, self._capacity.mode, before, after,
-            "" if after > before else " (memory does not bind)",
-        )
+        if log:
+            logger.info(
+                "sandbox memory over-commit %.1fx (%s, live limit on): ceiling %d->%d%s",
+                k, self._capacity.mode, before, after,
+                "" if after > before else " (memory does not bind)",
+            )
         return k
 
     def _ceiling(self, k: float) -> int:
