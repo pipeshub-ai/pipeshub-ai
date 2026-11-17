@@ -303,6 +303,35 @@ async def test_a_store_only_write_that_sets_a_new_revision_drops_the_page_count_
     assert after["contentRev"] == "rev-new" and not after.get("pageCount"), after
 
 
+async def test_a_write_of_the_revision_the_record_holds_keeps_the_page_count_and_a_new_revision_drops_it(store: Store) -> None:
+    """The finished-twin reuse writes the revision again without parsing: the count of that content stays (the store checks the revision in
+    its statement). A different revision drops it, and so does a record that moved to another revision after it was read."""
+    flow = Flow(store)
+    await flow.run("save_new", "cas_queued", "attempt")  # the attempt sets the revision
+    held = (await store.doc(flow.key))["contentRev"]
+    assert await store.p.update_node(flow.key, RECORDS, {"pageCount": 9})
+    processor = flow._event_processor()
+
+    assert await processor.update_record_fields({"_key": flow.key, "contentRev": held}, {"contentRev": held, "reason": None})
+    assert (await store.doc(flow.key))["pageCount"] == 9, "the same revision keeps its count"
+
+    # read as another revision: not known to be the same, so the count goes (the safe side; the parse writes it again)
+    assert await processor.update_record_fields({"_key": flow.key, "contentRev": "rev-stale"}, {"contentRev": held, "reason": None})
+    assert not (await store.doc(flow.key)).get("pageCount")
+    assert await store.p.update_node(flow.key, RECORDS, {"pageCount": 9})
+
+    # read as the held revision, but the record moved on since: the statement matches nothing and the count goes
+    assert await store.p.update_node(flow.key, RECORDS, {"contentRev": "rev-moved"})
+    assert await processor.update_record_fields({"_key": flow.key, "contentRev": held}, {"contentRev": held})
+    after = await store.doc(flow.key)
+    assert after["contentRev"] == held and not after.get("pageCount"), after
+
+    assert await store.p.update_node(flow.key, RECORDS, {"pageCount": 9})
+    assert await processor.update_record_fields({"_key": flow.key, "contentRev": held}, {"contentRev": "rev-new"})
+    after = await store.doc(flow.key)
+    assert after["contentRev"] == "rev-new" and not after.get("pageCount"), after
+
+
 # ---- a new run starts after the last outcome ----------------------------------------------------------------------------------
 
 LATER_MS = 3_600_000  # an outcome (or a restore stamp) an hour after the statement's own clock
@@ -356,6 +385,7 @@ async def test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_t
 
 TEST_NAMES = ['test_random_flows_match_the_oracle', 'test_a_write_conditional_on_the_snapshot_applies_to_an_unchanged_record', 'test_flow', 'test_f18_a_failure_handed_to_a_queued_duplicate_stamps_it', 'test_f19_a_save_that_read_a_closed_record_while_the_consumer_started_it_stays_within_the_race', 'test_f20_a_store_only_parse_now_run_writes_none_of_the_run_fields', 'test_a_record_from_before_the_fields_in_the_middle_of_a_run_continues_from_its_queue_time', 'test_f22_the_residual_of_a_failure_written_by_an_older_process_is_reported', 'test_a_rule_that_always_continues_fails_the_flow', 'test_a_rule_without_the_outcome_stamps_fails_f22', 'test_a_sink_only_end_that_keeps_the_start_fails_f9', 'test_a_restore_that_continues_the_stored_run_fails_f21', 'test_attempt_increment_in_statement', 'test_a_reset_between_the_read_and_the_write_starts_a_new_run_not_old_plus_one', 'test_a_read_modify_write_loses_increments',
               'test_a_store_only_write_that_sets_a_new_revision_drops_the_page_count_of_the_old_one',
+              'test_a_write_of_the_revision_the_record_holds_keeps_the_page_count_and_a_new_revision_drops_it',
               'test_a_requeue_after_a_later_outcome_starts_a_run_that_the_next_attempt_continues',
               'test_an_attempt_start_after_a_later_outcome_starts_a_run_after_it',
               'test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_the_next_attempt_continues']

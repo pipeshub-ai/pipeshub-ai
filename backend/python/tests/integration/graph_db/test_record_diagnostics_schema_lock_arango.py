@@ -8,6 +8,7 @@ tries again). Expected: an older process never overwrites a newer schema.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -329,3 +330,39 @@ async def test_no_quiet_point_means_no_schema_write_and_a_free_lock(env: tuple[A
         assert await ArangoLock(second.http_client).acquire(15_000) is True, "the lock was released"
     finally:
         await second.rollback_transaction(held)
+
+
+async def test_a_transaction_that_is_always_open_cannot_keep_the_schema_narrow(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic: one stream transaction stays open for every try. The first FORCE_AFTER_SKIPS (three) widenings are skipped; the next is sent
+    anyway, waits for the transaction, and lands when it ends. Without the escalation the schema would stay narrow for good."""
+    first, second = env
+    client = first.http_client
+    org = new_org()
+    key = f"{org}-open"
+    assert await first.batch_upsert_nodes([base_record(key, org)], RECORDS)
+    assert await client.update_collection_schema(RECORDS, narrow_schema())
+    monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 2.0)
+    monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.05)
+    held = await second.begin_transaction(read=[RECORDS], write=[RECORDS])
+    assert await second.update_node(key, RECORDS, {"indexingStatus": "QUEUED"}, transaction=held)
+    guard: RecordSchemaGuard = client.record_guard
+    results: list[bool] = []
+    try:
+        for _ in range(guard_module.FORCE_AFTER_SKIPS):
+            results.append(await guard.ensure_wide("test"))
+            assert await _generation(client) == 0, "skipped: nothing was sent"
+
+        async def the_transaction_ends() -> None:
+            await asyncio.sleep(guard_module.REWIDEN_TIMEOUT_S + 0.5)  # after the quiet wait gave up, while the forced write is waiting
+            await second.rollback_transaction(held)
+
+        ender = asyncio.get_running_loop().create_task(the_transaction_ends())
+        results.append(await guard.ensure_wide("test"))  # forced: waits for the transaction, then lands
+        await ender
+    finally:
+        with contextlib.suppress(Exception):
+            await second.rollback_transaction(held)
+
+    assert guard_module.FORCE_AFTER_SKIPS == 3
+    assert results == [False, False, False, True]
+    assert await _generation(client) == RECORD_SCHEMA_GENERATION

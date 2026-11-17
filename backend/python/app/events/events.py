@@ -60,7 +60,12 @@ from app.modules.indexing.parse_now_marker import (
     shape_status_write,
     store_only_active,
 )
-from app.modules.indexing.record_diagnostics import PAGE_COUNT, WriteKind, page_count_of
+from app.modules.indexing.record_diagnostics import (
+    PAGE_COUNT,
+    WriteKind,
+    drop_count_on_new_revision,
+    page_count_of,
+)
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parse_engine.inspection import (
@@ -781,11 +786,14 @@ class EventProcessor:
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
-        if "contentRev" in fields and not (attempt_start and "indexingStatus" in fields):
-            # A count belongs to the content it was taken from: every write that sets the revision drops it here, the one place that writes
-            # it, and the parse that follows writes the new one. An attempt start does the same inside its own statement, from the stored
-            # revision. (A store-only run drops the status fields, so its attempt start is a plain write that carries the revision.)
-            fields = {**fields, PAGE_COUNT: None}
+        # A count belongs to the content it was taken from, the same rule as ``write_attempt_start``: a write that sets a revision the record
+        # does not already hold drops it (the parse that follows writes the new one); one that sets the revision it holds keeps it. This is
+        # the one place that writes the revision outside an attempt start. (A store-only run drops the status fields, so its attempt start
+        # is a plain write that carries the revision too.)
+        sets_revision = "contentRev" in fields and not (attempt_start and "indexingStatus" in fields)
+        same_revision = sets_revision and bool(doc.get("contentRev")) and doc.get("contentRev") == fields["contentRev"]
+        if sets_revision:
+            fields = drop_count_on_new_revision(fields, doc.get("contentRev"))
         left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
         leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
         doc.update(fields)
@@ -798,11 +806,20 @@ class EventProcessor:
                 if attempt_start and "indexingStatus" in fields:
                     success = await self.graph_provider.write_attempt_start(record_id, fields)
                 else:
-                    success = await self.graph_provider.update_node(
-                        record_id,
-                        CollectionNames.RECORDS.value,
-                        fields,
-                    )
+                    if same_revision:
+                        # The record held this revision when it was read: written only while it still does (in the statement), so its
+                        # count is kept. A record that moved to another revision meanwhile matches nothing and is written below, count dropped.
+                        success = await self.graph_provider.update_node_fields_if_match(
+                            record_id, CollectionNames.RECORDS.value, fields, {"contentRev": fields["contentRev"]}
+                        )
+                        if not success:
+                            fields = {**fields, PAGE_COUNT: None}
+                    if not success:
+                        success = await self.graph_provider.update_node(
+                            record_id,
+                            CollectionNames.RECORDS.value,
+                            fields,
+                        )
         except Exception as e:
             if not success:
                 raise

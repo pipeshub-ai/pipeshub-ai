@@ -12,6 +12,7 @@ from typing import Any
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record
+from app.modules.indexing.record_diagnostics import drop_count_on_new_revision
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.models import Priority, RecordView
@@ -95,7 +96,10 @@ class StageIngress:
             # Paths that never saw the source bytes (re-index from a stored blob) still
             # need a revision: the blocks are that content's identity.
             rev = facts.blocks_digest[:16]
-            await self._graph.update_node(record.id, CollectionNames.RECORDS.value, {"contentRev": rev})
+            # The record held no revision, so a count it carries belongs to content of unknown identity: it goes with the new revision.
+            await self._graph.update_node(
+                record.id, CollectionNames.RECORDS.value, drop_count_on_new_revision({"contentRev": rev}, document.get("contentRev"))
+            )
         extension = getattr(record, "extension", None)
         view = RecordView(
             org_id=record.org_id,

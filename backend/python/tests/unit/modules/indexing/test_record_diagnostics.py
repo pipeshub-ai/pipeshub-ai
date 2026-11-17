@@ -379,6 +379,31 @@ class TestPageCountWrites:
 
         assert "pageCount" not in processor.graph_provider.write_attempt_start.await_args.args[1]
 
+    async def test_a_write_of_the_revision_the_record_already_holds_keeps_the_count(self) -> None:
+        """A finished-twin reuse writes the revision again without parsing: the count of that same content stays, as ``write_attempt_start`` keeps it."""
+        processor = _processor()
+
+        await processor.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-a", "reason": None})
+
+        call = processor.graph_provider.update_node_fields_if_match.await_args
+        assert call.args[3] == {"contentRev": "rev-a"} and "pageCount" not in call.args[2]
+        processor.graph_provider.update_node.assert_not_awaited()
+
+    async def test_a_record_that_moved_to_another_revision_since_it_was_read_is_written_with_the_count_dropped(self) -> None:
+        processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
+
+        await processor.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-a", "reason": None})
+
+        assert processor.graph_provider.update_node.await_args.args[2]["pageCount"] is None
+
+    async def test_a_new_revision_drops_the_count_in_one_plain_write(self) -> None:
+        processor = _processor()
+
+        await processor.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-b"})
+
+        processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
+        assert processor.graph_provider.update_node.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
+
     async def test_a_write_that_does_not_set_the_revision_leaves_the_count_alone(self) -> None:
         processor = _processor()
 
@@ -470,3 +495,37 @@ def test_reference_reads_a_fixed_number_of_fields_whatever_the_record_holds() ->
         reference(stored, WriteKind.ATTEMPT_START, 100, content_rev="a")
         reads[name] = _CountingStored.reads
     assert reads["small"] == reads["large"] and 0 < reads["large"] <= 20
+
+
+class TestTheCountRuleOfEveryRevisionWriter:
+    @pytest.mark.parametrize(("held", "dropped"), [("a", False), ("b", True), (None, True), ("", True), (5, True)])
+    def test_a_count_is_dropped_unless_the_record_already_holds_the_revision(self, held: object, dropped: bool) -> None:
+        from app.modules.indexing.record_diagnostics import drop_count_on_new_revision
+
+        written = drop_count_on_new_revision({"contentRev": "a", "reason": None}, held)
+
+        assert ("pageCount" in written and written["pageCount"] is None) is dropped
+
+    def test_fields_without_a_revision_are_left_alone(self) -> None:
+        from app.modules.indexing.record_diagnostics import drop_count_on_new_revision
+
+        assert drop_count_on_new_revision({"reason": "x"}, "a") == {"reason": "x"}
+
+    def test_every_graph_write_of_the_revision_outside_the_attempt_start_goes_through_the_rule(self) -> None:
+        """A writer of ``contentRev`` (an update call whose arguments name it) must use ``drop_count_on_new_revision``, so none can skip it."""
+        import ast
+        from pathlib import Path
+
+        app = Path(__file__).resolve().parents[4] / "app"
+        updates_at = {"update_node": 2, "update_node_if_unchanged": 2, "update_node_fields_if_match": 2, "update_record_fields": 1, "batch_update_nodes": 0}
+        unruled = []
+        for path in app.rglob("*.py"):
+            text = path.read_text(encoding="utf-8-sig")
+            if "contentRev" not in text or "drop_count_on_new_revision" in text:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in updates_at:
+                    index = updates_at[node.func.attr]
+                    if len(node.args) > index and "contentRev" in ast.unparse(node.args[index]):  # the fields written, not a match condition
+                        unruled.append(path.relative_to(app).as_posix())
+        assert sorted(set(unruled)) == [], f"these files write contentRev without the page count rule: {sorted(set(unruled))}"

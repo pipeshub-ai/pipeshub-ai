@@ -10,7 +10,17 @@ holds a newer field then fails every write with errorNum 1620. This guard:
 * runs one widening at a time across processes under a lease lock kept in ArangoDB itself (``ArangoLock``), at a moment no
   stream transaction is open when one can be found within 5 s, with a 5 s client timeout. A process that cannot take
   the lock, or that cannot tell it still holds it, writes no schema: the refused write is refused again and the poll
-  tries again, so an older process can never overwrite a newer schema.
+  tries again.
+
+What this does not do: a lease cannot fence a schema change, which is not transactional with the lock. A process paused
+for longer than the lease between its last look at the live generation and its write, or whose write the server applies
+after its client timed out, can still put an older schema over a newer one. The lease, the generation read under it and the
+last read right before the write narrow that window; they do not close it. The overwrite is repaired by the poll of a
+newer process (every ``POLL_INTERVAL_S``), so the guarantee is eventual: the newer generation is back within one poll
+interval of that process finding the lock free and a quiet point, and later than that when the lock is held (up to
+``LOCK_TTL_MS`` after a holder died or timed out), when widenings are skipped for lack of a quiet point (up to
+``FORCE_AFTER_SKIPS`` polls, then one that waits for the open transactions) or when the schema update is slow. Writes
+refused meanwhile raise the transient ``RecordSchemaNarrowError``, which their owner runs again.
 
 A 1620 inside a stream transaction aborts the transaction and raises ``RecordSchemaNarrowError`` (see
 ``ArangoHTTPClient``); the owner of the transaction runs it again once ``wait_wide`` says the schema is wide.
@@ -39,8 +49,9 @@ POLL_INTERVAL_S = 10.0
 SCHEMA_LOCK_COLLECTION = "schemaLocks"
 SCHEMA_LOCK_KEY = "records-schema"
 LOCK_TTL_MS = 15_000
-# After this many widenings in a row that found no quiet point (each skipped, to be tried again by the poll or by the write's owner), the
-# next one is sent anyway: with a stream transaction always open the quiet point never comes, and the schema would stay narrow for good.
+# After this many widenings in a row that found no quiet point and were skipped (to be tried again by the poll or by the write's owner),
+# the next one, the (FORCE_AFTER_SKIPS + 1)th try, is sent anyway: with a stream transaction always open the quiet point never comes, and
+# the schema would stay narrow for good.
 FORCE_AFTER_SKIPS = 3
 
 REWIDEN_TOTAL = METRICS_BACKEND.counter(
@@ -233,7 +244,10 @@ class RecordSchemaGuard:
 
     # -- widening ---------------------------------------------------------------------------------------------
     async def ensure_wide(self, trigger: str, *, transaction: str | None = None) -> bool:
-        """Apply this process's schema if the live generation is lower. Never inside a transaction."""
+        """Apply this process's schema if the live generation is lower. Never inside a transaction. Returns whether it was applied.
+
+        Not applied (False) when the schema is already wide, the lock is held elsewhere or cannot be taken or renewed, no quiet point was
+        found (up to ``FORCE_AFTER_SKIPS`` times in a row), or the generation turned out wide before the write."""
         assert transaction is None, "the records schema is never widened inside a transaction"
         loop = asyncio.get_running_loop()
         local = self._loop_locks.setdefault(loop, asyncio.Lock())
@@ -269,12 +283,12 @@ class RecordSchemaGuard:
                     return False
                 if contended:
                     REWIDEN_CONTENDED_TOTAL.inc(trigger)
-                    self._skips += 1
                     if self._skips < FORCE_AFTER_SKIPS:
                         # A schema change waits for every open stream transaction, so one sent now could outlast its 5 s timeout and the
                         # lease. Not sent: the refused write stays refused (transient) and the next try looks for a quiet point again.
+                        self._skips += 1
                         self._logger.warning(
-                            "record schema widening skipped: a stream transaction is still open (trigger=%s, %d of %d)",
+                            "record schema widening skipped: a stream transaction is still open (trigger=%s, skip %d of %d)",
                             trigger, self._skips, FORCE_AFTER_SKIPS,
                         )
                         return False

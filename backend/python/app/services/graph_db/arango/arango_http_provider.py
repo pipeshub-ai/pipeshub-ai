@@ -1294,7 +1294,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
         """Apply ``schema`` to a collection. The records schema is applied only while the live generation is
-        lower than this process's: a newer image's schema is never narrowed by an older start."""
+        lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
+        older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
+        repairs it, eventually (see ``record_schema_guard``)."""
         client = self.http_client
         if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
             guard = client.record_guard

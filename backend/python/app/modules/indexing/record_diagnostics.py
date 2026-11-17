@@ -173,6 +173,17 @@ def stamped(fields: dict[str, Any], stored: Mapping[str, Any] | None, kind: Writ
     return {**fields, **reference(stored, kind, now, **kw)}
 
 
+def drop_count_on_new_revision(fields: dict[str, Any], held_rev: object) -> dict[str, Any]:
+    """``fields`` for a write that sets ``contentRev``, with the page count dropped unless the record already holds that revision.
+
+    The rule of ``write_attempt_start`` (a count belongs to the content it was taken from) for every other writer of the revision;
+    a record with no revision, or an empty or non-string one, holds none, so its count goes too."""
+    rev = fields.get("contentRev")
+    if rev is None or (isinstance(held_rev, str) and held_rev and rev == held_rev):
+        return fields
+    return {**fields, PAGE_COUNT: None}
+
+
 def page_count_of(value: Any) -> int | None:  # noqa: ANN401
     """A page count the record may carry: a whole number in 1..MAX_PAGE_COUNT, else None."""
     if isinstance(value, bool):
