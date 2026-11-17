@@ -9,6 +9,7 @@ without being listed fails here; so does a listed one that is gone, and a transa
 from __future__ import annotations
 
 import ast
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -121,19 +122,32 @@ def scan(source: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], set
     return status_sites, tx_sites, helpers
 
 
-def _walk() -> tuple[set[tuple[str, str, str]], set[tuple[str, str]]]:
+@lru_cache(maxsize=1)
+def _app_text() -> dict[str, str]:
+    """Every file under ``app``, read once for the whole module."""
+    return {path.relative_to(APP).as_posix(): path.read_text(encoding="utf-8-sig") for path in sorted(APP.rglob("*.py"))}
+
+
+@lru_cache(maxsize=1)
+def _sources() -> dict[str, str]:
+    """The files that name a writer. A file that names none of them cannot hold a site, so it is never parsed (parsing the tree's 2,300 files
+    is what made this scan take longer than a CI worker's test timeout)."""
+    names = DEDICATED | GENERIC | RECORD_WRITERS | TX_WRITERS
+    return {relative: source for relative, source in _app_text().items() if any(name in source for name in names)}
+
+
+@lru_cache(maxsize=1)
+def _walk() -> tuple[frozenset[tuple[str, str, str]], frozenset[tuple[str, str]]]:
     status: set[tuple[str, str, str]] = set()
     tx: set[tuple[str, str]] = set()
-    for path in sorted(APP.rglob("*.py")):
-        relative = path.relative_to(APP).as_posix()
-        if relative.startswith("services/graph_db/") and "reindex_single_record" not in path.read_text(encoding="utf-8-sig"):
+    for relative, source in _sources().items():
+        if relative.startswith("services/graph_db/") and "reindex_single_record" not in source:
             continue
-        source = path.read_text(encoding="utf-8-sig")
         statuses, txs, _ = scan(source)
         status |= {(relative, function, method) for function, method in statuses}
         if not relative.startswith("services/graph_db/"):
             tx |= {(relative, function) for function, _ in txs}
-    return status, tx
+    return frozenset(status), frozenset(tx)
 
 
 def test_every_site_classified() -> None:
@@ -180,10 +194,12 @@ def test_the_dead_writer_has_no_caller() -> None:
     for _relative, function, _ in dead:
         name = function.rsplit(".", 1)[-1]
         callers = []
-        for path in APP.rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+        for relative, source in _app_text().items():
+            if name not in source:
+                continue
+            for node in ast.walk(ast.parse(source)):
                 callers.extend(
-                    str(path) for _ in [node] if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == name
+                    relative for _ in [node] if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == name
                 )
         assert callers == [], f"{name} is listed as dead but is called from {callers}"
 
