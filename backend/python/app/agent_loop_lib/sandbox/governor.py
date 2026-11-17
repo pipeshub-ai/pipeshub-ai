@@ -75,7 +75,9 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 # A mutex held by another worker is normally free again within microseconds;
-# after this many quick retries the attempt counts as full and waits normally.
+# after this many quick retries the attempt waits for the next poll. Nothing
+# is known about the slots then, so the limit provider is not told that runs
+# wait at its limit.
 _BUSY_RETRIES = 5
 _BUSY_RETRY_S = 0.002
 _BUSY_WARN_AFTER_S = 5.0
@@ -106,7 +108,7 @@ class GovernorLease:
 
 
 def message(
-    reason: HoldReason, *, held: int, limit: int, tag_held: int | None = None,
+    reason: HoldReason, *, held: int | None, limit: int, tag_held: int | None = None,
     org_limit: int | None = None, memory_source: Literal["host", "sidecar"] = "host",
 ) -> str:
     """What the model is told when a run gives up waiting for a sandbox."""
@@ -127,10 +129,8 @@ def message(
             f"{runner} CPU is busy, so fewer code sandboxes run at once "
             f"({held}/{limit}); retry in a minute"
         )
-    return (
-        f"all {limit} code sandboxes on this server are busy ({held}/{limit}); "
-        f"retry once one is released"
-    )
+    count = "" if held is None else f" ({held}/{limit})"
+    return f"all {limit} code sandboxes on this server are busy{count}; retry once one is released"
 
 
 def _memory_source(view: LiveView) -> Literal["host", "sidecar"]:
@@ -246,7 +246,9 @@ class SandboxResourceGovernor:
         busy_tries = 0
         last_reason: HoldReason | None = None
         outcome: Literal["granted", "refused", "cancelled"] | None = None
-        held = limit = 0
+        held: int | None = 0
+        limit = 0
+        held_known = False
         tag_held: int | None = None
         org_limit: int | None = None
         counted = False
@@ -258,9 +260,10 @@ class SandboxResourceGovernor:
                 result = self._slots.try_acquire_tagged(limit, tag=tag, tag_limit=org_limit)
                 denied: Literal["full", "tag_full"] | None = None
                 floor: HoldReason | None = None
+                busy = False
                 if isinstance(result, SlotHold):
                     self._busy_since = None
-                    held = result.held_before
+                    held, held_known = result.held_before, True
                     try:
                         floor = await self.limit_provider.admit_and_charge(held=held)
                     except BaseException:
@@ -278,22 +281,28 @@ class SandboxResourceGovernor:
                         busy_tries += 1
                         await asyncio.sleep(_BUSY_RETRY_S)
                         continue
-                    denied = "full"
+                    busy = True
                 else:
                     self._busy_since = None
                     denied = result.reason
-                    held, tag_held = result.held, result.tag_held
+                    held, tag_held, held_known = result.held, result.tag_held, True
                 busy_tries = 0
-                reason = hold_reason(view, denied=denied, floor=floor)
+                if busy:
+                    reason = last_reason or HoldReason.SLOTS_FULL
+                else:
+                    reason = hold_reason(view, denied=denied, floor=floor)
                 if last_reason is None:
                     self._notify("wait_start", reason)
                 elif reason != last_reason:
                     self._notify("wait_reason", reason)
                 last_reason = reason
                 now = self._clock()
-                self.limit_provider.waiting(reason, now - start)
+                if not busy:
+                    self.limit_provider.waiting(reason, now - start)
                 if now >= deadline:
                     outcome = "refused"
+                    if not held_known:
+                        held = self.held_total()
                     raise SandboxLimitExceeded(
                         message(
                             reason, held=held, limit=limit, tag_held=tag_held,

@@ -326,6 +326,35 @@ class TestAcquireLoop:
         assert caught.value.reason is HoldReason.SLOTS_FULL
         assert rec.outcomes() == [("outcome", "refused", HoldReason.SLOTS_FULL)]
 
+    async def test_a_busy_mutex_is_a_plain_wait_with_the_real_count(self, tmp_path: Path, opened) -> None:
+        rec = _Recorder()
+        gov = _gov(tmp_path, opened, observers=[rec], provider=_Provider)
+        other = _gov(tmp_path, opened)
+        await other.acquire()
+
+        def busy(limit: int, *, tag: bytes, tag_limit: int | None) -> object:
+            return SlotDenied("busy")
+
+        gov._slots.try_acquire_tagged = busy  # type: ignore[method-assign]
+        with pytest.raises(SandboxLimitExceeded) as caught:
+            await gov.acquire(wait_s=0.15)
+        assert gov.limit_provider.waits == []  # type: ignore[attr-defined]
+        assert caught.value.reason is HoldReason.SLOTS_FULL
+        assert "all 2 code sandboxes on this server are busy (1/2)" in str(caught.value)
+        assert rec.events == [("wait_start", HoldReason.SLOTS_FULL), ("outcome", "refused", HoldReason.SLOTS_FULL)]
+
+    async def test_a_mutex_busy_for_the_whole_wait_gives_no_count(self, tmp_path: Path, opened) -> None:
+        gov = _gov(tmp_path, opened, provider=_Provider)
+        mutex = os.open(tmp_path / "mutex", os.O_RDWR)
+        try:
+            fcntl.flock(mutex, fcntl.LOCK_EX)
+            with pytest.raises(SandboxLimitExceeded) as caught:
+                await gov.acquire(wait_s=0.05)
+        finally:
+            os.close(mutex)
+        assert gov.limit_provider.waits == []  # type: ignore[attr-defined]
+        assert "all 2 code sandboxes on this server are busy; retry once one is released" in str(caught.value)
+
     async def test_a_refusal_carries_its_reason_to_observers(self, tmp_path: Path, opened) -> None:
         rec = _Recorder()
         gov = _gov(tmp_path, opened, limit=1, observers=[rec])
