@@ -164,6 +164,11 @@ class AlertCooldown:
         is already over is deleted instead, so it cannot hold back the next
         alert until the store expires it."""
         if self._remaining_s(current) <= 0:
-            await self._call(self._config.delete_config(self.key(level)))
-            return True
+            key = self.key(level)
+            if await self._call(self._config.delete_config(key)):
+                return True
+            # False is both "already gone" and a store failure that did not
+            # raise; only a key that is really absent counts as done.
+            value = await self._call(self._config.get_config(key, use_cache=False, raise_on_error=True))
+            return value is None
         return await self._restore(level, {**current, "state": STATE_RESOLVED})

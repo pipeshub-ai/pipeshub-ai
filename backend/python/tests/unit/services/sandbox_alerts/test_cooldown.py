@@ -87,3 +87,30 @@ async def test_a_resolved_claim_is_taken_over_by_a_new_alert(store: FakeConfig, 
     assert store.values[key]["state"] == "claimed"
     assert store.ttls[key] == 86400
     assert await c.claim("warning", "a3") is False
+
+
+async def test_an_expired_claim_whose_delete_fails_quietly_is_not_marked_done(
+    store: FakeConfig, clock: Clock,
+) -> None:
+    c = cooldown(store, clock)
+    await c.claim("warning", "a1")
+    current = await c.read("warning")
+    assert current is not None
+    clock.now += 86400
+
+    async def failed_delete(key: str) -> bool:
+        return False  # the store reports failure without raising; the key stays
+
+    store.delete_config = failed_delete  # type: ignore[method-assign]
+    store.expires.pop("/services/sandbox/alerts/install/warning", None)  # the store still holds it
+    assert await c.mark_resolved("warning", current) is False
+
+
+async def test_an_expired_claim_that_is_already_gone_counts_as_resolved(store: FakeConfig, clock: Clock) -> None:
+    c = cooldown(store, clock)
+    await c.claim("warning", "a1")
+    current = await c.read("warning")
+    assert current is not None
+    clock.now += 86400
+    store.values.clear()
+    assert await c.mark_resolved("warning", current) is True
