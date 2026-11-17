@@ -10,6 +10,9 @@ unchanged, but only the calls the sandbox makes get through:
 - ping / version, and a filtered daemon ``/info`` (only the fields that size
   the sandbox ceiling: no labels, proxy settings, registry config or
   container counts);
+- ``GET /_pipeshub/host``, answered by the proxy itself: a hash of the
+  kernel's boot id, so the app can tell whether the daemon shares its
+  machine (the proxy mounts the daemon's socket, so it runs on that machine);
 - create a container from an allowed sandbox image with no host access
   (no privileged mode, binds, devices, host namespaces, port publishing,
   unconfined security profiles, or capabilities beyond the egress firewall's)
@@ -37,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -61,6 +65,8 @@ INSTANCE_LABEL = "ai.pipeshub.docker-proxy.instance"
 DEFAULT_INSTANCE = "default"
 _INSTANCE_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,128}")
 _UPSTREAM_TIMEOUT_S = 30.0
+
+_BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 
 _DEFAULT_SANDBOX_IMAGE = "pipeshub/sandbox:latest"
 _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
@@ -272,8 +278,10 @@ class DockerApiPolicy:
     def route(self, method: str, target: str) -> Route:
         """Classify a request. Raises ``PolicyDenied`` for anything unlisted."""
         path = _VERSION_PREFIX.sub("", urlsplit(target).path)
-        query = parse_qs(urlsplit(target).query)
+        query = parse_qs(urlsplit(target).query, keep_blank_values=True)
 
+        if path.startswith("/_pipeshub/"):
+            return _local_route(method, path, query)
         if path == "/_ping" and method in ("GET", "HEAD"):
             return Route("allow")
         if path == "/version" and method == "GET":
@@ -500,6 +508,26 @@ class DockerApiPolicy:
             if body.get(key):
                 raise PolicyDenied(f"network {key} is not permitted")
         return body
+
+
+def _local_route(method: str, path: str, query: Mapping[str, list[str]]) -> Route:
+    """Routes the proxy answers itself; none is ever forwarded."""
+    if method not in ("GET", "HEAD"):
+        raise PolicyDenied(f"{method} {path} is not permitted")
+    if path == "/_pipeshub/host" and not query:
+        return Route("local_host_id")
+    raise PolicyDenied(f"{method} {path} is not permitted")
+
+
+def boot_id_hash(path: str | None = None) -> str | None:
+    """The first 32 hex digits of the SHA-256 of the kernel's boot id, the
+    same for every container on one kernel. Only the hash leaves the proxy."""
+    try:
+        with open(path or _BOOT_ID_PATH) as f:
+            boot_id = f.read().strip()
+    except OSError:
+        return None
+    return hashlib.sha256(boot_id.encode()).hexdigest()[:32] if boot_id else None
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -753,6 +781,14 @@ class DockerSocketProxy:
         # Clients that sent Expect hold the body back until told to continue,
         # and the create routes read it before going upstream.
         expects_continue = (req.header("expect") or "").lower() == "100-continue"
+
+        if route.kind == "local_host_id":
+            digest = boot_id_hash()
+            if digest is None:
+                await _safe_write(client_w, _error_response(502, "Bad Gateway", "docker-proxy: boot id unavailable"))
+                return
+            await _safe_write(client_w, _json_response({"v": 1, "bootIdHash": digest}))
+            return
 
         if route.kind == "info":
             status, info = await self._upstream_json("/info")

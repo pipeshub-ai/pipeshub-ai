@@ -164,6 +164,20 @@ def test_info_answers_only_the_sizing_fields(proxy_host) -> None:
     assert "HttpProxy" not in info
 
 
+def test_host_route_matches_this_kernels_boot_id(proxy_host) -> None:
+    import docker
+
+    from app.agent_loop_lib.sandbox.host_reading import boot_id_hash
+
+    client = docker.DockerClient(base_url=proxy_host)
+    try:
+        response = client.api.get(client.api._url("/_pipeshub/host"), timeout=5)
+    finally:
+        client.close()
+    assert response.status_code == 200
+    assert response.json()["bootIdHash"] == boot_id_hash()
+
+
 async def test_sandbox_containers_are_marked_first_to_kill(proxy_host, tmp_path) -> None:
     """Read from inside the run: the container is removed afterwards."""
     result = await _run_code_through_proxy(

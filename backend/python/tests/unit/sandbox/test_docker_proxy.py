@@ -746,3 +746,35 @@ class TestResourceLimits:
         assert resp.startswith(b"HTTP/1.1 200")
         sent = json.loads(daemon.requests[-1][2])
         assert sent["HostConfig"]["MemorySwap"] == _LIMITS["Memory"]
+
+
+class TestLocalRoutes:
+    @pytest.mark.parametrize("target", ["/_pipeshub/host", "/v1.43/_pipeshub/host"])
+    def test_host_route_is_local(self, policy: DockerApiPolicy, target: str) -> None:
+        assert policy.route("GET", target).kind == "local_host_id"
+
+    @pytest.mark.parametrize(("method", "target"), [
+        ("POST", "/_pipeshub/host"), ("DELETE", "/_pipeshub/host"),
+        ("GET", "/_pipeshub/host?x=1"), ("GET", "/_pipeshub/other"),
+    ])
+    def test_other_local_requests_are_refused(self, policy: DockerApiPolicy, method: str, target: str) -> None:
+        with pytest.raises(PolicyDenied):
+            policy.route(method, target)
+
+    async def test_host_route_never_opens_the_upstream(self, tmp_path, policy: DockerApiPolicy) -> None:
+        boot = tmp_path / "boot_id"
+        boot.write_text("abc\n")
+        proxy = DockerSocketProxy(policy, str(tmp_path / "missing.sock"))
+        server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with patch("app.sandbox.docker_proxy._BOOT_ID_PATH", str(boot)):
+                resp = await _request(port, b"GET /v1.43/_pipeshub/host HTTP/1.1\r\nHost: x\r\n\r\n")
+            assert resp.startswith(b"HTTP/1.1 200")
+            body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+            assert body["v"] == 1 and len(body["bootIdHash"]) == 32
+            int(body["bootIdHash"], 16)
+            resp = await _request(port, b"POST /_pipeshub/host HTTP/1.1\r\nHost: x\r\n\r\n")
+            assert resp.startswith(b"HTTP/1.1 403")
+        finally:
+            server.close()
