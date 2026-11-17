@@ -395,3 +395,46 @@ async def test_a_pool_job_keeps_its_tokens_until_its_lane_has_finished_with_it(
         (tmp_path / "release").write_text("go")
         parse_pool.shutdown_parse_pool()
         parse_pool.set_resource_governor(None)
+
+
+def test_an_inspections_lane_demand_keeps_its_designed_memory_and_other_kinds_keep_their_lane_charge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.parse_engine import wiring
+    from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
+
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    wiring.reset_for_tests()
+    inspect = parse_pool._lane_demand(ParseKind.INSPECT, 1 << 20)
+    assert inspect.family is Family.INSPECT and inspect.mem_bytes == wiring.INSPECT_MEMORY_BYTES  # 0.1 GiB, not 1.25
+    for kind in (ParseKind.EXCEL_LOAD, ParseKind.PDF_LAYOUT, ParseKind.TEXT):
+        assert parse_pool._lane_demand(kind, 1 << 20).mem_bytes == lane_charge_bytes(kind, 1 << 20)  # unchanged
+    monkeypatch.setenv("PARSE_ADMISSION", "legacy")
+    assert parse_pool._lane_demand(ParseKind.INSPECT, 1 << 20).mem_bytes == lane_charge_bytes(ParseKind.INSPECT, 1 << 20)
+
+
+async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None
+) -> None:
+    from app.modules.parse_engine import wiring
+    from app.services.resource_governor.kinds import ParseKind
+
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    wiring.reset_for_tests()
+    install_budget(monkeypatch, tmp_path / "l", c=32, mem=8 * GIB)
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def inspect() -> int:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.3)
+        with lock:
+            running -= 1
+        return 1
+
+    await asyncio.gather(*(parse_pool.submit(inspect, kind=ParseKind.INSPECT, size=1 << 20) for _ in range(12)))
+    assert peak == 12  # at 1.25 GiB each only 6 fit an 8 GiB ledger

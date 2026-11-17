@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from app.modules.parse_engine.admission import (
     AdmissionNumbers,
     ClassDemand,
+    Grant,
     next_grant,
     slots,
 )
@@ -379,6 +380,17 @@ class ClassGate:
                 due = min(due, now + (numbers.aging_s - oldest))
         return due
 
+    def _aged_unbounded_head(self, now: float, aging_s: float, skipped: set[_Waiter]) -> _Waiter | None:
+        """The oldest waiting big record that cannot be split into bounded units and has waited ``aging_s``."""
+        best: _Waiter | None = None
+        for cls in _BIG:
+            for w in [*self._prio[cls], *(x for q in self._q[cls].values() for x in q)]:
+                if w.req.bounded or w in skipped or now - w.first_seen < aging_s:
+                    continue
+                if best is None or w.key < best.key:
+                    best = w
+        return best
+
     def _pump_grants(self) -> None:
         numbers = self._numbers()
         skipped: set[_Waiter] = set()  # waiters this gate will not admit now (over their class ceiling): not retried this pump
@@ -392,13 +404,24 @@ class ClassGate:
                 demand[c] = dataclasses.replace(demand[c], waiting=0)
             small = demand[CostClass.SMALL]
             since = 0.0 if (small.waiting or small.running) else now - self._last_small
-            g = next_grant(
-                numbers, P, demand, since_small_s=since, held_floors=H, small_waiting_elsewhere=self._elsewhere()
-            )
+            aged = self._aged_unbounded_head(now, numbers.aging_s, skipped)
+            g = None
+            if aged is not None:
+                # A big record that cannot be split and has waited its aging time is served next (A5): A1 needs room for
+                # two when small work waits, and A2 and A4 take bounded heads only, so at a capacity of 1 it would starve
+                # behind a steady small stream. Nothing new starts ahead of it; it runs when the running work has drained.
+                used_now = sum(self._running.values())
+                if used_now and used_now + aged.req.cpu > P:
+                    return
+                g = Grant(aged.req.cls, "A5")
+            if g is None:
+                g = next_grant(
+                    numbers, P, demand, since_small_s=since, held_floors=H, small_waiting_elsewhere=self._elsewhere()
+                )
             if g is None:
                 return
             bounded_only = g.rule in ("A2", "A4")
-            w = self._pick(g.cls, bounded_only=bounded_only, big_limit=max(1, P), exclude=skipped)
+            w = aged if g.rule == "A5" else self._pick(g.cls, bounded_only=bounded_only, big_limit=max(1, P), exclude=skipped)
             if w is None:
                 if masked or skipped:
                     masked.add(g.cls)

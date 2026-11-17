@@ -206,3 +206,67 @@ async def _kafka_run(cells: int | None) -> list[tuple[int, int, int]]:
 async def test_the_kafka_consumer_folds_an_xlsx_cell_area_into_the_class_too() -> None:
     assert await _kafka_run(26 * 400_000) == [(0, 1, 0)]  # moved out of small in place
     assert await _kafka_run(None) == [(1, 0, 0)]  # no cell area: it stays on its prior
+
+
+def _download_use() -> dict[str, int]:
+    return {n: a.stats()["in_use"] for n, a in wiring._Registry.ahead.get(asyncio.get_running_loop(), {}).items()}
+
+
+async def test_the_redis_consumer_moves_the_download_place_when_inspection_makes_a_record_huge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The second record waits for the one parse slot holding a download place: after inspection it is a huge record's."""
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD_SMALL", "2")
+    wiring.reset_for_tests()
+    consumer = _consumer(heavy_parse=1)
+    fleet = _Fleet(pages=1000)
+    consumer.message_handler = fleet.handler
+    first = asyncio.create_task(consumer._process_message_wrapper("t", "1-0", _fields("r1")))
+    await asyncio.sleep(0.3)  # r1 holds the one parse slot
+    second = asyncio.create_task(consumer._process_message_wrapper("t", "2-0", _fields("r2")))
+    await asyncio.sleep(0.4)  # r2 is inspected and waits for the parse slot, holding its download place
+    use = _download_use()
+    fleet.release.set()
+    await asyncio.gather(first, second)
+    assert use.get("small", 0) == 0 and use.get("big") == 1, use  # a small place held by a huge record blocks small PDFs
+
+
+async def test_the_kafka_consumer_moves_the_download_place_when_inspection_makes_a_record_huge(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD_SMALL", "2")
+    wiring.reset_for_tests()
+    consumer = _kafka_consumer()
+    consumer.governor._registry.set(Pool.HEAVY_PARSE, 1)
+    release = asyncio.Event()
+
+    async def handler(message):  # noqa: ANN001
+        rid = message.payload["recordId"]
+        yield PipelineEvent(event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id=rid))
+        yield PipelineEvent(event=IndexingEvent.START_INSPECT, data=PipelineEventData(record_id=rid, size_bytes=80 * MIB))
+        yield PipelineEvent(
+            event=IndexingEvent.START_PARSING,
+            data=PipelineEventData(record_id=rid, tier=ParseTier.HEAVY, size_bytes=80 * MIB, pages=1000, scanned=False),
+        )
+        await release.wait()
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=rid))
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=rid))
+
+    consumer.message_handler = handler
+
+    def message(rid: str, offset: int) -> object:
+        m = MagicMock()
+        m.topic, m.partition, m.offset = "record-events", 0, offset
+        payload = {"recordId": rid, "extension": "pdf", "mimeType": "application/pdf", "orgId": "o1"}
+        m.value = json.dumps({"eventType": "newRecord", "payload": payload}).encode()
+        return m
+
+    wrapper = consumer._IndexingKafkaConsumer__process_message_wrapper
+    first = asyncio.create_task(wrapper(message("r1", 1)))
+    await asyncio.sleep(0.3)
+    second = asyncio.create_task(wrapper(message("r2", 2)))
+    await asyncio.sleep(0.4)
+    use = _download_use()
+    release.set()
+    await asyncio.gather(first, second)
+    assert use.get("small", 0) == 0 and use.get("big") == 1, use

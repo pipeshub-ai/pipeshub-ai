@@ -12,7 +12,7 @@ from app.modules.parse_engine.class_gate import ClassGate, GateRequest, PoolCapa
 from app.modules.parse_engine.cost import CostClass
 from tests.support.fake_member_budget import FakeMemberBudget
 
-S, L = CostClass.SMALL, CostClass.LARGE
+S, L, H = CostClass.SMALL, CostClass.LARGE, CostClass.HUGE
 N = AdmissionNumbers()
 
 
@@ -131,3 +131,45 @@ async def test_the_huge_cap_holds_only_while_large_work_waits() -> None:
     assert gate.running(H) == 6  # past the huge cap of 5: nothing large is waiting
     for p in permits:
         p.release()
+
+
+async def test_an_oversized_head_is_served_at_a_capacity_of_one_while_small_work_keeps_arriving() -> None:
+    """P=1, aging 0.5 s, a steady small stream: an unbounded huge head (an Office record over the unit budget) waited
+    for ever (A1 needs room for two when small work waits, A2 and A4 take bounded heads only)."""
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    numbers = AdmissionNumbers(aging_s=0.5)
+    gate = ClassGate("remote_parse", numbers=lambda: numbers, capacity=lambda: PoolCapacity(1))
+    stop = asyncio.Event()
+    served_small = 0
+
+    async def small_stream() -> None:
+        nonlocal served_small
+        while not stop.is_set():
+            permit = await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=5)
+            served_small += 1
+            await asyncio.sleep(0.02)
+            permit.release()
+
+    streams = [asyncio.create_task(small_stream()) for _ in range(3)]
+    await asyncio.sleep(0.1)
+    started = time.monotonic()
+    head = await gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=4)
+    waited = time.monotonic() - started
+    stop.set()
+    head.release()
+    await asyncio.gather(*streams)
+    assert waited < 2.5, waited  # aged (0.5 s), then served next; it was not served in 4 s before
+    assert served_small > 0
+
+
+async def test_a_fresh_unbounded_head_still_waits_for_the_running_work_and_then_runs() -> None:
+    """The age bound covers an unbounded head only once it has aged (default 900 s): a fresh one waits as before."""
+    gate = ClassGate("remote_parse", numbers=lambda: N, capacity=lambda: PoolCapacity(1))
+    small = await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=1)
+    head = asyncio.create_task(gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=2))
+    await settle()
+    await asyncio.sleep(0.1)
+    assert not head.done()  # one place, held by small work
+    small.release()
+    (await asyncio.wait_for(head, 2)).release()  # served by the ordinary rules once the place is free
