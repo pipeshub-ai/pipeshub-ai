@@ -324,3 +324,26 @@ async def test_a_document_that_parses_to_nothing_still_completes_its_run(store: 
     assert (ORG, REC, f"manifests/{rev}/index.json") in store.files
     assert (ORG, REC, f"manifests/{rev}/index.open.json") not in store.files
     assert len(store.spawned) == 1                                   # the retention sweep is queued for an emptied record too
+
+
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_a_run_that_fails_lists_every_key_it_noted_without_anyone_flushing(store: MemoryResultStore) -> None:
+    """The failure path flushes: keys noted since the last flush are protected too, not only the first one."""
+    keys = [CacheKey(ORG, REC, "image_description", 1, "m", "p", "q", f"i{n}") for n in range(4)]
+    sink = MagicMock()
+
+    async def index(_ctx: object) -> None:
+        cache = access.paid_cache_for(MagicMock())
+        for key in keys:
+            await cache.get_or_compute(key, AsyncMock(return_value="a chart"))
+        raise ConnectionError("vector store down")
+
+    sink.index = AsyncMock(side_effect=index)
+    ep = _processor(sink)
+
+    with record_in_flight(ORG, REC), pytest.raises(ConnectionError):
+        async for _ in ep.on_event(_event()):
+            pass
+
+    listed = json.loads(store.files[(ORG, REC, f"manifests/{content_revision(BODY)}/index.open.json")][0])["keys"]
+    assert sorted(listed) == sorted(k.relative_path() for k in keys)

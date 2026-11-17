@@ -203,7 +203,9 @@ def template_text_of(template: object) -> str:
     return template_text(template)
 
 
-def start_run(content_rev: str | None, writer: str, *, refresh: bool = False) -> RunScope | None:
+def start_run(
+    content_rev: str | None, writer: str, *, refresh: bool = False, stage_deadline_s: float | None = None,
+) -> RunScope | None:
     """Opens the retention manifest of this writer's work on the record in flight.
 
     A ``refreshPaidOutputs`` run opened earlier for the same record keeps its flag. None when no record is in
@@ -215,7 +217,7 @@ def start_run(content_rev: str | None, writer: str, *, refresh: bool = False) ->
         return None
     prior = current_run()
     refresh = refresh or (prior is not None and prior.matches(*identity) and prior.refresh)
-    return begin_run(identity[0], identity[1], content_rev, writer, refresh=refresh)
+    return begin_run(identity[0], identity[1], content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s)
 
 
 async def complete_run(
@@ -240,6 +242,24 @@ async def complete_run(
         return
     if sweep:
         spawn_detached(_sweep(cache, run, log), name="paid-cache-sweep")
+
+
+async def abandon_run(
+    run: RunScope | None, config_service: "ConfigurationService", logger: logging.Logger | None = None,
+) -> None:
+    """A run that failed: its open manifest is brought up to date, so what it paid for stays protected.
+
+    Best effort and bounded by the write deadline; never raises (the failure being handled is the one that matters).
+    """
+    if run is None or config_service is None or run.finished:
+        return
+    log = logger or logging.getLogger(__name__)
+    try:
+        cache = paid_cache_for(config_service, log)
+        if isinstance(cache, PaidResultCache):
+            await run.flush(cache.store)
+    except Exception as exc:
+        log.warning("Paid-result manifest of a failed run not updated for record %s (%s)", run.record_id, type(exc).__name__)
 
 
 async def _sweep(cache: PaidResultCache, run: RunScope, log: logging.Logger) -> None:

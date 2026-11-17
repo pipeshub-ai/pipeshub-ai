@@ -96,7 +96,7 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
-from app.services.paid_cache.access import complete_run, start_run
+from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
@@ -1449,6 +1449,12 @@ class EventProcessor:
                     if scope is not None and scope is not before and scope.in_process and self.config_service is not None:
                         await complete_run(scope, self.config_service, self.logger, sweep=not store_only_active())
                 yield event
+        except BaseException:
+            # A run that failed keeps its open manifest, brought up to date: what it paid for stays protected.
+            scope = current_paid_run()
+            if scope is not None and scope is not before and self.config_service is not None:
+                await abandon_run(scope, self.config_service, self.logger)
+            raise
         finally:
             await inner.aclose()
 

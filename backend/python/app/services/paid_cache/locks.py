@@ -61,6 +61,25 @@ def stage_deadline_s() -> float:
     return max(float(STAGE_DEADLINE_S), _budgets()[1])
 
 
+#: The most a record budget a caller sends can be: a request body is not trusted with an unbounded deadline.
+MAX_RECORD_BUDGET_S = 7 * 24 * 3600.0
+
+
+def stage_deadline_for(record_budget_s: float | None) -> float:
+    """The stage deadline for a record whose budget the caller sent with its request.
+
+    The parsing client sends the record budget it applies, so the service uses the very figure the client waits
+    for, whatever its own environment says. An absent or unusable figure (an older client during a rollout) falls
+    back to the service's own settings (``stage_deadline_s()``).
+    """
+    if (
+        isinstance(record_budget_s, int | float) and not isinstance(record_budget_s, bool)
+        and 0 < record_budget_s <= MAX_RECORD_BUDGET_S
+    ):
+        return max(float(STAGE_DEADLINE_S), float(record_budget_s))
+    return stage_deadline_s()
+
+
 def admission_window_s() -> float:
     """The latest a paid stage can begin after its record was deleted.
 

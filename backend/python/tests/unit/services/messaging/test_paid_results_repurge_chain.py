@@ -242,3 +242,22 @@ def test_a_carried_horizon_that_is_not_a_sane_duration_is_ignored_or_capped() ->
     huge = {**repurge_event_payload(ORG, REC, now=0.0), "horizonS": 10**12}
     assert next_hop_payload(ORG, huge, now=MAX_CARRIED_HORIZON_S - 1) is not None
     assert next_hop_payload(ORG, huge, now=MAX_CARRIED_HORIZON_S + 1) is None   # capped
+
+
+def test_a_hostile_figure_in_a_hop_ends_the_chain_instead_of_raising() -> None:
+    """An integer too large for a float must not raise on every delivery."""
+    base = repurge_event_payload(ORG, REC, now=0.0)
+    assert next_hop_payload(ORG, {**base, "deletedAt": 10**400}, now=10.0) is None
+    assert next_hop_payload(ORG, {**base, "deletedAt": -(10**400)}, now=10.0) is None
+    assert next_hop_payload(ORG, {**base, "deletedAt": float("nan")}, now=10.0) is None
+    carried = next_hop_payload(ORG, {**base, "horizonS": 10**400}, now=10.0)   # ignored, the live horizon applies
+    assert carried is not None and carried["horizonS"] == repurge_horizon_s()
+
+
+def test_the_first_hop_of_an_org_carries_the_horizon_too() -> None:
+    from app.services.paid_cache.repurge import org_repurge_event_payload
+
+    first = org_repurge_event_payload(ORG, now=0.0)
+    assert first["horizonS"] == repurge_horizon_s()
+    following = next_hop_payload(ORG, first, now=100.0)
+    assert following is not None and following["horizonS"] == repurge_horizon_s() and following["scope"] == "org"

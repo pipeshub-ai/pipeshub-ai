@@ -282,3 +282,31 @@ async def test_a_malformed_signed_url_never_reaches_the_error_text(
         else:
             await store.get_if_present(_entry("GET"))                 # type: ignore[arg-type]
     assert "secret" not in str(raised.value) and "secret" not in repr(raised.value.__cause__)
+
+
+async def test_three_conditional_conflicts_in_a_row_read_as_a_lost_race_after_exactly_three_attempts(
+    storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slept: list[float] = []
+
+    async def pause(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(store_module.asyncio, "sleep", pause)
+    conflict = _FakeResponse(409, b"<Error><Code>ConditionalRequestConflict</Code></Error>")
+    session = _ScriptedSession(conflict)
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+
+    assert await _store(storage).put_to(_entry(), b"x") is False      # type: ignore[arg-type]
+    assert session.calls == store_module._CONFLICT_ATTEMPTS == 3      # no fourth request
+    assert len(slept) == 2 and slept[0] < slept[1]                    # paused between attempts, not after the last
+
+
+async def test_a_malformed_url_error_hides_its_context_too(storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    import aiohttp
+
+    session = _ScriptedSession(aiohttp.InvalidURL("https://signed.test/o?X-Amz-Signature=secret"))
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+    with pytest.raises(PaidResultStoreError) as raised:
+        await _store(storage).put_to(_entry(), b"x")                  # type: ignore[arg-type]
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__ is True

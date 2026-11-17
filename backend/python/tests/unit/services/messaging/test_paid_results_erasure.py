@@ -293,3 +293,31 @@ async def test_a_redelivered_refresh_event_reuses_what_its_first_delivery_stored
     clear_run()
     await _reindex(handler, {**payload, "_event_id": "evt-2"})          # a new request purges and bypasses again
     assert store.paths(ORG, REC) == [] and current_run() is not None and current_run().refresh
+
+
+async def test_a_retried_refresh_request_pays_no_page_again_that_the_first_attempt_paid(store: MemoryResultStore) -> None:
+    from app.services.paid_cache.keys import CacheKey
+    from tests.support.paid_cache import record_in_flight
+
+    handler = _handler()
+    cache = access.paid_cache_for(MagicMock())
+    paid: list[str] = []
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-9"}
+    keys = [CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", f"page{n}") for n in range(3)]
+
+    async def pay_pages() -> None:
+        for key in keys:
+            async def compute(page: str = key.input_digest) -> str:
+                paid.append(page)
+                return "text"
+
+            await cache.get_or_compute(key, compute)
+
+    with record_in_flight(ORG, REC):
+        await _reindex(handler, dict(payload))                       # the first attempt: purge, then pay every page
+        await pay_pages()
+        assert len(paid) == 3
+        clear_run()
+        await _reindex(handler, dict(payload))                       # its retry (the same event, redelivered)
+        await pay_pages()
+    assert len(paid) == 3, f"the retry paid again for {len(paid) - 3} page(s)"

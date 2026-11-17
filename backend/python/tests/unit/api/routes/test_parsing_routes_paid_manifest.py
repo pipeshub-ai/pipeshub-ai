@@ -133,3 +133,56 @@ def test_a_parse_the_indexing_side_marked_as_a_refresh_opens_a_bypassing_run(sto
     assert _post(parse, refresh_paid_outputs="true").status_code == 200
     assert _post(parse).status_code == 200
     assert seen == [True, False]
+
+
+def test_the_route_uses_the_record_budget_the_client_sent_and_falls_back_to_its_own(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 9000 s client budget (scaled) is honoured even when the service's own settings are smaller."""
+    import asyncio
+
+    from app.api.routes import parsing
+    from app.services.paid_cache import locks
+
+    monkeypatch.setattr(locks, "STAGE_DEADLINE_S", 0.1)
+    monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "0.1")
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "0.1")
+    monkeypatch.setattr(parsing, "_budget_mismatch_logged", set())
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        await asyncio.sleep(0.4)
+        return _ok_result()
+
+    with caplog.at_level("WARNING"):
+        assert _post(parse, record_budget_s="2.0").status_code == 200       # the client's budget covers the parse
+    assert any("differs from this service" in r.getMessage() for r in caplog.records)
+    assert _post(parse).status_code == 504                                  # no budget sent: the service's own applies
+    assert _post(parse, record_budget_s="nan").status_code == 504           # an unusable figure is ignored
+    assert _post(parse, record_budget_s="-5").status_code == 504
+
+
+def test_the_stage_start_write_bound_uses_the_budget_the_client_sent(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.paid_cache import locks
+
+    monkeypatch.setattr(locks, "STAGE_DEADLINE_S", 0.1)
+    monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "0.1")
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "0.1")
+    assert locks.stage_deadline_for(9000.0) == 9000.0
+    assert locks.stage_deadline_for(None) == locks.stage_deadline_s()
+    assert locks.stage_deadline_for(float("inf")) == locks.stage_deadline_s()
+    assert locks.stage_deadline_for(locks.MAX_RECORD_BUDGET_S * 2) == locks.stage_deadline_s()
+
+
+def test_a_parse_that_fails_after_noting_keys_keeps_every_key_listed(store: MemoryResultStore) -> None:
+    """Through the real failure path: no flush() called by the test, the route flushes before it answers."""
+    import json
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        cache = access.paid_cache_for(MagicMock())
+        for i in range(3):
+            await cache.get_or_compute(CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", f"page{i}"), AsyncMock(return_value="t"))
+        raise RuntimeError("renderer crashed")
+
+    assert _post(parse).status_code >= 500
+    listed = json.loads(store.files[(ORG, REC, f"manifests/{content_revision(BODY)}/parse.open.json")][0])["keys"]
+    assert len(listed) == 3

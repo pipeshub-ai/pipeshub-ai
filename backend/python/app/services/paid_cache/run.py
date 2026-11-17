@@ -51,7 +51,7 @@ class _ManifestStore(Protocol):
 class RunScope:
     def __init__(
         self, org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.time, stage_deadline_s: float | None = None,
     ) -> None:
         self.org_id = org_id
         self.record_id = record_id
@@ -63,6 +63,8 @@ class RunScope:
         #: Set by the in-process pipeline, whose run ends when the record's indexing completes.
         self.in_process = False
         self.finished = False
+        #: The stage deadline this run was given (the record budget a caller sent); None: the process's own setting.
+        self.stage_deadline_s = stage_deadline_s
         self._clock = clock
         self.started_ms = int(clock() * 1000)
         self._keys: list[str] = []
@@ -79,7 +81,8 @@ class RunScope:
         Measured from the stage's start, not from the paid call's: the delayed re-purge after a delete ends a
         bounded time after that stage began, so a write later than this could land after the last purge.
         """
-        return self._clock() * 1000 - self.started_ms > lock_limits.stage_deadline_s() * 1000
+        limit = self.stage_deadline_s if self.stage_deadline_s is not None else lock_limits.stage_deadline_s()
+        return self._clock() * 1000 - self.started_ms > limit * 1000
 
     def matches(self, org_id: str, record_id: str) -> bool:
         return self.org_id == org_id and self.record_id == record_id
@@ -176,9 +179,10 @@ _run: ContextVar[RunScope | None] = ContextVar("paid_cache_run", default=None)
 
 def begin_run(
     org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
+    stage_deadline_s: float | None = None,
 ) -> RunScope:
     """Opens the ambient run for this task and the tasks it starts. Left set: the next run replaces it."""
-    scope = RunScope(org_id, record_id, content_rev, writer, refresh=refresh)
+    scope = RunScope(org_id, record_id, content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s)
     _run.set(scope)
     return scope
 

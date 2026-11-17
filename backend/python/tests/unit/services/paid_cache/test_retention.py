@@ -370,3 +370,21 @@ async def test_a_failed_writers_references_survive_while_its_revision_is_retaine
     await sweep_record(store, ORG, REC, now_ms=clock.now)
 
     assert _obj(77) in store.results(ORG, REC), "an object a retained revision's failed writer paid for was deleted"
+
+
+async def test_a_failed_writer_of_a_retained_revision_is_kept_even_when_two_revisions_completed_after_it_started() -> None:
+    """Only ``rev in kept_revs`` protects here: the writer's start lies before both completions."""
+    store = MemoryResultStore()
+    clock = Clock(store)
+    failed = RunScope(ORG, REC, "r1", "index", clock=lambda: store.now_ms / 1000)   # starts first
+    store.files[(ORG, REC, _obj(55))] = (b"{}", store.now_ms)
+    await failed.note(store, _obj(55), opens=True)
+    clock.advance(2 * HOUR)
+    await _revision(store, "r1", [1], writer="parse")                   # r1 completes: retained
+    clock.advance(2 * HOUR)
+    await _revision(store, "r2", [2], writer="parse")                   # the newest
+    clock.advance(OPEN_PROTECTS_MS + HOUR)                              # the open manifest is no longer young
+
+    await sweep_record(store, ORG, REC, now_ms=clock.now)
+
+    assert _obj(55) in store.results(ORG, REC)

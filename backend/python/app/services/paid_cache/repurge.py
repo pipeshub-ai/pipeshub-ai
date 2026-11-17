@@ -50,6 +50,17 @@ def org_repurge_event_payload(org_id: str, *, now: float | None = None) -> dict[
     }
 
 
+def _finite_seconds(value: object) -> float:
+    """``value`` as a finite number of seconds, else 0 (never an arithmetic error on a hostile figure)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    try:
+        number = float(value)
+    except OverflowError:
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
 def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None = None) -> dict[str, Any] | None:
     """The hop after the one that carries ``payload``, or None when the chain is over.
 
@@ -60,13 +71,19 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
     now = time.time() if now is None else now
     deleted_at = payload.get("deletedAt")
     hop = payload.get("hop")
-    if isinstance(deleted_at, bool) or not isinstance(deleted_at, int | float) or not math.isfinite(deleted_at):
+    if isinstance(deleted_at, bool) or not isinstance(deleted_at, int | float):
         return None
-    deleted_at = min(float(deleted_at), now)
+    try:
+        deleted_at = float(deleted_at)
+    except OverflowError:                       # an integer too large for a float
+        return None
+    if not math.isfinite(deleted_at):
+        return None
+    deleted_at = min(deleted_at, now)
     # The horizon the chain was started with is kept: lowering a record budget later (or a mixed rollout) must not
     # shorten a chain already running. A figure that is not a sane duration is ignored.
     carried = payload.get("horizonS")
-    carried_s = float(carried) if isinstance(carried, int | float) and not isinstance(carried, bool) and math.isfinite(carried) else 0.0
+    carried_s = _finite_seconds(carried)
     horizon = max(repurge_horizon_s(), min(max(carried_s, 0.0), MAX_CARRIED_HORIZON_S))
     if now - deleted_at > horizon:
         return None
