@@ -11,6 +11,8 @@ import {
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
   isElectron,
+  markServerMode,
+  setLocalModeApiBaseUrl,
   setSessionApiBaseUrl,
   shouldSkipElectronServerUrlSetup,
 } from '@/lib/electron';
@@ -97,6 +99,7 @@ export function ServerUrlGuard({
   const gate = isElectron()
     ? decideDesktopGate(desktop.state, !needsSetup)
     : 'ready';
+  if (isElectron() && gate !== 'local') markServerMode();
 
   // Local mode: nothing of the signed-in app renders until the server answers,
   // and it is replaced by the error screen if the server later goes away.
@@ -140,10 +143,12 @@ export function ServerUrlGuard({
 function LocalModeGate({ state, children }: { state: DesktopState; children: React.ReactNode }) {
   const { local } = state;
   if (local.state !== 'running' || !local.url) {
+    // No server of this launch yet: requests (a token refresh too) wait instead of going to an earlier launch's port.
+    setLocalModeApiBaseUrl(null);
     return <LocalStartScreen status={local} state={state} />;
   }
-  // Idempotent storage write; must land before the children's first request.
-  if (getElectronApiBaseUrl() !== local.url) setSessionApiBaseUrl(local.url);
+  // In memory only, and before the children's first request.
+  if (getElectronApiBaseUrl() !== local.url) setLocalModeApiBaseUrl(local.url);
   return <>{children}</>;
 }
 

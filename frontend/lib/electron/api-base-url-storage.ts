@@ -63,8 +63,47 @@ export function forgetElectronServerUrl(): void {
   window.localStorage.removeItem(API_BASE_URL_STORAGE_KEY);
 }
 
-/** Session URL first (same-run Continue), then localStorage draft / post-login URL. */
+/**
+ * Local mode's URL: the launcher picks a new port at each start, so it is kept in memory for this launch and never saved.
+ * `unknown` until the app knows its mode; `local` with no URL while this launch's server is not ready yet.
+ */
+type ApiBaseUrlMode = { kind: 'unknown' } | { kind: 'server' } | { kind: 'local'; url: string | null };
+let mode: ApiBaseUrlMode = { kind: 'unknown' };
+let waiters: (() => void)[] = [];
+
+function settle(): void {
+  if (mode.kind === 'unknown' || (mode.kind === 'local' && !mode.url)) return;
+  const ready = waiters;
+  waiters = [];
+  ready.forEach((resolve) => resolve());
+}
+
+/** Local mode: `url` is this launch's server once it reports ready, null before. Never written to storage. */
+export function setLocalModeApiBaseUrl(url: string | null): void {
+  mode = { kind: 'local', url };
+  settle();
+}
+
+/** Connecting to a server: its saved URL applies. */
+export function markServerMode(): void {
+  mode = { kind: 'server' };
+  settle();
+}
+
+/** Resolves once the base URL points at a server of this launch: at once outside Electron or in server mode. */
+export function whenApiBaseUrlReady(): Promise<void> {
+  if (!isElectron() || mode.kind === 'server' || (mode.kind === 'local' && mode.url)) return Promise.resolve();
+  return new Promise((resolve) => waiters.push(resolve));
+}
+
+export function resetApiBaseUrlModeForTests(): void {
+  mode = { kind: 'unknown' };
+  waiters = [];
+}
+
+/** Local mode: this launch's URL only. Otherwise the session URL (same-run Continue), then the localStorage draft / post-login URL. */
 export function getElectronApiBaseUrl(): string {
+  if (mode.kind === 'local') return mode.url ?? '';
   return getSessionApiBaseUrl() ?? getStoredApiBaseUrl() ?? '';
 }
 

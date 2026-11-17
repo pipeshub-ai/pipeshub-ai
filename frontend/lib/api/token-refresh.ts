@@ -19,6 +19,7 @@ import { useAuthStore, logoutAndRedirect } from '@/config';
 import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
 
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { whenApiBaseUrlReady } from '@/lib/electron/api-base-url-storage';
 
 /** Endpoint that issues a new access token from a valid refresh token. */
 export const REFRESH_TOKEN_ENDPOINT = '/api/v1/userAccount/refresh/token';
@@ -108,6 +109,9 @@ export async function refreshAccessToken(): Promise<boolean> {
         return false;
       }
 
+      // In the desktop app's local mode the server's port is new at each launch: wait for this launch's, so the refresh token
+      // never goes to a port an earlier launch used.
+      await whenApiBaseUrlReady();
       // Bypass axios so the request interceptor doesn't recurse into refresh.
       const response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
         method: 'POST',
