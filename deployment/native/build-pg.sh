@@ -29,7 +29,9 @@ for d in "pgvector-$PGVECTOR_VERSION" "pg_textsearch-$PG_TEXTSEARCH_VERSION"; do
 done
 
 # What a server never needs: headers, static libraries, OpenSSL's command line and config, the client-only tools.
-rm -rf "$out/include" "$out/ssl" "$out/share/doc" "$out/share/man" "$out/lib/pkgconfig" "$out/lib/postgresql/pgxs" "$out"/lib/*.a "$out/bin/openssl" "$out/bin/c_rehash"
+# OpenSSL's engines and loadable providers are unused (no TLS on a loopback server) and link libcrypto by absolute path.
+rm -rf "$out/include" "$out/ssl" "$out/share/doc" "$out/share/man" "$out/lib/pkgconfig" "$out/lib/cmake" "$out/lib/postgresql/pgxs" "$out"/lib/*.a \
+  "$out/lib/engines-3" "$out/lib/ossl-modules" "$out/bin/openssl" "$out/bin/c_rehash"
 for b in "$out"/bin/*; do case $(basename "$b") in initdb|pg_ctl|postgres|pg_config|pg_dump|pg_restore|psql|pg_isready) ;; *) rm -f "$b";; esac; done
 
 if [ "$os" = linux ]; then
