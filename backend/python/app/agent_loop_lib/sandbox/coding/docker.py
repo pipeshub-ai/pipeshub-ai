@@ -649,6 +649,22 @@ def create_bounded_container(client: Any, **kwargs: Any) -> Any:
                         )
 
 
+async def _wait_until(aw: asyncio.Future[Any], deadline: float) -> bool:
+    """Wait for *aw* until *deadline* (loop time) without cancelling it.
+    Returns whether the caller was cancelled meanwhile; the wait goes on."""
+    loop = asyncio.get_running_loop()
+    cancelled = False
+    while not aw.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.wait({aw}, timeout=remaining)
+        except asyncio.CancelledError:
+            cancelled = True
+    return cancelled
+
+
 class DockerCodingSandbox(CodingSandboxBackend):
     """One sandbox instance = one host working directory + a Docker image
     used to run every `execute()`/`install_packages()` call in a fresh,
@@ -1015,25 +1031,22 @@ class DockerCodingSandbox(CodingSandboxBackend):
         # "never retrieved" when it finally ends.
         fut.add_done_callback(lambda f: f.cancelled() or f.exception())
         cancelled_again = False
+        deadline = started + _CANCEL_CLEANUP_S
         container_id = handle.container_id
         if container_id:
-            try:
-                await self._provider.run_control(
-                    self._provider.client.api.remove_container, container_id, force=True,
-                )
-            except asyncio.CancelledError:
-                cancelled_again = True
-            except Exception as exc:
-                logger.debug("removing cancelled sandbox container %.12s failed: %s", container_id, exc)
-        deadline = started + _CANCEL_CLEANUP_S
-        while not fut.done():
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-            try:
-                await asyncio.wait({fut}, timeout=remaining)
-            except asyncio.CancelledError:
-                cancelled_again = True
+            # The removal (and its wait for a control thread) counts against
+            # the same bound as the worker thread.
+            removal = asyncio.ensure_future(self._provider.run_control(
+                self._provider.client.api.remove_container, container_id, force=True,
+            ))
+
+            def removed(task: asyncio.Future[Any], cid: str = container_id) -> None:
+                if not task.cancelled() and task.exception() is not None:
+                    logger.debug("removing cancelled sandbox container %.12s failed: %s", cid, task.exception())
+
+            removal.add_done_callback(removed)
+            cancelled_again = await _wait_until(removal, deadline)
+        cancelled_again = await _wait_until(fut, deadline) or cancelled_again
         if fut.done():
             logger.info(
                 "sandbox run cancelled: container %.12s removed after %.1fs",

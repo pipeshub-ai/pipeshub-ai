@@ -113,6 +113,8 @@ class _Provider:
     async def run_control(self, fn: object, *args: object, **kwargs: object) -> None:
         if isinstance(self._remove, BaseException):
             raise self._remove
+        if isinstance(self._remove, float):
+            await asyncio.sleep(self._remove)  # a removal stuck behind a busy control pool
 
 
 class TestStopRun:
@@ -132,14 +134,32 @@ class TestStopRun:
 
     async def test_a_second_cancel_during_the_remove_is_re_raised_after_the_wait(self, tmp_path) -> None:
         sandbox = DockerCodingSandbox(working_dir=str(tmp_path))
-        sandbox._provider = _Provider(asyncio.CancelledError())  # type: ignore[assignment]
+        sandbox._provider = _Provider(0.05)  # type: ignore[assignment]
         handle = _RunHandle(container_id="c0ffee000000aaaa")
-        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        asyncio.get_running_loop().call_later(0.02, fut.set_result, None)
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[None] = loop.create_future()
+        loop.call_later(0.08, fut.set_result, None)
+        stop = asyncio.ensure_future(sandbox._stop_run(handle, fut))
+        loop.call_later(0.02, stop.cancel)  # cancelled again while the remove runs
         with pytest.raises(asyncio.CancelledError):
-            await sandbox._stop_run(handle, fut)
+            await stop
         # The worker finished before the cancel was passed on.
         assert fut.done()
+
+    async def test_a_removal_that_hangs_counts_against_the_cleanup_bound(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(docker_mod, "_CANCEL_CLEANUP_S", 0.1)
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path))
+        sandbox._provider = _Provider(5.0)  # type: ignore[assignment]
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with caplog.at_level(logging.WARNING, logger=docker_mod.logger.name):
+            await asyncio.wait_for(sandbox._stop_run(_RunHandle(container_id="c0ffee000000aaaa"), fut), 2)
+        assert loop.time() - started < 1.0
+        assert "did not stop within 0.1s of cancel" in caplog.text
+        fut.set_result(None)
 
     async def test_a_run_that_never_stops_releases_after_the_cleanup_bound(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
