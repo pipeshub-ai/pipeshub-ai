@@ -132,16 +132,31 @@ class TestReapOnce:
         assert fake.requests == []
         assert "reaper is off" in caplog.text
 
-    async def test_older_proxy_containers_are_counted_once_and_left_alone(self, daemon, caplog) -> None:
+    async def test_older_proxy_containers_are_removed_once_past_the_reap_age(self, daemon) -> None:
+        # A container started before the upgrade carries no instance label:
+        # this proxy will not serve it, so only the reaper can remove it.
         fake, sock = daemon
-        fake.containers = [_container("legacy", 9000, instance=None)]
+        fake.containers = [
+            _container("legacy-old", 500, instance=None),
+            _container("legacy-young", 100, instance=None),
+            _container("theirs", 5000, instance="stack-b"),
+            {"Id": "unmanaged", "Created": int(NOW - 9000), "State": "running", "Labels": {}},
+        ]
+
+        assert await _reaper(sock).reap_once() == 1
+
+        assert sorted(c["Id"] for c in fake.containers) == ["legacy-young", "theirs", "unmanaged"]
+
+    async def test_older_proxy_containers_are_reported_at_start(self, daemon, caplog) -> None:
+        fake, sock = daemon
+        fake.containers = [_container("legacy", 100, instance=None)]
         stop = asyncio.Event()
         with caplog.at_level(logging.INFO):
             task = asyncio.ensure_future(_reaper(sock).run(stop))
             await asyncio.sleep(0.05)
             stop.set()
             await asyncio.wait_for(task, 2)
-        assert "1 sandbox container(s) from an older proxy are not reaped automatically" in caplog.text
+        assert "1 sandbox container(s) from an older proxy" in caplog.text
         assert [c["Id"] for c in fake.containers] == ["legacy"]
 
     async def test_cancel_stops_the_loop_cleanly(self, daemon) -> None:

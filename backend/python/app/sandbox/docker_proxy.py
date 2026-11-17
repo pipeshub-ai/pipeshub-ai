@@ -1265,7 +1265,10 @@ class Reaper:
     in an image without ``timeout``. It runs here because the proxy is the
     one process that holds the socket and outlives the query workers.
     Only containers carrying this proxy's ``INSTANCE_LABEL`` are listed, so
-    other stacks on the same daemon are never touched.
+    other stacks on the same daemon are never touched. A managed container
+    with no instance label at all was started by a proxy from before the
+    label (one in flight during an upgrade); no proxy serves it any more, so
+    it is removed too once past the same age.
     """
 
     def __init__(
@@ -1309,11 +1312,14 @@ class Reaper:
         )
         if status != 200 or not isinstance(listed, list):
             raise RuntimeError(f"listing containers returned {status}")
+        status, managed = await self._proxy._upstream_call("GET", _containers_query(f"{MANAGED_LABEL}=true"))
+        if status != 200 or not isinstance(managed, list):
+            raise RuntimeError(f"listing containers returned {status}")
+        candidates = [item for item in listed if isinstance(item, dict)]
+        candidates += [item for item in managed if _legacy(item)]
         now = self._clock()
         removed = 0
-        for item in listed:
-            if not isinstance(item, dict):
-                continue
+        for item in candidates:
             created = item.get("Created")
             ident = str(item.get("Id") or "")
             if not ident or not isinstance(created, (int, float)) or now - created <= reap_after:
@@ -1335,8 +1341,8 @@ class Reaper:
         return removed
 
     async def _report_legacy(self) -> None:
-        """Containers from a proxy that predates the instance label are
-        never reaped (they may belong to another stack); say how many."""
+        """Say how many containers from a proxy that predates the instance
+        label there are; they are reaped once past the reap age."""
         try:
             status, listed = await self._proxy._upstream_call(
                 "GET", _containers_query(f"{MANAGED_LABEL}=true"),
@@ -1346,12 +1352,20 @@ class Reaper:
             return
         if status != 200 or not isinstance(listed, list):
             return
-        legacy = sum(
-            1 for item in listed
-            if isinstance(item, dict) and INSTANCE_LABEL not in (item.get("Labels") or {})
-        )
+        legacy = sum(1 for item in listed if _legacy(item))
         if legacy:
-            logger.info("%d sandbox container(s) from an older proxy are not reaped automatically", legacy)
+            logger.info(
+                "%d sandbox container(s) from an older proxy; removed once older than %gs",
+                legacy, self._settings.reap_after_s,
+            )
+
+
+def _legacy(item: object) -> bool:
+    """A managed container that carries no instance label at all."""
+    if not isinstance(item, dict):
+        return False
+    labels = item.get("Labels") or {}
+    return isinstance(labels, dict) and labels.get(MANAGED_LABEL) == "true" and INSTANCE_LABEL not in labels
 
 
 def _containers_query(label: str) -> str:

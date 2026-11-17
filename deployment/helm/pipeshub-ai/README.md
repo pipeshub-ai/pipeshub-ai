@@ -352,6 +352,9 @@ the install deadline) plus 120 s, for example after a crashed worker left one
 behind. Its containers carry the label
 `ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`, so releases that
 share a daemon through `config.dockerHost` never reach each other's containers.
+A sandbox container started by a proxy from before that label (one in flight
+during an upgrade) has no instance label; no proxy serves it, and the reaper
+removes it once past the same age.
 
 ### How many sandboxes run at once
 
