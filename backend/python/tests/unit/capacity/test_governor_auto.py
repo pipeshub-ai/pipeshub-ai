@@ -414,3 +414,27 @@ def test_a_pool_this_process_runs_without_stays_without_when_the_shared_plan_has
     own = (Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 0}), ControllerState.initial())
     limits = _step(link, own, Ceilings(112, 544, 224, 0))  # the local index_light ceiling is zero (collapsed tier)
     assert limits.get(Pool.INDEX_LIGHT) == 0
+
+
+def test_the_recovery_after_a_sandbox_yield_stays_local_until_it_reaches_the_shared_limit(tmp_path: Path) -> None:
+    import dataclasses
+
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    initial = ControllerState.initial()
+    heavy = initial.get(Pool.HEAVY_PARSE)
+
+    def own(limit: int, **fields: object) -> tuple:
+        state = initial.with_update(Pool.HEAVY_PARSE, dataclasses.replace(heavy, **fields))
+        return Limits(values={Pool.HEAVY_PARSE: limit, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100}), state
+
+    ceilings = Ceilings(112, 544, 224, 544)
+    assert _step(link, own(2, yield_holdoff=1), ceilings).get(Pool.HEAVY_PARSE) <= 2
+    # The last holdoff sample ran out (released now) and the local ramp starts from 2, not from the shared 8.
+    assert _step(link, own(2, yield_released_at=100.0), ceilings).get(Pool.HEAVY_PARSE) <= 2
+    assert _step(link, own(4, yield_released_at=90.0), ceilings).get(Pool.HEAVY_PARSE) <= 4
+    # Once the local ramp reaches the shared limit, the shared limit applies again.
+    assert _step(link, own(8, yield_released_at=90.0), ceilings).get(Pool.HEAVY_PARSE) == 8
+    assert _step(link, own(3, yield_released_at=90.0), ceilings).get(Pool.HEAVY_PARSE) == 8

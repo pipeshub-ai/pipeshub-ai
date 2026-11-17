@@ -79,6 +79,9 @@ class ContainerLink:
         self.fleet = fleet
         self.cells = max(1, cells)
         self._logger = logger or logging.getLogger(__name__)
+        # Pools this process is bringing back up after a code sandbox yield:
+        # its own limit stays the bound until it reaches the shared one.
+        self._yield_recovering: set[Pool] = set()
 
     def step(
         self,
@@ -135,7 +138,8 @@ class ContainerLink:
         # it: while a pool's cooldown runs, this process keeps the lower of its own and the shared limit.
         # The same for an index pool this process holds back to avoid growing into downstream latency: the shared ramp
         # has its own, smoothed view of that and may lift the pool before the local hold ends. The same again for a
-        # pool this process holds back for code sandbox runs waiting for memory, which the shared ramp never hears of.
+        # pool this process holds back for code sandbox runs waiting for memory, which the shared ramp never hears of,
+        # until its own linear recovery after that hold catches up with the shared limit.
         def holding(p: Pool) -> bool:
             state = own[1].get(p)
             return (
@@ -144,7 +148,14 @@ class ContainerLink:
                 or (p in _INDEX_POOLS and state.rule in _HOLD_RULES)
             )
 
-        held = {p: min(limits.get(p), own[0].get(p)) for p in Pool if holding(p)}
+        for p in Pool:
+            state = own[1].get(p)
+            released = state.yield_released_at
+            if state.yield_holdoff > 0 or (released is not None and released >= now):
+                self._yield_recovering.add(p)
+            elif p in self._yield_recovering and own[0].get(p) >= limits.get(p):
+                self._yield_recovering.discard(p)
+        held = {p: min(limits.get(p), own[0].get(p)) for p in Pool if holding(p) or p in self._yield_recovering}
         if held:
             limits = Limits(values={p: held.get(p, limits.get(p)) for p in Pool})
         return limits, own[1]
