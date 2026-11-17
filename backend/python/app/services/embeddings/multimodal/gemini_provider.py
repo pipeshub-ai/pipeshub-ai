@@ -14,10 +14,16 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
+from app.services.llm_gateway.wire import refused_by_allowance
 from app.utils.image_utils import get_mime_type_from_base64
 
 _CONCURRENCY_LIMIT = 5
@@ -41,7 +47,9 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
         model_name: str | None,
         normalize_fn: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
+        sdk_retries: int | None = None,
     ) -> None:
+        self.sdk_retries = sdk_retries
         self.api_key = api_key
         self.model_name = self._normalize_model_name(model_name)
         # Consumed by IMultimodalEmbeddingProvider.normalize().
@@ -66,7 +74,28 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.api_key)
+        # google-genai counts attempts (the first request included) and repeats a request after a dropped connection by
+        # itself unless retry options are given: with them, the gateway is the one retry layer.
+        http_options = (
+            types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=self.sdk_retries + 1))
+            if self.sdk_retries is not None else None
+        )
+        client = genai.Client(api_key=self.api_key, http_options=http_options)
+        if self.sdk_retries is not None:
+            # With aiohttp installed the SDK sends async requests through it and sends one again after a lost reply, whatever
+            # the retry options say: through httpx it repeats nothing.
+            from app.services.llm_gateway.wire import route_genai_through_httpx
+
+            route_genai_through_httpx(client)
+            # This client does not come from a model factory, so its requests carry no hooks yet: install them, or a failed
+            # request is not counted in the wire scope of the gateway attempt.
+            from app.services.llm_gateway.wire import (
+                find_http_clients,
+                install_wire_hook,
+            )
+
+            for http in find_http_clients(client):
+                install_wire_hook(http)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
@@ -77,18 +106,24 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
                 try:
                     raw_bytes = base64.b64decode(normalized)
                     mime_type = get_mime_type_from_base64(normalized) or _DEFAULT_MIME_TYPE
-                    response = await client.aio.models.embed_content(
-                        model=self.model_name,
-                        contents=[types.Part.from_bytes(data=raw_bytes, mime_type=mime_type)],
+                    response = await get_embedding_gateway().call(
+                        lambda: client.aio.models.embed_content(
+                            model=self.model_name,
+                            contents=[types.Part.from_bytes(data=raw_bytes, mime_type=mime_type)],
+                        )
                     )
                     return ImageEmbeddingResult(
                         index=i, embedding=list(response.embeddings[0].values)
                     )
+                except EmbeddingRateLimited:
+                    raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
+                    if refused_by_allowance(e):
+                        raise  # the job's send allowance is spent: not one image's failure
                     if self.logger:
                         self.logger.warning(f"Gemini image embed failed for index {i}: {e}")
                     return ImageEmbeddingResult(index=i, error=str(e))
 
-        return await asyncio.gather(
-            *[embed_single(i, ref) for i, ref in enumerate(image_base64s)]
+        return await gather_or_cancel(
+            [embed_single(i, ref) for i, ref in enumerate(image_base64s)]
         )

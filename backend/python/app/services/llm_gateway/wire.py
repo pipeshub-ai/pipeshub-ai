@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from app.services.model_identity.transport.client_paths import iter_http_clients
+from app.services.spend_guard.retry_policy import clamp_retry_after
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -54,6 +55,8 @@ class WireOutcome:
     statuses: list[int] = field(default_factory=list)
     # A request of this call was refused before it left: its job had no failed sends left (``SendMeter``).
     allowance_refused: bool = False
+    # The provider's Retry-After (seconds) on the last 429 or 503 it answered, when it sent one.
+    retry_after: float | None = None
 
     def judge(self, *, raised: BaseException | None, caller_budget_expired: bool = False) -> str:
         """``ok`` / ``ok_unrated`` (the request's fault) / ``fail`` / ``neutral`` / ``unsent`` (no wire evidence)."""
@@ -149,6 +152,37 @@ def wire_scope() -> Iterator[WireOutcome]:
         _current.reset(token)
 
 
+def refused_by_allowance(exc: BaseException) -> bool:
+    """Whether ``exc`` (or a cause) is the stage job's send allowance refusing a request before it was sent. That is the job's
+    refusal, not one image's or one batch's: callers that turn a failure into a per-item result must let it through."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, SendAllowanceSpent):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def open_scope() -> tuple[WireOutcome, Any]:
+    """``wire_scope`` for a caller that cannot indent its code under a ``with``: pair with ``close_scope``."""
+    outcome = WireOutcome()
+    return outcome, _current.set(outcome)
+
+
+def close_scope(token: Any) -> None:  # noqa: ANN401
+    with contextlib.suppress(ValueError):  # a token from another context (a task that moved loops) cannot be reset
+        _current.reset(token)
+
+
+def charge_failed_sends(count: int) -> None:
+    """Add ``count`` failed requests to the stage job's send meter, when the call runs inside one."""
+    meter = _meter.get()
+    if meter is not None and count > 0:
+        meter.failed += count
+
+
 def current_wire() -> WireOutcome | None:
     return _current.get()
 
@@ -162,12 +196,43 @@ def note_request_sent() -> None:
         outcome.status = None
 
 
-def note_response(status: int) -> None:
+def note_response(status: int, retry_after: float | None = None) -> None:
     outcome = _current.get()
     if outcome is not None:
         outcome.status = status
         outcome.responses += 1
         outcome.statuses.append(status)
+        outcome.retry_after = retry_after
+
+
+def _header(headers: Any, name: str) -> Any:  # noqa: ANN401 - any mapping of header names to values
+    """``headers[name]`` whatever the case of its key (httpx and requests headers are case-insensitive; a plain dict is not)."""
+    value = headers.get(name)
+    if value is None and hasattr(headers, "items"):
+        for key, candidate in headers.items():
+            if isinstance(key, str) and key.lower() == name:
+                return candidate
+    return value
+
+
+def parse_retry_after(headers: Any) -> float | None:  # noqa: ANN401 - any mapping of header names to values
+    """Seconds a provider asks to wait (``retry-after-ms``, else ``retry-after`` in seconds), or None.
+
+    The header is untrusted input: only a finite, non-negative number is accepted, and it is clamped to
+    ``MAX_RETRY_AFTER_S``. An HTTP-date, a NaN, an infinity or a malformed value is ignored (the gateway then waits by
+    its own jitter).
+    """
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        try:
+            raw = _header(headers, name)
+            if raw is None:
+                continue
+            value = clamp_retry_after(float(raw) / scale)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if value is not None:
+            return value
+    return None
 
 
 def note_error(name: str) -> None:
@@ -195,7 +260,7 @@ def _request_hook(request: httpx.Request) -> None:
 
 def _response_hook(response: httpx.Response) -> None:
     with contextlib.suppress(Exception):
-        note_response(response.status_code)
+        note_response(response.status_code, parse_retry_after(response.headers))
 
 
 async def _async_request_hook(request: httpx.Request) -> None:
@@ -359,7 +424,7 @@ def install_boto_hooks(client: Any) -> bool:  # noqa: ANN401 - botocore client
         with contextlib.suppress(Exception):
             status = getattr(http_response, "status_code", None)
             if isinstance(status, int):
-                note_response(status)
+                note_response(status, parse_retry_after(getattr(http_response, "headers", None) or {}))
 
     def needs_retry(caught_exception: BaseException | None = None, **_: object) -> None:
         with contextlib.suppress(Exception):
