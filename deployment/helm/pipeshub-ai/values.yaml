@@ -562,7 +562,8 @@ sandbox:
     # Live limit: holds new code runs back only when this sidecar is close to
     # its own limits (memory above ~90 % / 95 %, or its CPU throttled).
     # Running code is never stopped. A loop in the dind container writes the
-    # sidecar's cgroup counters for docker-proxy every exportIntervalSeconds;
+    # sidecar's cgroup counters for docker-proxy every exportIntervalSeconds
+    # (2..15: docker-proxy treats counters older than 20 s as missing);
     # it needs /bin/sh in sandbox.dind.image (set enabled=false otherwise).
     liveLimit:
       enabled: true

@@ -427,7 +427,7 @@ restores the plain `dind` container.
 | Value | Default | Meaning |
 | --- | --- | --- |
 | `sandbox.dind.liveLimit.enabled` | true | Export the sidecar's counters and hold runs back near its limits. |
-| `sandbox.dind.liveLimit.exportIntervalSeconds` | 5 | How often the counters are written (2..60). |
+| `sandbox.dind.liveLimit.exportIntervalSeconds` | 5 | How often the counters are written (2..15; docker-proxy treats counters older than 20 s as missing). |
 | `sandbox.dind.liveLimit.memHigh` | 0.90 | Working-set share above which the limit shrinks. |
 | `sandbox.dind.liveLimit.memHard` | 0.95 | Share above which it halves and new runs wait (above `memHigh`). |
 | `sandbox.dind.liveLimit.cpuBrake` | 0.95 | CPU use, as a share of the sidecar's CPU limit, that brakes. |
