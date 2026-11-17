@@ -73,7 +73,8 @@ def _setup(
 
 
 def _writes(gp: AsyncMock) -> list[dict[str, Any]]:
-    return [call.args[2] for call in gp.update_node.await_args_list]
+    # a write of the revision is first tried conditional on the stored revision (the count rule), then written plain
+    return [call.args[2] for call in [*gp.update_node.await_args_list, *gp.update_node_fields_if_match.await_args_list]]
 
 
 def _event(**kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -97,8 +98,8 @@ class TestStoreOnly:
         writes = _writes(gp)
         assert writes
         assert all(not STATUS_FIELDS & set(write) for write in writes)
-        # the revision write also drops the count of the revision it replaces (a count belongs to its content)
-        assert {"contentRev": REV, "pageCount": None, "parseNowStatus": "IN_PROGRESS", "parseNowRev": REV, "parseNowReason": None, "parseNowAt": ANY} in writes
+        # the revision write is tried conditional on the stored revision first (a count belongs to its content; the store keeps it only for the same one)
+        assert {"contentRev": REV, "parseNowStatus": "IN_PROGRESS", "parseNowRev": REV, "parseNowReason": None, "parseNowAt": ANY} in writes
 
     async def test_a_finished_twin_is_not_attached_to(self) -> None:
         # B6

@@ -428,6 +428,7 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
     graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
     graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     graph_provider.find_duplicate_records = AsyncMock(return_value=[{
         "_key": "rec-2",
