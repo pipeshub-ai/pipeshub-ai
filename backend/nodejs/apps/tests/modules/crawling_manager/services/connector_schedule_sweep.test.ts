@@ -153,6 +153,27 @@ describe('ConnectorScheduleSweepService', () => {
     expect(schedulesFor('c1')).to.have.length(1)
   })
 
+  it('closing the service ends the startup wait at once and changes nothing', async () => {
+    const clock = sinon.useFakeTimers()
+    await seed(record('c1'))
+    fetchAll.resetHistory()
+    fetchAll.rejects(new Error('connect ECONNREFUSED'))
+
+    let summary: any
+    const done = (sweeper as any).runJob({ id: 'sweep-startup' }).then((s: any) => { summary = s })
+    await clock.tickAsync(0)
+    await sweeper.close()
+    await clock.tickAsync(0)
+    const settledOnClose = summary !== undefined
+    await clock.tickAsync(10 * 60_000)
+    await done
+
+    expect(settledOnClose).to.be.true
+    expect(fetchAll.callCount).to.equal(1)
+    expect(summary.aborted).to.be.true
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
   it('a scheduled tick does not wait for the connector service', async () => {
     fetchAll.rejects(new Error('connect ECONNREFUSED'))
 

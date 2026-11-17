@@ -59,6 +59,8 @@ export class ConnectorScheduleSweepService {
   });
   private queue: Queue | PgJobQueue | null = null;
   private worker: Worker | PgJobWorker | null = null;
+  // close() waits for the running job, so the startup wait must end when the service closes
+  private readonly closing = new AbortController();
 
   constructor(
     @inject(CrawlingSchedulerService)
@@ -183,7 +185,11 @@ export class ConnectorScheduleSweepService {
           this.appConfig,
         );
       } catch (error) {
-        if (!waitForConnectorService || attempt >= STARTUP_LISTING_ATTEMPTS) {
+        if (
+          !waitForConnectorService ||
+          attempt >= STARTUP_LISTING_ATTEMPTS ||
+          this.closing.signal.aborted
+        ) {
           throw error;
         }
         this.logger.info(
@@ -194,10 +200,24 @@ export class ConnectorScheduleSweepService {
             error: error instanceof Error ? error.message : 'Unknown error',
           },
         );
-        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        if (await this.sleepUnlessClosed(delay)) throw error;
         delay = Math.min(delay * 2, STARTUP_LISTING_MAX_DELAY_MS);
       }
     }
+  }
+
+  /** Resolves true when the service closed during the wait. */
+  private sleepUnlessClosed(ms: number): Promise<boolean> {
+    const { signal } = this.closing;
+    return new Promise<boolean>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', done);
+        resolve(signal.aborted);
+      };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener('abort', done);
+    });
   }
 
   async sweep({
@@ -382,6 +402,7 @@ export class ConnectorScheduleSweepService {
   }
 
   async close(): Promise<void> {
+    this.closing.abort();
     await this.worker?.close();
     await this.queue?.close();
     this.worker = null;
