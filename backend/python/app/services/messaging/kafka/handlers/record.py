@@ -579,9 +579,10 @@ class RecordEventHandler(BaseEventService):
             graph = self.event_processor.graph_provider
             record = await graph.get_document(record_id, CollectionNames.RECORDS.value)
             if record and record.get("reason") == MEMBERSHIP_SYNC_PENDING and record.get("contentRev"):
-                await graph.compare_and_set_record_fields(
-                    [record_id], str(record["contentRev"]),
+                await graph.update_node_fields_if_match(
+                    record_id, CollectionNames.RECORDS.value,
                     {"reason": prior_reason if isinstance(prior_reason, str) and prior_reason else None},
+                    {"contentRev": str(record["contentRev"]), "reason": MEMBERSHIP_SYNC_PENDING},
                 )
         except Exception as exc:
             self.logger.warning("Could not clear the pending membership reason of %s: %s", record_id, type(exc).__name__)
@@ -607,11 +608,12 @@ class RecordEventHandler(BaseEventService):
             prior_reason = None
         content_rev = record.get("contentRev")
         try:
-            # Only while the record is still at the revision this give-up read: a real update that landed since owns
-            # the record and its reason. The reason it had is carried on the queued sync, to be put back.
+            # Only while the record still has the revision and the reason this give-up read: a real update, or a
+            # reason written since, owns the record. The reason it had is carried on the queued sync, to be put back.
             if content_rev:
-                await graph.compare_and_set_record_fields(
-                    [record_id], str(content_rev), {"reason": MEMBERSHIP_SYNC_PENDING}
+                await graph.update_node_fields_if_match(
+                    record_id, CollectionNames.RECORDS.value, {"reason": MEMBERSHIP_SYNC_PENDING},
+                    {"contentRev": str(content_rev), "reason": prior_reason},
                 )
         except Exception as exc:
             self.logger.error("Could not record the pending membership sync of %s: %s", record_id, type(exc).__name__)

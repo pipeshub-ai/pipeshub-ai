@@ -6,6 +6,8 @@ import threading
 from logging import getLogger
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.messaging.config import (
     ConsumerType,
     IndexingEvent,
@@ -219,3 +221,47 @@ async def test_a_paused_stage_still_stops_claiming() -> None:
     consumer = await _settle_raising(StagePaused("the model provider is down", delay_s=15.0))
 
     assert consumer._paused_until > 0.0
+
+
+@pytest.mark.parametrize(("same_bytes", "repairs_queued"), [(True, 1), (False, 0)])
+async def test_a_give_up_queues_one_membership_repair_only_for_a_same_bytes_hand_back(
+    monkeypatch: pytest.MonkeyPatch, same_bytes: bool, repairs_queued: int
+) -> None:
+    """Past the hand-back limit a same-bytes update is abandoned with the reason that names it, so the record handler
+    queues its repair; any other counted hand-back keeps the old path (charged as a failure, nothing abandoned here)."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.modules.indexing.connector_off_events import SameBytesSkipPending
+    from app.services.messaging.config import StreamMessage
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+    from app.services.messaging.postgres.queue import Delivery
+    from tests.support.give_up_sink import (
+        completed_record_sink,
+        repairs,
+        update_message_value,
+    )
+
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_LIMIT", "1")
+    sink = completed_record_sink()
+    error = SameBytesSkipPending("r1: skip") if same_bytes else RequeueWithoutAttempt("wait")
+
+    async def handler(_msg) -> bool:
+        raise error
+
+    consumer = PgMessagingConsumer(MagicMock(), CFG)
+    consumer.message_handler = handler
+    consumer.disposition_sink = sink
+    consumer.stage_admission = MagicMock()
+    consumer._parse_for_sink = AsyncMock(
+        return_value=StreamMessage(eventType="updateRecord", payload={"recordId": "r1", "orgId": "org-1"})
+    )
+    consumer.queue = MagicMock(dead=AsyncMock(), ack=AsyncMock(), nack=AsyncMock())
+    delivery = Delivery(topic="t", message_id=1, attempts=1, value=update_message_value().decode(), key=None)
+    assert json.loads(delivery.value)["eventType"] == "updateRecord"
+
+    await consumer._settle(delivery)  # the first hand-back: below the limit
+    await consumer._settle(delivery)  # the second: past it
+
+    assert len(repairs(sink)) == repairs_queued
+    assert consumer.queue.dead.await_count == repairs_queued

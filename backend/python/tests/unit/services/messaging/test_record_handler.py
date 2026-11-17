@@ -6615,7 +6615,7 @@ class TestMembershipRepairAfterAGiveUp:
         handler = _make_handler()
         handler.event_processor.graph_provider.get_document = AsyncMock(return_value=dict(cls.RECORD))
         handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
-        handler.event_processor.graph_provider.compare_and_set_record_fields = AsyncMock(return_value=["r1"])
+        handler.event_processor.graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
         handler.producer = MagicMock()
         handler.producer.send_event = AsyncMock(return_value=True)
         return handler
@@ -6628,8 +6628,9 @@ class TestMembershipRepairAfterAGiveUp:
         with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock) as stale:
             await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
 
-        handler.event_processor.graph_provider.compare_and_set_record_fields.assert_awaited_once_with(
-            ["r1"], "rev-1", {"reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": record_module.MEMBERSHIP_SYNC_PENDING},
+            {"contentRev": "rev-1", "reason": None},
         )
         stale.assert_awaited_once()
         assert stale.await_args.args[2] == "vr1"
@@ -6656,8 +6657,9 @@ class TestMembershipRepairAfterAGiveUp:
         )
         await _collect_events(handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, payload)
 
-        handler.event_processor.graph_provider.compare_and_set_record_fields.assert_awaited_with(
-            ["r1"], "rev-1", {"reason": "Classification skipped: no model"}
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_awaited_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": "Classification skipped: no model"},
+            {"contentRev": "rev-1", "reason": record_module.MEMBERSHIP_SYNC_PENDING},
         )
 
     @pytest.mark.asyncio
@@ -6670,7 +6672,7 @@ class TestMembershipRepairAfterAGiveUp:
         await handler.on_message_abandoned(message, reason="handed back 11 times without being admitted", attempts=11)
 
         handler.producer.send_event.assert_not_awaited()
-        handler.event_processor.graph_provider.compare_and_set_record_fields.assert_not_awaited()
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_the_queued_sync_applies_the_membership_and_clears_the_reason(self) -> None:
@@ -6684,8 +6686,9 @@ class TestMembershipRepairAfterAGiveUp:
         await _collect_events(handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, payload)
 
         handler.event_processor.sync_vector_membership.assert_awaited_once_with("vr1")
-        handler.event_processor.graph_provider.compare_and_set_record_fields.assert_awaited_once_with(
-            ["r1"], "rev-1", {"reason": None}
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": None},
+            {"contentRev": "rev-1", "reason": record_module.MEMBERSHIP_SYNC_PENDING},
         )
 
     @pytest.mark.asyncio
@@ -6698,7 +6701,7 @@ class TestMembershipRepairAfterAGiveUp:
             handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, {"virtualRecordId": "vr1", "pendingReasonRecordId": "r1"}
         )
 
-        handler.event_processor.graph_provider.compare_and_set_record_fields.assert_not_awaited()
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_an_abandoned_reindex_of_a_completed_record_queues_nothing(self) -> None:
@@ -6708,4 +6711,4 @@ class TestMembershipRepairAfterAGiveUp:
         await handler.on_message_abandoned(message, reason="x", attempts=3)
 
         handler.producer.send_event.assert_not_awaited()
-        handler.event_processor.graph_provider.compare_and_set_record_fields.assert_not_awaited()
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
