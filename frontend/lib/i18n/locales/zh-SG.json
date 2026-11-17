@@ -2778,7 +2778,7 @@
         "confirm": "放弃",
         "cancel": "继续编辑"
       },
-      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
+      "dataCollectionActive": "正在收集使用数据并发送到已配置的指标服务器。关闭此项即可停止。"
     },
     "mcpAccess": {
       "title": "MCP 访问",
