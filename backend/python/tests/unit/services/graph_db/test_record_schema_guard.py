@@ -76,6 +76,45 @@ class TestNeverInATransaction:
             await _guard(FakeServer(live=0)).ensure_wide("test", transaction="123")
 
 
+class TestADeadlineHoldsWhenARequestNeverAnswers:
+    async def test_wait_wide_returns_false_at_its_deadline_when_the_read_hangs(self) -> None:
+        server = FakeServer(live=0)
+
+        async def hang(name: str) -> None:
+            await asyncio.sleep(3600)
+
+        server.get_collection_schema = hang  # type: ignore[method-assign]
+        assert await asyncio.wait_for(_guard(server).wait_wide(0.2), timeout=3) is False
+
+    async def test_the_quiet_wait_gives_up_at_its_deadline_when_the_listing_hangs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = FakeServer(live=0)
+
+        async def hang() -> list[dict[str, Any]]:
+            await asyncio.sleep(3600)
+            return []
+
+        server.list_running_transactions = hang  # type: ignore[method-assign]
+        monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.2)
+        assert await asyncio.wait_for(_guard(server)._wait_quiet(), timeout=3) is False
+
+
+class TestANewerSchemaWrittenDuringTheQuietWait:
+    async def test_is_not_overwritten_by_an_older_generation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = FakeServer(live=0)
+        server.running = [{"id": "1", "state": "running"}]
+        monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.3)
+        monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.05)
+        real_list = server.list_running_transactions
+
+        async def newer_arrives() -> list[dict[str, Any]]:
+            server.live = RECORD_SCHEMA_GENERATION + 1  # another process installs a newer schema while this one waits
+            return await real_list()
+
+        server.list_running_transactions = newer_arrives  # type: ignore[method-assign]
+        assert await _guard(server).ensure_wide("test") is False
+        assert server.puts == [] and server.live == RECORD_SCHEMA_GENERATION + 1
+
+
 class TestQuietPoint:
     async def test_the_change_waits_for_the_running_transactions_and_counts_a_contended_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
         server = FakeServer(live=0)

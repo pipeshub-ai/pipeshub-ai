@@ -169,11 +169,12 @@ class RecordSchemaGuard:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                if await self.live_generation() >= self.generation:
+                # each read is bounded by what is left, so a read that never answers cannot outlast the deadline
+                if await asyncio.wait_for(self.live_generation(), max(deadline - time.monotonic(), 0.001)) >= self.generation:
                     self._narrowed = False
                     return True
-            except Exception as error:
-                self._logger.warning("could not read the records schema generation: %s", error)
+            except Exception as error:  # includes the timeout of the read
+                self._logger.warning("could not read the records schema generation: %r", error)
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(0.1)
@@ -204,6 +205,10 @@ class RecordSchemaGuard:
                     self._narrowed = False
                     return False
                 contended = not await self._wait_quiet()
+                # the wait can be long: a process of a newer generation may have written its schema in the meantime
+                if await self.live_generation() >= self.generation:
+                    self._narrowed = False
+                    return False
                 if contended:
                     REWIDEN_CONTENDED_TOTAL.inc(trigger)
                 started = time.monotonic()
@@ -236,9 +241,9 @@ class RecordSchemaGuard:
         deadline = time.monotonic() + REWIDEN_TIMEOUT_S
         while True:
             try:
-                if not await self._client.list_running_transactions():
+                if not await asyncio.wait_for(self._client.list_running_transactions(), max(deadline - time.monotonic(), 0.001)):
                     return True
-            except Exception:
+            except Exception:  # includes the timeout of the request
                 return False
             if time.monotonic() >= deadline:
                 return False
