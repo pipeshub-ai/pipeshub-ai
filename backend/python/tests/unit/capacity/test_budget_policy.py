@@ -341,6 +341,17 @@ def test_a_critical_demand_is_held_to_its_ceiling() -> None:
     assert admit(state, other, f, POLICY, 18, 1 << 60, 1000.0).ok, "another family's tokens are not this family's ceiling"
 
 
+def test_a_critical_ceiling_counts_critical_usage_only() -> None:
+    """Four PARSE/LARGE tokens in use do not count against the small parse ceiling of four: big work of the same family
+    is not critical work, so a critical demand is held only by what critical work holds."""
+    f = _floors(16, 18)
+    state = LedgerState(used={(Family.PARSE, "large"): 4})
+    d = Demand(Family.PARSE, 2, 0, "small", ceiling_tokens=4)
+    assert admit(state, d, f, POLICY, 18, 1 << 60, 1000.0).ok
+    state.used[(Family.PARSE, "small")] = 3
+    assert admit(state, d, f, POLICY, 18, 1 << 60, 1000.0).reason == "ceiling"  # 3 critical + 2 > 4
+
+
 def test_large_work_does_not_satisfy_a_critical_floor() -> None:
     """EMBED floor 4 with four EMBED/LARGE tokens in use: the floor is still unmet, so the older EMBED/SMALL
     waiter keeps owner priority over a newer QUERY_EMBED waiter whose own floor is zero."""
