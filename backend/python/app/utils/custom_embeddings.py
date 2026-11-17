@@ -271,12 +271,12 @@ class VoyageEmbeddings(BaseModel, Embeddings):
             texts, batch_size=self.batch_size, input_type="document"
         )
 
-    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         """``embed_documents`` in a thread that keeps the caller's context (LangChain's default uses an executor that does
         not), so the request is admitted and counted by the wire scope of the gateway attempt that made it."""
         return await asyncio.to_thread(self.embed_documents, texts)
 
-    async def aembed_query(self, text: str) -> List[float]:
+    async def aembed_query(self, text: str) -> list[float]:
         return await asyncio.to_thread(self.embed_query, text)
 
     def embed_query(self, text: str) -> List[float]:
@@ -492,7 +492,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
             response = response.model_dump()
         return response["data"][0]["embedding"]
 
-    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of document texts using passage model asynchronously.
 
         Args:
@@ -513,7 +513,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
                 embeddings.extend([i["embedding"] for i in response["data"]])
         return embeddings
 
-    async def aembed_query(self, text: str) -> List[float]:
+    async def aembed_query(self, text: str) -> list[float]:
         """Asynchronous Embed query text using query model.
 
         Args:

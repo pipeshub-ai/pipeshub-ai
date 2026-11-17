@@ -14,7 +14,6 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from app.services.llm_gateway.wire import refused_by_allowance
 from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
@@ -24,6 +23,7 @@ from app.services.llm_gateway.embedding_gateway import (
     EmbeddingRateLimited,
     get_embedding_gateway,
 )
+from app.services.llm_gateway.wire import refused_by_allowance
 from app.utils.image_utils import get_mime_type_from_base64
 
 _CONCURRENCY_LIMIT = 5

@@ -12,8 +12,10 @@ from collections.abc import Callable
 from typing import Any
 
 from app.exceptions.indexing_exceptions import EmbeddingError
-from app.services.llm_gateway.wire import refused_by_allowance
-from app.services.embeddings.multimodal._concurrent import gather_or_cancel, to_thread_settled
+from app.services.embeddings.multimodal._concurrent import (
+    gather_or_cancel,
+    to_thread_settled,
+)
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -22,6 +24,7 @@ from app.services.llm_gateway.embedding_gateway import (
     EmbeddingRateLimited,
     get_embedding_gateway,
 )
+from app.services.llm_gateway.wire import refused_by_allowance
 
 _CONCURRENCY_LIMIT = 10
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
