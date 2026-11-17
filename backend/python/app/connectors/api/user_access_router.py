@@ -511,7 +511,9 @@ async def _remove(
         # Marked first: a connection another process writes after this undoes itself (save_connection).
         await mark_removed(config_service, connector_id, user_id, get_epoch_timestamp_in_ms())
         removed = await delete_connection(config_service, connector_id, user_id)
-    if not removed or not await delete_config_confirmed(config_service, sign_in_path(connector_id, user_id)):
+        # Under the lock too: a sign-in waiting for it must find its session gone, not start an exchange.
+        removed = removed and await delete_config_confirmed(config_service, sign_in_path(connector_id, user_id))
+    if not removed:
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="The connection could not be removed. Try again."
         )

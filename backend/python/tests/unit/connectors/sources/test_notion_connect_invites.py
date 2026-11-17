@@ -138,6 +138,49 @@ class TestRemovalAcrossProcesses:
         assert await user_access.get_connection(store, "c1", "u1") is not None
 
 
+class TestRemovalDuringSignIn:
+    async def test_a_sign_in_waiting_on_a_removal_finds_its_session_gone(self) -> None:
+        routes = _routes()
+        store = _Store()
+        session = "/services/connectors/c1/sign-in/u1"
+        store.data[session] = {"oauth": {"state": "s1"}}
+        removing, resume = asyncio.Event(), asyncio.Event()
+        real_delete = user_access.delete_connection
+
+        async def slow_delete(*args: object) -> bool:
+            removing.set()
+            await resume.wait()
+            return await real_delete(*args)
+
+        async def slow_drop(_config_service: object, key: str) -> bool:
+            await asyncio.sleep(0.01)  # a real store answers later; another task may run meanwhile
+            store.data.pop(key, None)
+            return True
+
+        exchange = AsyncMock()
+        user = {"userId": "u1", "email": "a@acme.com", "id": "n1"}
+        provider = SimpleNamespace(handle_callback=exchange, close=AsyncMock())
+        with patch.object(routes, "_config_service", return_value=store), \
+                patch.object(routes, "delete_connection", new=slow_delete), \
+                patch.object(routes, "delete_config_confirmed", new=slow_drop), \
+                patch.object(routes, "_withdraw", new=AsyncMock()), \
+                patch.object(routes, "_per_user_connector", new=AsyncMock(return_value={"type": "Notion"})), \
+                patch.object(routes, "OAuthProvider", return_value=provider), \
+                patch.object(routes, "user_oauth_config", new=AsyncMock()), \
+                patch.object(routes, "current_org_id", return_value="org-1"):
+            removal = asyncio.create_task(routes._remove(MagicMock(), AsyncMock(), "c1", "u1", "n1"))
+            await removing.wait()  # the removal holds the lock
+            sign_in = asyncio.create_task(routes._complete_user_sign_in(
+                MagicMock(), AsyncMock(), user, connector_id="c1", state="s1", code="code"))
+            await asyncio.sleep(0.01)
+            resume.set()
+            await removal
+            with pytest.raises(routes._SignInFailed):
+                await sign_in
+        exchange.assert_not_awaited()
+        assert session not in store.data and await user_access.get_connection(store, "c1", "u1") is None
+
+
 class TestConnectLinks:
     async def test_a_link_names_its_user_until_it_expires_and_only_its_hash_is_stored(self) -> None:
         store = _Store()
