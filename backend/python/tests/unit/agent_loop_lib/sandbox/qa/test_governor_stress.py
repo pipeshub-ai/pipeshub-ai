@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import logging
 import random
 import threading
 import time
@@ -314,20 +315,25 @@ class TestCancelAtEveryAwait:
 
 
 class TestSlotErrors:
-    async def test_a_slot_error_escapes_once_and_holds_nothing(self) -> None:
+    async def test_a_slot_error_is_a_refusal_once_and_holds_nothing(self) -> None:
         recorder = _Outcomes()
         slots = _ScriptedSlots(4)
         governor = _gov(slots, limit=2, observers=(recorder,), provider=_Provider)
         slots.error = OSError(errno.ENOSPC, "No space left on device")
-        with pytest.raises(OSError):
+        with pytest.raises(SandboxLimitExceeded) as caught:
             await governor.acquire(wait_s=1)
-        assert recorder.outcomes == [("cancelled", None)]
+        assert str(caught.value) == "code sandbox capacity is unavailable: No space left on device"
+        assert caught.value.reason is None
+        assert isinstance(caught.value.__cause__, OSError)
+        assert recorder.outcomes == [("refused", None)]
         assert governor._waiting_here == 0
         slots.error = None
         lease = await governor.acquire()
         await governor.release(lease)
 
-    async def test_no_space_to_write_the_tag_holds_no_slot(self, tmp_path: Path, opened, monkeypatch) -> None:
+    async def test_no_space_to_write_the_tag_holds_no_slot(
+        self, tmp_path: Path, opened, monkeypatch, caplog,
+    ) -> None:
         from app.services.resource_governor import shared_slots
 
         slots = SharedSlots(tmp_path / "slots", 4)
@@ -338,9 +344,14 @@ class TestSlotErrors:
             raise OSError(errno.ENOSPC, "No space left on device")
 
         monkeypatch.setattr(shared_slots.os, "pwrite", no_space)
-        with pytest.raises(OSError):
-            await governor.acquire(org_id="o")
+        with caplog.at_level(logging.WARNING):
+            for _ in range(2):
+                with pytest.raises(SandboxLimitExceeded, match="capacity is unavailable"):
+                    await governor.acquire(org_id="o")
         monkeypatch.undo()
+        # Logged once, with the directory.
+        lines = [r.getMessage() for r in caplog.records if "cannot be used" in r.getMessage()]
+        assert len(lines) == 1 and str(tmp_path / "slots") in lines[0]
         assert governor.held_total() == 0
         # The mutex was given back: the next call is served.
         lease = await governor.acquire(org_id="o")
@@ -354,7 +365,7 @@ class TestSlotErrors:
         governor.close()
         await governor.release(lease)
         assert governor.held_total() == 0
-        with pytest.raises(OSError):
+        with pytest.raises(SandboxLimitExceeded, match="unavailable: shared slots are closed"):
             await governor.acquire()
 
 

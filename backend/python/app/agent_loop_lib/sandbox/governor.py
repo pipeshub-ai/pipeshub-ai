@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import threading
 import time
@@ -51,6 +52,7 @@ from app.agent_loop_lib.sandbox.capacity import (
     sandbox_state_directory,
 )
 from app.agent_loop_lib.sandbox.manager import SandboxLimitExceeded
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.shared_slots import (
     LocalTaggedSlots,
     SharedSlots,
@@ -137,9 +139,43 @@ def _memory_source(view: LiveView) -> Literal["host", "sidecar"]:
     return "sidecar" if (view.source or "").startswith("sidecar") else "host"
 
 
-def _wake(future: asyncio.Future[None]) -> None:
-    if not future.done():
-        future.set_result(None)
+@dataclass(eq=False)
+class _Waiter:
+    """One acquire of this worker that is waiting, or about to."""
+
+    tag: bytes
+    start: float
+    # Set while it waits for its turn; resolved to wake it.
+    future: asyncio.Future[None] | None = None
+    reason: HoldReason | None = None
+    # What its last try met: "full", "tag_full", "floor" or "busy".
+    denied: str | None = None
+
+
+class _LoopQueue:
+    """The waiters of one event loop, oldest first, and the one task that
+    polls the slot files for them. Touched only from that loop's thread."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.waiters: dict[_Waiter, None] = {}
+        self.poller: asyncio.Task[None] | None = None
+        self.kick = asyncio.Event()
+
+    def wake_one(self, released_tag: bytes | None = None) -> None:
+        """Wake the oldest waiter that a freed slot may serve: one held back
+        by its org's share only when the slot was its own org's."""
+        for waiter in self.waiters:
+            future = waiter.future
+            if future is None or future.done():
+                continue
+            if waiter.denied == "tag_full" and waiter.tag != released_tag:
+                continue
+            future.set_result(None)
+            return
+
+    def kick_poller(self) -> None:
+        self.kick.set()
 
 
 class SandboxResourceGovernor:
@@ -150,9 +186,13 @@ class SandboxResourceGovernor:
     (the default) fails at once. The agent surfaces the error to the model as
     a retryable denial.
 
-    A release in this process wakes this process's waiters at once. Releases
-    in other workers have no notification across processes, so every waiter
-    also retries on a jittered ``poll_s`` timer.
+    Waiting costs one scan per poll, not one per waiter: each event loop has
+    one poller task, running only while that loop has waiters. Every jittered
+    ``poll_s`` it counts the held slots once and wakes as many waiters as
+    there are free slots, oldest first, each of which then tries for a slot
+    itself. A release in this process wakes one waiter at once; releases in
+    other workers have no notification across processes and are seen at the
+    next poll. ``capacity_changed()`` makes the pollers look at once.
     """
 
     def __init__(
@@ -173,14 +213,16 @@ class SandboxResourceGovernor:
         self._poll_s = poll_s
         self._clock = clock
         self._rng = rng or random.Random()
-        # Futures of this process's waiters, possibly on different loops;
-        # resolved through their own loop so any thread may wake them.
-        self._waiters: set[asyncio.Future[None]] = set()
-        self._waiters_lock = threading.Lock()
+        # One queue per event loop with waiters; any thread may reach a queue
+        # through its loop's call_soon_threadsafe.
+        self._queues: dict[asyncio.AbstractEventLoop, _LoopQueue] = {}
+        self._queues_lock = threading.Lock()
         self._waiting_here = 0
         self._sizing_awaited = False
         self._last_counts: Counter[bytes] = Counter()
         self._warned_observers: set[tuple[int, str]] = set()
+        self._warned_poller = False
+        self._warned_unavailable = False
         self._busy_since: float | None = None
         self._busy_warned_at: float | None = None
         self._waiting_logged_at: float | None = None
@@ -216,6 +258,24 @@ class SandboxResourceGovernor:
                     self._warned_observers.add(key)
                     logger.warning("sandbox governor: observer %r failed in %s", observer, hook, exc_info=True)
 
+    def _set_reason(self, waiter: _Waiter, reason: HoldReason) -> None:
+        if waiter.reason is None:
+            self._notify("wait_start", reason)
+        elif reason != waiter.reason:
+            self._notify("wait_reason", reason)
+        waiter.reason = reason
+
+    def _unavailable(self, exc: OSError) -> SandboxLimitExceeded:
+        if not self._warned_unavailable:
+            self._warned_unavailable = True
+            logger.warning(
+                "sandbox slots in %s cannot be used: %s",
+                getattr(self._slots, "directory", None) or "this worker", exc,
+            )
+        return SandboxLimitExceeded(
+            f"code sandbox capacity is unavailable: {exc.strerror or exc}", reason=None,
+        )
+
     async def acquire(
         self,
         *,
@@ -224,25 +284,27 @@ class SandboxResourceGovernor:
         on_wait: Callable[[], Awaitable[None]] | None = None,
     ) -> GovernorLease:
         """Take a slot. When none is free, wait up to ``wait_s`` for one, then
-        raise ``SandboxLimitExceeded`` (with ``.reason``).
+        raise ``SandboxLimitExceeded`` (with ``.reason``). A slot directory
+        that cannot be used raises it too, with ``reason`` ``None``.
 
         ``on_wait`` runs once, when the caller starts waiting, so a chat can
         tell its user why it paused. A mutex another worker holds for an
-        instant is not a wait.
+        instant is not a wait. A mutex held longer is a wait but not a wait at
+        the limit: observers and the limit provider are told only of waits
+        with a known reason.
 
         Nothing here blocks the event loop: each try at the slots is one
         non-blocking pass.
         """
-        # shortcut: waiters are woken all at once and re-check, not served in
-        # arrival order, and a call arriving just as a slot frees can take it
-        # before them; add a FIFO queue if waits near slot_wait_s show up.
-        if not wait_s >= 0:  # NaN or negative: a NaN deadline never passes, and spins
+        # shortcut: a call arriving just as a slot frees can take it before
+        # the woken waiter; waiters are served in arrival order only among
+        # themselves, and only within one worker.
+        if not wait_s >= 0:  # NaN or negative: a NaN deadline never passes
             wait_s = 0.0
         tag = org_tag(org_id)
-        start = self._clock()
+        me = _Waiter(tag=tag, start=self._clock())
         told = on_wait is None
         busy_tries = 0
-        last_reason: HoldReason | None = None
         outcome: Literal["granted", "refused", "cancelled"] | None = None
         held: int | None = 0
         limit = 0
@@ -250,21 +312,24 @@ class SandboxResourceGovernor:
         tag_held: int | None = None
         org_limit: int | None = None
         counted = False
+        queue: _LoopQueue | None = None
         try:
             if not self._sizing_awaited:
                 # Inside the try: a cancel here is still one "cancelled" outcome.
                 self._sizing_awaited = True
                 await self.capacity.ensure_sized(timeout=2.0)
-                start = self._clock()
-            deadline = start + wait_s
+                me.start = self._clock()
+            deadline = me.start + wait_s
             while True:
                 view = self.limit_provider.view()
                 limit = view.limit
                 org_limit = self.capacity.per_org_limit(limit) if tag else None
-                result = self._slots.try_acquire_tagged(limit, tag=tag, tag_limit=org_limit)
-                denied: Literal["full", "tag_full"] | None = None
-                floor: HoldReason | None = None
-                busy = False
+                try:
+                    result = self._slots.try_acquire_tagged(limit, tag=tag, tag_limit=org_limit)
+                except OSError as exc:
+                    outcome = "refused"
+                    raise self._unavailable(exc) from exc
+                reason: HoldReason | None
                 if isinstance(result, SlotHold):
                     self._busy_since = None
                     held, held_known = result.held_before, True
@@ -272,47 +337,46 @@ class SandboxResourceGovernor:
                         floor = await self.limit_provider.admit_and_charge(held=held)
                     except BaseException:
                         result.release()
-                        self._wake_local()
+                        self._wake_one(tag)
                         raise
                     if floor is None:
                         outcome = "granted"
                         return GovernorLease(governor=self, hold=result, tag=tag)
+                    # Given back without waking anyone: another waiter would
+                    # meet the same floor, and wake this one back.
                     result.release()
-                    self._wake_local()
+                    me.denied = "floor"
+                    reason = hold_reason(view, denied=None, floor=floor)
                 elif result.reason == "busy":
                     self._note_busy()
                     if busy_tries < _BUSY_RETRIES:
                         busy_tries += 1
                         await asyncio.sleep(_BUSY_RETRY_S)
                         continue
-                    busy = True
+                    # Nothing is known about the slots: a wait, but no reason.
+                    me.denied = "busy"
+                    reason = None
                 else:
                     self._busy_since = None
-                    denied = result.reason
+                    me.denied = result.reason
                     held, tag_held, held_known = result.held, result.tag_held, True
+                    reason = hold_reason(view, denied=result.reason, floor=None)
                 busy_tries = 0
-                if busy:
-                    reason = last_reason or HoldReason.SLOTS_FULL
-                else:
-                    reason = hold_reason(view, denied=denied, floor=floor)
-                if last_reason is None:
-                    self._notify("wait_start", reason)
-                elif reason != last_reason:
-                    self._notify("wait_reason", reason)
-                last_reason = reason
                 now = self._clock()
-                if not busy:
-                    self.limit_provider.waiting(reason, now - start)
+                if reason is not None:
+                    self._set_reason(me, reason)
+                    self.limit_provider.waiting(reason, now - me.start)
                 if now >= deadline:
                     outcome = "refused"
                     if not held_known:
                         held = self.held_total()
+                    refusal = reason or me.reason or HoldReason.SLOTS_FULL
                     raise SandboxLimitExceeded(
                         message(
-                            reason, held=held, limit=limit, tag_held=tag_held,
+                            refusal, held=held, limit=limit, tag_held=tag_held,
                             org_limit=org_limit, memory_source=_memory_source(view),
                         ),
-                        reason=reason,
+                        reason=refusal,
                     )
                 if not counted:
                     counted = True
@@ -325,54 +389,146 @@ class SandboxResourceGovernor:
                     except Exception:
                         logger.debug("governor: on_wait callback failed", exc_info=True)
                     continue
-                await self._sleep_until_woken(
-                    min(deadline - now, self._poll_s * self._rng.uniform(0.5, 1.0)),
-                )
+                if queue is None:
+                    queue = self._join(me)
+                await self._wait_turn(me, deadline - now)
         except BaseException:
             if outcome is None:
                 outcome = "cancelled"
             raise
         finally:
+            if queue is not None:
+                self._leave(queue, me, granted=outcome == "granted")
             if counted:
                 self._waiting_here -= 1
-            if last_reason is not None:
+            if me.reason is not None:
                 try:
                     self.limit_provider.wait_ended(granted=outcome == "granted")
                 except Exception:
                     logger.debug("governor: wait_ended failed", exc_info=True)
             self._notify(
                 "outcome", outcome or "cancelled",
-                0.0 if last_reason is None else self._clock() - start, last_reason,
+                0.0 if me.reason is None else self._clock() - me.start, me.reason,
             )
 
-    async def _sleep_until_woken(self, timeout: float) -> None:
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        with self._waiters_lock:
-            self._waiters.add(future)
-        try:
-            await asyncio.wait_for(future, max(0.0, timeout))
-        except TimeoutError:
-            pass
-        finally:
-            with self._waiters_lock:
-                self._waiters.discard(future)
+    def _join(self, waiter: _Waiter) -> _LoopQueue:
+        """Put *waiter* at the back of its loop's queue, starting the poller."""
+        loop = asyncio.get_running_loop()
+        with self._queues_lock:
+            queue = self._queues.get(loop)
+            if queue is None:
+                queue = self._queues[loop] = _LoopQueue(loop)
+        queue.waiters[waiter] = None
+        if queue.poller is None or queue.poller.done():
+            queue.poller = spawn_detached(self._poll(queue), name="sandbox-slot-poller")
+        return queue
 
-    def _wake_local(self) -> None:
-        with self._waiters_lock:
-            waiters = list(self._waiters)
-        for future in waiters:
-            loop = future.get_loop()
-            if loop.is_closed():
+    def _leave(self, queue: _LoopQueue, waiter: _Waiter, *, granted: bool) -> None:
+        queue.waiters.pop(waiter, None)
+        future = waiter.future
+        if not granted and future is not None and future.done() and not future.cancelled():
+            # Woken for a slot it will not take: pass the turn on.
+            queue.wake_one()
+        if not queue.waiters:
+            queue.kick_poller()  # lets the poller see it has nothing left to do
+
+    @staticmethod
+    async def _wait_turn(waiter: _Waiter, timeout: float) -> None:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiter.future = future
+        try:
+            await asyncio.wait({future}, timeout=None if math.isinf(timeout) else max(0.0, timeout))
+        finally:
+            if not future.done():
+                future.cancel()
+
+    async def _poll(self, queue: _LoopQueue) -> None:
+        """While *queue* has waiters: every jittered ``poll_s`` (or at once
+        when kicked), count the slots once and wake waiters for the free ones."""
+        busy_tries = 0
+        try:
+            while queue.waiters:
+                if busy_tries:
+                    delay = _BUSY_RETRY_S
+                else:
+                    delay = self._poll_s * self._rng.uniform(0.5, 1.0)
+                try:
+                    await asyncio.wait_for(queue.kick.wait(), delay)
+                except TimeoutError:
+                    pass
+                queue.kick.clear()
+                if not queue.waiters:
+                    break
+                try:
+                    looked = self._poll_once(queue)
+                except Exception:
+                    looked = True
+                    if not self._warned_poller:
+                        self._warned_poller = True
+                        logger.warning("sandbox slots: the waiters' poll failed", exc_info=True)
+                busy_tries = 0 if looked or busy_tries >= _BUSY_RETRIES else busy_tries + 1
+        finally:
+            with self._queues_lock:
+                if not queue.waiters and self._queues.get(queue.loop) is queue:
+                    del self._queues[queue.loop]
+
+    def _poll_once(self, queue: _LoopQueue) -> bool:
+        """One look at the slots for *queue*'s waiters. ``False`` when another
+        worker held the mutex, so nothing was learned."""
+        view = self.limit_provider.view()
+        limit = view.limit
+        try:
+            counts = self._slots.held_by_tag(0.0)
+        except TimeoutError:
+            self._note_busy()
+            return False
+        self._busy_since = None
+        self._last_counts = counts
+        org_limit = self.capacity.per_org_limit(limit)
+        free = limit - sum(counts.values())
+        planned: Counter[bytes] = Counter()
+        now = self._clock()
+        longest: dict[HoldReason, float] = {}
+        for waiter in list(queue.waiters):
+            future = waiter.future
+            if future is None or future.done():
+                continue  # it is trying for a slot itself right now
+            org_full = (
+                bool(waiter.tag) and org_limit is not None
+                and counts[waiter.tag] + planned[waiter.tag] >= org_limit
+            )
+            if free > 0 and not org_full:
+                free -= 1
+                planned[waiter.tag] += 1
+                future.set_result(None)
+                continue
+            reason = hold_reason(view, denied="full" if free <= 0 else "tag_full", floor=None)
+            self._set_reason(waiter, reason)
+            longest[reason] = max(longest.get(reason, 0.0), now - waiter.start)
+        for reason, waited_s in longest.items():
+            self.limit_provider.waiting(reason, waited_s)
+        if queue.waiters:
+            self._log_waiting(now)
+        return True
+
+    def _on_loops(self, method: str, *args: Any) -> None:
+        with self._queues_lock:
+            queues = list(self._queues.values())
+        for queue in queues:
+            if queue.loop.is_closed():
                 continue
             try:
-                loop.call_soon_threadsafe(_wake, future)
+                queue.loop.call_soon_threadsafe(getattr(queue, method), *args)
             except RuntimeError:
                 pass  # the loop closed in between
 
+    def _wake_one(self, released_tag: bytes) -> None:
+        self._on_loops("wake_one", released_tag)
+
     def capacity_changed(self) -> None:
         """The limit may have risen (or sizing finished): this process's
-        waiters try again now. Safe from any thread."""
-        self._wake_local()
+        pollers look at the slots now. Safe from any thread."""
+        self._on_loops("kick_poller")
 
     def _note_busy(self) -> None:
         now = self._clock()
@@ -409,7 +565,7 @@ class SandboxResourceGovernor:
             return
         lease.released = True
         lease.hold.release()
-        self._wake_local()
+        self._wake_one(lease.tag)
 
     def held_total(self, budget: float = 0.0) -> int | None:
         """Slots held by every worker, or ``None`` when another worker held

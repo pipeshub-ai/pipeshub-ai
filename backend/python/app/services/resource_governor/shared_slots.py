@@ -121,6 +121,7 @@ class SharedSlots:
         # through a lock of its own.
         self._tags: dict[int, bytes] = {}
         self._closed = False
+        self.directory = directory
         ensure_private_directory(directory)
         opened: list[int] = []
         try:

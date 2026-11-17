@@ -324,7 +324,8 @@ class TestAcquireLoop:
         finally:
             os.close(mutex)
         assert caught.value.reason is HoldReason.SLOTS_FULL
-        assert rec.outcomes() == [("outcome", "refused", HoldReason.SLOTS_FULL)]
+        # Nothing was known about the slots: not reported as a wait at the limit.
+        assert rec.events == [("outcome", "refused", None)]
 
     async def test_a_busy_mutex_is_a_plain_wait_with_the_real_count(self, tmp_path: Path, opened) -> None:
         rec = _Recorder()
@@ -341,7 +342,7 @@ class TestAcquireLoop:
         assert gov.limit_provider.waits == []  # type: ignore[attr-defined]
         assert caught.value.reason is HoldReason.SLOTS_FULL
         assert "all 2 code sandboxes on this server are busy (1/2)" in str(caught.value)
-        assert rec.events == [("wait_start", HoldReason.SLOTS_FULL), ("outcome", "refused", HoldReason.SLOTS_FULL)]
+        assert rec.events == [("outcome", "refused", None)]
 
     async def test_a_mutex_busy_for_the_whole_wait_gives_no_count(self, tmp_path: Path, opened) -> None:
         gov = _gov(tmp_path, opened, provider=_Provider)
