@@ -851,9 +851,9 @@ class EventProcessor:
     ) -> None:
         """An update that leaves a record empty must not leave its old content searchable.
 
-        Types not reconciled block by block lost their vectors before this
-        event ran; reconciled ones still hold them. A VRID another record also
-        holds is that record's content, so it is left alone.
+        Every type still holds its vectors when this runs: nothing is taken out
+        ahead of the work. A VRID another record also holds is that record's
+        content, so it is left alone.
         """
         if not virtual_record_id or event_type not in (
             EventTypes.UPDATE_RECORD.value,
