@@ -61,7 +61,7 @@ These two APIs handle all read operations for browsing the knowledge hub hierarc
 
 | Parameter | Type | Description | Example Values |
 |-----------|------|-------------|----------------|
-| `nodeType` | enum | Type of parent node | `app`, `kb`, `folder`, `recordGroup`, `record` |
+| `nodeType` | enum | Type of parent node | `app`, `recordGroup`, `folder`, `record` (a collection is `app`; `kb` is refused with 400) |
 | `nodeId` | string | UUID of parent node | `f31459bb-c25a-40bd-8be9-8dcafdd01740` |
 
 **Query Parameters:** (Same as API 1)
@@ -498,7 +498,7 @@ Authorization: Bearer {{authToken}}
 
 **Actions:**
 1. Call **API 2** (Get Node Items) with:
-   - `nodeType` = type of selected node (kb, folder, recordGroup, etc.)
+   - `nodeType` = type of selected node (app, recordGroup, folder or record)
    - `nodeId` = ID of selected node
    - `page=1&limit=50`
    - `include=counts,permissions,breadcrumbs,availableFilters`

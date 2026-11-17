@@ -393,7 +393,7 @@ Component calls: navigateToNode(kbId, folderId)
        ↓
 Store action:
   1. Update selectedKb and selectedFolder
-  2. Update query params: ?nodeType=kb&nodeId=xxx
+  2. Update query params: ?nodeType=app&nodeId=xxx
   3. Fetch folder contents from API
   4. Update tableData with response
        ↓
@@ -416,7 +416,7 @@ Components re-render (subscribed to tableData)
 // 2. Store action
 const navigateToNode = (kbId: string, folderId?: string) => {
   // Update query params
-  router.push(`/knowledge-base?nodeType=${folderId ? 'folder' : 'kb'}&nodeId=${folderId || kbId}`);
+  router.push(`/knowledge-base?nodeType=${folderId ? 'folder' : 'app'}&nodeId=${folderId || kbId}`);
 
   // Fetch contents
   const response = await KnowledgeBaseApi.getNodeContent(kbId, folderId);
@@ -606,7 +606,7 @@ The page uses query params to track navigation state:
 
 **URL Format:**
 ```
-/knowledge-base?nodeType=kb&nodeId=kb-001
+/knowledge-base?nodeType=app&nodeId=kb-001
 /knowledge-base?nodeType=folder&nodeId=folder-001
 ```
 
@@ -619,13 +619,13 @@ import { useSearchParams } from 'next/navigation';
 
 export default function KnowledgeBasePage() {
   const searchParams = useSearchParams();
-  const nodeType = searchParams.get('nodeType');  // 'kb' | 'folder'
+  const nodeType = searchParams.get('nodeType');  // 'app' | 'recordGroup' | 'folder' | 'record'
   const nodeId = searchParams.get('nodeId');      // ID
 
   useEffect(() => {
     if (nodeType && nodeId) {
       // Load node contents
-      const kbId = nodeType === 'kb' ? nodeId : findKbForFolder(nodeId);
+      const kbId = nodeType === 'app' ? nodeId : findKbForFolder(nodeId);
       const folderId = nodeType === 'folder' ? nodeId : undefined;
 
       navigateToNode(kbId, folderId);
@@ -679,7 +679,7 @@ export default function KnowledgeBasePage() {
 **Key Concepts:**
 1. **Flat API data** → **Tree UI structure** (transformed in UI)
 2. **Zustand store** manages all state (nodes, navigation, expansion)
-3. **Query params** track current location (`?nodeType=kb&nodeId=xxx`)
+3. **Query params** track current location (`?nodeType=app&nodeId=xxx`)
 4. **Lazy loading** fetches children only when needed
 5. **Recursive rendering** builds nested tree in sidebar
 6. **Breadcrumbs** provide navigation path and quick access
