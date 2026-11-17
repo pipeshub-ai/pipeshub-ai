@@ -106,11 +106,18 @@ export async function replaceDocs(
     await rt.jobs(async (tx: Tx, k) => {
       if (inPlace) await deleteChildren(k, m, ids);
       else await deleteDocs(k, m, ids);
-      followUps = (
-        await withUpsert(inPlace ? [m.table] : [], () =>
-          repo.importBatch(m.collection, docs, tx),
-        )
-      ).followUps;
+      const stats = await withUpsert(inPlace ? [m.table] : [], () =>
+        repo.importBatch(m.collection, docs, tx),
+      );
+      followUps = stats.followUps;
+      // a document the copy skips now (an outbox event published since it was copied) must not keep the row of its earlier state;
+      // a skipped part of a document (a project member) is reported under another id and is not a document to remove
+      if (inPlace)
+        await deleteDocs(
+          k,
+          m,
+          stats.skipped.map((s) => s.id).filter((id) => ids.includes(id)),
+        );
     });
   };
   try {

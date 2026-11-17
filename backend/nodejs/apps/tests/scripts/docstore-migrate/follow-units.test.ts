@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { deleteChildren, deleteDocs } from '../../../src/scripts/docstore-migrate/apply'
+import { ObjectId } from 'mongodb'
+import { deleteChildren, deleteDocs, replaceDocs } from '../../../src/scripts/docstore-migrate/apply'
 import { repositoryFor, sourceDb } from '../../../src/scripts/docstore-migrate/bulk'
 import { cancelDrain } from '../../../src/scripts/docstore-migrate/drain'
 import { MARKER_COLLECTION, clearMarkers, isHistoryLost, majorityPoint, watchOptions } from '../../../src/scripts/docstore-migrate/follow'
@@ -78,5 +79,29 @@ describe('follow: deleting a document and what the stream asks for', () => {
     const rt = { cfg: { slackDb: 'slack' }, db: (n?: string) => n ?? 'api' } as never
     expect(sourceDb(rt, mapping('users'))).to.equal('api')
     expect(sourceDb(rt, { ...mapping('users'), collection: 'slack_conversations' })).to.equal('slack')
+  })
+
+  it('a document the copy now skips loses the row an earlier event wrote (an event published after it was copied pending)', async () => {
+    const previous = process.env.DOC_STORE
+    process.env.DOC_STORE = 'postgres'
+    try {
+      const event = (hex: string, status: string) => ({
+        _id: new ObjectId(hex), topic: 'entity-events', key: 'k', status, attempts: 0, createdAt: new Date('2026-11-17T20:57:34.349Z'),
+        value: JSON.stringify({ payload: { orgId: '6afcbe98f03c0c4c54f37bce' } }),
+      })
+      const run = async (status: string) => {
+        const { log, k } = record()
+        const rt = { jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => fn({ pgTx: { kernel: k } }, k) } as never
+        await replaceDocs(rt, mapping('outbox_events'), [event('6afcbfbe0d70d44bb8638f31', status)])
+        return log.filter((l) => /DELETE FROM platform\.outbox WHERE/.test(l.sql))
+      }
+      const published = await run('published')
+      expect(published).to.have.length(1)
+      expect(published[0]!.params).to.deep.equal([[outboxTableId('6afcbfbe0d70d44bb8638f31')]])
+      expect(await run('pending')).to.have.length(0)
+    } finally {
+      if (previous === undefined) delete process.env.DOC_STORE
+      else process.env.DOC_STORE = previous
+    }
   })
 })

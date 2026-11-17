@@ -95,6 +95,21 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await rows(), 'the delete reached the row').to.equal(0);
       });
 
+      it('removes the row of an outbox event copied pending once a later event shows it published (published events are not copied)', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const _id = new ObjectId();
+        await events.insertOne({ _id, topic: 'publish-probe', key: 'k', value: JSON.stringify({ payload: { orgId: String(ORG_A) } }), status: 'pending', createdAt: new Date(), updatedAt: new Date(), __v: 0 } as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        const rows = async (): Promise<number> => Number((await sql("SELECT count(*)::int AS n FROM platform.outbox WHERE topic = 'publish-probe'"))[0].n);
+        expect(await rows()).to.equal(1);
+        await events.updateOne({ _id } as never, { $set: { status: 'published', publishedAt: new Date() } });
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await rows(), 'a published event has no row, as after a fresh copy').to.equal(0);
+      });
+
       it('does not guess which organisation an outbox delete meant when two hold the same folded id: both rows stay and the clash is named', async () => {
         const js = await JobState.attach(w.rt);
         await followStart(w.rt, js);
