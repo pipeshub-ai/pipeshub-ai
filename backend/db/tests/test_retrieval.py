@@ -7,6 +7,7 @@ import pytest
 from psycopg import errors as pg
 
 from db import vetted_harness
+from db.lib import fold
 
 from .conftest import run_migrate
 from .rls_fixture import ORG_A, ORG_B, uow
@@ -400,6 +401,71 @@ def test_the_postings_of_a_term_are_its_document_frequency(rdb):
     assert [r[0] for r in first] == [sk] and len(second) == 2 and second[0][1] != first[0][1]
 
 
+def kept_frequencies(cluster, name, org: str) -> dict[int, int]:
+    """What the search reads as a term's frequency: the folded value plus the deltas."""
+    with cluster.admin(name) as c:
+        return dict(c.execute(
+            "SELECT term, sum(n)::int FROM (SELECT term, df AS n FROM retrieval.lexical_df WHERE org_id = %s "
+            "UNION ALL SELECT term, d FROM retrieval.lexical_term_delta WHERE org_id = %s) x GROUP BY term HAVING sum(n) <> 0", (org, org)))
+
+
+def counted_frequencies(cluster, name, org: str) -> dict[int, int]:
+    with cluster.admin(name) as c:
+        return dict(c.execute("SELECT term, count(*)::int FROM retrieval.postings WHERE org_id = %s GROUP BY term", (org,)))
+
+
+def postings_read(cluster, name, org, terms) -> tuple[list, int, int]:
+    """A search's answer, the postings index entries it read and its probes of the kept frequencies: this transaction's own counters, so
+    nothing another session does counts."""
+    with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", org):
+        got = c.execute("SELECT point_sk, score FROM retrieval.search_sparse(1::smallint, %s::bigint[], %s::real[], NULL, NULL, NULL, NULL, NULL, 10)",
+                        (list(terms), [1.0] * len(terms))).fetchall()
+        read, probes = c.execute(
+            "SELECT coalesce(sum(pg_stat_get_xact_tuples_returned(i.indexrelid)) FILTER (WHERE t.relname LIKE 'postings%%'), 0)::int, "
+            "coalesce(sum(pg_stat_get_xact_numscans(i.indexrelid)) FILTER (WHERE t.relname = 'lexical_df'), 0)::int "
+            "FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid WHERE t.relnamespace = 'retrieval'::regnamespace").fetchone()
+        return got, read, probes
+
+
+def test_the_search_reads_kept_term_frequencies_and_each_posting_once(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sks = [write_terms(c, ORG_A, f"a0000000-0000-0000-0000-0000000000{i:02x}", f"g{i}", {5: 1.0 + i, 6: 2.0, 7 + i % 3: 0.5}) for i in range(30)]
+        delta(c, ORG_A, 30)
+        c.execute("DELETE FROM retrieval.postings WHERE org_id = %s AND point_sk = ANY(%s) AND term = 6", (ORG_A, sks[:4]))     # a rewrite drops a term
+        c.execute("UPDATE retrieval.postings SET w = 9 WHERE org_id = %s AND point_sk = %s AND term = 5", (ORG_A, sks[5]))     # a weight changes
+        c.execute("INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w) "
+                  "SELECT %s, 1, 1, 11, s, 1.0 FROM unnest(%s::bigint[]) s", (ORG_A, sks[:7]))                                     # one statement, many rows
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A) == {5: 30, 6: 26, 7: 10, 8: 10, 9: 10, 11: 7}
+    with cluster.admin(name) as c:            # other terms, so that the postings of a term are a range of the index and not the whole org
+        c.execute("INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w) "
+                  "SELECT %s, 1, 1, 1000 + t, s, 1.0 FROM unnest(%s::bigint[]) s, generate_series(1, 300) t", (ORG_A, sks))
+        c.execute("VACUUM (ANALYZE) retrieval.postings")                   # no dead entries of the rewrites above left in the index
+    kept, read, probes = postings_read(cluster, name, ORG_A, (5, 6, 11))
+    assert read == 30 + 26 + 7 and probes == 3                                # every posting of the query's terms once; one kept frequency per term
+    with cluster.admin(name) as c:                                            # a collection whose postings predate the kept frequencies
+        c.execute("INSERT INTO retrieval.lexical_df_pending VALUES (%s, 1, 1)", (ORG_A,))
+    counted, read, probes = postings_read(cluster, name, ORG_A, (5, 6, 11))
+    assert counted == kept and read == 2 * (30 + 26 + 7) and probes == 0       # the same answer, scores included, by counting
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+        assert fold.recount_org(jobs, ORG_A) is not None
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT count(*) FROM retrieval.lexical_term_delta WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM retrieval.lexical_df_pending WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 0
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
+    assert postings_read(cluster, name, ORG_A, (5, 6, 11)) == (kept, 30 + 26 + 7, 3)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        c.execute("DELETE FROM retrieval.postings WHERE org_id = %s AND point_sk = ANY(%s)", (ORG_A, sks[20:]))           # points deleted
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
+    with cluster.admin(name) as c:                                            # recount repairs a frequency that drifted
+        c.execute("UPDATE retrieval.lexical_df SET df = df + 5 WHERE org_id = %s AND term = 5", (ORG_A,))
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.recount_org(jobs, ORG_A) is not None
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
+
+
 def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():
     """Static check: the function takes the org from the unit of work, so every reference to a retrieval table must say so."""
     import re
@@ -409,7 +475,8 @@ def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():
 
     fn = next(f for f in vetted.load(Path(__file__).parents[1] / "versions/retrieval/vetted/manifest.yaml") if f.name == "search_sparse")
     refs = re.findall(r"\b(?:FROM|JOIN)\s+retrieval\.(\w+)\s+(\w+)", fn.body)
-    assert {t for t, _ in refs} == {"org_spaces", "collection_stats", "lexical_df_delta", "postings", "points", "group_members", "point_tombstones"}
+    assert {t for t, _ in refs} == {"org_spaces", "collection_stats", "lexical_df_delta", "postings", "points", "group_members", "point_tombstones",
+                                    "lexical_df", "lexical_term_delta", "lexical_df_pending"}
     for table, alias in refs:
         assert re.search(rf"\b{alias}\.org_id = v_org\b", fn.body), f"{table} {alias} is not filtered by v_org"
     assert "p_org" not in fn.body and all("org" not in a.name for a in fn.args)               # no argument can name an org
@@ -689,3 +756,4 @@ def test_vrid_held_elsewhere_probes_the_vrid_index_and_never_scans_the_points(rd
     for i in (0, 6):
         assert "_vrid_block_id_idx" in plans[i] and "Scan using point_tombstones_h" in plans[i], (i, plans[i])
         assert vetted_harness.seq_scanned(plans[i], big) == [], (i, plans[i])
+
