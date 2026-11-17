@@ -23,8 +23,16 @@ die() { echo "$*" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || die "no env file at $ENV_FILE: run from a PipesHub Docker Compose install, or set PIPESHUB_ENV_FILE"
 
 env_get() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 | tr -d '\r"'; }
-# sed -i keeps the file's mode; a missing final newline is not glued to the new line
-env_del() { sed -i "/^$1=/d" "$ENV_FILE"; }
+# Rewritten in place (cat into the same file): keeps its mode, owner and a symlink, and needs no GNU-only `sed -i`. The private
+# temporary file sits beside it, and a failed sed leaves the env file as it was.
+env_del() {
+  local t rc=0
+  t="$(mktemp "$ENV_FILE.XXXXXX")"
+  { sed "/^$1=/d" "$ENV_FILE" >"$t" && cat "$t" >"$ENV_FILE"; } || rc=$?
+  rm -f "$t"
+  return "$rc"
+}
+# a missing final newline is not glued to the new line
 env_set() { env_del "$1"; [ -z "$(tail -c1 "$ENV_FILE")" ] || echo >>"$ENV_FILE"; printf '%s=%s\n' "$1" "$2" >>"$ENV_FILE"; }
 
 PROJECT="${PIPESHUB_PROJECT:-$(env_get COMPOSE_PROJECT_NAME)}"
@@ -34,14 +42,15 @@ for _o in "${_overrides[@]}"; do [ -n "$_o" ] && DC+=(-f "$_o"); done
 PSQL=("${DC[@]}" exec -T postgres psql -q -v ON_ERROR_STOP=1 -U postgres -d pipeshub)
 
 # The tool, as the guide runs it: MongoDB's address comes from the application service's own environment, the schema job already
-# built the tables. An empty import password reads as "login closed" to the tool.
+# built the tables. An empty import password reads as "login closed" to the tool. The service's own entrypoint starts the
+# application whatever the command is; the image's entrypoint runs the command, as the unprivileged user the application runs as.
 docstore() {
   PG_IMPORT_URL="postgresql://pipeshub_import:$(env_get PG_IMPORT_PASSWORD)@postgres:5432/pipeshub" \
   PG_MIGRATE_URL="postgresql://pipeshub_migrate:$(env_get PG_MIGRATE_PASSWORD)@postgres:5432/pipeshub" \
   PG_NODE_URL="postgresql://pipeshub_node_login:$(env_get PG_NODE_PASSWORD)@pgbouncer:6432/pipeshub" \
   MIGRATE_SCHEMA_COMMAND=none \
     "${DC[@]}" run --rm --no-deps -e PG_IMPORT_URL -e PG_MIGRATE_URL -e PG_NODE_URL -e MIGRATE_SCHEMA_COMMAND \
-      pipeshub-ai node /app/backend/dist/scripts/docstore-migrate.js "$@"
+      --entrypoint /usr/local/bin/docker-entrypoint.sh pipeshub-ai node /app/backend/dist/scripts/docstore-migrate.js "$@"
 }
 
 # Lets pipeshub_import log in. The password is kept in the env file while the login is open, so a re-run after an interrupted one

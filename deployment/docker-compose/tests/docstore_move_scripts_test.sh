@@ -59,6 +59,9 @@ case "$args" in
   *" stop "*) step="stop:${*: -1}" ;;
   *docstore-migrate.js*)
     tool=${args#*docstore-migrate.js }; tool=${tool% }; step="tool:$tool"
+    # the service's own entrypoint starts the application whatever the arguments are: only the image entrypoint runs them
+    [[ "$args" == *" run "*" --entrypoint /usr/local/bin/docker-entrypoint.sh pipeshub-ai node /app/backend/dist/scripts/docstore-migrate.js "* ]] \
+      || step="APP_STARTED_INSTEAD:$tool"
     # the URLs reach the container through the environment, built from the env file
     [[ "${PG_MIGRATE_URL:-}" == "postgresql://pipeshub_migrate:${EXPECT_MIGRATE_PW}@postgres:5432/pipeshub" ]] || step="$step:BAD_MIGRATE_URL"
     [[ "${PG_NODE_URL:-}" == "postgresql://pipeshub_node_login:${EXPECT_NODE_PW}@pgbouncer:6432/pipeshub" ]] || step="$step:BAD_NODE_URL"
@@ -66,6 +69,14 @@ case "$args" in
     [[ "${MIGRATE_SCHEMA_COMMAND:-}" == none ]] || step="$step:BAD_SCHEMA_COMMAND"
     printf '%s\n' "${PG_IMPORT_URL:-}" >>"$IMPORT_URLS"
     echo '{"ok": true}'
+    if [[ "$tool" == "follow run" && -n "${STUB_FOLLOW_SIGNALS:-}" ]]; then
+      # a follower that runs until a signal reaches it, and records which one
+      trap 'echo INT >>"$STUB_FOLLOW_SIGNALS"; exit 0' INT
+      trap 'echo TERM >>"$STUB_FOLLOW_SIGNALS"; exit 0' TERM
+      echo ready >"$STUB_FOLLOW_SIGNALS.ready"
+      for _ in $(seq 1 100); do sleep 0.1; done
+      echo none >>"$STUB_FOLLOW_SIGNALS"
+    fi
     [[ -n "${STUB_FAIL:-}" && "$tool" == "$STUB_FAIL"* ]] && { echo "$step" >>"$CALLS"; echo "  argv: $*" >>"$ARGV"; exit 1; } ;;
 esac
 echo "$step" >>"$CALLS"
@@ -73,6 +84,16 @@ echo "  argv: $*" >>"$ARGV"
 exit 0
 STUB
 chmod +x "$BIN/docker"
+
+# BSD sed takes the word after -i as the backup suffix, so GNU's suffix-less `sed -i SCRIPT FILE` fails there (macOS)
+BSD_BIN="$TMP_ROOT/bsdbin"; mkdir -p "$BSD_BIN"
+REAL_SED="$(command -v sed)"
+cat >"$BSD_BIN/sed" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == -i ]] && { echo "sed: 1: \"\$2\": invalid command code" >&2; exit 1; }; done
+exec "$REAL_SED" "\$@"
+STUB
+chmod +x "$BSD_BIN/sed"
 
 MIGRATE_PW=mig_$RANDOM$RANDOM$RANDOM
 NODE_PW=node_$RANDOM$RANDOM$RANDOM
@@ -244,6 +265,54 @@ check_eq "runs only the tool" "$(steps)" "tool:cutover --dry-run --fence-armed -
 check "with the open login's password" "$(cat "$IMPORT_URLS")" "pipeshub_import:open_for_cutover_7@"
 no_secret_shown "without showing it" "open_for_cutover_7"
 check_eq "and leaves it in the env file" "$(import_pw)" "open_for_cutover_7"
+
+echo
+echo "== the tool runs through the image entrypoint, never the service's (which starts the app) =="
+new_install
+run_script "$TOOL" status
+check "--entrypoint is the image entrypoint, before the service" "$(cat "$ARGV")" \
+  "--entrypoint /usr/local/bin/docker-entrypoint.sh pipeshub-ai node /app/backend/dist/scripts/docstore-migrate.js status"
+check_eq "and the stub saw the tool run" "$(steps)" "tool:status"
+
+echo
+echo "== online: Ctrl+C reaches the follower, and the script still says how to close the login =="
+new_install
+SIGS="$INST/signals"
+# Ctrl+C signals the whole foreground process group; job control gives the script its own group to signal
+(
+  set -m
+  PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" \
+    STUB_FOLLOW_SIGNALS="$SIGS" bash "$MIGRATE" --online >"$INST/out" 2>&1 &
+  pid=$!
+  for _ in $(seq 1 100); do [[ -f "$SIGS.ready" ]] && break; sleep 0.05; done
+  kill -INT -- "-$pid" 2>/dev/null
+  for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+  kill -KILL -- "-$pid" 2>/dev/null
+  wait "$pid"; echo $? >"$INST/rc"
+)
+check_eq "the follower got SIGINT" "$(head -1 "$SIGS" 2>/dev/null)" INT
+check_eq "the script exits 0 after the follower stops" "$(cat "$INST/rc")" 0
+check "and says how to close the login" "$(cat "$INST/out")" "--close-login"
+check_not "and does not close it" "$(steps)" "login-close"
+
+echo
+echo "== the env file is edited with portable commands, keeps its mode, and stays a symlink =="
+new_install
+OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" bash "$MIGRATE" --offline 2>&1)"; RC=$?
+check_eq "offline with BSD sed exits 0" "$RC" 0
+check_eq "and opens and closes the login" "$(steps)" \
+  "verifier login-open stop:pipeshub-ai tool:preflight tool:migrate --offline login-close"
+check_eq "the password is removed with BSD sed" "$(import_pw)" ""
+check_eq "the env file stays 0600" "$(stat -c %a "$ENVF")" 600
+new_install
+mv "$ENVF" "$INST/real.env"; ln -s real.env "$ENVF"
+OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" bash "$MIGRATE" --online 2>&1)"; RC=$?
+check_eq "online with BSD sed exits 0" "$RC" 0
+check "and stores the password through the symlink" "$(cat "$INST/real.env")" "PG_IMPORT_PASSWORD="
+if [[ -L "$ENVF" ]]; then pass "a symlinked env file stays a symlink"; else fail "a symlinked env file stays a symlink"; fi
+check_eq "the real file stays 0600" "$(stat -c %a "$INST/real.env")" 600
+left="$(shopt -s nullglob; f=("$INST"/*.env.* "$INST"/.env.*); echo "${f[*]}")"
+if [[ -z "$left" ]]; then pass "no temporary or backup file is left beside the env file"; else fail "no temporary or backup file is left beside the env file: $left"; fi
 
 echo
 echo "== which install: project name and override files =="

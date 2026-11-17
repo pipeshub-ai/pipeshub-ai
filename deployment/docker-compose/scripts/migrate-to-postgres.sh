@@ -55,8 +55,11 @@ case "$MODE" in
     docstore migrate --online
     KEEP_LOGIN=1
     echo "Following MongoDB; stop with Ctrl+C. Run cutover and reverse with scripts/docstore-migrate.sh while the import login is open." >&2
-    # the tool stops on the signal docker passes on and exits 0; the shell must not exit first
-    trap '' INT TERM
-    docstore follow run
-    echo "The follower stopped. The import login stays open while the move runs; close it when the move is over: $0 --close-login" >&2 ;;
+    # A handler, not '' (an ignored signal stays ignored in docker, which then never stops the follower): docker gets Ctrl+C and
+    # passes it on, the tool stops and exits, and this shell goes on to the message.
+    trap 'true' INT TERM
+    rc=0
+    docstore follow run || rc=$?
+    echo "The follower stopped. The import login stays open while the move runs; close it when the move is over: $0 --close-login" >&2
+    exit "$rc" ;;
 esac
