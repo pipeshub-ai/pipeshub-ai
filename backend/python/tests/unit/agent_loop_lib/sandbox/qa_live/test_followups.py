@@ -24,26 +24,31 @@ import time
 import zlib
 from typing import TYPE_CHECKING, Any
 
-import pytest
-
 from app.agent_loop_lib.sandbox import host_reading
 from app.agent_loop_lib.sandbox.capacity import HoldReason
 from app.agent_loop_lib.sandbox.host_reading import HostSample, LiveMode, SidecarReader
 from app.agent_loop_lib.sandbox.live_limit import LiveLimit
 from app.agent_loop_lib.sandbox.live_record import RECORD_SIZE, LiveLedger
 from app.agent_loop_lib.sandbox.live_settings import LiveSettings
-from tests.unit.agent_loop_lib.sandbox.live_fakes import FakeClock, FakeReader, capacity, sample
+from tests.unit.agent_loop_lib.sandbox.live_fakes import (
+    FakeClock,
+    FakeReader,
+    capacity,
+    sample,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 GiB = 2**30
 MiB = 2**20
 M = 512 * MiB
 
 
-def _live(tmp_path: Path, clock: FakeClock, reader: Any, *, settings: LiveSettings | None = None,  # noqa: ANN401
-          cap: Any = None, mode: str = "on:host", profile: str = "host") -> LiveLimit:  # noqa: ANN401
+def _live(tmp_path: Path, clock: FakeClock, reader: Any, *, settings: LiveSettings | None = None,
+          cap: Any = None, mode: str = "on:host", profile: str = "host") -> LiveLimit:
     live_mode = LiveMode(mode=mode, reader=reader, profile=profile)  # type: ignore[arg-type]
     live = LiveLimit(
         cap or capacity(), None, settings=settings or LiveSettings(), resolver=lambda: live_mode,
@@ -231,7 +236,9 @@ class TestSidecarMemory:
         assert len(calls) == 2
 
     async def test_admission_with_a_slow_proxy_admits_in_time_and_checks_later(self, tmp_path: Path) -> None:
-        from tests.unit.agent_loop_lib.sandbox.qa_live.test_live_edges import _helm_capacity
+        from tests.unit.agent_loop_lib.sandbox.qa_live.test_live_edges import (
+            _helm_capacity,
+        )
 
         proxy = _Proxy(delay=0.3)
         reader = SidecarReader(proxy, "sidecar", memory_bytes=16 * GiB, cpu_millis=16000)

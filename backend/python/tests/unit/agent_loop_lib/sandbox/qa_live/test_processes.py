@@ -45,7 +45,7 @@ class _FileReader:
         except (OSError, ValueError, KeyError):
             return None
 
-    def read(self) -> Any:  # noqa: ANN401
+    def read(self) -> Any:
         from app.agent_loop_lib.sandbox.host_reading import HostSample
 
         return HostSample(mem_total=16 * GiB, mem_available=self._avail(), cpu_util=0.1, source="host")
@@ -54,8 +54,12 @@ class _FileReader:
         return self._avail(), 16 * GiB
 
 
-def _live(directory: str, reader_file: str, interval_s: float) -> Any:  # noqa: ANN401
-    from app.agent_loop_lib.sandbox.capacity import CapacitySettings, MachineSize, SandboxCapacity
+def _live(directory: str, reader_file: str, interval_s: float) -> Any:
+    from app.agent_loop_lib.sandbox.capacity import (
+        CapacitySettings,
+        MachineSize,
+        SandboxCapacity,
+    )
     from app.agent_loop_lib.sandbox.host_reading import LiveMode
     from app.agent_loop_lib.sandbox.live_limit import LiveLimit
     from app.agent_loop_lib.sandbox.live_settings import LiveSettings
@@ -150,7 +154,7 @@ def test_a_stopped_lock_holder_never_blocks_the_others(tmp_path: Path) -> None:
         os.kill(holder.pid, signal.SIGSTOP)
         time.sleep(0.15)
 
-        async def on_loop() -> tuple[float, float, Any]:  # noqa: ANN401
+        async def on_loop() -> tuple[float, float, Any]:
             lags: list[float] = []
 
             async def ticker() -> None:

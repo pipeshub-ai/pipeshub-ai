@@ -27,7 +27,12 @@ from app.agent_loop_lib.sandbox.live_record import (
     LiveRecord,
 )
 from app.agent_loop_lib.sandbox.live_settings import LiveSettings
-from tests.unit.agent_loop_lib.sandbox.live_fakes import FakeClock, FakeReader, capacity, sample
+from tests.unit.agent_loop_lib.sandbox.live_fakes import (
+    FakeClock,
+    FakeReader,
+    capacity,
+    sample,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path

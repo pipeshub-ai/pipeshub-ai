@@ -131,7 +131,7 @@ class TestCancelKillsTheProcessGroup:
         spawned: list[asyncio.subprocess.Process] = []
         real_exec = asyncio.create_subprocess_exec
 
-        async def _recording_exec(*args, **kwargs):
+        async def _recording_exec(*args, **kwargs) -> asyncio.subprocess.Process:
             proc = await real_exec(*args, **kwargs)
             spawned.append(proc)
             return proc

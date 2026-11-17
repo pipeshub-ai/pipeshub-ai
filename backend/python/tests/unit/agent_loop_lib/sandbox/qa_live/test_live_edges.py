@@ -46,7 +46,12 @@ from app.agent_loop_lib.sandbox.live_settings import (
     MAX_MEMORY_OVERCOMMIT,
     LiveSettings,
 )
-from tests.unit.agent_loop_lib.sandbox.live_fakes import FakeClock, FakeReader, capacity, sample
+from tests.unit.agent_loop_lib.sandbox.live_fakes import (
+    FakeClock,
+    FakeReader,
+    capacity,
+    sample,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,7 +62,7 @@ MiB = 2**20
 
 
 def _live(
-    tmp_path: Path, clock: FakeClock, reader: Any, *, mode: str = "on:host",  # noqa: ANN401
+    tmp_path: Path, clock: FakeClock, reader: Any, *, mode: str = "on:host",
     profile: str = "host", cap: SandboxCapacity | None = None, settings: LiveSettings | None = None,
 ) -> LiveLimit:
     live_mode = LiveMode(mode=mode, reader=reader, profile=profile)  # type: ignore[arg-type]
@@ -274,7 +279,7 @@ class TestCgroupReadings:
         assert reader.read() == HostSample(source="cgroup")
 
 
-def _sidecar_get(body: Any, status: int = 200, *, delay: float = 0.0, exc: Exception | None = None) -> Callable:  # noqa: ANN401
+def _sidecar_get(body: Any, status: int = 200, *, delay: float = 0.0, exc: Exception | None = None) -> Callable:
     def get(path: str, timeout: float) -> tuple[int, Any]:
         if delay:
             time.sleep(delay)
@@ -471,7 +476,7 @@ class TestOvercommit:
 # -- the event loop -----------------------------------------------------------
 
 
-async def _max_lag(work: Callable[[], Any], seconds: float) -> float:  # noqa: ANN401
+async def _max_lag(work: Callable[[], Any], seconds: float) -> float:
     """The longest the loop went without running a 1 ms ticker while *work*
     ran on it."""
     lags: list[float] = []
@@ -500,7 +505,7 @@ async def _max_lag(work: Callable[[], Any], seconds: float) -> float:  # noqa: A
 
 class TestEventLoop:
     @pytest.fixture
-    def held_lock(self, tmp_path: Path) -> Any:  # noqa: ANN401
+    def held_lock(self, tmp_path: Path) -> Any:
         import fcntl
 
         def hold() -> int:
@@ -513,7 +518,7 @@ class TestEventLoop:
         for fd in fds:
             os.close(fd)
 
-    async def test_view_wait_and_admit_never_block_on_a_held_lock(self, tmp_path: Path, held_lock: Any) -> None:  # noqa: ANN401
+    async def test_view_wait_and_admit_never_block_on_a_held_lock(self, tmp_path: Path, held_lock: Any) -> None:
         clock = FakeClock()
         live = _live(tmp_path, clock, FakeReader(sample(4.0)))
         live.sample_once()

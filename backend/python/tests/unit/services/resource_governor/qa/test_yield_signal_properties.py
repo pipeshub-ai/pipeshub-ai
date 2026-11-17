@@ -16,7 +16,6 @@ import zlib
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -34,8 +33,8 @@ from app.services.resource_governor.yield_signal import (
     DEAD_WRITER_S,
     MAX_ACKS,
     MAX_SPAN_S,
-    RECORD_SIZE,
     REASONS,
+    RECORD_SIZE,
     YieldAck,
     YieldRecord,
     YieldSignal,
@@ -46,6 +45,8 @@ from app.services.resource_governor.yield_signal import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 
 def _alive(pid: int) -> bool:
