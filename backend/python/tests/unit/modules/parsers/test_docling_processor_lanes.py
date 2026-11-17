@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import threading
 import time
+import types
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
@@ -575,7 +577,7 @@ def test_a_submit_does_not_wait_for_the_idle_shutdown_to_join_its_children() -> 
         def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
             if wait:
                 SlowToExit.joining.set()
-                SlowToExit.release.wait(10)
+                SlowToExit.release.wait()  # held until the test releases it, however long that is
             super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
     clock = FakeClock()
@@ -587,9 +589,18 @@ def test_a_submit_does_not_wait_for_the_idle_shutdown_to_join_its_children() -> 
     reaper.start()
     try:
         assert SlowToExit.joining.wait(5)
-        started = time.monotonic()
-        ex.submit(int).result(timeout=5)
-        assert time.monotonic() - started < 1.0
+        # Shown by order, not by the wall time submit took: the join holds until the test releases it, so a submit that
+        # waited for it could not return at all. Run on its own thread, its return is waited for with a bound that only
+        # turns such a hang into a failure.
+        submitted = threading.Event()
+
+        def submit() -> None:
+            ex.submit(int).result(timeout=5)
+            submitted.set()
+
+        threading.Thread(target=submit, daemon=True).start()
+        assert submitted.wait(30), "submit waited for the reaper's join"
+        assert reaper.is_alive() and not SlowToExit.release.is_set()
     finally:
         SlowToExit.release.set()
         reaper.join(10)
@@ -672,7 +683,12 @@ async def test_lease_released_when_the_document_stream_cannot_be_built(
     def boom(**kwargs: object) -> None:
         raise ValueError("bad stream")
 
-    monkeypatch.setattr("docling.datamodel.base_models.DocumentStream", boom)
+    # The module the conversion imports DocumentStream from, replaced in sys.modules rather than patched by its
+    # dotted name: where docling cannot be imported in full, tests/conftest.py stands mocks in for it, and the
+    # attribute set on the mock was not the one the conversion's import then found.
+    base_models = types.ModuleType("docling.datamodel.base_models")
+    base_models.DocumentStream = boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
     with pytest.raises(ValueError):
         await processor.parse_document("a.pdf", PDF)
     assert budget.held_count()[0] == 0

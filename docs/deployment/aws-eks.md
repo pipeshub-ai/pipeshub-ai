@@ -244,6 +244,7 @@ The file creates:
 - A `system` node group: 2 × `m7i.large`, no taint. CoreDNS and the controllers run here
 - A `data` node group: 4 × `m7i.2xlarge` (8 vCPU, 32 GiB), tainted `pipeshub/role=data`
 - An `app` node group: 2 × `m7i.2xlarge`, 150 GiB root disk, tainted `pipeshub/role=app`
+- A `parsing` node group: 1 × `c7i.2xlarge` (8 vCPU, 16 GiB), tainted `pipeshub/role=parsing`. It stays empty until you turn on [parsing pods](#parsing-in-its-own-pods)
 - IMDSv2 only, and pods cannot reach the instance metadata endpoint (`disablePodIMDS`). Neither the app nor sandbox containers can read the node's IAM role
 
 ```bash
@@ -260,7 +261,37 @@ kubectl get csidriver ebs.csi.aws.com
 kubectl get pods -n kube-system
 ```
 
-You should see two `system`, four `data`, and two `app` nodes, all Ready, across three zones. Every `kube-system` pod should be Running.
+You should see two `system`, four `data`, two `app` and one `parsing` node, all Ready, across three zones. Every `kube-system` pod should be Running.
+
+## Parsing in its own pods
+
+By default each app pod parses documents itself. For large or PDF-heavy workloads you can move parsing into separate pods on their own node group, so a burst of parsing does not compete with the app for CPU. It is off by default.
+
+The `parsing` node group in `cluster.yaml` is one `c7i.2xlarge`: 8 vCPU and 16 GiB. Parsing a PDF with Docling is CPU-bound, so a compute-optimised type gives more CPU per dollar than `m7i`, and 2 GiB per vCPU is enough for two parses at once per pod. Each parsing pod requests 2 CPU and 4 GiB (limits 4 CPU and 8 GiB), so three fit on a node, and each runs two parses at a time (`parsing.maxConcurrent`). A pod beyond its two parses answers 429 with `Retry-After`, and the indexer retries. The node group is created with the cluster and keeps one node (about 0.36 USD per hour in us-east-1) whether or not you turn parsing on. If you do not plan to use it, set its `minSize` and `desiredCapacity` to 0 in `cluster.yaml` before you create the cluster.
+
+Turn it on with a values file, applied through `PIPESHUB_EXTRA_VALUES`:
+
+```bash
+cat > parsing.yaml <<'YAML'
+parsing:
+  enabled: true
+  replicas: 3
+  clientConcurrency: "6"   # replicas x maxConcurrent
+YAML
+PIPESHUB_EXTRA_VALUES="$PWD/parsing.yaml" ./deployment/helm/aws/deploy.sh \
+  --domain pipeshub.example.com --region us-east-1
+```
+
+`replicas` is a fixed count. Keep `clientConcurrency` equal to `replicas` times `maxConcurrent`: it is how many parses the app pods keep in flight toward the pool in total. One node holds three pods. For more, raise the node group (`eksctl scale nodegroup --cluster <cluster> --name parsing --nodes 2`, at most its `maxSize`), then `replicas` and `clientConcurrency`. Replicas beyond three per node stay Pending.
+
+Check it:
+
+```bash
+kubectl get pods -n "$NAMESPACE" -l pipeshub.ai/workload=parsing -o wide
+kubectl get nodes -l pipeshub/role=parsing
+```
+
+With `--existing-cluster` the preset does not pin parsing pods to a node group, so they run on any node with room (each requests 2 CPU and 4 GiB). They keep the toleration for the parsing group's taint, so after you add that group they can run there too; to dedicate it to parsing, set `parsing.nodeSelector` to `pipeshub/role: parsing`. To add the node group to a cluster created from an earlier `cluster.yaml`, run `eksctl create nodegroup --config-file deployment/helm/aws/cluster.yaml --include parsing`.
 
 ## 3. Storage class and the load balancer controller
 

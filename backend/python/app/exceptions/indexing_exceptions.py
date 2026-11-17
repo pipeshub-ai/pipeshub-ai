@@ -21,6 +21,15 @@ class DocumentProcessingError(IndexingError):
         self.doc_id = doc_id
 
 
+class ProviderRateLimitedTooLongError(DocumentProcessingError):
+    """A model provider kept rate-limiting one record for longer than ``RATE_LIMIT_MAX_WAIT_S`` in all (the waits it was
+    handed back for added up). A terminal error (a document processing one): the record is failed with this message as its reason, not retried."""
+
+    def __init__(self, message: str, doc_id: str | None = None, details: dict | None = None) -> None:
+        super().__init__(message, doc_id, details)
+        self.doc_id = doc_id
+
+
 class PasswordProtectedError(DocumentProcessingError):
     """The file is encrypted and needs a password to open.
 

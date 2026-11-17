@@ -182,6 +182,12 @@ class IVectorDBService(ABC):
         """The orgs holding points of each virtual record (absent: none), or None when the provider cannot say without being told an org."""
         return None
 
+    async def other_orgs_hold_virtual_record(self, virtual_record_id: str, org_id: str) -> bool | None:
+        """Whether an org other than ``org_id`` holds a point of this virtual record, in any collection. None when the provider
+        answers it with a scroll that excludes ``org_id`` (``must_not``), which the caller then runs; a provider whose reads must
+        name one org answers here."""
+        return None
+
     @abstractmethod
     async def collection_exists(self, collection_name: str) -> bool:
         raise NotImplementedError

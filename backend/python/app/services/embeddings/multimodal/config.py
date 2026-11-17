@@ -35,3 +35,6 @@ class MultimodalProviderConfig:
     # keep working after this dispatch moved into provider classes.
     normalize_fn: Callable[[str], Any] | None = None
     logger: Any = None
+    # Retries the provider's SDK client makes on its own (None: the SDK's default). The indexing pipeline passes 0 and
+    # repeats a failed request through the ``EmbeddingGateway``, so one logical call is never sent more than its policy allows.
+    sdk_retries: int | None = None

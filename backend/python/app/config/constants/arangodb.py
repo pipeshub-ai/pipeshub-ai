@@ -709,6 +709,8 @@ class EventTypes(Enum):
     # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
     SOFT_DELETE_RECORDS = "softDeleteRecords"
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
+    # The delayed second purge of a deleted record's stored model outputs.
+    PURGE_PAID_RESULTS = "purgePaidResults"
     BUILD_CODE_EDGES = "buildCodeEdges"
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -29,6 +28,7 @@ from app.utils.request_context import (
     reset_admitted_in,
     set_admitted_in,
 )
+from tests.support.loop_clock import virtual_loop_time
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 if TYPE_CHECKING:
@@ -243,10 +243,13 @@ async def test_permit_holder_memory_wait_is_bounded(host, governor, monkeypatch)
     budget.limit = 2 * GIB
     assert await budget.reserve(int(1.5 * GIB))  # someone else holds most of it
     gate = governor.gate(Pool.HEAVY_PARSE)
-    started = time.monotonic()
+    # On a loop clock the test controls: the memory wait is the budget's own loop-time deadline, measured exactly.
+    virtual_loop_time(monkeypatch)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     with pytest.raises(cc.ParseAdmissionTimeout):
         await cc.acquire_parsing_slot(host, ParseTier.HEAVY, 10 * MIB, timeout=30.0, kind=ParseKind.DOCLING_DOCX)
-    assert time.monotonic() - started < 3.0
+    assert loop.time() - started == pytest.approx(0.3)  # the 0.3 s bound, not the caller's 30 s timeout
     assert gate.in_use == 0, "the permit went back"
     assert budget.stats()["reserved_bytes"] == int(1.5 * GIB), "and took nothing"
 
@@ -260,10 +263,13 @@ async def test_permit_holder_never_waits_for_memory_beyond_the_bound(host, gover
     registry.set(Pool.HEAVY_PARSE, 1)
     x = await cc.reserve_record_memory(host, ParseTier.HEAVY, 400 * MIB, kind=ParseKind.PDF)  # 1.6 GiB, waits for a permit
     assert x is not None
-    started = time.monotonic()
+    # On a loop clock the test controls: the memory wait is the budget's own loop-time deadline, measured exactly.
+    virtual_loop_time(monkeypatch)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     with pytest.raises(cc.ParseAdmissionTimeout):
         await cc.acquire_parsing_slot(host, ParseTier.HEAVY, 10 * MIB, timeout=30.0, kind=ParseKind.DOCLING_DOCX)
-    assert time.monotonic() - started < 3.0
+    assert loop.time() - started == pytest.approx(0.3)  # the 0.3 s bound, not the caller's 30 s timeout
     cc.release_admission(x)
 
 

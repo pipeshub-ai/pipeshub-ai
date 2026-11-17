@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from app.modules.parsers import parse_pool
 from app.modules.parsers.image_parser import svg_worker
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.image_parser.svg_core import check_svg_budget
+from tests.support.loop_clock import virtual_loop_time
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 GOOD = f'<svg {NS} width="20" height="20"><rect width="20" height="20" fill="red"/></svg>'
@@ -19,6 +21,37 @@ GOOD = f'<svg {NS} width="20" height="20"><rect width="20" height="20" fill="red
 
 def _b64(svg: str) -> str:
     return base64.b64encode(svg.encode()).decode()
+
+
+def record_deadlines(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The deadline of every write to and read from a renderer, as the worker applied it.
+
+    The deadline tests check these rather than the wall time a call took, which a busy runner stretches past any
+    small bound: a request is bounded when every wait it made used the one deadline set before it started.
+    """
+    applied: list[float] = []
+    real_read, real_write = svg_worker._read_line, svg_worker._write_all
+
+    def read(fd: int, deadline: float) -> bytes | None:
+        applied.append(deadline)
+        return real_read(fd, deadline)
+
+    def write(fd: int, data: bytes, deadline: float) -> bool:
+        applied.append(deadline)
+        return real_write(fd, data, deadline)
+
+    monkeypatch.setattr(svg_worker, "_read_line", read)
+    monkeypatch.setattr(svg_worker, "_write_all", write)
+    return applied
+
+
+def assert_deadline_applied(applied: list[float], deadline: float, error: BaseException) -> None:
+    """Every wait of the request used *deadline*; or, if the runner stalled past the deadline before the request
+    started, it was refused before taking a renderer and made no wait at all."""
+    if not applied:
+        assert "before it started" in str(error), error
+    else:
+        assert set(applied) == {deadline}, (applied, deadline)
 
 
 def _slow_but_countable(n: int) -> str:
@@ -36,10 +69,12 @@ def test_an_ordinary_svg_renders_in_the_child_process() -> None:
 
 def test_a_child_that_runs_past_its_deadline_is_killed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 1.0)
-    start = time.monotonic()
-    with pytest.raises(DocumentProcessingError, match="timed out"):
-        svg_worker.run_bounded(_b64(_slow_but_countable(15000)), timeout=1.0)
-    assert time.monotonic() - start < 4.0
+    applied = record_deadlines(monkeypatch)
+    svg = _b64(_slow_but_countable(15000))  # built before the deadline is set, so building it uses none of it
+    deadline = time.monotonic() + 1.0
+    with pytest.raises(DocumentProcessingError, match="timed out") as err:
+        svg_worker.run_bounded(svg, deadline=deadline)
+    assert_deadline_applied(applied, deadline, err.value)
 
 
 def test_the_memory_cap_stops_an_allocation_and_is_lifted_afterwards() -> None:
@@ -160,17 +195,19 @@ def test_a_renderer_is_not_returned_to_the_pool_after_a_protocol_error(
 def test_a_kill_leaves_a_warm_spare_and_the_deadline_holds_when_cold(monkeypatch: pytest.MonkeyPatch) -> None:
     pool = svg_worker._Renderers()
     monkeypatch.setattr(svg_worker, "_renderers", pool)
-    hostile = _slow_but_countable(15000)
+    hostile = _b64(_slow_but_countable(15000))
+    applied = record_deadlines(monkeypatch)
     try:
-        start = time.monotonic()
-        with pytest.raises(DocumentProcessingError, match="timed out"):
-            svg_worker.run_bounded(_b64(hostile), timeout=2.0)  # cold renderer
-        assert time.monotonic() - start < 4.5
+        deadline = time.monotonic() + 2.0
+        with pytest.raises(DocumentProcessingError, match="timed out") as err:
+            svg_worker.run_bounded(hostile, deadline=deadline)  # cold renderer
+        assert_deadline_applied(applied, deadline, err.value)  # its start-up got no time of its own
         assert len(pool._idle) == 1 and pool._idle[0].alive()  # the spare
-        start = time.monotonic()
-        with pytest.raises(DocumentProcessingError, match="timed out"):
-            svg_worker.run_bounded(_b64(hostile), timeout=2.0)
-        assert time.monotonic() - start < 4.5
+        applied.clear()
+        deadline = time.monotonic() + 2.0
+        with pytest.raises(DocumentProcessingError, match="timed out") as err:
+            svg_worker.run_bounded(hostile, deadline=deadline)
+        assert_deadline_applied(applied, deadline, err.value)
     finally:
         pool.close_all()
 
@@ -210,11 +247,20 @@ def test_a_caller_that_finds_every_renderer_busy_gives_up_at_its_deadline(monkey
     pool = svg_worker._Renderers()
     monkeypatch.setattr(svg_worker, "_renderers", pool)
     held = [pool.acquire(time.monotonic() + 5) for _ in range(svg_worker._MAX_RENDERERS)]
+    waited_until: list[float] = []
+    real_acquire = pool.acquire
+
+    def acquire(deadline: float) -> object:
+        waited_until.append(deadline)
+        return real_acquire(deadline)
+
+    monkeypatch.setattr(pool, "acquire", acquire)
     try:
-        start = time.monotonic()
+        deadline = time.monotonic() + 1.0
         with pytest.raises(DocumentProcessingError, match="busy"):
-            svg_worker.run_bounded(_b64(GOOD), timeout=1.0)
-        assert time.monotonic() - start < 2.5
+            svg_worker.run_bounded(_b64(GOOD), deadline=deadline)
+        # The wait for a renderer was bounded by the call's own deadline, checked as applied rather than timed.
+        assert waited_until == [deadline]
     finally:
         pool.close_all()
         assert len(held) == svg_worker._MAX_RENDERERS
@@ -291,6 +337,9 @@ async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_
     import asyncio
 
     monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 0.3)
+    # The waiters' clock and their polling sleeps on one loop clock the test controls, so each deadline is exact.
+    virtual_loop_time(monkeypatch)
+    monkeypatch.setattr(svg_worker, "time", SimpleNamespace(**{**vars(time), "monotonic": asyncio.get_running_loop().time}))
     waiters = svg_worker._waiters
     for _ in range(svg_worker._MAX_RENDERERS):
         assert waiters.slots.acquire(blocking=False)
@@ -309,7 +358,8 @@ async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_
     assert all(isinstance(o, DocumentProcessingError) for o in outcomes), outcomes
     assert all("waiting for a renderer" in str(o) for o in outcomes)
     assert submitted == []
-    assert elapsed < 1.0
+    # each gave up at its own 0.3 s deadline, at the first poll past it; queued behind each other they would take 6 s
+    assert 0.3 <= elapsed <= 0.3 + svg_worker._ADMISSION_POLL_SECONDS + 1e-6
 
 
 @pytest.mark.asyncio
@@ -378,12 +428,14 @@ def test_closing_a_renderer_does_not_wait_for_a_process_that_will_not_exit(
     import threading
 
     reaped = threading.Event()
+    waits: list[tuple[float | None, int]] = []
 
     class StuckProcess:
         pid = 2**22 + 7  # nothing to signal; killpg's error is suppressed
         stdin = stdout = None
 
         def wait(self, timeout: float | None = None) -> int:
+            waits.append((timeout, threading.get_ident()))
             if timeout is not None:
                 raise subprocess.TimeoutExpired("renderer", timeout)
             reaped.set()
@@ -393,10 +445,13 @@ def test_closing_a_renderer_does_not_wait_for_a_process_that_will_not_exit(
     renderer.process = StuckProcess()  # type: ignore[assignment]
     renderer._closed = False
     monkeypatch.setattr(renderer, "release_pipes", lambda: None)
-    start = time.monotonic()
     renderer.close()
-    assert time.monotonic() - start < 1.0
-    assert reaped.wait(2), "the stuck renderer is still reaped, in the background"
+    assert reaped.wait(30), "the stuck renderer is still reaped, in the background"
+    # The caller waited only the bounded reap wait; the unbounded one ran on another thread. Checked as the waits it
+    # made, not as the wall time close() took.
+    caller = threading.get_ident()
+    assert waits[0] == (svg_worker._REAP_WAIT_SECONDS, caller)
+    assert [t for t, thread in waits if thread == caller] == [svg_worker._REAP_WAIT_SECONDS]
 
 
 def test_a_deadline_already_passed_is_refused_without_taking_a_renderer() -> None:

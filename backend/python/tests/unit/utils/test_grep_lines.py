@@ -2,12 +2,16 @@
 import pytest
 import regex
 
+from app.utils import grep_lines
 from app.utils.grep_lines import (
+    LINE_MATCH_TIMEOUT_SECS,
+    MAX_LINE_TIMEOUTS,
     MAX_SCAN_CHARS,
     ere_prefilter,
     find_matches,
     literal_prefilter,
 )
+from tests.support.recording_pattern import RecordingPattern
 
 
 def _rx(p: str) -> "regex.Pattern[str]":
@@ -63,10 +67,27 @@ def test_a_catastrophic_pattern_is_given_up_on_within_the_deadline() -> None:
 
     line = ",".join(f"v{i}_{j}" for i, j in zip(range(60), range(60)))
     blocks = [{"data": "\n".join([line] * 400)}]
-    pattern = regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE)
-    start = time.monotonic()
-    _, _, _, complete = find_matches(blocks, pattern, context_lines=0, max_matches=5, deadline=start + 1.0)
-    assert not complete and time.monotonic() - start < 1.5
+    pattern = RecordingPattern(regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE))
+    deadline = time.monotonic() + 1.0
+    _, _, _, complete = find_matches(blocks, pattern, context_lines=0, max_matches=5, deadline=deadline)
+    assert not complete
+    # The budgets the search was given, not its wall time (which a busy runner stretches): every try within the
+    # per-line limit, and the record left after at most MAX_LINE_TIMEOUTS slow lines rather than read to the deadline.
+    # A runner that stalled past the deadline before the first slow line leaves none, which is right too.
+    full = [t for t in pattern.timeouts if t is not None and t > grep_lines._QUICK_SECS]
+    assert all(t is not None and t <= LINE_MATCH_TIMEOUT_SECS for t in pattern.timeouts), pattern.timeouts
+    assert len(full) <= MAX_LINE_TIMEOUTS, pattern.timeouts
+    assert full or time.monotonic() >= deadline, pattern.timeouts
+
+
+def test_a_deadline_already_passed_reads_nothing() -> None:
+    import time
+
+    pattern = RecordingPattern(regex.compile(r"v0_0"))
+    _, total, _, complete = find_matches(
+        [{"data": "v0_0\nv0_0"}], pattern, context_lines=0, max_matches=5, deadline=time.monotonic() - 1.0,
+    )
+    assert (total, complete, pattern.timeouts) == (0, False, [])
 
 
 def test_a_passed_deadline_reads_nothing_and_says_so() -> None:

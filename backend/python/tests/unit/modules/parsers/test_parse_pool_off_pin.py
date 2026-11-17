@@ -38,6 +38,8 @@ TRACE = json.loads(FIXTURE.read_text())
 
 # What may differ from the recorded source, and why. Everything else is pinned.
 PARSE_POOL_ALLOWED = {
+    "import:from app.capacity.admission import reserve_or_adopt, reserve_or_adopt_blocking",  # the member permit helpers (auto only)
+    "import:from app.capacity.budget_policy import Demand, Family",
     "import:from app.services.resource_governor.lanes import parse_lanes_mode",  # the mode switch
     "if:TYPE_CHECKING",  # a type-only import of the lane pool
     "assign:__all__",  # pool_stats
@@ -46,7 +48,16 @@ PARSE_POOL_ALLOWED = {
     "_Worker.__init__",  # extra_env, empty in off
     "_Lane._start_worker", "_Lane._new_worker",  # the one-line hook
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
+    "class _EventToken", "_EventToken.__init__", "_EventToken.cancelled", "_EventToken:Expr", "_capacity_timeout",  # the same flag: a cancel event seen as the ledger's token, and the requeue-uncounted timeout of a capacity wait
+    "import:import dataclasses",  # the lane's demand carries the worker's memory charge (the flag only)
+    "import:import contextvars",  # the thread fallback keeps its permit past a cancelled caller (the flag only)
+    "import:from app.capacity.member_budget import AdmissionTimeout, Cancelled",  # the ledger's own exception types, caught only around the optional reservation
+    "run_blocking", "_run_blocking", "_lane_demand", "assign:_LANE_WAIT_S",  # PIPESHUB_CAPACITY_PROFILE=auto only: an optional permit, adopted or reserved; without the flag nothing is held and the old body runs (test_member_permits)
     "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
+    "import:from app.modules.parse_engine import pools as class_pools",  # PARSE_ADMISSION=classes: the pool routing and the lane permit
+    "import:from app.modules.parse_engine import wiring",
+    "_ParsePool.__init__", "_ParsePool._make_lane",  # one lane factory hook; the default factory builds the same _Lane (test_parse_pool_classes::test_default_lane_factory_is_the_legacy_lane)
+    "set_resource_governor",  # refuses PARSE_LANES=on with PARSE_ADMISSION=classes; a no-op with the flag off
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
 }
 TABLE_DETECTOR_ALLOWED = {
