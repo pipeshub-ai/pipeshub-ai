@@ -119,12 +119,13 @@ def raise_if_odf_encrypted(content: bytes) -> None:
         raise PasswordProtectedError(PASSWORD_PROTECTED_MESSAGE, details={"format": "odt"})
 
 
-def pdfium_password_error(exc: BaseException) -> bool:
+def _pdfium_password_error(exc: BaseException) -> bool:
     """Whether *exc* is pdfium refusing a PDF for want of a password.
 
-    Only trustworthy for an error raised by ``open_pdfium_document``: a plain
-    ``pypdfium2.PdfDocument`` open that fails without pdfium setting an error
-    carries the code left by whatever failed last in the thread.
+    Only trustworthy for the error of an open made by ``open_pdfium_document``,
+    which is the only caller: a plain ``pypdfium2.PdfDocument`` open that fails
+    without pdfium setting an error carries the code left by whatever failed
+    last in the thread.
     """
     import pypdfium2
     import pypdfium2.raw as pdfium_raw
@@ -135,7 +136,11 @@ def pdfium_password_error(exc: BaseException) -> bool:
 
 
 def open_pdfium_document(source: object, password: str | None = None) -> pypdfium2.PdfDocument:
-    """``pypdfium2.PdfDocument(source)``, whose failure carries this open's own error code.
+    """``pypdfium2.PdfDocument(source)``, refusing a locked file as ``PasswordProtectedError``.
+
+    Raises ``PasswordProtectedError`` when pdfium needs a password it was not
+    given, and ``pypdfium2.PdfiumError`` when it cannot open *source* for any
+    other reason. Callers must not read pdfium's error code themselves.
 
     pdfium fails some loads (a PDF with no pages) without setting an error, and pypdfium2 then
     reports the thread's previous code: a worker that read a locked file just before would call
@@ -148,7 +153,14 @@ def open_pdfium_document(source: object, password: str | None = None) -> pypdfiu
 
     with contextlib.suppress(pypdfium2.PdfiumError):
         pypdfium2.PdfDocument(b"x")
-    return pypdfium2.PdfDocument(source, password=password)
+    try:
+        return pypdfium2.PdfDocument(source, password=password)
+    except pypdfium2.PdfiumError as exc:
+        if _pdfium_password_error(exc):
+            raise PasswordProtectedError(
+                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
+            ) from exc
+        raise
 
 
 def raise_if_pdf_needs_password(content: bytes) -> None:
@@ -159,11 +171,9 @@ def raise_if_pdf_needs_password(content: bytes) -> None:
     """
     try:
         document = open_pdfium_document(content)
-    except Exception as exc:
-        if pdfium_password_error(exc):
-            raise PasswordProtectedError(
-                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
-            ) from exc
+    except PasswordProtectedError:
+        raise
+    except Exception:
         return
     document.close()
 
