@@ -58,6 +58,7 @@ class TestHostReader:
         (proc / "stat").write_text("cpu  150 0 0 950 0 0 0 0\n")
         sample = reader.read()
         assert sample.cpu_util == pytest.approx(0.5)
+        assert sample.cpu_counters == (150, 1100)
         assert sample.mem_total == 16384000 * 1024
         assert sample.mem_available == 8192000 * 1024
         assert sample.source == "host"

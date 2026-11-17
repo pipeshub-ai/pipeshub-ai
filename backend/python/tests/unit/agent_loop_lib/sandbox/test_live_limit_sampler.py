@@ -54,6 +54,24 @@ class TestSharedSteps:
         assert a.sample_once() is None
         assert (ra.reads, rb.reads) == (1, 1)
 
+    def test_cpu_use_is_measured_since_the_last_step_whichever_worker_took_it(self, tmp_path: Path) -> None:
+        # Each worker's own previous reading is several steps old when the
+        # workers take turns; the record keeps the counters of the last step.
+        clock = FakeClock()
+        ra = FakeReader(sample(7.0, cpu_util=0.1, cpu_counters=(100, 1000)))
+        rb = FakeReader(sample(7.0, cpu_util=0.1, cpu_counters=(1090, 2000)))
+        a, b = _live(tmp_path, clock, ra), _live(tmp_path, clock, rb)
+        first = a.sample_once()
+        assert first is not None and first.cpu_high_streak == 0
+        assert (first.cpu_busy, first.cpu_total) == (100, 1000)
+        clock.now += 13
+        second = b.sample_once()
+        assert second is not None and second.cpu_high_streak == 1
+        clock.now += 13
+        ra.sample = sample(7.0, cpu_util=0.1, cpu_counters=(1190, 3000))
+        third = a.sample_once()
+        assert third is not None and third.cpu_high_streak == 0
+
     def test_the_other_worker_sees_the_limit_within_a_second(self, tmp_path: Path) -> None:
         clock = FakeClock()
         reader = FakeReader(sample(7.0))

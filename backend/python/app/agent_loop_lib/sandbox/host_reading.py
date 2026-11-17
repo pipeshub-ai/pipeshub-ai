@@ -81,6 +81,9 @@ class HostSample:
     cpu_throttled_ratio: float | None = None
     mem_oom_events: int | None = None
     source: Source | None = None
+    # ``(busy, total)`` jiffies, so the live limit can measure CPU use since
+    # the last step, which another worker may have taken.
+    cpu_counters: tuple[int, int] | None = None
 
 
 class Reader(Protocol):
@@ -182,7 +185,7 @@ class HostReader:
             mem_total=total, mem_available=available, cpu_util=util,
             cpu_psi_some_avg10=_psi_avg10(_read(pressure / "cpu"), "some"),
             mem_psi_full_avg10=_psi_avg10(_read(pressure / "memory"), "full"),
-            source="host",
+            source="host", cpu_counters=cpu,
         )
 
 

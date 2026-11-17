@@ -18,7 +18,7 @@ RECORD = LiveRecord(
     owner_pid=4321, last_step_at=12.5, cooldown_until=42.5, cpu_high_streak=1, in_slow_start=True,
     slow_start_step=2, last_wait_limit_at=11.0, last_wait_mem_at=3.0, wait_events=9,
     charges=((17.5, 2**29), (19.0, 2**28)), sample_at=12.5, last_valid_at=12.5,
-    mem_total=16 * 2**30, mem_available=4 * 2**30,
+    mem_total=16 * 2**30, mem_available=4 * 2**30, cpu_busy=12345, cpu_total=67890,
 )
 
 

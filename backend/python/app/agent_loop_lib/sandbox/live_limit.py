@@ -232,6 +232,20 @@ def _add_charge(
     return tuple(merged)
 
 
+def _shared_cpu(sample: HostSample | None, rec: LiveRecord | None) -> HostSample | None:
+    """*sample* with its CPU use measured from the counters of the last
+    step, whichever worker took it, rather than from this worker's own
+    previous reading, which is several steps old when workers take turns."""
+    if sample is None or sample.cpu_counters is None or rec is None or rec.cpu_total <= 0:
+        return sample
+    d_busy = sample.cpu_counters[0] - rec.cpu_busy
+    d_total = sample.cpu_counters[1] - rec.cpu_total
+    if d_total <= 0 or d_busy < 0:
+        # The counters restarted (a reboot): keep this worker's own reading.
+        return sample
+    return replace(sample, cpu_util=min(1.0, d_busy / d_total))
+
+
 def _sample_fields(sample: HostSample, now: float) -> dict[str, Any]:
     return {
         "sample_at": now, "last_valid_at": now,
@@ -597,6 +611,7 @@ class LiveLimit:
             rec = txn.read()
             if self._fresh_step(rec, now):
                 return None
+            sample = _shared_cpu(sample, rec)
             lost = self._lost(rec, now)
             usable = _usable(sample)
             k = 1.0 if lost and not usable else self._overcommit
@@ -615,6 +630,8 @@ class LiveLimit:
             else:
                 new = step(rec, sample, **kwargs)
             new = replace(new, owner_pid=self._pid)
+            if sample is not None and sample.cpu_counters is not None:
+                new = replace(new, cpu_busy=sample.cpu_counters[0], cpu_total=sample.cpu_counters[1])
             txn.write(new)
         self._log_step(rec, new, sample, m, now)
         return new

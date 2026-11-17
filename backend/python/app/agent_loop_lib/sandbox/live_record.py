@@ -51,8 +51,8 @@ _HEADER = struct.Struct("<8sII")
 # limit ceiling min target slow_start_step cpu_high_streak (H), rule
 # shrink_cause in_slow_start (B), owner_pid wait_events (I), stamp
 # last_step_at cooldown_until last_wait_limit_at last_wait_mem_at sample_at
-# last_valid_at (d), mem_total mem_available (Q).
-_BODY = struct.Struct("<6H3B2I7d2Q")
+# last_valid_at (d), mem_total mem_available cpu_busy cpu_total (Q).
+_BODY = struct.Struct("<6H3B2I7d4Q")
 # One burst charge: until (d), bytes (Q).
 _CHARGE = struct.Struct("<dQ")
 BURST_SLOTS = 8
@@ -92,6 +92,9 @@ class LiveRecord:
     last_valid_at: float = 0.0
     mem_total: int | None = None
     mem_available: int | None = None
+    # The CPU counters (jiffies) at the last step; 0 when there are none.
+    cpu_busy: int = 0
+    cpu_total: int = 0
 
     @property
     def initialised(self) -> bool:
@@ -115,6 +118,7 @@ class LiveRecord:
             self.stamp, self.last_step_at, self.cooldown_until, self.last_wait_limit_at,
             self.last_wait_mem_at, self.sample_at, self.last_valid_at,
             nbytes(self.mem_total), nbytes(self.mem_available),
+            nbytes(self.cpu_busy), nbytes(self.cpu_total),
         )
         raw = bytearray(RECORD_SIZE)
         raw[_HEADER.size:_HEADER.size + len(body)] = body
@@ -140,7 +144,7 @@ class LiveRecord:
             return None
         (limit, ceiling, minimum, target, slow_step, cpu_streak, rule, cause, slow,
          owner, waits, stamp, last_step, cooldown, wait_limit, wait_mem,
-         sample_at, last_valid, total, available) = _BODY.unpack_from(data, _HEADER.size)
+         sample_at, last_valid, total, available, cpu_busy, cpu_total) = _BODY.unpack_from(data, _HEADER.size)
         if rule >= len(RULES) or cause >= len(_CAUSES):
             return None
         charges = []
@@ -157,6 +161,7 @@ class LiveRecord:
             wait_events=waits, charges=tuple(charges), sample_at=sample_at, last_valid_at=last_valid,
             mem_total=None if total == _NO_BYTES else total,
             mem_available=None if available == _NO_BYTES else available,
+            cpu_busy=cpu_busy, cpu_total=cpu_total,
         )
 
 
