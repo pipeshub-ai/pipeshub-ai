@@ -404,3 +404,14 @@ def mock_config_service():
 def mock_blob_store():
     """Mock BlobStorage."""
     return MagicMock()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """``stress`` tests are probabilistic load tests: they run on request (``-m stress`` or
+    ``RUN_STRESS_TESTS=1``), never in a shared runner's unit job."""
+    if os.environ.get("RUN_STRESS_TESTS") == "1" or "stress" in (config.getoption("-m") or ""):
+        return
+    skip = pytest.mark.skip(reason="a stress test: run with -m stress or RUN_STRESS_TESTS=1")
+    for item in items:
+        if "stress" in item.keywords:
+            item.add_marker(skip)

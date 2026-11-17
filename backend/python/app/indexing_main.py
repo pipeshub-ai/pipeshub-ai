@@ -144,6 +144,7 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
+from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
@@ -2898,6 +2899,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app_container.resource_governor = governor
     attach_parse_admission_config(app_container.config_service())
     governor_task = asyncio.create_task(governor.run())
+    ops_exporter = exporter_from_env(governor, "indexing")
+    if ops_exporter is not None:
+        ops_exporter.start()
     # With several worker processes, each claims a cell index and publishes its stats, so that
     # whichever worker answers /health serves every cell's.
     await _start_cell(app, governor)
@@ -3245,6 +3249,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
+    if ops_exporter is not None:
+        ops_exporter.stop()
 
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
