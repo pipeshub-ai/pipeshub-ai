@@ -432,12 +432,16 @@ async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
     peak = 0
     lock = threading.Lock()
 
+    all_up = threading.Event()
+
     def inspect() -> int:
         nonlocal running, peak
         with lock:
             running += 1
             peak = max(peak, running)
-        time.sleep(0.3)
+            if running == 12:
+                all_up.set()
+        all_up.wait(10)  # held until all twelve have started (bounded: insufficient admission fails, it does not hang)
         with lock:
             running -= 1
         return 1
@@ -445,5 +449,6 @@ async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
     try:
         await asyncio.gather(*(parse_pool.submit(inspect, kind=ParseKind.INSPECT, size=1 << 20) for _ in range(12)))
     finally:
+        all_up.set()
         executor.shutdown(wait=True)
     assert peak == 12  # at 1.25 GiB each only 6 fit an 8 GiB ledger
