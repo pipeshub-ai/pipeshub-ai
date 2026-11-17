@@ -105,6 +105,14 @@ _ALLOWED_NETWORK_OPTIONS = frozenset({"com.docker.network.bridge.enable_icc"})
 _ALLOWED_RUNTIMES = frozenset({"", "runc", "runsc"})
 
 _ALLOWED_LOG_DRIVERS = frozenset({"json-file", "local"})
+# LogConfig.Config may only bound the log files' size: both drivers rotate on
+# these two keys, and the bounds keep one container's logs at 500 MiB at most.
+_LOG_MAX_SIZE_BYTES = 100 * 1024 * 1024
+_LOG_MAX_FILES = 5
+# The daemon's own size syntax (go-units RAMInBytes), binary units.
+_LOG_SIZE = re.compile(r"([0-9]{1,12}(?:\.[0-9]{1,6})?) ?([kKmMgG]?)[iI]?[bB]?")
+_LOG_FILES = re.compile(r"[0-9]{1,2}")
+_LOG_SIZE_UNITS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
 
 # Docker decodes bodies with Go's encoding/json, which matches struct fields
 # case-insensitively, while the checks below read exact keys. So in every object
@@ -142,6 +150,10 @@ _NETWORKING_CONFIG_FIELDS = frozenset({"EndpointsConfig"})
 # the EndpointsConfig key the policy checks, so a NetworkID would join any
 # network on the daemon (another stack's, the default bridge).
 _ENDPOINT_FIELDS = frozenset({"Aliases", "Links", "IPAMConfig", "DriverOpts", "MacAddress"})
+# Non-empty values of these are refused: an alias registers a DNS name on a
+# bridge other stacks may share, and a link names a container the daemon
+# looks up at start, whichever stack owns it.
+_ENDPOINT_EMPTY_FIELDS = ("Aliases", "Links")
 # Closed: what docker-py's networks.create can send.
 _NETWORK_CREATE_FIELDS = frozenset({
     "Name", "CheckDuplicate", "Driver", "Options", "IPAM", "Internal", "Labels",
@@ -173,7 +185,11 @@ _VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)?(?=/)")
 # policy checks: a form body on /images/create turns a pull of the allowed
 # image into an import from any URL, tagged as the allowed image.
 _FORM_CONTENT_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
-_CHUNK_SIZE = re.compile(rb"[0-9A-Fa-f]{1,16}")
+# A chunk-size line is the hex size and CRLF only: chunk extensions and
+# trailers are refused (Docker clients send neither), so every byte the proxy
+# forwards is either data or this fixed framing.
+_CHUNK_SIZE_LINE = re.compile(rb"([0-9A-Fa-f]{1,16})\r\n")
+_CONTENT_LENGTH = re.compile(r"[0-9]{1,19}")
 _CONTAINER_IN_TARGET = re.compile(r"^((?:/v\d+(?:\.\d+)?)?/containers/)[^/?]+")
 _NETWORK_IN_TARGET = re.compile(r"^((?:/v\d+(?:\.\d+)?)?/networks/)[^/?]+")
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
@@ -280,6 +296,35 @@ def _positive_env(env: Mapping[str, str], key: str, default: float, cast: Callab
     return value
 
 
+def _log_options(raw: object) -> dict[str, str]:
+    """``HostConfig.LogConfig.Config`` as forwarded: only ``max-size`` (a
+    size of 1 byte to 100 MiB, as the daemon writes it: ``10m``, ``1.5MiB``)
+    and ``max-file`` (1 to 5), as strings. Anything else is refused."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise PolicyDenied("HostConfig.LogConfig.Config must be an object")
+    extra = set(raw) - {"max-size", "max-file"}
+    if extra:
+        raise PolicyDenied(f"log options {sorted(map(str, extra))} are not permitted")
+    out: dict[str, str] = {}
+    size = raw.get("max-size")
+    if size is not None:
+        m = _LOG_SIZE.fullmatch(size) if isinstance(size, str) else None
+        n = float(m.group(1)) * _LOG_SIZE_UNITS[m.group(2).lower()] if m else 0
+        if not 1 <= n <= _LOG_MAX_SIZE_BYTES:
+            raise PolicyDenied(
+                f"log option max-size must be a size of at most {_LOG_MAX_SIZE_BYTES // (1024 * 1024)}m"
+            )
+        out["max-size"] = size
+    files = raw.get("max-file")
+    if files is not None:
+        if not (isinstance(files, str) and _LOG_FILES.fullmatch(files) and 0 < int(files) <= _LOG_MAX_FILES):
+            raise PolicyDenied(f"log option max-file must be 1 to {_LOG_MAX_FILES}")
+        out["max-file"] = files
+    return out
+
+
 def _json_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -384,7 +429,7 @@ class DockerApiPolicy:
             ref = unquote(m.group(1))
             if not self.image_allowed(ref):
                 raise PolicyDenied(f"inspecting image {ref!r} is not permitted")
-            return Route("allow")
+            return Route("image_inspect")
 
         if path == "/networks" and method == "GET":
             return Route("network_list")
@@ -477,8 +522,7 @@ class DockerApiPolicy:
         log_driver = log_config.get("Type") or "local"
         if log_driver not in _ALLOWED_LOG_DRIVERS:
             raise PolicyDenied(f"log driver {log_driver!r} is not permitted")
-        if log_config.get("Config"):
-            raise PolicyDenied("HostConfig.LogConfig.Config is not permitted")
+        log_options = _log_options(log_config.get("Config"))
 
         network_mode = host.get("NetworkMode") or ""
         if network_mode != "none" and network_mode not in self.allowed_networks:
@@ -492,7 +536,10 @@ class DockerApiPolicy:
         for name, endpoint in endpoints.items():
             if name not in self.allowed_networks:
                 raise PolicyDenied(f"network {name!r} is not permitted")
-            _struct_object(endpoint, _ENDPOINT_FIELDS, f"EndpointsConfig[{name!r}]", closed=True)
+            settings = _struct_object(endpoint, _ENDPOINT_FIELDS, f"EndpointsConfig[{name!r}]", closed=True)
+            for key in _ENDPOINT_EMPTY_FIELDS:
+                if settings.get(key):
+                    raise PolicyDenied(f"EndpointsConfig[{name!r}].{key} is not permitted")
 
         swap = self._check_resources(host)
 
@@ -506,7 +553,7 @@ class DockerApiPolicy:
         labels[INSTANCE_LABEL] = instance
         return {
             **body,
-            "HostConfig": {**host, "MemorySwap": swap, "LogConfig": {"Type": log_driver, "Config": {}}},
+            "HostConfig": {**host, "MemorySwap": swap, "LogConfig": {"Type": log_driver, "Config": log_options}},
             "Labels": labels,
         }
 
@@ -589,7 +636,9 @@ class DockerApiPolicy:
         labels = dict(raw_labels)
         labels[MANAGED_LABEL] = "true"
         labels[INSTANCE_LABEL] = instance
-        return {**body, "Labels": labels}
+        # An explicit false: docker-py omits a false EnableIPv6, and newer
+        # daemons then apply their default-network-opts, which may turn it on.
+        return {**body, "EnableIPv6": False, "Labels": labels}
 
 
 def _local_route(method: str, path: str, query: Mapping[str, list[str]]) -> Route:
@@ -886,13 +935,11 @@ class _Request:
         raw = self.header("content-length")
         if raw is None:
             return 0
-        try:
-            n = int(raw)
-        except ValueError as exc:
-            raise PolicyDenied("invalid Content-Length") from exc
-        if n < 0:
+        # Decimal digits only: int() would also take "+1", "1_0" and
+        # non-ASCII digits, which the daemon reads differently or not at all.
+        if not _CONTENT_LENGTH.fullmatch(raw):
             raise PolicyDenied("invalid Content-Length")
-        return n
+        return int(raw)
 
 
 async def _read_head(reader: asyncio.StreamReader) -> bytes:
@@ -936,27 +983,45 @@ def _parse_request_head(raw: bytes) -> _Request:
 
 
 def _chunk_size(size_line: bytes) -> int:
-    """The size of a chunk, read as strictly as the daemon reads it: Python's
-    ``int(x, 16)`` would also take ``0x``, ``+``, ``-`` and ``_``."""
-    raw = size_line.split(b";", 1)[0].strip(b" \t\r\n")
-    if not _CHUNK_SIZE.fullmatch(raw):
-        raise PolicyDenied("malformed chunk size")
-    return int(raw, 16)
+    """The size of a chunk from its CRLF-terminated size line. Stricter than
+    the daemon: Python's ``int(x, 16)`` would also take ``0x``, ``+``, ``-``
+    and ``_``, and chunk extensions, whitespace and bare CR or LF are
+    refused outright."""
+    m = _CHUNK_SIZE_LINE.fullmatch(size_line)
+    if not m:
+        raise PolicyDenied("malformed chunk size line (chunk extensions are not permitted)")
+    return int(m.group(1), 16)
+
+
+async def _size_line(reader: asyncio.StreamReader, idle_s: float | None = None) -> bytes:
+    try:
+        return await _idle(reader.readuntil(b"\r\n"), idle_s)
+    except asyncio.LimitOverrunError as exc:
+        raise PolicyDenied("malformed chunk size line") from exc
+
+
+async def _end_of_chunks(reader: asyncio.StreamReader, idle_s: float | None = None) -> None:
+    """Read the CRLF after the last chunk; trailers are refused."""
+    if await _idle(reader.readexactly(2), idle_s) != b"\r\n":
+        raise PolicyDenied("chunked trailers are not permitted")
+
+
+async def _end_of_chunk(reader: asyncio.StreamReader, idle_s: float | None = None) -> None:
+    if await _idle(reader.readexactly(2), idle_s) != b"\r\n":
+        raise PolicyDenied("malformed chunk: data is not followed by CRLF")
 
 
 async def _read_chunked(reader: asyncio.StreamReader, limit: int) -> bytes:
     body = bytearray()
     while True:
-        size_line = await reader.readuntil(b"\r\n")
-        size = _chunk_size(size_line)
+        size = _chunk_size(await _size_line(reader))
         if size == 0:
-            while (await reader.readuntil(b"\r\n")) != b"\r\n":
-                pass
+            await _end_of_chunks(reader)
             return bytes(body)
         if len(body) + size > limit:
             raise PolicyDenied("request body too large")
         body += await reader.readexactly(size)
-        await reader.readexactly(2)
+        await _end_of_chunk(reader)
 
 
 class BodyTooLarge(PolicyDenied):
@@ -971,32 +1036,39 @@ async def _pipe_chunked(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *,
     limit: int | None = None, idle_s: float | None = None,
 ) -> None:
-    """Forward a chunked body verbatim, stopping after the terminating chunk.
-    More than ``limit`` body bytes raises ``BodyTooLarge``; ``idle_s`` bounds
-    each wait for the client."""
+    """Forward a chunked body, stopping after the terminating chunk. Every
+    forwarded byte, framing included, counts toward ``limit``; past it
+    ``BodyTooLarge`` is raised. ``idle_s`` bounds each wait for the client."""
     total = 0
-    while True:
-        size_line = await _idle(reader.readuntil(b"\r\n"), idle_s)
-        size = _chunk_size(size_line)
-        total += size
+
+    def count(n: int) -> None:
+        nonlocal total
+        total += n
         if limit is not None and total > limit:
             raise BodyTooLarge("request body too large")
+
+    while True:
+        # A valid size line is at most 16 hex digits and CRLF; anything else
+        # is refused before it is forwarded.
+        size_line = await _size_line(reader, idle_s)
+        size = _chunk_size(size_line)
+        count(len(size_line) + size + 2)
         writer.write(size_line)
         if size == 0:
-            while True:
-                trailer = await _idle(reader.readuntil(b"\r\n"), idle_s)
-                writer.write(trailer)
-                if trailer == b"\r\n":
-                    break
+            await _end_of_chunks(reader, idle_s)
+            writer.write(b"\r\n")
             await writer.drain()
             return
-        remaining = size + 2
+        remaining = size
         while remaining:
             chunk = await _idle(reader.read(min(remaining, _COPY_CHUNK)), idle_s)
             if not chunk:
                 raise asyncio.IncompleteReadError(b"", remaining)
             writer.write(chunk)
             remaining -= len(chunk)
+            await writer.drain()
+        await _end_of_chunk(reader, idle_s)
+        writer.write(b"\r\n")
         await writer.drain()
 
 
@@ -1033,13 +1105,48 @@ def _error_response(status: int, reason: str, message: str) -> bytes:
     return head + body
 
 
-# The /info fields the app sizes the sandbox ceiling from. Raw /info also
-# carries daemon labels, registry mirrors and HTTP(S)_PROXY settings (which can
-# hold credentials), swarm and plugin details, and every container's count.
+# The /info fields the app sizes the sandbox ceiling from, and the storage
+# driver it decides disk-quota enforcement from. Raw /info also carries daemon
+# labels, registry mirrors and HTTP(S)_PROXY settings (which can hold
+# credentials), swarm and plugin details, and every container's count.
 INFO_FIELDS = (
     "NCPU", "MemTotal", "KernelVersion", "OperatingSystem", "OSType", "Architecture",
-    "ServerVersion", "CgroupVersion", "CgroupDriver", "Driver",
+    "ServerVersion", "CgroupVersion", "CgroupDriver", "Driver", "DriverStatus",
 )
+# The DriverStatus entries passed through: the backing filesystem, and the
+# driver type that marks a containerd snapshotter (which accepts a size quota
+# without enforcing it). The rest can name host paths and pool devices.
+_DRIVER_STATUS_KEYS = frozenset({"backing filesystem", "driver-type"})
+
+
+def filter_info(info: Mapping[str, Any]) -> dict[str, Any]:
+    """The client's view of ``/info``: ``INFO_FIELDS`` only. ``DriverStatus``
+    is always present (a list, possibly empty) and keeps only the entries in
+    ``_DRIVER_STATUS_KEYS``."""
+    out = {k: info[k] for k in INFO_FIELDS if k in info and k != "DriverStatus"}
+    status = info.get("DriverStatus")
+    out["DriverStatus"] = [
+        [pair[0], pair[1]] for pair in status if isinstance(pair, (list, tuple)) and len(pair) == 2
+        and isinstance(pair[0], str) and isinstance(pair[1], str)
+        and pair[0].lower() in _DRIVER_STATUS_KEYS
+    ] if isinstance(status, list) else []
+    return out
+
+
+# Image inspect as answered to clients: what docker-py's Image object reads
+# (id, tags, labels in Config) and the platform. Dropped: GraphDriver (host
+# paths of the layers), the build's Container id and ContainerConfig, Parent,
+# Metadata and RootFS.
+IMAGE_FIELDS = (
+    "Id", "RepoTags", "RepoDigests", "Created", "Architecture", "Variant", "Os",
+    "OsVersion", "Size", "Config",
+)
+
+
+def filter_image(image: object) -> object:
+    if not isinstance(image, dict):
+        return image
+    return {k: image[k] for k in IMAGE_FIELDS if k in image}
 
 
 _REASONS = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 500: "Internal Server Error"}
@@ -1232,6 +1339,10 @@ class DockerSocketProxy:
         if not isinstance(network, dict):
             return network, own
         out = {k: v for k, v in network.items() if k not in _NETWORK_FOREIGN_KEYS}
+        # Labels name the stack that created the network (its instance).
+        labels = network.get("Labels")
+        if "Labels" in network and not (isinstance(labels, dict) and labels.get(INSTANCE_LABEL) == self.instance):
+            out["Labels"] = {}
         attached = network.get("Containers")
         if isinstance(attached, dict) and attached:
             if own is None:
@@ -1346,7 +1457,7 @@ class DockerSocketProxy:
             if status != 200 or not isinstance(info, dict):
                 await _safe_write(client_w, _error_response(502, "Bad Gateway", "docker-proxy: upstream /info failed"))
                 return
-            await _safe_write(client_w, _json_response({k: info[k] for k in INFO_FIELDS if k in info}))
+            await _safe_write(client_w, _json_response(filter_info(info)))
             return
 
         body: bytes | None = None
@@ -1372,6 +1483,10 @@ class DockerSocketProxy:
             # Address the container by the id we checked, so a name reused
             # between the check and the call cannot redirect it.
             target = _CONTAINER_IN_TARGET.sub(rf"\g<1>{full_id}", target, count=1)
+        elif route.kind == "image_inspect":
+            status, image = await self._upstream_call_capped(target)
+            await _safe_write(client_w, _json_response(filter_image(image) if status == 200 else image, status))
+            return
         elif route.kind == "network_list":
             status, listed = await self._filtered_networks(target, single=False)
             await _safe_write(client_w, _json_response(listed, status))

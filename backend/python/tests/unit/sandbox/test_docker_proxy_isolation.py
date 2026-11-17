@@ -70,6 +70,10 @@ class _Daemon:
             "othernet": {"Id": "othernet", "Name": "stack-b_default", "Labels": {}, "Containers": {}},
         }
 
+    def answer(self, method: str, parts: list[str]) -> tuple[str, object] | None:
+        """A subclass's own ``(status, payload)`` for a request, or None."""
+        return None
+
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head = (await reader.readuntil(b"\r\n\r\n")).decode()
         method, target, _ = head.split("\r\n")[0].split(" ")
@@ -98,7 +102,10 @@ class _Daemon:
         if parts and parts[0].startswith("v1."):
             parts = parts[1:]
         status, payload = "200 OK", {"ok": True}
-        if parts == ["networks"]:
+        answer = self.answer(method, parts)
+        if answer is not None:
+            status, payload = answer
+        elif parts == ["networks"]:
             payload = list(self.networks.values())
         elif parts[:1] == ["networks"] and len(parts) == 2 and method == "GET":
             net = self.networks.get(parts[1]) or next(

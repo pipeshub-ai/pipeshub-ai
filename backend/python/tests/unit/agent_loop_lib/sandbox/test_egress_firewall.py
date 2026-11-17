@@ -9,6 +9,7 @@ import pytest
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     BLOCKED_CIDRS,
     FIREWALL_UNAVAILABLE_EXIT_CODE,
+    EgressNetworkUnsafe,
     build_firewall_script,
     ensure_egress_network_sync,
     firewall_unavailable,
@@ -179,13 +180,14 @@ class TestEnsureEgressNetwork:
         legacy.remove.assert_called_once()
         client.networks.create.assert_called_once()
 
-    def test_in_use_network_with_icc_on_is_kept(self) -> None:
+    def test_in_use_network_with_icc_on_is_refused(self) -> None:
         client = MagicMock()
         legacy = _network("egress", icc_off=False, containers={"c": {}})
         client.networks.list.return_value = [legacy]
         client.networks.get.return_value = legacy
 
-        assert ensure_egress_network_sync(client, "egress", {}) == ["172.30.0.0/16"]
+        with pytest.raises(EgressNetworkUnsafe, match="inter-container traffic"):
+            ensure_egress_network_sync(client, "egress", {})
         legacy.remove.assert_not_called()
         client.networks.create.assert_not_called()
 

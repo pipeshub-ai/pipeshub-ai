@@ -111,7 +111,6 @@ class TestRouting:
     @pytest.mark.parametrize("method,target", [
         ("GET", "/_ping"), ("HEAD", "/_ping"), ("GET", "/v1.43/version"),
         ("POST", "/v1.43/images/create?fromImage=pipeshubai%2Fpipeshub-sandbox&tag=latest"),
-        ("GET", "/v1.43/images/pipeshubai/pipeshub-sandbox:latest/json"),
     ])
     def test_plain_allow(self, policy: DockerApiPolicy, method: str, target: str) -> None:
         assert policy.route(method, target).kind == "allow"
@@ -347,7 +346,8 @@ class TestNetworkCreate:
             labels={"pipeshub.sandbox": "egress"}, check_duplicate=True,
         )
         assert policy.check_network_create(body, "stack-a") == {
-            **body, "Labels": {**body["Labels"], MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-a"},
+            **body, "EnableIPv6": False,
+            "Labels": {**body["Labels"], MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-a"},
         }
 
     def test_refuses_ipv6(self, policy: DockerApiPolicy) -> None:
@@ -596,7 +596,9 @@ class TestProxyServer:
         resp = await _request(port, b"GET /v1.47/info HTTP/1.1\r\nHost: x\r\n\r\n")
         assert resp.startswith(b"HTTP/1.1 200")
         body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
-        assert body == {"NCPU": 4, "MemTotal": 16 * 2**30, "KernelVersion": "6.8.0", "Driver": "overlay2"}
+        assert body == {
+            "NCPU": 4, "MemTotal": 16 * 2**30, "KernelVersion": "6.8.0", "Driver": "overlay2", "DriverStatus": [],
+        }
         assert daemon.requests[-1][:2] == ("GET", "/info")
 
     @pytest.mark.parametrize("upstream", [

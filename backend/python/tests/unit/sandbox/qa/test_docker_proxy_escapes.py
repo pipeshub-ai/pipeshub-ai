@@ -212,7 +212,7 @@ class TestNetworkEscapes:
         with pytest.raises(PolicyDenied):
             policy.check_container_create(body, "stack-a")
 
-    @pytest.mark.parametrize("endpoint", [None, {}, {"Aliases": ["a"]}, {"IPAMConfig": None}])
+    @pytest.mark.parametrize("endpoint", [None, {}, {"Aliases": []}, {"IPAMConfig": None}])
     def test_plain_endpoint_settings_are_admitted(self, policy: DockerApiPolicy, endpoint: object) -> None:
         body = _body({"NetworkMode": EGRESS}, NetworkingConfig={"EndpointsConfig": {EGRESS: endpoint}})
         policy.check_container_create(body, "stack-a")
@@ -303,7 +303,7 @@ class TestRouteEscapes:
     def test_image_names_with_dots_are_still_routed(self, policy: DockerApiPolicy) -> None:
         p = DockerApiPolicy(allowed_images=frozenset({"registry.example.com/a.b/sandbox:1.2"}),
                             allowed_networks=frozenset({EGRESS}))
-        assert p.route("GET", "/v1.43/images/registry.example.com/a.b/sandbox:1.2/json").kind == "allow"
+        assert p.route("GET", "/v1.43/images/registry.example.com/a.b/sandbox:1.2/json").kind == "image_inspect"
 
 
 # --- Through the server -------------------------------------------------------

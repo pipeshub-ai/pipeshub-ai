@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
+    EgressNetworkUnsafe,
     build_firewall_script,
     ensure_egress_network_sync,
 )
@@ -31,28 +32,61 @@ _ROUTES = (
 )
 
 
-def _rules(tmp_path: Path, network_cidrs: list[str], allowed: list[str], routes: str = _ROUTES) -> list[str]:
-    """Run the script under ``sh`` with a recording ``iptables`` and return
-    the rules it installed, in order."""
+def _run(
+    tmp_path: Path, network_cidrs: list[str], allowed: list[str], routes: str | None = _ROUTES,
+    *, ipv6: dict[str, str] | None = None, ip6tables: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
+    """Run the script under ``sh`` with recording ``iptables``/``ip6tables``
+    and return the result and the IPv4 and IPv6 rules it installed, in order.
+
+    ``routes`` None leaves the route table unreadable. ``ipv6`` maps an
+    interface to its ``disable_ipv6`` value (None: the kernel has no IPv6).
+    """
     sh = shutil.which("dash") or shutil.which("sh")
     if sh is None:
         pytest.skip("no POSIX shell")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "rules.log"
+    log6 = tmp_path / "rules6.log"
+    log.touch()
+    log6.touch()
     (bin_dir / "iptables").write_text(f'#!/bin/sh\necho "$*" >> {log}\n')
+    if ip6tables:
+        (bin_dir / "ip6tables").write_text(f'#!/bin/sh\necho "$*" >> {log6}\n')
+    else:
+        # Shadow a host ip6tables with one that does not work.
+        (bin_dir / "ip6tables").write_text("#!/bin/sh\nexit 1\n")
+        (bin_dir / "ip6tables-legacy").write_text("#!/bin/sh\nexit 1\n")
     (bin_dir / "setpriv").write_text("#!/bin/sh\nexit 0\n")
     for tool in bin_dir.iterdir():
         tool.chmod(0o755)
     route_file = tmp_path / "route"
-    route_file.write_text(routes)
+    if routes is not None:
+        route_file.write_text(routes)
+    conf = tmp_path / "ipv6conf"
+    if ipv6 is not None:
+        for iface, value in ipv6.items():
+            (conf / iface).mkdir(parents=True)
+            (conf / iface / "disable_ipv6").write_text(value + "\n")
     script = build_firewall_script(network_cidrs, allowed, token=_TOKEN)
-    assert "/proc/net/route" in script
+    assert "/proc/net/route" in script and "/proc/sys/net/ipv6/conf" in script
     script = script.replace("/proc/net/route", str(route_file))
+    script = script.replace("/proc/sys/net/ipv6/conf", str(conf))
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
-    subprocess.run([sh, "-c", script, "sandbox-egress", "true"], env=env, check=True, capture_output=True)
+    result = subprocess.run(
+        [sh, "-c", script, "sandbox-egress", "true"], env=env, capture_output=True, text=True,
+    )
     rules = [line.removeprefix("-w ") for line in log.read_text().splitlines()]
-    return [r for r in rules if r.startswith("-A ")]
+    rules6 = [line.removeprefix("-w ") for line in log6.read_text().splitlines()]
+    return result, [r for r in rules if r.startswith("-A ")], [r for r in rules6 if not r.startswith("-n ")]
+
+
+def _rules(tmp_path: Path, network_cidrs: list[str], allowed: list[str], routes: str = _ROUTES) -> list[str]:
+    result, rules, _ = _run(tmp_path, network_cidrs, allowed, routes, ipv6={"eth0": "0"})
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, "sh", result.stdout, result.stderr)
+    return rules
 
 
 def _first(rules: list[str], dest: str) -> int:
@@ -89,7 +123,7 @@ class TestAllowancesCannotOpenTheBridge:
 
 
 class TestRecreatingANetworkItCannotRemove:
-    def test_a_refused_remove_keeps_the_network(self) -> None:
+    def test_a_refused_remove_fails_the_networked_run(self) -> None:
         network = MagicMock()
         network.name = "egress"
         network.attrs = {"Options": {}, "Containers": {}, "IPAM": {"Config": [{"Subnet": "172.30.0.0/16"}]}}
@@ -98,5 +132,6 @@ class TestRecreatingANetworkItCannotRemove:
         client.networks.list.return_value = [network]
         client.networks.get.return_value = network
 
-        assert ensure_egress_network_sync(client, "egress", {}) == ["172.30.0.0/16"]
+        with pytest.raises(EgressNetworkUnsafe, match="could not be recreated"):
+            ensure_egress_network_sync(client, "egress", {})
         client.networks.create.assert_not_called()

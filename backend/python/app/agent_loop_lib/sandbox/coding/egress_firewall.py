@@ -40,6 +40,7 @@ __all__ = [
     "build_firewall_script",
     "create_sandbox_container",
     "deadline_command",
+    "EgressNetworkUnsafe",
     "ensure_egress_network_sync",
     "firewall_unavailable",
     "firewalled_container_kwargs",
@@ -109,9 +110,9 @@ def create_sandbox_container(client: Any, *, purpose: str = "run", **kwargs: Any
     on the storage driver (overlay2 on xfs with ``pquota``, or btrfs/zfs/
     devicemapper, enforce it; overlay2 on ext4 accepts but silently ignores
     it). That ignore case is not detected — the daemon returns no error, and
-    the docker-socket-proxy's filtered ``/info`` names the storage driver but
-    not its backing filesystem or mount options — so it is stated in a
-    one-time log rather than probed (a write probe is not reliable through
+    ``/info`` (also through the docker-socket-proxy) names the storage driver
+    and its backing filesystem but not its mount options — so it is stated in
+    a one-time log rather than probed (a write probe is not reliable through
     the proxy's log streaming). A daemon
     that REJECTS the option falls back to no cap with a warning, so a run is
     never broken. Exceeding an enforced cap fails a write with a clean ENOSPC.
@@ -247,16 +248,41 @@ _ROUTE_REJECT_LINES = [
     "\"0x$(echo \"$h\" | cut -c3-4)\" \"0x$(echo \"$h\" | cut -c1-2)\"; }",
     "hex8() { case $1 in [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) "
     "return 0;; esac; return 1; }",
-    "if [ -r /proc/net/route ]; then",
-    "  while read -r i d g _f _c _u _m k _rest; do",
-    '    [ "$i" = Iface ] || [ "$i" = lo ] && continue',
-    '    hex8 "$d" && hex8 "$g" && hex8 "$k" || fail "unreadable route: $i $d $g $k"',
-    '    if [ "$d" = 00000000 ]; then',
-    '      [ "$g" = 00000000 ] || r -A OUTPUT -d "$(ip4 "$g")/32" -j REJECT',
-    "    else",
-    '      r -A OUTPUT -d "$(ip4 "$d")/$(ip4 "$k")" -j REJECT',
-    "    fi",
-    "  done < /proc/net/route",
+    "[ -r /proc/net/route ] || fail 'cannot read /proc/net/route'",
+    "while read -r i d g _f _c _u _m k _rest; do",
+    '  [ "$i" = Iface ] || [ "$i" = lo ] && continue',
+    '  hex8 "$d" && hex8 "$g" && hex8 "$k" || fail "unreadable route: $i $d $g $k"',
+    '  if [ "$d" = 00000000 ]; then',
+    '    [ "$g" = 00000000 ] || r -A OUTPUT -d "$(ip4 "$g")/32" -j REJECT',
+    "  else",
+    '    r -A OUTPUT -d "$(ip4 "$d")/$(ip4 "$k")" -j REJECT',
+    "  fi",
+    "done < /proc/net/route",
+]
+
+# The IPv4 rules above do not cover IPv6. Where the kernel has IPv6, all IPv6
+# output except loopback is dropped with ip6tables. An image without a working
+# ip6tables is accepted only if IPv6 is disabled on every interface but lo.
+_IPV6_LINES = [
+    "if [ -d /proc/sys/net/ipv6/conf ]; then",
+    '  IP6=""',
+    "  for b in ip6tables ip6tables-legacy; do",
+    '    if command -v "$b" >/dev/null 2>&1 && "$b" -w -n -L OUTPUT >/dev/null 2>&1; then IP6="$b"; break; fi',
+    "  done",
+    '  if [ -n "$IP6" ]; then',
+    '    r6() { "$IP6" -w "$@" || fail "ip6tables $*"; }',
+    "    r6 -A OUTPUT -o lo -j ACCEPT",
+    # REJECT fails a connect at once; the DROP policy holds without it.
+    '    "$IP6" -w -A OUTPUT -j REJECT >/dev/null 2>&1 || true',
+    "    r6 -P OUTPUT DROP",
+    "  else",
+    "    for c in /proc/sys/net/ipv6/conf/*; do",
+    '      n="${c##*/}"',
+    '      case "$n" in all|default|lo) continue;; esac',
+    '      v=""; { read -r v < "$c/disable_ipv6"; } 2>/dev/null || true',
+    '      [ "$v" = 1 ] || fail "IPv6 is enabled on $n and no working ip6tables in the sandbox image"',
+    "    done",
+    "  fi",
     "fi",
 ]
 
@@ -296,7 +322,11 @@ def build_firewall_script(
        gateway (the host, or under Docker-in-Docker the application pod)
        are rejected;
     3. ``allowed_cidrs`` are accepted;
-    4. every other private, CGNAT and reserved range is rejected.
+    4. every other private, CGNAT and reserved range is rejected;
+    5. all IPv6 output but loopback is dropped (see ``_IPV6_LINES``).
+
+    An unreadable routing table fails the setup rather than skipping step 2's
+    route rejects.
 
     So an operator allowance, however broad (``0.0.0.0/0``), opens private
     hosts beyond the bridge but never the gateway, sibling sandboxes or the
@@ -326,6 +356,7 @@ def build_firewall_script(
     lines += _ROUTE_REJECT_LINES
     lines += [f"r -A OUTPUT -d {cidr} -j ACCEPT" for cidr in allowed]
     lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in blocked]
+    lines += _IPV6_LINES
     # The container starts as root, so HOME is /root; npm/npx would then
     # fail to write their cache once running as `run_as`.
     lines += [
@@ -403,35 +434,53 @@ def _get_network(client: Any, network_name: str) -> Any | None:
     return None
 
 
-def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str, str]) -> list[str]:
-    """Create the egress bridge with inter-container traffic off and return
-    its IPv4 subnets (empty if they can't be read).
+class EgressNetworkUnsafe(RuntimeError):
+    """The egress network allows inter-container traffic or IPv6 and could
+    not be replaced; a networked run must not join it."""
 
-    A network created before ICC was turned off is replaced while idle; one
-    with containers attached is kept (removing it would fail) — the
-    per-container firewall blocks the bridge subnet either way.
+
+def _network_problems(attrs: dict[str, Any]) -> list[str]:
+    problems = []
+    if (attrs.get("Options") or {}).get(_ICC_OPTION) != "false":
+        problems.append("allows inter-container traffic")
+    if attrs.get("EnableIPv6"):
+        problems.append("has IPv6 enabled")
+    return problems
+
+
+def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str, str]) -> list[str]:
+    """Create the egress bridge with inter-container traffic and IPv6 off and
+    return its IPv4 subnets (empty if they can't be read).
+
+    An existing network that allows inter-container traffic or has IPv6 on
+    is replaced while idle. When it cannot be replaced (containers are
+    attached, or the Docker proxy refuses to remove a network another stack
+    created) ``EgressNetworkUnsafe`` is raised: sandboxes on it would be
+    reachable from unfirewalled peers, or have IPv6 the firewall's IPv4
+    rules do not cover.
     """
     network = _get_network(client, network_name)
-    if network is not None and (network.attrs.get("Options") or {}).get(_ICC_OPTION) != "false":
+    problems = _network_problems(network.attrs) if network is not None else []
+    if network is not None and problems:
+        what = " and ".join(problems)
         if network.attrs.get("Containers"):
-            logger.warning(
-                "sandbox egress network %s allows inter-container traffic and is in use; "
-                "it will be recreated once idle", network_name,
+            raise EgressNetworkUnsafe(
+                f"sandbox egress network {network_name} {what} and has containers attached, so it "
+                "cannot be recreated; networked sandbox runs are refused until it is removed "
+                "(or set a different egress network name)"
             )
-        else:
-            logger.info("recreating sandbox egress network %s with inter-container traffic off", network_name)
-            try:
-                network.remove()
-                network = None
-            except Exception as exc:
-                # In use by containers this client is not shown, or not
-                # created by this stack's Docker proxy (which only removes
-                # its own networks). The per-container firewall blocks the
-                # bridge subnet either way.
-                logger.warning(
-                    "sandbox egress network %s allows inter-container traffic and could not be "
-                    "recreated (%s); keeping it", network_name, exc,
-                )
+        logger.info("recreating sandbox egress network %s: it %s", network_name, what)
+        try:
+            network.remove()
+        except Exception as exc:
+            # In use by containers this client is not shown, or not created
+            # by this stack's Docker proxy (which only removes its own).
+            raise EgressNetworkUnsafe(
+                f"sandbox egress network {network_name} {what} and could not be recreated ({exc}); "
+                "networked sandbox runs are refused until it is removed "
+                "(or set a different egress network name)"
+            ) from exc
+        network = None
     if network is None:
         try:
             client.networks.create(
@@ -454,6 +503,15 @@ def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str,
             if raced is None:
                 raise
         network = _get_network(client, network_name)
+        problems = _network_problems(network.attrs) if network is not None else []
+        if problems:
+            # A daemon default (default-network-opts) can turn IPv6 on, or a
+            # racing creator made it differently.
+            raise EgressNetworkUnsafe(
+                f"sandbox egress network {network_name} {' and '.join(problems)} as created on "
+                "this Docker daemon; networked sandbox runs are refused (check the daemon's "
+                "default-network-opts)"
+            )
     return _subnets(network.attrs) if network is not None else []
 
 

@@ -305,7 +305,7 @@ async def _through_proxy(tmp_path, policy: DockerApiPolicy, raw: bytes) -> tuple
 
 class TestChunkedArchiveUpload:
     async def test_a_chunked_archive_is_forwarded_verbatim(self, tmp_path, policy: DockerApiPolicy) -> None:
-        body = b"5\r\nhello\r\n3;ext=1\r\nabc\r\n0\r\nX-Trailer: 1\r\n\r\n"
+        body = b"5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n"
         daemon, resp = await _through_proxy(
             tmp_path, policy,
             b"PUT /containers/owned/archive?path=/src HTTP/1.1\r\nHost: x\r\n"
