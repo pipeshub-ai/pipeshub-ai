@@ -2,7 +2,8 @@ name: Desktop local mode
 
 # "Run PipesHub on this computer" in the desktop app: unit tests and an Electron
 # e2e against a stub launcher, then the Linux AppImage and the macOS arm64 dmg.
-# Packages are unsigned unless the signing secrets below are set.
+# Packages are unsigned: this workflow runs for pull requests and reads no secrets. A signed, notarised macOS dmg is
+# electron-desktop-signed.yml, which only runs by hand.
 on:
   pull_request:
     paths:
@@ -118,13 +119,8 @@ jobs:
           ELECTRON_ARCH: ${{ matrix.arch }}
           # Empty -> stage-launcher builds without the local server (server mode only).
           PIPESHUB_NATIVE_BUNDLE_URL: ${{ inputs.native_bundle_url || vars.PIPESHUB_NATIVE_BUNDLE_URL }}
-          # Signing and notarisation plug in here; with none set the build is unsigned.
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CSC_LINK != '' && matrix.target == 'mac' && 'true' || 'false' }}
-          CSC_LINK: ${{ matrix.target == 'mac' && secrets.MAC_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.target == 'mac' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.target == 'mac' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.target == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.target == 'mac' && secrets.APPLE_TEAM_ID || '' }}
+          # Unsigned: this job runs for pull requests, so it reads no secrets (signed builds: electron-desktop-signed.yml).
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
           # Retry to ride out transient GitHub release CDN failures while the Electron binary downloads.
           for attempt in 1 2 3; do
@@ -143,3 +139,4 @@ jobs:
             frontend/dist-electron/${{ matrix.target }}/*.AppImage
           if-no-files-found: error
           retention-days: 14
+

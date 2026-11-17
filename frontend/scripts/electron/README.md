@@ -51,7 +51,7 @@ First launch asks "Run PipesHub on this computer" or "Connect to a PipesHub serv
 
 ## Signing
 
-Builds are unsigned by default. CI signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Node, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). `after-pack.cjs` lists every Mach-O file under `Resources/pipeshub-native` as an extra binary for electron-builder to sign (unit-tested, but the signing itself is unverified: check on a Mac). For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
+Builds are unsigned by default; the pull-request workflow reads no secrets. The manual `electron-desktop-signed.yml` run signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Node, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). `after-pack.cjs` lists every Mach-O file under `Resources/pipeshub-native` as an extra binary for electron-builder to sign (unit-tested, but the signing itself is unverified: check on a Mac). For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
 
 ## Host notes
 

@@ -1,0 +1,54 @@
+name: Desktop signed macOS package
+
+# The desktop app as a signed, notarised macOS dmg. Only by hand: the signing secrets must never reach a pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      native_bundle_url:
+        description: 'Optional .tar.gz of the native bundle to ship in the package (launcher/ and node/ at its root).'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  package-signed:
+    name: Package macOS dmg (arm64, signed)
+    runs-on: macos-14
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --include=dev
+
+      - name: Build package
+        shell: bash
+        env:
+          ELECTRON_ARCH: arm64
+          PIPESHUB_NATIVE_BUNDLE_URL: ${{ inputs.native_bundle_url || vars.PIPESHUB_NATIVE_BUNDLE_URL }}
+          # With no certificate set the build is unsigned, as in the package job.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CSC_LINK != '' && 'true' || 'false' }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run electron:build:mac
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipeshub-desktop-mac-arm64-signed
+          path: frontend/dist-electron/mac/*.dmg
+          if-no-files-found: error
+          retention-days: 14
