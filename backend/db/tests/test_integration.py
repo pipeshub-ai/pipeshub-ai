@@ -69,10 +69,10 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (18, 11), "platform": (8, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+HEADS = {"kernel": (18, 11), "platform": (9, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
          "graph": (13, 0), "kg": (17, 17), "retrieval": (4, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0008", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0017", "retrieval_0004", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0009", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0017", "retrieval_0004", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
@@ -725,7 +725,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0008", min_code=None):
+def _as_newer_build(cluster, name, revision="platform_0009", min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
@@ -870,6 +870,10 @@ KV_MATRIX = [
     # the class admission's live numbers: indexing reads them; kv never does
     ("indexing", "/services/indexing/parseAdmission", True, False), ("kv", "/services/indexing/parseAdmission", False, False),
     ("indexing", "/services/indexing/parseAdmissionx", False, False),
+    # the code sandbox's load alert cooldown claims: query creates, rewrites and deletes them; the others only read (connectors) or not at all
+    ("query", "/services/sandbox/alerts/local/warning", True, True), ("query", "/services/sandbox/alerts", True, False),
+    ("query", "/services/sandbox/alertsx", True, False), ("connectors", "/services/sandbox/alerts/local/warning", True, False),
+    ("indexing", "/services/sandbox/alerts/local/warning", False, False), ("kv", "/services/sandbox/alerts/local/warning", False, False),
     *[("kv", k, False, False) for k in ("/services/connectors/c1/config", "/services/oauth/jira", "/services/toolset-instances",
                                         "/services/mcp/credentials/i1/u1", "/services/webSearch", "/services/smtp", "crawl:reconcile:c1",
                                         "state:lock:x:leader", "/services/connectors/c1/metadataSchemas/latest",
