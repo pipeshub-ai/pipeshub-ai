@@ -20,6 +20,7 @@ import {
   PLATFORM_ADMIN_RECIPIENTS,
   PlatformAdminRecipientsResolver,
   PlatformAlertHandler,
+  logIfPlatformAlertsBlocked,
 } from '../service/platform-alert.handler';
 // Who receives installation-wide alerts is chosen in src/config.ts.
 import { resolvePlatformAdminRecipients } from '../../../config';
@@ -66,6 +67,7 @@ export class NotificationContainer {
       .bind<PlatformAdminRecipientsResolver>(PLATFORM_ADMIN_RECIPIENTS)
       .toConstantValue(() => resolvePlatformAdminRecipients());
     container.bind(PlatformAlertHandler).toSelf().inSingletonScope();
+    logIfPlatformAlertsBlocked(this.logger);
 
     container.bind(NotificationProducer).toSelf().inSingletonScope();
     container.bind(NotificationConsumer).toSelf().inSingletonScope();

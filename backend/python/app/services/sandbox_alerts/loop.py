@@ -47,6 +47,24 @@ def _default_snapshot() -> dict[str, Any]:
     return get_default_governor().snapshot()
 
 
+def envelope_blocks_alerts() -> str | None:
+    """Why Node will reject every alert under the current envelope settings,
+    or ``None``. An alert has no org, so it is sent unsigned, and a consumer
+    that requires a signed context drops unsigned messages."""
+    from app.core.envelope import ctx_required, sign_enabled
+    from app.core.org_context import enforcing
+
+    if ctx_required():
+        return "ENVELOPE_CTX_REQUIRED is on"
+    try:
+        enforce = enforcing()
+    except ValueError:
+        enforce = False
+    if sign_enabled() and enforce:
+        return "ENVELOPE_SIGN is on with ORG_CONTEXT_MODE=enforce"
+    return None
+
+
 def off_reason(settings: AlertSettings) -> str | None:
     """Why the loop does not run here, or ``None`` when it does."""
     if not settings.enabled:
@@ -154,8 +172,13 @@ class SandboxAlertRunner:
         for claimed, previous in targets:
             try:
                 await self._cooldown.release_if_ours(claimed, alert_id, previous)
-            except Exception:
-                self._logger.warning("sandbox load alert %s: could not release the claim", claimed, exc_info=True)
+            except Exception as exc:
+                # One line, no traceback: a store that hangs fails every release.
+                self._warn_once(
+                    "release", "sandbox load alert %s: could not release the claim (%r)", claimed, exc,
+                )
+            else:
+                self._recovered("release")
 
     async def _fire(self, decision: AlertDecision, now: float) -> None:
         level = decision.level
@@ -333,6 +356,12 @@ async def run_sandbox_alert_loop(
     if reason is not None or state_directory is None:
         log.info("sandbox load alerts off: %s", reason)
         return
+    blocked = envelope_blocks_alerts()
+    if blocked is not None:
+        log.error(
+            "sandbox load alerts will not be delivered: they have no org to sign, and unsigned "
+            "notification messages are rejected (%s)", blocked,
+        )
     runner = SandboxAlertRunner(
         config_service, settings, state_directory,
         producer_factory=producer_factory or default_producer_factory(config_service, log),

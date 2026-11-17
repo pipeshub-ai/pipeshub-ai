@@ -46,7 +46,6 @@ def test_an_infinite_slot_wait_still_builds_the_alert(monkeypatch: pytest.Monkey
         AlertSettings(), alert_id="a", host="h", fired_at=T0,
     )
     assert event["payload"]["slotWaitSeconds"] == 120
-    assert "after waiting 120 s" in event["message"]
 
 
 def test_a_decision_without_a_level_is_not_an_alert() -> None:

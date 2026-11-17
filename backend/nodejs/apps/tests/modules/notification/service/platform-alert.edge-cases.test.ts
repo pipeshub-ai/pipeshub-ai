@@ -9,6 +9,7 @@ import { setUserRepository } from '../../../../src/libs/repositories/user';
 import { DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { getEmailContent } from '../../../../src/modules/mail/utils/email-content';
 import { buildSandboxCapacityMail } from '../../../../src/modules/notification/utils/sandbox-capacity-mail';
+import { parseSandboxCapacityAlert } from '../../../../src/modules/notification/utils/sandbox-capacity-alert';
 
 const id = () => new mongoose.Types.ObjectId().toString();
 
@@ -94,8 +95,14 @@ describe('notification/service/platform-alert.handler edge cases', () => {
       ['a string', 'platformAdmins'],
       ['no type', { ...event(), type: undefined }],
       ['an empty type', event({ type: '' })],
-      ['no title', event({ title: 42 })],
-      ['no message', event({ message: undefined })],
+      ['a type that is not a load alert', event({ type: 'SECURITY_NOTICE' })],
+      ['a type in another case', event({ type: 'sandbox_capacity_critical' })],
+      ['a level that does not match the type', event({}, { level: 'warning' })],
+      ['a level that is not a level', event({ type: 'SANDBOX_CAPACITY_RESOLVED' }, { level: 'resolved' })],
+      ['a reason that is not a reason', event({}, { reason: 'please sign in' })],
+      ['an alertId with markup', event({}, { alertId: '<b>x</b>' })],
+      ['a firedAt an hour in the future', event({}, { firedAt: new Date(Date.now() + 3600_000).toISOString() })],
+      ['an event over 16 KB', event({}, { junk: 'x'.repeat(20_000) })],
       ['no payload', event({ payload: null })],
       ['a payload that is a string', event({ payload: 'x' })],
       ['a version given as text', event({}, { v: '1' })],
@@ -112,8 +119,8 @@ describe('notification/service/platform-alert.handler edge cases', () => {
     }
   });
 
-  it('delivers an event whose expiry cannot be read, rather than losing it', async () => {
-    await handler.handle(event({}, { expiresAt: 'not a date' }));
+  it('delivers a fresh event whose expiry cannot be read', async () => {
+    await handler.handle(event({}, { expiresAt: 'not a date', firedAt: new Date().toISOString() }));
     expect(insertMany.calledOnce).to.be.true;
   });
 
@@ -137,12 +144,11 @@ describe('notification/service/platform-alert.handler edge cases', () => {
     expect(doc.payload.alertId).to.equal('a1');
   });
 
-  it('notifies and emails twice when the broker delivers the same event twice', async () => {
-    // Dedup is the publisher's cooldown; pinned so a change here is deliberate.
+  it('notifies and emails once when the broker delivers the same event twice', async () => {
     await handler.handle(event());
     await handler.handle(event());
-    expect(insertMany.callCount).to.equal(2);
-    expect(mailProducer.publishEvent.callCount).to.equal(4);
+    expect(insertMany.callCount).to.equal(1);
+    expect(mailProducer.publishEvent.callCount).to.equal(2);
   });
 
   it('delivers to many admins with one store call and one email job per admin', async () => {
@@ -218,50 +224,43 @@ describe('notification/service/platform-alert.handler edge cases', () => {
     expect(insertMany.called).to.be.false;
   });
 
-  it('sends no email for a level it has no email for, even when asked', async () => {
-    await handler.handle(event({ type: 'SANDBOX_CAPACITY_RESOLVED', severity: 'success' }, { level: 'resolved' }));
+  it('sends no email for a resolved notice, even when asked', async () => {
+    await handler.handle(event({ type: 'SANDBOX_CAPACITY_RESOLVED', severity: 'success', email: true }, { level: 'critical' }));
     expect(insertMany.calledOnce).to.be.true;
     expect(mailProducer.publishEvent.called).to.be.false;
   });
 
   describe('the email body', () => {
     const render = (ev: Record<string, unknown>) => {
-      const mail = buildSandboxCapacityMail(ev, ev.payload as never)!;
+      const parsed = parseSandboxCapacityAlert(ev);
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const mail = buildSandboxCapacityMail(parsed.alert)!;
       return getEmailContent('sandboxCapacityAlert', mail.templateData as never);
     };
 
-    it('escapes markup and template syntax from every text field', () => {
+    it('shows no text from the event', () => {
       const html = render(event(
-        { title: '<img src=x onerror=alert(1)>', message: '{{constructor}}' },
-        { reasonText: '"><script>alert(1)</script>', indexingText: '<a href="javascript:x">i</a>', host: '<b>h</b>' },
+        { title: '<img src=x onerror=alert(1)>', message: '{{constructor}}', redirectLink: 'http://evil.example' },
+        { reasonText: '"><script>alert(1)</script>', indexingText: 'Visit http://evil.example', host: '<b>h</b>' },
       ));
-      expect(html).to.not.contain('<script>');
-      expect(html).to.not.contain('<img src=x');
-      expect(html).to.not.contain('<b>h</b>');
-      expect(html).to.not.contain('href="javascript:');
-      expect(html).to.contain('&lt;script&gt;');
+      expect(html).to.not.contain('script');
+      expect(html).to.not.contain('img src');
+      expect(html).to.not.contain('&lt;b&gt;h');
+      expect(html).to.not.contain('evil.example');
+      expect(html).to.not.contain('constructor');
+      expect(html).to.contain('All 6 code-run slots were in use.');
     });
 
-    it('never puts a link that is not http(s) in the email', () => {
-      for (const link of ['javascript:alert(1)', 'data:text/html,x', 'not a url', '']) {
-        const mail = buildSandboxCapacityMail(event({ redirectLink: link }), event().payload as never)!;
-        expect(mail.templateData.docsUrl).to.equal('https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts');
-      }
-      const mail = buildSandboxCapacityMail(event({ redirectLink: 'https://example.com/x' }), event().payload as never)!;
-      expect(mail.templateData.docsUrl).to.equal('https://example.com/x');
-    });
-
-    it('renders a very long reason in full', () => {
-      const long = 'x'.repeat(100_000);
-      expect(render(event({}, { reasonText: long }))).to.contain(long);
-    });
-
-    it('falls back to safe numbers when the payload numbers are missing or not finite', () => {
-      const html = render(event({}, { runs: 'many', refused: Number.NaN, refusedPercent: Infinity, windowMinutes: null }));
+    it('falls back to safe numbers when the payload numbers are missing, not finite or out of range', () => {
+      const html = render(event({}, {
+        runs: 'many', refused: Number.NaN, refusedPercent: Infinity, windowMinutes: null, waited: -5, busyPercent: 1e9,
+      }));
       expect(html).to.contain('0 of 0 code runs');
       expect(html).to.contain('last 30 minutes');
       expect(html).to.not.contain('NaN');
       expect(html).to.not.contain('Infinity');
+      expect(html).to.not.contain('-5');
+      expect(html).to.not.contain('1000000000');
     });
 
     it('says alerts repeat in the app and the email comes at most once a day', () => {

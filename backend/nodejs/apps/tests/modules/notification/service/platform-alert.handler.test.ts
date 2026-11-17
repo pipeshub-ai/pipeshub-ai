@@ -58,6 +58,7 @@ describe('notification/service/platform-alert.handler', () => {
       reason: 'memory',
       reasonText: 'Free memory on the host was low, so new runs were held back to protect the databases and the app.',
       indexingText: 'Indexing was already slowed down from 10:13 UTC to give chat priority.',
+      indexingSlowedSince: '2026-11-16T10:13:40Z',
       limit: { current: 3, ceiling: 6, floor: 2 },
       hostMemoryTotalGb: 16,
       hostMemoryFreeGb: 1.1,
@@ -149,7 +150,9 @@ describe('notification/service/platform-alert.handler', () => {
 
   it('queues no email when the event does not ask for one, whatever its type', async () => {
     await handler.handle(event({ email: false }));
-    await handler.handle(event({ type: 'SANDBOX_CAPACITY_RESOLVED', severity: 'success', email: false }, { level: 'warning' }));
+    await handler.handle(
+      event({ type: 'SANDBOX_CAPACITY_RESOLVED', severity: 'success', email: false }, { level: 'warning', alertId: 'r1' }),
+    );
 
     expect(insertMany.calledTwice).to.be.true;
     expect(mailProducer.publishEvent.called).to.be.false;

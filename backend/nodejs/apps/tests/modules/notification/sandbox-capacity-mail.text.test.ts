@@ -6,6 +6,7 @@ import {
   buildSandboxCapacityMail,
   footerNoteFor,
 } from '../../../src/modules/notification/utils/sandbox-capacity-mail';
+import { parseSandboxCapacityAlert } from '../../../src/modules/notification/utils/sandbox-capacity-alert';
 import {
   getEmailContent,
   getEmailText,
@@ -15,13 +16,11 @@ import { MailModel } from '../../../src/modules/mail/schema/mailInfo.schema';
 import { setMailLogRepository } from '../../../src/libs/repositories/mail-log';
 import { setIdentityPort } from '../../../src/libs/repositories/identity';
 
-const event = {
-  title: 'Code runs are waiting for capacity',
-  message: 'm',
-  redirectLink: 'https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts',
-};
+const DOCS = 'https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts';
 
 const payload = (overrides: Record<string, unknown> = {}) => ({
+  v: 1,
+  alertId: 'a1',
   level: 'warning',
   host: 'pipeshub-7d9c',
   memorySource: 'host',
@@ -34,15 +33,17 @@ const payload = (overrides: Record<string, unknown> = {}) => ({
   longestWaitSeconds: 118,
   slotWaitSeconds: 120,
   reason: 'slots',
-  reasonText: 'All 6 code-run slots were in use.',
   limit: { current: 3, ceiling: 6, floor: 2 },
   hostMemoryTotalGb: 16,
   hostMemoryFreeGb: 1.1,
   ...overrides,
 });
 
-const templateData = (overrides: Record<string, unknown> = {}) =>
-  buildSandboxCapacityMail(event, payload(overrides) as never)!.templateData;
+const templateData = (overrides: Record<string, unknown> = {}) => {
+  const parsed = parseSandboxCapacityAlert({ type: 'SANDBOX_CAPACITY_WARNING', payload: payload(overrides) });
+  if (!parsed.ok) throw new Error(parsed.reason);
+  return buildSandboxCapacityMail(parsed.alert)!.templateData;
+};
 
 describe('sandbox capacity alert email: cooldown footer and plain-text part', () => {
   describe('footerNoteFor', () => {
@@ -83,15 +84,15 @@ describe('sandbox capacity alert email: cooldown footer and plain-text part', ()
       'sandboxCapacityAlert',
       templateData({
         emailCooldownSeconds: 600,
-        indexingText: 'Indexing was already slowed down from 10:13 UTC.',
-        reasonText: '<b>slots</b> & more',
+        reason: 'memory',
+        indexingSlowedSince: '2026-11-16T10:13:00Z',
       }) as never,
     )!;
     expect(text).to.contain('Code runs are waiting for capacity');
-    expect(text).to.contain('Why runs were held back: <b>slots</b> & more');
-    expect(text).to.contain('Already done: Indexing was already slowed down from 10:13 UTC.');
-    expect(text).to.contain('What you can do:\n- Raise the sandbox limit (SANDBOX_MAX_TOTAL)');
-    expect(text).to.contain(`- Read the load alerts guide: ${event.redirectLink}`);
+    expect(text).to.contain("Why runs were held back: Free memory on the host was low, so new runs were held back to protect the databases and the app.");
+    expect(text).to.contain('Already done: Indexing was already slowed down from 10:13 UTC to give chat priority.');
+    expect(text).to.contain('What you can do:\n- Add memory to the host');
+    expect(text).to.contain(`- Read the load alerts guide: ${DOCS}`);
     expect(text).to.contain('Host: pipeshub-7d9c');
     expect(text).to.contain('at most once every 10 minutes for each level');
     expect(text).to.not.contain('&amp;');

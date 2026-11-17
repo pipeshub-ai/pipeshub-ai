@@ -182,12 +182,10 @@ describe('mail/utils/emailTemplates', () => {
       getEmailContent = require('../../../../src/modules/mail/utils/email-content').getEmailContent
     })
 
-    const event = {
-      title: 'Code runs are waiting for capacity',
-      message: 'm',
-      redirectLink: 'https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts',
-    }
+    const { parseSandboxCapacityAlert } = require('../../../../src/modules/notification/utils/sandbox-capacity-alert')
     const payload = (overrides: Record<string, unknown> = {}) => ({
+      v: 1,
+      alertId: 'a1',
       level: 'warning',
       host: 'pipeshub-7d9c',
       memorySource: 'host',
@@ -200,14 +198,18 @@ describe('mail/utils/emailTemplates', () => {
       longestWaitSeconds: 118,
       slotWaitSeconds: 120,
       reason: 'memory',
-      reasonText: 'Free memory on the host was low.',
       limit: { current: 3, ceiling: 6, floor: 2 },
       hostMemoryTotalGb: 16,
       hostMemoryFreeGb: 1.1,
       ...overrides,
     })
-    const render = (overrides: Record<string, unknown> = {}, ev: Record<string, unknown> = event) =>
-      getEmailContent('sandboxCapacityAlert', build(ev, payload(overrides) as never)!.templateData as never)
+    const mail = (overrides: Record<string, unknown> = {}, type = 'SANDBOX_CAPACITY_WARNING') => {
+      const parsed = parseSandboxCapacityAlert({ type, payload: payload(overrides) })
+      if (!parsed.ok) throw new Error(parsed.reason)
+      return build(parsed.alert)
+    }
+    const render = (overrides: Record<string, unknown> = {}) =>
+      getEmailContent('sandboxCapacityAlert', mail(overrides)!.templateData as never)
 
     it('lists the action for each reason', () => {
       expect(render({ reason: 'memory' })).to.contain('Add memory to the host')
@@ -216,9 +218,9 @@ describe('mail/utils/emailTemplates', () => {
       expect(render()).to.contain('load alerts guide')
     })
 
-    it('shows the indexing paragraph only when the event has one', () => {
+    it('shows the indexing paragraph only when indexing slowed down for memory', () => {
       expect(render()).to.not.contain('Already done')
-      const html = render({ indexingText: 'Indexing was already slowed down from 10:13 UTC to give chat priority.' })
+      const html = render({ indexingSlowedSince: '2026-11-16T10:13:40Z' })
       expect(html).to.contain('Already done')
       expect(html).to.contain('10:13 UTC')
     })
@@ -235,19 +237,18 @@ describe('mail/utils/emailTemplates', () => {
       expect(html).to.not.contain('memory free / total')
     })
 
-    it('escapes HTML from the event', () => {
-      const html = render({ reasonText: '<script>alert(1)</script>' }, { ...event, title: '<b>x</b>' })
-      expect(html).to.not.contain('<script>alert(1)</script>')
-      expect(html).to.contain('&lt;script&gt;')
-      expect(html).to.not.contain('<b>x</b>')
+    it('ignores free text in the event', () => {
+      const html = render({ reasonText: '<script>alert(1)</script>', indexingText: 'x' })
+      expect(html).to.not.contain('script')
+      expect(html).to.contain('Free memory on the host was low')
     })
 
     it('puts the brand product name in the subject', () => {
-      expect(build(event, payload() as never)!.subject).to.equal('PipesHub: code runs in chat are waiting for capacity')
+      expect(mail()!.subject).to.equal('PipesHub: code runs in chat are waiting for capacity')
     })
 
-    it('has no email for a notice that is not a warning or critical', () => {
-      expect(build(event, payload({ level: 'resolved' }) as never)).to.equal(null)
+    it('has no email for a resolved notice', () => {
+      expect(mail({}, 'SANDBOX_CAPACITY_RESOLVED')).to.equal(null)
     })
 
     it('refuses data missing the required fields', () => {

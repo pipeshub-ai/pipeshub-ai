@@ -24,6 +24,7 @@ COMPOSE_ENV = ROOT / "deployment/docker-compose/env.template"
 HELM_README = ROOT / "deployment/helm/pipeshub-ai/README.md"
 HELM_DEPLOYMENT = ROOT / "deployment/helm/pipeshub-ai/templates/deployment.yaml"
 NODE_MAIL = ROOT / "backend/nodejs/apps/src/modules/notification/utils/sandbox-capacity-mail.ts"
+NODE_ALERT = ROOT / "backend/nodejs/apps/src/modules/notification/utils/sandbox-capacity-alert.ts"
 COMPOSE_FILES = [
     ROOT / "deployment/docker-compose" / name
     for name in (
@@ -195,7 +196,15 @@ def test_the_email_wording_and_link_match_the_in_app_titles() -> None:
         match = re.search(rf"{level}:\s*'([^']+)'", node)
         assert match, f"no {level} summary in the alert email"
         assert match.group(1).replace(" in chat", "") == title[0].lower() + title[1:]
-    assert f"'{ev.DOCS_URL}'" in node
+    assert f"'{ev.DOCS_URL}'" in NODE_ALERT.read_text()
+
+
+def test_node_builds_the_documented_titles() -> None:
+    """Node writes the titles admins see; they must be the documented ones."""
+    node = NODE_ALERT.read_text()
+    titles = dict(ev._TITLES, resolved=ev.RESOLVED_TITLE)
+    for kind, title in titles.items():
+        assert re.search(rf"\b{kind}:\s*'{re.escape(title)}'", node), f"Node has no {kind} title {title!r}"
 
 
 def test_the_slot_wait_default_matches_the_docs() -> None:

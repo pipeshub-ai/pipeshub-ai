@@ -7,6 +7,7 @@ import {
   buildSandboxCapacityMail,
   footerNoteFor,
 } from '../../../src/modules/notification/utils/sandbox-capacity-mail';
+import { parseSandboxCapacityAlert } from '../../../src/modules/notification/utils/sandbox-capacity-alert';
 import {
   SANDBOX_CAPACITY_DEFAULT_FOOTER,
   isSandboxCapacityAlertData,
@@ -21,10 +22,18 @@ import { setUserRepository } from '../../../src/libs/repositories/user';
 const REPO = path.resolve(__dirname, '../../../../../..');
 const read = (rel: string) => fs.readFileSync(path.join(REPO, rel), 'utf8');
 
-const event = {
-  title: 'Code runs are waiting for capacity',
-  message: 'the event message',
-  redirectLink: 'https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts',
+const DOCS = 'https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts';
+
+/** The email for an event with this payload, or null when the event is not accepted. */
+const mailFor = (payload: Record<string, unknown>, top: Record<string, unknown> = {}) => {
+  const type = payload.level === 'critical' ? 'SANDBOX_CAPACITY_CRITICAL' : 'SANDBOX_CAPACITY_WARNING';
+  const parsed = parseSandboxCapacityAlert({
+    audience: 'platformAdmins',
+    type,
+    ...top,
+    payload: { v: 1, alertId: 'a1', ...payload },
+  });
+  return parsed.ok ? buildSandboxCapacityMail(parsed.alert) : null;
 };
 
 describe('sandbox capacity mail: every wording branch is pinned', () => {
@@ -35,14 +44,14 @@ describe('sandbox capacity mail: every wording branch is pinned', () => {
     ];
     for (const [level, subject] of cases) {
       it(`${level}`, () => {
-        expect(buildSandboxCapacityMail(event, { level })?.subject).to.equal(subject);
+        expect(mailFor({ level })?.subject).to.equal(subject);
       });
     }
   });
 
   it('builds no email for a level that is not warning or critical', () => {
     for (const level of ['resolved', 'info', undefined, 2, 'WARNING']) {
-      expect(buildSandboxCapacityMail(event, { level })).to.equal(null);
+      expect(mailFor({ level })).to.equal(null);
     }
   });
 
@@ -66,12 +75,12 @@ describe('sandbox capacity mail: every wording branch is pinned', () => {
         'sidecar',
         ['Raise sandbox.capacity.maxTotal if the code runner has room; otherwise give it more memory.'],
       ],
-      ['unknown', 'host', []],
-      [undefined, 'sidecar', []],
+      // No reason reads as the slot limit, as the publisher defaults it.
+      [undefined, 'sidecar', ['Raise sandbox.capacity.maxTotal if the code runner has room; otherwise give it more memory.']],
     ];
     for (const [reason, source, actions] of cases) {
       it(`${String(reason)} / ${source}`, () => {
-        const mail = buildSandboxCapacityMail(event, {
+        const mail = mailFor({
           level: 'warning',
           reason,
           memorySource: source,
@@ -135,19 +144,19 @@ describe('sandbox capacity mail: every wording branch is pinned', () => {
     ];
     for (const [name, payload, intro] of cases) {
       it(name, () => {
-        expect(buildSandboxCapacityMail(event, payload)?.templateData.intro).to.equal(intro);
+        expect(mailFor(payload)?.templateData.intro).to.equal(intro);
       });
     }
   });
 
   describe('the stats rows', () => {
     it('leave out the host, the limit and memory when the event lacks them', () => {
-      const mail = buildSandboxCapacityMail(event, { level: 'warning', host: '  ', limit: null });
+      const mail = mailFor({ level: 'warning', host: '  ', limit: null });
       expect(mail?.templateData.stats.map((s) => s.label)).to.deep.equal(['Window', 'Runs', 'Waited', 'Refused']);
     });
 
     it('leave out the limit when only one of its numbers is there', () => {
-      const mail = buildSandboxCapacityMail(event, {
+      const mail = mailFor({
         level: 'warning',
         limit: { current: 4 },
         hostMemoryFreeGb: 3,
@@ -162,7 +171,7 @@ describe('sandbox capacity mail: every wording branch is pinned', () => {
         ['sidecar', 'Code runner memory free / total'],
         ['host', 'Host memory free / total'],
       ]) {
-        const mail = buildSandboxCapacityMail(event, {
+        const mail = mailFor({
           level: 'critical',
           memorySource: source,
           hostMemoryFreeGb: 1.5,
@@ -181,39 +190,61 @@ describe('sandbox capacity mail: every wording branch is pinned', () => {
     });
   });
 
-  describe('the reason text falls back to the event message, then to nothing', () => {
-    const cases: Array<[Record<string, unknown>, Record<string, unknown>, string]> = [
-      [event, { reasonText: 'All slots in use.' }, 'All slots in use.'],
-      [event, { reasonText: ' ' }, 'the event message'],
-      [{ title: 7, message: '' }, {}, ''],
+  it('builds no email for a reason it does not know', () => {
+    expect(mailFor({ level: 'warning', reason: 'unknown' })).to.equal(null);
+  });
+
+  describe('the heading, reason and link are built here, never taken from the event', () => {
+    const forged = {
+      title: 'Action required: sign in again',
+      message: 'Sign in at http://evil.example/login',
+      redirectLink: 'http://evil.example/login',
+    };
+    const forgedPayload = {
+      reasonText: 'Re-verify at http://evil.example/login now.',
+      indexingText: 'Visit http://evil.example',
+    };
+
+    it('the heading is the title of the level', () => {
+      expect(mailFor({ level: 'warning', ...forgedPayload }, forged)?.templateData.heading).to.equal(
+        'Code runs are waiting for capacity',
+      );
+      expect(mailFor({ level: 'critical' }, forged)?.templateData.heading).to.equal('Code runs are being refused');
+    });
+
+    const reasons: Array<[Record<string, unknown>, string]> = [
+      [{ reason: 'memory' }, 'Free memory on the host was low, so new runs were held back to protect the databases and the app.'],
+      [{ reason: 'memory', memorySource: 'sidecar' }, 'The code runner was short of memory, so new runs were held back.'],
+      [{ reason: 'cpu' }, "The host's CPU stayed busy, so fewer runs were allowed at once."],
+      [{ reason: 'cpu', memorySource: 'sidecar' }, "The code runner's CPU stayed busy, so fewer runs were allowed at once."],
+      [{ reason: 'slots', limit: { ceiling: 6 } }, 'All 6 code-run slots were in use. The host still had free memory and CPU, so the slot limit was the bottleneck.'],
+      [{ reason: 'slots', limit: { ceiling: 1 } }, 'The only code-run slot was in use. The host still had free memory and CPU, so the slot limit was the bottleneck.'],
+      [{ reason: 'slots', limit: { ceiling: -1 } }, 'All code-run slots were in use. The host still had free memory and CPU, so the slot limit was the bottleneck.'],
     ];
-    for (const [evt, extra, expected] of cases) {
-      it(JSON.stringify(extra), () => {
-        expect(buildSandboxCapacityMail(evt, { level: 'warning', ...extra })?.templateData.reasonText).to.equal(
+    for (const [extra, expected] of reasons) {
+      it(`reason ${JSON.stringify(extra)}`, () => {
+        expect(mailFor({ level: 'warning', ...forgedPayload, ...extra }, forged)?.templateData.reasonText).to.equal(
           expected,
         );
       });
     }
-    it('an event title that is not text gives an empty heading', () => {
-      expect(buildSandboxCapacityMail({ title: 7 }, { level: 'warning' })?.templateData.heading).to.equal('');
-    });
-  });
 
-  describe('the docs link keeps only web links', () => {
-    const fallback = 'https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts';
-    const cases: Array<[unknown, string]> = [
-      ['http://example.com/x', 'http://example.com/x'],
-      ['javascript:alert(1)', fallback],
-      ['data:text/html,x', fallback],
-      ['not a url', fallback],
-      ['', fallback],
-      [undefined, fallback],
-    ];
-    for (const [link, expected] of cases) {
-      it(String(link), () => {
-        expect(
-          buildSandboxCapacityMail({ ...event, redirectLink: link }, { level: 'warning' })?.templateData.docsUrl,
-        ).to.equal(expected);
+    it('says what indexing did only from the time it slowed down, for memory on a host', () => {
+      const since = '2026-11-16T10:13:40Z';
+      const indexing = (extra: Record<string, unknown>) =>
+        mailFor({ level: 'warning', ...forgedPayload, ...extra })?.templateData.indexingText;
+      expect(indexing({ reason: 'memory', indexingSlowedSince: since })).to.equal(
+        'Indexing was already slowed down from 10:13 UTC to give chat priority.',
+      );
+      expect(indexing({ reason: 'memory' })).to.equal(undefined);
+      expect(indexing({ reason: 'memory', indexingSlowedSince: 'yesterday' })).to.equal(undefined);
+      expect(indexing({ reason: 'cpu', indexingSlowedSince: since })).to.equal(undefined);
+      expect(indexing({ reason: 'memory', indexingSlowedSince: since, sandboxMode: 'helm_dind' })).to.equal(undefined);
+    });
+
+    for (const link of ['http://example.com/x', 'https://evil.example', 'javascript:alert(1)', '', undefined]) {
+      it(`the docs link is the guide whatever the event says (${String(link)})`, () => {
+        expect(mailFor({ level: 'warning' }, { redirectLink: link })?.templateData.docsUrl).to.equal(DOCS);
       });
     }
   });

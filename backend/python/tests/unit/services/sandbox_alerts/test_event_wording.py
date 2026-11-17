@@ -1,4 +1,4 @@
-"""The alert event's wording with a cap of one, and the email cooldown it
+"""The numbers Node words a cap of one from, and the email cooldown the event
 carries so the email can say how often it may come."""
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from app.services.sandbox_alerts.config import AlertSettings
 from app.services.sandbox_alerts.evaluator import AlertDecision
-from app.services.sandbox_alerts.event import build_alert_event, reason_text
+from app.services.sandbox_alerts.event import build_alert_event
 from app.services.sandbox_alerts.window import WindowTotals
 
 FIRED = datetime(2026, 11, 16, 10, 42, tzinfo=UTC).timestamp()
@@ -33,13 +33,9 @@ def _build(settings: AlertSettings, ceiling: int = 1) -> dict:
     )
 
 
-def test_a_cap_of_one_reads_in_the_singular() -> None:
-    assert reason_text("slots", "host", 1).startswith("The only code-run slot was in use.")
-    assert "All 1" not in _build(AlertSettings())["message"]
-
-
-def test_a_larger_cap_keeps_the_plural() -> None:
-    assert reason_text("slots", "host", 6).startswith("All 6 code-run slots were in use.")
+def test_the_cap_is_sent_for_the_wording() -> None:
+    assert _build(AlertSettings())["payload"]["limit"]["ceiling"] == 1
+    assert _build(AlertSettings(), ceiling=6)["payload"]["limit"]["ceiling"] == 6
 
 
 def test_the_payload_carries_the_email_cooldown() -> None:

@@ -55,66 +55,53 @@ def test_the_document_is_for_the_platform_admins_with_no_org() -> None:
 
 
 @pytest.mark.parametrize(
-    ("level", "type_", "severity", "title"),
+    ("level", "type_", "severity"),
     [
-        ("warning", "SANDBOX_CAPACITY_WARNING", "warning", "Code runs are waiting for capacity"),
-        ("critical", "SANDBOX_CAPACITY_CRITICAL", "critical", "Code runs are being refused"),
+        ("warning", "SANDBOX_CAPACITY_WARNING", "warning"),
+        ("critical", "SANDBOX_CAPACITY_CRITICAL", "critical"),
     ],
 )
-def test_type_and_severity_per_level(level: str, type_: str, severity: str, title: str) -> None:
+def test_type_and_severity_per_level(level: str, type_: str, severity: str) -> None:
     event = build(decision(level))
-    assert (event["type"], event["severity"], event["title"]) == (type_, severity, title)
+    assert (event["type"], event["severity"], event["payload"]["level"]) == (type_, severity, level)
 
 
-def test_the_warning_text() -> None:
-    assert build()["message"] == (
-        "For 72% of the last 30 minutes, code runs in chat waited for a free sandbox (57 runs waited). "
-        "Free memory on the host was low, so new runs were held back to protect the databases and the app. "
-        "Indexing was already slowed down from 10:13 UTC to give chat priority."
-    )
+def test_the_event_carries_no_text_or_link() -> None:
+    """Node builds every sentence and the link from the structured fields."""
+    event = build()
+    assert not {"title", "message", "redirectLink"} & set(event)
+    assert not {"reasonText", "indexingText"} & set(event["payload"])
 
 
-def test_the_critical_text() -> None:
-    event = build(decision("critical", reason="slots", refused=14, runs=210, refused_pct=100 * 14 / 210))
-    assert event["message"].startswith(
-        "14 of 210 code runs in the last 30 minutes (6.7%) were refused after waiting 120 s for a free sandbox. "
-        "All 6 code-run slots were in use."
-    )
+def test_the_fields_node_words_the_warning_from() -> None:
+    payload = build()["payload"]
+    assert (payload["busyPercent"], payload["windowMinutes"], payload["waited"]) == (72, 30, 57)
+    assert (payload["reason"], payload["memorySource"]) == ("memory", "host")
+    assert payload["indexingSlowed"] is True
+    assert payload["indexingSlowedSince"] == "2026-11-16T10:13:40Z"
 
 
-@pytest.mark.parametrize(
-    ("reason", "source", "sentence"),
-    [
-        ("slots", "host", "All 6 code-run slots were in use."),
-        ("memory", "host", "Free memory on the host was low"),
-        ("memory", "sidecar", "The code runner was short of memory"),
-        ("cpu", "host", "The host's CPU stayed busy"),
-        ("cpu", "sidecar", "The code runner's CPU stayed busy"),
-    ],
-)
-def test_reason_sentences(reason: str, source: str, sentence: str) -> None:
-    event = build(decision(reason=reason), snapshot(source=source))
-    assert sentence in event["message"]
-    assert event["payload"]["reasonText"] in event["message"]
+def test_the_fields_node_words_the_critical_from() -> None:
+    payload = build(decision("critical", reason="slots", refused=14, runs=210, refused_pct=100 * 14 / 210))["payload"]
+    assert (payload["refused"], payload["runs"], payload["refusedPercent"]) == (14, 210, 6.7)
+    assert (payload["slotWaitSeconds"], payload["reason"], payload["limit"]["ceiling"]) == (120, "slots", 6)
 
 
 @pytest.mark.parametrize("reason", ["cpu", "slots"])
-def test_no_indexing_sentence_outside_memory(reason: str) -> None:
-    event = build(decision(reason=reason))
-    assert "Indexing" not in event["message"]
-    assert event["payload"]["indexingSlowed"] is False
-    assert event["payload"]["indexingText"] is None
+def test_no_indexing_outside_memory(reason: str) -> None:
+    payload = build(decision(reason=reason))["payload"]
+    assert payload["indexingSlowed"] is False
+    assert payload["indexingSlowedSince"] is None
 
 
-def test_no_indexing_sentence_on_a_sidecar() -> None:
-    event = build(decision(reason="memory"), snapshot(mode="helm_dind", source="sidecar"))
-    assert "Indexing" not in event["message"]
-    assert "The code runner was short of memory" in event["message"]
-    assert event["payload"]["memorySource"] == "sidecar"
+def test_no_indexing_on_a_sidecar() -> None:
+    payload = build(decision(reason="memory"), snapshot(mode="helm_dind", source="sidecar"))["payload"]
+    assert payload["indexingSlowed"] is False
+    assert payload["memorySource"] == "sidecar"
 
 
-def test_no_indexing_sentence_when_indexing_did_not_slow() -> None:
-    assert "Indexing" not in build(decision(since=None))["message"]
+def test_no_indexing_when_indexing_did_not_slow() -> None:
+    assert build(decision(since=None))["payload"]["indexingSlowed"] is False
 
 
 @pytest.mark.parametrize(
@@ -150,8 +137,8 @@ def test_the_payload_has_only_the_listed_keys() -> None:
     assert set(build()["payload"]) == {
         "v", "alertId", "level", "firedAt", "expiresAt", "host", "sandboxMode", "memorySource",
         "windowMinutes", "runs", "waited", "refused", "busyPercent", "refusedPercent",
-        "longestWaitSeconds", "slotWaitSeconds", "emailCooldownSeconds", "reason", "reasonCounts", "reasonText",
-        "indexingText", "indexingSlowed", "indexingSlowedSince", "limit",
+        "longestWaitSeconds", "slotWaitSeconds", "emailCooldownSeconds", "reason", "reasonCounts",
+        "indexingSlowed", "indexingSlowedSince", "limit",
         "hostMemoryTotalGb", "hostMemoryFreeGb",
     }
 
@@ -164,9 +151,8 @@ def test_the_resolved_notice_is_in_app_only() -> None:
     assert event["type"] == "SANDBOX_CAPACITY_RESOLVED"
     assert event["severity"] == "success"
     assert event["email"] is False
-    assert event["title"] == "Code runs are no longer held back"
-    assert event["message"] == (
-        "Since 10:52 UTC, code runs in chat on pipeshub-7d9c have had enough capacity for 30 minutes. "
-        "The critical alert from 10:42 UTC is resolved."
-    )
-    assert event["payload"]["resolvesAlertId"] == "a1"
+    assert not {"title", "message", "redirectLink"} & set(event)
+    payload = event["payload"]
+    assert payload["resolvesAlertId"] == "a1"
+    assert (payload["level"], payload["host"], payload["windowMinutes"]) == ("critical", "pipeshub-7d9c", 30)
+    assert (payload["clearSince"], payload["alertFiredAt"]) == ("2026-11-16T10:52:00Z", "2026-11-16T10:42:00Z")

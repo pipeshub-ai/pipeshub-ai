@@ -26,6 +26,8 @@ ENV_SCOPE = "SANDBOX_ALERT_SCOPE"
 
 DEFAULT_SCOPE = "install"
 _SCOPE_RE = re.compile(r"[A-Za-z0-9._-]{1,63}")
+# The scope is a key path segment: these would point at another level of it.
+_SCOPE_RESERVED = frozenset({".", ".."})
 _FALSY = {"false", "off", "0", "no"}
 _TRUTHY = {"true", "on", "1", "yes"}
 # Below this the cooldown no longer limits alerts to about one a day.
@@ -85,9 +87,9 @@ class AlertSettings:
         scope = (env.get(ENV_SCOPE) or "").strip()
         if not scope:
             scope = DEFAULT_SCOPE
-        elif not _SCOPE_RE.fullmatch(scope):
+        elif not _SCOPE_RE.fullmatch(scope) or scope in _SCOPE_RESERVED:
             logger.warning(
-                "Ignoring %s=%r: use 1-63 letters, digits, '.', '_' or '-'; using %r",
+                "Ignoring %s=%r: use 1-63 letters, digits, '.', '_' or '-' (not '.' or '..'); using %r",
                 ENV_SCOPE, scope, DEFAULT_SCOPE,
             )
             scope = DEFAULT_SCOPE

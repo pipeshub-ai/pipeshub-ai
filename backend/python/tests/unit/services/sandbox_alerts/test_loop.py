@@ -252,7 +252,7 @@ class TestBackToNormal:
         notices = self.resolved(env)
         assert len(notices) == 1
         assert notices[0]["email"] is False
-        assert "The warning alert from" in notices[0]["message"]
+        assert notices[0]["payload"]["level"] == "warning"
         assert env.store.values[WARN_KEY]["state"] == "resolved"
         await self.tick(env, runner, 120)
         assert len(self.resolved(env)) == 1
@@ -291,7 +291,7 @@ class TestBackToNormal:
         await self.tick(env, runner, 120)
         notices = self.resolved(env)
         assert len(notices) == 1
-        assert "The critical alert from" in notices[0]["message"]
+        assert notices[0]["payload"]["level"] == "critical"
         assert env.store.values[CRIT_KEY]["state"] == "resolved"
         assert env.store.values[WARN_KEY]["state"] == "resolved"
 

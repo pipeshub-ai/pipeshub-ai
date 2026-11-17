@@ -2,7 +2,9 @@
 
 Node delivers an event with ``audience: "platformAdmins"`` to the
 installation's admins: an in-app notification each and, when ``email`` is
-true, an email built from ``payload``. The text is English and stored as is.
+true, an email. The event carries only the type, enums, identifiers and
+numbers; Node builds every sentence and the link from fixed templates, so the
+text cannot be set by whoever writes to the broker.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ if TYPE_CHECKING:
     from app.services.sandbox_alerts.evaluator import AlertDecision
 
 PAYLOAD_VERSION = 1
+# The documented titles and guide link. Node renders them; tests pin both
+# sides to the deployment docs.
 DOCS_URL = "https://docs.pipeshub.com/deployment/code-sandboxes#load-alerts"
 # Node drops an event it receives later than this, so an outage does not
 # deliver a stale alert hours afterwards.
@@ -39,10 +43,6 @@ RESOLVED_TITLE = "Code runs are no longer held back"
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _hhmm(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, UTC).strftime("%H:%M UTC")
 
 
 def _pct(value: float) -> int | float:
@@ -62,29 +62,14 @@ def memory_source(snapshot: dict[str, Any]) -> str:
     return "sidecar" if isinstance(source, str) and source.startswith("sidecar") else "host"
 
 
-def reason_text(reason: str | None, source: str, ceiling: object) -> str:
-    sidecar = source == "sidecar"
-    if reason == "memory":
-        if sidecar:
-            return "The code runner was short of memory, so new runs were held back."
-        return "Free memory on the host was low, so new runs were held back to protect the databases and the app."
-    if reason == "cpu":
-        who = "The code runner's" if sidecar else "The host's"
-        return f"{who} CPU stayed busy, so fewer runs were allowed at once."
-    slots = "The only code-run slot was" if ceiling == 1 else f"All {ceiling} code-run slots were"
-    return (
-        f"{slots} in use. The host still had free memory and CPU, "
-        "so the slot limit was the bottleneck."
-    )
-
-
-def indexing_text(decision: AlertDecision, sandbox_mode: str) -> str | None:
+def indexing_slowed(decision: AlertDecision, sandbox_mode: str) -> bool:
     """Only for memory: CPU and slot waits do not wait for indexing to back
     off, and on a sidecar indexing does not share the sandboxes' memory."""
-    since = decision.indexing_slowed_since
-    if decision.reason != "memory" or since is None or sandbox_mode == "helm_dind":
-        return None
-    return f"Indexing was already slowed down from {_hhmm(since)} to give chat priority."
+    return (
+        decision.reason == "memory"
+        and decision.indexing_slowed_since is not None
+        and sandbox_mode != "helm_dind"
+    )
 
 
 def slot_wait_seconds(env: dict[str, str] | None = None) -> int:
@@ -124,19 +109,7 @@ def build_alert_event(
     busy = _pct(decision.busy_percent)
     refused_pct = _pct(decision.refused_percent)
     reason = decision.reason or "slots"
-    because = reason_text(reason, source, snapshot.get("ceiling"))
-    indexing = indexing_text(decision, sandbox_mode)
-    if level == "critical":
-        lead = (
-            f"{totals.refused} of {totals.runs} code runs in the last {minutes} minutes "
-            f"({refused_pct}%) were refused after waiting {slot_wait} s for a free sandbox."
-        )
-    else:
-        lead = (
-            f"For {busy}% of the last {minutes} minutes, code runs in chat waited for a free "
-            f"sandbox ({totals.waited} runs waited)."
-        )
-    message = " ".join(part for part in (lead, because, indexing) if part)
+    indexing = indexing_slowed(decision, sandbox_mode)
     payload: dict[str, Any] = {
         "v": PAYLOAD_VERSION,
         "alertId": alert_id,
@@ -158,9 +131,7 @@ def build_alert_event(
         "emailCooldownSeconds": settings.cooldown_s,
         "reason": reason,
         "reasonCounts": {r: totals.waited_by_reason.get(r, 0) for r in ("slots", "memory", "cpu")},
-        "reasonText": because,
-        "indexingText": indexing,
-        "indexingSlowed": indexing is not None,
+        "indexingSlowed": indexing,
         "indexingSlowedSince": _iso(decision.indexing_slowed_since) if indexing else None,
         "limit": {
             "current": snapshot.get("limit"),
@@ -177,9 +148,6 @@ def build_alert_event(
         "severity": (NotificationSeverity.CRITICAL if critical else NotificationSeverity.WARNING).value,
         "status": NotificationStatus.UNREAD.value,
         "originService": NotificationOrigin.AI.value,
-        "title": _TITLES[level],
-        "message": message,
-        "redirectLink": DOCS_URL,
         "email": email,
         "isDeleted": False,
         "payload": payload,
@@ -200,19 +168,12 @@ def build_resolved_event(
     """The in-app only notice that the *level* alert from *alert_fired_at*
     has cleared for a full window."""
     minutes = round(settings.window_s / 60)
-    message = (
-        f"Since {_hhmm(clear_since)}, code runs in chat on {host} have had enough capacity for "
-        f"{minutes} minutes. The {level} alert from {_hhmm(alert_fired_at)} is resolved."
-    )
     return {
         "audience": NotificationAudience.PLATFORM_ADMINS.value,
         "type": NotificationType.SANDBOX_CAPACITY_RESOLVED.value,
         "severity": NotificationSeverity.SUCCESS.value,
         "status": NotificationStatus.UNREAD.value,
         "originService": NotificationOrigin.AI.value,
-        "title": RESOLVED_TITLE,
-        "message": message,
-        "redirectLink": DOCS_URL,
         "email": False,
         "isDeleted": False,
         "payload": {
@@ -224,6 +185,7 @@ def build_resolved_event(
             "expiresAt": _iso(fired_at + EXPIRES_AFTER.total_seconds()),
             "host": host,
             "clearSince": _iso(clear_since),
+            "alertFiredAt": _iso(alert_fired_at),
             "windowMinutes": minutes,
         },
     }
