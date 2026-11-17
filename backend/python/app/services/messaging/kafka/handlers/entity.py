@@ -734,7 +734,9 @@ class EntityEventService(BaseEventService):
             # The user the event names, by its userId first: the address may belong to a user added since (another userId, and
             # events of two users are not ordered). Then a user of the event's org with this address, never a group, a person,
             # another org's user or one that carries another userId. raise_on_error: a failed read must not read as "no such user".
-            by_user_id = await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True) if user_id else None
+            by_user_id = (
+                await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True, org_id=org_id) if user_id else None
+            )
             if by_user_id:      # a userId is one account, of one org (as userAdded resolves it)
                 existing_user_id, email = by_user_id.get("id") or by_user_id.get("_key"), by_user_id.get("email") or payload["email"]
             else:

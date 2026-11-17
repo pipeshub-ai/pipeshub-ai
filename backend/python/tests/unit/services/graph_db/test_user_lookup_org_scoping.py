@@ -359,6 +359,17 @@ class TestHandlersPassTheOrg:
         await svc._handle_user_updated({"orgId": ORG_B, "userId": USER_ID, "email": "a@test.com"})
         assert svc.graph_provider.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B
 
+    async def test_a_user_deleted_event_looks_the_user_up_in_its_own_org(self) -> None:
+        from tests.unit.services.messaging.test_entity_handler import (
+            _make_entity_service,
+        )
+
+        svc = _make_entity_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
+        await svc._handle_user_deleted({"orgId": ORG_B, "userId": USER_ID, "email": "a@test.com"})
+        assert svc.graph_provider.get_user_by_user_id.await_args.kwargs["org_id"] == ORG_B
+
     async def test_the_graph_transaction_store_hands_the_org_to_the_provider(self) -> None:
         from app.connectors.core.base.data_store.graph_data_store import (
             GraphTransactionStore,
