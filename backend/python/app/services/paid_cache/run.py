@@ -209,6 +209,6 @@ def clear_run() -> None:
     _run.set(None)
 
 
-def refresh_requested(payload: Any) -> bool:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
+def refresh_requested(payload: Any) -> bool:
     """``refreshPaidOutputs`` on a reindex event (never a string: ``"false"`` must not refresh)."""
     return isinstance(payload, dict) and payload.get("refreshPaidOutputs") is True
