@@ -55,7 +55,7 @@ def _record(external_id: str, record_id: str | None = None, record_type=RecordTy
     return SimpleNamespace(
         id=record_id or f"r-{external_id}", external_record_id=external_id, record_type=record_type,
         is_placeholder=kw.get("is_placeholder", False), inherit_permissions=True,
-        parent_external_record_id=kw.get("parent"),
+        parent_external_record_id=kw.get("parent"), record_group_id=kw.get("group"),
     )
 
 
@@ -454,6 +454,21 @@ class TestPerUserRun:
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "n1")
         connector._delete_records_nobody_sees.assert_not_awaited()
 
+    async def test_a_user_who_disconnected_during_an_unfinished_pass_loses_what_it_granted(self):
+        users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
+        connector, p1, p2, p3 = _run_setup([_connection("u1")], users, {"u1": False})
+        with p1, p2, p3, patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=None)):
+            await connector._run_per_user_sync()
+        connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "n1")
+
+    async def test_an_unfinished_pass_of_a_user_still_connected_keeps_their_access(self):
+        users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
+        connection = _connection("u1", last_complete_listing_at=10**13)
+        connector, p1, p2, p3 = _run_setup([connection], users, {"u1": False})
+        with p1, p2, p3, patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=connection)),                 patch(f"{_MOD}.get_epoch_timestamp_in_ms", return_value=10**13):
+            await connector._run_per_user_sync()
+        connector.data_entities_processor.withdraw_user_from_connector.assert_not_awaited()
+
     async def test_a_stale_incomplete_user_loses_access(self):
         users = {"u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
         old = _connection("u1", last_complete_listing_at=1, connected_at=1)
@@ -554,6 +569,26 @@ class TestWorkspaceGroup:
         await connector._create_workspace_record_group()
         group, _ = connector.data_entities_processor.on_new_record_groups.await_args.args[0][0]
         assert group.permission_model == PermissionModel.RECORD_GROUP_LEVEL and group.inherit_permissions is True
+
+    async def test_back_in_workspace_mode_every_page_inherits_again_before_the_marker_moves(self):
+        connector = _connector()
+        existing = self._group(PermissionModel.RECORD_LEVEL)
+        existing.id = "g-1"
+        tx = MagicMock()
+        tx.get_record_group_by_external_id = AsyncMock(return_value=existing)
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction.return_value = tx
+        dep = connector.data_entities_processor
+        top, child = _record("p1"), _record("p2", parent="p1")
+        dep.get_records_by_record_type.side_effect = lambda _c, rt: [top, child] if rt == RecordType.WEBPAGE else []
+        dep.get_record_by_external_id = AsyncMock(side_effect=lambda _c, ext: {"p1": top}.get(ext))
+        order = []
+        dep.resume_inheriting_permissions = AsyncMock(side_effect=lambda rid, _c, **kw: order.append((rid, kw)))
+        dep.on_new_record_groups = AsyncMock(side_effect=lambda rows: order.append("marker"))
+        await connector._create_workspace_record_group()
+        assert order == [("r-p1", {"parent_record_id": None, "record_group_id": "g-1"}),
+                         ("r-p2", {"parent_record_id": "r-p1", "record_group_id": "g-1"}), "marker"]
 
 
 # ---------------------------------------------------------------- content that differs per viewer
@@ -1088,6 +1123,25 @@ class TestDisconnectAndAdminRoutes:
         delete_mock.assert_awaited_once_with(ANY, "c1", "u1")
         drop_mock.assert_awaited_once_with(ANY, "/services/connectors/c1/sign-in/u1")
         withdraw_mock.assert_awaited_once_with(ANY, "c1", "n1")
+
+    async def test_disconnect_waits_for_a_token_refresh_in_progress(self):
+        import asyncio
+
+        from app.connectors.api import user_access_router as routes
+        from app.connectors.sources.notion.per_user import refresh_lock
+
+        request = MagicMock()
+        request.state.user = {"userId": "u1"}
+        gate, user, cfg, delete, drop_session, withdraw = self._patches(routes)
+        lock = refresh_lock("c1", "u1")
+        with gate, user, cfg, delete as delete_mock, drop_session, withdraw:
+            await lock.acquire()
+            task = asyncio.create_task(routes.disconnect_my_account("c1", request, graph_provider=AsyncMock()))
+            await asyncio.sleep(0.01)
+            delete_mock.assert_not_awaited()  # a refresh that read the connection writes it back first
+            lock.release()
+            await task
+        delete_mock.assert_awaited_once()
 
     async def test_a_credential_that_could_not_be_deleted_keeps_nothing_quiet(self):
         from app.connectors.api import user_access_router as routes

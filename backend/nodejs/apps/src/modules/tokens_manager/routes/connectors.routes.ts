@@ -971,12 +971,12 @@ export function createConnectorRouter(
     disconnectMyConnectorAccount(config),
   );
 
-  /** Admin only: who has connected, and removing someone's connection. */
+  /** Admin only: who has connected, and removing someone's connection. A non-admin gets a 404. */
   router.get(
     '/:connectorId/user-access/users',
     authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
-    userAdminCheck,
+    adminOrNotFound,
     ValidationMiddleware.validate(connectorIdParamSchema),
     listConnectorUserConnections(config),
   );
@@ -985,7 +985,7 @@ export function createConnectorRouter(
     '/:connectorId/user-access/users/:userId',
     authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
-    userAdminCheck,
+    adminOrNotFound,
     ValidationMiddleware.validate(connectorUserParamSchema),
     removeConnectorUserConnection(config),
   );

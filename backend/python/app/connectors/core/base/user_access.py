@@ -256,13 +256,12 @@ class Invite:
         return self.last_sent_at is not None and now_ms - self.last_sent_at < MIN_SEND_GAP_MS
 
     def reminder_due(self, now_ms: int) -> bool:
-        """A reminder is due 3 and 10 days after the first send, then never again; never within a
-        day of the last send (syncs that did not run for days must not send both at once)."""
-        if self.opted_out or self.first_sent_at is None or not 1 <= self.send_count <= len(REMINDER_AFTER_MS):
+        """A reminder is due once 3 and once 10 days after the first send, unless something was sent
+        since that date (an admin's re-send counts), then never again; never within a day of the last send."""
+        if self.opted_out or self.first_sent_at is None or self.last_sent_at is None or self.recently_sent(now_ms):
             return False
-        if self.recently_sent(now_ms):
-            return False
-        return now_ms - self.first_sent_at >= REMINDER_AFTER_MS[self.send_count - 1]
+        dates = [self.first_sent_at + after for after in REMINDER_AFTER_MS]
+        return any(self.last_sent_at < date <= now_ms for date in dates)
 
 
 async def get_invite(config_service: ConfigurationService, connector_id: str, user_id: str) -> Invite | None:

@@ -52,6 +52,8 @@ function OpenAppButton({ href }: { href: string }) {
  * Reads `?token=` and starts the source sign-in in this tab. With `&optOut=1` it asks first:
  * mail scanners open links, so loading the page must not turn reminders off.
  */
+const LINK_TOKEN_KEY = 'pipeshub:connectLinkToken';
+
 export function ConnectAccountClient() {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ kind: 'loading' });
@@ -63,7 +65,20 @@ export function ConnectAccountClient() {
     if (ranRef.current) return;
     ranRef.current = true;
     const params = new URLSearchParams(window.location.search);
-    const linkToken = params.get('token')?.trim() ?? '';
+    // The token works without a login: keep it out of the address bar and history, and in this
+    // tab only, so a reload or Back from the source still finds it.
+    let linkToken = params.get('token')?.trim() ?? '';
+    try {
+      if (linkToken) sessionStorage.setItem(LINK_TOKEN_KEY, linkToken);
+      else linkToken = sessionStorage.getItem(LINK_TOKEN_KEY) ?? '';
+    } catch {
+      // Storage blocked: the token only lives in this page.
+    }
+    if (params.has('token')) {
+      params.delete('token');
+      const rest = params.toString();
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${rest ? `?${rest}` : ''}`);
+    }
     setToken(linkToken);
     if (!linkToken) {
       setView({ kind: 'expired' });

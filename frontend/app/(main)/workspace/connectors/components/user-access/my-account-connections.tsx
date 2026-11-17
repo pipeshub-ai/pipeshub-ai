@@ -96,7 +96,9 @@ function ConnectAccountDialog({
     const connectorId = connector.connectorId;
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; error?: string } | null;
+      const data = event.data as { type?: string; error?: string; connectorId?: string | null } | null;
+      // Another connector's OAuth popup in this window is not this sign-in.
+      if (data?.connectorId && data.connectorId !== connectorId) return;
       if (data?.type === CONNECTOR_OAUTH_POST_MESSAGE.SUCCESS) {
         setSigningIn(false);
         ConnectorsApi.getUserAccess(connectorId)

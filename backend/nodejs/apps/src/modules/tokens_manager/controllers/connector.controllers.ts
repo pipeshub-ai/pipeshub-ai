@@ -1801,6 +1801,8 @@ const proxyUserAccess =
         method,
         buildProxyHeaders(req),
         body(req),
+        // A retried POST would send invites twice; the connector service may have done the work.
+        { retries: method === HttpMethod.POST ? 1 : 3 },
       );
       handleConnectorResponse(response, res, operation, 'Connector not found');
     } catch (error) {
@@ -1907,6 +1909,8 @@ export const proxyUserAccessLink =
         HttpMethod.POST,
         headers,
         req.body,
+        // An OAuth code works once: a retry after the service used it would report a false failure.
+        { retries: name === 'complete' ? 1 : 3 },
       );
       handleConnectorResponse(response, res, operation, 'No data');
     } catch (error) {

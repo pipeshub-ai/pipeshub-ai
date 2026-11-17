@@ -916,6 +916,7 @@ class NotionConnector(BaseConnector):
         return self._per_user
 
     def _client_for(self, token: str) -> NotionClient:
+        # shortcut: a refreshed token's old client stays open until the connector closes (one per refresh); close it on refresh if refreshes get frequent.
         client = self._user_clients.get(token)
         if client is None:
             client = NotionClient(NotionRESTClientViaToken(token, resilience=self.resilience))
@@ -1051,6 +1052,9 @@ class NotionConnector(BaseConnector):
                     # Disconnected while the pass ran: what it granted must not outlive the connection.
                     await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
                     complete = False
+            elif not await self._still_connected(connection):
+                # Disconnected while an unfinished pass ran: no later sync sees them to take back its grants.
+                await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
             elif connection.active and connection.stale(now):
                 # Its last complete view is too old to trust: no access until one completes.
                 self.logger.warning("Notion per-user sync: %s has no recent complete listing", connection.email)
@@ -1060,6 +1064,11 @@ class NotionConnector(BaseConnector):
             await self._delete_records_nobody_sees([user for _, user in connected])
         else:
             self._sync_incomplete = True
+
+    async def _still_connected(self, connection: UserConnection) -> bool:
+        """The stored connection is still this one: the user did not disconnect or connect again."""
+        current = await get_connection(self.config_service, self.connector_id, connection.user_id)
+        return current is not None and current.connected_at == connection.connected_at
 
     async def _update_connection(self, connection: UserConnection) -> bool:
         """Store a sync's update to a connection, unless the user disconnected or connected again
@@ -5152,6 +5161,23 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.warning("Could not load Notion workspace from bot user: %s", e)
 
+    async def _resume_inheritance(self, workspace_group_id: str | None) -> None:
+        """Every page and data source inherits again from what it hangs under, as in workspace mode."""
+        for record_type in GRANTED_TYPES:
+            for record in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type):
+                if not record.id:
+                    continue
+                parent = None
+                if record.parent_external_record_id:
+                    parent = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, record.parent_external_record_id
+                    )
+                await self.data_entities_processor.resume_inheriting_permissions(
+                    record.id, self.connector_id,
+                    parent_record_id=parent.id if parent is not None else None,
+                    record_group_id=record.record_group_id or workspace_group_id,
+                )
+
     async def _create_workspace_record_group(self) -> None:
         """
         Create a RecordGroup for the Notion workspace.
@@ -5172,7 +5198,10 @@ class NotionConnector(BaseConnector):
             if existing:
                 if getattr(existing, "permission_model", None) == PermissionModel.RECORD_LEVEL:
                     # Back from per-user mode: the workspace is everyone's again, and a later switch
-                    # to per-user mode sees it was left and cuts inheritance again.
+                    # to per-user mode sees it was left and cuts inheritance again. Pages nobody edits
+                    # are never saved again, so give each its inheritance back here, before the marker
+                    # moves (a run cut short restores again).
+                    await self._resume_inheritance(existing.id)
                     existing.permission_model = PermissionModel.RECORD_GROUP_LEVEL
                     existing.inherit_permissions = True
                     await self.data_entities_processor.on_new_record_groups([(existing, [])])

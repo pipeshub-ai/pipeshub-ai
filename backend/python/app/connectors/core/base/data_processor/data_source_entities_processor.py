@@ -7481,6 +7481,21 @@ class DataSourceEntitiesProcessor:
         if edges:
             await self._access_changed([connector_id])
 
+    async def resume_inheriting_permissions(
+        self, record_id: str, connector_id: str, *, parent_record_id: str | None = None,
+        record_group_id: str | None = None,
+    ) -> None:
+        """Undo stop_inheriting_permissions: inherit again from the parent record, or from the group when
+        the record hangs off it."""
+        async with self.data_store_provider.transaction() as tx_store:
+            if parent_record_id:
+                await tx_store.create_inherit_permissions_relation_record(record_id, parent_record_id)
+            elif record_group_id:
+                await tx_store.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+            else:
+                return
+        await self._access_changed([connector_id])
+
     @retry_on_deadlock()
     async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
         """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold

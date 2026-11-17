@@ -539,7 +539,13 @@ describe('connect-account landing page', () => {
   const assign = vi.fn();
   const at = (search: string) =>
     Object.defineProperty(window, 'location', {
-      value: { search, assign, origin: 'http://localhost', href: `http://localhost/connect-account/${search}` },
+      value: {
+        search,
+        assign,
+        origin: 'http://localhost',
+        pathname: '/connect-account/',
+        href: `http://localhost/connect-account/${search}`,
+      },
       configurable: true,
     });
   const info = {
@@ -554,6 +560,23 @@ describe('connect-account landing page', () => {
   afterEach(() => {
     Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
     assign.mockReset();
+    sessionStorage.clear();
+    vi.mocked(window.history.replaceState).mockRestore?.();
+  });
+
+  it('takes the token out of the address bar but keeps it for a reload in this tab', async () => {
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined);
+    at('?token=c-1.abc&optOut=1');
+    api.getUserAccessLinkInfo.mockResolvedValue(info);
+    const first = renderInTheme(<ConnectAccountClient />);
+    await screen.findByText('Stop reminders for Team Notion?');
+    expect(replaceState.mock.calls.map((c) => c[2])).toEqual(['/connect-account/?optOut=1']);
+    first.unmount();
+
+    at('');
+    renderInTheme(<ConnectAccountClient />);
+    expect(await screen.findByText('Connect your Notion account')).toBeTruthy();
+    expect(api.getUserAccessLinkInfo).toHaveBeenLastCalledWith('c-1.abc');
   });
 
   it('shows who the link is for and continues to the source in this tab', async () => {

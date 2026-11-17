@@ -68,6 +68,7 @@ from app.connectors.sources.notion.per_user import (
 from app.connectors.sources.notion.per_user import (
     NotionAccessError,
     has_oauth_app,
+    refresh_lock,
     user_oauth_config,
     verify_token,
 )
@@ -487,9 +488,9 @@ async def _remove(
     """Credential first: once it is gone no sync can grant the user anything again. A sign-in
     still waiting for its callback goes too, so it cannot connect the user after they left."""
     config_service = _config_service(request)
-    if not await delete_connection(config_service, connector_id, user_id) or not await delete_config_confirmed(
-        config_service, sign_in_path(connector_id, user_id)
-    ):
+    async with refresh_lock(connector_id, user_id):
+        removed = await delete_connection(config_service, connector_id, user_id)
+    if not removed or not await delete_config_confirmed(config_service, sign_in_path(connector_id, user_id)):
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="The connection could not be removed. Try again."
         )

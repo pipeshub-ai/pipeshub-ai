@@ -100,9 +100,10 @@ describe('Connector routes: per-user access invitations and connect links', () =
     it('answers a member with 404 before anything reaches the connector service', async () => {
       const roster = await call(h, 'GET', `/${CONNECTOR_ID}/user-access/roster`, sessionToken(h, MEMBER))
       const invite = await call(h, 'POST', `/${CONNECTOR_ID}/user-access/invites`, sessionToken(h, MEMBER), { all: true })
+      const users = await call(h, 'GET', `/${CONNECTOR_ID}/user-access/users`, sessionToken(h, MEMBER))
+      const remove = await call(h, 'DELETE', `/${CONNECTOR_ID}/user-access/users/${MEMBER_ID}`, sessionToken(h, MEMBER))
 
-      expect(roster.status).to.equal(404)
-      expect(invite.status).to.equal(404)
+      expect([roster.status, invite.status, users.status, remove.status]).to.deep.equal([404, 404, 404, 404])
       expect(h.backend.calls).to.have.length(0)
     })
 

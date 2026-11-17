@@ -5,6 +5,7 @@ import NextLink from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { Button, Flex, IconButton, Link, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import { ConnectorsApi } from '../../api';
 import type { UserAccessConnector } from '../../types';
 
@@ -28,6 +29,9 @@ function loadMyConnectors(): Promise<UserAccessConnector[]> {
 export function forgetMyUserAccessConnectors(): void {
   myConnectors = null;
 }
+
+// The next person to sign in on this tab must not see this one's list.
+onSessionEnd(forgetMyUserAccessConnectors);
 
 function isDismissed(): boolean {
   try {

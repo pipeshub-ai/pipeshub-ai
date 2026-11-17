@@ -79,14 +79,29 @@ class TestReminderSchedule:
         assert invite.send_count == 3 and invite.first_sent_at == 0
         assert not invite.reminder_due(365 * _DAY)
 
-    def test_syncs_that_missed_both_dates_send_one_reminder_a_day_at_most(self):
+    def test_syncs_that_missed_both_dates_send_one_reminder(self):
         invite = Invite(user_id="u1")
         invite.sent(0)
         late = 20 * _DAY
         assert invite.reminder_due(late)
         invite.sent(late)
         assert not invite.reminder_due(late + 60 * 60 * 1000)  # the next hourly sync
-        assert invite.reminder_due(late + _DAY)
+        assert not invite.reminder_due(late + _DAY)
+
+    def test_an_admins_resend_does_not_use_up_a_reminder(self):
+        invite = Invite(user_id="u1")
+        invite.sent(0)
+        invite.sent(60 * 1000)  # the admin pressed Remind straight away
+        assert invite.reminder_due(REMINDER_AFTER_MS[0])
+        invite.sent(REMINDER_AFTER_MS[0])
+        assert invite.reminder_due(REMINDER_AFTER_MS[1])
+
+    def test_a_resend_after_a_reminder_date_stands_in_for_that_reminder(self):
+        invite = Invite(user_id="u1")
+        invite.sent(0)
+        invite.sent(REMINDER_AFTER_MS[0] + _DAY)
+        assert not invite.reminder_due(REMINDER_AFTER_MS[1] - 1)
+        assert invite.reminder_due(REMINDER_AFTER_MS[1])
 
     def test_no_reminder_after_opting_out_or_before_any_invite(self):
         invite = Invite(user_id="u1")

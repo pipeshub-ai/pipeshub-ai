@@ -225,6 +225,13 @@ async def user_oauth_config(
 _REFRESH_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 
+def refresh_lock(connector_id: str, user_id: str) -> asyncio.Lock:
+    """Held while a connection's token is refreshed; removing the connection takes it too, so a refresh
+    that read the connection cannot write it back after it was deleted.
+    shortcut: per process; a sync in another process can still race a removal, use a store lock then."""
+    return _REFRESH_LOCKS.setdefault((connector_id, user_id), asyncio.Lock())
+
+
 async def refresh_connection(
     connection: UserConnection,
     *,
@@ -240,8 +247,7 @@ async def refresh_connection(
     Notion refused it, or the user disconnected); the user must connect again. None: the refresh
     could not be tried or failed for another reason; try again later.
     """
-    lock = _REFRESH_LOCKS.setdefault((connector_id, connection.user_id), asyncio.Lock())
-    async with lock:
+    async with refresh_lock(connector_id, connection.user_id):
         stored = await get_connection(config_service, connector_id, connection.user_id)
         if stored is None or stored.connected_at != connection.connected_at:
             return False  # disconnected, or connected again: this connection is over
