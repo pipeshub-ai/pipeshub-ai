@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -88,11 +87,7 @@ class _Store:
 
 
 @pytest.fixture
-async def store(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
-    # the widening's cross-process lock lives in Redis, and no lock means no schema write
-    monkeypatch.setenv("REDIS_HOST", os.environ.get("REDIS_IT_HOST", "localhost"))
-    monkeypatch.setenv("REDIS_PORT", os.environ.get("REDIS_IT_PORT", "6389"))
-    monkeypatch.setenv("REDIS_MODE", "standalone")
+async def store() -> AsyncIterator[_Store]:
     try:
         provider = await connect_arango(logger, f"rd_schema_{uuid.uuid4().hex[:8]}")
     except Exception as exc:

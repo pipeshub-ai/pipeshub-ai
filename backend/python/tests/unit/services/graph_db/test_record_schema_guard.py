@@ -46,7 +46,25 @@ class FakeServer:
         return self.applies
 
 
+class FreeLock:
+    """A lock nobody else wants (the guard's own default is the ArangoDB lease lock, tested on a real server)."""
+
+    async def acquire(self, ttl_ms: int) -> bool:
+        return True
+
+    async def renew(self, ttl_ms: int) -> bool:
+        return True
+
+    async def release(self) -> None:
+        return None
+
+
+async def _free_lock() -> FreeLock:
+    return FreeLock()
+
+
 def _guard(server: FakeServer, **kw: Any) -> RecordSchemaGuard:  # noqa: ANN401
+    kw.setdefault("lock_factory", _free_lock)
     return RecordSchemaGuard(server, logging.getLogger("test"), schema=record_schema, generation=RECORD_SCHEMA_GENERATION, **kw)
 
 
@@ -189,6 +207,9 @@ class FakeLock:
     async def acquire(self, ttl_ms: int) -> bool:
         return not self.held_elsewhere
 
+    async def renew(self, ttl_ms: int) -> bool:
+        return not self.held_elsewhere
+
     async def release(self) -> None:
         self.released = True
 
@@ -224,6 +245,9 @@ class TestSingleFlight:
                     return True
                 return False
 
+            async def renew(self, ttl_ms: int) -> bool:
+                return taken["by"] == self.me
+
             async def release(self) -> None:
                 taken["by"] = None
 
@@ -238,7 +262,7 @@ class TestSingleFlight:
         server = FakeServer(live=0)
 
         async def broken() -> Any:  # noqa: ANN401
-            raise ConnectionError("no redis")
+            raise ConnectionError("lock store down")
 
         assert await _guard(server, lock_factory=broken).ensure_wide("test") is False
         assert server.puts == []
@@ -273,7 +297,7 @@ class TestSingleFlight:
         server = self._server_where_a_newer_schema_lands_after_the_first_check()
 
         async def broken() -> Any:  # noqa: ANN401
-            raise ConnectionError("no redis")
+            raise ConnectionError("lock store down")
 
         await _guard(server, lock_factory=broken).ensure_wide("test")
         await server.get_collection_schema("records")  # the newer process installs its schema now, whatever this one did
@@ -282,31 +306,54 @@ class TestSingleFlight:
         assert server.puts == [], "no lock, no schema write"
         assert server.live == RECORD_SCHEMA_GENERATION + 1
 
-    async def test_the_unlocked_widening_is_the_race_it_closes(self) -> None:
-        """The control: with the lock opted out, the same sequence writes this process's schema over the newer one."""
-        server = self._server_where_a_newer_schema_lands_after_the_first_check()
-
-        async def broken() -> Any:  # noqa: ANN401
-            raise ConnectionError("no redis")
-
-        real_put = server.update_collection_schema
-
-        async def put_after_the_newer_one_landed(name: str, schema: dict, timeout: float | None = None) -> bool:
-            server.live = RECORD_SCHEMA_GENERATION + 1  # the newer process installed its schema just before this write
-            return await real_put(name, schema, timeout)
-
-        server.update_collection_schema = put_after_the_newer_one_landed  # type: ignore[method-assign]
-        await _guard(server, lock_factory=broken, require_lock=False).ensure_wide("test")
-
-        assert server.puts and server.live == RECORD_SCHEMA_GENERATION  # the newer schema was overwritten by the older one
-
-    async def test_a_deployment_that_opts_out_of_the_lock_still_widens_without_it(self) -> None:
+    async def test_a_process_that_lost_its_lease_before_the_write_is_fenced(self) -> None:
+        """The lease expired during the quiet wait and another process took it: the renew before the write says no, and nothing is written."""
         server = FakeServer(live=0)
 
-        async def broken() -> Any:  # noqa: ANN401
-            raise ConnectionError("no redis")
+        class Expired(FreeLock):
+            async def renew(self, ttl_ms: int) -> bool:
+                return False
 
-        assert await _guard(server, lock_factory=broken, require_lock=False).ensure_wide("test") is True
+        async def factory() -> Expired:
+            return Expired()
+
+        assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
+        assert server.puts == []
+
+    async def test_a_lock_that_cannot_be_renewed_for_an_error_is_fenced_too(self) -> None:
+        server = FakeServer(live=0)
+
+        class Broken(FreeLock):
+            async def renew(self, ttl_ms: int) -> bool:
+                raise ConnectionError("down")
+
+        async def factory() -> Broken:
+            return Broken()
+
+        assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
+        assert server.puts == []
+
+    async def test_the_lock_is_released_after_a_widening_and_after_a_fenced_one(self) -> None:
+        released = {"n": 0}
+
+        class Counting(FreeLock):
+            async def release(self) -> None:
+                released["n"] += 1
+
+        async def factory() -> Counting:
+            return Counting()
+
+        await _guard(FakeServer(live=0), lock_factory=factory).ensure_wide("test")
+
+        class Expired(Counting):
+            async def renew(self, ttl_ms: int) -> bool:
+                return False
+
+        async def expired() -> Expired:
+            return Expired()
+
+        await _guard(FakeServer(live=0), lock_factory=expired).ensure_wide("test")
+        assert released["n"] == 2
 
 
 def _factory(lock: Any):  # noqa: ANN202, ANN401
@@ -373,7 +420,7 @@ class TestTheClientHook:
         client = _Client(server, [Exception(REFUSAL), Exception(REFUSAL)])
 
         async def broken() -> Any:  # noqa: ANN401
-            raise ConnectionError("no redis")
+            raise ConnectionError("lock store down")
 
         client.record_guard = _guard(server, lock_factory=broken)
         with pytest.raises(RecordSchemaNarrowError):

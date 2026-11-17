@@ -13,7 +13,6 @@ import bisect
 import contextlib
 import functools
 import json
-import os
 import random
 import re
 import time
@@ -183,8 +182,7 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoQueryError,
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
-from app.services.graph_db.arango.record_schema_guard import LOCK_KEY as RECORD_SCHEMA_LOCK_KEY
-from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard, RedisLock
+from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
 from app.services.graph_db.common.cascade_retry import (
     CASCADE_ATTEMPTS,
@@ -1245,8 +1243,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception("Failed to connect to ArangoDB")
             self.http_client.record_guard = RecordSchemaGuard(
                 self.http_client, self.logger, schema=record_schema, generation=RECORD_SCHEMA_GENERATION,
-                lock_factory=self._record_schema_lock,
-                require_lock=os.environ.get("RECORD_SCHEMA_REQUIRE_LOCK", "true").strip().lower() != "false",
             )
 
             # Ensure database exists
@@ -1311,21 +1307,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return False
             return await guard.is_wide()
         return await client.update_collection_schema(name, schema)
-
-    async def _record_schema_lock(self) -> RedisLock | None:
-        """The cross-process lock for a records schema widening; None where Redis cannot be reached."""
-        try:
-            from app.services.redis.config import RedisConnectionConfig
-            from app.services.redis.connection_provider_factory import (
-                RedisConnectionProviderFactory,
-            )
-
-            config = RedisConnectionConfig.from_env()
-            provider = RedisConnectionProviderFactory.create(config)
-            return RedisLock(provider.get_client(), f"{provider.key_namespace or ''}{RECORD_SCHEMA_LOCK_KEY}")
-        except Exception as error:
-            self.logger.warning("no lock for the records schema widening: %s", error)
-            return None
 
     async def ensure_wide_record_schema(self, trigger: str = "manual") -> bool:
         """Widen the live records schema now (outside any transaction). Test and operator entry point."""

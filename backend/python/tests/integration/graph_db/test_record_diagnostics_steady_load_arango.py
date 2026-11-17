@@ -44,10 +44,7 @@ def _counter(name: str) -> float:
 
 
 @pytest.fixture
-async def env(monkeypatch):  # noqa: ANN201
-    monkeypatch.setenv("REDIS_HOST", os.environ.get("REDIS_IT_HOST", "localhost"))
-    monkeypatch.setenv("REDIS_PORT", os.environ.get("REDIS_IT_PORT", "6389"))
-    monkeypatch.setenv("REDIS_MODE", "standalone")
+async def env():  # noqa: ANN201
     try:
         p = await connect_arango(logger, f"rd_load_{uuid.uuid4().hex[:6]}")
     except Exception as exc:

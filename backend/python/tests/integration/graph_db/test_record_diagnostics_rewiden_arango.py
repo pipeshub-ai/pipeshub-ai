@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -95,12 +94,7 @@ class Cluster:
 
 
 @pytest.fixture
-async def cluster(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Cluster]:
-    # the graph jobs start Redis too (REDIS_IT_HOST / REDIS_IT_PORT); the widening's lock lives there
-    host, port = os.environ.get("REDIS_IT_HOST", "localhost"), os.environ.get("REDIS_IT_PORT", "6389")
-    monkeypatch.setenv("REDIS_HOST", host)
-    monkeypatch.setenv("REDIS_PORT", port)
-    monkeypatch.setenv("REDIS_MODE", "standalone")
+async def cluster() -> AsyncIterator[Cluster]:
     try:
         provider = await connect_arango(logger, f"rd_rewiden_{uuid.uuid4().hex[:6]}")
     except Exception as exc:

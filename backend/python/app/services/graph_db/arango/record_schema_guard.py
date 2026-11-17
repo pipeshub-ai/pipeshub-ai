@@ -7,8 +7,10 @@ holds a newer field then fails every write with errorNum 1620. This guard:
   live generation is lower, never when it is higher (no union: a narrowed enum is replaced, not merged);
 * widens the schema **outside** any transaction: a schema change waits for every open stream transaction that wrote
   the collection and every later write queues behind it, so inside a transaction it would wait on itself;
-* runs one widening at a time across processes (a Redis lock), at a moment no stream transaction is open when one
-  can be found within 5 s, with a 5 s client timeout.
+* runs one widening at a time across processes under a lease lock kept in ArangoDB itself (``ArangoLock``), at a moment no
+  stream transaction is open when one can be found within 5 s, with a 5 s client timeout. A process that cannot take
+  the lock, or that cannot tell it still holds it, writes no schema: the refused write is refused again and the poll
+  tries again, so an older process can never overwrite a newer schema.
 
 A 1620 inside a stream transaction aborts the transaction and raises ``RecordSchemaNarrowError`` (see
 ``ArangoHTTPClient``); the owner of the transaction runs it again once ``wait_wide`` says the schema is wide.
@@ -34,7 +36,8 @@ if TYPE_CHECKING:
 REWIDEN_TIMEOUT_S = 5.0
 QUIET_POLL_S = 0.2
 POLL_INTERVAL_S = 10.0
-LOCK_KEY = "pipeshub:record-schema:rewiden"
+SCHEMA_LOCK_COLLECTION = "schemaLocks"
+SCHEMA_LOCK_KEY = "records-schema"
 LOCK_TTL_MS = 15_000
 
 REWIDEN_TOTAL = METRICS_BACKEND.counter(
@@ -77,22 +80,60 @@ def generation_of_schema(schema: dict[str, Any] | None) -> int:
 
 class Lock(Protocol):
     async def acquire(self, ttl_ms: int) -> bool: ...
+    async def renew(self, ttl_ms: int) -> bool: ...
     async def release(self) -> None: ...
 
 
-class RedisLock:
-    """``SET key token NX PX``; released only by its holder."""
+_ACQUIRE = """
+UPSERT { _key: @key }
+INSERT { _key: @key, owner: @me, leaseUntil: DATE_NOW() + @ttl, generation: @gen }
+UPDATE ((OLD.owner == @me OR OLD.leaseUntil < DATE_NOW()) ? { owner: @me, leaseUntil: DATE_NOW() + @ttl, generation: @gen } : {})
+IN @@c
+RETURN NEW.owner
+"""
+_RENEW = """
+FOR d IN @@c
+  FILTER d._key == @key AND d.owner == @me AND d.leaseUntil > DATE_NOW()
+  UPDATE d WITH { leaseUntil: DATE_NOW() + @ttl } IN @@c
+  RETURN NEW.owner
+"""
+_RELEASE = """
+FOR d IN @@c
+  FILTER d._key == @key AND d.owner == @me
+  REMOVE d IN @@c
+"""
 
-    _RELEASE = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
-    def __init__(self, client: Any, key: str) -> None:  # noqa: ANN401
-        self._client, self._key, self._token = client, key, uuid.uuid4().hex
+class ArangoLock:
+    """A lease lock kept in one document of a small collection of the same ArangoDB (``{owner, leaseUntil, generation}``).
+
+    The lease is read against the server's clock (``DATE_NOW()``), so processes with different clocks agree. A concurrent
+    take of the same document loses on the write conflict (or the unique key) and counts as "not acquired". An expired
+    lease is taken over by the next ``acquire``. ``renew`` succeeds only while the lease is still this owner's and
+    unexpired: the widening renews right before it writes, so a process that lost its lease cannot write.
+    Any error is raised (never read as "acquired")."""
+
+    def __init__(self, client: Any, *, generation: int = 0, collection: str = SCHEMA_LOCK_COLLECTION, key: str = SCHEMA_LOCK_KEY) -> None:  # noqa: ANN401
+        self._client, self._collection, self._key, self._generation = client, collection, key, generation
+        self._owner = uuid.uuid4().hex
+        self._ready = False
+
+    async def _bind(self, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
+        if not self._ready:
+            if not await self._client.create_collection(self._collection):  # creating an existing collection is a success
+                raise RuntimeError(f"could not create the lock collection {self._collection}")
+            self._ready = True
+        return {"@c": self._collection, "key": self._key, "me": self._owner, **extra}
 
     async def acquire(self, ttl_ms: int) -> bool:
-        return bool(await self._client.set(self._key, self._token, nx=True, px=ttl_ms))
+        rows = await self._client.execute_aql(_ACQUIRE, await self._bind(ttl=ttl_ms, gen=self._generation))
+        return bool(rows) and rows[0] == self._owner
+
+    async def renew(self, ttl_ms: int) -> bool:
+        return bool(await self._client.execute_aql(_RENEW, await self._bind(ttl=ttl_ms)))
 
     async def release(self) -> None:
-        await self._client.eval(self._RELEASE, 1, self._key, self._token)
+        await self._client.execute_aql(_RELEASE, await self._bind())
 
 
 LockFactory = Callable[[], Awaitable[Lock | None]]
@@ -110,20 +151,21 @@ class RecordSchemaGuard:
         generation: int,
         collection: str = "records",
         lock_factory: LockFactory | None = None,
-        require_lock: bool = True,
     ) -> None:
         self._client = client
         self._logger = logger
         self._schema = schema
         self.generation = generation
         self._collection = collection
-        self._lock_factory = lock_factory
-        self._require_lock = require_lock
+        self._lock_factory = lock_factory or self._arango_lock
         self._narrowed = False
         self._aborted: OrderedDict[str, float] = OrderedDict()
         self._abort_confirmed: OrderedDict[str, float] = OrderedDict()
         self._loop_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
         self._poller: asyncio.Task[None] | None = None
+
+    async def _arango_lock(self) -> Lock:
+        return ArangoLock(self._client, generation=self.generation)
 
     # -- aborted transactions ---------------------------------------------------------------------------------
     def mark_aborted(self, txn_id: str) -> None:
@@ -195,23 +237,21 @@ class RecordSchemaGuard:
             if await self.live_generation() >= self.generation:
                 self._narrowed = False
                 return False
-            lock: Lock | None = None
-            if self._lock_factory is not None:
-                try:
-                    lock = await self._lock_factory()
-                    if lock is not None and not await lock.acquire(LOCK_TTL_MS):
-                        # another process is fixing it
-                        await self.wait_wide(REWIDEN_TIMEOUT_S)
-                        return False
-                except Exception as error:
-                    self._logger.warning("record schema widening could not take its lock: %s", error)
-                    lock = None
-                if lock is None and self._require_lock:
-                    # Fails closed: without the lock another process can install a newer schema after the last generation check and
-                    # this write would narrow it. The write that was refused is refused again (a transient error, run again by its owner)
-                    # and the poll tries again.
-                    self._logger.warning("record schema widening skipped: no cross-process lock (Redis unreachable)")
-                    return False
+            # Fails closed: a process that cannot take the lock, or cannot tell whether it has it, writes no schema. Without it another
+            # process can install a newer schema after the last generation check and this write would narrow it. The write that was
+            # refused is refused again (a transient error its owner runs again) and the poll tries again.
+            try:
+                lock = await self._lock_factory()
+                if lock is None:
+                    raise RuntimeError("no lock")
+                acquired = await lock.acquire(LOCK_TTL_MS)
+            except Exception as error:
+                self._logger.warning("record schema widening skipped: could not take its lock: %s", error)
+                return False
+            if not acquired:
+                # another process is fixing it
+                await self.wait_wide(REWIDEN_TIMEOUT_S)
+                return False
             try:
                 if await self.live_generation() >= self.generation:
                     self._narrowed = False
@@ -223,6 +263,15 @@ class RecordSchemaGuard:
                     return False
                 if contended:
                     REWIDEN_CONTENDED_TOTAL.inc(trigger)
+                # Fencing: the lease is renewed (to a full term, longer than the 5 s write) only while it is still ours and unexpired.
+                try:
+                    holding = await lock.renew(LOCK_TTL_MS)
+                except Exception as error:
+                    self._logger.warning("record schema widening skipped: could not renew its lock: %s", error)
+                    return False
+                if not holding:
+                    self._logger.warning("record schema widening skipped: the lock lease was lost")
+                    return False
                 started = time.monotonic()
                 try:
                     applied = await self._client.update_collection_schema(
@@ -242,11 +291,10 @@ class RecordSchemaGuard:
                     self._narrowed = False
                 return bool(applied)
             finally:
-                if lock is not None:
-                    try:
-                        await lock.release()
-                    except Exception:
-                        self._logger.debug("could not release the record schema lock", exc_info=True)
+                try:
+                    await lock.release()
+                except Exception:
+                    self._logger.debug("could not release the record schema lock", exc_info=True)
 
     async def _wait_quiet(self) -> bool:
         """True when no stream transaction is running before the 5 s are up."""
