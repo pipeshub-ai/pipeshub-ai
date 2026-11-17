@@ -141,7 +141,8 @@ class TestRouting:
         ("POST", "/v1.43/exec/abc/start"),
         ("POST", "/v1.43/build"),
         ("POST", "/v1.43/volumes/create"),
-        ("GET", "/v1.43/info"),
+        ("POST", "/v1.43/info"),
+        ("GET", "/v1.43/info/x"),
         ("POST", "/v1.43/swarm/init"),
         ("POST", "/v1.43/plugins/pull"),
         ("POST", "/v1.43/images/create?fromImage=alpine&tag=latest"),
@@ -153,6 +154,10 @@ class TestRouting:
     def test_denied(self, policy: DockerApiPolicy, method: str, target: str) -> None:
         with pytest.raises(PolicyDenied):
             policy.route(method, target)
+
+    @pytest.mark.parametrize("target", ["/info", "/v1.47/info"])
+    def test_info_has_its_own_route(self, policy: DockerApiPolicy, target: str) -> None:
+        assert policy.route("GET", target).kind == "info"
 
     def test_from_env_defaults_follow_sandbox_settings(self) -> None:
         p = DockerApiPolicy.from_env({"SANDBOX_DOCKER_IMAGE": "x/y:1", "SANDBOX_EGRESS_NETWORK": "n"})
@@ -381,6 +386,11 @@ class _FakeDaemon:
         self.networks = networks or {}
         self.requests: list[tuple[str, str, bytes]] = []
         self.before_inspect: Callable[[], Awaitable[None]] | None = None
+        self.info: tuple[str, bytes] = ("200 OK", json.dumps({
+            "NCPU": 4, "MemTotal": 16 * 2**30, "KernelVersion": "6.8.0", "Driver": "overlay2",
+            "HttpProxy": "http://user:secret@proxy:3128", "Labels": ["x=y"],
+            "RegistryConfig": {"Mirrors": ["m"]}, "Containers": 99,
+        }).encode())
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head = (await reader.readuntil(b"\r\n\r\n")).decode()
@@ -393,7 +403,10 @@ class _FakeDaemon:
         self.requests.append((method, target, body))
 
         path = target.split("?", 1)[0]
-        if path.endswith("/json") and "/containers/" in path:
+        if path == "/info":
+            status, payload = self.info
+            writer.write(f"HTTP/1.1 {status}\r\nContent-Length: {len(payload)}\r\n\r\n".encode() + payload)
+        elif path.endswith("/json") and "/containers/" in path:
             if self.before_inspect is not None:
                 await self.before_inspect()
             ident = path.split("/containers/")[1].split("/")[0]
@@ -569,6 +582,25 @@ class TestProxyServer:
         head, _, body = resp.partition(b"\r\n\r\n")
         assert b"Connection: close" in head and b"keep-alive" not in head
         assert body == b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+
+    async def test_info_passes_only_the_sizing_fields(self, proxied) -> None:
+        daemon, port = proxied
+        resp = await _request(port, b"GET /v1.47/info HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert resp.startswith(b"HTTP/1.1 200")
+        body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+        assert body == {"NCPU": 4, "MemTotal": 16 * 2**30, "KernelVersion": "6.8.0", "Driver": "overlay2"}
+        assert daemon.requests[-1][:2] == ("GET", "/info")
+
+    @pytest.mark.parametrize("upstream", [
+        ("500 Internal Server Error", b'{"message":"boom"}'),
+        ("200 OK", b"not json"),
+        ("200 OK", b"[1, 2]"),
+    ])
+    async def test_a_bad_upstream_info_is_a_502(self, proxied, upstream: tuple[str, bytes]) -> None:
+        daemon, port = proxied
+        daemon.info = upstream
+        resp = await _request(port, b"GET /info HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert resp.startswith(b"HTTP/1.1 502")
 
     async def test_unlisted_endpoint_is_refused(self, proxied) -> None:
         daemon, port = proxied

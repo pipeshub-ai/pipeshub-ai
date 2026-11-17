@@ -588,3 +588,15 @@ class TestLiveRunSafety:
             await asyncio.wait_for(manager.unless_stopped(run, tool="run_code"), 15)
         assert gov.snapshot()["total"] == 0
         await manager.destroy_all()
+
+
+class TestLiveCapacity:
+    async def test_the_machine_is_read_from_the_daemon(self) -> None:
+        from app.agent_loop_lib.sandbox.capacity import CapacitySettings, read_machine_size
+
+        _require_docker()
+        machine, info = await read_machine_size("compose", CapacitySettings())
+        assert machine.source in ("docker_info", "proc_fallback")
+        assert machine.memory_bytes and machine.memory_bytes > 0
+        if machine.source == "docker_info":
+            assert info is not None and info.ncpus

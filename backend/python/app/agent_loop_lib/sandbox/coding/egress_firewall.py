@@ -55,6 +55,10 @@ _DEFAULT_DISK_QUOTA = "10g"
 # (applied), False = it rejects it (runs go uncapped). Set once under the lock.
 _storage_opt_usable: bool | None = None
 _storage_opt_lock = threading.Lock()
+# Sandboxes are the first thing the kernel kills when memory runs out, ahead
+# of the databases and the app. False once an older Docker proxy refused it.
+_OOM_SCORE_ADJ = 1000
+_oom_score_adj_usable = True
 
 
 def _disk_quota() -> str | None:
@@ -70,20 +74,50 @@ def _disk_quota() -> str | None:
 
 
 def create_sandbox_container(client: Any, **kwargs: Any) -> Any:
-    """``client.containers.create`` with a per-run writable-layer disk quota.
+    """``client.containers.create`` with a per-run writable-layer disk quota,
+    marked first to kill when memory runs out (``oom_score_adj=1000``).
+
+    A Docker proxy older than the field refuses every create that sets it, so
+    on that refusal the container is created without it, and later creates
+    skip it, with one warning.
 
     Caps a run's writable layer (``/src``, ``/output``, …) via ``storage_opt``
     so one run cannot fill the host disk (CWE-400). The cap is applied wherever
     the daemon accepts the option; whether an accepted cap is ENFORCED depends
     on the storage driver (overlay2 on xfs with ``pquota``, or btrfs/zfs/
     devicemapper, enforce it; overlay2 on ext4 accepts but silently ignores
-    it). That ignore case cannot be detected reliably — the daemon returns no
-    error, and the docker-socket-proxy blocks the ``/info`` query that would
-    reveal the driver — so it is stated in a one-time log rather than probed
-    (a write probe is not reliable through the proxy's log streaming). A daemon
+    it). That ignore case is not detected — the daemon returns no error, and
+    the docker-socket-proxy's filtered ``/info`` names the storage driver but
+    not its backing filesystem or mount options — so it is stated in a
+    one-time log rather than probed (a write probe is not reliable through
+    the proxy's log streaming). A daemon
     that REJECTS the option falls back to no cap with a warning, so a run is
     never broken. Exceeding an enforced cap fails a write with a clean ENOSPC.
     """
+    global _oom_score_adj_usable
+    if _oom_score_adj_usable:
+        try:
+            return _create_with_quota(client, oom_score_adj=_OOM_SCORE_ADJ, **kwargs)
+        except Exception as exc:
+            if not _is_oom_score_adj_refused(exc):
+                raise
+            if _oom_score_adj_usable:
+                _oom_score_adj_usable = False
+                logger.warning(
+                    "sandbox containers are not marked first-to-kill: the Docker proxy "
+                    "predates OomScoreAdj; upgrade it (%s)", exc,
+                )
+    return _create_with_quota(client, **kwargs)
+
+
+def _is_oom_score_adj_refused(exc: Exception) -> bool:
+    """The closed-field refusal of a proxy that does not know the field. Not
+    its range check, which is a real misconfiguration."""
+    msg = str(exc)
+    return "'OomScoreAdj'" in msg and "is not permitted" in msg
+
+
+def _create_with_quota(client: Any, **kwargs: Any) -> Any:
     quota = _disk_quota()
     if quota is None or _storage_opt_usable is False:
         return client.containers.create(**kwargs)

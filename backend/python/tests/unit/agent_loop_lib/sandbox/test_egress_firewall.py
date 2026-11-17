@@ -273,6 +273,64 @@ class TestCreateSandboxContainerDiskQuota:
         assert "storage_opt" not in client.containers.create.call_args.kwargs
 
 
+class TestCreateSandboxContainerOomScoreAdj:
+    """Sandboxes are created first-to-kill; an older proxy that refuses the
+    field must not break every run."""
+
+    _OLD_PROXY = "403 Client Error: docker-proxy: HostConfig: field 'OomScoreAdj' is not permitted"
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        monkeypatch.setattr(ef, "_oom_score_adj_usable", True)
+        monkeypatch.setenv("SANDBOX_DISK_QUOTA", "0")
+
+    def test_every_create_is_marked(self) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
+
+    def test_an_older_proxy_falls_back_and_warns_once(self, caplog) -> None:
+        import logging
+
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        ok = MagicMock()
+        client.containers.create.side_effect = [Exception(self._OLD_PROXY), ok, ok]
+        with caplog.at_level(logging.WARNING):
+            assert ef.create_sandbox_container(client, image="img", detach=True) is ok
+            ef.create_sandbox_container(client, image="img", detach=True)
+        first, second, third = client.containers.create.call_args_list
+        assert first.kwargs["oom_score_adj"] == 1000
+        assert "oom_score_adj" not in second.kwargs and "oom_score_adj" not in third.kwargs
+        warns = [r for r in caplog.records if "first-to-kill" in r.getMessage()]
+        assert len(warns) == 1
+
+    @pytest.mark.parametrize("message", [
+        "403 Client Error: docker-proxy: HostConfig.OomScoreAdj may not be negative: -5",
+        "403 Client Error: docker-proxy: HostConfig: field 'Privileged' is not permitted",
+        "image not found",
+    ])
+    def test_other_refusals_are_raised(self, message: str) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        client.containers.create.side_effect = Exception(message)
+        with pytest.raises(Exception, match="."):
+            ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_count == 1
+        assert ef._oom_score_adj_usable is True
+
+    def test_the_quota_fallback_keeps_the_mark(self, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        monkeypatch.setattr(ef, "_storage_opt_usable", None)
+        monkeypatch.setenv("SANDBOX_DISK_QUOTA", "10g")
+        client = MagicMock()
+        client.containers.create.side_effect = [Exception("--storage-opt is not supported"), MagicMock()]
+        ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
+
+
 class TestIsStorageOptRejected:
     def test_recognises_storage_opt_rejections(self) -> None:
         import app.agent_loop_lib.sandbox.coding.egress_firewall as ef

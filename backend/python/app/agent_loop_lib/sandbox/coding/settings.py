@@ -5,8 +5,11 @@ the coding sandbox — replaces the duplicated env reads scattered across
 Phase 1 (``EnvSandboxSettingsLoader``): reads from process environment,
 same vars the legacy stack used (``SANDBOX_MODE``, ``SANDBOX_DOCKER_IMAGE``,
 ``SANDBOX_EGRESS_NETWORK``, ``SANDBOX_PIP_INDEX_URL``, ``SANDBOX_NPM_REGISTRY``,
-``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus new ``SANDBOX_MAX_TOTAL``,
-``SANDBOX_MAX_PER_ORG``, ``SANDBOX_EGRESS_ALLOW_CIDRS``).
+``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus ``SANDBOX_EGRESS_ALLOW_CIDRS``).
+The capacity variables (``SANDBOX_MAX_TOTAL``, ``SANDBOX_MAX_PER_ORG``,
+``SANDBOX_MIN_TOTAL``, ``SANDBOX_MEMORY_SHARE``, ``SANDBOX_CPU_FACTOR``,
+``SANDBOX_HOST_*``) are parsed by ``sandbox/capacity.py``; unset means the
+ceiling is sized from the machine.
 
 Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 ``ConfigurationService`` — interface defined here, body raises

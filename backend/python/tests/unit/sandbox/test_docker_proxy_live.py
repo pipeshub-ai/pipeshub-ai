@@ -55,6 +55,27 @@ def proxy_host(monkeypatch) -> Iterator[str]:
     thread.join(timeout=5)
 
 
+async def _run_code_through_proxy(proxy_host: str, tmp_path, code: str):
+    from app.agent_loop_lib.sandbox.coding.base import CodeRequest
+    from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
+    from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
+
+    provider = DockerClientProvider(max_workers=2)
+    sb = DockerCodingSandbox(
+        working_dir=str(tmp_path / "wd"), image=DOCKER_TEST_IMAGE,
+        image_node_modules="/home/sandbox/node_modules", provider=provider,
+        egress_network=EGRESS,
+    )
+    await sb.provision()
+    try:
+        result = await sb.execute(CodeRequest(code=code, language="python"))
+        assert result.exit_code == 0, result.stderr
+        return result
+    finally:
+        await sb.destroy()
+        provider.close()
+
+
 async def test_coding_sandbox_runs_and_installs_through_proxy(proxy_host, tmp_path) -> None:
     from app.agent_loop_lib.sandbox.coding.base import CodeRequest
     from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
@@ -123,6 +144,29 @@ def test_escape_attempts_are_refused(proxy_host) -> None:
         assert exc.value.status_code == 403
     finally:
         client.close()
+
+
+def test_info_answers_only_the_sizing_fields(proxy_host) -> None:
+    import docker
+
+    from app.sandbox.docker_proxy import INFO_FIELDS
+
+    client = docker.DockerClient(base_url=proxy_host)
+    try:
+        info = client.info()
+    finally:
+        client.close()
+    assert info["NCPU"] > 0 and info["MemTotal"] > 0
+    assert set(info) <= set(INFO_FIELDS)
+    assert "HttpProxy" not in info
+
+
+async def test_sandbox_containers_are_marked_first_to_kill(proxy_host, tmp_path) -> None:
+    """Read from inside the run: the container is removed afterwards."""
+    result = await _run_code_through_proxy(
+        proxy_host, tmp_path, "print(open('/proc/self/oom_score_adj').read().strip())",
+    )
+    assert result.stdout.strip() == "1000"
 
 
 def test_containers_the_proxy_did_not_create_are_untouchable(proxy_host) -> None:

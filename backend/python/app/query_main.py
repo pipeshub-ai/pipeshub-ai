@@ -377,6 +377,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+            # Size the code sandbox ceiling from the machine in the background;
+            # runs use the minimum until it is known.
+            from app.agent_loop_lib.sandbox.capacity import get_sandbox_capacity
+
+            get_sandbox_capacity().start_sizing()
             registry = build_default_registry(
                 shared_config=SharedSandboxConfig(max_lifetime_s=settings.max_lifetime_s),
                 backend_options=settings.backend_options,

@@ -7,7 +7,9 @@ proxy is the only process that touches the socket. The app reaches it over
 TCP (``DOCKER_HOST=tcp://docker-socket-proxy:2375``) and the Docker SDK works
 unchanged, but only the calls the sandbox makes get through:
 
-- ping / version;
+- ping / version, and a filtered daemon ``/info`` (only the fields that size
+  the sandbox ceiling: no labels, proxy settings, registry config or
+  container counts);
 - create a container from an allowed sandbox image with no host access
   (no privileged mode, binds, devices, host namespaces, port publishing,
   unconfined security profiles, or capabilities beyond the egress firewall's)
@@ -276,6 +278,8 @@ class DockerApiPolicy:
             return Route("allow")
         if path == "/version" and method == "GET":
             return Route("allow")
+        if path == "/info" and method == "GET":
+            return Route("info")
 
         if path == "/containers/create" and method == "POST":
             return Route("container_create")
@@ -644,6 +648,25 @@ def _error_response(status: int, reason: str, message: str) -> bytes:
     return head + body
 
 
+# The /info fields the app sizes the sandbox ceiling from. Raw /info also
+# carries daemon labels, registry mirrors and HTTP(S)_PROXY settings (which can
+# hold credentials), swarm and plugin details, and every container's count.
+INFO_FIELDS = (
+    "NCPU", "MemTotal", "KernelVersion", "OperatingSystem", "OSType", "Architecture",
+    "ServerVersion", "CgroupVersion", "CgroupDriver", "Driver",
+)
+
+
+def _json_response(payload: Mapping[str, Any]) -> bytes:
+    body = json.dumps(payload).encode()
+    head = _serialize_head(
+        "HTTP/1.1 200 OK",
+        [("Content-Type", "application/json"), ("Content-Length", str(len(body))),
+         ("Connection", "close")],
+    )
+    return head + body
+
+
 class DockerSocketProxy:
     def __init__(
         self, policy: DockerApiPolicy, upstream_socket: str, *, instance: str = DEFAULT_INSTANCE,
@@ -730,6 +753,14 @@ class DockerSocketProxy:
         # Clients that sent Expect hold the body back until told to continue,
         # and the create routes read it before going upstream.
         expects_continue = (req.header("expect") or "").lower() == "100-continue"
+
+        if route.kind == "info":
+            status, info = await self._upstream_json("/info")
+            if status != 200 or not isinstance(info, dict):
+                await _safe_write(client_w, _error_response(502, "Bad Gateway", "docker-proxy: upstream /info failed"))
+                return
+            await _safe_write(client_w, _json_response({k: info[k] for k in INFO_FIELDS if k in info}))
+            return
 
         body: bytes | None = None
         if route.kind in ("container_create", "network_create"):

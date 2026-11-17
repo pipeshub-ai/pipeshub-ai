@@ -267,6 +267,7 @@ class TestExecuteHappyPath:
         assert kwargs["command"][3:5] == ["sandbox-deadline", "30"]
         assert kwargs["command"][5:] == ["sh", "-c", "python3 main.py"]
         assert kwargs["network_mode"] == "none"
+        assert kwargs["oom_score_adj"] == 1000
         assert kwargs["network_disabled"] is True
 
 
@@ -608,6 +609,7 @@ class TestInstallFailsClosed:
         assert "Package install refused" in result.stderr
         fake_client.containers.create.assert_called_once()
         assert fake_client.containers.create.call_args.kwargs["user"] == "0"
+        assert fake_client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
 
     async def test_unreadable_bridge_subnet_refuses_the_install(self, tmp_path) -> None:
         sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
