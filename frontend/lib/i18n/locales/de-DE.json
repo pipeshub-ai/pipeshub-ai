@@ -2639,7 +2639,7 @@
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
       },
-      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
+      "dataCollectionActive": "Nutzungsdaten werden erfasst und an den konfigurierten Metrikserver gesendet. Schalten Sie dies aus, um es zu beenden."
     },
     "mcpAccess": {
       "title": "MCP-Zugriff",

@@ -2782,7 +2782,7 @@
         "confirm": "취소",
         "cancel": "계속 편집"
       },
-      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
+      "dataCollectionActive": "사용 데이터가 수집되어 구성된 메트릭 서버로 전송되고 있습니다. 중지하려면 이 옵션을 끄세요."
     },
     "mcpAccess": {
       "title": "MCP 액세스",
