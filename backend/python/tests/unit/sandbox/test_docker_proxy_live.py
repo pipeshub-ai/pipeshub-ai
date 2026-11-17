@@ -3,12 +3,15 @@
 Skipped unless a daemon and the sandbox image are present. Run with:
     SANDBOX_TEST_IMAGE=pipeshub/sandbox:latest pytest \\
         tests/unit/sandbox/test_docker_proxy_live.py -m docker --timeout=600
+On a daemon other people use, also name a network and a proxy instance of
+your own with SANDBOX_TEST_EGRESS_NETWORK and SANDBOX_TEST_PROXY_INSTANCE.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -31,7 +34,8 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.docker, pytest.mark.timeout(600, method="thread")]
 
-EGRESS = "pipeshub_sandbox_egress"
+EGRESS = os.environ.get("SANDBOX_TEST_EGRESS_NETWORK") or "pipeshub_sandbox_egress"
+INSTANCE = os.environ.get("SANDBOX_TEST_PROXY_INSTANCE") or "default"
 
 
 @pytest.fixture
@@ -44,7 +48,7 @@ def proxy_host(monkeypatch) -> Iterator[str]:
     policy = DockerApiPolicy(
         allowed_images=frozenset({DOCKER_TEST_IMAGE}), allowed_networks=frozenset({EGRESS}),
     )
-    proxy = DockerSocketProxy(policy, "/var/run/docker.sock")
+    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", instance=INSTANCE)
     server = loop.run_until_complete(asyncio.start_server(proxy.handle, "127.0.0.1", 0))
     port = server.sockets[0].getsockname()[1]
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -368,3 +372,59 @@ async def test_out_of_memory_is_detected_through_the_proxy(proxy_host, tmp_path)
     finally:
         await sb.destroy()
         provider.close()
+
+
+def test_another_stack_sees_neither_the_run_nor_the_network(proxy_host) -> None:
+    """While this stack's sandbox runs on the egress network, a second
+    stack's proxy on the same daemon lists only that network, sees none of
+    this stack's containers on it, and cannot remove it."""
+    import uuid
+
+    import docker
+    from docker.errors import APIError
+
+    from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
+    from app.agent_loop_lib.sandbox.coding.egress_firewall import (
+        ensure_egress_network_sync,
+    )
+
+    provider = DockerClientProvider(max_workers=1)
+    try:
+        assert asyncio.run(provider.egress_network_cidrs(EGRESS))
+    finally:
+        provider.close()
+    host_b, _proxy_b, loop_b, thread_b = _start_proxy(f"{INSTANCE}-b-{uuid.uuid4().hex[:6]}")
+    ours = docker.DockerClient(base_url=proxy_host)
+    theirs = docker.DockerClient(base_url=host_b)
+    limits = {"mem_limit": 64 * 1024 * 1024, "nano_cpus": 100_000_000, "pids_limit": 16}
+    run = ours.containers.create(DOCKER_TEST_IMAGE, ["sleep", "60"], network=EGRESS, **limits)
+    try:
+        run.start()
+        mine = ours.api.inspect_network(EGRESS)
+        assert run.id in mine["Containers"]
+        assert mine["Labels"]["ai.pipeshub.docker-proxy.instance"] == INSTANCE
+
+        seen = theirs.api.inspect_network(EGRESS)
+        assert seen["Containers"] == {}
+        assert run.id.encode() not in theirs.api.get(theirs.api._url(f"/networks/{seen['Id']}")).content
+        assert [n["Name"] for n in theirs.api.networks()] == [EGRESS]
+        with pytest.raises(APIError) as exc:
+            theirs.api.remove_network(EGRESS)
+        assert exc.value.status_code == 403
+        # The other stack's app keeps the network it cannot recreate.
+        assert ensure_egress_network_sync(theirs, EGRESS, {}) != []
+        with pytest.raises(APIError) as exc:
+            theirs.api.create_container(DOCKER_TEST_IMAGE, ["true"], name=run.name)
+        assert exc.value.status_code == 403 and run.id not in str(exc.value)
+        # A pull of every tag is refused before it reaches the daemon.
+        pulled = theirs.api.post(
+            theirs.api._url("/images/create"), params={"fromImage": DOCKER_TEST_IMAGE.rsplit(":", 1)[0]},
+        )
+        assert pulled.status_code == 403
+    finally:
+        with contextlib.suppress(APIError):
+            run.remove(force=True)
+        ours.close()
+        theirs.close()
+        loop_b.call_soon_threadsafe(loop_b.stop)
+        thread_b.join(timeout=5)

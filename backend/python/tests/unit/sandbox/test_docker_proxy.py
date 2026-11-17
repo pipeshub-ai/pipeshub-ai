@@ -110,7 +110,6 @@ class TestNormalizeImage:
 class TestRouting:
     @pytest.mark.parametrize("method,target", [
         ("GET", "/_ping"), ("HEAD", "/_ping"), ("GET", "/v1.43/version"),
-        ("GET", "/v1.43/networks?filters=%7B%7D"),
         ("POST", "/v1.43/images/create?fromImage=pipeshubai%2Fpipeshub-sandbox&tag=latest"),
         ("GET", "/v1.43/images/pipeshubai/pipeshub-sandbox:latest/json"),
     ])
@@ -347,7 +346,9 @@ class TestNetworkCreate:
             options={"com.docker.network.bridge.enable_icc": "false"},
             labels={"pipeshub.sandbox": "egress"}, check_duplicate=True,
         )
-        assert policy.check_network_create(body) == body
+        assert policy.check_network_create(body, "stack-a") == {
+            **body, "Labels": {**body["Labels"], MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-a"},
+        }
 
     def test_refuses_ipv6(self, policy: DockerApiPolicy) -> None:
         with pytest.raises(PolicyDenied):
@@ -356,7 +357,9 @@ class TestNetworkCreate:
     def test_admits_egress_network(self, policy: DockerApiPolicy) -> None:
         body = {"Name": EGRESS, "Driver": "bridge", "Options": {"com.docker.network.bridge.enable_icc": "false"},
                 "IPAM": None, "CheckDuplicate": True, "Labels": {"pipeshub.sandbox": "egress"}}
-        assert policy.check_network_create(body) == body
+        assert policy.check_network_create(body)["Labels"] == {
+            "pipeshub.sandbox": "egress", MANAGED_LABEL: "true", INSTANCE_LABEL: "default",
+        }
 
     @pytest.mark.parametrize("body", [
         {"Name": "pipeshub-ai_pipeshub", "Driver": "bridge"},
@@ -451,7 +454,10 @@ async def proxied(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_Fak
     daemon = _FakeDaemon(
         {"owned": owned, "f" * 64: owned, "foreign": foreign,
          "other-stack": other_stack, "older-proxy": older_proxy},
-        networks={"egressid": {"Name": EGRESS}, "appnetid": {"Name": "pipeshub-ai_pipeshub"}},
+        networks={
+            "egressid": {"Id": "egressid", "Name": EGRESS, "Labels": {INSTANCE_LABEL: "stack-a"}},
+            "appnetid": {"Id": "appnetid", "Name": "pipeshub-ai_pipeshub"},
+        },
     )
     sock = str(tmp_path / "d.sock")
     upstream = await asyncio.start_unix_server(daemon.handle, sock)

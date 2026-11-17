@@ -649,7 +649,8 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            # Loopback only: the default 0.0.0.0 would also serve the pod IP.
+            # Loopback only (also the proxy's default): the pod IP must not
+            # serve it, since the proxy has no client authentication.
             - name: DOCKER_PROXY_HOST
               value: "127.0.0.1"
             - name: DOCKER_PROXY_PORT

@@ -238,6 +238,28 @@ _ICC_OPTION = "com.docker.network.bridge.enable_icc"
 
 _TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
 
+# Rejects every subnet the container is attached to and its default gateway,
+# read from /proc/net/route (little-endian hex), so they hold even when the
+# bridge's subnets could not be read on the host and an allowance overlaps
+# them. Fields: Iface Destination Gateway Flags RefCnt Use Metric Mask.
+_ROUTE_REJECT_LINES = [
+    "ip4() { h=$1; printf '%d.%d.%d.%d' \"0x${h#??????}\" \"0x$(echo \"$h\" | cut -c5-6)\" "
+    "\"0x$(echo \"$h\" | cut -c3-4)\" \"0x$(echo \"$h\" | cut -c1-2)\"; }",
+    "hex8() { case $1 in [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) "
+    "return 0;; esac; return 1; }",
+    "if [ -r /proc/net/route ]; then",
+    "  while read -r i d g _f _c _u _m k _rest; do",
+    '    [ "$i" = Iface ] || [ "$i" = lo ] && continue',
+    '    hex8 "$d" && hex8 "$g" && hex8 "$k" || fail "unreadable route: $i $d $g $k"',
+    '    if [ "$d" = 00000000 ]; then',
+    '      [ "$g" = 00000000 ] || r -A OUTPUT -d "$(ip4 "$g")/32" -j REJECT',
+    "    else",
+    '      r -A OUTPUT -d "$(ip4 "$d")/$(ip4 "$k")" -j REJECT',
+    "    fi",
+    "  done < /proc/net/route",
+    "fi",
+]
+
 
 def new_firewall_token() -> str:
     return secrets.token_hex(16)
@@ -264,14 +286,27 @@ def build_firewall_script(
 ) -> str:
     """``sh -c`` script: install the rules, then exec ``"$@"`` as ``run_as``.
 
-    Blocking the bridge's own subnets covers the gateway and sibling
-    sandboxes even when the daemon's address pools sit outside the private
-    ranges. Loopback stays open because Docker's embedded DNS (127.0.0.11)
-    is reached through it.
+    Rule order (first match wins):
+
+    1. loopback is accepted: Docker's embedded DNS (127.0.0.11) is reached
+       through it;
+    2. link-local (cloud metadata), Azure's wireserver, the bridge's own
+       subnets (``network_cidrs``) and, read from the container's routing
+       table at start, every subnet it is attached to and its default
+       gateway (the host, or under Docker-in-Docker the application pod)
+       are rejected;
+    3. ``allowed_cidrs`` are accepted;
+    4. every other private, CGNAT and reserved range is rejected.
+
+    So an operator allowance, however broad (``0.0.0.0/0``), opens private
+    hosts beyond the bridge but never the gateway, sibling sandboxes or the
+    metadata endpoints. Blocking the bridge's subnets also covers daemons
+    whose address pools sit outside the private ranges.
     """
     if not _TOKEN_RE.fullmatch(token):
         raise ValueError("firewall token must be 16-64 lowercase hex characters")
-    blocked = list(dict.fromkeys([*BLOCKED_CIDRS, *_ipv4_cidrs(network_cidrs)]))
+    bridge = list(dict.fromkeys(_ipv4_cidrs(network_cidrs)))
+    blocked = [c for c in dict.fromkeys(BLOCKED_CIDRS) if c not in bridge]
     allowed = _ipv4_cidrs(allowed_cidrs)
     user = shlex.quote(run_as)
     lines = [
@@ -287,6 +322,8 @@ def build_firewall_script(
         "r -A OUTPUT -o lo -j ACCEPT",
     ]
     lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in _NEVER_ALLOWED_CIDRS]
+    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in bridge]
+    lines += _ROUTE_REJECT_LINES
     lines += [f"r -A OUTPUT -d {cidr} -j ACCEPT" for cidr in allowed]
     lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in blocked]
     # The container starts as root, so HOME is /root; npm/npx would then
@@ -383,8 +420,18 @@ def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str,
             )
         else:
             logger.info("recreating sandbox egress network %s with inter-container traffic off", network_name)
-            network.remove()
-            network = None
+            try:
+                network.remove()
+                network = None
+            except Exception as exc:
+                # In use by containers this client is not shown, or not
+                # created by this stack's Docker proxy (which only removes
+                # its own networks). The per-container firewall blocks the
+                # bridge subnet either way.
+                logger.warning(
+                    "sandbox egress network %s allows inter-container traffic and could not be "
+                    "recreated (%s); keeping it", network_name, exc,
+                )
     if network is None:
         try:
             client.networks.create(

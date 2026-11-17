@@ -115,4 +115,28 @@ for f in "${FILES[@]}"; do
   done
 done
 
+# The proxy defaults to loopback, so Compose must set its address; it may only
+# listen on all interfaces because it publishes no port and sits only on
+# internal networks.
+for f in "${FILES[@]}"; do
+  render "$f" "$TMP/default.json"
+  got="$(python3 - "$TMP/default.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+svc = cfg["services"].get("docker-socket-proxy")
+if svc is None:
+    print("<no proxy>")
+    sys.exit(0)
+env = svc.get("environment") or {}
+if isinstance(env, list):
+    env = dict(item.split("=", 1) for item in env if "=" in item)
+nets = svc.get("networks") or {}
+internal = all((cfg.get("networks") or {}).get(n, {}).get("internal") for n in nets)
+print(f"host={env.get('DOCKER_PROXY_HOST')} ports={bool(svc.get('ports'))} internal={bool(nets) and internal}")
+PY
+)"
+  [[ "$got" == "<no proxy>" ]] && continue
+  check "$f proxy listen address" "host=0.0.0.0 ports=False internal=True" "$got"
+done
+
 exit "$fail"

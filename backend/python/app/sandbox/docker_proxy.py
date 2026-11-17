@@ -27,9 +27,20 @@ unchanged, but only the calls the sandbox makes get through:
   containers this proxy created (it stamps labels at create time, one of
   them naming this stack, so stacks sharing a daemon cannot reach each
   other's containers);
-- inspect / pull of the allowed sandbox images;
-- list networks, and create / inspect / remove the sandbox egress network
-  (the egress firewall recreates it when it predates its required options).
+- inspect / pull of the allowed sandbox images, by an explicit tag or digest;
+- list and inspect the sandbox egress network (other networks are left out
+  of the list, and only this stack's containers are shown attached to it),
+  create it with inter-container traffic off, and remove it only when this
+  proxy created it (the egress firewall recreates it when it predates its
+  required options).
+
+Request bodies are bounded: a create body by size and nesting depth, an
+archive upload by ``DOCKER_PROXY_MAX_UPLOAD_MB`` and by idle and total
+timeouts. Each client address may hold at most
+``DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT`` connections at once. It listens
+on ``DOCKER_PROXY_HOST`` (default 127.0.0.1; Compose sets 0.0.0.0 on its
+internal control network) and has no client authentication of its own, so
+keep it off any network a user can reach.
 
 Path-only proxies cannot express the create rules: they allow
 ``/containers/create`` or they don't. That is why this one reads the body.
@@ -57,11 +68,13 @@ import stat
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger("docker_proxy")
 
@@ -73,6 +86,7 @@ INSTANCE_LABEL = "ai.pipeshub.docker-proxy.instance"
 DEFAULT_INSTANCE = "default"
 _INSTANCE_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,128}")
 _UPSTREAM_TIMEOUT_S = 30.0
+_DEFAULT_HOST = "127.0.0.1"
 
 _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 
@@ -128,13 +142,28 @@ _NETWORKING_CONFIG_FIELDS = frozenset({"EndpointsConfig"})
 # the EndpointsConfig key the policy checks, so a NetworkID would join any
 # network on the daemon (another stack's, the default bridge).
 _ENDPOINT_FIELDS = frozenset({"Aliases", "Links", "IPAMConfig", "DriverOpts", "MacAddress"})
+# Closed: what docker-py's networks.create can send.
 _NETWORK_CREATE_FIELDS = frozenset({
-    "Name", "Driver", "Options", "IPAM", "ConfigFrom", "ConfigOnly", "Ingress", "Scope",
-    "EnableIPv6",
+    "Name", "CheckDuplicate", "Driver", "Options", "IPAM", "Internal", "Labels",
+    "Attachable", "Ingress", "Scope", "ConfigOnly", "ConfigFrom", "EnableIPv6",
 })
+_ICC_OPTION = "com.docker.network.bridge.enable_icc"
+# Network inspect keys that describe other endpoints on the network (swarm
+# peers and services); "Containers" is narrowed to this stack's instead.
+_NETWORK_FOREIGN_KEYS = ("Peers", "Services")
+# Query parameters a container create may carry. ``name`` is refused: a
+# conflicting name makes the daemon answer with the id of the container
+# that holds it, whichever stack that is.
+_CREATE_QUERY = frozenset({"platform"})
 
 _MAX_HEAD_BYTES = 64 * 1024
 _MAX_POLICY_BODY_BYTES = 1024 * 1024
+# Docker's own bodies nest a few levels deep; this only stops a body built
+# to exhaust the parser's recursion.
+_MAX_JSON_DEPTH = 32
+# A filtered response (network list / inspect) is read whole before it is
+# rewritten.
+_MAX_FILTERED_RESPONSE_BYTES = 16 * 1024 * 1024
 _HEAD_TIMEOUT_S = 30.0
 _COPY_CHUNK = 64 * 1024
 
@@ -146,6 +175,7 @@ _VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)?(?=/)")
 _FORM_CONTENT_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
 _CHUNK_SIZE = re.compile(rb"[0-9A-Fa-f]{1,16}")
 _CONTAINER_IN_TARGET = re.compile(r"^((?:/v\d+(?:\.\d+)?)?/containers/)[^/?]+")
+_NETWORK_IN_TARGET = re.compile(r"^((?:/v\d+(?:\.\d+)?)?/networks/)[^/?]+")
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _HTTP_VERSION = re.compile(r"HTTP/1\.[01]")
 _TARGET_FORBIDDEN = re.compile(r"[\x00-\x20\x7f]")
@@ -316,6 +346,9 @@ class DockerApiPolicy:
             return Route("info")
 
         if path == "/containers/create" and method == "POST":
+            extra = set(query) - _CREATE_QUERY
+            if extra:
+                raise PolicyDenied(f"container create parameters {sorted(extra)} are not permitted")
             return Route("container_create")
         m = re.fullmatch(r"/containers/([^/]+)(/[a-z]+)?", path)
         if m:
@@ -339,6 +372,10 @@ class DockerApiPolicy:
                 ref = f"{name}@{tag}" if tag.startswith("sha256:") else f"{name}:{tag}"
             else:
                 ref = name
+                # The daemon pulls every tag of a repository named without
+                # a tag or digest.
+                if "@" not in name and ":" not in name.rsplit("/", 1)[-1]:
+                    raise PolicyDenied(f"pulling {name!r} needs an explicit tag or digest")
             if not self.image_allowed(ref):
                 raise PolicyDenied(f"pulling image {ref!r} is not permitted")
             return Route("allow")
@@ -350,7 +387,7 @@ class DockerApiPolicy:
             return Route("allow")
 
         if path == "/networks" and method == "GET":
-            return Route("allow")
+            return Route("network_list")
         if path == "/networks/create" and method == "POST":
             return Route("network_create")
         m = re.fullmatch(r"/networks/([^/]+)", path)
@@ -520,23 +557,39 @@ class DockerApiPolicy:
                 raise PolicyDenied(f"HostConfig.OomScoreAdj may not be above {_MAX_OOM_SCORE_ADJ}")
         return memory
 
-    def check_network_create(self, body: dict[str, Any]) -> dict[str, Any]:
+    def check_network_create(self, body: dict[str, Any], instance: str = DEFAULT_INSTANCE) -> dict[str, Any]:
+        """Validate a network create and return it with the ownership labels:
+        only a network carrying this ``instance`` may later be removed."""
         if not isinstance(body, dict):
             raise PolicyDenied("network create body must be a JSON object")
-        _struct_object(body, _NETWORK_CREATE_FIELDS, "network create body")
+        _struct_object(body, _NETWORK_CREATE_FIELDS, "network create body", closed=True)
         name = body.get("Name") or ""
         if name not in self.allowed_networks:
             raise PolicyDenied(f"creating network {name!r} is not permitted")
         if (body.get("Driver") or "bridge") != "bridge":
             raise PolicyDenied("only bridge networks are permitted")
-        extra = set((body.get("Options") or {})) - _ALLOWED_NETWORK_OPTIONS
+        options = body.get("Options") or {}
+        if not isinstance(options, dict):
+            raise PolicyDenied("network Options must be an object")
+        extra = set(options) - _ALLOWED_NETWORK_OPTIONS
         if extra:
             raise PolicyDenied(f"network options {sorted(extra)} are not permitted")
+        # Sandboxes on the bridge must not reach each other directly.
+        if options.get(_ICC_OPTION) != "false":
+            raise PolicyDenied(f"network option {_ICC_OPTION} must be \"false\"")
         # EnableIPv6: the sandbox egress firewall only installs IPv4 rules.
-        for key in ("IPAM", "ConfigFrom", "ConfigOnly", "Ingress", "Scope", "EnableIPv6"):
+        for key in ("IPAM", "ConfigFrom", "ConfigOnly", "Ingress", "Scope", "EnableIPv6", "Attachable"):
             if body.get(key):
                 raise PolicyDenied(f"network {key} is not permitted")
-        return body
+        raw_labels = body.get("Labels")
+        if raw_labels is None:
+            raw_labels = {}
+        if not isinstance(raw_labels, dict):
+            raise PolicyDenied("network Labels must be an object")
+        labels = dict(raw_labels)
+        labels[MANAGED_LABEL] = "true"
+        labels[INSTANCE_LABEL] = instance
+        return {**body, "Labels": labels}
 
 
 def _local_route(method: str, path: str, query: Mapping[str, list[str]]) -> Route:
@@ -719,6 +772,87 @@ def _split_csv(value: str | None) -> list[str]:
     return [v.strip() for v in (value or "").split(",") if v.strip()]
 
 
+# The sandbox uploads a run's input files and its installed dependencies
+# (a Python or Node tree that can reach a few GB) through PUT /archive; the
+# writable layer that receives them defaults to 10 GB (SANDBOX_DISK_QUOTA).
+_DEFAULT_MAX_UPLOAD_MB = 10 * 1024
+_DEFAULT_BODY_IDLE_TIMEOUT_S = 120.0
+_DEFAULT_BODY_TIMEOUT_S = 1800.0
+# Every running sandbox holds a few connections (wait, logs, archive); a
+# Helm pod's processes all reach the proxy from 127.0.0.1.
+_DEFAULT_MAX_CONNECTIONS_PER_CLIENT = 512
+
+
+@dataclass(frozen=True)
+class ProxyLimits:
+    """Bounds on what one client can hold open or send through the proxy."""
+
+    max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_MB * 1024 * 1024
+    # Longest wait for the next piece of a forwarded body, and for all of it.
+    body_idle_timeout_s: float = _DEFAULT_BODY_IDLE_TIMEOUT_S
+    body_timeout_s: float = _DEFAULT_BODY_TIMEOUT_S
+    max_connections_per_client: int = _DEFAULT_MAX_CONNECTIONS_PER_CLIENT
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> ProxyLimits:
+        """``DOCKER_PROXY_MAX_UPLOAD_MB`` (default 10240),
+        ``DOCKER_PROXY_BODY_IDLE_TIMEOUT_S`` (120), ``DOCKER_PROXY_BODY_TIMEOUT_S``
+        (1800) and ``DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT`` (512). A value
+        that is not a positive number warns and keeps the default."""
+        env = os.environ if env is None else env
+        upload_mb = _positive_env(env, "DOCKER_PROXY_MAX_UPLOAD_MB", _DEFAULT_MAX_UPLOAD_MB, int)
+        return cls(
+            max_upload_bytes=int(upload_mb) * 1024 * 1024,
+            body_idle_timeout_s=_positive_env(
+                env, "DOCKER_PROXY_BODY_IDLE_TIMEOUT_S", _DEFAULT_BODY_IDLE_TIMEOUT_S, float,
+            ),
+            body_timeout_s=_positive_env(env, "DOCKER_PROXY_BODY_TIMEOUT_S", _DEFAULT_BODY_TIMEOUT_S, float),
+            max_connections_per_client=int(_positive_env(
+                env, "DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT", _DEFAULT_MAX_CONNECTIONS_PER_CLIENT, int,
+            )),
+        )
+
+    def text(self) -> str:
+        return (
+            f"uploads<= {self.max_upload_bytes // (1024 * 1024)} MB, body idle<= {self.body_idle_timeout_s:g}s, "
+            f"body total<= {self.body_timeout_s:g}s, connections per client<= {self.max_connections_per_client}"
+        )
+
+
+def _json_depth_ok(raw: bytes, limit: int = _MAX_JSON_DEPTH) -> bool:
+    """Whether no array or object in ``raw`` nests deeper than ``limit``,
+    checked before parsing so a hostile body never reaches the recursive
+    decoder. Brackets inside strings do not count."""
+    depth = 0
+    in_string = escaped = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:  # backslash
+                escaped = True
+            elif byte == 0x22:  # quote
+                in_string = False
+        elif byte == 0x22:
+            in_string = True
+        elif byte in (0x5B, 0x7B):  # [ {
+            depth += 1
+            if depth > limit:
+                return False
+        elif byte in (0x5D, 0x7D):  # ] }
+            depth -= 1
+    return True
+
+
+def _parse_policy_body(raw: bytes) -> object:
+    if not _json_depth_ok(raw):
+        raise PolicyDenied("request body nests too deeply")
+    try:
+        return json.loads(raw or b"{}", object_pairs_hook=_reject_duplicate_keys)
+    except (ValueError, RecursionError) as exc:
+        raise PolicyDenied("request body is not valid JSON") from exc
+
+
 @dataclass
 class _Request:
     method: str
@@ -825,15 +959,32 @@ async def _read_chunked(reader: asyncio.StreamReader, limit: int) -> bytes:
         await reader.readexactly(2)
 
 
-async def _pipe_chunked(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    """Forward a chunked body verbatim, stopping after the terminating chunk."""
+class BodyTooLarge(PolicyDenied):
+    """A forwarded body went past ``ProxyLimits.max_upload_bytes``."""
+
+
+async def _idle(awaitable: Awaitable[_T], idle_s: float | None) -> _T:
+    return await (asyncio.wait_for(awaitable, idle_s) if idle_s else awaitable)
+
+
+async def _pipe_chunked(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *,
+    limit: int | None = None, idle_s: float | None = None,
+) -> None:
+    """Forward a chunked body verbatim, stopping after the terminating chunk.
+    More than ``limit`` body bytes raises ``BodyTooLarge``; ``idle_s`` bounds
+    each wait for the client."""
+    total = 0
     while True:
-        size_line = await reader.readuntil(b"\r\n")
+        size_line = await _idle(reader.readuntil(b"\r\n"), idle_s)
         size = _chunk_size(size_line)
+        total += size
+        if limit is not None and total > limit:
+            raise BodyTooLarge("request body too large")
         writer.write(size_line)
         if size == 0:
             while True:
-                trailer = await reader.readuntil(b"\r\n")
+                trailer = await _idle(reader.readuntil(b"\r\n"), idle_s)
                 writer.write(trailer)
                 if trailer == b"\r\n":
                     break
@@ -841,7 +992,7 @@ async def _pipe_chunked(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             return
         remaining = size + 2
         while remaining:
-            chunk = await reader.read(min(remaining, _COPY_CHUNK))
+            chunk = await _idle(reader.read(min(remaining, _COPY_CHUNK)), idle_s)
             if not chunk:
                 raise asyncio.IncompleteReadError(b"", remaining)
             writer.write(chunk)
@@ -849,9 +1000,11 @@ async def _pipe_chunked(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         await writer.drain()
 
 
-async def _pipe_exact(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, n: int) -> None:
+async def _pipe_exact(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, n: int, *, idle_s: float | None = None,
+) -> None:
     while n:
-        chunk = await reader.read(min(n, _COPY_CHUNK))
+        chunk = await _idle(reader.read(min(n, _COPY_CHUNK)), idle_s)
         if not chunk:
             raise asyncio.IncompleteReadError(b"", n)
         writer.write(chunk)
@@ -889,10 +1042,13 @@ INFO_FIELDS = (
 )
 
 
-def _json_response(payload: Mapping[str, Any]) -> bytes:
+_REASONS = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 500: "Internal Server Error"}
+
+
+def _json_response(payload: object, status: int = 200) -> bytes:
     body = json.dumps(payload).encode()
     head = _serialize_head(
-        "HTTP/1.1 200 OK",
+        f"HTTP/1.1 {status} {_REASONS.get(status, 'Error')}",
         [("Content-Type", "application/json"), ("Content-Length", str(len(body))),
          ("Connection", "close")],
     )
@@ -902,11 +1058,14 @@ def _json_response(payload: Mapping[str, Any]) -> bytes:
 class DockerSocketProxy:
     def __init__(
         self, policy: DockerApiPolicy, upstream_socket: str, *, instance: str = DEFAULT_INSTANCE,
-        sidecar_stats_file: str | None = None,
+        sidecar_stats_file: str | None = None, limits: ProxyLimits | None = None,
     ) -> None:
         self._policy = policy
         self._upstream = upstream_socket
         self.instance = instance
+        self.limits = limits or ProxyLimits()
+        # Open connections per client address.
+        self._connections: dict[str, int] = {}
         self._sidecar = SidecarStats(sidecar_stats_file)
         self._containers_lock = asyncio.Lock()
         self._containers_cache: tuple[float, dict[str, Any] | None, str | None] | None = None
@@ -928,14 +1087,23 @@ class DockerSocketProxy:
         bounded by ``timeout`` so a hung daemon cannot hang the caller."""
         return await asyncio.wait_for(self._upstream_request(method, path), timeout)
 
-    async def _upstream_request(self, method: str, path: str) -> tuple[int, Any]:
+    async def _upstream_request(
+        self, method: str, path: str, max_bytes: int | None = None,
+    ) -> tuple[int, Any]:
         reader, writer = await asyncio.open_unix_connection(self._upstream)
         try:
             writer.write(_serialize_head(
                 f"{method} {path} HTTP/1.1", [("Host", "docker"), ("Connection", "close")]
             ))
             await writer.drain()
-            raw = await reader.read()
+            if max_bytes is None:
+                raw = await reader.read()
+            else:
+                raw = b""
+                while chunk := await reader.read(_COPY_CHUNK):
+                    raw += chunk
+                    if len(raw) > max_bytes:
+                        raise ValueError("upstream response too large")
         finally:
             writer.close()
         head, _, body = raw.partition(b"\r\n\r\n")
@@ -1030,22 +1198,90 @@ class DockerSocketProxy:
         labels: dict[str, str] = {}
         if status == 200 and isinstance(info, dict):
             labels = (info.get("Config") or {}).get("Labels") or {}
-        if labels.get(MANAGED_LABEL) != "true":
-            raise PolicyDenied("container is not managed by the sandbox proxy")
-        if labels.get(INSTANCE_LABEL) != self.instance:
+        # One answer for missing, unmanaged and another stack's containers,
+        # so the refusal says nothing about what exists on the daemon.
+        if labels.get(MANAGED_LABEL) != "true" or labels.get(INSTANCE_LABEL) != self.instance:
             raise PolicyDenied("container is not managed by this sandbox proxy")
         return str(info["Id"])
 
-    async def _check_network(self, ident: str) -> None:
+    async def _check_network(self, ident: str, *, owned: bool = False) -> str:
+        """The id of sandbox network ``ident``. ``owned`` also requires that
+        this proxy created it (it carries this stack's instance label)."""
         status, info = await self._upstream_json(f"/networks/{quote(ident, safe='')}")
-        if status != 200 or (info or {}).get("Name") not in self._policy.allowed_networks:
+        if status != 200 or not isinstance(info, dict) or info.get("Name") not in self._policy.allowed_networks:
             raise PolicyDenied("network is not a sandbox network")
+        if owned:
+            labels = info.get("Labels") or {}
+            if not isinstance(labels, dict) or labels.get(INSTANCE_LABEL) != self.instance:
+                raise PolicyDenied("network was not created by this sandbox proxy")
+        if not isinstance(info.get("Id"), str) or not info["Id"]:
+            raise PolicyDenied("network is not a sandbox network")
+        return info["Id"]
+
+    async def _own_container_ids(self) -> set[str]:
+        status, items = await self._upstream_call(
+            "GET", _containers_query(f"{INSTANCE_LABEL}={self.instance}"), _LIST_TIMEOUT_S,
+        )
+        if status != 200 or not isinstance(items, list):
+            raise RuntimeError(f"listing containers returned {status}")
+        return {str(item["Id"]) for item in items if _owned_by(item, self.instance) and item.get("Id")}
+
+    async def _redact_network(self, network: object, own: set[str] | None) -> tuple[object, set[str] | None]:
+        """``network`` with only this stack's containers attached and no swarm
+        peers or services. ``own`` caches this stack's container ids."""
+        if not isinstance(network, dict):
+            return network, own
+        out = {k: v for k, v in network.items() if k not in _NETWORK_FOREIGN_KEYS}
+        attached = network.get("Containers")
+        if isinstance(attached, dict) and attached:
+            if own is None:
+                own = await self._own_container_ids()
+            out["Containers"] = {k: v for k, v in attached.items() if k in own}
+        elif attached is not None:
+            out["Containers"] = {}
+        return out, own
+
+    async def _filtered_networks(self, path: str, *, single: bool) -> tuple[int, Any]:
+        """Network list or inspect: only the sandbox networks, each redacted."""
+        status, payload = await self._upstream_call_capped(path)
+        if status != 200:
+            return status, payload
+        own: set[str] | None = None
+        if single:
+            if not isinstance(payload, dict) or payload.get("Name") not in self._policy.allowed_networks:
+                raise PolicyDenied("network is not a sandbox network")
+            redacted, _ = await self._redact_network(payload, own)
+            return status, redacted
+        if not isinstance(payload, list):
+            raise ValueError("network list is not a list")
+        kept = []
+        for item in payload:
+            if isinstance(item, dict) and item.get("Name") in self._policy.allowed_networks:
+                redacted, own = await self._redact_network(item, own)
+                kept.append(redacted)
+        return status, kept
+
+    async def _upstream_call_capped(self, path: str) -> tuple[int, Any]:
+        return await asyncio.wait_for(
+            self._upstream_request("GET", path, _MAX_FILTERED_RESPONSE_BYTES), _UPSTREAM_TIMEOUT_S,
+        )
 
     async def handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         if task is not None:
             self._inflight.add(task)
             task.add_done_callback(self._inflight.discard)
+        peer = client_w.get_extra_info("peername")
+        client = str(peer[0]) if isinstance(peer, tuple) and peer else str(peer or "")
+        open_now = self._connections.get(client, 0)
+        if open_now >= self.limits.max_connections_per_client:
+            logger.warning("refused a connection from %s: %d already open", client, open_now)
+            await _safe_write(client_w, _error_response(
+                503, "Service Unavailable", "docker-proxy: too many connections from this client",
+            ))
+            client_w.close()
+            return
+        self._connections[client] = open_now + 1
         try:
             await self._handle(client_r, client_w)
         except PolicyDenied as exc:
@@ -1057,6 +1293,11 @@ class DockerSocketProxy:
             logger.exception("proxy error")
             await _safe_write(client_w, _error_response(502, "Bad Gateway", "docker-proxy: upstream error"))
         finally:
+            left = self._connections.get(client, 1) - 1
+            if left > 0:
+                self._connections[client] = left
+            else:
+                self._connections.pop(client, None)
             client_w.close()
 
     async def _handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
@@ -1066,10 +1307,18 @@ class DockerSocketProxy:
         target = req.target
         if req.form_body:
             raise PolicyDenied("form-encoded request bodies are not permitted")
-        # ping, version, network list and image pull / inspect never carry a
-        # body; the daemon would read one on /images/create.
-        if route.kind == "allow" and (req.chunked or req.content_length):
+        # Only the create routes and an archive upload carry a body; the
+        # daemon would read one on /images/create.
+        takes_body = route.kind in ("container_create", "network_create") or (
+            route.kind == "container_owned" and req.method == "PUT"
+        )
+        if not takes_body and (req.chunked or req.content_length):
             raise PolicyDenied("a request body is not permitted on this endpoint")
+        if route.kind == "container_owned" and req.content_length > self.limits.max_upload_bytes:
+            raise BodyTooLarge(
+                f"request body is larger than {self.limits.max_upload_bytes // (1024 * 1024)} MB "
+                "(DOCKER_PROXY_MAX_UPLOAD_MB)"
+            )
         # Clients that sent Expect hold the body back until told to continue,
         # and the create routes read it before going upstream.
         expects_continue = (req.header("expect") or "").lower() == "100-continue"
@@ -1111,14 +1360,11 @@ class DockerSocketProxy:
                 if req.content_length > _MAX_POLICY_BODY_BYTES:
                     raise PolicyDenied("request body too large")
                 raw = await asyncio.wait_for(client_r.readexactly(req.content_length), _HEAD_TIMEOUT_S)
-            try:
-                payload = json.loads(raw or b"{}", object_pairs_hook=_reject_duplicate_keys)
-            except ValueError as exc:
-                raise PolicyDenied("request body is not valid JSON") from exc
+            payload = _parse_policy_body(raw)
             if route.kind == "container_create":
                 payload = self._policy.check_container_create(payload, self.instance)
             else:
-                payload = self._policy.check_network_create(payload)
+                payload = self._policy.check_network_create(payload, self.instance)
             body = json.dumps(payload).encode()
         elif route.kind == "container_owned":
             assert route.container is not None
@@ -1126,9 +1372,18 @@ class DockerSocketProxy:
             # Address the container by the id we checked, so a name reused
             # between the check and the call cannot redirect it.
             target = _CONTAINER_IN_TARGET.sub(rf"\g<1>{full_id}", target, count=1)
+        elif route.kind == "network_list":
+            status, listed = await self._filtered_networks(target, single=False)
+            await _safe_write(client_w, _json_response(listed, status))
+            return
         elif route.kind == "network_allowed":
             assert route.network is not None
-            await self._check_network(route.network)
+            network_id = await self._check_network(route.network, owned=req.method == "DELETE")
+            target = _NETWORK_IN_TARGET.sub(rf"\g<1>{network_id}", target, count=1)
+            if req.method == "GET":
+                status, info = await self._filtered_networks(target, single=True)
+                await _safe_write(client_w, _json_response(info, status))
+                return
 
         logger.debug("allow %s %s", req.method, target)
         headers = [(k, v) for k, v in req.headers if k.lower() not in _HOP_BY_HOP]
@@ -1147,10 +1402,8 @@ class DockerSocketProxy:
             up_w.write(_serialize_head(f"{req.method} {target} {req.version}", headers))
             if body is not None:
                 up_w.write(body)
-            elif req.chunked:
-                await _pipe_chunked(client_r, up_w)
-            elif req.content_length:
-                await _pipe_exact(client_r, up_w, req.content_length)
+            elif req.chunked or req.content_length:
+                await self._forward_body(req, client_r, up_w)
             await up_w.drain()
 
             resp_head = _parse_response_head(await up_r.readuntil(b"\r\n\r\n"))
@@ -1159,6 +1412,26 @@ class DockerSocketProxy:
             await _pipe_to_eof(up_r, client_w)
         finally:
             up_w.close()
+
+
+    async def _forward_body(
+        self, req: _Request, client_r: asyncio.StreamReader, up_w: asyncio.StreamWriter,
+    ) -> None:
+        """Pipe an archive upload to the daemon within the size cap and the
+        idle and total timeouts. On a breach the daemon connection is closed
+        mid-body, so the daemon drops the upload."""
+        limits = self.limits
+        if req.chunked:
+            pipe = _pipe_chunked(
+                client_r, up_w, limit=limits.max_upload_bytes, idle_s=limits.body_idle_timeout_s,
+            )
+        else:
+            pipe = _pipe_exact(client_r, up_w, req.content_length, idle_s=limits.body_idle_timeout_s)
+        try:
+            await asyncio.wait_for(pipe, limits.body_timeout_s)
+        except asyncio.TimeoutError:
+            logger.warning("dropped a request body: the client stalled or took too long")
+            raise
 
 
 def _parse_response_head(raw: bytes) -> bytes:
@@ -1483,19 +1756,22 @@ def _containers_query(label: str) -> str:
 async def serve(
     host: str, port: int, upstream: str, policy: DockerApiPolicy, *,
     instance: str | None = None, reaper: ReaperSettings | None = None,
+    limits: ProxyLimits | None = None,
 ) -> None:
     if instance is None:
         instance = await resolve_instance(os.environ, upstream)
+    limits = limits or ProxyLimits.from_env()
     proxy = DockerSocketProxy(
         policy, upstream, instance=instance,
         sidecar_stats_file=os.environ.get("DOCKER_PROXY_SIDECAR_STATS_FILE") or None,
+        limits=limits,
     )
     server = await asyncio.start_server(proxy.handle, host, port, limit=_MAX_HEAD_BYTES)
     logger.info(
         "docker proxy listening on %s:%d -> %s (instance=%s images=%s networks=%s)",
         host, port, upstream, instance, sorted(policy.allowed_images), sorted(policy.allowed_networks),
     )
-    logger.info("docker proxy limits: %s", policy.limits_text())
+    logger.info("docker proxy limits: %s; %s", policy.limits_text(), limits.text())
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1517,7 +1793,9 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     asyncio.run(serve(
-        os.environ.get("DOCKER_PROXY_HOST", "0.0.0.0"),
+        # Loopback unless told otherwise: the proxy has no client
+        # authentication, so listening on every interface must be a choice.
+        os.environ.get("DOCKER_PROXY_HOST") or _DEFAULT_HOST,
         int(os.environ.get("DOCKER_PROXY_PORT", "2375")),
         _upstream_path(os.environ.get("DOCKER_PROXY_UPSTREAM", "/var/run/docker.sock")),
         DockerApiPolicy.from_env(),

@@ -438,7 +438,8 @@ services:
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
       # Generated code gets no network unless set to true; even then private,
       # link-local and cloud-metadata addresses are firewalled. CIDRs in
-      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt,
+      # except the sandbox bridge, its gateway and metadata, which stay blocked.
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
@@ -582,6 +583,9 @@ services:
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
       # Same value as the app's, so the reaper never removes a run still in time.
       - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # All interfaces of this container, which is only on the internal
+      # sandbox-control network (the proxy itself defaults to loopback).
+      - DOCKER_PROXY_HOST=0.0.0.0
       # Names this stack on the containers it creates. Blank: the Compose project.
       - DOCKER_PROXY_INSTANCE=${DOCKER_PROXY_INSTANCE:-}
       # Also remove leftover sandbox containers that carry no stack name (from a

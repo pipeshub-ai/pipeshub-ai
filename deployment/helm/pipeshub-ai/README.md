@@ -340,7 +340,17 @@ refuses to install without one:
   only on containers it created. Only `dind` and `docker-proxy` mount
   `dind-sock`. The application container cannot reach the daemon directly.
 - `config.dockerHost` points at a daemon you run. Put the same proxy in front
-  of it. Never expose a raw dockerd.
+  of it. Never expose a raw dockerd. The proxy has no client authentication
+  and listens on 127.0.0.1 unless `DOCKER_PROXY_HOST` is set; when you set it
+  to reach the proxy from the app, limit who can connect (a NetworkPolicy).
+
+Releases sharing one daemon do not see each other through the proxy: its
+network list and inspect show only the sandbox egress network and this
+release's containers on it, and it removes only networks it created. It caps
+an upload into a sandbox at `DOCKER_PROXY_MAX_UPLOAD_MB` (default 10240),
+drops an upload that stalls for `DOCKER_PROXY_BODY_IDLE_TIMEOUT_S` (120) or
+runs past `DOCKER_PROXY_BODY_TIMEOUT_S` (1800), and holds at most
+`DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT` (512) connections per client address.
 
 `config.sandboxMaxRunTimeoutS` (default 300, 10..3600) is the most seconds one
 `run_code` run may take; a larger timeout asked for by the model is lowered to

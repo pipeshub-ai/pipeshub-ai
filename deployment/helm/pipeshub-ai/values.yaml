@@ -409,7 +409,8 @@ config:
   # code runs offline instead.
   sandboxAllowNetwork: false
   # Comma-separated IPv4 CIDRs exempt from that firewall, e.g. a private
-  # package mirror. Link-local and metadata addresses stay blocked.
+  # package mirror. Link-local and metadata addresses, the sandbox bridge and
+  # its gateway (this pod, under DinD) stay blocked however broad this is.
   sandboxEgressAllowCidrs: ""
   sandboxEgressNetwork: "pipeshub_sandbox_egress"
   # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
@@ -430,7 +431,9 @@ config:
   # reach a daemon you run yourself, e.g. "tcp://docker-proxy.svc:2375".
   # The chart cannot secure that daemon: put the same policy proxy in front of
   # it (`python -m app.docker_proxy_main` from this image, as the DinD sidecar
-  # does) and never point this at a raw, unauthenticated dockerd.
+  # does) and never point this at a raw, unauthenticated dockerd. That proxy
+  # listens on 127.0.0.1 unless DOCKER_PROXY_HOST says otherwise and has no
+  # client authentication: expose it only to the app (a NetworkPolicy).
   dockerHost: ""
 
   # Light records take their own cluster-wide indexing lease pool. Leave false
