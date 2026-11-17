@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -184,6 +185,8 @@ class LoadLedger:
     ) -> None:
         if self._disabled:
             return
+        # Only the last KEEP_S of a wait is ever read; a non-finite value is a bug upstream.
+        waited_s = min(float(waited_s), KEEP_S) if math.isfinite(waited_s) and waited_s > 0 else 0.0
         if reason is None:
             if outcome != "granted":
                 return
@@ -211,7 +214,7 @@ class LoadLedger:
                 flags |= FLAG_BACKED_OFF
         with self._lock:
             now = self._clock()
-            for tick in range(int((now - max(0.0, waited_s)) // TICK_S), int(now // TICK_S) + 1):
+            for tick in range(int((now - waited_s) // TICK_S), int(now // TICK_S) + 1):
                 self._ticks[tick] = self._ticks.get(tick, 0) | flags
             bucket = self._bucket(now)
             if outcome == "cancelled":
