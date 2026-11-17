@@ -436,7 +436,9 @@ export async function stop(o: Options, emit: Emit): Promise<number> {
 
 async function stopPid(pid: number, dataDir: string, lay: Layout, o: Options, emit: Emit): Promise<number> {
   try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
-  const until = Date.now() + ((o.stopWaitS ?? 30) + 40) * 1000;
+  // Long enough for a start that is still cleaning up a crashed run (a leftover step: 10 s; pg_ctl stop: up to 60 s) to finish
+  // that cleanup, see the signal, and stop its own services (stopWaitS).
+  const until = Date.now() + ((o.stopWaitS ?? 30) + 100) * 1000;
   while (alive(pid) && Date.now() < until) await sleep(200);
   if (alive(pid)) { emit({ event: "error", code: "stop_failed", message: `launcher ${pid} did not stop` }); return 1; }
   // If the launcher died rather than stopped, its step or server may still be up. Under the lock, and only if no new start
