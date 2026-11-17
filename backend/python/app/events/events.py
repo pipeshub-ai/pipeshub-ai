@@ -258,9 +258,9 @@ class EventProcessor:
 
         1. The membership sync: a full update ends in one, and the update may be the sign that the
            record's connector, groups or permissions changed under the same bytes.
-        2. An unforced redrive of the stages after embed. Unforced, so a stage whose output is current
-           finishes without work, one that failed or paused is picked up again, and a claim never
-           resets the revision's pause budget (only a forced one does).
+        2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
+           finished stage is not claimed, so statuses and `reason` stay; the claim never resets the
+           revision's pause budget (only a forced one does).
         3. The delivery is remembered in the replay set, as the record's COMPLETED write would.
 
         A revision the stage runtime never saw (a lost hand-off, or content indexed before it existed)
@@ -1911,10 +1911,11 @@ class EventProcessor:
             # Persist the vrid this attempt will index under *before* parsing
             # starts. If this attempt fails partway through (after vectors are
             # written but before indexingStatus=COMPLETED), the retry re-reads
-            # this same vrid from the record instead of minting a fresh one —
-            # so record.py's bulk_delete_embeddings (for non-reconciliation
-            # types) or the reconciliation diff (for reconciliation-enabled
-            # types) targets the orphaned vectors instead of abandoning them.
+            # this same vrid from the record instead of minting a fresh one
+            # (an interrupted embedding resumes under it; a reconciliation-enabled
+            # type diffs against its stored blocks) so the orphaned vectors are
+            # not abandoned. A type that is not reconciled block by block and
+            # is not resuming mints a new vrid below, and its old one is cleaned.
             if virtual_record_id != doc.get("virtualRecordId"):
                 await self.update_record_fields(
                     doc, {"virtualRecordId": virtual_record_id}

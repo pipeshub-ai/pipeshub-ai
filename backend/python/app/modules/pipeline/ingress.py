@@ -62,14 +62,15 @@ class StageIngress:
         )
 
     async def redrive_unchanged(self, virtual_record_id: str, rev: str) -> list[str] | None:
-        """Re-dispatch every stage after embed for a revision whose content did not change.
+        """Re-dispatch the stages after embed that did not finish, for a revision whose content did not change.
 
-        Unforced and at bulk priority: a stage whose output is current finishes without work, one that
-        failed or paused runs again, and the claim keeps the stage's pause budget (only a forced claim
-        resets it). None when the runtime holds no state for the revision, which the caller treats as
-        "run the record in full"."""
+        Only a failed or paused stage is claimed: a finished one is left alone, so the record's statuses
+        and `reason` stay as they are and its queued copies are not held. Unforced and at bulk priority,
+        so the claim keeps the stage's pause budget (only a forced claim resets it). None when the
+        runtime holds no state for the revision, which the caller treats as "run the record in full"."""
         return await self._coordinator.redrive_revision(
-            virtual_record_id, rev, self._coordinator.stage_names(), priority=Priority.BULK, force=False
+            virtual_record_id, rev, self._coordinator.stage_names(), priority=Priority.BULK, force=False,
+            only_unfinished=True,
         )
 
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:

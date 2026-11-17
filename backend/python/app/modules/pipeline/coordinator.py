@@ -167,11 +167,21 @@ class Coordinator:
         return any(self._recorded(s) for s in states.values())
 
     async def redrive_revision(
-        self, virtual_record_id: str, rev: str, stages: Sequence[str], *, priority: Priority, force: bool
+        self,
+        virtual_record_id: str,
+        rev: str,
+        stages: Sequence[str],
+        *,
+        priority: Priority,
+        force: bool,
+        only_unfinished: bool = False,
     ) -> list[str] | None:
         """Re-dispatch ``stages`` for a revision the runtime has seen, from what its external
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
-        instead, which dispatches every stage."""
+        instead, which dispatches every stage. With ``only_unfinished``, only a stage whose state
+        is FAILED or PAUSED is dispatched: a finished stage is left alone (a claim writes its
+        headline status and its finish clears the record's ``reason``), and a stage with no state
+        (classification deferred to first use) stays deferred."""
         states = await self._states.get_many(virtual_record_id, rev)
         recorded = [s for s in states.values() if self._recorded(s)]
         if not recorded:
@@ -187,9 +197,14 @@ class Coordinator:
             return []
         view = origin.to_job().view
         dispatched: list[str] = []
+        by_stage = {s.stage: s for s in states.values()}
         for stage in stages:
             if not self._registry.has(stage):
                 self._logger.warning("Cannot re-run unknown stage %r for %s", stage, virtual_record_id)
+                continue
+            if only_unfinished and (
+                stage not in by_stage or by_stage[stage].status not in (ProgressStatus.FAILED, ProgressStatus.PAUSED)
+            ):
                 continue
             job_id = await self.redrive(view, stage, priority=priority, force=force)
             if job_id is not None:

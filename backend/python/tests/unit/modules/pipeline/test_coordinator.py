@@ -625,3 +625,19 @@ async def test_redrive_unchanged_keeps_the_pause_budget(fleet) -> None:
 async def test_redrive_unchanged_without_a_recorded_revision_is_none(fleet) -> None:
     h = _Harness(_classify_after_embed())
     assert await _ingress_for(h, PauseStore()).redrive_unchanged(VRID, REV) is None
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_leaves_finished_and_deferred_stages_alone(fleet) -> None:
+    """A finished stage is not claimed (the claim writes the record's headline status and its finish clears `reason`),
+    and a stage with no state stays deferred."""
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    h.complete("classify")
+
+    assert await ingress.redrive_unchanged(VRID, REV) == []
+    assert h.producer.sent == [] and h.headlines.writes == []
+
+    del h.states.states[stage_state_key(VRID, REV, "classify")]
+    assert await ingress.redrive_unchanged(VRID, REV) == []

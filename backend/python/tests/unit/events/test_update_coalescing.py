@@ -130,6 +130,7 @@ async def test_same_bytes_update_side_effects() -> None:
     world.ingress.redrive.assert_not_awaited()
     # Nothing of the record is written: statuses and `reason` stay as they were.
     world.graph.update_node.assert_not_awaited()
+    world.graph.compare_and_set_record_fields.assert_not_awaited()
     assert world.state["reason"] == "an earlier failure"
     world.ep._rewrite_or_delete_vrid_vectors.assert_not_awaited()
     world.ep._spawn_abandoned_vrid_cleanup.assert_not_called()

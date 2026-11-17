@@ -2029,8 +2029,8 @@ class RecordEventHandler(BaseEventService):
             # Nothing is taken out of the vector store ahead of the work. The record still holds its
             # vrid, so a delete here only rewrote the points' membership and left what search serves as
             # it was; the points a re-parse replaces go with the old vrid once the record has moved to
-            # its new one (the abandoned-vrid path in EventProcessor.on_event), and a failed run leaves
-            # the last good copy searchable.
+            # its new one (the abandoned-vrid path in EventProcessor.on_event, which replaces the record's
+            # vrid before the parse).
 
             # Check if record is from a connector and if the connector is active.
             # UPDATE_RECORD is included: without it an update for a disabled
