@@ -21,7 +21,9 @@ from typing import (
 import openai
 import requests
 from langchain_community.embeddings.jina import JINA_API_URL
-from langchain_community.embeddings.jina import JinaEmbeddings as CommunityJinaEmbeddings
+from langchain_community.embeddings.jina import (
+    JinaEmbeddings as CommunityJinaEmbeddings,
+)
 from langchain_core.embeddings import Embeddings
 from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
 from langchain_core.utils.utils import (
