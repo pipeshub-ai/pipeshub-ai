@@ -118,6 +118,11 @@ def deleted_name(org_id: str, record_id: str | None = None) -> str:
     return f"pc:deleted:{{{org_id}:{record_id}}}" if record_id is not None else f"pc:deleted:{{{org_id}}}"
 
 
+def manifest_lock_name(org_id: str, record_id: str, path: str) -> str:
+    """The lock one replica holds while it reads, merges and replaces a manifest another replica may also write."""
+    return f"pc:mlock:{{{org_id}:{record_id}}}:{path}"
+
+
 def refresh_name(org_id: str, record_id: str, event_id: str) -> str:
     """The marker that a refresh event already purged its record's results (a redelivery must not purge again)."""
     return f"pc:refresh:{{{org_id}:{record_id}}}:{event_id}"

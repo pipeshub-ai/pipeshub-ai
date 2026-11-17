@@ -15,6 +15,7 @@ A run that fails keeps its open manifest, so a retry still finds its objects.
 """
 
 import asyncio
+import contextlib
 import itertools
 import json
 import secrets
@@ -75,6 +76,8 @@ class RunScope:
         self._last_flush = clock()
         #: One open-manifest write at a time, so a later snapshot is never overtaken by an older one.
         self._write_lock = asyncio.Lock()
+        #: Serializes writers of one manifest across replicas (set by the cache, which holds the lock backend).
+        self.manifest_guard: Callable[[str, str, str], contextlib.AbstractAsyncContextManager[None]] | None = None
 
     def past_deadline(self) -> bool:
         """True once the stage has run longer than ``stage_deadline_s()``: nothing more is written for the record.
@@ -122,7 +125,7 @@ class RunScope:
             if self.finished or self.past_deadline() or (self._opened and self._unflushed == 0):
                 return
             open_path = open_manifest_path(self.content_rev, self.writer)
-            async with _path_lock(self.org_id, self.record_id, open_path):
+            async with _path_lock(self.org_id, self.record_id, open_path), self._guard(open_path):
                 await self._adopt(store, open_path)
                 body, noted = self._body(), self._unflushed
                 async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
@@ -130,6 +133,11 @@ class RunScope:
             self._opened = True
             self._unflushed = max(self._unflushed - noted, 0)
             self._last_flush = self._clock()
+
+    def _guard(self, path: str) -> contextlib.AbstractAsyncContextManager[None]:
+        if self.manifest_guard is None:
+            return contextlib.nullcontext()
+        return self.manifest_guard(self.org_id, self.record_id, path)
 
     async def _adopt(self, store: _ManifestStore, path: str) -> None:
         """Keeps the keys an earlier attempt (or a parse that outlived its client, still running beside its retry)
@@ -164,7 +172,10 @@ class RunScope:
             open_path = open_manifest_path(self.content_rev, self.writer)
             # The open manifest is merged too, under the locks of both paths: a sibling run of this revision may have
             # flushed keys into it that this run never noted, and it is deleted below.
-            async with _path_lock(self.org_id, self.record_id, open_path), _path_lock(self.org_id, self.record_id, final_path):
+            async with (
+                _path_lock(self.org_id, self.record_id, open_path), _path_lock(self.org_id, self.record_id, final_path),
+                self._guard(open_path), self._guard(final_path),
+            ):
                 await self._adopt(store, final_path)
                 await self._adopt(store, open_path)
                 async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):

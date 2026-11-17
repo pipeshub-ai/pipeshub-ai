@@ -356,3 +356,61 @@ async def test_a_flush_that_lands_between_another_runs_read_and_write_is_not_dro
 
     final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
     assert set(final) == {a, b}
+
+
+async def test_two_replicas_writing_one_manifest_through_the_shared_lock_keep_each_others_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry is another request, served by another replica: only the shared lock backend serializes them (the
+    in-process lock is bypassed here, as two processes would not share it)."""
+    import json
+
+    from app.services.paid_cache import run as run_module
+    from app.services.paid_cache.run import RunScope
+
+    monkeypatch.setattr(run_module, "_path_lock", lambda *_a: asyncio.Lock())     # a lock per call: no in-process help
+    store, shared_locks = MemoryResultStore(), InProcessLocks()                    # one store, one lock backend (Redis)
+    replica_a, replica_b = PaidResultCache(store, shared_locks), PaidResultCache(store, shared_locks)
+    real_replace = store.replace
+
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
+        await asyncio.sleep(0.05)                                                  # the width of a read-and-write
+        await real_replace(*args)
+
+    store.replace = slow_replace  # type: ignore[method-assign]
+    a, b = (f"ocr_page/{n * 64}.json" for n in "ab")
+    first, second = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+    first.manifest_guard, second.manifest_guard = replica_a.manifest_lock, replica_b.manifest_lock
+    first._keys, first._seen, first._unflushed = [a], {a}, 1
+    second._keys, second._seen, second._unflushed = [b], {b}, 1
+
+    await asyncio.gather(first._write_open(store), second._write_open(store))
+    await first.finish(store)
+
+    final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
+    assert set(final) == {a, b}
+
+
+async def test_without_the_shared_lock_two_replicas_do_lose_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control: the same interleaving with no guard drops a key, so the test above is not vacuous."""
+    import json
+
+    from app.services.paid_cache import run as run_module
+    from app.services.paid_cache.run import RunScope
+
+    monkeypatch.setattr(run_module, "_path_lock", lambda *_a: asyncio.Lock())
+    store = MemoryResultStore()
+    real_replace = store.replace
+
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
+        await asyncio.sleep(0.05)
+        await real_replace(*args)
+
+    store.replace = slow_replace  # type: ignore[method-assign]
+    a, b = (f"ocr_page/{n * 64}.json" for n in "ab")
+    first, second = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+    first._keys, first._seen, first._unflushed = [a], {a}, 1
+    second._keys, second._seen, second._unflushed = [b], {b}, 1
+    await asyncio.gather(first._write_open(store), second._write_open(store))
+    listed = json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]
+    assert len(listed) == 1

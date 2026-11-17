@@ -236,6 +236,7 @@ async def complete_run(
     cache = paid_cache_for(config_service, log)
     if not isinstance(cache, PaidResultCache):
         return
+    run.manifest_guard = cache.manifest_lock
     try:
         await run.finish(cache.store)
     except Exception as exc:
@@ -274,6 +275,7 @@ async def abandon_run(
     try:
         cache = paid_cache_for(config_service, log)
         if isinstance(cache, PaidResultCache):
+            run.manifest_guard = cache.manifest_lock
             await run.flush(cache.store)
     except Exception as exc:
         log.warning("Paid-result manifest of a failed run not updated for record %s (%s)", run.record_id, type(exc).__name__)

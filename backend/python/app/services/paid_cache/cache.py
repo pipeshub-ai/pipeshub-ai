@@ -9,11 +9,12 @@ record. Only the caller's own ``compute`` can raise.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -27,6 +28,7 @@ from app.services.paid_cache.locks import (
     LockBackend,
     deleted_name,
     lock_name,
+    manifest_lock_name,
     refresh_name,
 )
 from app.services.paid_cache.run import RunScope, current_run
@@ -43,6 +45,8 @@ POLL_MAX_S = 2.0
 #: Losers wait for as long as the holder's lock lives: a live holder renews it, a dead one lapses within
 #: ``LOCK_TTL_MS``. This only caps a holder that renews for ever (a hung call with no timeout).
 MAX_WAIT_S = 3600.0
+#: How often a replica asks again for a manifest lock another replica holds.
+MANIFEST_LOCK_POLL_S = 0.05
 #: Kept for callers: the holder's lease, not this, bounds the wait.
 DEFAULT_WAIT_S = MAX_WAIT_S
 
@@ -472,9 +476,35 @@ class PaidResultCache:
         except Exception as exc:
             self._storage_error(key, "write", exc)
 
+    @contextlib.asynccontextmanager
+    async def manifest_lock(self, org_id: str, record_id: str, path: str) -> AsyncIterator[None]:
+        """Holds the cross-replica lock of one manifest path for a read-merge-replace. Without a lock backend (or when
+        it cannot be asked) the write goes ahead unserialized: a manifest is best effort, never a reason to fail."""
+        name = manifest_lock_name(org_id, record_id, path)
+        token = None
+        backend = None
+        try:
+            backend = await self._backend()
+            deadline = time.monotonic() + lock_limits.WRITE_DEADLINE_S
+            while token is None:
+                token = await backend.acquire(name, LOCK_TTL_MS)
+                if token is None:
+                    if time.monotonic() > deadline:
+                        break
+                    await asyncio.sleep(MANIFEST_LOCK_POLL_S)
+        except Exception:
+            self.logger.debug("Paid-result manifest lock unavailable", exc_info=True)
+        try:
+            yield
+        finally:
+            if token is not None and backend is not None:
+                with contextlib.suppress(Exception):
+                    await backend.release(name, token)
+
     async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> None:
         if scope is None or not writes_enabled():
             return
+        scope.manifest_guard = self.manifest_lock
         try:
             await scope.note(self._store, path, opens=stored)
         except Exception as exc:
