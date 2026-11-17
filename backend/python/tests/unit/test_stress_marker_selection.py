@@ -10,10 +10,12 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
+from typing import TYPE_CHECKING
 
 from tests.conftest import pytest_collection_modifyitems
+
+if TYPE_CHECKING:
+    import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
