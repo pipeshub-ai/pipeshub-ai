@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -68,6 +69,7 @@ import stat
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -1630,7 +1632,8 @@ async def resolve_instance(env: Mapping[str, str], upstream: str) -> str:
 
 _DEFAULT_MAX_RUN_TIMEOUT_S = 300.0
 _INSTALL_DEADLINE_S = 300.0
-# Covers archive upload before the start and extraction after the exit.
+# Slack on top of the run cap; a container is aged from its latest start or
+# exit, and one not started yet also gets the proxy's body timeout for its upload.
 _REAP_MARGIN_S = 120.0
 _DEFAULT_REAP_INTERVAL_S = 60.0
 _MIN_REAP_INTERVAL_S = 10.0
@@ -1709,6 +1712,22 @@ class ReaperSettings:
         if not reap_unlabeled and raw not in _FALSE:
             logger.warning("DOCKER_PROXY_REAP_UNLABELED=%r is not true or false; leaving it off", raw)
         return cls(reap_after_s=reap_after, interval_s=interval, reap_unlabeled=reap_unlabeled)
+
+
+def _docker_time(value: object) -> float | None:
+    """Seconds since the epoch of a daemon timestamp such as
+    ``2026-01-02T03:04:05.123456789Z``; None when unset or unreadable."""
+    if not isinstance(value, str) or not value or value.startswith("0001-"):
+        return None
+    head, _, rest = value.partition(".")
+    if rest:
+        digits = "".join(itertools.takewhile(str.isdigit, rest))
+        zone = rest[len(digits):]
+        value = f"{head}.{digits[:6]}{zone}"
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 class Reaper:
@@ -1792,6 +1811,9 @@ class Reaper:
             ident = str(item.get("Id") or "")
             if not ident or not isinstance(created, (int, float)) or now - created <= reap_after:
                 continue
+            since = await self._active_since(item, ident, created)
+            if now - since <= reap_after:
+                continue
             delete_status, _ = await self._proxy._upstream_call(
                 "DELETE", f"/containers/{quote(ident, safe='')}?force=1",
             )
@@ -1807,6 +1829,24 @@ class Reaper:
         if removed:
             logger.info("reaper: removed %d container(s)", removed)
         return removed
+
+    async def _active_since(self, item: dict[str, Any], ident: str, created: float) -> float:
+        """When the container's age starts counting. A container that is not
+        started yet may still be receiving its input archive, for up to the
+        proxy's body timeout; one that started (or exited) counts from its
+        latest start or exit, so a slow upload does not use up its run."""
+        state = item.get("State")
+        if state == "created":
+            return created + self._proxy.limits.body_timeout_s
+        try:
+            status, info = await self._proxy._upstream_call("GET", f"/containers/{quote(ident, safe='')}/json")
+        except Exception:
+            return created
+        times = info.get("State") if status == 200 and isinstance(info, dict) else None
+        if not isinstance(times, dict):
+            return created
+        stamps = [_docker_time(times.get(key)) for key in ("StartedAt", "FinishedAt")]
+        return max([created, *(t for t in stamps if t is not None)])
 
     def _log_unlabeled(self, count: int, now: float) -> None:
         if not count:
