@@ -295,8 +295,9 @@ class SandboxManager:
         except asyncio.CancelledError:
             # A cancel during the slot wait or the provision would otherwise
             # leak the half-made backend (a remote VM keeps running) and its slot.
-            await asyncio.shield(self._safe_destroy(backend))
-            await asyncio.shield(self._release_lease(lease))
+            # One shielded task, so a second cancel during the destroy cannot
+            # skip the release.
+            await asyncio.shield(self._destroy_then_release(backend, lease))
             raise
         except Exception:
             await self._release_lease(lease)
@@ -580,6 +581,12 @@ class SandboxManager:
             await self._release_lease(record.governor_lease)
             for other_key in [k for k, v in self._instances.items() if v is record]:
                 del self._instances[other_key]
+
+    async def _destroy_then_release(self, backend: SandboxLifecycle, lease: Any | None) -> None:
+        try:
+            await self._safe_destroy(backend)
+        finally:
+            await self._release_lease(lease)
 
     async def _safe_destroy(self, backend: SandboxLifecycle) -> None:
         """Never raises: one wedged backend must not block the teardown of

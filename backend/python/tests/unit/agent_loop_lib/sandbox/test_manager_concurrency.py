@@ -552,6 +552,31 @@ class TestCancelSafety:
         assert gov.snapshot()["total"] == 0
         assert mgr._instances == {}
 
+    async def test_a_second_cancel_during_the_destroy_still_frees_the_slot(self) -> None:
+        provisioning, destroying = asyncio.Event(), asyncio.Event()
+
+        class _SlowDestroy(_FakeBackend):
+            async def provision(self) -> None:
+                provisioning.set()
+                await asyncio.sleep(60)
+
+            async def destroy(self) -> None:
+                destroying.set()
+                await asyncio.sleep(0.05)
+
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
+        mgr = SandboxManager(governor=gov)
+        mgr.register_backend_factory(SandboxType.CODING, _SlowDestroy)
+        task = asyncio.ensure_future(mgr.get_or_create(SandboxType.CODING))
+        await provisioning.wait()
+        task.cancel()
+        await destroying.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.1)
+        assert gov.snapshot()["total"] == 0
+
     async def test_after_stop_the_next_waiter_is_granted_only_once_cleanup_finished(self) -> None:
         from app.agent_loop_lib.core.context import CancellationToken
         from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
