@@ -483,7 +483,7 @@ def _aql_access_rule(v: str) -> str:
 def _aql_passes_vertex(v: str) -> str:
     """The hop rule without the inheritance probe: what a child needs whether
     or not it inherits."""
-    return (f'({_aql_access_rule(v)} IN ["STRICT", "OPEN"]'
+    return (f'({_aql_access_rule(v)} IN ["STRICT", "OPEN", "STRICT_OR_GRANT"]'
             f' OR ({_aql_access_rule(v)} IN ["RESTRICTED", "PARENT_AND_GRANT"] AND HAS(@granted, {v}._key)))')
 
 
@@ -496,11 +496,11 @@ def _aql_inherits(child: str, parent: str, tag: str) -> str:
 def _aql_granted_hop(child: str, parent: str, tag: str, *, navigation: bool) -> str:
     """One hop of the v3 rule, as Neo4j's ``_kh_v3_granted_hop``; ``kh_opens``
     and ``@granted`` must be in scope. RESTRICTED and PARENT_AND_GRANT need
-    inheritance and their own grant, STRICT or OPEN either, any other value nothing.
+    inheritance and their own grant, STRICT, OPEN or STRICT_OR_GRANT either, any other value nothing.
     ``hideChildren`` is navigation only."""
     rule = _aql_access_rule(child)
     hide = f" AND {parent}.hideChildren != true" if navigation else ""
-    granted_open = f'({rule} IN ["STRICT", "OPEN"] AND HAS(@granted, {child}._key))'
+    granted_open = f'({rule} IN ["STRICT", "OPEN", "STRICT_OR_GRANT"] AND HAS(@granted, {child}._key))'
     return (f"({child}.isDeleted != true{hide} AND (kh_opens ? true : ({_aql_passes_vertex(child)}"
             f" ? ({granted_open} ? true : {_aql_inherits(child, parent, tag)}) : false)))")
 
@@ -590,8 +590,10 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     member_p = p_member or _aql_is_member(p)
     below_member = f"(NOT {member_p} OR HAS(@granted, {p}._key) OR {seed})"
     # Below a node the walk from the App does not reach (admitted by the check as a seed, or by a declaration) only a seed lists on: a group
-    # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it.
-    walk_seeded = f'(NOT ({declared_p} OR (IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", {p}) AND HAS(@kh_scope, {p}._key))) OR {seed})'
+    # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it. Nor is a
+    # STRICT_OR_GRANT node, admitted there by its own grant alone.
+    walk_seeded = (f'(NOT ({declared_p} OR {_aql_access_rule(p)} == "STRICT_OR_GRANT"'
+                   f' OR (IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", {p}) AND HAS(@kh_scope, {p}._key))) OR {seed})')
     below_member_seeded = f"(NOT {member_p} OR {seed})"
     # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (a record only, as the check: a group is read by
     # its hops). The loop over an empty list reads nothing otherwise; the App is matched by its handle, as a key is unique only in its collection.
@@ -20458,10 +20460,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     : (LENGTH({dgs}[* FILTER HAS(@granted, CURRENT._key)]) > 0 ? true
                     : LENGTH(FOR {d} IN {dgs} FILTER {from_app(d, tag + "d")} LIMIT 1 RETURN 1) > 0))"""
 
-        def seed(v: str) -> str:
+        def seed(v: str, rules: str = '["OPEN"]') -> str:
             return (f'((IS_SAME_COLLECTION("{records}", {v}) OR IS_SAME_COLLECTION("{groups}", {v}))'
                     f' AND {v}.connectorId == kh_app._key AND {v}.isDeleted != true'
-                    f' AND {rule(v)} == "OPEN" AND HAS(@granted, {v}._key))')
+                    f' AND {rule(v)} IN {rules} AND HAS(@granted, {v}._key))')
 
         def head(org: str) -> str:
             """A walking stage re-reads its nodes and their App: the ids come
@@ -20521,7 +20523,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 FILTER kh_ab._from == t._id AND kh_ab._to == kh_app._id
                                 LIMIT 1 RETURN 1) > 0
                     : false))
-            LET kh_ok = kh_opened ? true : (kh_app != null AND {seed("t")})
+            // A granted STRICT_OR_GRANT target is admitted by its own grant (R9), but is no seed: the walk below a seed starts at OPEN ones only.
+            LET kh_ok = kh_opened ? true : (kh_app != null AND {seed("t", '["OPEN", "STRICT_OR_GRANT"]')})
             // A record outside every App (a chat attachment) has no hierarchy:
             // only a grant on the record itself opens it.
             LET kh_attachment = kh_ok ? false
@@ -20819,6 +20822,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         member_groups = [handle for handle, hidden in scope if not hidden]
         scope_handles = [handle for handle, _ in scope]
         seeds: list[str] = []
+        own: list[str] = []
         taken = {*region, *scope_handles}
         # A grant another arm already lists is no seed; skipping it here spares
         # the seed query's walk up for every one of them.
@@ -20828,13 +20832,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             and (within is None or f"{CollectionNames.RECORDS.value}/{k}" in within or f"{groups}/{k}" in within)
         ]
         if candidates:
-            seeds = [s for s in await self._kh_v3_run("seeds", {
+            for handle, is_seed in await self._kh_v3_run("seeds", {
                 "app_id": bind["app_id"], "kh_keys": candidates, "kh_member_groups": member_groups,
-            }, transaction) if s not in taken]
+            }, transaction):
+                if handle not in taken:
+                    (seeds if is_seed else own).append(handle)
         below = await self._kh_v3_walk(
             seeds, "step_open", {"granted": bind["granted"]}, 50, transaction, within=within,
         ) if seeds else []
-        nodes = list(dict.fromkeys([*region, *scope_handles, *seeds, *below]))
+        nodes = list(dict.fromkeys([*region, *scope_handles, *seeds, *own, *below]))
         listed = set(matches or ())
         if matches is not None:
             nodes = [h for h in nodes if h in listed]
@@ -21525,7 +21531,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 (FOR x IN {groups} FILTER x._key IN @kh_keys RETURN x)
             )
                 FILTER kh_s.connectorId == @app_id AND kh_s.isDeleted != true
-                    AND {_aql_access_rule("kh_s")} == "OPEN"
+                    AND {_aql_access_rule("kh_s")} IN ["OPEN", "STRICT_OR_GRANT"]
                 FILTER NOT {_aql_hidden_above("kh_s", "s")} AND NOT {_aql_in_hidden_group("kh_s", "sm")}
                 // A record of the declared scope is listed as one (arm 4), not as a seed.
                 FILTER NOT (IS_SAME_COLLECTION("{records}", kh_s) AND LENGTH(
@@ -21533,7 +21539,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER kh_be._from == kh_s._id AND kh_be._to IN @kh_member_groups
                         LIMIT 1
                         RETURN 1) > 0)
-                RETURN kh_s._id
+                // A STRICT_OR_GRANT node is listed by its own grant, but is no seed: nothing below it is walked from it.
+                RETURN [kh_s._id, {_aql_access_rule("kh_s")} == "OPEN"]
             """,
             # Below a seed only the hop below a seed passes (`_aql_open_hop`).
             "step_open": children(open_parent, open_hop),
