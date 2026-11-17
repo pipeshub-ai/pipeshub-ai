@@ -9,6 +9,8 @@ import tarfile
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
@@ -155,6 +157,66 @@ _INSTALL_FIREWALL_UNAVAILABLE = (
 )
 
 
+_OOM_NOTE = (
+    "[sandbox] The program was killed because it ran out of memory: either it went "
+    "over this sandbox's {limit} MB per run, or the server itself was short of memory. "
+    "Use less memory (process data in chunks, smaller types) and try again.\n"
+)
+_INSTALL_OOM_NOTE = (
+    "[sandbox] Package installation ran out of memory (limit {limit} MB). "
+    "Install fewer packages at once, or pick lighter ones.\n"
+)
+
+
+@dataclass
+class _RunOutcome:
+    """What one run container left behind. `oom_killed` and `ran_s` come
+    from inspecting the container after it exited; they are False / None
+    when the inspect failed or the daemon did not report them."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    oom_killed: bool = False
+    ran_s: float | None = None
+
+
+def _parse_docker_time(value: object) -> float | None:
+    """Epoch seconds from a Docker RFC 3339 timestamp, which carries
+    nanoseconds (more digits than `fromisoformat` takes before 3.11). The
+    zero time Docker reports for "never" is `None`."""
+    if not isinstance(value, str) or not value or value.startswith("0001-"):
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    if "." in text:
+        head, _, rest = text.partition(".")
+        digits = len(rest) - len(rest.lstrip("0123456789"))
+        text = f"{head}.{rest[:min(digits, 6)]}{rest[digits:]}"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def _container_exit_state(container: Any) -> tuple[bool, float | None]:
+    """`(oom_killed, ran_s)` for a container that has exited. Never raises:
+    a failed inspect means "not known", and the run is classified from its
+    exit code alone."""
+    try:
+        container.reload()
+        attrs = container.attrs if isinstance(container.attrs, dict) else {}
+    except Exception:
+        logger.debug("inspect after run failed for container %s", getattr(container, "id", "?"), exc_info=True)
+        return False, None
+    state = attrs.get("State")
+    if not isinstance(state, dict):
+        return False, None
+    started = _parse_docker_time(state.get("StartedAt"))
+    finished = _parse_docker_time(state.get("FinishedAt"))
+    ran_s = finished - started if started is not None and finished is not None and finished >= started else None
+    return state.get("OOMKilled") is True, ran_s
+
+
 class DockerCodingSandbox(CodingSandboxBackend):
     """One sandbox instance = one host working directory + a Docker image
     used to run every `execute()`/`install_packages()` call in a fresh,
@@ -209,7 +271,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self._egress_allow_cidrs = parse_cidrs(egress_allow_cidrs)
         self._sandbox_user = sandbox_user
         self._installed: dict[str, set[str]] = {"typescript": set(), "python": set()}
-        self._reflection = ReflectionEngine()
+        self._reflection = ReflectionEngine(memory_limit_mb=memory_limit_mb)
         self._provisioned = False
 
     # ------------------------------------------------------------------
@@ -329,7 +391,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 network_enabled, egress_network = False, None
                 network_note = _NETWORK_UNAVAILABLE_NOTE
         try:
-            exit_code, stdout, stderr = await asyncio.wait_for(
+            outcome = await asyncio.wait_for(
                 self._provider.run_blocking(
                     self._run_container_sync,
                     run_cmd, src_dir, request.timeout, network_enabled,
@@ -362,13 +424,37 @@ class DockerCodingSandbox(CodingSandboxBackend):
         artifacts = self._list_output_artifacts(output_before)
         artifacts.extend(self._promote_src_artifacts(src_dir, entry, staged_inputs))
         artifacts.sort()
+        return self._classify(outcome, request, duration_ms, artifacts, network_note)
+
+    def _classify(
+        self, outcome: _RunOutcome, request: CodeRequest, duration_ms: float,
+        artifacts: list[str], network_note: str,
+    ) -> CodeResult:
+        """The `CodeResult` for a finished run container.
+
+        The kernel's OOM flag is checked first, because a 137 exit alone
+        cannot tell an out-of-memory kill from any other SIGKILL. When the
+        flag is set but the program still exited 0 (a child process was
+        killed and the parent carried on), the run stays a success and only
+        gets the note.
+        """
+        stderr = network_note + outcome.stderr
+        exit_code = outcome.exit_code
+        if outcome.oom_killed:
+            stderr = _OOM_NOTE.format(limit=self._memory_limit_mb) + stderr
+            if exit_code != 0:
+                exit_code = 137
         result = CodeResult(
-            stdout=stdout, stderr=network_note + stderr, exit_code=exit_code,
+            stdout=outcome.stdout, stderr=stderr, exit_code=exit_code,
             language=request.language, duration_ms=duration_ms, artifacts=artifacts,
         )
-        if not result.success:
-            result = result.model_copy(update={"error_analysis": self._reflection.analyze(result)})
-        return result
+        if result.success:
+            return result
+        if outcome.oom_killed:
+            analysis = self._reflection.out_of_memory(outcome.stderr, certain=True)
+        else:
+            analysis = self._reflection.analyze(result)
+        return result.model_copy(update={"error_analysis": analysis})
 
     async def install_packages(self, packages: list[str], language: CodingLanguage) -> InstallResult:
         if not self._provisioned:
@@ -590,24 +676,24 @@ class DockerCodingSandbox(CodingSandboxBackend):
         client: Any,
         egress_network: str | None,
         egress_cidrs: list[str] | None = None,
-    ) -> tuple[int, str, str]:
+    ) -> _RunOutcome:
         token = new_firewall_token()
-        exit_code, stdout, stderr = self._run_container_once(
+        outcome = self._run_container_once(
             command, src_dir, timeout, network_enabled, staged_inputs, client,
             egress_network, egress_cidrs or [], token,
         )
-        if network_enabled and firewall_unavailable(exit_code, stderr, token):
+        if network_enabled and firewall_unavailable(outcome.exit_code, outcome.stderr, token):
             # The firewall step exits before the command starts, so running
             # again offline cannot repeat any of the program's side effects.
             logger.error(
                 "_run_container_sync: image %s cannot install the egress firewall; "
-                "running without network: %.500s", self._image, stderr,
+                "running without network: %.500s", self._image, outcome.stderr,
             )
-            exit_code, stdout, stderr = self._run_container_once(
+            outcome = self._run_container_once(
                 command, src_dir, timeout, False, staged_inputs, client, None, [], "",
             )
-            stderr = _NETWORK_UNAVAILABLE_NOTE + stderr
-        return exit_code, stdout, stderr
+            outcome.stderr = _NETWORK_UNAVAILABLE_NOTE + outcome.stderr
+        return outcome
 
     def _run_container_once(
         self,
@@ -620,7 +706,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         egress_network: str | None,
         egress_cidrs: list[str],
         token: str,
-    ) -> tuple[int, str, str]:
+    ) -> _RunOutcome:
         container = None
         try:
             has_py_deps = os.path.isdir(self._deps_python_dir) and bool(os.listdir(self._deps_python_dir))
@@ -703,6 +789,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             container.start()
 
             timed_out = False
+            oom_killed, ran_s = False, None
             try:
                 exit_info = container.wait(timeout=timeout)
                 exit_code = exit_info.get("StatusCode", -1)
@@ -713,6 +800,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     container.kill()
                 except Exception:
                     pass
+            else:
+                oom_killed, ran_s = _container_exit_state(container)
 
             stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
             stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
@@ -721,8 +810,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
 
             logger.info(
                 "_run_container_sync: container %.12s finished exit_code=%d "
-                "timed_out=%s stdout_len=%d stderr_len=%d stderr_preview=%.500s",
-                container.id, exit_code, timed_out,
+                "timed_out=%s oom_killed=%s stdout_len=%d stderr_len=%d stderr_preview=%.500s",
+                container.id, exit_code, timed_out, oom_killed,
                 len(stdout), len(stderr),
                 stderr[:500] if stderr else "",
             )
@@ -730,7 +819,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             os.makedirs(self._output_dir, exist_ok=True)
             _extract_container_dir(container, "/output", self._output_dir)
             _extract_container_dir(container, "/src", src_dir)
-            return exit_code, stdout, stderr
+            return _RunOutcome(exit_code, stdout, stderr, oom_killed=oom_killed, ran_s=ran_s)
         finally:
             if container is not None:
                 try:
@@ -839,8 +928,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
             container.start()
             exit_info = container.wait(timeout=300)
             exit_code = exit_info.get("StatusCode", -1)
+            oom_killed, _ran_s = _container_exit_state(container)
             stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
             stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
+            if oom_killed and exit_code != 0:
+                stderr = _INSTALL_OOM_NOTE.format(limit=self._memory_limit_mb) + stderr
             logger.info(
                 "_install_packages_sync: container %.12s exit_code=%d "
                 "stdout_len=%d stderr_preview=%.500s",

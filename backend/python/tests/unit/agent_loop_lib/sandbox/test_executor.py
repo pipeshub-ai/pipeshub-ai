@@ -111,6 +111,8 @@ class TestMemoryLimitDoesNotBreakJitRuntimes:
         applied = self._applied_limits(
             ExecutionLimits(max_cpu_seconds=7, max_file_size_bytes=99, max_processes=5)
         )
-        assert applied.get(resource.RLIMIT_CPU) == (7, 7)
+        # Hard one second above soft, so the kernel sends SIGXCPU (reported
+        # as a CPU-time kill) rather than SIGKILL (which reads as out of memory).
+        assert applied.get(resource.RLIMIT_CPU) == (7, 8)
         assert applied.get(resource.RLIMIT_FSIZE) == (99, 99)
         assert applied.get(resource.RLIMIT_NPROC) == (5, 5)

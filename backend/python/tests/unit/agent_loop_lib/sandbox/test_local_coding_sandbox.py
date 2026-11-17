@@ -5,6 +5,7 @@ contract would be true on Docker but not on the local (default) backend."""
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -127,3 +128,40 @@ class TestPythonVenvFailureSaysWhy:
 
         with pytest.raises(EnvironmentSetupError, match="ensurepip is not available"):
             await manager.ensure_python_venv()
+
+
+class TestResourceLimitMessages:
+    async def test_memory_error_is_out_of_memory_naming_the_local_limit(self, tmp_path, monkeypatch) -> None:
+        from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult, ErrorCategory
+
+        sandbox = LocalCodingSandbox(working_dir=str(tmp_path / "sandbox-1"))
+
+        async def fake_execute(request):
+            return CodeResult(
+                stdout="", exit_code=1, language="python", duration_ms=1.0,
+                stderr='Traceback (most recent call last):\n  File "main.py", line 1\nMemoryError\n',
+            )
+
+        monkeypatch.setattr(sandbox._executor, "execute", fake_execute)
+        result = await sandbox.execute(CodeRequest(code="x = 'a' * (2 * 1024**3)", language="python"))
+
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert "1536 MB" in result.error_analysis.message
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_CPU signals are Linux behaviour")
+    async def test_busy_loop_past_the_cpu_limit_gets_the_cpu_time_note(self, tmp_path) -> None:
+        from app.agent_loop_lib.sandbox.coding.base import CodeRequest, ErrorCategory
+        from app.agent_loop_lib.sandbox.coding.executor import ExecutionLimits
+
+        sandbox = LocalCodingSandbox(
+            working_dir=str(tmp_path / "sandbox-1"), limits=ExecutionLimits(max_cpu_seconds=1),
+        )
+        result = await sandbox.execute(CodeRequest(code="while True:\n    pass\n", language="python", timeout=20))
+
+        assert result.exit_code in (-24, 152)
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.TIMEOUT
+        assert result.error_analysis.message.startswith(
+            "[sandbox] The program used up its CPU time limit (1 s of CPU)."
+        )

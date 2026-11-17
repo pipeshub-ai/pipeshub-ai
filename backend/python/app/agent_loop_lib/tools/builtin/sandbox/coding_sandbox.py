@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.sandbox.coding.base import CodeRequest
+from app.agent_loop_lib.sandbox.coding.base import (
+    CodeRequest,
+    CodeResult,
+    ErrorCategory,
+)
 from app.agent_loop_lib.sandbox.manager import (
     SandboxLimitExceeded,
     SandboxManager,
@@ -92,6 +98,32 @@ def _reuse_id(sandbox_id: str | None) -> str | None:
         return None
     stripped = sandbox_id.strip()
     return stripped or None
+
+
+def _run_outcome(result: CodeResult) -> str:
+    """The `outcome=` value of the `run_code finished` log line."""
+    if result.success:
+        return "ok"
+    category = result.error_analysis.category if result.error_analysis else None
+    if category == ErrorCategory.TIMEOUT:
+        return "timeout"
+    if category == ErrorCategory.OUT_OF_MEMORY:
+        return "out_of_memory"
+    return "error"
+
+
+def _log_run_finished(
+    outcome: str, *, exit_code: int, duration_ms: float, timeout_s: float,
+    timeout_capped: bool, backend: Any,
+) -> None:
+    """One line per `run_code` call, whatever its outcome: the record that
+    run-outcome counts (timeouts, out-of-memory kills, stops) are read from."""
+    _logger.info(
+        "run_code finished: outcome=%s exit_code=%d duration_ms=%.0f timeout_s=%g "
+        "timeout_capped=%s backend=%s",
+        outcome, exit_code, duration_ms, timeout_s, timeout_capped,
+        getattr(backend, "backend_name", type(backend).__name__),
+    )
 
 
 def unknown_sandbox_guidance(error: Exception) -> str:
@@ -489,18 +521,26 @@ class CodingSandboxTool(Tool):
             packages=packages or [],
             allow_network=self._allow_network,
         )
+        started = time.monotonic()
         try:
             async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
                 result = await backend.execute(request)
         except SandboxLimitExceeded as e:
             _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except asyncio.CancelledError:
+            _log_run_finished(
+                "cancelled", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
+                timeout_s=request.timeout, timeout_capped=False, backend=backend,
+            )
+            raise
+        _log_run_finished(
+            _run_outcome(result), exit_code=result.exit_code, duration_ms=result.duration_ms,
+            timeout_s=request.timeout, timeout_capped=False, backend=backend,
+        )
         _logger.info(
-            "CodingSandboxTool.execute: result exit_code=%d artifacts=%s "
-            "duration_ms=%.1f stderr_len=%d",
-            result.exit_code,
+            "CodingSandboxTool.execute: result artifacts=%s stderr_len=%d",
             result.artifacts,
-            result.duration_ms,
             len(result.stderr) if result.stderr else 0,
         )
 

@@ -104,7 +104,7 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
     import resource
 
     def _preexec() -> None:
-        for res, value in (
+        for res, value, hard in (
             # RLIMIT_DATA, deliberately not RLIMIT_AS. A JIT reserves far
             # more VIRTUAL address space than it ever commits, and V8 sizes
             # that reservation from the limit it can see — so capping
@@ -121,13 +121,16 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
             # every limit tried. macOS enforces it loosely, but the local
             # backend is HOST isolation there anyway — these rlimits are
             # defence in depth, not the boundary.
-            (resource.RLIMIT_DATA, limits.max_memory_bytes),
-            (resource.RLIMIT_CPU, limits.max_cpu_seconds),
-            (resource.RLIMIT_FSIZE, limits.max_file_size_bytes),
-            (resource.RLIMIT_NPROC, limits.max_processes),
+            (resource.RLIMIT_DATA, limits.max_memory_bytes, limits.max_memory_bytes),
+            # The hard limit is one second above the soft one. With equal
+            # limits Linux sends SIGKILL instead of SIGXCPU, and the run would
+            # look like an out-of-memory kill instead of a CPU-time one.
+            (resource.RLIMIT_CPU, limits.max_cpu_seconds, limits.max_cpu_seconds + 1),
+            (resource.RLIMIT_FSIZE, limits.max_file_size_bytes, limits.max_file_size_bytes),
+            (resource.RLIMIT_NPROC, limits.max_processes, limits.max_processes),
         ):
             try:
-                resource.setrlimit(res, (value, value))
+                resource.setrlimit(res, (value, hard))
             except (ValueError, OSError):
                 continue  # best-effort — some rlimits are unavailable in containers/CI
 

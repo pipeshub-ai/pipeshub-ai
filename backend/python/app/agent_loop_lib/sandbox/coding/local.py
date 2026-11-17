@@ -94,7 +94,11 @@ class LocalCodingSandbox(CodingSandboxBackend):
             typecheck_typescript=typecheck_typescript,
             limits=limits,
         )
-        self._reflection = ReflectionEngine()
+        effective_limits = limits or ExecutionLimits()
+        self._reflection = ReflectionEngine(
+            memory_limit_mb=effective_limits.max_memory_bytes // 2**20,
+            cpu_limit_s=effective_limits.max_cpu_seconds,
+        )
         self._provisioned = False
 
     @property

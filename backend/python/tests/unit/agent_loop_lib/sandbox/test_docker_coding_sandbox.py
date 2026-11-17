@@ -860,3 +860,89 @@ class TestConfigWiring:
         _, backend = await control_plane.sandbox_manager.get_or_create(SandboxType.CODING)
         assert isinstance(backend, DockerCodingSandbox)
         await control_plane.sandbox_manager.destroy_all()
+
+
+def _exit_state(*, oom: bool = False, started: str = "2026-01-01T00:00:00.123456789Z",
+                finished: str = "2026-01-01T00:00:02.5Z") -> dict:
+    return {"State": {"OOMKilled": oom, "StartedAt": started, "FinishedAt": finished}}
+
+
+class TestOutOfMemory:
+    async def _run(self, tmp_path, container) -> object:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        with patch("docker.from_env", return_value=fake_client):
+            return await sandbox.execute(CodeRequest(code="x = 'a' * (1024**3)", language="python"))
+
+    async def test_oom_killed_run_is_out_of_memory_with_a_note(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(oom=True)
+        result = await self._run(tmp_path, container)
+
+        container.reload.assert_called_once()
+        assert result.exit_code == 137
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert result.stderr.startswith("[sandbox] The program was killed because it ran out of memory")
+        assert "512 MB per run" in result.stderr
+        assert "the server itself was short of memory" in result.stderr
+        assert "512 MB limit" in result.error_analysis.message
+
+    async def test_oom_flag_with_exit_zero_stays_a_success_with_the_note(self, tmp_path) -> None:
+        container = _fake_container(exit_code=0, stdout=b"done\n")
+        container.attrs = _exit_state(oom=True)
+        result = await self._run(tmp_path, container)
+
+        assert result.success is True
+        assert result.error_analysis is None
+        assert result.stderr.startswith("[sandbox] The program was killed because it ran out of memory")
+
+    async def test_unreadable_attrs_are_not_oom(self, tmp_path) -> None:
+        # MagicMock attrs are truthy everywhere; they must not read as OOMKilled.
+        result = await self._run(tmp_path, _fake_container(exit_code=1, stderr=b"ValueError: boom\n"))
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.RUNTIME
+        assert "[sandbox]" not in result.stderr
+
+    async def test_failed_inspect_falls_back_to_reflection(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.reload.side_effect = RuntimeError("daemon gone")
+        result = await self._run(tmp_path, container)
+
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert result.error_analysis.message.startswith("The run was killed (SIGKILL)")
+        assert "[sandbox]" not in result.stderr
+
+    async def test_install_oom_fails_with_a_note(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=137, stderr=b"Killed\n")
+        container.attrs = _exit_state(oom=True)
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.install_packages(["torch"], "python")
+
+        assert result.success is False
+        assert result.stderr.startswith(
+            "[sandbox] Package installation ran out of memory (limit 512 MB)."
+        )
+
+
+class TestDockerTime:
+    def test_nanosecond_timestamps_parse(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.docker import _parse_docker_time
+
+        start = _parse_docker_time("2026-01-01T00:00:00.123456789Z")
+        end = _parse_docker_time("2026-01-01T00:00:02.5Z")
+        assert start is not None and end is not None
+        assert abs((end - start) - 2.376544) < 1e-5
+
+    def test_zero_time_and_garbage_are_none(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.docker import _parse_docker_time
+
+        assert _parse_docker_time("0001-01-01T00:00:00Z") is None
+        assert _parse_docker_time("not a time") is None
+        assert _parse_docker_time(None) is None

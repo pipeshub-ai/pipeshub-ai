@@ -35,6 +35,29 @@ _PY_FRAME_RE = re.compile(r'File "(?P<file>[^"]+)", line (?P<line>\d+)')
 
 _IMPORT_HINTS = ("cannot find module", "cannot find package", "no module named", "modulenotfounderror")
 
+# Node aborts with one of these when V8 cannot grow its heap. It sizes the
+# heap from the cgroup limit, so in a container it often dies this way
+# before the kernel's OOM killer gets to it.
+_NODE_OOM_MARKERS = (
+    "javascript heap out of memory",
+    "fatal process out of memory",
+    "reached heap limit",
+    "allocation failed - process out of memory",
+)
+# Exit statuses of a SIGKILL: 137 from a container or a shell (128 + 9),
+# -9 from a subprocess the host waited on directly.
+_SIGKILL_EXIT_CODES = (137, -9)
+# SIGXCPU (RLIMIT_CPU's soft limit): -24 from a direct subprocess, 152 when a
+# wrapper such as bwrap reports it as 128 + 24.
+_CPU_LIMIT_EXIT_CODES = (-24, 152)
+
+_OUT_OF_MEMORY_SUGGESTION = (
+    "Reduce peak memory and run again: process the data in chunks or stream it instead "
+    "of loading it all at once (for example pandas read_csv(chunksize=...)), use smaller "
+    "dtypes, avoid keeping several copies of large data, and delete large objects once "
+    "you are done with them. Running the same code again will fail the same way."
+)
+
 # A `FileNotFoundError` (Python) / `ENOENT` (Node) whose missing path is
 # under `input/` almost always means "no data was staged into this sandbox
 # this run" (see `agent_loop_lib/tools/builtin/sandbox/input_staging.py`) —
@@ -71,13 +94,64 @@ def _suggestion_for(category: ErrorCategory) -> str:
         ErrorCategory.SYNTAX: "Fix the syntax error described in the message before re-running.",
         ErrorCategory.PERMISSION: "The sandbox denied this operation — avoid filesystem/network access outside the sandbox's allowed scope.",
         ErrorCategory.TIMEOUT: "The code took too long to run — optimize it, reduce its scope, or increase the timeout.",
+        ErrorCategory.OUT_OF_MEMORY: _OUT_OF_MEMORY_SUGGESTION,
         ErrorCategory.RUNTIME: "Inspect the stack trace for the failing line and correct the logic error.",
         ErrorCategory.UNKNOWN: "Inspect stdout/stderr for details; the failure could not be automatically categorized.",
     }[category]
 
 
 class ReflectionEngine:
-    """Stateless — `analyze()` is a pure function of a `CodeResult`."""
+    """Stateless — `analyze()` is a pure function of a `CodeResult`.
+
+    `memory_limit_mb` and `cpu_limit_s` are the backend's per-run limits,
+    named in the out-of-memory and CPU-time messages. `None` means the
+    backend does not know them (E2B), and the messages say less.
+    """
+
+    def __init__(self, memory_limit_mb: int | None = None, cpu_limit_s: float | None = None) -> None:
+        self._memory_limit_mb = memory_limit_mb
+        self._cpu_limit_s = cpu_limit_s
+
+    def out_of_memory(self, text: str, *, certain: bool) -> ErrorAnalysis:
+        """The run ran out of memory. `certain` is False when all that is
+        known is that it was SIGKILLed: memory is then only the likely cause.
+
+        The certain message names both causes, because the kernel reports a
+        kill the same way whether the run went over its own limit or the
+        whole server was short of memory.
+        """
+        if certain and self._memory_limit_mb is not None:
+            message = (
+                "Out of memory: the run was killed for using more memory than allowed "
+                f"(its {self._memory_limit_mb} MB limit, or the server was short of memory)."
+            )
+        else:
+            message = "The run was killed (SIGKILL) before it finished, most likely because it ran out of memory."
+        return ErrorAnalysis(
+            category=ErrorCategory.OUT_OF_MEMORY,
+            message=message,
+            suggestion=_OUT_OF_MEMORY_SUGGESTION,
+            stack_trace=text or None,
+            is_retryable=True,
+        )
+
+    def cpu_time_exceeded(self, text: str) -> ErrorAnalysis:
+        """The run used up its CPU-time rlimit (local backend), which is
+        separate from, and often shorter than, its wall-clock timeout."""
+        limit = f"{self._cpu_limit_s:g} s of CPU" if self._cpu_limit_s is not None else "CPU time"
+        return ErrorAnalysis(
+            category=ErrorCategory.TIMEOUT,
+            message=(
+                f"[sandbox] The program used up its CPU time limit ({limit}). "
+                "Make it faster, or split the work into smaller runs."
+            ),
+            suggestion=(
+                "Make the code faster, or split the work into smaller runs. A larger "
+                "timeout does not help: the limit counts CPU time, not wall-clock time."
+            ),
+            stack_trace=text or None,
+            is_retryable=True,
+        )
 
     def analyze(self, result: CodeResult) -> ErrorAnalysis | None:
         if result.success:
@@ -89,6 +163,16 @@ class ReflectionEngine:
                 suggestion=_suggestion_for(ErrorCategory.TIMEOUT),
                 is_retryable=True,
             )
+        text = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        if self._cpu_limit_s is not None and result.exit_code in _CPU_LIMIT_EXIT_CODES:
+            return self.cpu_time_exceeded(text)
+        lowered = text.lower()
+        if any(marker in lowered for marker in _NODE_OOM_MARKERS):
+            return self.out_of_memory(text, certain=True)
+        if result.language != "typescript" and _python_memory_error(text):
+            return self.out_of_memory(text, certain=True)
+        if result.exit_code in _SIGKILL_EXIT_CODES:
+            return self.out_of_memory(text, certain=False)
         if result.language == "typescript":
             return self._analyze_typescript(result)
         return self._analyze_python(result)
@@ -178,6 +262,17 @@ class ReflectionEngine:
             stack_trace=text,
             is_retryable=True,
         )
+
+
+def _python_memory_error(text: str) -> bool:
+    """The traceback's last line is a `MemoryError`, including subclasses
+    such as numpy's `_ArrayMemoryError`. A bare `MemoryError` has no
+    message, so it has no `: ` for `_PY_EXC_RE` to match."""
+    last = _last_nonempty_line(text)
+    if last is None:
+        return False
+    exc_type = last.split(":", 1)[0].strip()
+    return bool(re.fullmatch(r"[\w.]*MemoryError", exc_type))
 
 
 def _last_nonempty_line(text: str) -> str | None:

@@ -106,6 +106,7 @@ class ErrorCategory(str, Enum):
     IMPORT = "import"
     TIMEOUT = "timeout"
     PERMISSION = "permission"
+    OUT_OF_MEMORY = "out_of_memory"
     UNKNOWN = "unknown"
 
 
