@@ -16,6 +16,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Secrets and configuration](#secrets-and-configuration)
 - [OAuth dynamic registration and device grant](#oauth-dynamic-registration-and-device-grant)
 - [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
+- [Code sandbox capacity](#code-sandbox-capacity)
 - [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
@@ -194,6 +195,8 @@ PIPESHUB_PROJECT=pipeshub-eval PIPESHUB_PORT=3200 PIPESHUB_DEPLOY_TYPE=slim \
 The installer writes `COMPOSE_PROJECT_NAME` into `.env`. `--stop` and `--uninstall` in that directory read it, so they tear down **this** copy only.
 
 Exec and logs use the service name with `-p` set to that project (see [Upgrading an existing Compose install](#upgrading-an-existing-compose-install)).
+
+Both copies run their code sandboxes on the same Docker host, and each sizes its sandbox cap from the whole host. Give each copy its own `SANDBOX_MAX_TOTAL` and its own `SANDBOX_EGRESS_NETWORK` in its `.env` (see [Code sandbox capacity](#code-sandbox-capacity)).
 
 ---
 
@@ -453,6 +456,40 @@ the table says.
 > [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 > are read by `install.sh` *before* `.env` is written and control the installer itself.
 > The four above are read by the running service. They share a prefix but not a purpose.
+
+---
+
+## Code sandbox capacity
+
+Code the agent runs (`run_code`, `install_packages`) gets a throwaway container per run. The app counts how many run at once for the **whole app container**: every query worker (`QUERY_UVICORN_WORKERS`) shares one count, kept in lock files under the container's `/tmp`. A run that finds every sandbox busy waits up to `SANDBOX_SLOT_WAIT_S` (120 s) and shows "waiting in queue", then is refused with a message the model can act on.
+
+The cap is sized from the Docker host when the app starts (the app asks the Docker proxy, which answers a filtered `/info`). It is the smallest of:
+
+| Term | Formula (defaults) |
+| --- | --- |
+| Memory | `SANDBOX_MEMORY_SHARE` (0.25) × host memory ÷ 512 MB per run |
+| CPU | `SANDBOX_CPU_FACTOR` (0.75) × host CPUs ÷ 0.5 CPU per run |
+| Processes | 25 % of the kernel's process limit ÷ 256 per run |
+
+It is never below `SANDBOX_MIN_TOTAL` (2). A 16 GB / 4 CPU host gets 6, 64 GB / 16 CPU gets 24, 192 GB / 48 CPU gets 72. The query log shows the result as one `sandbox capacity:` line. If Docker does not answer at startup, the app uses the minimum and retries (after 5 s, 15 s, 30 s, then every minute).
+
+Sandboxes are marked first to be killed if the host runs out of memory, ahead of the databases and the app.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_MAX_TOTAL` | sized | Replaces the computed cap (up to 1024; 0 or less means 1024). |
+| `SANDBOX_MAX_PER_ORG` | none | The most sandboxes one org may hold at once. |
+| `SANDBOX_MIN_TOTAL` | 2 | The floor, and the cap until the host has been read. |
+| `SANDBOX_MEMORY_SHARE` | 0.25 | Share of host memory sandboxes may claim (0.05–0.95). |
+| `SANDBOX_CPU_FACTOR` | 0.75 | Share of host CPUs sandboxes may claim (0.1–2.0). |
+| `SANDBOX_SLOT_WAIT_S` | 120 | How long a run waits for a free sandbox. |
+| `SANDBOX_HOST_MEMORY_BYTES`, `SANDBOX_HOST_CPU_MILLIS` | unset | The host's size, when it cannot be read (set both). |
+
+The memory share comes on top of the app container's own limit ([App container memory](#app-container-memory)): on a small host lower `SANDBOX_MEMORY_SHARE` or set `SANDBOX_MAX_TOTAL`.
+
+**Several stacks on one Docker host.** Each stack sizes itself from the whole host, so together they would run several times the cap. Give each stack its own `SANDBOX_MAX_TOTAL` that together fit the host, and its own `SANDBOX_EGRESS_NETWORK`: every stack defaults to the same `pipeshub_sandbox_egress` network, and one stack re-creating it can break another stack's networked runs. Stacks whose services run directly on the host as one user (not in containers, e.g. several source checkouts) also share one `/tmp`; give each its own `SANDBOX_STATE_ID` (the same value for its query and indexing processes), or they share one count.
+
+**Disk.** The 10 GB per-sandbox disk cap (`SANDBOX_DISK_QUOTA`) is enforced only on overlay2 with xfs and the `pquota` mount option (or btrfs/zfs); elsewhere sandboxes share the host disk with the databases, and the app logs a warning once.
 
 ---
 

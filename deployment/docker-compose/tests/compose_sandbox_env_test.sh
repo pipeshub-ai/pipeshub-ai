@@ -27,6 +27,14 @@ FILES=(
 VARS=(
   "SANDBOX_MAX_RUN_TIMEOUT_S|300|900|app proxy"
   "DOCKER_PROXY_INSTANCE||stack-a|proxy"
+  "SANDBOX_MAX_TOTAL||7|app"
+  "SANDBOX_MAX_PER_ORG||3|app"
+  "SANDBOX_MIN_TOTAL||2|app"
+  "SANDBOX_MEMORY_SHARE||0.5|app"
+  "SANDBOX_CPU_FACTOR||1.0|app"
+  "SANDBOX_SLOT_WAIT_S||30|app"
+  "SANDBOX_HOST_MEMORY_BYTES||17179869184|app"
+  "SANDBOX_HOST_CPU_MILLIS||4000|app"
 )
 
 # render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables.

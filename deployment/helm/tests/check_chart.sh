@@ -48,6 +48,7 @@ INGRESS=(
   --set 'ingress.hosts[0].paths[0].pathType=Prefix'
 )
 LOCAL=(-f values-local.yaml)
+EXTERNAL=(--set config.dockerHost=tcp://d:2375 --set persistence.accessModes={ReadWriteMany})
 
 # name, then the helm arguments for that variant. They come after SECRETS so a
 # variant can override one of them.
@@ -63,6 +64,10 @@ VARIANTS=(
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "dind-run-cap|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set config.sandboxMaxRunTimeoutS=900"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
+  "external-daemon-2-pods|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false"
+  "external-daemon-max-total|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
+  "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
+  "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
 )
@@ -206,6 +211,49 @@ check_docker_proxy dind-run-cap 900
 check_docker_proxy eks
 check_docker_proxy eks-single-az
 
+# The code sandbox cap is sized from the dind sidecar's limits, passed in as
+# env; pods sharing an external daemon each take their share of it.
+app_env() { # variant name -> "missing" or the env entry as JSON
+  python3 - "$OUT/$1.yaml" "$2" <<'PY'
+import json, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+app = next(c for c in pod["containers"] if c["name"] == "pipeshub-ai")
+entry = next((e for e in app.get("env") or [] if e["name"] == sys.argv[2]), None)
+print("missing" if entry is None else json.dumps(entry.get("value", entry.get("valueFrom")), sort_keys=True))
+PY
+}
+expect_env() { # variant, name, expected
+  local doc="$OUT/$1.yaml" got
+  [[ -f "$doc" ]] || return 0
+  got="$(app_env "$1" "$2")"
+  if [[ "$got" == "$3" ]]; then echo "ok $1: $2 = $3"; else echo "!! $1: $2 is $got, expected $3"; failed=1; fi
+}
+for v in defaults-dind eks; do
+  expect_env "$v" SANDBOX_HOST_MEMORY_BYTES '{"resourceFieldRef": {"containerName": "dind", "divisor": "1", "resource": "limits.memory"}}'
+  expect_env "$v" SANDBOX_HOST_CPU_MILLIS '{"resourceFieldRef": {"containerName": "dind", "divisor": "1m", "resource": "limits.cpu"}}'
+  expect_env "$v" SANDBOX_MEMORY_SHARE '"0.9"'
+  expect_env "$v" SANDBOX_CAPACITY_DIVISOR missing
+  if [[ -f "$OUT/$v.yaml" ]] && python3 - "$OUT/$v.yaml" <<'PY'; then echo "ok $v: dind requests equal limits"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+res = next(c for c in pod["containers"] if c["name"] == "dind")["resources"]
+if res.get("requests") != res.get("limits"):
+    print(f"!! {sys.argv[1]}: dind requests {res.get('requests')} differ from limits {res.get('limits')}")
+    sys.exit(1)
+PY
+done
+for name in SANDBOX_HOST_MEMORY_BYTES SANDBOX_MEMORY_SHARE SANDBOX_CAPACITY_DIVISOR SANDBOX_MAX_TOTAL; do
+  expect_env cloud "$name" missing
+done
+expect_env external-daemon-2-pods SANDBOX_CAPACITY_DIVISOR '"2"'
+expect_env external-daemon-2-pods SANDBOX_HOST_MEMORY_BYTES missing
+expect_env external-daemon-max-total SANDBOX_CAPACITY_DIVISOR missing
+expect_env external-daemon-max-total SANDBOX_MAX_TOTAL '"10"'
+expect_env external-daemon-1-pod SANDBOX_CAPACITY_DIVISOR missing
+expect_env external-daemon-autoscaled SANDBOX_CAPACITY_DIVISOR '"3"'
+
 # A rotated key must restart both sides together. Secrets the chart does not
 # create carry no checksum: the chart cannot see their value.
 if [[ -f "$OUT/local-neo4j-kafka.yaml" && -f "$OUT/local-existing-secrets.yaml" && -f "$OUT/local-external-secrets.yaml" ]]; then
@@ -238,6 +286,8 @@ REFUSED=(
   "placeholder qdrant api key|qdrant.apiKey must not use default placeholder 'api_key'|${LOCAL[*]} --set qdrant.apiKey=api_key"
   "default arango password|arango.auth.rootPassword must not use default placeholder 'root'|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=root"
   "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
+  "dind without a memory limit|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits.memory=null"
+  "dind without limits|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits=null"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
   "docker socket mounted into the app|mounts a Docker socket into the application container|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/var/run/docker.sock"
   "docker socket mounted under another path|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/tmp/d"

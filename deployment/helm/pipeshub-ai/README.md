@@ -353,6 +353,45 @@ behind. Its containers carry the label
 `ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`, so releases that
 share a daemon through `config.dockerHost` never reach each other's containers.
 
+### How many sandboxes run at once
+
+Each app pod counts its code sandboxes for the whole pod (every query worker
+shares the count). Unless `sandbox.capacity.maxTotal` is set, the cap is sized
+when the pod starts:
+
+- **With the `dind` sidecar**, from the sidecar's limits, which the app reads
+  through `resourceFieldRef`: the smallest of `sandbox.capacity.memoryShare`
+  (0.9) x `limits.memory` / 512Mi and 0.75 x `limits.cpu` / 0.5 CPU per run
+  (and 25% of the process limit / 256), at least 2. The defaults (2 CPU, 4Gi)
+  give 3; the `values-eks.yaml` sidecar (4 CPU, 4Gi) gives 6. Both limits are
+  required, and the chart refuses to render without them: a container with no
+  limit would be sized from the whole node.
+- **With `config.dockerHost`**, from that daemon's size. When more than one pod
+  can run (`replicaCount`, or `autoscaling.maxReplicas` with autoscaling on),
+  every pod would size itself from the whole daemon, so the chart sets
+  `SANDBOX_CAPACITY_DIVISOR` to that pod count and each pod takes its share.
+  With autoscaling the split uses the maximum, so a scaled-down deployment
+  runs below the daemon's capacity. `sandbox.capacity.maxTotal` overrides it.
+
+The sidecar's requests equal its limits (`sandbox.dind.resources`), so the
+node really has the room the cap assumes. That adds 1.75 CPU / 3.5Gi (defaults)
+or 3 CPU / 3Gi (`values-eks.yaml`) to each pod's scheduling footprint compared
+with earlier releases; the pod is still Burstable, since the other containers
+keep lower requests. The release notes warn when requests and limits differ.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `sandbox.capacity.maxTotal` | sized | The most sandboxes at once per pod (up to 1024). |
+| `sandbox.capacity.maxPerOrg` | none | The most one org may hold at once per pod. |
+| `sandbox.capacity.minTotal` | 2 | The floor, and the cap until the size is known. |
+| `sandbox.capacity.memoryShare` | 0.9 | Share of the sidecar's memory limit (dind only). |
+| `sandbox.capacity.cpuFactor` | 0.75 | Share of the CPUs. |
+| `sandbox.capacity.slotWaitSeconds` | 120 | How long a run waits for a free sandbox. |
+| `sandbox.capacity.pidLimit` | unset | The pod's pids limit (kubelet `podPidsLimit`), which the app cannot read. |
+
+Sandbox containers are created with `oom_score_adj=1000`, so inside the
+sidecar's memory limit the kernel kills a sandbox before `dockerd`.
+
 Mounting a container-runtime socket into the application container would give
 the app, and any code it runs, root on the node. At render time the chart refuses
 `extraVolumes`/`volumes` and `extraVolumeMounts`/`volumeMounts` that:

@@ -84,9 +84,10 @@ sandbox:
   dind:
     enabled: true
     resources:
+      # Requests equal limits: the code sandbox cap is sized from the limits.
       requests:
-        cpu: "1"
-        memory: 1Gi
+        cpu: "4"
+        memory: 4Gi
       limits:
         cpu: "4"
         memory: 4Gi

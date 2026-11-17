@@ -141,6 +141,33 @@ spec:
               value: {{ .Values.config.sandboxDiskQuota | quote }}
             - name: SANDBOX_MAX_RUN_TIMEOUT_S
               value: {{ .Values.config.sandboxMaxRunTimeoutS | quote }}
+            # Code sandbox capacity (sandbox.capacity in values.yaml).
+            {{- if and .Values.sandbox.dind.enabled (eq (include "pipeshub-ai.sandboxPath" .) "dind") }}
+            - name: SANDBOX_HOST_MEMORY_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: dind
+                  resource: limits.memory
+                  divisor: "1"
+            - name: SANDBOX_HOST_CPU_MILLIS
+              valueFrom:
+                resourceFieldRef:
+                  containerName: dind
+                  resource: limits.cpu
+                  divisor: "1m"
+            - name: SANDBOX_MEMORY_SHARE
+              value: {{ .Values.sandbox.capacity.memoryShare | default "0.9" | quote }}
+            {{- end }}
+            {{- with (include "pipeshub-ai.sandboxCapacityDivisor" .) }}
+            - name: SANDBOX_CAPACITY_DIVISOR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $name, $key := dict "SANDBOX_MAX_TOTAL" "maxTotal" "SANDBOX_MAX_PER_ORG" "maxPerOrg" "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_SLOT_WAIT_S" "slotWaitSeconds" "SANDBOX_HOST_PID_LIMIT" "pidLimit" }}
+            {{- with (index $.Values.sandbox.capacity $key) }}
+            - name: {{ $name }}
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- end }}
             {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
               value: {{ . | quote }}

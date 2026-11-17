@@ -353,6 +353,12 @@ the raw daemon API with no policy in between, i.e. root on the node.
     {{- end }}
   {{- end }}
 {{- end }}
+{{- if .Values.sandbox.dind.enabled }}
+  {{- $limits := (.Values.sandbox.dind.resources | default dict).limits | default dict }}
+  {{- if not (and $limits.memory $limits.cpu) }}
+    {{- fail "sandbox.dind.resources.limits.memory and limits.cpu are required: the code sandbox cap is sized from the dind limits, and a container without a limit would be sized from the whole node." }}
+  {{- end }}
+{{- end }}
 {{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
   {{- if not (or .Values.sandbox.dind.enabled .Values.config.dockerHost) }}
     {{- fail "config.sandboxMode is \"docker\" but no Docker daemon is configured, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar behind the docker-proxy policy sidecar (needs a PRIVILEGED container - see sandbox.dind in values.yaml); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you run, behind the same policy proxy (python -m app.docker_proxy_main); (c) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (d) --set config.sandboxMode=local --set config.sandboxAllowLocal=true to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
@@ -465,6 +471,24 @@ creates a privileged container whatever the backend is, while
 Describing one in terms of the other is how the notes came to claim
 Docker-in-Docker for an e2b deployment.
 */}}
+{{/*
+How many pods share one external Docker daemon, when each must size its
+code sandbox cap to its share of it: the most pods that can run, with
+config.dockerHost set, sandbox.capacity.maxTotal empty, and more than one
+pod. Empty otherwise.
+*/}}
+{{- define "pipeshub-ai.sandboxCapacityDivisor" -}}
+{{- if and (eq (include "pipeshub-ai.sandboxPath" .) "external") (not .Values.sandbox.capacity.maxTotal) -}}
+{{- $pods := int .Values.replicaCount -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- $pods = int .Values.autoscaling.maxReplicas -}}
+{{- end -}}
+{{- if gt $pods 1 -}}
+{{- $pods -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "pipeshub-ai.sandboxPath" -}}
 {{- $mode := include "pipeshub-ai.sandboxMode" . -}}
 {{- if ne $mode "docker" -}}

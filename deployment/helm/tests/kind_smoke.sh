@@ -257,6 +257,9 @@ else:
     raise SystemExit("docker-proxy admitted a privileged container")
 if os.path.exists("/var/run/dind/docker.sock"):
     raise SystemExit("the app container can see the DinD daemon socket")
+# The code sandbox cap is sized from the dind sidecar's limits.
+if not os.environ.get("SANDBOX_HOST_MEMORY_BYTES", "").isdigit():
+    raise SystemExit("SANDBOX_HOST_MEMORY_BYTES is not the dind memory limit")
 PY
 fi
 

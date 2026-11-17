@@ -542,10 +542,14 @@ sandbox:
     # Loopback port of the policy proxy the application connects to
     # (DOCKER_HOST). The daemon itself has no TCP listener.
     port: 2375
+    # The code sandbox cap is sized from these limits (see sandbox.capacity),
+    # so both limits are required. Requests equal the limits so the node
+    # really has the room the cap assumes; that adds 2 CPU / 4Gi to each app
+    # pod's scheduling footprint.
     resources:
       requests:
-        cpu: "250m"
-        memory: "512Mi"
+        cpu: "2"
+        memory: "4Gi"
       limits:
         cpu: "2"
         memory: "4Gi"
@@ -555,6 +559,30 @@ sandbox:
     storage:
       sizeLimit: "20Gi"
       existingClaim: ""
+
+  # How many code sandboxes run at once in each app pod (every query worker
+  # of the pod shares the count). Empty values are sized automatically: with
+  # the dind sidecar, the smallest of memoryShare x its memory limit / 512Mi
+  # per run, cpuFactor (0.75) x its CPU limit / 0.5 CPU per run, and 25% of
+  # the process limit / 256, at least minTotal (2). The defaults give 3.
+  # With config.dockerHost, each pod sizes itself from that daemon; when more
+  # than one pod can run (replicaCount, or autoscaling.maxReplicas) and
+  # maxTotal is empty, each pod takes 1/<pods> of it.
+  capacity:
+    # Replaces the computed cap per pod (up to 1024).
+    maxTotal: ""
+    # The most sandboxes one org may hold at once in a pod (empty: no cap).
+    maxPerOrg: ""
+    minTotal: ""
+    # Share of the dind sidecar's memory limit sandboxes may claim. Only used
+    # with the dind sidecar, which runs nothing else.
+    memoryShare: "0.9"
+    # Share of the CPUs sandboxes may claim (default 0.75).
+    cpuFactor: ""
+    # Seconds a run waits for a free sandbox before it is refused (default 120).
+    slotWaitSeconds: ""
+    # The pod's pids limit (kubelet podPidsLimit), which the app cannot read.
+    pidLimit: ""
 
   # Docker API policy proxy, deployed with the DinD sidecar. It runs
   # app.docker_proxy_main from the application image (`image` above), so that

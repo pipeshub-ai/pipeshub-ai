@@ -116,12 +116,27 @@ application reaches it only through the `docker-proxy` sidecar
 containers, host mounts, devices, host namespaces and images other than
 {{ .Values.sandbox.proxy.allowedImages | default .Values.config.sandboxDockerImage }}.
 
+{{- if .Values.sandbox.capacity.maxTotal }}
+
+Each pod runs at most {{ .Values.sandbox.capacity.maxTotal }} code sandboxes at once (sandbox.capacity.maxTotal).
+{{- else }}
+
+Each pod sizes its code sandbox cap from the sidecar's limits: the smallest of
+{{ .Values.sandbox.capacity.memoryShare | default "0.9" }} x {{ .Values.sandbox.dind.resources.limits.memory }} / 512Mi and {{ .Values.sandbox.capacity.cpuFactor | default "0.75" }} x {{ .Values.sandbox.dind.resources.limits.cpu }} CPU / 0.5 CPU
+per run, at least 2. Set sandbox.capacity.maxTotal to override it.
+{{- end }}
+
 {{- else if eq $path "external" }}
 
 run_code executes on the Docker daemon at {{ .Values.config.dockerHost }}.
 That daemon runs untrusted, model-generated code: it should be dedicated to
 this purpose, reachable only by this deployment, and fronted by the policy
 proxy (python -m app.docker_proxy_main) rather than exposed raw.
+{{- with (include "pipeshub-ai.sandboxCapacityDivisor" .) }}
+
+Pods share one Docker daemon: each pod uses 1/{{ . }} of its capacity (up to {{ . }}
+pods can run). Set sandbox.capacity.maxTotal to override.
+{{- end }}
 
 {{- end }}
 
@@ -138,6 +153,12 @@ proxy (python -m app.docker_proxy_main) rather than exposed raw.
   * `docker-proxy` runs app.docker_proxy_main from {{ .Values.sandbox.proxy.image | default (include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global)) }}.
     An image built before the Docker API proxy was added lacks it, and the
     sidecar crash-loops; set sandbox.proxy.image to a newer one.
+{{- $requests := .Values.sandbox.dind.resources.requests | default dict }}
+{{- $limits := .Values.sandbox.dind.resources.limits | default dict }}
+{{- if or (ne (toString $requests.cpu) (toString $limits.cpu)) (ne (toString $requests.memory) (toString $limits.memory)) }}
+  * The sidecar's requests differ from its limits: the node may evict the pod
+    when sandboxes use their limit. Set requests equal to limits.
+{{- end }}
 {{- if not .Values.sandbox.dind.storage.existingClaim }}
   * /var/lib/docker is an emptyDir, so {{ .Values.config.sandboxDockerImage }}
     is re-pulled after every pod restart. Set
