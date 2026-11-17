@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import os
 import time
+from unittest.mock import patch
 
+from app.agent_loop_lib.sandbox.coding.base import CodeRequest
 from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 
 from .test_docker_coding_sandbox import (  # noqa: F401  (fixtures)
@@ -112,3 +114,26 @@ class TestShrinkingAnUploadEarnsNoCredit:
             stderr = result.stderr
         # 3 x 400 KiB of new output is past the 1 MiB limit whatever happened to the upload.
         assert "this sandbox already keeps" in stderr
+
+
+class TestAnUploadDuringTheRunWins:
+    async def test_an_input_replaced_on_the_host_during_the_run_keeps_the_new_content(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        await sandbox.upload_file("data.csv", b"old,1\n")
+        host = tmp_path / "wd" / "data.csv"
+        mtime = int(os.path.getmtime(host))
+        archives = {"/src": _tar([("src", None, mtime), ("src/data.csv", b"old,1\n", mtime)])}
+        client, container = _client({})
+
+        def get_archive(path: str) -> tuple:
+            if path == "/src":
+                host.write_bytes(b"new upload,22\n")  # another call uploads while this run is going
+                os.utime(host, (mtime + 30, mtime + 30))
+            return iter([archives.get(path, _tar([]))]), {}
+
+        container.get_archive.side_effect = get_archive
+        with patch("docker.from_env", return_value=client):
+            result = await sandbox.execute(CodeRequest(code="print(1)", language="python"))
+
+        assert host.read_bytes() == b"new upload,22\n"
+        assert "data.csv" not in result.artifacts

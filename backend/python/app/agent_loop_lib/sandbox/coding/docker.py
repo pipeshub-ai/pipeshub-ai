@@ -1183,6 +1183,13 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     logger.warning("_promote_src_artifacts: skipping symlink %s", rel)
                     continue
                 if rel in staged_inputs:
+                    if _replaced_since_staged(os.path.join(self._working_dir, rel), staged_inputs[rel]):
+                        # Uploaded again while the run was going: the newer upload wins.
+                        logger.warning(
+                            "_promote_src_artifacts: %r was replaced on the host during the run; keeping that copy",
+                            rel,
+                        )
+                        continue
                     same = _same_content(full, os.path.join(self._working_dir, rel))
                     if same is None:
                         continue
@@ -1897,6 +1904,16 @@ def _dir_usage(root: str) -> tuple[int, int]:
                 total += st.st_size
                 files += 1
     return total, files
+
+
+def _replaced_since_staged(path: str, staged: _StagedFile) -> bool:
+    """Whether the host file at ``path`` is no longer the one archived into
+    the run (another upload replaced it, or it is gone)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    return not stat.S_ISREG(st.st_mode) or st.st_size != staged.size or int(st.st_mtime) != staged.mtime
 
 
 def _same_content(a: str, b: str) -> bool | None:
