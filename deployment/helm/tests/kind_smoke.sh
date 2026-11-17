@@ -271,8 +271,17 @@ image = os.environ["SANDBOX_DOCKER_IMAGE"]
 client.images.pull(image)
 # docker-proxy refuses a create without memory, CPU and process limits.
 limits = {"mem_limit": 512 * 2**20, "nano_cpus": 500_000_000, "pids_limit": 256}
-out = client.containers.run(image, ["python", "-c", "print(1+1)"], network_mode="none", remove=True, **limits)
-text = out.decode() if isinstance(out, bytes) else str(out)
+# create/start/wait/logs, as the app does: containers.run() returns no output
+# unless the log driver is json-file or journald.
+container = client.containers.create(image, ["python", "-c", "print(1+1)"], network_mode="none", **limits)
+try:
+    container.start()
+    status = container.wait(timeout=120).get("StatusCode")
+    text = container.logs(stdout=True, stderr=True).decode(errors="replace")
+finally:
+    container.remove(force=True)
+if status != 0:
+    raise SystemExit(f"sandbox container exited {status}: {text}")
 if "2" not in text:
     raise SystemExit(text)
 print(text)
