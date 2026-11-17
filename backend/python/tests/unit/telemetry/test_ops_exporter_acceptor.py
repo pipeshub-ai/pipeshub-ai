@@ -308,9 +308,9 @@ def test_a_trickling_client_is_cut_at_the_request_deadline_not_at_the_read_timeo
 def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_deadline_is_far(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Eviction, not the reaper: the idle clients are cut once they are half a deadline old (1.5 s), well before
-    the deadline (3 s) and inside the admit wait, and the scrape is answered then."""
-    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 3.0)
+    """Eviction, not the reaper: with the deadline far away, only cutting the oldest incomplete request
+    frees a slot inside the admit wait."""
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
     exporter = _exporter(tmp_path)
     port = exporter._port
     server = exporter._server
@@ -320,8 +320,7 @@ def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_de
         assert _wait_until(lambda: len(server._live) == ox.MAX_CONNECTIONS, 5)
         started = time.monotonic()
         assert _get(port) == 200
-        waited = time.monotonic() - started
-        assert 1.2 < waited < ox.REQUEST_DEADLINE_S, f"answered after {waited:.2f} s: not by eviction at half the deadline"
+        assert time.monotonic() - started < ox.ADMIT_WAIT_S + 2
     finally:
         for s in idle:
             s.close()
@@ -610,13 +609,13 @@ def test_a_client_that_sent_nothing_by_the_deadline_is_told_503_before_it_is_clo
 def test_a_refusal_is_never_followed_by_an_answer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
     """The client's bytes are in the socket but its handler has not read them yet (starved). Evicting it must not
     send a 503 and then let the handler answer: one response, the answer."""
-    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 3.0)  # a silent holder is evictable from 1.5 s
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
     entered = threading.Event()
     original = ox._Handler.handle
 
     def late_handle(self: ox._Handler) -> None:
         entered.set()
-        time.sleep(2.2)  # the handler thread is starved past the eviction at 1.5 s before it reads what is already in the socket
+        time.sleep(0.5)  # the handler thread is starved before it reads what is already in the socket
         original(self)
 
     monkeypatch.setattr(ox._Handler, "handle", late_handle)
@@ -663,109 +662,46 @@ def test_a_silent_client_is_told_503_exactly_once_by_the_reaper(tmp_path: Path, 
         _close(exporter)
 
 
-# -- a silent client is not refused on the strength of a newer arrival ---------
+# -- a legitimate scrape under a flood of idle connections ---------------------
 
 
-def test_a_silent_client_younger_than_half_the_deadline_is_not_evicted_and_one_older_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_legitimate_scrape_is_answered_under_a_flood_of_idle_connections_that_stay_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An idle flood that keeps every connection open must not blind the port: a scrape, which sends at once, is
+    answered, not refused. Known limit: such a flood can get a client that connects and waits an early 503."""
     monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 2.0)
     exporter = _exporter(tmp_path)
     server = exporter._server
     assert server is not None
-    server._max = 2
-    socks = []
+    server._max = 4
+    stop = threading.Event()
+    held: list[socket.socket] = []
+
+    def flood() -> None:
+        while not stop.is_set():
+            try:
+                held.append(socket.create_connection((HOST, exporter._port), timeout=2))
+            except OSError:
+                pass
+            stop.wait(0.02)
+
+    thread = threading.Thread(target=flood, daemon=True)
     try:
-        young = socket.create_connection((HOST, exporter._port), timeout=10)
-        socks.append(young)
-        socks.append(socket.create_connection((HOST, exporter._port)))
-        assert _wait_until(lambda: len(server._live) == 2, 5)
-        socks.append(socket.create_connection((HOST, exporter._port)))  # queues at once: both slots hold silent clients under 1 s old
-        young.settimeout(0.4)
-        with pytest.raises(TimeoutError):
-            young.recv(100)  # nothing in the first 0.4 s: no 503 for a client that has had no time to send
-        young.settimeout(10)
-        assert young.recv(100).startswith(b"HTTP/1.1 503")  # once it is half a deadline old it is evictable
+        thread.start()
+        time.sleep(1.2)  # every slot is full of idle clients, the queue is busy
+        heads = []
+        for _ in range(5):
+            with socket.create_connection((HOST, exporter._port), timeout=10) as client:
+                client.sendall(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+                data = b""
+                while chunk := client.recv(65536):
+                    data += chunk
+            heads.append(data[:12])
+        assert all(h.startswith(b"HTTP/1.0 200") for h in heads), heads
     finally:
-        for s in socks:
-            s.close()
-        _close(exporter)
-
-
-def test_a_flood_of_new_silent_connections_is_refused_new_not_old(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every slot holds a young silent client and the queue is full: the next arrival is the one refused at once."""
-    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)  # nothing is old enough to evict during the test
-    exporter = _exporter(tmp_path)
-    server = exporter._server
-    assert server is not None
-    server._max = 2
-    socks = []
-    try:
-        socks.extend(socket.create_connection((HOST, exporter._port)) for _ in range(2))
-        assert _wait_until(lambda: len(server._live) == 2, 5)
-        socks.extend(socket.create_connection((HOST, exporter._port)) for _ in range(ox.ADMIT_QUEUE_MAX))
-        assert _wait_until(lambda: len(server._queue) == ox.ADMIT_QUEUE_MAX, 5)
-        newest = socket.create_connection((HOST, exporter._port), timeout=5)
-        socks.append(newest)
-        assert newest.recv(100).startswith(b"HTTP/1.1 503"), "the newest arrival was not refused"
-        for held in socks[:2]:
-            held.settimeout(0.3)
-            with pytest.raises(TimeoutError):
-                held.recv(100)  # the holders were not touched
-    finally:
-        for s in socks:
-            s.close()
-        _close(exporter)
-
-
-def test_a_partial_sender_is_not_evicted_while_a_silent_holder_is_still_young(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """One holder has sent its request line and is still sending headers; the other two are silent and younger
-    than half the deadline. A newcomer must not cost the partial sender its place: nobody is evicted yet."""
-    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
-    exporter = _exporter(tmp_path)
-    server = exporter._server
-    assert server is not None
-    server._max = 3
-    socks = []
-    try:
-        partial = socket.create_connection((HOST, exporter._port), timeout=10)
-        socks.append(partial)
-        partial.sendall(b"GET /metrics HTTP/1.1\r\n")  # the request line: its handler has read it, a header is still to come
-        assert _wait_until(lambda: any(len(e) > 2 and e[2] for e in server._conns.values()), 5)
-        socks.extend(socket.create_connection((HOST, exporter._port)) for _ in range(2))
-        assert _wait_until(lambda: len(server._live) == 3, 5)
-        socks.append(socket.create_connection((HOST, exporter._port)))  # the newcomer queues
-        assert _wait_until(lambda: len(server._queue) == 1, 5)
-        time.sleep(0.4)  # the admitter has looked many times
-        assert not server._cut_socks, "a holder was evicted while a silent one was still too young"
-        partial.sendall(b"Host: x\r\n\r\n")  # the rest of the request
-        data = b""
-        while chunk := partial.recv(65536):
-            data += chunk
-        assert data.startswith(b"HTTP/1.0 200"), data[:60]
-    finally:
-        for s in socks:
-            s.close()
-        _close(exporter)
-
-
-def test_tricklers_alone_do_not_keep_the_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When every holder has sent a byte, the oldest partial sender is evicted for a newcomer at once."""
-    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
-    exporter = _exporter(tmp_path)
-    server = exporter._server
-    assert server is not None
-    server._max = 2
-    socks = []
-    try:
-        for _ in range(2):
-            c = socket.create_connection((HOST, exporter._port), timeout=10)
-            socks.append(c)
-            c.sendall(b"GET /metrics HTTP/1.1\r\n")
-        assert _wait_until(lambda: len(server._live) == 2 and all(len(e) > 2 and e[2] for e in server._conns.values()), 5)
-        socks.append(socket.create_connection((HOST, exporter._port)))
-        socks[0].settimeout(5)
-        assert socks[0].recv(100) is not None  # the oldest trickler's handler left within the timeout (it would raise otherwise)
-        assert _wait_until(lambda: len(server._live) <= 2 and len(server._queue) == 0, 5), "the newcomer was not given the evicted slot"
-    finally:
-        for s in socks:
+        stop.set()
+        thread.join(5)
+        for s in held:
             s.close()
         _close(exporter)

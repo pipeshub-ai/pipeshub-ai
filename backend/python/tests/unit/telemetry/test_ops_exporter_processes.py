@@ -13,10 +13,14 @@ import textwrap
 import time
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from tests.support.free_port import bind_on_free_port, free_port
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 PY = Path(__file__).resolve().parents[3]
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
@@ -247,45 +251,62 @@ def _p99_ms(samples: list[float]) -> float:
     return samples[min(len(samples) - 1, int(0.99 * len(samples)))] * 1000
 
 
-def _late_s(samples: list[float]) -> float:
-    return sum(lag_s for lag_s in samples if lag_s > 0.25)
+def _late_s(samples: list[float], beyond: float) -> float:
+    return sum(lag_s for lag_s in samples if lag_s > beyond)
 
 
-def _flood_lag_problem(busy: list[float], idle: list[float]) -> str | None:
+def _flood_lag_problem(busy: list[float]) -> str | None:
     """Why the loop-lag samples (sorted, seconds) of a flood are not acceptable, else None.
 
     A blocked loop is one late sample however long it blocks, so a count of slow samples cannot see it; the
-    time the loop spent late can. The verdict bounds three things: the p99 (50 ms); the lag beyond 250 ms summed
-    over the window, at 2 s plus three times what the idle phase of the same run was late (a host that stalls
-    while idle stalls under the flood too, and one hiccup of the 1.5 s seen on a shared runner stays under 2 s);
-    and the longest single stall (3 s, above that hiccup, below a frozen loop).
-
-    Deliberate trade-off: one stall under about 3 s (a single 1.9 s freeze, say) is not told apart from a host
-    hiccup, because shared runners produce them (CI has seen 1.47 s and 2.06 s). What this still catches is what a
-    regression does: a stall on every refresh, repeated freezes, a slow loop, and any single stall past 3 s.
+    time the loop spent late can. Absolute bounds, none relative to an idle phase (the exporter's own round runs in
+    the idle phase too): the p99 within 50 ms; the lag beyond 50 ms summed over the 5 s window within 0.5 s (a stall
+    on every collector refresh); beyond 250 ms within 2 s (repeated freezes); and the longest stall within 3 s.
+    A host stall that hits one attempt fails it here; the test retries once, so a host stall has to hit both
+    attempts to fail, and a regression, which recurs, fails both.
     """
-    p99, idle_p99 = _p99_ms(busy), _p99_ms(idle)
-    late, idle_late = _late_s(busy), _late_s(idle)
-    if p99 > 50.0 or late > 2.0 + 3 * idle_late or busy[-1] > 3.0:
-        return (f"event loop lag under a scrape flood: p99 {p99:.1f} ms (idle {idle_p99:.1f}), {late:.2f} s late beyond "
-                f"250 ms over {len(busy)} samples (idle phase {idle_late:.2f} s), longest {busy[-1] * 1000:.1f} ms")
+    p99 = _p99_ms(busy)
+    late_50, late_250 = _late_s(busy, 0.05), _late_s(busy, 0.25)
+    if p99 > 50.0 or late_50 > 0.5 or late_250 > 2.0 or busy[-1] > 3.0:
+        return (f"event loop lag under a scrape flood: p99 {p99:.1f} ms, {late_50:.2f} s late beyond 50 ms and "
+                f"{late_250:.2f} s beyond 250 ms over {len(busy)} samples, longest {busy[-1] * 1000:.1f} ms")
     return None
 
 
-def test_the_flood_lag_verdict_bounds_the_p99_the_time_the_loop_was_late_and_the_longest_stall() -> None:
+def _attempt_flood(run: Callable[[], list[float]]) -> list[str]:
+    """Run the flood measurement up to twice; the problems of the attempts that failed (fewer than two = a pass)."""
+    problems: list[str] = []
+    for _attempt in range(2):
+        problem = _flood_lag_problem(run())
+        if problem is None:
+            break
+        problems.append(problem)
+    return problems
+
+
+def test_the_flood_lag_verdict_catches_each_way_a_regression_stalls_the_loop() -> None:
     quiet = sorted([0.001] * 400)
-    assert _flood_lag_problem(quiet, quiet) is None
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.5]), quiet) is None  # one host hiccup, as seen on a shared runner
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.9]), quiet) is None  # a single 1.9 s stall is still one hiccup
-    assert _flood_lag_problem(sorted([0.001] * 400 + [3.5]), quiet) is not None  # a single freeze past the 3 s longest-stall bound (both attempts see it)
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.9, 1.9]), quiet) is not None  # repeated: a collector that freezes the loop
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.0] * 3), quiet) is not None  # repeated 1 s freezes
-    assert _flood_lag_problem(sorted([0.001] * 200 + [4.5]), quiet) is not None  # a frozen loop: one late sample, 4.5 s
-    assert _flood_lag_problem(sorted([0.001] * 1000 + [30.0] * 10), quiet) is not None  # ten long stalls
-    assert _flood_lag_problem(sorted([0.001] * 400 + [0.4] * 12), quiet) is not None  # many slow samples
-    assert _flood_lag_problem(sorted([0.15] * 400), quiet) is not None  # 150 ms per refresh: a slow loop (p99 over 50 ms)
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.5, 1.5]), sorted([0.001] * 400 + [1.0])) is None  # a stalling host: idle was late too
-    assert _flood_lag_problem(sorted([0.001] * 400 + [1.5, 1.5]), quiet) is not None  # the same under a quiet idle phase
+    assert _flood_lag_problem(quiet) is None
+    assert _flood_lag_problem(sorted([0.001] * 400 + [0.3])) is None  # one small hiccup
+    assert _flood_lag_problem(sorted([0.001] * 400 + [0.15] * 9)) is not None  # 150 ms at every collector refresh
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.0] * 6)) is not None  # a 1 s freeze at every exporter round
+    assert _flood_lag_problem(sorted([0.001] * 400 + [1.0] * 3)) is not None  # repeated 1 s freezes
+    assert _flood_lag_problem(sorted([0.001] * 400 + [3.5])) is not None  # a 3.5 s freeze
+    assert _flood_lag_problem(sorted([0.001] * 200 + [4.5])) is not None  # a frozen loop: one late sample
+    assert _flood_lag_problem(sorted([0.001] * 1000 + [30.0] * 10)) is not None  # ten long stalls
+    assert _flood_lag_problem(sorted([0.15] * 400)) is not None  # a slow loop (p99 over 50 ms)
+
+
+def test_a_host_stall_has_to_hit_both_attempts_and_a_regression_fails_both() -> None:
+    quiet = sorted([0.001] * 400)
+    runs = iter([sorted([0.001] * 400 + [1.47]), quiet])  # CI saw 1.47 s: the first attempt fails, the retry is clean
+    assert len(_attempt_flood(lambda: next(runs))) < 2
+    runs = iter([sorted([0.001] * 400 + [2.06]), quiet])  # and 2.06 s
+    assert len(_attempt_flood(lambda: next(runs))) < 2
+    runs = iter([sorted([0.001] * 400 + [1.47]), sorted([0.001] * 400 + [2.06])])  # a stall on both attempts
+    assert len(_attempt_flood(lambda: next(runs))) == 2
+    for regression in (sorted([0.001] * 400 + [0.15] * 9), sorted([0.001] * 400 + [1.0] * 6), sorted([0.001] * 400 + [3.5])):
+        assert len(_attempt_flood(lambda regression=regression: regression)) == 2, "a recurring regression fails both attempts"
 
 
 def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp_path: Path) -> None:
@@ -325,20 +346,17 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
     while not exporter.holds_port and time.time() < deadline:
         time.sleep(0.05)
     assert exporter.holds_port
-    problems: list[str] = []
+    def measure() -> list[float]:
+        asyncio.run(lag(2.0))  # let the exporter settle after its first round
+        hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "6", "16"])
+        try:
+            time.sleep(0.3)
+            return asyncio.run(lag(5.0))
+        finally:
+            hammer.wait(timeout=30)
+
     try:
-        for _attempt in range(2):  # a shared runner can stall once whatever the code does; a regression stalls every time
-            idle = asyncio.run(lag(2.0))
-            hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "6", "16"])
-            try:
-                time.sleep(0.3)
-                busy = asyncio.run(lag(5.0))
-            finally:
-                hammer.wait(timeout=30)
-            problem = _flood_lag_problem(busy, idle)
-            if problem is None:
-                break
-            problems.append(problem)
+        problems = _attempt_flood(measure)
     finally:
         exporter._stop.set()
         if exporter._server:

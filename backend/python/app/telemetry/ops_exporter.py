@@ -71,7 +71,7 @@ _FOLDED_KEPT = 256
 MAX_SERIES = 300
 DEFAULT_BIND = "0.0.0.0"  # the scraper is another pod; the chart narrows it to the pod IP
 MAX_CONNECTIONS = 16  # handler threads of the port; past them the oldest unfinished request is evicted
-ADMIT_WAIT_S = 2.0  # how long a queued connection waits for a slot before it gets a 503 (longer than a silent connection's minimum age)
+ADMIT_WAIT_S = 1.0  # how long a queued connection waits for a slot before it gets a 503
 ADMIT_QUEUE_MAX = 32  # connections waiting for a slot; one more gets a 503 at once
 REQUEST_DEADLINE_S = 2.0  # the whole request (line and headers) must arrive within this, however it trickles
 CONNECTION_TIMEOUT_S = 5.0  # a single read or write that blocks this long is dropped (the answer's own I/O)
@@ -1040,33 +1040,14 @@ class BoundedServer(HTTPServer):
         return True
 
     def _evict_locked(self) -> None:
-        """Cut the oldest incomplete request, once per queued connection (one slot is enough for each).
-
-        A connection that has sent nothing is evictable only after half the request deadline: a client whose
-        request is still on its way is not refused on the strength of a newer arrival. Until a victim is old
-        enough the new connection waits in the queue (up to ``ADMIT_WAIT_S``) or, past the queue's bound, is
-        refused at accept; the admitter looks again every few milliseconds.
-        """
+        """Cut the oldest incomplete request, once per queued connection (one slot is enough for each)."""
         if len(self._cut_socks) >= len(self._queue):
             return
-        now = time.monotonic()
-        min_age = self._deadline / 2  # a connection that has sent nothing is not given up on before this
-        unanswered = [(len(e) > 2 and bool(e[2]), e[0], s) for s, e in self._conns.items() if not e[1] and s not in self._cut_socks]
-        silent = [(at, s) for started, at, s in unanswered if not started]
-        silent_old = [(at, s) for at, s in silent if now - at >= min_age]
-        if silent_old:
-            _at, victim = min(silent_old, key=lambda item: item[0])
-            silent_victim = True
-        elif silent:
-            return  # a silent holder is still young: nobody is evicted, the new connection waits its turn
-        else:
-            partial = [(at, s) for started, at, s in unanswered if started]
-            if not partial:
-                return
-            _at, victim = min(partial, key=lambda item: item[0])  # every holder has sent a byte: tricklers do not keep the slots
-            silent_victim = False
-        self._cut_socks.add(victim)
-        self._dismiss(victim, silent=silent_victim)
+        waiting = [(len(e) > 2 and bool(e[2]), e[0], s) for s, e in self._conns.items() if not e[1] and s not in self._cut_socks]
+        if waiting:
+            sent_something, _at, victim = min(waiting, key=lambda item: (item[0], item[1]))  # the silent ones first
+            self._cut_socks.add(victim)
+            self._dismiss(victim, silent=not sent_something)
 
     def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         """Runs on the acceptor thread: it never waits."""
