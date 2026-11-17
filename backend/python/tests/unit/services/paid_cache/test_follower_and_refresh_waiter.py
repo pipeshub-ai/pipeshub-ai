@@ -557,7 +557,8 @@ async def test_a_redelivery_while_a_dead_holders_lease_is_live_is_handed_back_th
     locks.expire_all()                                                  # the dead holder's lease lapses
     async with cache.refresh_purge(ORG, REC, "evt") as redelivery:
         assert redelivery is True                                       # no marker: this delivery purges
-    await dying.__aexit__(None, None, None)                             # tidy: stop the dead process's heartbeat
+    with pytest.raises(RefreshPurgeInProgress):                         # the dead holder, resumed, finds its lease lost
+        await dying.__aexit__(None, None, None)
 
 
 async def test_the_refresh_token_of_a_redelivered_event_reaches_the_parse_request() -> None:

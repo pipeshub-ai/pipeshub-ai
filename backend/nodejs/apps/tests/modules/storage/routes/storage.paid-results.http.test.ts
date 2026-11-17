@@ -208,6 +208,26 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       )
     })
 
+    it('a purge with `before` removes only objects written before it: a late DELETE leaves what a newer run stored', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      const cutoff = Date.now()
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await store(page('c'), 'stored after the purge started')
+      const purged = await call('DELETE', `/internal/paid-results/${REC}?before=${cutoff}`)
+      expect(purged).to.deep.equal({ status: 200, body: { purged: true } })
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('c')), onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+      )
+    })
+
+    it('refuses a `before` that is not one positive integer', async () => {
+      for (const bad of ['abc', '-5', '0', '1.5']) {
+        expect((await call('DELETE', `/internal/paid-results/${REC}?before=${bad}`)).status, bad).to.equal(400)
+      }
+      expect((await call('DELETE', `/internal/paid-results/${REC}?before=5&before=6`)).status).to.equal(400)
+      expect(filesOnDisk()).to.have.length(5)
+    })
+
     it('a purge of a record with nothing stored is a success, and so is a repeat', async () => {
       expect((await call('DELETE', `/internal/paid-results/never-stored`)).status).to.equal(200)
       expect((await call('DELETE', `/internal/paid-results/${REC}`)).status).to.equal(200)

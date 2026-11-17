@@ -1433,11 +1433,50 @@ export class StorageController {
       if (typeof recordParam !== 'string' || recordParam === '') {
         throw new BadRequestError('recordId must be a single value');
       }
+      const beforeQuery: unknown = req.query.before;
+      if (beforeQuery !== undefined && typeof beforeQuery !== 'string') {
+        throw new BadRequestError('before must be a single value');
+      }
       const adapter = await this.initializeStorageAdapter(req);
-      await adapter.deleteTree(paidResultsRecordRoot(orgId, recordParam));
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      if (beforeQuery === undefined) {
+        await adapter.deleteTree(root);
+      } else {
+        // A purge that started at this instant removes only what existed then: a late DELETE (its caller lost its
+        // lease and a newer one has stored results since) leaves the newer objects alone.
+        await this.deletePaidResultsOlderThan(adapter, root, Number(beforeQuery));
+      }
       res.status(HTTP_STATUS.OK).json({ purged: true });
     } catch (error) {
       next(error);
+    }
+  }
+
+  /**
+   * Removes the objects under `root` last written before `before` (ms). Object versions are not read: a store's
+   * write time is its own clock (whole seconds on S3 and Azure), so the caller passes an instant a margin earlier
+   * than its purge started. An object overwritten between the listing and the delete is the one gap (a conditional
+   * delete on the listed etag would close it, which the storage adapters do not offer yet).
+   */
+  private async deletePaidResultsOlderThan(
+    adapter: StorageServiceAdapter,
+    root: string,
+    before: number,
+  ): Promise<void> {
+    let after: string | undefined;
+    for (;;) {
+      const page = await adapter.listObjects(`${root}/`, {
+        after,
+        limit: PAID_RESULT_LIST_PAGE,
+      });
+      const doomed = page.objects
+        .filter((o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before)
+        .map((o) => o.key);
+      if (doomed.length > 0) {
+        await adapter.deleteObjects(doomed);
+      }
+      if (page.next === undefined) return;
+      after = page.next;
     }
   }
 

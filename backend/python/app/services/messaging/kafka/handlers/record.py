@@ -230,6 +230,9 @@ _DISABLED_TYPES_TTL_SECONDS = 60.0
 
 #: How long the broker holds a refresh event handed back because another delivery is purging.
 REFRESH_HANDBACK_DELAY_S = 30.0
+#: The storage service stamps objects with its own clock (whole seconds on S3 and Azure): a purge removes only objects
+#: older than its start by this margin.
+REFRESH_PURGE_CLOCK_MARGIN_MS = 2000
 
 
 class RecordEventHandler(BaseEventService):
@@ -2349,7 +2352,11 @@ class RecordEventHandler(BaseEventService):
                         async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
                             if must_purge:
                                 # A failure raises out of the block: no marker is written, and the redelivery purges.
-                                await paid_cache.purge_record(refresh_org, record_id)
+                                # Only what existed before this purge started goes (with a margin for the store's own
+                                # clock): a DELETE that lands after this delivery lost its lease leaves what the
+                                # delivery that took over has stored since.
+                                started_ms = int(time.time() * 1000) - REFRESH_PURGE_CLOCK_MARGIN_MS
+                                await paid_cache.purge_record(refresh_org, record_id, before_ms=started_ms)
                     except RefreshPurgeInProgress as exc:
                         # Nothing has been written for this delivery: the bookkeeping below skips it, as for a
                         # record held for its connector's delete (no FAILED, no queued duplicate, no status rewrite).

@@ -367,9 +367,9 @@ async def test_a_long_purge_and_its_duplicate_both_end_with_the_record_completed
     release_purge = asyncio.Event()
     real_purge = cache.purge_record
 
-    async def slow_purge(org: str, rec: str) -> None:
+    async def slow_purge(org: str, rec: str, *, before_ms: int | None = None) -> None:
         await release_purge.wait()                                 # the purge is still running
-        await real_purge(org, rec)
+        await real_purge(org, rec, before_ms=before_ms)
 
     cache.purge_record = slow_purge  # type: ignore[method-assign]
     payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-180"}
@@ -444,11 +444,13 @@ async def test_a_duplicate_is_handed_back_for_as_long_as_the_holder_lives_and_ne
     updates.assert_not_awaited()
 
 
-async def test_a_holder_that_renews_for_ever_is_cut_off_at_its_deadline_and_its_duplicate_then_purges(
+async def test_a_holder_that_renews_for_ever_is_cut_off_and_when_it_resumes_it_removes_nothing_the_duplicate_stored(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
     import asyncio
+    import time
 
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
     from app.services.paid_cache import cache as cache_module
     from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 
@@ -459,15 +461,15 @@ async def test_a_holder_that_renews_for_ever_is_cut_off_at_its_deadline_and_its_
     _seed(store)
     holder_handler, duplicate_handler = _handler(), _handler()
     cache = access.paid_cache_for(MagicMock())
-    never = asyncio.Event()
+    resume = asyncio.Event()
     real_purge = cache.purge_record
-    purges: list[str] = []
+    calls: list[str] = []
 
-    async def purge(org: str, rec: str) -> None:
-        purges.append("holder" if not purges else "duplicate")
-        if len(purges) == 1:
-            await never.wait()                                              # the holder purges and renews for ever
-        await real_purge(org, rec)
+    async def purge(org: str, rec: str, *, before_ms: int | None = None) -> None:
+        calls.append("holder" if not calls else "duplicate")
+        if len(calls) == 1:
+            await resume.wait()                                             # the holder's DELETE is slow
+        await real_purge(org, rec, before_ms=before_ms)
 
     cache.purge_record = purge  # type: ignore[method-assign]
     payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-9"}
@@ -480,15 +482,25 @@ async def test_a_holder_that_renews_for_ever_is_cut_off_at_its_deadline_and_its_
     with caplog.at_level("WARNING"):
         for _ in range(100):                                               # delivered again until the holder is cut off
             try:
-                events = await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+                await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
                 break
             except RefreshPurgeHeld:
                 await asyncio.sleep(0.02)
         else:
             raise AssertionError("the duplicate never ran")
-    assert purges == ["holder", "duplicate"]                                # the duplicate purged and completed
-    assert events is not None
+    assert calls == ["holder", "duplicate"]
     assert any("no longer renewed" in r.getMessage() for r in caplog.records)   # a visible reason
-    never.set()
-    holder.cancel()
-    await asyncio.gather(holder, return_exceptions=True)
+
+    store.now_ms = int(time.time() * 1000) + 60_000                         # the duplicate's run stores a result since
+    stored = f"ocr_page/{'d' * 64}.json"
+    store.files[(ORG, REC, stored)] = (b"{}", store.now_ms)
+    clear_run()
+
+    resume.set()                                                           # the holder's DELETE now lands, late
+    with pytest.raises(RequeueWithoutAttempt):                              # lost its lease: handed back, nothing more
+        await holder
+
+    assert stored in store.paths(ORG, REC), "the late DELETE removed an object the duplicate stored"
+    assert current_run() is None, "the lost-lease holder opened a run"
+    async with cache.refresh_purge(ORG, REC, "evt-9") as redelivery:        # and it wrote no marker: the duplicate's stands
+        assert redelivery is False

@@ -98,7 +98,7 @@ class ResultStore:
         """Overwrites one result object: a refresh run's, or one that was found unreadable."""
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]: ...
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
-    async def purge_record(self, org_id: str, record_id: str) -> None: ...
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None: ...
     async def purge_org(self, org_id: str) -> None: ...
 
 
@@ -175,8 +175,8 @@ class _FencedStore:
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None:
         await self._inner.delete_files(org_id, record_id, paths)
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
-        await self._inner.purge_record(org_id, record_id)
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
+        await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
 
     async def purge_org(self, org_id: str) -> None:
         await self._inner.purge_org(org_id)
@@ -270,11 +270,15 @@ class PaidResultCache:
         self._count(key, "miss")
         return _plain(await compute())
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
-        """Removes every stored result of the record (a refresh; the record goes on). Raises on a storage failure."""
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
+        """Removes every stored result of the record (a refresh; the record goes on). Raises on a storage failure.
+
+        ``before_ms``: only objects last written before that instant go (a purge that may land late must not remove
+        what a newer one's run stored since).
+        """
         if not valid_record_id(record_id):
             return  # no result was ever stored under such an id (see ``valid_record_id``)
-        await self._store.purge_record(org_id, record_id)
+        await self._store.purge_record(org_id, record_id, before_ms=before_ms)
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         """Claims the refresh named ``event_id`` for its first request, atomically (``SET NX`` with a TTL on Redis).
@@ -333,6 +337,10 @@ class PaidResultCache:
         try:
             yield must_purge
             if must_purge and held is not None and backend is not None:
+                if held.lost or not await held.still_owned():
+                    # The lease was given up (past its deadline) or taken while the purge ran: another delivery has
+                    # purged or is purging, so this one writes no marker and its caller opens no run.
+                    raise RefreshPurgeInProgress(f"the purge lease of refresh {event_id} was lost; another delivery owns it")
                 await backend.mark(name, DELETED_TTL_MS)     # only after the purge returned
         finally:
             if held is not None:
@@ -732,7 +740,7 @@ class NullPaidResultCache:
     async def get_or_compute(self, key: CacheKey, compute: Callable[[], Awaitable[Any]], *, wait_s: float = 0, validate: Callable[[Any], object] | None = None) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         return _plain(await compute())
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         return None
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:

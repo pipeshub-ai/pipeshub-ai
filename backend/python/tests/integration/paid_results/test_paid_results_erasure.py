@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -91,3 +92,22 @@ async def test_the_listing_pages_through_more_files_than_one_page(store: NodePai
     assert len(await store.list_files(org, "rec-p")) == 7
     assert [f.path for f in await store.list_files(org, "rec-p", "ocr_page/")] == [f"ocr_page/{i:064x}.json" for i in range(7)]
     assert await store.list_files(org, "rec-p", "classify/") == []
+
+
+async def test_a_purge_with_a_cutoff_leaves_what_was_stored_after_it_on_the_real_store(store: NodePaidResultStore) -> None:
+    """A late DELETE (its caller lost its lease) removes only what existed before its purge started."""
+    import asyncio
+    import time
+
+    org, rec = new_org(), str(uuid.uuid4())
+    old, new = f"ocr_page/{'a' * 64}.json", f"ocr_page/{'b' * 64}.json"
+    try:
+        assert await store.put(org, rec, old, b"{}") is True
+        await asyncio.sleep(3.5)                                       # past the whole-second stamps of S3 and Azure
+        cutoff = int(time.time() * 1000) - 2000                        # the purge's start, less its clock margin
+        await asyncio.sleep(3.5)
+        assert await store.put(org, rec, new, b"{}") is True           # stored by the delivery that took over
+        await store.purge_record(org, rec, before_ms=cutoff)           # the late DELETE lands
+        assert [f.path for f in await store.list_files(org, rec)] == [new]
+    finally:
+        await store.purge_org(org)

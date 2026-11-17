@@ -76,9 +76,11 @@ class MemoryResultStore:
         for p in paths:
             self.files.pop((org_id, record_id, p), None)
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         self._call("purge", org_id, record_id)
         for k in [k for k in self.files if k[0] == org_id and k[1] == record_id]:
+            if before_ms is not None and self.files[k][1] >= before_ms:
+                continue                                       # written at or after the purge's start: not its to remove
             del self.files[k]
 
     async def purge_org(self, org_id: str) -> None:

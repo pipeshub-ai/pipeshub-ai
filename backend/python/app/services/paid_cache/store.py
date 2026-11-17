@@ -175,14 +175,17 @@ class NodePaidResultStore:
                 org_id, "POST", route, body={"paths": list(paths[start:start + MAX_FILES_PER_CALL])},
             )
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         """Removes the record's folder. Nothing stored is a success (the route answers 200).
 
-        A storage service without the routes never held a result, so it is a success too.
+        ``before_ms``: only objects last written before that instant go, so a DELETE that lands late (its caller lost
+        its lease) leaves what a newer purge's run stored since. A storage service without the routes never held a
+        result, so it is a success too.
         """
         try:
             await self._call(
                 org_id, "DELETE", Routes.STORAGE_PAID_RESULTS_RECORD.value.format(recordId=record_id),
+                params={"before": str(int(before_ms))} if before_ms is not None else None,
             )
         except ArtifactRoutesUnavailable:
             return
