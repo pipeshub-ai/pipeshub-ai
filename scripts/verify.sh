@@ -130,6 +130,10 @@ run shell "release tooling tests" \
   'exists deployment/docker-compose/tests/release_tooling_test.sh' \
   bash deployment/docker-compose/tests/release_tooling_test.sh
 
+run shell "document-store move script tests" \
+  'exists deployment/docker-compose/tests/docstore_move_scripts_test.sh' \
+  bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
+
 run shell "omnigent helper tests" \
   'exists integrations/omnigent/tests/scripts_test.sh' \
   bash integrations/omnigent/tests/scripts_test.sh
