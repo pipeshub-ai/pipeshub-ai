@@ -478,28 +478,36 @@ class PaidResultCache:
 
     @contextlib.asynccontextmanager
     async def manifest_lock(self, org_id: str, record_id: str, path: str) -> AsyncIterator[None]:
-        """Holds the cross-replica lock of one manifest path for a read-merge-replace. Without a lock backend (or when
-        it cannot be asked) the write goes ahead unserialized: a manifest is best effort, never a reason to fail."""
+        """Holds the cross-replica lock of one manifest path for a read-merge-replace.
+
+        The lease is renewed until the section ends, as a result's lock is renewed through its write. A lock that
+        another replica holds is a live holder: this call waits for it (bounded by ``WRITE_DEADLINE_S``) and raises
+        ``TimeoutError`` rather than write beside it. Only when no lock backend can be asked at all does the write go
+        ahead unserialized: a manifest is best effort, never a reason to fail.
+        """
         name = manifest_lock_name(org_id, record_id, path)
-        token = None
-        backend = None
+        held: _Held | None = None
         try:
             backend = await self._backend()
             deadline = time.monotonic() + lock_limits.WRITE_DEADLINE_S
+            token = await backend.acquire(name, LOCK_TTL_MS)
             while token is None:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"the manifest lock of {path} is held by another writer")
+                await asyncio.sleep(MANIFEST_LOCK_POLL_S)
                 token = await backend.acquire(name, LOCK_TTL_MS)
-                if token is None:
-                    if time.monotonic() > deadline:
-                        break
-                    await asyncio.sleep(MANIFEST_LOCK_POLL_S)
+            held = _Held(backend, name, token, self.logger)  # type: ignore[arg-type]
+            held.start_heartbeat()
+        except TimeoutError:
+            raise
         except Exception:
             self.logger.debug("Paid-result manifest lock unavailable", exc_info=True)
         try:
             yield
         finally:
-            if token is not None and backend is not None:
-                with contextlib.suppress(Exception):
-                    await backend.release(name, token)
+            if held is not None:
+                await _uninterrupted(held.stop_heartbeat())
+                await _uninterrupted(held.release())
 
     async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> None:
         if scope is None or not writes_enabled():

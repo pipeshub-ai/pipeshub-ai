@@ -414,3 +414,72 @@ async def test_without_the_shared_lock_two_replicas_do_lose_a_key(monkeypatch: p
     await asyncio.gather(first._write_open(store), second._write_open(store))
     listed = json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]
     assert len(listed) == 1
+
+
+async def test_the_manifest_lease_is_renewed_through_a_section_longer_than_the_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read-merge-replace slower than the lease keeps the lock: the other replica waits instead of writing beside it."""
+    import json
+
+    from app.services.paid_cache import run as run_module
+    from app.services.paid_cache.run import RunScope
+
+    monkeypatch.setattr(cache_module, "LOCK_TTL_MS", 300)
+    monkeypatch.setattr(run_module, "_path_lock", lambda *_a: asyncio.Lock())
+    store, shared_locks = MemoryResultStore(), InProcessLocks()
+    replica_a, replica_b = PaidResultCache(store, shared_locks), PaidResultCache(store, shared_locks)
+    real_replace = store.replace
+
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
+        await asyncio.sleep(0.8)                                   # more than twice the lease
+        await real_replace(*args)
+
+    store.replace = slow_replace  # type: ignore[method-assign]
+    a, b = (f"ocr_page/{n * 64}.json" for n in "ab")
+    first, second = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+    first.manifest_guard, second.manifest_guard = replica_a.manifest_lock, replica_b.manifest_lock
+    first._keys, first._seen, first._unflushed = [a], {a}, 1
+    second._keys, second._seen, second._unflushed = [b], {b}, 1
+
+    await asyncio.gather(first._write_open(store), second._write_open(store))
+
+    listed = json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]
+    assert set(listed) == {a, b}
+    assert shared_locks._held == {}                                # both released
+
+
+async def test_a_writer_that_never_gets_the_manifest_lock_does_not_write_beside_the_holder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.paid_cache.locks import manifest_lock_name
+    from app.services.paid_cache.run import RunScope
+
+    monkeypatch.setattr(locks_module, "WRITE_DEADLINE_S", 0.2)
+    monkeypatch.setattr(cache_module, "MANIFEST_LOCK_POLL_S", 0.01)
+    store, shared_locks = MemoryResultStore(), InProcessLocks()
+    cache = PaidResultCache(store, shared_locks)
+    path = "manifests/r1/parse.open.json"
+    holder = await shared_locks.acquire(manifest_lock_name(ORG, REC, path), 60_000)      # another replica's live lock
+    assert holder is not None
+    calls: list[str] = []
+    real_replace, real_delete = store.replace, store.delete_files
+
+    async def replace(*args: Any) -> None:  # noqa: ANN401
+        calls.append("replace")
+        await real_replace(*args)
+
+    async def delete_files(*args: Any) -> None:  # noqa: ANN401
+        calls.append("delete")
+        await real_delete(*args)
+
+    store.replace, store.delete_files = replace, delete_files  # type: ignore[method-assign]
+    run = RunScope(ORG, REC, "r1", "parse")
+    run.manifest_guard = cache.manifest_lock
+    run._keys, run._seen, run._unflushed = ["ocr_page/" + "a" * 64 + ".json"], {"ocr_page/" + "a" * 64 + ".json"}, 1
+
+    with pytest.raises(TimeoutError):
+        await run._write_open(store)
+    with pytest.raises(TimeoutError):
+        await run.finish(store)
+
+    assert calls == []                                             # neither replace nor delete ran
+    assert await shared_locks.owns(manifest_lock_name(ORG, REC, path), holder)           # the holder's lock is untouched
