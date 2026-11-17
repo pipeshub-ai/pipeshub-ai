@@ -102,7 +102,9 @@ def read_window(directory: Path, now: float, window_s: int) -> WindowTotals:
                 minute = int(key)
             except ValueError:
                 continue
-            if (minute + 1) * MINUTE_S <= since or not isinstance(bucket, dict):
+            # A minute that starts after now is left by a clock that was
+            # stepped back; it is not part of this window.
+            if (minute + 1) * MINUTE_S <= since or minute * MINUTE_S > now or not isinstance(bucket, dict):
                 continue
             for name_ in sums:
                 sums[name_] += _int(bucket.get(name_))
@@ -119,7 +121,9 @@ def read_window(directory: Path, now: float, window_s: int) -> WindowTotals:
                 tick = int(key)
             except ValueError:
                 continue
-            if tick * TICK_S < since or tick * TICK_S > now:
+            # Ticks starting in (since, now]: exactly window_s / TICK_S of them,
+            # so the busy share never passes 100 %.
+            if tick * TICK_S <= since or tick * TICK_S > now:
                 continue
             ticks[tick] = ticks.get(tick, 0) | _int(flags)
     backed_off = [tick for tick, flags in ticks.items() if flags & FLAG_BACKED_OFF]

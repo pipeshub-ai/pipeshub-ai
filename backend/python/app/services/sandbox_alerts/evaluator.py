@@ -40,11 +40,13 @@ def evaluate(totals: WindowTotals, settings: AlertSettings) -> AlertDecision:
     Critical: at least ``crit_min_refused`` runs were refused and they are at
     least ``crit_refused_pct`` of all runs. Critical wins."""
     window_ticks = max(1, totals.window_s // TICK_S)
-    busy_percent = 100.0 * totals.busy_ticks / window_ticks
+    # A window that is not a whole number of ticks can touch one tick more.
+    busy_ticks = min(totals.busy_ticks, window_ticks)
+    busy_percent = 100.0 * busy_ticks / window_ticks
     refused_percent = 100.0 * totals.refused / totals.runs if totals.runs else 0.0
     # Integer comparisons, so a threshold met exactly is not lost to rounding.
     warning = (
-        totals.busy_ticks * 100 >= settings.warn_busy_pct * window_ticks
+        busy_ticks * 100 >= settings.warn_busy_pct * window_ticks
         and totals.waited >= settings.warn_min_waited
     )
     critical = (
