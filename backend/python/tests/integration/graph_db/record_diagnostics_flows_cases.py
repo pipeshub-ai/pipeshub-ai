@@ -281,6 +281,28 @@ async def test_random_flows_match_the_oracle(store: Store) -> None:
     assert wrong == [], f"seed={seed}: {wrong[:3]}"
 
 
+async def test_a_store_only_write_that_sets_a_new_revision_drops_the_page_count_of_the_old_one(store: Store) -> None:
+    """A store-only run drops the status fields, so its attempt start is a plain write that carries the new revision: the count of
+    the old revision must not outlive it (the real event processor writes it, on every store)."""
+    from app.modules.indexing.parse_now_marker import ParseNowRun, begin_run, end_run
+
+    flow = Flow(store)
+    await flow.run("save_new", "cas_queued", "attempt")
+    assert await store.p.update_node(flow.key, RECORDS, {"pageCount": 9})
+    assert (await store.doc(flow.key))["pageCount"] == 9
+
+    begin_run(ParseNowRun(store_only=True))
+    try:
+        assert await flow._event_processor().update_record_fields(
+            {"_key": flow.key}, {"indexingStatus": "IN_PROGRESS", "contentRev": "rev-new"}, attempt_start=True
+        )
+    finally:
+        end_run()
+
+    after = await store.doc(flow.key)
+    assert after["contentRev"] == "rev-new" and not after.get("pageCount"), after
+
+
 # ---- a new run starts after the last outcome ----------------------------------------------------------------------------------
 
 LATER_MS = 3_600_000  # an outcome (or a restore stamp) an hour after the statement's own clock
@@ -333,6 +355,7 @@ async def test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_t
 
 
 TEST_NAMES = ['test_random_flows_match_the_oracle', 'test_a_write_conditional_on_the_snapshot_applies_to_an_unchanged_record', 'test_flow', 'test_f18_a_failure_handed_to_a_queued_duplicate_stamps_it', 'test_f19_a_save_that_read_a_closed_record_while_the_consumer_started_it_stays_within_the_race', 'test_f20_a_store_only_parse_now_run_writes_none_of_the_run_fields', 'test_a_record_from_before_the_fields_in_the_middle_of_a_run_continues_from_its_queue_time', 'test_f22_the_residual_of_a_failure_written_by_an_older_process_is_reported', 'test_a_rule_that_always_continues_fails_the_flow', 'test_a_rule_without_the_outcome_stamps_fails_f22', 'test_a_sink_only_end_that_keeps_the_start_fails_f9', 'test_a_restore_that_continues_the_stored_run_fails_f21', 'test_attempt_increment_in_statement', 'test_a_reset_between_the_read_and_the_write_starts_a_new_run_not_old_plus_one', 'test_a_read_modify_write_loses_increments',
+              'test_a_store_only_write_that_sets_a_new_revision_drops_the_page_count_of_the_old_one',
               'test_a_requeue_after_a_later_outcome_starts_a_run_that_the_next_attempt_continues',
               'test_an_attempt_start_after_a_later_outcome_starts_a_run_after_it',
               'test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_the_next_attempt_continues']

@@ -781,6 +781,11 @@ class EventProcessor:
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
+        if "contentRev" in fields and not (attempt_start and "indexingStatus" in fields):
+            # A count belongs to the content it was taken from: every write that sets the revision drops it here, the one place that writes
+            # it, and the parse that follows writes the new one. An attempt start does the same inside its own statement, from the stored
+            # revision. (A store-only run drops the status fields, so its attempt start is a plain write that carries the revision.)
+            fields = {**fields, PAGE_COUNT: None}
         left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
         leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
         doc.update(fields)

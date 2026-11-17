@@ -97,7 +97,8 @@ class TestStoreOnly:
         writes = _writes(gp)
         assert writes
         assert all(not STATUS_FIELDS & set(write) for write in writes)
-        assert {"contentRev": REV, "parseNowStatus": "IN_PROGRESS", "parseNowRev": REV, "parseNowReason": None, "parseNowAt": ANY} in writes
+        # the revision write also drops the count of the revision it replaces (a count belongs to its content)
+        assert {"contentRev": REV, "pageCount": None, "parseNowStatus": "IN_PROGRESS", "parseNowRev": REV, "parseNowReason": None, "parseNowAt": ANY} in writes
 
     async def test_a_finished_twin_is_not_attached_to(self) -> None:
         # B6

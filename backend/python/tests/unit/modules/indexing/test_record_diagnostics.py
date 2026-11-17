@@ -262,6 +262,7 @@ def _processor(**graph: Any) -> EventProcessor:  # noqa: ANN401
     processor.logger = logging.getLogger("test")
     provider = MagicMock()
     provider.update_node = AsyncMock(return_value=True)
+    provider.write_attempt_start = AsyncMock(return_value=True)
     provider.update_node_fields_if_match = AsyncMock(return_value=True)
     provider.update_node_if_unchanged = AsyncMock(return_value=True)
     for name, value in graph.items():
@@ -356,6 +357,34 @@ class TestPageCountWrites:
 
         processor.graph_provider.update_node_if_unchanged.assert_not_awaited()
         assert processor.graph_provider.update_node.await_args.args[2] == {"parsingStatus": "COMPLETED"}
+
+    @pytest.mark.parametrize("attempt_start", [True, False])
+    async def test_a_store_only_write_that_sets_the_revision_drops_the_count_it_may_hold(self, attempt_start: bool) -> None:
+        """A store-only run drops the status fields, so its attempt start is a plain write: it still must not leave the old revision's count."""
+        processor = _processor()
+        begin_run(ParseNowRun(store_only=True))
+        try:
+            await processor.update_record_fields({"_key": "r1"}, {"indexingStatus": IP, "contentRev": "rev-b"}, attempt_start=attempt_start)
+        finally:
+            end_run()
+
+        processor.graph_provider.write_attempt_start.assert_not_awaited()
+        written = processor.graph_provider.update_node.await_args.args[2]
+        assert written["contentRev"] == "rev-b" and written["pageCount"] is None and "indexingStatus" not in written
+
+    async def test_an_attempt_start_leaves_the_count_to_its_own_statement(self) -> None:
+        processor = _processor()
+
+        await processor.update_record_fields({"_key": "r1"}, {"indexingStatus": IP, "contentRev": "rev-b"}, attempt_start=True)
+
+        assert "pageCount" not in processor.graph_provider.write_attempt_start.await_args.args[1]
+
+    async def test_a_write_that_does_not_set_the_revision_leaves_the_count_alone(self) -> None:
+        processor = _processor()
+
+        await processor.update_record_fields({"_key": "r1"}, {"reason": "x"})
+
+        assert "pageCount" not in processor.graph_provider.update_node.await_args.args[2]
 
     async def test_a_parse_without_a_count_is_the_unchanged_status_write(self) -> None:
         processor = _processor()
