@@ -26,6 +26,7 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.error_classifier import is_expected_outcome
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -299,3 +300,31 @@ def test_the_same_bytes_rule_is_a_pure_function_of_the_record_and_the_event() ->
     assert not decide(event_type=EventTypes.REINDEX_RECORD.value)
     assert not decide(data={"forceReindex": True})
     assert not decide(rec={**record, "contentRev": "x"})
+
+
+@pytest.mark.asyncio
+async def test_a_hand_back_is_bounded_by_the_backstop_and_delayed() -> None:
+    """The retries of a skip that cannot finish end in the consumer's delivery backstop (counted hand-backs) and are
+    spaced by a delay, so a store that stays down is neither endless nor a busy loop."""
+    world = _World(node={"contentRev": content_revision(NEW)})
+    world.processor.indexing_pipeline.sync_vector_membership = AsyncMock(side_effect=RuntimeError("down"))
+
+    with pytest.raises(SameBytesSkipPending) as raised:
+        await world.run(world.event(NEW))
+
+    assert raised.value.counts_toward_backstop is True
+    assert raised.value.delay_s and raised.value.delay_s >= 1.0
+    assert is_expected_outcome(raised.value), "an expected hand-back is logged once, not as an error"
+
+
+@pytest.mark.asyncio
+async def test_a_type_change_queued_behind_an_update_of_the_same_bytes_is_skipped_known_limit() -> None:
+    """Documents a limit: the stored record and the event agree on the new type, and nothing stored says which parser
+    produced the indexed copy, so the skip cannot see that a type change landed while an earlier update was queued.
+    A forced reindex repairs it. Dispatching on the stored record's type instead of the event's would close it."""
+    world = _World(node={"contentRev": content_revision(NEW), "mimeType": "text/markdown", "recordName": "notes.md"})
+
+    events = await world.run(world.event(NEW, mime="text/markdown", ext="md"))
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert world.parses == 0

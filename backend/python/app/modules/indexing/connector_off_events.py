@@ -89,6 +89,8 @@ class SameBytesSkipPending(RequeueWithoutAttempt):
 
     counts_toward_backstop = True
     pauses_consumer = False
+    # Logged once, at WARNING, by the code that raised it; not a fault for the handler to log again.
+    expected_outcome = True
 
 
 class ReadTimeOutcome(Enum):

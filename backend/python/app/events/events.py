@@ -198,7 +198,7 @@ class EventProcessor:
         """
         return getattr(self.processor, "indexing_pipeline", None)
 
-    async def sync_vector_membership(self, virtual_record_id: str) -> None:
+    async def sync_vector_membership(self, virtual_record_id: str, *, log_failure: bool = True) -> None:
         """Recompute a VRID's connector/group arrays from graph. Never deletes."""
         if not virtual_record_id or not isinstance(virtual_record_id, str):
             return
@@ -222,9 +222,10 @@ class EventProcessor:
             # record attached to the VRID with its connectorId missing from the
             # points and nothing to repair it; both callers are event handlers,
             # and re-running a duplicate attach is idempotent.
-            self.logger.error(
-                "Failed to sync vector membership for %s: %s", virtual_record_id, e
-            )
+            if log_failure:
+                self.logger.error(
+                    "Failed to sync vector membership for %s: %s", virtual_record_id, e
+                )
             raise
 
     @staticmethod
@@ -285,7 +286,7 @@ class EventProcessor:
         try:
             if await ingress.handoff_lost(record):
                 return False
-            await self.sync_vector_membership(vrid)
+            await self.sync_vector_membership(vrid, log_failure=False)
             dispatched = await ingress.redrive_unchanged(vrid, rev, record)
         except Exception as exc:
             # The record is indexed and stays as it is: no status is written and nothing is re-indexed

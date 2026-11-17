@@ -816,3 +816,48 @@ async def test_a_refused_publish_in_the_recovery_stays_queued_and_is_retried_onc
     assert second.republished == 1 and [t for t, *_ in h.producer.sent] == ["pipeline.classify"]
     third = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
     assert third.republished == 0 and len(h.producer.sent) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.COMPLETED, ProgressStatus.SKIPPED])
+async def test_a_missing_stage_that_finishes_after_the_snapshot_is_not_requeued(fleet, status: ProgressStatus) -> None:
+    """The snapshot shows entities missing; the interrupted hand-off's own job creates and finishes it before the
+    recovery's claim, which therefore must not queue it again."""
+    registry = _classify_and_entities()
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+    h.complete("classify")
+    real = h.states.get_many
+    calls = 0
+
+    async def stale_snapshot(*a: str, **k: str) -> dict[str, StageState]:
+        nonlocal calls
+        snap = await real(*a, **k)
+        calls += 1
+        if calls == 1:
+            job = StageJob.for_view(_view(), stage="entities", stage_version=1, priority=Priority.BULK, trigger="t", force=False)
+            h.states.put(StageState.from_job(job, status, h.clock()))
+        return snap
+
+    h.states.get_many = stale_snapshot  # type: ignore[method-assign,assignment]
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"}) == []
+    assert h.status("entities") is status and h.producer.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_stage_behind_a_missing_prerequisite_waits_for_it(fleet) -> None:
+    """A stage that requires classify is not dispatched while classify is deferred: the last prerequisite to finish
+    dispatches it."""
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_stage("classify", "embed", headline=HeadlineField.EXTRACTION))
+    registry.register(_stage("after-classify", "classify"))
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "NOT_STARTED"}) == []
+    assert h.status("classify") is None and h.status("after-classify") is None
+    assert h.producer.sent == []

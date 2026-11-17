@@ -6595,3 +6595,77 @@ class TestRejectedTooLargeCounter:
         counter.assert_called_once_with(400)
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["reason"] == user_errors.FILE_TOO_LARGE
+
+
+class TestMembershipRepairAfterAGiveUp:
+    """A same-bytes update handed back until the consumer's backstop never applied its membership sync."""
+
+    RECORD = {
+        "_key": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "connectorId": "conn-1",
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+
+    @classmethod
+    def _handler(cls) -> RecordEventHandler:
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=dict(cls.RECORD))
+        handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        handler.producer = MagicMock()
+        handler.producer.send_event = AsyncMock(return_value=True)
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_it_marks_a_reason_marks_the_scope_stale_and_queues_a_sync(self) -> None:
+        handler = self._handler()
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock) as stale:
+            await handler.on_message_abandoned(message, reason="handed back 11 times", attempts=11)
+
+        handler.event_processor.graph_provider.update_node.assert_awaited_once_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        )
+        stale.assert_awaited_once()
+        assert stale.await_args.args[2] == "vr1"
+        handler.producer.send_event.assert_awaited_once()
+        sent = handler.producer.send_event.await_args.kwargs
+        assert sent["event_type"] == EventTypes.SYNC_VECTOR_MEMBERSHIP.value
+        assert sent["payload"]["virtualRecordId"] == "vr1" and sent["payload"]["pendingReasonRecordId"] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_the_queued_sync_applies_the_membership_and_clears_the_reason(self) -> None:
+        handler = self._handler()
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value={**self.RECORD, "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        )
+        payload = {"virtualRecordId": "vr1", "orgId": "org-1", "pendingReasonRecordId": "r1"}
+
+        await _collect_events(handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, payload)
+
+        handler.event_processor.sync_vector_membership.assert_awaited_once_with("vr1")
+        handler.event_processor.graph_provider.update_node.assert_awaited_once_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": None}
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_reason_is_not_cleared(self) -> None:
+        handler = self._handler()
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value={**self.RECORD, "reason": "other"})
+
+        await _collect_events(
+            handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, {"virtualRecordId": "vr1", "pendingReasonRecordId": "r1"}
+        )
+
+        handler.event_processor.graph_provider.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_reindex_of_a_completed_record_queues_nothing(self) -> None:
+        handler = self._handler()
+        message = StreamMessage(eventType=EventTypes.REINDEX_RECORD.value, payload={"recordId": "r1"})
+
+        await handler.on_message_abandoned(message, reason="x", attempts=3)
+
+        handler.producer.send_event.assert_not_awaited()
+        handler.event_processor.graph_provider.update_node.assert_not_awaited()

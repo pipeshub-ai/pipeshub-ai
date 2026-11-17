@@ -29,7 +29,7 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
-from app.core.org_context import current_org_id
+from app.core.org_context import current_org_id, for_org
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
@@ -127,6 +127,7 @@ from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
+from app.services.vector_db.membership import mark_scope_stale
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
@@ -223,6 +224,10 @@ _PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 
 
 _DISABLED_TYPES_TTL_SECONDS = 60.0
+
+
+# What a record shows while the membership sync of its update waits for its repair.
+MEMBERSHIP_SYNC_PENDING = "Access scope update pending: the vector store could not be updated; a background sync is queued"
 
 
 class RecordEventHandler(BaseEventService):
@@ -474,6 +479,15 @@ class RecordEventHandler(BaseEventService):
             if current_status in self._IN_FLIGHT_STATUSES:
                 claim = await self._claim_if_orphaned(record_id)
             orphaned = claim is not None
+            if (
+                message.eventType == EventTypes.UPDATE_RECORD.value
+                and current_status == ProgressStatus.COMPLETED.value
+                and not is_parse_now(message.eventType, payload)
+            ):
+                # An update of an indexed record that was handed back until the backstop (its same-bytes skip could not
+                # finish) never reached the membership sync, and nothing else will: the points keep the old container
+                # arrays, so a grant through a group or app change stays invisible to a search that selects by them.
+                await self._repair_membership_after_give_up(record_id, record, reason)
             if not orphaned and (current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES):
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
@@ -554,6 +568,67 @@ class RecordEventHandler(BaseEventService):
         finally:
             if claim is not None and self.record_leases is not None:
                 await self.record_leases.release(record_id, claim)
+
+    async def _clear_membership_pending(self, record_id: object) -> None:
+        """The repair ran: take the pending reason off the record that shows it. Best effort; only that reason."""
+        if not isinstance(record_id, str) or not record_id:
+            return
+        try:
+            graph = self.event_processor.graph_provider
+            record = await graph.get_document(record_id, CollectionNames.RECORDS.value)
+            if record and record.get("reason") == MEMBERSHIP_SYNC_PENDING:
+                await graph.update_node(record_id, CollectionNames.RECORDS.value, {"reason": None})
+        except Exception as exc:
+            self.logger.warning("Could not clear the pending membership reason of %s: %s", record_id, type(exc).__name__)
+
+    async def _repair_membership_after_give_up(self, record_id: str, record: dict, reason: str) -> None:
+        """Make a membership sync that was given up on visible and queue its repair. Never raises.
+
+        The record stays COMPLETED. It gets a reason naming what is pending, its points' scope stamps are marked
+        stale (a stale stamp is never trusted over the graph), and one ``syncVectorMembership`` event is published
+        for its vrid: the same repair the connector path uses, idempotent, and given up on by the consumer like any
+        event if it fails again (this runs once per abandoned message, so it cannot loop)."""
+        vrid = record.get("virtualRecordId")
+        org_id = record.get("orgId")
+        if not vrid or not org_id:
+            return
+        self.logger.error(
+            "Record %s: the vector membership of its update was not applied (%s); marking it stale and queueing a sync",
+            record_id, reason,
+        )
+        graph = self.event_processor.graph_provider
+        try:
+            await graph.update_node(record_id, CollectionNames.RECORDS.value, {"reason": MEMBERSHIP_SYNC_PENDING})
+        except Exception as exc:
+            self.logger.error("Could not record the pending membership sync of %s: %s", record_id, type(exc).__name__)
+        try:
+            pipeline = self.event_processor.processor.indexing_pipeline
+            with for_org(str(org_id), job="same-bytes-give-up"):
+                await mark_scope_stale(
+                    pipeline.vector_db_service, pipeline.collection_locator, str(vrid), self.logger
+                )
+        except Exception as exc:
+            self.logger.error("Could not mark the scope of %s stale: %s", vrid, type(exc).__name__)
+        if self.producer is None:
+            return
+        try:
+            await run_on_loop(
+                self._producer_loop,
+                self.producer.send_event(
+                    topic=Topic.RECORD_EVENTS.value,
+                    event_type=EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+                    payload={
+                        "virtualRecordId": str(vrid),
+                        "orgId": str(org_id),
+                        "connectorId": record.get("connectorId"),
+                        # Which record shows the pending reason, for the sync to clear once it has run.
+                        "pendingReasonRecordId": record_id,
+                    },
+                    key=str(vrid),
+                ),
+            )
+        except Exception as exc:
+            self.logger.error("Could not queue the membership sync of %s: %s", vrid, type(exc).__name__)
 
     async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
         """End a record stale recovery has given up on, and move its queued copies on.
@@ -1881,6 +1956,7 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = payload.get("virtualRecordId")
                 if virtual_record_id:
                     await self.event_processor.sync_vector_membership(virtual_record_id)
+                    await self._clear_membership_pending(payload.get("pendingReasonRecordId"))
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id="sync_vector_membership"),
