@@ -168,8 +168,11 @@ async def one_trial(svc, col, fresh_col, dim, rng, monkeypatch, *, unmovable: bo
     info = {"straddle": straddle, "failed": calls["failed"], "reads": calls["n"], "broken": broken, "points": len(after)}
     tag = f"{info}"
     rows_fresh, rows_after = listed(fresh), listed(after)
-    def near(v, w) -> float:
-        return max((abs(a - b) for a, b in zip(v, w)), default=1.0)
+    def near(v: list[float] | tuple[float, ...], w: list[float]) -> float:
+        """Distance by direction (1 - cosine): a store that normalises vectors (Qdrant, cosine) keeps the direction, not the length."""
+        dot = sum(a * b for a, b in zip(v, w, strict=False))
+        norms = (sum(a * a for a in v) ** 0.5) * (sum(b * b for b in w) ** 0.5)
+        return 1.0 - dot / norms if norms else 2.0
 
     # moved: the stored vector is V1's (the legacy embed), not V2's (this run's); float32 stores round, so compare by distance
     moved = {pid for pid, (t, m, v) in after.items() if v and near(v, vec(t, dim, "V1")) < near(v, vec(t, dim, "V2"))}
