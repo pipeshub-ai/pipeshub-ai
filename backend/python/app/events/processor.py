@@ -424,10 +424,6 @@ class Processor:
             doc = await self.docling_client.parse_pdf_batched(record_name, pdf_binary)
             # Nothing reads the file again; the caller drops its copy on PARSING_COMPLETE.
             pdf_binary = None
-            if doc is None:
-                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
-                return
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 

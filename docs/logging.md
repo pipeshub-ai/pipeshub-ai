@@ -377,6 +377,12 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
   delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
   (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
 
+## Indexing
+
+| Event | Level | When |
+| --- | --- | --- |
+| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. A failed request (a 500, a 429 without `Retry-After`, a connection lost mid-answer) has no `reason`: `error_class` says why, and `status` adds Docling's HTTP status when it answered with one (a lost connection has none) |
+
 ## Agent loop events (Python)
 
 One chat turn is reconstructable from these lines; each carries the bound `org_id`, `user_id`, `conversation_id`,

@@ -95,6 +95,7 @@ from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.docling.client import (
     MAX_PAGES_ENV,
+    DoclingParseError,
     DoclingUnavailableError,
     docling_max_pages,
     docling_takes,
@@ -129,6 +130,7 @@ from app.services.vector_db.strategy import (
     resolve_write_collection_name,
 )
 from app.utils.cpu_offload import offload_if_large
+from app.utils.error_class import log_failure
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -528,13 +530,15 @@ class EventProcessor:
                         if event.event == IndexingEvent.PARSING_COMPLETE:
                             pdf_binary = inspected = None
                         yield event
-            except DoclingUnavailableError as exc:
+            except (DoclingUnavailableError, DoclingParseError) as exc:
                 # Only before Docling produced anything: after PARSING_COMPLETE a
                 # second parse would index the record twice.
                 if yielded:
                     raise
-                self.logger.warning(
-                    "⚠️ Docling is unavailable (%s); using the PdfPlumber+OpenCV processor", exc
+                # Swallowed (the PdfPlumber path runs next), so logged here once, without text.
+                log_failure(
+                    self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
+                    status=exc.status_code, include_error_text=False,
                 )
             else:
                 if not docling_failed:
