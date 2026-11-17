@@ -736,3 +736,60 @@ async def test_redrive_unchanged_does_not_publish_a_classify_that_does_not_apply
 
     assert h.status("classify") is ProgressStatus.SKIPPED and h.status("entities") is ProgressStatus.SKIPPED
     assert h.producer.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_stop_between_the_classify_dispatch_and_the_entities_claim_is_healed_once(fleet) -> None:
+    """The hand-off claims successors one by one. The process stopped after classify was dispatched and before entities
+    was claimed: a same-bytes update dispatches entities exactly once, and never claims classify again."""
+    registry = _classify_and_entities()
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    real_claim = h.coordinator._claim
+    claims: list[str] = []
+
+    async def stop_before_entities(job: StageJob, only_from: frozenset[ProgressStatus] | None = None) -> ProgressStatus | None:
+        if job.stage == "entities":
+            raise RuntimeError("process stopped")
+        claims.append(job.stage)
+        return await real_claim(job, only_from)
+
+    h.coordinator._claim = stop_before_entities  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="process stopped"):
+        await h.coordinator.on_external_done("embed", _view(), priority=Priority.BULK, trigger="index")
+    assert claims == ["classify"] and h.status("entities") is None
+    h.states.put(h.states.states[stage_state_key(VRID, REV, "classify")].model_copy(update={"status": ProgressStatus.COMPLETED}))
+    h.producer.sent.clear()
+
+    for _ in range(3):  # idempotent: later same-bytes updates find nothing more to do
+        await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"})
+
+    assert [t for t, *_ in h.producer.sent] == ["pipeline.entities"]
+    assert h.status("classify") is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_stage_that_finishes_after_the_snapshot_is_not_requeued(fleet) -> None:
+    """The snapshot says PAUSED; the worker finishes the stage before the claim; the claim refuses it."""
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    key = stage_state_key(VRID, REV, "classify")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(_view(), stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.PAUSED, h.clock(),
+        )
+    )
+    real = h.states.get_many
+
+    async def stale_snapshot(*a: str, **k: str) -> dict[str, StageState]:
+        snap = await real(*a, **k)
+        h.states.put(h.states.states[key].model_copy(update={"status": ProgressStatus.COMPLETED}))
+        return snap
+
+    h.states.get_many = stale_snapshot  # type: ignore[method-assign,assignment]
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == []
+    assert h.status("classify") is ProgressStatus.COMPLETED
+    assert h.producer.sent == [] and h.headlines.writes == []
