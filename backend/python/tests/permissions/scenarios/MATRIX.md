@@ -31,7 +31,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `gitlab_personal` | container | container | the whole app | `app/connectors/sources/gitlab_personal/connector.py:107` | writer read |
 | `notion` | container | container | workspace and team groups | `app/connectors/sources/notion/connector.py:2325` | writer read |
 | `notion_personal` | container | container | the whole app | `app/connectors/sources/notion_personal/connector.py:55` | writer read |
-| `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:57` | writer read |
+| `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:65` | writer read |
 | `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py:467` | writer read |
 | `local_repo` | container | container | the whole app | `app/connectors/sources/local_repo/connector.py:38` | writer read |
 | `local_folder` | container | container | the whole app | `app/connectors/sources/local_folder/connector.py:347` | writer read |
