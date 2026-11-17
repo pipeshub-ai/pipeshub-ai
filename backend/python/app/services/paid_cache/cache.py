@@ -50,8 +50,10 @@ MANIFEST_LOCK_POLL_S = 0.05
 #: How long a delivery of a refresh event waits for another delivery that is purging, and how often it looks.
 REFRESH_PURGE_WAIT_S = 20.0
 REFRESH_PURGE_POLL_S = 0.2
-#: The counter of hand-backs stops counting here (the handler's own limit is lower).
-MAX_REFRESH_HANDBACK_COUNT = 1000
+#: The longest a purge is expected to take, and the hard deadline of its lease: twice that. Past it the holder stops
+#: renewing and gives the lease up (it is logged), so a duplicate purges instead of waiting for a holder that never ends.
+REFRESH_PURGE_EXPECTED_S = 300.0
+REFRESH_PURGE_MAX_AGE_S = 2 * REFRESH_PURGE_EXPECTED_S
 #: Kept for callers: the holder's lease, not this, bounds the wait.
 DEFAULT_WAIT_S = MAX_WAIT_S
 
@@ -289,22 +291,6 @@ class PaidResultCache:
             return "unclaimed"
         return token
 
-    async def refresh_handback_count(self, org_id: str, record_id: str, event_id: str) -> int:
-        """How many times this refresh event has been handed back for another delivery's purge, counting this one.
-
-        Counted in the lock backend (one ``SET NX`` per hand-back), so the count survives redeliveries and replicas
-        and a holder that keeps renewing cannot hold duplicates back for ever.
-        """
-        name = refresh_name(org_id, record_id, event_id)
-        try:
-            backend = await self._backend()
-            for n in range(1, MAX_REFRESH_HANDBACK_COUNT + 2):
-                if await backend.acquire(f"{name}:handback{n}", 3600 * 1000) is not None:
-                    return n
-        except Exception:
-            self.logger.debug("Paid-result refresh hand-back count unavailable", exc_info=True)
-        return 1
-
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:
         """Yields True when this delivery of a refresh event must purge the record's results, False when it may reuse.
@@ -328,7 +314,7 @@ class PaidResultCache:
                     break
                 token = await backend.acquire(name + ":lease", LOCK_TTL_MS)
                 if token is not None:
-                    held = _Held(backend, name + ":lease", token, self.logger)  # type: ignore[arg-type]
+                    held = _Held(backend, name + ":lease", token, self.logger, max_age_s=REFRESH_PURGE_MAX_AGE_S)  # type: ignore[arg-type]
                     held.start_heartbeat()
                     if await backend.is_marked(name):      # a holder marked between the check and the acquire
                         must_purge = False
@@ -641,12 +627,17 @@ class PaidResultCache:
 
 
 class _Held:
-    def __init__(self, backend: LockBackend, name: str, token: str | None, logger: logging.Logger) -> None:
+    def __init__(
+        self, backend: LockBackend, name: str, token: str | None, logger: logging.Logger, *, max_age_s: float | None = None,
+    ) -> None:
         self._backend = backend
         self._name = name
         self.token = token
         self._logger = logger
         self._heartbeat: asyncio.Task[None] | None = None
+        #: The lease is renewed for at most this long in total; None: for as long as its holder runs.
+        self._max_age_s = max_age_s
+        self._since = time.monotonic()
         #: Set when a renewal found the lock gone or taken.
         self.lost = False
 
@@ -657,6 +648,17 @@ class _Held:
     async def _renew_loop(self) -> None:
         while True:
             await asyncio.sleep(LOCK_TTL_MS / 3000)
+            if self._max_age_s is not None and time.monotonic() - self._since > self._max_age_s:
+                # A holder past its hard deadline stops renewing and gives the lease up, so a duplicate can take over.
+                self._logger.warning(
+                    "The lease %s was held for more than %.0f s; it is no longer renewed and has been given up", self._name,
+                    self._max_age_s,
+                )
+                self.lost = True
+                with contextlib.suppress(Exception):
+                    if self.token is not None:
+                        await self._backend.release(self._name, self.token)
+                return
             try:
                 if self.token is not None and not await self._backend.renew(self._name, self.token, LOCK_TTL_MS):
                     self.lost = True
@@ -735,9 +737,6 @@ class NullPaidResultCache:
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
-
-    async def refresh_handback_count(self, org_id: str, record_id: str, event_id: str) -> int:
-        return 1
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:

@@ -230,8 +230,6 @@ _DISABLED_TYPES_TTL_SECONDS = 60.0
 
 #: How long the broker holds a refresh event handed back because another delivery is purging.
 REFRESH_HANDBACK_DELAY_S = 30.0
-#: The most a refresh is handed back for another delivery's purge (20 x 30 s = 10 min), then it fails with a reason.
-MAX_REFRESH_HANDBACKS = 20
 
 
 class RecordEventHandler(BaseEventService):
@@ -2356,13 +2354,6 @@ class RecordEventHandler(BaseEventService):
                         # Nothing has been written for this delivery: the bookkeeping below skips it, as for a
                         # record held for its connector's delete (no FAILED, no queued duplicate, no status rewrite).
                         held_for_refresh = True
-                        waits = await paid_cache.refresh_handback_count(refresh_org, record_id, str(event_id))
-                        if waits > MAX_REFRESH_HANDBACKS:
-                            held_for_refresh = False
-                            raise RuntimeError(
-                                f"the purge of refresh {event_id} by another delivery is still running after "
-                                f"{MAX_REFRESH_HANDBACKS} hand-backs ({MAX_REFRESH_HANDBACKS * REFRESH_HANDBACK_DELAY_S:.0f} s)"
-                            ) from exc
                         # Queue time, not a failure: handed back after a delay without counting an attempt.
                         raise RefreshPurgeHeld(str(exc), delay_s=REFRESH_HANDBACK_DELAY_S) from exc
                     # A redelivery of the same event (must_purge False) still refreshes: it reuses only what its first

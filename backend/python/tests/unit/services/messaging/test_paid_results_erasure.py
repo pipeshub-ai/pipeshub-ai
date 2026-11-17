@@ -425,17 +425,70 @@ async def test_a_handed_back_refresh_on_its_last_counted_delivery_does_not_fail_
     updates.assert_not_awaited()                                                         # no status rewrite at all
 
 
-async def test_a_refresh_handed_back_for_ever_by_a_live_holder_fails_after_the_bound_with_a_reason(
+async def test_a_duplicate_is_handed_back_for_as_long_as_the_holder_lives_and_never_fails_the_record(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services.messaging.kafka.handlers import record as record_module
+    """Past what used to be the 20th hand-back, on a delivery the consumer marks final: no FAILED, no triggered duplicate."""
     from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 
     handler = await _held_handler(store, monkeypatch)
-    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-f", "is_final_failure": False}
+    updates = handler.event_processor.graph_provider.update_node
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-f", "is_final_failure": True}
 
-    for _ in range(record_module.MAX_REFRESH_HANDBACKS):
-        with pytest.raises(RefreshPurgeHeld):
+    for _ in range(25):
+        with pytest.raises(RefreshPurgeHeld):                                          # never the failure path
             await _events(handler, EventTypes.REINDEX_RECORD.value, dict(payload))
-    with pytest.raises(RuntimeError, match="still running after"):
-        await _events(handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+
+    assert not [c for c in updates.await_args_list if "FAILED" in str(c)]
+    handler._trigger_next_queued_duplicate.assert_not_awaited()
+    updates.assert_not_awaited()
+
+
+async def test_a_holder_that_renews_for_ever_is_cut_off_at_its_deadline_and_its_duplicate_then_purges(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import asyncio
+
+    from app.services.paid_cache import cache as cache_module
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+
+    monkeypatch.setattr(cache_module, "LOCK_TTL_MS", 150)                  # renewals every 50 ms
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_MAX_AGE_S", 0.3)      # the holder's hard deadline
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.02)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.005)
+    _seed(store)
+    holder_handler, duplicate_handler = _handler(), _handler()
+    cache = access.paid_cache_for(MagicMock())
+    never = asyncio.Event()
+    real_purge = cache.purge_record
+    purges: list[str] = []
+
+    async def purge(org: str, rec: str) -> None:
+        purges.append("holder" if not purges else "duplicate")
+        if len(purges) == 1:
+            await never.wait()                                              # the holder purges and renews for ever
+        await real_purge(org, rec)
+
+    cache.purge_record = purge  # type: ignore[method-assign]
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-9"}
+
+    holder = asyncio.ensure_future(_events(holder_handler, EventTypes.REINDEX_RECORD.value, dict(payload)))
+    await asyncio.sleep(0.05)
+    with pytest.raises(RefreshPurgeHeld):                                   # inside the deadline the duplicate waits
+        await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+
+    with caplog.at_level("WARNING"):
+        for _ in range(100):                                               # delivered again until the holder is cut off
+            try:
+                events = await _events(duplicate_handler, EventTypes.REINDEX_RECORD.value, dict(payload))
+                break
+            except RefreshPurgeHeld:
+                await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("the duplicate never ran")
+    assert purges == ["holder", "duplicate"]                                # the duplicate purged and completed
+    assert events is not None
+    assert any("no longer renewed" in r.getMessage() for r in caplog.records)   # a visible reason
+    never.set()
+    holder.cancel()
+    await asyncio.gather(holder, return_exceptions=True)
