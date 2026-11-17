@@ -235,4 +235,24 @@ async def test_the_revision_is_asked_again_before_each_delete_batch(db, monkeypa
 
     result = await _sweep(db, set(), may_delete=may_delete)
     assert asked["n"] == 3 and len(_ids(db)) == 10, "two batches of 5 went, the third was refused"
-    assert result.stray_blocks == 20
+    assert result.stray_blocks == 10, "the blocks removed, not the blocks found"
+
+
+async def test_a_refused_pass_publishes_no_resume_point_and_the_next_pass_still_finds_its_strays(db, monkeypatch) -> None:
+    """A pass cut by its bound and then refused must not leave a cursor past the strays it listed and did not delete."""
+    monkeypatch.setattr(stray_sweep, "_PAGE_SIZE", 10)
+    monkeypatch.setattr(stray_sweep, "_DELETE_BATCH", 5)
+    await db.upsert_points(COLL, [_point(f"s-{i:02d}", f"stray-{i:02d}") for i in range(30)])
+
+    async def never() -> bool:
+        return False
+
+    refused = await _sweep(db, set(), max_points=20, may_delete=never)
+    assert refused.truncated and refused.next_offset is None and refused.stray_blocks == 0 and len(_ids(db)) == 30
+    resume = refused.next_offset
+    for _ in range(5):
+        result = await _sweep(db, set(), max_points=20, resume=resume)
+        resume = result.next_offset
+        if resume is None:
+            break
+    assert _ids(db) == set(), "the first window's strays were not skipped"

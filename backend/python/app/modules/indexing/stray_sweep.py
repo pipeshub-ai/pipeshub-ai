@@ -115,20 +115,29 @@ async def sweep_stray_points(
             break
 
     ordered = sorted(strays)
+    removed = 0
+    refused = False
     for start in range(0, len(ordered), _DELETE_BATCH):
         if may_delete is not None and not await may_delete():
+            refused = True
             break
         batch: list[str | int | float | bool] = [*ordered[start:start + _DELETE_BATCH]]
         must: dict[str, FilterValue] = {"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": batch}
         delete_filter = await vector_db.filter_collection(must=must)
         await vector_db.delete_points(collection_name, delete_filter)
+        removed += len(batch)
+    if refused:
+        # Strays that were listed and not deleted sit before any resume point: the next pass starts over.
+        stopped_at = None
+        truncated = True
     if strays or truncated:
         _logger.info(
-            "stray sweep of %s: scanned %d points, removed the points of %d stale blocks%s",
-            virtual_record_id, scanned, len(strays),
-            (" (stopped at its bound; the next pass resumes there)" if stopped_at is not None
+            "stray sweep of %s: scanned %d points, removed the points of %d of %d stale blocks%s",
+            virtual_record_id, scanned, removed, len(strays),
+            (" (refused: the record is on another revision or could not be read; the next pass starts over)" if refused
+             else " (stopped at its bound; the next pass resumes there)" if stopped_at is not None
              else " (the store could not list further; points past that depth were not checked)") if truncated else "",
         )
     if stopped_at is not None:
         stopped_at = vector_db.scroll_offset_after_delete(stopped_at, stray_points)
-    return SweepResult(scanned=scanned, stray_blocks=len(strays), truncated=truncated, next_offset=stopped_at)
+    return SweepResult(scanned=scanned, stray_blocks=removed, truncated=truncated, next_offset=stopped_at)
