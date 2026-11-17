@@ -133,6 +133,19 @@ def _positive_int(env: Mapping[str, str], key: str) -> int | None:
     return value
 
 
+# A machine size above this is a typo: the terms are float arithmetic, and a
+# larger int would overflow it.
+_MAX_HOST_VALUE = 2**53
+
+
+def _host_int(env: Mapping[str, str], key: str) -> int | None:
+    value = _positive_int(env, key)
+    if value is not None and value > _MAX_HOST_VALUE:
+        _warn_once(key, str(value), "Ignoring %s: %d digits is not a machine size", key, len(str(value)))
+        return None
+    return value
+
+
 def _float_in(env: Mapping[str, str], key: str, default: float, low: float, high: float) -> float:
     raw = (env.get(key) or "").strip()
     if not raw:
@@ -198,8 +211,8 @@ class CapacitySettings:
         if max_per_org is not None and max_per_org <= 0:
             max_per_org = 0
         min_total = _positive_int(env, ENV_MIN_TOTAL) or DEFAULT_MIN_TOTAL
-        host_memory = _positive_int(env, ENV_HOST_MEMORY_BYTES)
-        host_cpu = _positive_int(env, ENV_HOST_CPU_MILLIS)
+        host_memory = _host_int(env, ENV_HOST_MEMORY_BYTES)
+        host_cpu = _host_int(env, ENV_HOST_CPU_MILLIS)
         if (host_memory is None) != (host_cpu is None):
             _warn_once(
                 "host", f"{host_memory}/{host_cpu}",
@@ -221,7 +234,7 @@ class CapacitySettings:
             cpu_factor=_float_in(env, ENV_CPU_FACTOR, DEFAULT_CPU_FACTOR, 0.1, 2.0),
             host_memory_bytes=host_memory,
             host_cpu_millis=host_cpu,
-            host_pid_limit=_positive_int(env, ENV_HOST_PID_LIMIT),
+            host_pid_limit=_host_int(env, ENV_HOST_PID_LIMIT),
             divisor=divisor or 1,
         )
 
