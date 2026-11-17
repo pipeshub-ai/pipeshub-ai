@@ -342,6 +342,14 @@ def _owned(ident: str, created: float, instance: str = "stack-a") -> dict[str, A
             "Labels": {MANAGED_LABEL: "true", INSTANCE_LABEL: instance}}
 
 
+# The reaper inspects an old container for its start; these started when created (time 0).
+_STARTED_AT_CREATION = {"State": {"StartedAt": "1970-01-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"}}
+
+
+def _is_inspect(path: str) -> bool:
+    return path.split("?")[0].count("/") == 3 and path.split("?")[0].endswith("/json")
+
+
 class TestReaper:
     async def test_off_reaps_nothing(self, policy: DockerApiPolicy) -> None:
         async def responses(method: str, path: str) -> tuple[int, Any]:
@@ -365,6 +373,8 @@ class TestReaper:
         deletes: list[str] = []
 
         async def responses(method: str, path: str) -> tuple[int, Any]:
+            if method == "GET" and _is_inspect(path):
+                return 200, _STARTED_AT_CREATION
             if method == "GET":
                 return 200, listed if "instance" in path else []
             deletes.append(path)
@@ -381,6 +391,8 @@ class TestReaper:
         deletes: list[str] = []
 
         async def responses(method: str, path: str) -> tuple[int, Any]:
+            if method == "GET" and _is_inspect(path):
+                return 200, _STARTED_AT_CREATION
             if method == "GET":
                 return 200, [] if "instance" in path else [legacy, "junk"]
             deletes.append(path)
