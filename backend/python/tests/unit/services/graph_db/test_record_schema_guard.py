@@ -327,6 +327,138 @@ class TestTheClientHook:
         assert client.aborted == []
 
 
+class _Response:
+    def __init__(self, status: int, body: Any) -> None:  # noqa: ANN401
+        self.status, self.body = status, body
+
+    async def __aenter__(self) -> "_Response":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def json(self) -> Any:  # noqa: ANN401
+        return self.body
+
+    async def text(self) -> str:
+        return str(self.body)
+
+
+class _BatchSession:
+    """A records collection whose validator refuses the documents named in ``refused`` until the schema is widened; every document that is
+    accepted is written (and counted), as ArangoDB does for an array body."""
+
+    def __init__(self, server: FakeServer, refused: set[str]) -> None:
+        self.server, self.refused = server, refused
+        self.posts: list[list[str]] = []
+        self.writes: dict[str, int] = {}
+
+    def post(self, url: str, json: list[dict[str, Any]], params: dict[str, str], headers: dict[str, str]) -> _Response:  # noqa: A002
+        self.posts.append([d["_key"] for d in json])
+        answers: list[dict[str, Any]] = []
+        for doc in json:
+            if doc["_key"] in self.refused and self.server.live != RECORD_SCHEMA_GENERATION:
+                answers.append({"error": True, "errorNum": 1620, "errorMessage": "Document does not match the record schema."})
+            elif params.get("overwrite") == "false" and doc["_key"] in self.writes:
+                answers.append({"error": True, "errorNum": 1210, "errorMessage": "unique constraint violated"})
+            else:
+                self.writes[doc["_key"]] = self.writes.get(doc["_key"], 0) + 1
+                answers.append({"_key": doc["_key"], "_rev": "1"})
+        return _Response(202, answers)
+
+
+class TestABatchOutsideATransaction:
+    """Items land one by one. After a refusal only the refused items are sent again: the others already landed."""
+
+    @pytest.mark.parametrize("kwargs", [{}, {"overwrite_mode": "replace"}, {"overwrite": False}])
+    async def test_only_the_refused_items_are_sent_again(self, kwargs: dict[str, Any]) -> None:
+        server = FakeServer(live=0)
+        client = _Client(server, [])
+        session = _BatchSession(server, {"b"})
+
+        async def get_session() -> _BatchSession:
+            return session
+
+        client._get_session = get_session  # type: ignore[method-assign]
+        result = await client.batch_insert_documents("records", [{"_key": "a"}, {"_key": "b"}, {"_key": "c"}], **kwargs)
+
+        assert session.posts == [["a", "b", "c"], ["b"]]
+        assert session.writes == {"a": 1, "b": 1, "c": 1}, "no document was written twice"
+        assert result["errors"] == 0
+
+    async def test_an_item_that_the_wide_schema_still_refuses_is_raised_once_without_a_whole_batch_resend(self) -> None:
+        server = FakeServer(live=0)
+        client = _Client(server, [])
+        session = _BatchSession(server, {"b"})
+
+        async def get_session() -> _BatchSession:
+            return session
+
+        client._get_session = get_session  # type: ignore[method-assign]
+        server.applies = False  # the widening does not apply: the item stays refused and the schema narrow
+        with pytest.raises(RecordSchemaNarrowError):
+            await client.batch_insert_documents("records", [{"_key": "a"}, {"_key": "b"}])
+
+        assert session.posts == [["a", "b"], ["b"]]
+        assert session.writes == {"a": 1}
+
+
+class _DeleteSession:
+    """The transaction endpoint: each DELETE answers with the next scripted status, or raises it when it is an exception."""
+
+    def __init__(self, answers: list[Any]) -> None:
+        self.answers, self.deletes = list(answers), 0
+
+    def delete(self, url: str) -> _Response:
+        self.deletes += 1
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return _Response(answer, "")
+
+
+class TestTheAbortAfterARefusal:
+    def _client(self, answers: list[Any]) -> tuple[ArangoHTTPClient, _DeleteSession]:
+        client = ArangoHTTPClient("http://x", "u", "p", "db", logging.getLogger("test"))
+        client.record_guard = _guard(FakeServer(live=0))
+        session = _DeleteSession(answers)
+
+        async def get_session() -> _DeleteSession:
+            return session
+
+        client._get_session = get_session  # type: ignore[method-assign]
+        return client, session
+
+    async def test_an_abort_the_server_never_answered_is_sent_again_by_the_owners_clean_up(self) -> None:
+        client, session = self._client([ConnectionError("reset"), 204])
+
+        await client._abort_record_schema_refused_transaction("t1")  # does not raise: the caller must get the narrow error
+        assert client.record_guard.is_aborted("t1") and not client.record_guard.is_abort_confirmed("t1")
+        with pytest.raises(RecordSchemaNarrowError):
+            client.record_guard.check_usable("t1")
+
+        await client.abort_transaction("t1")
+        assert session.deletes == 2 and client.record_guard.is_abort_confirmed("t1")
+
+    async def test_an_abort_the_server_refused_is_sent_again(self) -> None:
+        client, session = self._client([500, 200])
+
+        await client._abort_record_schema_refused_transaction("t1")
+        await client.abort_transaction("t1")
+        assert session.deletes == 2
+
+    async def test_a_confirmed_abort_is_not_sent_again_and_a_404_counts_as_confirmed(self) -> None:
+        client, session = self._client([204])
+        await client._abort_record_schema_refused_transaction("t1")
+        await client.abort_transaction("t1")
+        assert session.deletes == 1
+
+        client, session = self._client([404])
+        await client._abort_record_schema_refused_transaction("t2")
+        await client.abort_transaction("t2")
+        assert session.deletes == 1 and client.record_guard.is_abort_confirmed("t2")
+
+
 class TestTheErrorClass:
     def test_it_is_transient_to_the_retry_owners_and_classified_a_conflict(self) -> None:
         from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider

@@ -119,6 +119,7 @@ class RecordSchemaGuard:
         self._lock_factory = lock_factory
         self._narrowed = False
         self._aborted: OrderedDict[str, float] = OrderedDict()
+        self._abort_confirmed: OrderedDict[str, float] = OrderedDict()
         self._loop_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
         self._poller: asyncio.Task[None] | None = None
 
@@ -127,6 +128,15 @@ class RecordSchemaGuard:
         self._aborted[txn_id] = time.monotonic()
         while len(self._aborted) > 4096:
             self._aborted.popitem(last=False)
+
+    def mark_abort_confirmed(self, txn_id: str) -> None:
+        """The server answered that ``txn_id`` is gone. ``mark_aborted`` only refuses more writes and the commit."""
+        self._abort_confirmed[txn_id] = time.monotonic()
+        while len(self._abort_confirmed) > 4096:
+            self._abort_confirmed.popitem(last=False)
+
+    def is_abort_confirmed(self, txn_id: str | None) -> bool:
+        return txn_id is not None and txn_id in self._abort_confirmed
 
     def is_aborted(self, txn_id: str | None) -> bool:
         return txn_id is not None and txn_id in self._aborted

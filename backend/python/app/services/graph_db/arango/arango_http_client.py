@@ -140,6 +140,13 @@ def _logged(op: str):  # noqa: ANN202
 
 
 
+def _sends_per_item(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """Marks a batch write whose items land one by one: the guard never sends such a batch again whole (the items that landed would be
+    written twice, and a newer write by someone else undone). The write itself sends again only the items the records schema refused."""
+    write.sends_per_item = True  # type: ignore[attr-defined]
+    return write
+
+
 def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
     """A write that may touch ``records``: a refusal by the records schema (errorNum 1620) is handled here.
 
@@ -149,6 +156,7 @@ def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[...,
     statement wrote nothing, so the schema is widened and the statement is sent once more.
     """
     signature = inspect.signature(write)
+    per_item = bool(getattr(write, "sends_per_item", False))
 
     @functools.wraps(write)
     async def run(self: "ArangoHTTPClient", *args: object, **kwargs: object) -> _W:
@@ -178,6 +186,11 @@ def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[...,
             guard.note_narrow()
             mode = signature.bind(self, *args, **kwargs).arguments.get("overwrite_mode", "update")
             await guard.ensure_wide("1620")
+            if per_item:
+                # The write already sent the refused items again after the widening; a refusal that is left is the data's, or the schema is still narrow.
+                if await guard.is_wide():
+                    raise
+                raise RecordSchemaNarrowError("the records schema still refuses items of a batch after it was widened") from error
             if mode not in ("update", "replace"):
                 if await guard.is_wide():
                     raise
@@ -517,16 +530,18 @@ class ArangoHTTPClient:
         Args:
             txn_id: Transaction ID returned by begin_transaction
         """
-        if self.record_guard is not None and self.record_guard.is_aborted(txn_id):
-            return  # already aborted by a schema refusal
+        if self.record_guard is not None and self.record_guard.is_abort_confirmed(txn_id):
+            return  # the server confirmed the abort a schema refusal made; one that did not is sent again here
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
         session = await self._get_session()
         async with session.delete(url) as resp:
-            if resp.status not in [200, 204]:
+            if resp.status not in [200, 204, HttpStatusCode.NOT_FOUND.value]:  # 404: already gone
                 error = await resp.text()
                 raise Exception(f"Failed to abort transaction: {error}")
 
+            if self.record_guard is not None:
+                self.record_guard.mark_abort_confirmed(txn_id)
             self.logger.debug(f"Transaction aborted: {txn_id}")
 
 
@@ -534,14 +549,17 @@ class ArangoHTTPClient:
         """Abort ``txn_id`` and remember it, so a caller that catches the error and goes on can neither write nor commit."""
         guard = self.record_guard
         assert guard is not None
+        guard.mark_aborted(txn_id)  # first: whatever the server answers, nothing more is written or committed in it
         try:
             url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
             session = await self._get_session()
             async with session.delete(url) as resp:
-                if resp.status not in [200, 204]:
+                if resp.status in [200, 204, HttpStatusCode.NOT_FOUND.value]:
+                    guard.mark_abort_confirmed(txn_id)
+                else:
                     self.logger.warning("could not abort transaction %s: %s", txn_id, await resp.text())
-        finally:
-            guard.mark_aborted(txn_id)
+        except Exception as exc:  # the caller gets RecordSchemaNarrowError; its owner's clean-up sends the abort again
+            self.logger.warning("could not abort transaction %s: %s", txn_id, exc)
 
     def _widen_records_schema_in_background(self) -> None:
         """Widen the schema in a task of its own, never inside the transaction that was refused."""
@@ -859,6 +877,7 @@ class ArangoHTTPClient:
     # ==================== Batch Operations ====================
 
     @_record_schema_guarded
+    @_sends_per_item
     @_logged("batch_insert_documents")
     async def batch_insert_documents(
     self,
@@ -916,6 +935,17 @@ class ArangoHTTPClient:
                 raise Exception(f"Batch insert failed (status={resp.status}): {error}")
 
         result = await _send_until_landed(documents, txn_id, send)
+        guard = self.record_guard
+        if guard is not None and not txn_id and isinstance(result, list):
+            # Items land one by one: the ones the records schema refused did not, the others did. Widen, then send only the refused ones.
+            refused = [i for i, answer in enumerate(result) if is_record_schema_error(str(answer)) and isinstance(answer, dict) and answer.get("error")]
+            if refused:
+                guard.note_narrow()
+                await guard.ensure_wide("1620")
+                again = await _send_until_landed([documents[i] for i in refused], txn_id, send)
+                if isinstance(again, list) and len(again) == len(refused):
+                    for i, answer in zip(refused, again):
+                        result[i] = answer
 
         # Check for errors in response
         self._check_response_for_errors(result, "Batch insert")
