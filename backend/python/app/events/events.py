@@ -336,15 +336,16 @@ class EventProcessor:
         except Exception as error:  # diagnostic only
             self.logger.warning("Could not record the page count of %s: %s", record_id, error)
 
-    async def _persist_parsing_completed(self, record_doc: dict[str, Any], pages: object) -> None:
+    async def _persist_parsing_completed(self, record_doc: dict[str, Any], pages: object, content_rev: str | None = None) -> None:
         """``parsingStatus=COMPLETED``, with the page count the parsing service reported in the same conditional write
         while the record is still on this revision and attempt. When nothing matches, the plain status write runs, as
-        before, without a count."""
+        before, without a count. ``content_rev`` is the revision of the bytes that were parsed, never the one of the record read
+        afterwards: a record that moved to another revision while the service parsed matches nothing."""
         fields = {"parsingStatus": ProgressStatus.COMPLETED.value}
         count = page_count_of(pages)
         record_id = _record_key(record_doc)
-        if count is not None and record_id and record_doc.get("contentRev") is not None:
-            match: dict[str, Any] = {"contentRev": record_doc["contentRev"]}
+        if count is not None and record_id and content_rev is not None:
+            match: dict[str, Any] = {"contentRev": content_rev}
             if not store_only_active():
                 match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
             shaped = shape_status_write({**fields, PAGE_COUNT: count})
@@ -540,6 +541,7 @@ class EventProcessor:
         *,
         is_code: bool = False,
         file_path: str | None = None,
+        content_rev: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """New orchestration path: parse → index → enrich via standalone services.
 
@@ -606,7 +608,7 @@ class EventProcessor:
         if record_doc is None:
             raise RecordDeletedError(record_id)
 
-        await self._persist_parsing_completed(record_doc, (parse_result.metadata or {}).get("page_count"))
+        await self._persist_parsing_completed(record_doc, (parse_result.metadata or {}).get("page_count"), content_rev)
 
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -2117,6 +2119,7 @@ class EventProcessor:
                     file_content=content_bytes,
                     is_code=is_code,
                     file_path=event_data.get("filePath"),
+                    content_rev=content_rev,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None

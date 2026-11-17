@@ -317,7 +317,7 @@ class TestPageCountWrites:
         processor = _processor(update_node_if_unchanged=AsyncMock(return_value=True))
         record = {"_key": "r1", "contentRev": "rev-a", "_rev": "_r1"}
 
-        await processor._persist_parsing_completed(record, 30)
+        await processor._persist_parsing_completed(record, 30, "rev-a")
 
         call = processor.graph_provider.update_node_if_unchanged.await_args
         assert call.args[2] == {"parsingStatus": "COMPLETED", "pageCount": 30}
@@ -329,15 +329,33 @@ class TestPageCountWrites:
         processor = _processor(update_node_if_unchanged=AsyncMock(return_value=False))
         record = {"_key": "r1", "contentRev": "rev-a"}
 
-        await processor._persist_parsing_completed(record, 30)
+        await processor._persist_parsing_completed(record, 30, "rev-a")
 
         processor.graph_provider.update_node.assert_awaited_once()
+        assert processor.graph_provider.update_node.await_args.args[2] == {"parsingStatus": "COMPLETED"}
+
+    async def test_the_count_is_tied_to_the_revision_that_was_parsed_not_the_one_read_afterwards(self) -> None:
+        """Revision B replaced A while the service parsed A: the record read afterwards is on B, and A's count must not be written to it."""
+        processor = _processor(update_node_if_unchanged=AsyncMock(return_value=False))
+        record = {"_key": "r1", "contentRev": "rev-b"}
+
+        await processor._persist_parsing_completed(record, 30, "rev-a")
+
+        assert processor.graph_provider.update_node_if_unchanged.await_args.args[4]["contentRev"] == "rev-a"
+        assert processor.graph_provider.update_node.await_args.args[2] == {"parsingStatus": "COMPLETED"}
+
+    async def test_a_count_with_no_revision_to_tie_it_to_is_not_written(self) -> None:
+        processor = _processor()
+
+        await processor._persist_parsing_completed({"_key": "r1", "contentRev": "rev-a"}, 30)
+
+        processor.graph_provider.update_node_if_unchanged.assert_not_awaited()
         assert processor.graph_provider.update_node.await_args.args[2] == {"parsingStatus": "COMPLETED"}
 
     async def test_a_parse_without_a_count_is_the_unchanged_status_write(self) -> None:
         processor = _processor()
 
-        await processor._persist_parsing_completed({"_key": "r1", "contentRev": "rev-a"}, None)
+        await processor._persist_parsing_completed({"_key": "r1", "contentRev": "rev-a"}, None, "rev-a")
 
         processor.graph_provider.update_node_if_unchanged.assert_not_awaited()
         assert processor.graph_provider.update_node.await_args.args[2] == {"parsingStatus": "COMPLETED"}

@@ -795,6 +795,20 @@ async def test_service_pipeline_forwards_the_record_file_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_service_path_ties_the_page_count_to_the_revision_of_the_bytes_it_parsed() -> None:
+    parsing_client = _service_parsing_client()
+    ep = _make_event_processor(parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=_indexing_sink())
+    ep._persist_parsing_completed = AsyncMock()  # type: ignore[method-assign]
+
+    _ = [e async for e in ep._orchestrate_via_services(
+        record_id="rec-1", org_id="org-1", virtual_record_id="v-1", record_name="d.pdf", mime_type="application/pdf",
+        extension="pdf", event_type="newRecord", prev_virtual_record_id=None, file_content=b"%PDF", content_rev="rev-a",
+    )]
+
+    assert ep._persist_parsing_completed.await_args.args[2] == "rev-a"
+
+
+@pytest.mark.asyncio
 async def test_an_emptied_code_file_loses_its_old_blocks() -> None:
     """B3: the service path marked an emptied code file EMPTY but kept its last
     version's blocks, so their calls and imports stayed in the code graph."""
