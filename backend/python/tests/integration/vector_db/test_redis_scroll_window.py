@@ -52,15 +52,15 @@ async def test_a_scroll_reads_every_point_of_a_record_past_the_window(redis_serv
     try:
         await _load(redis_service, col)
         flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": VRID})
-        seen: set[str] = set()
+        sequence: list[str] = []
         offset = None
         while True:
             page = await redis_service.scroll(col, flt, 500, offset, with_payload=["metadata.blockId"])
-            seen.update(p.payload["metadata"]["blockId"] for p in page.points)
+            sequence.extend(p.payload["metadata"]["blockId"] for p in page.points)
             if not page.next_offset:
                 break
             offset = page.next_offset
-        assert len(seen) == KEPT + STRAYS
+        assert len(sequence) == len(set(sequence)) == KEPT + STRAYS, "every point once across the 10,000 boundary, none repeated"
         whole = await redis_service.scroll_with_vectors(col, flt, 5, "10500")
         assert len(whole.points) == 5 and all(p.dense_vector and p.payload["page_content"] for p in whole.points)
     finally:

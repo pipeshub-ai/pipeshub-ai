@@ -1211,10 +1211,10 @@ class RedisVectorService(IVectorDBService):
         if cursor and len(keys) >= limit and position == offset + len(keys):
             cache[(idx, query)] = (position, cursor)
             while len(cache) > _SCROLL_CURSORS_KEPT:
-                _, (_, evicted) = next(iter(cache.items()))
+                (evicted_idx, _), (_, evicted) = next(iter(cache.items()))
                 del cache[next(iter(cache))]
                 with contextlib.suppress(Exception):
-                    await self.client.execute_command("FT.CURSOR", "DEL", idx, evicted)  # type: ignore
+                    await self.client.execute_command("FT.CURSOR", "DEL", evicted_idx, evicted)  # type: ignore
         elif cursor:
             with contextlib.suppress(Exception):
                 await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore

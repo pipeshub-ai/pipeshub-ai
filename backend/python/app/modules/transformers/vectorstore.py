@@ -1313,7 +1313,7 @@ class VectorStore(Transformer):
                 block_ids_to_delete.add(old)
                 del new_by_old[old]
         index_of = {b.id: b.index for b in record.block_containers.blocks}
-        index_of.update({g.id: g.index for g in record.block_containers.block_groups})
+        group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
         collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
         old_ids = sorted(new_by_old)
         moved: set[str] = set()
@@ -1339,10 +1339,15 @@ class VectorStore(Transformer):
                 if old_block not in new_by_old or point.dense_vector is None or (
                         row_ids and any(r not in new_by_old for r in row_ids)):
                     unmovable.add(old_block)
+                    # A grouped point holds the text of every row it lists under the first row's id: each of them is embedded again.
+                    failed.update({r: "unmovable" for r in row_ids or () if r in new_by_old})
                     continue
                 meta["blockId"] = new_by_old[old_block]
-                if new_by_old[old_block] in index_of:
-                    meta["blockIndex"] = index_of[new_by_old[old_block]]
+                new_block = new_by_old[old_block]
+                if new_block in group_index_of:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
+                    meta["blockGroupIndex"] = group_index_of[new_block]
+                elif new_block in index_of:
+                    meta["blockIndex"] = index_of[new_block]
                 if row_ids:
                     meta["rowBlockIds"] = [new_by_old[r] for r in row_ids]
                 new_payload = {**payload, "metadata": meta}
@@ -1381,6 +1386,8 @@ class VectorStore(Transformer):
             if not page.next_offset or page.next_offset == offset:
                 break
             offset = page.next_offset
+        # A positional cursor can repeat a point and skip another: one entry per point id, so the count check below sees the skip.
+        points = list({p.id: p for p in points}.values())
         # Complete or an error: a store can answer a scroll with fewer points than it holds, and a block counted as moved loses
         # its old points. The store's own count of the same filter must agree with what was read.
         counted = await self.vector_db_service.count_points(collection_name, scroll_filter)

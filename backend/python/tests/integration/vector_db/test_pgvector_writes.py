@@ -244,7 +244,7 @@ async def test_scroll_with_vectors_returns_the_vector_the_terms_and_the_payload_
             break
         offset = page.next_offset
     p1 = seen[pid(f"{A}/p1")]
-    assert set(seen) == {pid(f"{A}/p1"), pid(f"{A}/p2")} or set(seen) == {pid(f"{A}/p1")}
+    assert set(seen) == {pid(f"{A}/p1"), pid(f"{A}/p2")}
     assert p1.payload["page_content"] == "alpha" and p1.payload["metadata"]["blockId"] == "p1"
     assert p1.dense_vector == [0.0, 1.0] + [0.0] * (DIM - 2)
     assert dict(zip(p1.sparse_vector.indices, p1.sparse_vector.values, strict=True)) == {3: 0.5, big: 0.5}

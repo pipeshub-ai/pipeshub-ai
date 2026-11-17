@@ -123,10 +123,11 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
                {'pt.payload' if need_json else 'NULL::jsonb'} AS payload, {'pt.page_content' if need_text else 'NULL::text'} AS page_content,
                coalesce(g.connector_ids, '{{}}') AS connector_ids, coalesce(g.record_group_ids, '{{}}') AS record_group_ids,
                coalesce(g.root_record_group_ids, '{{}}') AS root_record_group_ids, {_SCOPE_COLUMNS}
-               {', p.embedding::text AS embedding, p.lex_terms' if vectors else ''}
+               {', p.embedding::text AS embedding, pq.terms AS post_terms, pq.weights AS post_weights' if vectors else ''}
         FROM retrieval.points p
         {'JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk' if join_text else ''}
         LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
+        {_POSTINGS if vectors else ''}
         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_sk > $4 AND {_ALIVE} AND ({c.where})
         ORDER BY p.point_sk LIMIT ${len(c.params) + 5}""",
         org, collection_id, space_id, after, *c.params, limit + 1,
@@ -134,32 +135,30 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
     page = rows[:limit]
     points = [to_point(r, with_payload, org) for r in page]
     if vectors:
-        await _add_vectors(tx, org, collection_id, space_id, page, points)
+        for row, point in zip(page, points, strict=True):
+            _set_vectors(row, point)
     return points, (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
 
 
-def _stored_term(term: int) -> int:
-    """A term id as the postings store it: ids above 2^31 - 1 wrap by 2^32 (``lex_terms`` keeps the id as written)."""
-    return term - 4294967296 if term > 2147483647 else term
+# The point's postings (its sparse terms and weights) in the same statement as the point, so both come from one snapshot: a write that
+# commits between two statements could leave a point's dense vector and its terms out of step. The terms are the ids ``lex_terms`` holds,
+# wrapped the way the postings store them.
+_POSTINGS = """LEFT JOIN LATERAL (
+          SELECT array_agg(q.term ORDER BY q.term) AS terms, array_agg(q.w ORDER BY q.term) AS weights
+          FROM retrieval.postings q
+          WHERE q.org_id = $1 AND q.collection_id = p.collection_id AND q.space_id = p.space_id AND q.point_sk = p.point_sk
+            AND q.term = ANY(ARRAY(SELECT (CASE WHEN t > 2147483647 THEN t - 4294967296 ELSE t END)::int FROM unnest(p.lex_terms) t))
+        ) pq ON true"""
 
 
-async def _add_vectors(tx: Tx, org: str, collection_id: int, space_id: int, rows: list[asyncpg.Record], points: list[VectorPoint]) -> None:
-    """Set each point's dense vector (the halfvec column) and sparse vector (its postings, term-major so the lookup uses the index)."""
-    terms = sorted({_stored_term(t) for r in rows for t in (r["lex_terms"] or [])})
-    weights: dict[tuple[int, int], float] = {}
+def _set_vectors(row: asyncpg.Record, point: VectorPoint) -> None:
+    """The point's dense vector (the halfvec column) and sparse vector (its postings; a term stored wrapped is given back as written)."""
+    point.dense_vector = [float(x) for x in json.loads(row["embedding"])]
+    terms = row["post_terms"] or []
     if terms:
-        found = await tx.fetch(
-            """/* pipeshub:pgvector.scroll_postings */
-            SELECT term, point_sk, w FROM retrieval.postings
-            WHERE org_id = $1 AND collection_id = $2 AND space_id = $3 AND term = ANY($4::int[]) AND point_sk = ANY($5::bigint[])""",
-            org, collection_id, space_id, terms, [r["point_sk"] for r in rows],
+        point.sparse_vector = SparseVector(
+            indices=[t + 4294967296 if t < 0 else t for t in terms], values=[float(w) for w in row["post_weights"]],
         )
-        weights = {(f["point_sk"], f["term"]): f["w"] for f in found}
-    for row, point in zip(rows, points, strict=True):
-        point.dense_vector = [float(x) for x in json.loads(row["embedding"])]
-        mine = sorted((t, weights[(row["point_sk"], _stored_term(t))]) for t in (row["lex_terms"] or []) if (row["point_sk"], _stored_term(t)) in weights)
-        if mine:
-            point.sparse_vector = SparseVector(indices=[t for t, _ in mine], values=[w for _, w in mine])
 
 
 async def count_filtered(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled) -> int:
