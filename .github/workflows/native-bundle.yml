@@ -34,7 +34,7 @@ jobs:
           useradd -m builder && chown -R builder "$GITHUB_WORKSPACE"
       - name: Build the bundle
         run: su builder -c "deployment/native/bundle.sh $PWD/out/pipeshub-native --archive $PWD/out/pipeshub-native-linux-x64.tar.gz"
-      - name: Start, check health, stop
+      - name: Start, check health and loopback-only listeners, stop
         run: su builder -c "deployment/native/smoke.sh $PWD/out/pipeshub-native"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -55,16 +55,20 @@ jobs:
           version: ${{ steps.uv.outputs.version }}
       - name: Build the bundle
         run: deployment/native/bundle.sh "$PWD/out/pipeshub-native" --archive "$PWD/out/pipeshub-native-darwin-arm64.tar.gz"
-      - name: Every Mach-O file is signed and loads only bundle or system libraries
+      - name: Every Mach-O file is signed; PostgreSQL and Node load only bundle or system libraries
         run: |
           bad=0
+          # The whole bundle: Python's extension modules and the API's native addons (sharp's *.node) are loaded by signed processes.
           while read -r f; do
             file -b "$f" | grep -q Mach-O || continue
             codesign --verify "$f" || { echo "unsigned: $f"; bad=1; }
-            otool -L "$f" | awk 'NR>1 {print $1}' | grep -vE '^(@rpath|@loader_path|/usr/lib/|/System/)' && { echo "absolute library path in $f"; bad=1; }
-          done < <(find out/pipeshub-native/pg out/pipeshub-native/node -type f)
+            case $f in out/pipeshub-native/pg/*|out/pipeshub-native/node/*)
+              otool -L "$f" | awk 'NR>1 {print $1}' | grep -vE '^(@rpath|@loader_path|/usr/lib/|/System/)' && { echo "absolute library path in $f"; bad=1; } ;;
+            esac
+          done < <(find out/pipeshub-native -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \))
           exit $bad
-      - name: Start, check health, stop
+      # A real start: the API loads sharp, so a native addon macOS refuses to load fails here.
+      - name: Start, check health and loopback-only listeners, stop
         run: deployment/native/smoke.sh "$PWD/out/pipeshub-native"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

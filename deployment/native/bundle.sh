@@ -19,7 +19,8 @@ exec "$here/node/bin/node" "$here/launcher/src/main.ts" "$@"
 SH
 chmod 0755 "$out/pipeshub-native"
 if [ "$os" = darwin ]; then
-  find "$out" -type f -perm -u+x -o -type f \( -name '*.dylib' -o -name '*.so' \) | while read -r f; do
+  # Native addons (sharp's *.node) count too: a signed node refuses to load an unsigned one on Apple silicon.
+  find "$out" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) | while read -r f; do
     file -b "$f" | grep -q Mach-O && codesign --force -s - "$f"
   done
 fi

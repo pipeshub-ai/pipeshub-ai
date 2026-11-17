@@ -12,7 +12,12 @@ py="$out/py/bin/python3"
 # CPU-only torch first, so the resolver below never picks the CUDA build (as Dockerfile.base does).
 uv pip install --python "$py" --break-system-packages --index-url https://download.pytorch.org/whl/cpu \
   "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION"
-uv pip install --python "$py" --break-system-packages -r "$repo/backend/python/pyproject.toml" -r "$repo/backend/db/requirements.txt"
+# From backend/python: uv reads [tool.uv] exclude-dependencies from the working directory, and without it a transitive
+# unclecode-litellm overwrites litellm's files.
+(cd "$repo/backend/python" && uv pip install --python "$py" --break-system-packages -r pyproject.toml -r ../db/requirements.txt)
+"$py" -I -c 'import importlib.metadata as m, sys
+bad = [n for n in sys.argv[1:] if any(True for _ in m.distributions(name=n))]
+sys.exit(f"build-py: installed although backend/python/pyproject.toml excludes them: {bad}" if bad else 0)' cchardet unclecode-litellm
 # What a server never imports: headers, Tk, IDLE, the standard library's own tests.
 rm -rf "$out/py/include" "$out"/py/lib/python3.*/{test,idlelib,tkinter,turtledemo,ensurepip} "$out"/py/lib/{libtcl,libtk,tcl,tk}* 2>/dev/null || true
 mkdir -p "$out/app/python" && cp -R "$repo/backend/python/app" "$out/app/python/"
