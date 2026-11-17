@@ -354,3 +354,83 @@ async def test_the_limit_check_and_the_stored_deadline_use_one_delay(monkeypatch
     stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
     assert raised.value.delay_s == 120.0
     assert before + 120_000 <= stored <= before + 121_000, "the stored deadline is not the delay that was checked"
+
+
+async def test_a_consumer_whose_clock_runs_behind_does_not_shorten_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Elapsed time is derived only from stamps the record carries (``max(now, deferredUntilMs) - rateLimitedSinceMs``), so a
+    consumer 15 minutes behind the one that stamped the first hand-back cannot step the backoff back."""
+    from app.services.messaging import config as config_module
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 6 * 3600.0))
+    true_now = {"ms": 1_800_000_000_000}
+    skew = {"ms": 0}
+    monkeypatch.setattr(record_module, "get_epoch_timestamp_in_ms", lambda: true_now["ms"] + skew["ms"])
+    stored: dict = _record(indexingStatus="QUEUED")
+    calls, outcome = 0, None
+    for _ in range(200):
+        harness = Harness(dict(stored))
+        harness.fail_with = RateLimited("model busy", provider="p", retry_after=1.0)
+        real = harness.graph.update_node.side_effect
+
+        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:
+            _stored.update(fields)
+            return await _real(doc_id, collection, fields) if _real else True
+
+        harness.graph.update_node = AsyncMock(side_effect=update)
+        calls += 1
+        try:
+            await harness.run(_payload(parseNow=False, is_final_failure=False))
+        except ProviderRateLimitedTooLongError as exc:
+            outcome = exc
+            break
+        except ProviderRateLimitRequeue as requeue:
+            skew["ms"] = -15 * 60_000  # every later consumer runs 15 minutes behind the one that stamped the first hand-back
+            true_now["ms"] += math.ceil(requeue.delay_s * 1000) + 1
+    assert isinstance(outcome, ProviderRateLimitedTooLongError)
+    assert calls <= 14, f"{calls} provider calls with a consumer clock 15 minutes behind"
+
+
+def test_the_handback_delay_is_jittered_by_at_most_ten_percent() -> None:
+    import random
+
+    from app.modules.indexing.rate_limit_deferral import handback_delay_s
+
+    rng = random.Random(7)
+    delays = [handback_delay_s(1.0, None, 0, rng=rng) for _ in range(400)]
+    assert all(30.0 <= d <= 33.0 + 1e-9 for d in delays)
+    assert len({round(d, 6) for d in delays}) > 100, "the delays are not jittered"
+    assert max(delays) > 32.0 and min(delays) < 31.0
+
+
+async def test_the_final_status_write_does_not_touch_the_fields_while_the_setting_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The write that ends a record (FAILED here) names ``rateLimitedSinceMs`` only when the setting is on."""
+    from app.services.messaging.config import messaging_env
+
+    async def end_record(on: bool) -> list[dict]:
+        monkeypatch.setattr(type(messaging_env), "record_deferral_fields_write", property(lambda self: on))
+        harness = Harness(_record(indexingStatus="IN_PROGRESS", rateLimitedSinceMs=1_700_000_000_000, deferredUntilMs=5))
+        await harness.handler._RecordEventHandler__update_document_status(
+            record_id="rec-1", indexing_status="FAILED", extraction_status="FAILED", reason="x"
+        )
+        return harness.writes()
+
+    off = await end_record(False)
+    assert off and all(not {"rateLimitedSinceMs", "deferredUntilMs"} & set(w) for w in off), off
+    on = await end_record(True)
+    assert any("rateLimitedSinceMs" in w for w in on), "with the setting on the record's clock is cleared when it ends"
+
+
+def test_the_startup_warning_is_logged_when_the_setting_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from app.indexing_main import warn_if_deferral_fields_write
+
+    logger = MagicMock()
+    monkeypatch.setenv("RECORD_DEFERRAL_FIELDS_WRITE", "true")
+    warn_if_deferral_fields_write(logger)
+    assert logger.warning.call_count == 1 and "rolled back" in logger.warning.call_args.args[0]
+    logger.reset_mock()
+    monkeypatch.delenv("RECORD_DEFERRAL_FIELDS_WRITE")
+    warn_if_deferral_fields_write(logger)
+    logger.warning.assert_not_called()

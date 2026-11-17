@@ -862,7 +862,7 @@ class RecordEventHandler(BaseEventService):
         since = self._rate_limited_since_ms(record)
         limit_s = messaging_env.rate_limit_max_wait_seconds
         # The first hand-back has no start time yet: its own wait is compared with the whole allowance.
-        elapsed_s = ((get_epoch_timestamp_in_ms() - since) / 1000.0 if since is not None else 0.0) + wait_s
+        elapsed_s = ((self._handback_clock_ms(record) - since) / 1000.0 if since is not None else 0.0) + wait_s
         if elapsed_s <= limit_s:
             return None
         hours = limit_s / 3600.0
@@ -883,13 +883,16 @@ class RecordEventHandler(BaseEventService):
         the write fails: the failure stays an ordinary one, counted by its delivery attempts, because nothing would bound it."""
         if not messaging_env.record_deferral_fields_write:
             return False
+        # The deadline is measured from the later of now and the previous deadline, so the chain of deadlines advances by at
+        # least each wait whatever this consumer's clock says (the elapsed time read from it never shrinks).
         now = get_epoch_timestamp_in_ms()
+        base = self._handback_clock_ms(record)
         try:
             stored = await self.event_processor.graph_provider.update_node(
                 record_id,
                 CollectionNames.RECORDS.value,
                 {
-                    DEFERRED_UNTIL_FIELD: now + handback_wait_ms(wait_s),
+                    DEFERRED_UNTIL_FIELD: base + handback_wait_ms(wait_s),
                     RATE_LIMITED_SINCE_MS_FIELD: self._rate_limited_since_ms(record) or now,
                 },
             )
@@ -915,6 +918,15 @@ class RecordEventHandler(BaseEventService):
             )
         except Exception as exc:
             self.logger.warning(f"Could not clear the rate-limit total of record {record_id}: {exc}")
+
+    @staticmethod
+    def _handback_clock_ms(record: dict | None) -> int:
+        """The time to measure a record's rate-limited time against: now, but never earlier than the end of its last
+        hand-back's wait. Both stamps came from some consumer's clock; one running behind the writer's would otherwise make the
+        elapsed time (and so the backoff) shrink. Derived only from what the record carries, so it never goes back."""
+        now = get_epoch_timestamp_in_ms()
+        until = (record or {}).get(DEFERRED_UNTIL_FIELD)
+        return max(now, int(until)) if isinstance(until, (int, float)) and not isinstance(until, bool) else now
 
     @staticmethod
     def _handback_remaining_s(record: dict | None) -> float | None:
@@ -2538,7 +2550,7 @@ class RecordEventHandler(BaseEventService):
             last_exception = ie
             if (wait := provider_rate_limit_wait(ie)) is not None:
                 # One draw of the jitter, used for the limit check and the stored deadline alike.
-                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms())
+                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
                 too_long = self._rate_limited_too_long(record_id, record, delay)
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
@@ -2561,7 +2573,7 @@ class RecordEventHandler(BaseEventService):
                 # The provider said when it can serve again: come back then, with no attempt spent on the wait, until the
                 # time the record has spent rate-limited passes the limit.
                 # One draw of the jitter, used for the limit check and the stored deadline alike.
-                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms())
+                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
                 too_long = self._rate_limited_too_long(record_id, record, delay)
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)

@@ -2255,6 +2255,17 @@ async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logge
                 await redis.aclose()
 
 
+def warn_if_deferral_fields_write(logger: logging.Logger) -> None:
+    """Say at start-up that records are being given the deferral fields, and what that commits the deployment to."""
+    if messaging_env.record_deferral_fields_write:
+        logger.warning(
+            "RECORD_DEFERRAL_FIELDS_WRITE is on: records handed back for a model provider's rate limit are given "
+            "deferredUntilMs and rateLimitedSinceMs. Every process must run a release whose record schema lists them, and "
+            "the deployment must not be rolled back past this release (a record carrying them cannot be written on an "
+            "older schema)."
+        )
+
+
 async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
     """Wait until the graph holds the schema indexing writes against.
 
@@ -2851,13 +2862,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Indexing writes stage states and record fields declared by the connector service's schema
     # bootstrap, which may not have run yet (a first start, or an older connector image).
     await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
-    if messaging_env.record_deferral_fields_write:
-        logger.warning(
-            "RECORD_DEFERRAL_FIELDS_WRITE is on: records handed back for a model provider's rate limit are given "
-            "deferredUntilMs and rateLimitedSinceMs. Every process must run a release whose record schema lists them, and "
-            "the deployment must not be rolled back past this release (a record carrying them cannot be written on an "
-            "older schema)."
-        )
+    warn_if_deferral_fields_write(logger)
     await _check_redis_eviction_policy(app_container, logger)
 
     # One governor per process: derives parse/index ceilings from cgroup/CPU

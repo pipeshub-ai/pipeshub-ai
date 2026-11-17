@@ -322,6 +322,6 @@ async def test_voyage_requests_are_counted_and_admitted_by_the_wire_scope(monkey
     with wire.wire_scope() as seen, pytest.raises(requests.exceptions.ConnectionError):
         await embeddings.aembed_documents(["x"])
     assert seen.requests == 1 and posted == [1], "the thread must keep the wire scope of the attempt"
-    with wire.metered(wire.SendMeter(allowance=0)), wire.wire_scope(), pytest.raises(Exception) as refused:  # noqa: B017
+    with wire.metered(wire.SendMeter(allowance=0)), wire.wire_scope(), pytest.raises(Exception) as refused:
         await embeddings.aembed_documents(["x"])
     assert wire.refused_by_allowance(refused.value) and posted == [1], "no request was made past the allowance"
