@@ -70,8 +70,9 @@ def reason_text(reason: str | None, source: str, ceiling: object) -> str:
     if reason == "cpu":
         who = "The code runner's" if sidecar else "The host's"
         return f"{who} CPU stayed busy, so fewer runs were allowed at once."
+    slots = "The only code-run slot was" if ceiling == 1 else f"All {ceiling} code-run slots were"
     return (
-        f"All {ceiling} code-run slots were in use. The host still had free memory and CPU, "
+        f"{slots} in use. The host still had free memory and CPU, "
         "so the slot limit was the bottleneck."
     )
 
@@ -149,6 +150,8 @@ def build_alert_event(
         "refusedPercent": refused_pct,
         "longestWaitSeconds": round(totals.max_wait_s),
         "slotWaitSeconds": slot_wait,
+        # How often each level may be emailed, for the email's footer.
+        "emailCooldownSeconds": settings.cooldown_s,
         "reason": reason,
         "reasonCounts": {r: totals.waited_by_reason.get(r, 0) for r in ("slots", "memory", "cpu")},
         "reasonText": because,

@@ -363,7 +363,7 @@ class TestAcquireLoop:
         with pytest.raises(SandboxLimitExceeded) as caught:
             await gov.acquire(wait_s=0.05)
         assert caught.value.reason is HoldReason.SLOTS_FULL
-        assert "all 1 code sandboxes on this server are busy (1/1)" in str(caught.value)
+        assert "the only code sandbox on this server is busy (1/1); retry once it is released" in str(caught.value)
         assert rec.events == [
             ("outcome", "granted", None),
             ("wait_start", HoldReason.SLOTS_FULL),

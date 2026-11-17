@@ -7,7 +7,7 @@ import { MailBody, SmtpConfig } from '../middlewares/types';
 import { getMailLogRepository } from '../../../libs/repositories/mail-log';
 import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
 import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
-import { getEmailContent } from '../utils/email-content';
+import { getEmailContent, getEmailText } from '../utils/email-content';
 import { smtpTransportOptions } from '../utils/smtp-transport';
 import {
   classifyMailError,
@@ -289,8 +289,13 @@ export class MailSenderService {
     }
 
     let emailContent: string;
+    let textContent: string | undefined;
     try {
       emailContent = this.renderContent(
+        bodyData.emailTemplateType!,
+        bodyData.templateData!,
+      );
+      textContent = getEmailText(
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
@@ -325,6 +330,7 @@ export class MailSenderService {
           replyTo: bodyData.replyTo,
           subject: bodyData.subject,
           html: emailContent,
+          ...(textContent === undefined ? {} : { text: textContent }),
           attachments: bodyData.attachments || [],
         },
         deadlineMs,

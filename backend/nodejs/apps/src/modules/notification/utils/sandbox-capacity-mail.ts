@@ -28,6 +28,8 @@ export interface SandboxCapacityAlertPayload {
   refusedPercent?: unknown;
   longestWaitSeconds?: unknown;
   slotWaitSeconds?: unknown;
+  /** How often each level may be emailed; older events lack it (one day). */
+  emailCooldownSeconds?: unknown;
   reason?: unknown;
   reasonText?: unknown;
   indexingText?: unknown;
@@ -156,6 +158,36 @@ function statsFor(
   return stats;
 }
 
+const DAY_S = 86400;
+
+/** "once a day", "once an hour", "once every 10 minutes": in the largest whole unit. */
+function oncePer(seconds: number): string {
+  const units: [number, string][] = [
+    [DAY_S, 'day'],
+    [3600, 'hour'],
+    [60, 'minute'],
+    [1, 'second'],
+  ];
+  for (const [size, name] of units) {
+    if (seconds >= size && seconds % size === 0) {
+      const n = seconds / size;
+      if (n === 1) return `once ${name === 'hour' ? 'an' : 'a'} ${name}`;
+      return `once every ${n} ${name}s`;
+    }
+  }
+  return `once every ${seconds} seconds`;
+}
+
+/** Says how often this email may come, from the cooldown the event carries (one day when it has none). */
+export function footerNoteFor(cooldownSeconds: unknown): string {
+  const raw = num(cooldownSeconds);
+  const seconds = raw !== null && raw >= 1 ? Math.round(raw) : DAY_S;
+  return (
+    'Admins are notified in the app each time code runs are held back again; ' +
+    `this email is sent at most ${oncePer(seconds)} for each level. It goes to each admin of this workspace.`
+  );
+}
+
 /**
  * The email for a code sandbox load alert, or `null` when the event is not a
  * warning or critical one. The numbers and the reason come from the event, so
@@ -178,6 +210,7 @@ export function buildSandboxCapacityMail(
     actions: actionsFor(payload.reason, sidecar),
     stats: statsFor(level, payload, sidecar),
     docsUrl: webUrl(event.redirectLink) ?? DEFAULT_DOCS_URL,
+    footerNote: footerNoteFor(payload.emailCooldownSeconds),
   };
   if (indexingText) templateData.indexingText = indexingText;
   return {

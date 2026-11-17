@@ -136,15 +136,18 @@ _STOPPED_ERROR = (
     "Stopped by the user before this run finished. The run was ended; files it "
     "was writing may be incomplete."
 )
+_STOPPED_BEFORE_START_ERROR = "Stopped by the user before this call started. Nothing ran."
 
 
-def stopped_output() -> ToolOutput:
+def stopped_output(*, started: bool = True) -> ToolOutput:
     """The result of a sandbox call the user stopped mid-way. The run then
     ends as cancelled at its next turn, so the model does not act on it in
-    this run; the wording is safe for it to read in a later turn."""
+    this run; the wording is safe for it to read in a later turn.
+    `started` is False when the stop came while the call was still waiting
+    for a sandbox or a slot, so nothing ran."""
     return ToolOutput(
         success=False,
-        error=_STOPPED_ERROR,
+        error=_STOPPED_ERROR if started else _STOPPED_BEFORE_START_ERROR,
         end_fields={"reason": "stopped", "error_class": "cancelled"},
     )
 
@@ -193,17 +196,26 @@ def unknown_sandbox_guidance(error: Exception) -> str:
     )
 
 
-def sandbox_limit_guidance(error: Exception) -> str:
+def sandbox_limit_guidance(error: Exception, *, reuse_helps: bool = True) -> str:
     """Turn a capacity denial into a retryable instruction.
 
     Capacity is transient — another request finishing frees a slot — so the
-    model should reuse a sandbox it already has, or wait, rather than
-    treating this as a permanent failure and abandoning the task.
+    model should wait and retry rather than treat this as a permanent
+    failure and abandon the task. `reuse_helps` is True when the denial was
+    for a new sandbox (a backend that keeps its slot for life, or the
+    sandbox count): an existing sandbox then avoids it. It is False when
+    every call takes a slot while it runs, reused sandbox or not.
     """
+    if reuse_helps:
+        return (
+            f"{error}. This is a temporary capacity limit, not a problem with your "
+            "code. Reuse an existing sandbox_id from earlier in this turn if you "
+            "have one, or retry this call shortly."
+        )
     return (
         f"{error}. This is a temporary capacity limit, not a problem with your "
-        "code. Reuse an existing sandbox_id from earlier in this turn if you "
-        "have one, or retry this call shortly."
+        "code. Every call needs a free slot while it runs, even on an existing "
+        "sandbox, so retry this call shortly and run one call at a time."
     )
 
 
@@ -556,7 +568,7 @@ class CodingSandboxTool(Tool):
                 "stopped", exit_code=-1, duration_ms=0.0, timeout_s=0.0,
                 timeout_capped=False, backend=None,
             )
-            return stopped_output()
+            return stopped_output(started=False)
 
         _logger.info(
             "CodingSandboxTool.execute: resolved sandbox_id=%s backend=%s "
@@ -591,8 +603,12 @@ class CodingSandboxTool(Tool):
             packages=packages or [],
             allow_network=self._allow_network,
         )
+        ran = False
+
         async def _run() -> CodeResult:
+            nonlocal ran
             async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                ran = True
                 return await backend.execute(request)
 
         started = time.monotonic()
@@ -601,13 +617,13 @@ class CodingSandboxTool(Tool):
             result = await self._manager.unless_stopped(_run, tool=self.name)
         except SandboxLimitExceeded as e:
             _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
-            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
         except SandboxCallStopped:
             _log_run_finished(
                 "stopped", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
                 timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
             )
-            return stopped_output()
+            return stopped_output(started=ran)
         except asyncio.CancelledError:
             _log_run_finished(
                 "cancelled", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
@@ -733,7 +749,7 @@ class InstallPackagesTool(Tool):
         except SandboxLimitExceeded as e:
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
         except SandboxCallStopped:
-            return stopped_output()
+            return stopped_output(started=False)
 
         # Same staged-input upload `run_code` does on a fresh sandbox —
         # a child that pre-warms its environment with install_packages
@@ -746,16 +762,20 @@ class InstallPackagesTool(Tool):
         if is_fresh_sandbox:
             uploaded_inputs = await _upload_staged_files(backend)
 
+        ran = False
+
         async def _install() -> Any:
+            nonlocal ran
             async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                ran = True
                 return await backend.install_packages(packages, language)
 
         try:
             result = await self._manager.unless_stopped(_install, tool=self.name)
         except SandboxLimitExceeded as e:
-            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
         except SandboxCallStopped:
-            return stopped_output()
+            return stopped_output(started=ran)
         data = {**result.model_dump(), "sandbox_id": resolved_id}
         if uploaded_inputs:
             data["input_files"] = sorted(uploaded_inputs)

@@ -132,6 +132,8 @@ def message(
             f"({held}/{limit}); retry in a minute"
         )
     count = "" if held is None else f" ({held}/{limit})"
+    if limit == 1:
+        return f"the only code sandbox on this server is busy{count}; retry once it is released"
     return f"all {limit} code sandboxes on this server are busy{count}; retry once one is released"
 
 

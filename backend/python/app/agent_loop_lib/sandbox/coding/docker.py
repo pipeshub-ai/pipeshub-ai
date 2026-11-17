@@ -309,7 +309,9 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self._egress_allow_cidrs = parse_cidrs(egress_allow_cidrs)
         self._sandbox_user = sandbox_user
         self._installed: dict[str, set[str]] = {"typescript": set(), "python": set()}
-        self._reflection = ReflectionEngine(memory_limit_mb=memory_limit_mb)
+        self._reflection = ReflectionEngine(
+            memory_limit_mb=memory_limit_mb, process_limit=CONTAINER_HARDENING["pids_limit"],
+        )
         self._provisioned = False
 
     # ------------------------------------------------------------------

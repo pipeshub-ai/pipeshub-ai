@@ -98,6 +98,9 @@ class LocalCodingSandbox(CodingSandboxBackend):
         self._reflection = ReflectionEngine(
             memory_limit_mb=effective_limits.max_memory_bytes // 2**20,
             cpu_limit_s=effective_limits.max_cpu_seconds,
+            process_limit=effective_limits.max_processes,
+            process_limit_shared=True,
+            file_size_limit_mb=effective_limits.max_file_size_bytes / 2**20,
         )
         self._provisioned = False
 

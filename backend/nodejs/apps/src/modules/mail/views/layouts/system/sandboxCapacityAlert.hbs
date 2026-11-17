@@ -83,7 +83,7 @@
                       margin-top: 8px;
                     "
                   >
-                    Admins are notified in the app each time code runs are held back again; this email is sent at most once a day for each level. It goes to each admin of this workspace.
+                    {{#if footerNote}}{{footerNote}}{{else}}Admins are notified in the app each time code runs are held back again; this email is sent at most once a day for each level. It goes to each admin of this workspace.{{/if}}
                   </div>
                 </td>
               </tr>

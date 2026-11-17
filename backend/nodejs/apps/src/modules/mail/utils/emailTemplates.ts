@@ -114,6 +114,8 @@ export interface SandboxCapacityAlertData {
   actions: string[];
   stats: SandboxCapacityAlertStat[];
   docsUrl: string;
+  /** The closing note; says how often this email may come. Older jobs lack it. */
+  footerNote?: string;
 }
 export const isSandboxCapacityAlertData = (
   data: unknown,
@@ -137,8 +139,29 @@ export const isSandboxCapacityAlertData = (
         typeof (stat as Record<string, unknown>).label === 'string' &&
         typeof (stat as Record<string, unknown>).value === 'string',
     ) &&
-    typeof record.docsUrl === 'string'
+    typeof record.docsUrl === 'string' &&
+    (record.footerNote === undefined || typeof record.footerNote === 'string')
   );
+};
+export const SANDBOX_CAPACITY_DEFAULT_FOOTER =
+  'Admins are notified in the app each time code runs are held back again; this email is sent at most once a day for each level. It goes to each admin of this workspace.';
+/** The plain-text part of the code sandbox load alert email, with the same content as the HTML one. */
+export const sandboxCapacityAlertText = (
+  data: SandboxCapacityAlertData,
+): string => {
+  const lines: string[] = [data.heading, '', data.intro, '', `Why runs were held back: ${data.reasonText}`];
+  if (data.indexingText) {
+    lines.push(
+      '',
+      `Already done: ${data.indexingText} Runs were still held back after that, so the machine is short of capacity for this load.`,
+    );
+  }
+  lines.push('', 'What you can do:');
+  for (const action of data.actions) lines.push(`- ${action}`);
+  lines.push(`- Read the load alerts guide: ${data.docsUrl}`, '');
+  for (const stat of data.stats) lines.push(`${stat.label}: ${stat.value}`);
+  lines.push('', data.footerNote ?? SANDBOX_CAPACITY_DEFAULT_FOOTER);
+  return `${lines.join('\n')}\n`;
 };
 export const sandboxCapacityAlert = (templateData: SandboxCapacityAlertData): string => compileTemplate(sandboxCapacityAlertTemplate, templateData as unknown as Record<string, unknown>);
 

@@ -14,6 +14,7 @@ import {
   resetEmail,
   resetPassword,
   sandboxCapacityAlert,
+  sandboxCapacityAlertText,
   suspiciousLoginAttempt,
 } from './emailTemplates';
 
@@ -74,4 +75,21 @@ export function getEmailContent(
     default:
       throw 'Unknown Template';
   }
+}
+
+/**
+ * The plain-text part for a template that has one, or `undefined` to send
+ * HTML only. Called after `getEmailContent` accepted the same data.
+ */
+export function getEmailText(
+  emailTemplateType: string,
+  templateData: Record<string, any>,
+): string | undefined {
+  if (
+    emailTemplateType === EmailTemplateType.SandboxCapacityAlert &&
+    isSandboxCapacityAlertData(templateData)
+  ) {
+    return sandboxCapacityAlertText(templateData);
+  }
+  return undefined;
 }

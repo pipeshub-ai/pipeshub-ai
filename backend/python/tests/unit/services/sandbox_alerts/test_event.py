@@ -150,7 +150,7 @@ def test_the_payload_has_only_the_listed_keys() -> None:
     assert set(build()["payload"]) == {
         "v", "alertId", "level", "firedAt", "expiresAt", "host", "sandboxMode", "memorySource",
         "windowMinutes", "runs", "waited", "refused", "busyPercent", "refusedPercent",
-        "longestWaitSeconds", "slotWaitSeconds", "reason", "reasonCounts", "reasonText",
+        "longestWaitSeconds", "slotWaitSeconds", "emailCooldownSeconds", "reason", "reasonCounts", "reasonText",
         "indexingText", "indexingSlowed", "indexingSlowedSince", "limit",
         "hostMemoryTotalGb", "hostMemoryFreeGb",
     }
