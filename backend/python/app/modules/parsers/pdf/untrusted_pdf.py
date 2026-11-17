@@ -35,9 +35,11 @@ from app.exceptions.indexing_exceptions import (
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseAbandonedError, ParseWorkerError
 from app.modules.parsers.pdf.pdf_inspection import (
+    PdfFacts,
     PdfStructure,
     detect_ocr,
     open_pdf,
+    quick_facts,
     repair_pdf,
 )
 from app.services.resource_governor.kinds import ParseKind
@@ -100,6 +102,20 @@ async def inspect_untrusted_pdf(content: bytes, *, label: str = "") -> Inspected
     copy = await _readable_copy(content, label)
     page_count = copy.structure.page_count if copy.structure else None
     return InspectedPdf(copy.content, await _needs_ocr(copy, label), copy.repaired, page_count)
+
+
+async def inspect_for_class(content: bytes, *, label: str = "") -> PdfFacts | None:
+    """The page count and text layer of *content*, read on the inspect pool, for the cost class.
+
+    Cheap and best effort: ``None`` when the file cannot be read this way (the class then stays on its size
+    prior and the full inspection at parse time deals with the file), and for a stop or a dead worker, which
+    the parse that follows will meet again.
+    """
+    try:
+        return await _in_worker(quick_facts, content, label=label)
+    except Exception as exc:
+        _logger.info("No quick facts for PDF %s (%s); its class stays on the size prior", label, type(exc).__name__)
+        return None
 
 
 async def _readable_copy(content: bytes, label: str) -> _Copy:
