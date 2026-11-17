@@ -1818,7 +1818,7 @@ class Reaper:
             if not ident or not isinstance(created, (int, float)) or now - created <= reap_after:
                 continue
             since = await self._active_since(item, ident, created)
-            if now - since <= reap_after:
+            if since is None or now - since <= reap_after:
                 continue
             delete_status, _ = await self._proxy._upstream_call(
                 "DELETE", f"/containers/{quote(ident, safe='')}?force=1",
@@ -1836,13 +1836,14 @@ class Reaper:
             logger.info("reaper: removed %d container(s)", removed)
         return removed
 
-    async def _active_since(self, item: dict[str, Any], ident: str, created: float) -> float:
-        """When the container's age starts counting. A container that is not
-        started yet may still be receiving its input archive, for up to the
-        proxy's body timeout; one that started (or exited) counts from its
-        latest start or exit, so a slow upload does not use up its run.
-        When the start cannot be read, the container is assumed to have
-        started as late as an upload allows."""
+    async def _active_since(self, item: dict[str, Any], ident: str, created: float) -> float | None:
+        """When the container's age starts counting, or None to skip it this
+        pass. A container that is not started yet may still be receiving its
+        input archive, for up to the proxy's body timeout; one that started
+        (or exited) counts from its latest start or exit, so a slow upload
+        does not use up its run. A started container whose start and exit
+        times cannot be read is skipped: a client may upload several archives
+        before starting it, so its creation time says nothing about its run."""
         state = item.get("State")
         upload_bound = created + self._proxy.limits.body_timeout_s
         if state == "created":
@@ -1850,13 +1851,13 @@ class Reaper:
         try:
             status, info = await self._proxy._upstream_call("GET", f"/containers/{quote(ident, safe='')}/json")
         except Exception:
-            return upload_bound
+            return None
         times = info.get("State") if status == 200 and isinstance(info, dict) else None
         if not isinstance(times, dict):
-            return upload_bound
+            return None
         stamps = [t for t in (_docker_time(times.get(key)) for key in ("StartedAt", "FinishedAt")) if t is not None]
         if not stamps:
-            return upload_bound
+            return None
         return max([created, *stamps])
 
     def _log_unlabeled(self, count: int, now: float) -> None:

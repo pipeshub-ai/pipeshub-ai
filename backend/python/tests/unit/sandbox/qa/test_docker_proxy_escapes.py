@@ -510,6 +510,10 @@ class _UnfilteredDaemon:
         method, target, _ = head.split("\r\n")[0].split(" ")
         if method == "GET" and target.startswith("/containers/json"):
             status, body = "200 OK", json.dumps(self.containers).encode()
+        elif method == "GET" and target.startswith("/containers/") and target.endswith("/json"):
+            # Started long ago, so the reaper ages it from a readable start.
+            state = {"StartedAt": "2020-01-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"}
+            status, body = "200 OK", json.dumps({"State": state}).encode()
         elif method == "DELETE":
             self.deleted.append(target.split("/")[2].split("?")[0])
             status, body = "204 No Content", b""
