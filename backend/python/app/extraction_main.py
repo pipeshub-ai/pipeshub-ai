@@ -9,7 +9,6 @@ departments and passes them in the request body.
 """
 import asyncio
 import logging
-import os
 import signal
 import sys
 import types
@@ -36,7 +35,7 @@ from app.modules.transformers.document_extraction import DocumentExtraction
 from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.llm_gateway.wire import hook_status as wire_hook_status
-from app.utils.env_utils import env_int
+from app.utils.env_utils import bind_host, bind_port, env_int
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 
@@ -146,11 +145,16 @@ async def health_check() -> JSONResponse:
     return JSONResponse(content=content)
 
 
-if __name__ == "__main__":
-    port = int(os.getenv("EXTRACTION_SERVICE_PORT", "8093"))
+def run(host: str | None = None, port: int | None = None, *, reload: bool = False) -> None:
+    """Run the Extraction service"""
     uvicorn.run(
         "app.extraction_main:app",
-        host="0.0.0.0",
-        port=port,
+        host=host or bind_host(),
+        port=port if port is not None else bind_port(8093, "EXTRACTION_SERVICE_PORT"),
         log_level="info",
+        reload=reload,
     )
+
+
+if __name__ == "__main__":
+    run()
