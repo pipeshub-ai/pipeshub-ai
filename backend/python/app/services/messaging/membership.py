@@ -151,6 +151,30 @@ async def redis_untagged(redis: Any, group_streams: dict[str, list[str]]) -> lis
     return sorted(names)
 
 
+class PgClaimCheck:
+    """Untagged members of the PostgreSQL queue's groups. The queue keeps no member list, only the name each claim was taken
+    under (``queue_deliveries.consumer``), so a claimer is a member. An older pod between two short records holds no claim at
+    the moment of a check: an untagged name counts until it has gone unseen for ``REDIS_IDLE_LIVE_MS``, as an idle Redis
+    consumer does. The sightings live in the checking process; a new leader starts with none."""
+
+    def __init__(
+        self,
+        claimers: Callable[[dict[str, list[str]]], Awaitable[list[str]]],
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._claimers = claimers
+        self._monotonic = monotonic
+        self._seen: dict[str, float] = {}
+
+    async def __call__(self, groups: dict[str, list[str]]) -> list[str]:
+        names = await self._claimers(groups)
+        now = self._monotonic()
+        self._seen.update((name, now) for name in names if not is_tagged(name))
+        self._seen = {name: at for name, at in self._seen.items() if now - at < REDIS_IDLE_LIVE_MS / 1000}
+        return sorted(self._seen)
+
+
 class MembershipPublisher:
     """Runs the check on its own timer and publishes the holder's entry.
 

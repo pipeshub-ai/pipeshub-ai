@@ -2125,14 +2125,6 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
     logger = app_container.logger()
     config_service = app_container.config_service()
     broker_type = get_message_broker_type()
-    if broker_type == MessageBrokerType.POSTGRES:
-        # Its consumers register no group, so there is nothing to check. Nothing is published, which
-        # is the "stale" result: artifact readers stay on the stored record and retention stays paused.
-        logger.info(
-            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record",
-            broker_type.value,
-        )
-        return
     owner = f"membership:{uuid4().hex[:12]}"
     lease_seconds = max(90.0, 3 * membership_module.CHECK_PERIOD_SECONDS)
 
@@ -2148,7 +2140,15 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
             return True
         return bool(await leases.try_acquire("artifact-membership", owner, 1, lease_seconds))
 
+    pg_check: membership_module.PgClaimCheck | None = None
+    if broker_type == MessageBrokerType.POSTGRES:
+        from app.services.messaging.postgres.queue import PgQueue
+
+        pg_check = membership_module.PgClaimCheck(PgQueue().claimers)
+
     async def check(groups: dict[str, list[str]]) -> list[str]:
+        if pg_check is not None:
+            return await pg_check(groups)
         if broker_type == MessageBrokerType.KAFKA:
             from aiokafka.admin import AIOKafkaAdminClient
 

@@ -100,6 +100,49 @@ class TestChecks:
         redis.xinfo_consumers = AsyncMock(side_effect=RuntimeError("NOGROUP No such consumer group"))
         assert await m.redis_untagged(redis, {"g": ["s"]}) == []
 
+    @pytest.mark.asyncio
+    async def test_postgres_counts_an_untagged_claimer_as_live_until_it_has_been_unseen_for_the_idle_window(self) -> None:
+        """The queue keeps no member list, only who holds each claim: an older pod between two short records holds nothing
+        at the moment of a check, so a sighting counts as long as a Redis consumer's idle time does."""
+        clock = [0.0]
+        claims = [["records/sp3-1", "records-old"]]
+        claimers = AsyncMock(side_effect=lambda groups: claims[0])
+        check = m.PgClaimCheck(claimers, monotonic=lambda: clock[0])
+
+        assert await check({"g": ["t"]}) == ["records-old"]
+        claimers.assert_awaited_with({"g": ["t"]})
+        claims[0] = ["records/sp3-1"]
+        clock[0] = m.REDIS_IDLE_LIVE_MS / 1000 - 1
+        assert await check({"g": ["t"]}) == ["records-old"]
+        clock[0] = m.REDIS_IDLE_LIVE_MS / 1000 + 1
+        assert await check({"g": ["t"]}) == []
+
+    @pytest.mark.asyncio
+    async def test_postgres_a_failed_claim_read_fails_the_check_rather_than_reporting_clean(self) -> None:
+        check = m.PgClaimCheck(AsyncMock(side_effect=ConnectionError("db down")))
+        with pytest.raises(ConnectionError):
+            await check({"g": ["t"]})
+
+    def test_a_postgres_indexing_consumer_registers_its_group_and_claims_under_the_tag(self) -> None:
+        from app.services.messaging.config import RedisStreamsConfig
+        from app.services.messaging.postgres.consumer import PgMessagingConsumer
+        from app.services.messaging.storage_protocol import is_tagged
+
+        m.reset_registered_groups()
+        try:
+            cfg = RedisStreamsConfig(topics=["record-events"], group_id="records_group", client_id="records")
+            indexing = PgMessagingConsumer(logging.getLogger("t"), cfg, indexing=True, queue=MagicMock())
+            simple = PgMessagingConsumer(
+                logging.getLogger("t"),
+                RedisStreamsConfig(topics=["entity-events"], group_id="entity_group", client_id="entity"),
+                queue=MagicMock(),
+            )
+
+            assert m.registered_groups() == {"records_group": ["record-events"]}
+            assert is_tagged(indexing.consumer_name) and not is_tagged(simple.consumer_name)
+        finally:
+            m.reset_registered_groups()
+
 
 class TestPublisher:
     @staticmethod
