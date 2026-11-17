@@ -91,8 +91,9 @@ function provesEveryExpectedGroup(value: {
 
 /**
  * The union over fresh entries: untagged if any fresh entry lists an untagged member, stale
- * when no fresh entry checked every group it expected. An ex-leader's clean entry cannot hide
- * the new leader's finding.
+ * when no fresh entry checked every group it expected, or when a group some fresh entry expects
+ * was checked by none (a new leader expects a group an ex-leader's entry did not). An
+ * ex-leader's clean entry cannot hide the new leader's finding.
  */
 export function evaluateMembership(
   entries: unknown[],
@@ -100,6 +101,8 @@ export function evaluateMembership(
   staleMs: number = MEMBERSHIP_STALE_MS,
 ): MembershipVerdict {
   const untagged = new Set<string>();
+  const expected = new Set<string>();
+  const checked = new Set<string>();
   let proven = 0;
   for (const entry of entries) {
     const value = entry as {
@@ -114,10 +117,18 @@ export function evaluateMembership(
     if (Array.isArray(value.untagged)) {
       for (const name of value.untagged) untagged.add(String(name));
     }
+    if (Array.isArray(value.groupsExpected)) {
+      for (const group of value.groupsExpected) expected.add(String(group));
+    }
+    if (Array.isArray(value.groupsChecked)) {
+      for (const group of value.groupsChecked) checked.add(String(group));
+    }
   }
   if (untagged.size > 0)
     return { ok: false, untagged: [...untagged], reason: 'untagged' };
-  if (proven === 0) return { ok: false, untagged: [], reason: 'stale' };
+  const unchecked = [...expected].some((group) => !checked.has(group));
+  if (proven === 0 || unchecked)
+    return { ok: false, untagged: [], reason: 'stale' };
   return { ok: true, untagged: [] };
 }
 

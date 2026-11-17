@@ -88,18 +88,16 @@ async def holding_one_claim(client_id: str) -> AsyncIterator[tuple[str, str]]:
 
 @contextlib.asynccontextmanager
 async def leader(svc) -> AsyncIterator[None]:
-    """``indexing_main.run_membership_publisher`` on the PostgreSQL broker, as the indexing service starts it."""
+    """``indexing_main.run_membership_publisher`` on the PostgreSQL broker, as the indexing service starts it, run to its end."""
     container = MagicMock()
     container.logger.return_value = LOG
     container.config_service.return_value = svc
     container.kafka_consumers = []
     with patch.object(indexing_main, "get_message_broker_type", return_value=MessageBrokerType.POSTGRES):
-        task = asyncio.ensure_future(indexing_main.run_membership_publisher(container))
-        try:
-            yield
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        # On this broker it returns at once; awaited, so a publisher that raises fails the test instead of leaving an empty
+        # directory that reads as the expected stale result.
+        await asyncio.wait_for(indexing_main.run_membership_publisher(container), timeout=10)
+        yield
 
 
 async def published_verdict(svc, timeout: float = 15.0) -> m.MembershipVerdict:

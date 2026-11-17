@@ -51,6 +51,18 @@ class TestEvaluate:
         assert m.evaluate([full], NOW).ok
         assert m.evaluate([{**unstated, "untagged": ["old-pod"]}, full], NOW).untagged == ("old-pod",)  # a finding counts all the same
 
+    def test_a_group_one_fresh_entry_expects_must_be_checked_by_some_fresh_entry(self) -> None:
+        """A leader handover: the ex-leader's entry, still fresh, proves the groups it expected; the new leader expects a
+        stage group more and has not covered it. No fresh entry checked that group, so the result is not clean."""
+        ex_leader = {"checkedAt": NOW - 60_000, "untagged": [], "groupsChecked": ["records"], "groupsExpected": ["records"]}
+        new_leader = {
+            "checkedAt": NOW - 1_000, "untagged": [], "groupsChecked": ["records"], "groupsExpected": ["pipeline_x", "records"],
+        }
+        covered = {**new_leader, "groupsChecked": ["pipeline_x", "records"]}
+
+        assert m.evaluate([ex_leader, new_leader], NOW) == m.MembershipVerdict(False, (), "stale")
+        assert m.evaluate([ex_leader, covered], NOW).ok
+
 
 class TestChecks:
     @staticmethod
@@ -86,6 +98,19 @@ class TestChecks:
 
         assert await m.kafka_untagged(lambda: admin, ["g1", "g2"]) == ["indexing", "older-pod-1"]
         admin.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_kafka_describes_one_group_per_request(self) -> None:
+        """aiokafka 0.14 reads a v3 DescribeGroups answer with the v2 layout (no authorized_operations), so every group after
+        the first in one answer comes back shifted (error -32768, an empty name)."""
+        admin = self._admin([])
+        admin.describe_consumer_groups = AsyncMock(
+            side_effect=lambda groups: [self._described(1, (0, groups[0], [f"old-{groups[0]}"]))] if len(groups) == 1 else
+            [self._described(1, (0, groups[0], []), (-32768, "", []))],
+        )
+
+        assert await m.kafka_untagged(lambda: admin, ["g1", "g2"]) == ["old-g1", "old-g2"]
+        assert [c.args[0] for c in admin.describe_consumer_groups.await_args_list] == [["g1"], ["g2"]]
 
     @pytest.mark.asyncio
     async def test_kafka_a_group_that_does_not_exist_yet_has_no_members(self) -> None:

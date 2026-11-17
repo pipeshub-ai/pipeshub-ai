@@ -119,9 +119,16 @@ def _proves_every_expected_group(entry: dict[str, Any]) -> bool:
     return {str(g) for g in expected} <= {str(g) for g in checked}
 
 
+def _names(value: Any) -> set[str]:  # noqa: ANN401
+    return {str(n) for n in value} if isinstance(value, list) else set()
+
+
 def evaluate(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) -> MembershipVerdict:
-    """The union of the untagged members over the fresh entries; stale when no fresh entry checked every group it expected."""
+    """The union of the untagged members over the fresh entries. Stale when no fresh entry checked every group it expected,
+    or when a group some fresh entry expects was checked by none (a new leader expects a group an ex-leader's entry did not)."""
     untagged: set[str] = set()
+    expected: set[str] = set()
+    checked: set[str] = set()
     proven = 0
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("checkedAt"), (int, float)):
@@ -129,12 +136,12 @@ def evaluate(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) ->
         if now_ms - entry["checkedAt"] > stale_ms:
             continue
         proven += _proves_every_expected_group(entry)
-        names = entry.get("untagged")
-        if isinstance(names, list):
-            untagged.update(str(n) for n in names)
+        untagged |= _names(entry.get("untagged"))
+        expected |= _names(entry.get("groupsExpected"))
+        checked |= _names(entry.get("groupsChecked"))
     if untagged:
         return MembershipVerdict(False, tuple(sorted(untagged)), "untagged")
-    if proven == 0:
+    if proven == 0 or not expected <= checked:
         return MembershipVerdict(False, (), "stale")
     return MembershipVerdict(True)
 
@@ -151,7 +158,9 @@ async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) ->
     admin = admin_factory()
     await admin.start()
     try:
-        described = await admin.describe_consumer_groups(groups)
+        # One group per request: aiokafka 0.14 decodes a v3 answer with the v2 layout (``DescribeGroupsRequest_v3``'s
+        # RESPONSE_TYPE), which lacks authorized_operations, so every group after the first in one answer is misread.
+        described = [response for group in groups for response in await admin.describe_consumer_groups([group])]
     finally:
         await admin.close()
     names: list[str] = []

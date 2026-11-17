@@ -214,5 +214,12 @@ describe('setPlatformSettings: the artifact rollout rules', () => {
       expect(evaluateMembership([{ ...full, groupsExpected: [] }], NOW).reason).to.equal('stale')
       expect(evaluateMembership([{ checkedAt: NOW, untagged: ['old-pod'] }, full], NOW).untagged).to.deep.equal(['old-pod'])
     })
+
+    it('a group one fresh entry expects must be checked by some fresh entry', () => {
+      const exLeader = { checkedAt: NOW - 60_000, untagged: [], groupsChecked: ['records'], groupsExpected: ['records'] }
+      const newLeader = { checkedAt: NOW - 1_000, untagged: [], groupsChecked: ['records'], groupsExpected: ['pipeline_x', 'records'] }
+      expect(evaluateMembership([exLeader, newLeader], NOW).reason).to.equal('stale')
+      expect(evaluateMembership([exLeader, { ...newLeader, groupsChecked: ['pipeline_x', 'records'] }], NOW).ok).to.be.true
+    })
   })
 })
