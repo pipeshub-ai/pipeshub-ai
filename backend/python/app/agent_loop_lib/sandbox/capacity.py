@@ -516,8 +516,11 @@ class SandboxCapacity:
         slot_files: int | None = None,
     ) -> SandboxCapacity:
         """A capacity with an explicit ceiling (and per-org cap; ``None``
-        leaves it to the per-org share) that never reads the machine."""
-        files = slot_files if slot_files is not None else max(total, 1)
+        leaves it to the per-org share) that never reads the machine. A
+        total of zero or less is the largest ceiling, as in the environment."""
+        if total <= 0:
+            total = MAX_SLOT_FILES
+        files = slot_files if slot_files is not None else total
         capacity = cls(
             mode, CapacitySettings(max_total=total, max_per_org=per_org), slot_files=files,
         )
