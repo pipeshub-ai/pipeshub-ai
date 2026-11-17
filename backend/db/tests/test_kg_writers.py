@@ -68,7 +68,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
 GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
-EPOCH = 7
+EPOCH = 8
 
 
 def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
@@ -157,7 +157,7 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
         c.execute("SET LOCAL ROLE pipeshub_connectors")
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
-        assert c.execute("SELECT kg.w_changes_ack(7)").fetchone()[0] == 1
+        assert c.execute(f"SELECT kg.w_changes_ack({EPOCH})").fetchone()[0] == 1
         c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
         clean(c)
@@ -363,9 +363,9 @@ def test_a_closed_set_refuses_a_value_outside_it_in_a_record(pdb, column, value)
         clean(c)
 
 
-@pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", None])
+@pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", "STRICT_OR_GRANT", None])
 def test_every_access_rule_a_connector_writes_is_stored(pdb, rule):
-    """PARENT_AND_GRANT is one of them (kg_0017): a record with it once refused its whole batch."""
+    """PARENT_AND_GRANT (kg_0017) and STRICT_OR_GRANT (kg_0018) are among them: a record with either once refused its whole batch."""
     with conn(pdb) as c:
         clean(c)
         assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(rule=rule)))) == [(1,)]

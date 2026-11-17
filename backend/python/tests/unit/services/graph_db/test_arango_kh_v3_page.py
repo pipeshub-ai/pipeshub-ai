@@ -97,7 +97,7 @@ async def test_a_bounded_flatten_keeps_only_nodes_within_the_depth_whichever_arm
         return {
             "declared": ["recordGroups/dg"],
             "group_scope": [["recordGroups/dg", False], ["recordGroups/dg2", False]],
-            "seeds": ["records/s1"],
+            "seeds": [["records/s1", True]],
         }[name]
 
     provider._kh_v3_walk = walk

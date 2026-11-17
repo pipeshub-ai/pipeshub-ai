@@ -2,8 +2,8 @@
 returns, and it is used only while the ENABLE_KH_SCOPE_LISTING flag is on and the connector's stamp is fresh.
 
 The graph is built to be eligible (no declarations, no hidden or multi-parent nodes) and to hold every hop kind
-the stamp classifies: free chains, a gate, a nested gate, a RESTRICTED gate, a PARENT_AND_GRANT gate, a block with
-seeds below it (and PARENT_AND_GRANT records below a seed), a chain
+the stamp classifies: free chains, a gate, a nested gate, a RESTRICTED gate, a PARENT_AND_GRANT gate, a STRICT_OR_GRANT gate
+and free node, a block with seeds below it (and PARENT_AND_GRANT and STRICT_OR_GRANT records below a seed), a chain
 deeper than the walk's 50 hops, a null name, and a null-named seed. A second, small App has no null names.
 Every listing is compared page by page, both directions, against the full query (KH_SCOPE_MODE=off).
 """
@@ -83,6 +83,14 @@ def _graph() -> tuple[list, list]:
         r("r-seed-pag", "Parent and grant below the seed", rule="PARENT_AND_GRANT"),
         r("r-seed-pag-1", "Below the parent and grant record"),
         r("r-seed-pag-no", "Parent and grant without a grant", rule="PARENT_AND_GRANT"),
+        # STRICT_OR_GRANT: a gate that does not inherit (opens with its own grant), a free one, and below the seed a record
+        # read by its own grant (listed, its OPEN child not) and one without a grant (not listed: a seed never opens it).
+        rg("g-sog", "Strict or grant site", rule="STRICT_OR_GRANT", **group),
+        r("r-sog-1", "In the strict or grant site"),
+        r("r-sog-free", "Strict or grant but free", rule="STRICT_OR_GRANT"),
+        r("r-seed-sog", "Strict or grant below the seed", rule="STRICT_OR_GRANT"),
+        r("r-seed-sog-1", "Below the strict or grant record"),
+        r("r-seed-sog-no", "Strict or grant without a grant", rule="STRICT_OR_GRANT"),
         # The small App: no null names anywhere.
         app(SMALL, "Small App", connector="SHAREPOINT ONLINE", app_group="Microsoft"),
         r("s-1", "small one", app_id=SMALL), r("s-2", "small two", app_id=SMALL),
@@ -108,6 +116,11 @@ def _graph() -> tuple[list, list]:
         nr("r-seed", "r-seed-pag"), ip("r-seed-pag", "r-seed"), nr("r-seed-pag", "r-seed-pag-1"),
         ip("r-seed-pag-1", "r-seed-pag"), nr("r-seed", "r-seed-pag-no"), ip("r-seed-pag-no", "r-seed"),
         perm(USER_U, "g-pag"), perm(USER_U, "r-seed-pag"),
+        nr(APP, "g-sog"), nr("g-sog", "r-sog-1"), ip("r-sog-1", "g-sog"),
+        nr("f-docs", "r-sog-free"), ip("r-sog-free", "f-docs"),
+        nr("r-seed", "r-seed-sog"), ip("r-seed-sog", "r-seed"), nr("r-seed-sog", "r-seed-sog-1"),
+        ip("r-seed-sog-1", "r-seed-sog"), nr("r-seed", "r-seed-sog-no"), ip("r-seed-sog-no", "r-seed"),
+        perm(USER_U, "g-sog"), perm(USER_U, "r-seed-sog"),
         perm(USER_U, "g-gate"), perm(USER_U, "r-nested"), perm(USER_U, "g-restricted"),
         perm(USER_U, "r-seed"), perm(USER_U, "r-seed-null"),
         nr(SMALL, "s-1"), ip("s-1", SMALL), nr(SMALL, "s-2"), ip("s-2", SMALL),
@@ -242,6 +255,18 @@ async def test_a_parent_and_grant_node_is_listed_only_where_it_inherits_and_is_g
     for user, want in ((USER_U, pag - {"r-seed-pag-no"}), (USER_V, set())):
         rows = {r[0] for p in await _walk(neo4j_provider, user, APP, 500) if p != ("back",) for r in p[0]}
         assert rows & pag == want, user
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+async def test_a_strict_or_grant_node_is_listed_from_the_app_or_by_its_own_grant_alone(
+    scope_graph, neo4j_provider, monkeypatch, mode,
+) -> None:
+    """From the App as STRICT (a gate with its grant, or free), and below a seed only by its own grant, which lists nothing below it."""
+    monkeypatch.setenv("KH_SCOPE_MODE", mode)
+    sog = {"g-sog", "r-sog-1", "r-sog-free", "r-seed-sog", "r-seed-sog-1", "r-seed-sog-no"}
+    for user, want in ((USER_U, {"g-sog", "r-sog-1", "r-sog-free", "r-seed-sog"}), (USER_V, {"r-sog-free"})):
+        rows = {r[0] for p in await _walk(neo4j_provider, user, APP, 500) if p != ("back",) for r in p[0]}
+        assert rows & sog == want, user
 
 
 async def test_a_null_named_seed_is_listed_and_counted_once(scope_graph, neo4j_provider, monkeypatch) -> None:
