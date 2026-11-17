@@ -49,12 +49,16 @@ PSQL=("${DC[@]}" exec -T postgres psql -q -v ON_ERROR_STOP=1 -U postgres -d pipe
 # built the tables. An empty import password reads as "login closed" to the tool. The service's own entrypoint starts the
 # application whatever the command is; the image's entrypoint runs the command, as the unprivileged user the application runs as.
 docstore() {
+  # PostgreSQL's data volume, read-only, so preflight measures the space the copy will use. By its full name: a short name in
+  # `run -v` is a new global volume, and one that does not exist yet must not be created here.
+  local vol="${PROJECT:-pipeshub-ai}_postgres_data" mount=()
+  docker volume inspect "$vol" >/dev/null 2>&1 && mount=(-v "$vol:/pgdata:ro" -e PG_DATA_DIR=/pgdata)
   PG_IMPORT_URL="postgresql://pipeshub_import:$(env_get PG_IMPORT_PASSWORD)@postgres:5432/pipeshub" \
   PG_MIGRATE_URL="postgresql://pipeshub_migrate:$(env_get PG_MIGRATE_PASSWORD)@postgres:5432/pipeshub" \
   PG_NODE_URL="postgresql://pipeshub_node_login:$(env_get PG_NODE_PASSWORD)@pgbouncer:6432/pipeshub" \
   MIGRATE_SCHEMA_COMMAND=none \
     "${DC[@]}" run --rm --no-deps -e PG_IMPORT_URL -e PG_MIGRATE_URL -e PG_NODE_URL -e MIGRATE_SCHEMA_COMMAND \
-      --entrypoint /usr/local/bin/docker-entrypoint.sh pipeshub-ai node /app/backend/dist/scripts/docstore-migrate.js "$@"
+      ${mount[@]+"${mount[@]}"} --entrypoint /usr/local/bin/docker-entrypoint.sh pipeshub-ai node /app/backend/dist/scripts/docstore-migrate.js "$@"
 }
 
 # Lets pipeshub_import log in. The password is kept in the env file while the login is open, so a re-run after an interrupted one

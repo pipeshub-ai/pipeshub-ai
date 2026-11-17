@@ -1,0 +1,20 @@
+# Runs the Node API on MongoDB with shadow reads on PostgreSQL (DOC_STORE=shadow) and the write fence on, for the online move of
+# the document store (scripts/migrate-to-postgres.sh --online). Users always get MongoDB's answer; a share of reads is repeated
+# on PostgreSQL and compared, and differences are logged. Nothing is written to PostgreSQL. The fence makes every write check
+# the store fence first, which the switch (cutover --fence-armed) relies on.
+#
+# Use it with the `postgres` profile (it depends on pgbouncer) and PG_NODE_PASSWORD in .env. After the switch, replace it with
+# docker-compose.postgres-docstore.yml in PIPESHUB_COMPOSE_OVERRIDES.
+services:
+  pipeshub-ai:
+    environment:
+      - DOC_STORE=shadow
+      - DOC_STORE_FENCE=on
+      - PG_NODE_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD:?PG_NODE_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - DOC_STORE_SHADOW_SAMPLE=${DOC_STORE_SHADOW_SAMPLE:-0.1}
+      - DOC_STORE_SHADOW_SETTLE_MS=${DOC_STORE_SHADOW_SETTLE_MS:-2000}
+      - DOC_STORE_SHADOW_TIMEOUT_MS=${DOC_STORE_SHADOW_TIMEOUT_MS:-2000}
+      - DOC_STORE_SHADOW_MAX_IN_FLIGHT=${DOC_STORE_SHADOW_MAX_IN_FLIGHT:-8}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy

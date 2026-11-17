@@ -60,6 +60,15 @@ case "$args" in
   *" exec "*psql*) sql=$(cat); printf '%s\n' "$sql" >>"$SQL"
                    case "$sql" in *NOLOGIN*) step=login-close ;; *LOGIN*) step=login-open ;; *) step=psql ;; esac ;;
   *" stop "*) step="stop:${*: -1}" ;;
+  # a read-only lookup, not a step: answers from STUB_VOLUMES
+  *" volume inspect "*) echo "  argv: $*" >>"$ARGV"; [[ " ${STUB_VOLUMES:-} " == *" ${*: -1} "* ]]; exit ;;
+  *" run "*" mongodb -c "*)
+    step=mongo-keyfile
+    # run the key-file script for real, on a stand-in for MongoDB's volume (no root here, so no chown)
+    script=${*: -1}; script=${script//\/data\/db/$MONGO_DATA}; script=${script//chown mongodb:mongodb/true}
+    mkdir -p "$MONGO_DATA"; sh -c "$script" ;;
+  *" exec "*mongosh*) step=rs-init ;;
+  *" up -d "*) step="up:${*: -1}" ;;
   *docstore-migrate.js*)
     tool=${args#*docstore-migrate.js }; tool=${tool% }; step="tool:$tool"
     # the service's own entrypoint starts the application whatever the arguments are: only the image entrypoint runs them
@@ -111,7 +120,7 @@ new_install() {
     for l in "$@"; do echo "$l"; done
   } >"$ENVF"
   chmod 600 "$ENVF"
-  export CALLS="$INST/calls" ARGV="$INST/argv" SQL="$INST/sql" IMPORT_URLS="$INST/urls"
+  export CALLS="$INST/calls" ARGV="$INST/argv" SQL="$INST/sql" IMPORT_URLS="$INST/urls" MONGO_DATA="$INST/mongo-data"
   : >"$CALLS"; : >"$ARGV"; : >"$SQL"; : >"$IMPORT_URLS"
 }
 # run_script <script> [args...]: runs it against $ENVF with the stub; sets OUT (stdout+stderr) and RC
@@ -201,12 +210,12 @@ no_secret_shown "without showing it" "left_by_a_killed_run_42"
 check_eq "and closes the login" "$(import_pw)" ""
 
 echo
-echo "== online: open the login, preflight, copy, follow; the login stays open while the move runs =="
-new_install
+echo "== online: replica set and shadow first, then open the login, preflight, copy, follow; the login stays open =="
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 run_script "$MIGRATE" --online
 check_eq "exits 0 when the follower stops" "$RC" 0
 check_eq "steps in order" "$(steps)" \
-  "verifier login-open tool:preflight --allow-clients tool:migrate --online tool:follow run"
+  "mongo-keyfile up:mongodb rs-init up:pipeshub-ai verifier login-open tool:preflight --allow-clients tool:migrate --online tool:follow run"
 pw="$(import_pw)"
 check_not "the import password stays in the env file for cutover and reverse" "x${pw}x" "xx"
 no_secret_shown "and is never shown" "$pw"
@@ -215,11 +224,11 @@ check "it says how to close the login" "$OUT" "--close-login"
 run_script "$MIGRATE" --online
 check "a second run reuses the open login's password" "$(sort -u "$IMPORT_URLS" | wc -l | tr -d ' ')" 1
 
-new_install
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 STUB_FAIL="migrate --online" run_script "$MIGRATE" --online
 check_eq "a failed online copy exits 1" "$RC" 1
 check_eq "and closes the login (nothing runs that needs it)" "$(steps)" \
-  "verifier login-open tool:preflight --allow-clients tool:migrate --online login-close"
+  "mongo-keyfile up:mongodb rs-init up:pipeshub-ai verifier login-open tool:preflight --allow-clients tool:migrate --online login-close"
 
 echo
 echo "== --close-login and --reset =="
@@ -279,7 +288,7 @@ check_eq "and the stub saw the tool run" "$(steps)" "tool:status"
 
 echo
 echo "== online: Ctrl+C reaches the follower, and the script still says how to close the login =="
-new_install
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 SIGS="$INST/signals"
 # Ctrl+C signals the whole foreground process group; job control gives the script its own group to signal
 (
@@ -307,7 +316,7 @@ check_eq "and opens and closes the login" "$(steps)" \
   "verifier login-open stop:pipeshub-ai tool:preflight tool:migrate --offline login-close"
 check_eq "the password is removed with BSD sed" "$(import_pw)" ""
 check_eq "the env file stays 0600" "$(stat -c %a "$ENVF")" 600
-new_install
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 mv "$ENVF" "$INST/real.env"; ln -s real.env "$ENVF"
 OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" "$BASH_UNDER_TEST" "$MIGRATE" --online 2>&1)"; RC=$?
 check_eq "online with BSD sed exits 0" "$RC" 0
@@ -316,6 +325,44 @@ if [[ -L "$ENVF" ]]; then pass "a symlinked env file stays a symlink"; else fail
 check_eq "the real file stays 0600" "$(stat -c %a "$INST/real.env")" 600
 left="$(shopt -s nullglob; f=("$INST"/*.env.* "$INST"/.env.*); echo ${f[@]+"${f[*]}"})"
 if [[ -z "$left" ]]; then pass "no temporary or backup file is left beside the env file"; else fail "no temporary or backup file is left beside the env file: $left"; fi
+
+echo
+echo "== online: refuses without the replica-set and shadow overrides, naming each and the fix =="
+new_install
+run_script "$MIGRATE" --online
+check_eq "exits 1" "$RC" 1
+check "names the replica-set override" "$OUT" "docker-compose.mongo-replica-set.yml"
+check "names the shadow override" "$OUT" "docker-compose.docstore-shadow.yml"
+check "says how to add them" "$OUT" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
+check_eq "before docker is called" "$(steps)" ""
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.parsing.yml:docker-compose.mongo-replica-set.yml"
+run_script "$MIGRATE" --online
+check_eq "with one of them: exits 1" "$RC" 1
+check "names the missing one" "$OUT" "docker-compose.docstore-shadow.yml"
+check_not "not the one in use" "$(printf '%s\n' "$OUT" | grep -A9 'Missing' | grep -v PIPESHUB_COMPOSE_OVERRIDES)" "docker-compose.mongo-replica-set.yml"
+check "and keeps the overrides already listed" "$OUT" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.parsing.yml:docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
+
+echo
+echo "== online: the replica-set key file is private to mongod and never shown =="
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
+run_script "$MIGRATE" --online
+check_eq "exits 0" "$RC" 0
+check_eq "the key file is mode 0400" "$(stat -c %a "$MONGO_DATA/rs.key" 2>/dev/null)" 400
+key="$(cat "$MONGO_DATA/rs.key" 2>/dev/null)"
+check_not "the key is long enough to mean something" "x${key:0:40}x" "xx"
+no_secret_shown "the key never appears in the output or a command line" "${key:0:40}"
+run_script "$MIGRATE" --online
+check_eq "a second run keeps the same key" "$(cat "$MONGO_DATA/rs.key")" "$key"
+
+echo
+echo "== preflight measures the PostgreSQL volume when it exists, and never creates it =="
+new_install "COMPOSE_PROJECT_NAME=proj"
+STUB_VOLUMES="proj_postgres_data" run_script "$TOOL" preflight
+check "the volume is mounted read-only and named for the tool" "$(grep docstore-migrate.js "$ARGV")" "-v proj_postgres_data:/pgdata:ro -e PG_DATA_DIR=/pgdata"
+new_install "COMPOSE_PROJECT_NAME=proj"
+run_script "$TOOL" preflight
+check_eq "without the volume: the tool still runs" "$RC" 0
+check_not "and no volume is named, so docker creates none" "$(grep docstore-migrate.js "$ARGV")" "postgres_data"
 
 echo
 echo "== which install: project name and override files =="
