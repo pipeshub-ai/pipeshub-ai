@@ -160,5 +160,10 @@ class AlertCooldown:
 
     async def mark_resolved(self, level: str, current: dict[str, Any]) -> bool:
         """Record that *level*'s alert was followed by a back-to-normal
-        notice, keeping the claim's original expiry."""
+        notice, keeping the claim's original expiry. A claim whose cooldown
+        is already over is deleted instead, so it cannot hold back the next
+        alert until the store expires it."""
+        if self._remaining_s(current) <= 0:
+            await self._call(self._config.delete_config(self.key(level)))
+            return True
         return await self._restore(level, {**current, "state": STATE_RESOLVED})

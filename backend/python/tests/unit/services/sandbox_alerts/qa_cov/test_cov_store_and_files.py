@@ -59,11 +59,12 @@ class TestCooldownRestore:
         assert await cooldown.mark_resolved("warning", claimed)
         assert store.ttls[KEY] == 86400 - 3600
 
-    async def test_a_claim_past_its_cooldown_is_not_marked(self) -> None:
+    async def test_a_claim_past_its_cooldown_is_deleted_not_marked(self) -> None:
         cooldown, store, clock = self._cooldown()
         claimed = {"alertId": "a", "state": STATE_CLAIMED, "claimedAt": int(T0 * 1000), "cooldownS": 86400}
+        store.values[KEY] = claimed
         clock.now = T0 + 86400
-        assert await cooldown.mark_resolved("warning", claimed) is False
+        assert await cooldown.mark_resolved("warning", claimed) is True
         assert KEY not in store.values
 
     async def test_a_release_whose_resolved_value_has_expired_deletes_the_claim(self) -> None:
