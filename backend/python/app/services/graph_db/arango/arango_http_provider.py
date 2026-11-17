@@ -1300,11 +1300,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         client = self.http_client
         if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
             guard = client.record_guard
+            # The guard's locked recheck decides, so a start that read a lower generation and paused cannot write after a newer
+            # image installed its own; an unreadable live schema is not written over (this attempt of the start fails).
             try:
-                if await guard.live_generation() >= guard.generation:
-                    return True
-            except Exception as error:  # unknown live schema: apply ours, as before
-                self.logger.warning("could not read the records schema generation: %s", error)
+                await guard.ensure_wide("startup")
+            except Exception as error:
+                self.logger.warning("could not apply the records schema: %s", error)
+                return False
+            return await guard.is_wide()
         return await client.update_collection_schema(name, schema)
 
     async def _record_schema_lock(self) -> RedisLock | None:

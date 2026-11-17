@@ -547,6 +547,41 @@ class TestTheGuardFollowsTheConnection:
         await provider.disconnect()
 
 
+class TestApplyingTheRecordsSchemaAtStart:
+    def _provider(self, server: FakeServer) -> Any:  # noqa: ANN401
+        from types import SimpleNamespace
+
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        provider = module.ArangoHTTPProvider(logger=logging.getLogger("test"), config_service=MagicMock())
+        provider.http_client = SimpleNamespace(record_guard=_guard(server), update_collection_schema=AsyncMock(return_value=True))  # type: ignore[assignment]
+        return provider
+
+    async def test_a_lower_live_generation_is_replaced_through_the_guard(self) -> None:
+        server = FakeServer(live=0)
+
+        assert await self._provider(server)._apply_schema("records", record_schema) is True
+        assert server.live == RECORD_SCHEMA_GENERATION and len(server.puts) == 1
+
+    async def test_a_live_schema_that_cannot_be_read_is_not_written_over(self) -> None:
+        server = FakeServer(live=0)
+
+        async def unreadable(name: str) -> None:
+            raise ConnectionError("down")
+
+        server.get_collection_schema = unreadable  # type: ignore[method-assign]
+        provider = self._provider(server)
+
+        assert await provider._apply_schema("records", record_schema) is False
+        assert server.puts == [] and not provider.http_client.update_collection_schema.await_count
+
+    async def test_a_newer_generation_is_left_alone(self) -> None:
+        server = FakeServer(live=RECORD_SCHEMA_GENERATION + 2)
+
+        assert await self._provider(server)._apply_schema("records", record_schema) is True
+        assert server.puts == []
+
+
 class TestTheErrorClass:
     def test_it_is_transient_to_the_retry_owners_and_classified_a_conflict(self) -> None:
         from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
