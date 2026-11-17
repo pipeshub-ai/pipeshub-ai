@@ -394,7 +394,7 @@ function classifyExit(
   exitedService: string | null = null,
 ): { code: LocalServerErrorCode; message: string } {
   const tail = logTail.join('\n');
-  // `port_in_use` is not a code the launcher emits today; kept so a future one still maps.
+  // The launcher reports port_in_use when the data folder's web port is taken (it never moves once the database exists).
   if (reported?.code === 'port_in_use' || PORT_IN_USE.test(tail)) {
     return { code: 'port_in_use', message: reported?.message ?? 'A network port PipesHub needs is already in use.' };
   }
