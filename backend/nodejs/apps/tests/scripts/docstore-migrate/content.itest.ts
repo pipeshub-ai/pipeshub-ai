@@ -15,7 +15,7 @@ import { REPOSITORIES } from '../../../src/libs/repositories/all';
 import type { Importable } from '../../../src/libs/repositories/import';
 import { SourceReport, prepareSource, toNeutral } from '../../../src/scripts/docstore-migrate/source';
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
-import { readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
+import { countByOrg, readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
 import { copyAgainInserts, copyAndCompare, jobsUnit, oid } from './roundtrip';
 import { ORG_A, ORG_B, SESSION_1, SESSION_2, USER_1, contentDocs, ids } from './fixtures/content';
@@ -181,6 +181,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const ids = rows.map((r: { id: string }) => Number(r.id));
       expect(ids).to.deep.equal([...ids].sort((a, b) => a - b));
       expect(rows[2].last_error).to.equal('broker down');
+    });
+
+    it('outbox: the verifier counts only the rows a copy holds, not the delivered rows the dispatcher keeps for a week', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'outbox_events')!;
+      const before = await jobsUnit((_tx, k) => countByOrg(k, m));
+      await stack.admin((c) => c.query(
+        "INSERT INTO platform.outbox (org_id, topic, msg_key, value, status, next_attempt_at, published_at, created_at, updated_at) VALUES ($1, 'entity-events', 'k', '{}', 'published', now(), now(), now(), now())",
+        [String(ORG_A)],
+      ));
+      try {
+        // published events are skipped on the MongoDB side (history, not copied); counting them here failed every verify after the
+        // application had delivered an event from PostgreSQL, which is what `rollback --online` runs
+        expect(await jobsUnit((_tx, k) => countByOrg(k, m))).to.deep.equal(before);
+      } finally {
+        await stack.admin((c) => c.query("DELETE FROM platform.outbox WHERE status = 'published'"));
+      }
     });
 
     it('authorization codes are stored hashed and the plain code is nowhere', async () => {
