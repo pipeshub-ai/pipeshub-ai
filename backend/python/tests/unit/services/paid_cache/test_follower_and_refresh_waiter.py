@@ -338,7 +338,7 @@ async def test_a_flush_that_lands_between_another_runs_read_and_write_is_not_dro
     store = MemoryResultStore()
     real_replace = store.replace
 
-    async def slow_replace(*args: Any) -> None:
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
         await asyncio.sleep(0.05)                                   # the window between a run's read and its write
         await real_replace(*args)
 
