@@ -15,6 +15,7 @@ from app.capacity.admission import docling_demand, llm_slot, parse_class
 from app.capacity.budget_policy import Demand, Family
 from app.capacity.member_budget import AdmissionTimeout
 from app.modules.parsers import parse_pool
+from tests.support import ledger_procs as lp
 from tests.support.member_budget_env import GIB, install_budget
 
 if TYPE_CHECKING:
@@ -370,8 +371,13 @@ async def test_a_pool_job_keeps_its_tokens_until_its_lane_has_finished_with_it(
             real_stop(self)
 
         monkeypatch.setattr(parse_pool._Worker, "stop", held_stop)
-        task = asyncio.create_task(parse_pool.submit(time.sleep, 5, label="t", size=1))
-        await asyncio.sleep(0.8)  # the worker is up and running the job
+        ready, release = tmp_path / "ready", tmp_path / "release"
+        task = asyncio.create_task(parse_pool.submit(lp.signal_ready_then_wait, str(ready), str(release), label="t", size=1))
+        for _ in range(300):  # the worker says it is running the job (bounded wait)
+            if ready.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert ready.exists(), "the worker never started the job"
         assert b.snapshot()["used"] == 1
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -386,5 +392,6 @@ async def test_a_pool_job_keeps_its_tokens_until_its_lane_has_finished_with_it(
         assert b.snapshot()["used"] == 0  # released when the lane finished with the job
     finally:
         stop_may_finish.set()  # before shutdown, so it does not wait on a held stop
+        (tmp_path / "release").write_text("go")
         parse_pool.shutdown_parse_pool()
         parse_pool.set_resource_governor(None)

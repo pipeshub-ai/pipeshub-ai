@@ -8,6 +8,7 @@ import random
 import signal
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.capacity.budget_policy import AdmissionPolicy, Demand, Family, plan_floors
@@ -158,3 +159,12 @@ def hold_then_leave_an_idle_child(directory: str, ready: Connection) -> None:
         os._exit(0)
     ready.send((pid, all(held)))
     os._exit(9)
+
+
+def signal_ready_then_wait(ready_path: str, release_path: str, seconds: float = 30.0) -> int:
+    """Runs in a pool worker: say it is running (a file), then wait until the test releases it (another file)."""
+    Path(ready_path).write_text("up")
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and not Path(release_path).exists():
+        time.sleep(0.02)
+    return 1
