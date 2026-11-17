@@ -3749,7 +3749,13 @@ class JiraConnector(BaseConnector):
                     break
 
                 members_data = response.json()
-                batch_members = members_data.get("values", [])
+                batch_members = members_data.get("values")
+                if not isinstance(batch_members, list):
+                    # Not an empty group: read as one, product access from it would withdraw every account.
+                    self.logger.warning(f"Members of group {group_name} came back without a member list")
+                    self._note_unread(None)
+                    ok = False
+                    break
 
                 if not batch_members:
                     break
@@ -4910,17 +4916,17 @@ class JiraConnector(BaseConnector):
         product access was unknown, or before they were listed, left out their grants)."""
         linked_before = {u.source_user_id for u in self._stored_app_users}
         newly = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
-        admitted: set[str] | None = None
-        if self._licensed_account_ids is not None:
-            admitted = {u.source_user_id for u in self._listed_without_email()}
-            try:
-                held = set(json.loads(
-                    ((await self.issues_sync_point.read_sync_point(ADMITTED_WITHOUT_EMAIL_KEY)) or {}).get("accounts") or "[]"))
-            except (TypeError, ValueError):
-                held = set()
-            newly |= admitted - held
+        try:
+            held = set(json.loads(
+                ((await self.issues_sync_point.read_sync_point(ADMITTED_WITHOUT_EMAIL_KEY)) or {}).get("accounts") or "[]"))
+        except (TypeError, ValueError):
+            held = set()
+        # Product access unknown: the directory holds none of them and issues written now leave their grants out, so
+        # none is held and the next sync that knows reads them all again.
+        admitted = {u.source_user_id for u in self._listed_without_email()}
+        newly |= admitted - held
         pending = await self._note_people_to_reread(newly)
-        if admitted is not None and admitted != held:
+        if admitted != held:
             # After the accounts to re-read are saved: a sync that fails in between re-reads them, never forgets them.
             await self.issues_sync_point.update_sync_point(ADMITTED_WITHOUT_EMAIL_KEY, {"accounts": json.dumps(sorted(admitted))})
         return pending
