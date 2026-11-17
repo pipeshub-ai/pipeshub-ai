@@ -12,13 +12,18 @@ unchanged, but only the calls the sandbox makes get through:
   (no privileged mode, binds, devices, host namespaces, port publishing,
   unconfined security profiles, or capabilities beyond the egress firewall's);
 - start / wait / kill / stop / logs / archive / inspect / remove, only on
-  containers this proxy created (it stamps a label at create time);
+  containers this proxy created (it stamps labels at create time, one of
+  them naming this stack, so stacks sharing a daemon cannot reach each
+  other's containers);
 - inspect / pull of the allowed sandbox images;
 - list networks, and create / inspect / remove the sandbox egress network
   (the egress firewall recreates it when it predates its required options).
 
 Path-only proxies cannot express the create rules: they allow
 ``/containers/create`` or they don't. That is why this one reads the body.
+
+It also removes its own sandbox containers that outlive any run (a worker
+that crashed mid-run leaves its container behind), see ``Reaper``.
 
 Stdlib only, so the proxy starts without importing the app's dependencies.
 Run with ``python -m app.sandbox.docker_proxy``.
@@ -27,18 +32,31 @@ Run with ``python -m app.sandbox.docker_proxy``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import signal
+import socket
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 logger = logging.getLogger("docker_proxy")
 
 MANAGED_LABEL = "ai.pipeshub.docker-proxy.managed"
+# Which stack's proxy created a container. Every stack stamps the same
+# MANAGED_LABEL, so on a daemon shared by several stacks only this label
+# keeps one stack's proxy (and its reaper) away from another's containers.
+INSTANCE_LABEL = "ai.pipeshub.docker-proxy.instance"
+DEFAULT_INSTANCE = "default"
+_INSTANCE_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,128}")
+_UPSTREAM_TIMEOUT_S = 30.0
 
 _DEFAULT_SANDBOX_IMAGE = "pipeshub/sandbox:latest"
 _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
@@ -257,8 +275,9 @@ class DockerApiPolicy:
 
         raise PolicyDenied(f"{method} {path} is not permitted")
 
-    def check_container_create(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Validate a create payload and return it with the ownership label."""
+    def check_container_create(self, body: dict[str, Any], instance: str = DEFAULT_INSTANCE) -> dict[str, Any]:
+        """Validate a create payload and return it with the ownership labels
+        (``instance`` names the stack; see ``INSTANCE_LABEL``)."""
         if not isinstance(body, dict):
             raise PolicyDenied("container create body must be a JSON object")
         _struct_object(body, _CREATE_FIELDS, "container create body", closed=True)
@@ -357,6 +376,7 @@ class DockerApiPolicy:
             raise PolicyDenied("Labels must be an object")
         labels = dict(raw_labels)
         labels[MANAGED_LABEL] = "true"
+        labels[INSTANCE_LABEL] = instance
         return {
             **body,
             "HostConfig": {**host, "LogConfig": {"Type": log_driver, "Config": {}}},
@@ -529,9 +549,12 @@ def _error_response(status: int, reason: str, message: str) -> bytes:
 
 
 class DockerSocketProxy:
-    def __init__(self, policy: DockerApiPolicy, upstream_socket: str) -> None:
+    def __init__(
+        self, policy: DockerApiPolicy, upstream_socket: str, *, instance: str = DEFAULT_INSTANCE,
+    ) -> None:
         self._policy = policy
         self._upstream = upstream_socket
+        self.instance = instance
         # The stream server holds a handler task only through its transport,
         # which the loop lets go of while reading is paused (a large body
         # arriving during the ownership lookup); a GC pass then collects the
@@ -539,10 +562,20 @@ class DockerSocketProxy:
         self._inflight: set[asyncio.Task[None]] = set()
 
     async def _upstream_json(self, path: str) -> tuple[int, Any]:
+        return await self._upstream_call("GET", path)
+
+    async def _upstream_call(
+        self, method: str, path: str, timeout: float = _UPSTREAM_TIMEOUT_S,
+    ) -> tuple[int, Any]:
+        """One bodiless request to the daemon, returning ``(status, json)``;
+        bounded by ``timeout`` so a hung daemon cannot hang the caller."""
+        return await asyncio.wait_for(self._upstream_request(method, path), timeout)
+
+    async def _upstream_request(self, method: str, path: str) -> tuple[int, Any]:
         reader, writer = await asyncio.open_unix_connection(self._upstream)
         try:
             writer.write(_serialize_head(
-                f"GET {path} HTTP/1.1", [("Host", "docker"), ("Connection", "close")]
+                f"{method} {path} HTTP/1.1", [("Host", "docker"), ("Connection", "close")]
             ))
             await writer.drain()
             raw = await reader.read()
@@ -566,6 +599,8 @@ class DockerSocketProxy:
             labels = (info.get("Config") or {}).get("Labels") or {}
         if labels.get(MANAGED_LABEL) != "true":
             raise PolicyDenied("container is not managed by the sandbox proxy")
+        if labels.get(INSTANCE_LABEL) != self.instance:
+            raise PolicyDenied("container is not managed by this sandbox proxy")
         return str(info["Id"])
 
     async def _check_network(self, ident: str) -> None:
@@ -616,7 +651,7 @@ class DockerSocketProxy:
             except ValueError as exc:
                 raise PolicyDenied("request body is not valid JSON") from exc
             if route.kind == "container_create":
-                payload = self._policy.check_container_create(payload)
+                payload = self._policy.check_container_create(payload, self.instance)
             else:
                 payload = self._policy.check_network_create(payload)
             body = json.dumps(payload).encode()
@@ -698,19 +733,238 @@ def _upstream_path(value: str) -> str:
     return value.removeprefix("unix://") if value.startswith("unix://") else value
 
 
-async def serve(host: str, port: int, upstream: str, policy: DockerApiPolicy) -> None:
-    proxy = DockerSocketProxy(policy, upstream)
+# --- Which stack this proxy serves ------------------------------------------
+
+
+async def resolve_instance(env: Mapping[str, str], upstream: str) -> str:
+    """The value stamped in ``INSTANCE_LABEL``, resolved once at startup.
+
+    1. ``DOCKER_PROXY_INSTANCE`` when set. An invalid value stops the proxy:
+       guessing would let two stacks share a label.
+    2. Else the Compose project of the proxy's own container
+       (``compose:<project>``), found by inspecting its hostname, which is
+       the container id unless the service sets ``hostname:``.
+    3. Else ``default``, with a warning.
+    """
+    raw = (env.get("DOCKER_PROXY_INSTANCE") or "").strip()
+    if raw:
+        if not _INSTANCE_RE.fullmatch(raw):
+            raise ValueError(
+                "DOCKER_PROXY_INSTANCE must be 1-128 characters from A-Z a-z 0-9 _ . : / -"
+            )
+        return raw
+    probe = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), upstream)
+    try:
+        status, info = await probe._upstream_call(
+            "GET", f"/containers/{quote(socket.gethostname(), safe='')}/json", timeout=10,
+        )
+    except (OSError, asyncio.TimeoutError, ValueError, IndexError):
+        status, info = 0, None
+    labels = ((info or {}).get("Config") or {}).get("Labels") or {} if status == 200 else {}
+    project = labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
+    if project:
+        candidate = f"compose:{project}"
+        if _INSTANCE_RE.fullmatch(candidate):
+            return candidate
+    logger.warning(
+        "docker proxy: no instance id (set DOCKER_PROXY_INSTANCE); if several stacks share "
+        "this Docker daemon they will see and reap each other's sandbox containers"
+    )
+    return DEFAULT_INSTANCE
+
+
+# --- Removing sandbox containers that outlive their run ---------------------
+
+_DEFAULT_MAX_RUN_TIMEOUT_S = 300.0
+_INSTALL_DEADLINE_S = 300.0
+# Covers archive upload before the start and extraction after the exit.
+_REAP_MARGIN_S = 120.0
+_DEFAULT_REAP_INTERVAL_S = 60.0
+_MIN_REAP_INTERVAL_S = 10.0
+_REAP_PASS_TIMEOUT_S = 30.0
+
+
+def _max_run_timeout_s(env: Mapping[str, str]) -> float:
+    """``SANDBOX_MAX_RUN_TIMEOUT_S``, parsed exactly as the app parses it
+    (``agent_loop_lib/sandbox/coding/settings.py``; this module is stdlib-only
+    and cannot import it): missing, invalid or ``<= 0`` → 300, else clamped
+    to 10..3600."""
+    raw = (env.get("SANDBOX_MAX_RUN_TIMEOUT_S") or "").strip()
+    try:
+        value = float(raw) if raw else _DEFAULT_MAX_RUN_TIMEOUT_S
+    except ValueError:
+        return _DEFAULT_MAX_RUN_TIMEOUT_S
+    if value != value or value <= 0:  # NaN
+        return _DEFAULT_MAX_RUN_TIMEOUT_S
+    return min(max(value, 10.0), 3600.0)
+
+
+@dataclass(frozen=True)
+class ReaperSettings:
+    reap_after_s: float | None  # None: the reaper is off
+    interval_s: float
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> ReaperSettings:
+        """``DOCKER_PROXY_REAP_AFTER_S`` (``0`` turns the reaper off) or, by
+        default, the longest a run or an install may take plus a margin;
+        ``DOCKER_PROXY_REAP_INTERVAL_S``, default 60, at least 10."""
+        env = os.environ if env is None else env
+        default_after = max(_max_run_timeout_s(env), _INSTALL_DEADLINE_S) + _REAP_MARGIN_S
+        reap_after: float | None = default_after
+        raw = (env.get("DOCKER_PROXY_REAP_AFTER_S") or "").strip()
+        if raw:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = -1.0
+            if value == 0:
+                reap_after = None
+            elif value > 0:
+                reap_after = value
+            else:
+                logger.warning("DOCKER_PROXY_REAP_AFTER_S=%r is not valid; using %gs", raw, default_after)
+        interval = _DEFAULT_REAP_INTERVAL_S
+        raw = (env.get("DOCKER_PROXY_REAP_INTERVAL_S") or "").strip()
+        if raw:
+            try:
+                interval = max(float(raw), _MIN_REAP_INTERVAL_S)
+            except ValueError:
+                logger.warning(
+                    "DOCKER_PROXY_REAP_INTERVAL_S=%r is not valid; using %gs", raw, _DEFAULT_REAP_INTERVAL_S,
+                )
+        return cls(reap_after_s=reap_after, interval_s=interval)
+
+
+class Reaper:
+    """Removes this stack's sandbox containers older than ``reap_after_s``.
+
+    A run's container normally lives for at most its timeout plus the time
+    to copy files in and out, and the app removes it when the run ends. One
+    left behind (the query worker crashed, or was killed mid-run) is not
+    counted anywhere and may run until its in-container deadline, or forever
+    in an image without ``timeout``. It runs here because the proxy is the
+    one process that holds the socket and outlives the query workers.
+    Only containers carrying this proxy's ``INSTANCE_LABEL`` are listed, so
+    other stacks on the same daemon are never touched.
+    """
+
+    def __init__(
+        self, proxy: DockerSocketProxy, settings: ReaperSettings, *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._proxy = proxy
+        self._settings = settings
+        self._clock = clock
+
+    async def run(self, stop: asyncio.Event) -> None:
+        reap_after = self._settings.reap_after_s
+        if reap_after is None:
+            logger.warning(
+                "docker proxy: the sandbox container reaper is off (DOCKER_PROXY_REAP_AFTER_S=0); "
+                "containers left behind by a crashed worker are not removed"
+            )
+            return
+        logger.info(
+            "docker proxy reaper: removes instance %r sandbox containers older than %gs, every %gs",
+            self._proxy.instance, reap_after, self._settings.interval_s,
+        )
+        await self._report_legacy()
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(self.reap_once(), _REAP_PASS_TIMEOUT_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("reaper: pass skipped: %s", exc)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), self._settings.interval_s)
+
+    async def reap_once(self) -> int:
+        """One pass; returns how many containers it removed."""
+        reap_after = self._settings.reap_after_s
+        if reap_after is None:
+            return 0
+        status, listed = await self._proxy._upstream_call(
+            "GET", _containers_query(f"{INSTANCE_LABEL}={self._proxy.instance}"),
+        )
+        if status != 200 or not isinstance(listed, list):
+            raise RuntimeError(f"listing containers returned {status}")
+        now = self._clock()
+        removed = 0
+        for item in listed:
+            if not isinstance(item, dict):
+                continue
+            created = item.get("Created")
+            ident = str(item.get("Id") or "")
+            if not ident or not isinstance(created, (int, float)) or now - created <= reap_after:
+                continue
+            delete_status, _ = await self._proxy._upstream_call(
+                "DELETE", f"/containers/{quote(ident, safe='')}?force=1",
+            )
+            if delete_status in (200, 204, 404):
+                removed += delete_status != 404
+                if delete_status != 404:
+                    logger.warning(
+                        "reaped sandbox container %.12s (state=%s, age=%ds > %ds)",
+                        ident, item.get("State"), int(now - created), int(reap_after),
+                    )
+            else:
+                logger.warning("reaper: removing %.12s returned %s", ident, delete_status)
+        if removed:
+            logger.info("reaper: removed %d container(s)", removed)
+        return removed
+
+    async def _report_legacy(self) -> None:
+        """Containers from a proxy that predates the instance label are
+        never reaped (they may belong to another stack); say how many."""
+        try:
+            status, listed = await self._proxy._upstream_call(
+                "GET", _containers_query(f"{MANAGED_LABEL}=true"),
+            )
+        except Exception as exc:
+            logger.debug("reaper: legacy count failed: %s", exc)
+            return
+        if status != 200 or not isinstance(listed, list):
+            return
+        legacy = sum(
+            1 for item in listed
+            if isinstance(item, dict) and INSTANCE_LABEL not in (item.get("Labels") or {})
+        )
+        if legacy:
+            logger.info("%d sandbox container(s) from an older proxy are not reaped automatically", legacy)
+
+
+def _containers_query(label: str) -> str:
+    filters = json.dumps({"label": [label]}, separators=(",", ":"))
+    return f"/containers/json?all=1&filters={quote(filters, safe='')}"
+
+
+async def serve(
+    host: str, port: int, upstream: str, policy: DockerApiPolicy, *,
+    instance: str | None = None, reaper: ReaperSettings | None = None,
+) -> None:
+    if instance is None:
+        instance = await resolve_instance(os.environ, upstream)
+    proxy = DockerSocketProxy(policy, upstream, instance=instance)
     server = await asyncio.start_server(proxy.handle, host, port, limit=_MAX_HEAD_BYTES)
     logger.info(
-        "docker proxy listening on %s:%d -> %s (images=%s networks=%s)",
-        host, port, upstream, sorted(policy.allowed_images), sorted(policy.allowed_networks),
+        "docker proxy listening on %s:%d -> %s (instance=%s images=%s networks=%s)",
+        host, port, upstream, instance, sorted(policy.allowed_images), sorted(policy.allowed_networks),
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
-    async with server:
-        await stop.wait()
+    reaper_task = asyncio.create_task(
+        Reaper(proxy, reaper or ReaperSettings.from_env()).run(stop), name="docker-proxy-reaper",
+    )
+    try:
+        async with server:
+            await stop.wait()
+    finally:
+        reaper_task.cancel()
+        await asyncio.gather(reaper_task, return_exceptions=True)
 
 
 def main() -> None:

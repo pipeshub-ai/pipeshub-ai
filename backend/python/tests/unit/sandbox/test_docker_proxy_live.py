@@ -8,6 +8,7 @@ Skipped unless a daemon and the sandbox image are present. Run with:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -145,3 +146,83 @@ def test_containers_the_proxy_did_not_create_are_untouchable(proxy_host) -> None
         victim.remove(force=True)
         direct.close()
         proxied.close()
+
+
+def _start_proxy(instance: str) -> tuple[str, DockerSocketProxy, asyncio.AbstractEventLoop, threading.Thread]:
+    loop = asyncio.new_event_loop()
+    policy = DockerApiPolicy(
+        allowed_images=frozenset({DOCKER_TEST_IMAGE}), allowed_networks=frozenset({EGRESS}),
+    )
+    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", instance=instance)
+    server = loop.run_until_complete(asyncio.start_server(proxy.handle, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    return f"tcp://127.0.0.1:{port}", proxy, loop, thread
+
+
+def test_reaper_removes_only_its_own_stacks_old_containers() -> None:
+    import time
+    import uuid
+
+    import docker
+    from docker.errors import APIError
+
+    from app.sandbox.docker_proxy import Reaper, ReaperSettings
+
+    available, reason = docker_available()
+    if not available:
+        pytest.skip(reason)
+    suffix = uuid.uuid4().hex[:8]
+    host_a, proxy_a, loop_a, thread_a = _start_proxy(f"it-a-{suffix}")
+    host_b, _proxy_b, loop_b, thread_b = _start_proxy(f"it-b-{suffix}")
+    client_a, client_b = docker.DockerClient(base_url=host_a), docker.DockerClient(base_url=host_b)
+    limits = {"mem_limit": 64 * 1024 * 1024, "nano_cpus": 100_000_000, "pids_limit": 16, "network_mode": "none"}
+    a = client_a.containers.create(DOCKER_TEST_IMAGE, ["sleep", "100"], **limits)
+    b = client_b.containers.create(DOCKER_TEST_IMAGE, ["sleep", "100"], **limits)
+    try:
+        a.start()
+        b.start()
+        with pytest.raises(APIError) as exc:
+            client_a.api.inspect_container(b.id)
+        assert exc.value.status_code == 403
+
+        time.sleep(3)
+        reaper = Reaper(proxy_a, ReaperSettings(reap_after_s=2, interval_s=1))
+        removed = asyncio.run_coroutine_threadsafe(reaper.reap_once(), loop_a).result(30)
+        assert removed == 1
+        with pytest.raises(APIError):
+            client_b.api.inspect_container(a.id)  # gone (and never B's to see)
+        assert client_b.api.inspect_container(b.id)["State"]["Running"] is True
+    finally:
+        for client, cid in ((client_a, a.id), (client_b, b.id)):
+            with contextlib.suppress(APIError):
+                client.api.remove_container(cid, force=True)
+            client.close()
+        for loop, thread in ((loop_a, thread_a), (loop_b, thread_b)):
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+
+
+async def test_stop_removes_the_container_through_the_proxy(proxy_host, tmp_path) -> None:
+    from app.agent_loop_lib.core.context import CancellationToken
+    from app.agent_loop_lib.sandbox.coding.base import CodeRequest
+    from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
+    from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
+    from app.agent_loop_lib.sandbox.manager import SandboxCallStopped, SandboxManager
+
+    provider = DockerClientProvider(max_workers=2)
+    sb = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), image=DOCKER_TEST_IMAGE, provider=provider)
+    await sb.provision()
+    token = CancellationToken()
+    manager = SandboxManager(stop_token=token)
+    asyncio.get_running_loop().call_later(2, token.cancel)
+    try:
+        with pytest.raises(SandboxCallStopped):
+            await asyncio.wait_for(manager.unless_stopped(
+                lambda: sb.execute(CodeRequest(code="while True: pass", language="python", timeout=120)),
+                tool="run_code",
+            ), 15)
+    finally:
+        await sb.destroy()
+        provider.close()

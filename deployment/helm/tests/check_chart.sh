@@ -61,6 +61,7 @@ VARIANTS=(
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "dind-run-cap|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set config.sandboxMaxRunTimeoutS=900"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
@@ -164,12 +165,12 @@ fi
 # The DinD daemon must be reachable only through the policy proxy: no TCP
 # listener (pod containers share one network namespace), and its socket volume
 # mounted into dind and docker-proxy alone, never the app container.
-check_docker_proxy() { # variant
+check_docker_proxy() { # variant [expected SANDBOX_MAX_RUN_TIMEOUT_S, default 300]
   local doc="$OUT/$1.yaml"
   [[ -f "$doc" ]] || return 0
   expect "$1" 'app.docker_proxy_main' present
   expect "$1" '--host=tcp://' absent
-  if python3 - "$doc" <<'PY'; then echo "ok $1: dind socket reachable only through docker-proxy"; else failed=1; fi
+  if python3 - "$doc" "${2:-300}" <<'PY'; then echo "ok $1: dind socket reachable only through docker-proxy"; else failed=1; fi
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
 pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
@@ -186,12 +187,22 @@ if env.get("DOCKER_PROXY_HOST") != "127.0.0.1":
 app_env = {e["name"]: e.get("value") for e in containers["pipeshub-ai"].get("env") or []}
 if app_env.get("DOCKER_HOST") != f"tcp://127.0.0.1:{env.get('DOCKER_PROXY_PORT')}":
     errors.append(f"app DOCKER_HOST {app_env.get('DOCKER_HOST')!r} is not the docker-proxy listener")
+# The proxy's reaper age follows the run-time cap, so both must get the same value.
+cap = sys.argv[2]
+if app_env.get("SANDBOX_MAX_RUN_TIMEOUT_S") != cap or env.get("SANDBOX_MAX_RUN_TIMEOUT_S") != cap:
+    errors.append(
+        f"SANDBOX_MAX_RUN_TIMEOUT_S is {app_env.get('SANDBOX_MAX_RUN_TIMEOUT_S')!r} on the app and "
+        f"{env.get('SANDBOX_MAX_RUN_TIMEOUT_S')!r} on docker-proxy, expected {cap!r} on both"
+    )
+if env.get("DOCKER_PROXY_INSTANCE") != "default/ci-pipeshub-ai":
+    errors.append(f"docker-proxy DOCKER_PROXY_INSTANCE is {env.get('DOCKER_PROXY_INSTANCE')!r}")
 for e in errors:
     print(f"!! {sys.argv[1]}: {e}")
 sys.exit(1 if errors else 0)
 PY
 }
 check_docker_proxy defaults-dind
+check_docker_proxy dind-run-cap 900
 check_docker_proxy eks
 check_docker_proxy eks-single-az
 

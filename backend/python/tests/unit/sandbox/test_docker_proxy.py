@@ -15,6 +15,7 @@ from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     firewalled_container_kwargs,
 )
 from app.sandbox.docker_proxy import (
+    INSTANCE_LABEL,
     MANAGED_LABEL,
     DockerApiPolicy,
     DockerSocketProxy,
@@ -172,7 +173,12 @@ class TestContainerCreate:
     def test_label_cannot_be_spoofed_off(self, policy: DockerApiPolicy) -> None:
         body = _sdk_create_body(**_LEGACY_RUN, labels={MANAGED_LABEL: "false", "keep": "1"})
         out = policy.check_container_create(body)
-        assert out["Labels"] == {MANAGED_LABEL: "true", "keep": "1"}
+        assert out["Labels"] == {MANAGED_LABEL: "true", INSTANCE_LABEL: "default", "keep": "1"}
+
+    def test_instance_label_is_stamped_over_a_client_value(self, policy: DockerApiPolicy) -> None:
+        body = _sdk_create_body(**_LEGACY_RUN, labels={INSTANCE_LABEL: "someone-else"})
+        out = policy.check_container_create(body, "stack-a")
+        assert out["Labels"][INSTANCE_LABEL] == "stack-a"
 
     @pytest.mark.parametrize("extra", [
         {"privileged": True},
@@ -420,15 +426,18 @@ async def _request(port: int, raw: bytes) -> bytes:
 
 @pytest.fixture
 async def proxied(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_FakeDaemon, int]]:
-    owned = {"Id": "f" * 64, "Config": {"Labels": {MANAGED_LABEL: "true"}}}
+    owned = {"Id": "f" * 64, "Config": {"Labels": {MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-a"}}}
     foreign = {"Id": "e" * 64, "Config": {"Labels": {}}}
+    other_stack = {"Id": "d" * 64, "Config": {"Labels": {MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-b"}}}
+    older_proxy = {"Id": "c" * 64, "Config": {"Labels": {MANAGED_LABEL: "true"}}}
     daemon = _FakeDaemon(
-        {"owned": owned, "f" * 64: owned, "foreign": foreign},
+        {"owned": owned, "f" * 64: owned, "foreign": foreign,
+         "other-stack": other_stack, "older-proxy": older_proxy},
         networks={"egressid": {"Name": EGRESS}, "appnetid": {"Name": "pipeshub-ai_pipeshub"}},
     )
     sock = str(tmp_path / "d.sock")
     upstream = await asyncio.start_unix_server(daemon.handle, sock)
-    proxy = DockerSocketProxy(policy, sock)
+    proxy = DockerSocketProxy(policy, sock, instance="stack-a")
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     yield daemon, port
@@ -488,6 +497,13 @@ class TestProxyServer:
         assert resp.startswith(b"HTTP/1.1 200")
         sent = json.loads(daemon.requests[-1][2])
         assert sent["Labels"][MANAGED_LABEL] == "true"
+        assert sent["Labels"][INSTANCE_LABEL] == "stack-a"
+
+    async def test_another_stacks_container_is_refused_by_name(self, proxied) -> None:
+        _daemon, port = proxied
+        resp = await _request(port, b"GET /containers/other-stack/json HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert resp.startswith(b"HTTP/1.1 403")
+        assert b"not managed by this sandbox proxy" in resp
 
     async def test_chunked_create_body_is_read(self, proxied) -> None:
         daemon, port = proxied
@@ -513,7 +529,7 @@ class TestProxyServer:
         assert resp.startswith(b"HTTP/1.1 200")
         assert daemon.requests[-1][:2] == ("POST", f"/v1.43/containers/{'f' * 64}/start")
 
-    @pytest.mark.parametrize("name", ["foreign", "missing"])
+    @pytest.mark.parametrize("name", ["foreign", "missing", "other-stack", "older-proxy"])
     async def test_unowned_container_is_refused(self, proxied, name: str) -> None:
         daemon, port = proxied
         resp = await _request(port, f"PUT /containers/{name}/archive?path=/ HTTP/1.1\r\nHost: x\r\n"

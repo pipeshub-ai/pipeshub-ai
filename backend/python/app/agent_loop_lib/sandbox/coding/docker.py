@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import os
 import shutil
 import tarfile
@@ -40,6 +41,7 @@ from app.agent_loop_lib.sandbox.coding.docker_client import (
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
     create_sandbox_container,
+    deadline_command,
     firewall_unavailable,
     firewalled_container_kwargs,
     new_firewall_token,
@@ -163,6 +165,12 @@ _OOM_NOTE = (
     "over this sandbox's {limit} MB per run, or the server itself was short of memory. "
     "Use less memory (process data in chunks, smaller types) and try again.\n"
 )
+_INSTALL_TIMEOUT_S = 300
+_INSTALL_TIMEOUT_NOTE = "[sandbox] Package installation timed out after {seconds}s.\n"
+# The host waits this much longer than the in-container deadline, so the
+# deadline is the normal way a run ends at its timeout and the host-side kill
+# is only the fallback.
+_HOST_WAIT_MARGIN_S = 10
 _INSTALL_OOM_NOTE = (
     "[sandbox] Package installation ran out of memory (limit {limit} MB). "
     "Install fewer packages at once, or pick lighter ones.\n"
@@ -205,6 +213,9 @@ class _RunOutcome:
     stderr: str
     oom_killed: bool = False
     ran_s: float | None = None
+    # The program ran for (about) its whole timeout: the in-container
+    # deadline or the host killed it.
+    deadline_hit: bool = False
 
 
 def _parse_docker_time(value: object) -> float | None:
@@ -372,7 +383,10 @@ class DockerCodingSandbox(CodingSandboxBackend):
         with open(os.path.join(src_dir, entry), "w", encoding="utf-8") as f:
             f.write(request.code)
 
-        run_cmd = ["sh", "-c", _RUN_COMMANDS[request.language].format(file=entry)]
+        run_cmd = deadline_command(
+            ["sh", "-c", _RUN_COMMANDS[request.language].format(file=entry)],
+            math.ceil(request.timeout),
+        )
 
         # Everything `upload_file()` has ever staged into the working dir
         # (input artifacts from `input_artifacts`, skill resources, files
@@ -465,14 +479,24 @@ class DockerCodingSandbox(CodingSandboxBackend):
     ) -> CodeResult:
         """The `CodeResult` for a finished run container.
 
-        The kernel's OOM flag is checked first, because a 137 exit alone
-        cannot tell an out-of-memory kill from any other SIGKILL. When the
-        flag is set but the program still exited 0 (a child process was
-        killed and the parent carried on), the run stays a success and only
-        gets the note.
+        A run that lasted its whole timeout is a timeout, checked first: the
+        in-container deadline kills with SIGKILL, so its 137 looks like any
+        other kill, and it never sets the OOM flag. The kernel's OOM flag is
+        checked next, because a 137 exit alone cannot tell an out-of-memory
+        kill from any other SIGKILL. When the flag is set but the program
+        still exited 0 (a child process was killed and the parent carried
+        on), the run stays a success and only gets the note.
         """
         stderr = network_note + outcome.stderr
         exit_code = outcome.exit_code
+        if outcome.deadline_hit and exit_code != 0:
+            result = CodeResult(
+                stdout=outcome.stdout,
+                stderr=f"Execution timed out after {request.timeout}s\n{stderr}".strip(),
+                exit_code=-1, language=request.language, duration_ms=duration_ms,
+                artifacts=artifacts,
+            )
+            return result.model_copy(update={"error_analysis": self._reflection.analyze(result)})
         if outcome.oom_killed:
             stderr = _OOM_NOTE.format(limit=self._memory_limit_mb) + stderr
             if exit_code != 0:
@@ -890,7 +914,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             timed_out = False
             oom_killed, ran_s = False, None
             try:
-                exit_info = container.wait(timeout=timeout)
+                exit_info = container.wait(timeout=timeout + _HOST_WAIT_MARGIN_S)
                 exit_code = exit_info.get("StatusCode", -1)
             except Exception:
                 timed_out = True
@@ -920,7 +944,13 @@ class DockerCodingSandbox(CodingSandboxBackend):
             os.makedirs(self._output_dir, exist_ok=True)
             _extract_container_dir(container, "/output", self._output_dir)
             _extract_container_dir(container, "/src", src_dir)
-            return _RunOutcome(exit_code, stdout, stderr, oom_killed=oom_killed, ran_s=ran_s)
+            # The exit status after `timeout -s KILL` is not a reliable signal
+            # (137, or 124 from some builds), so the run time decides.
+            deadline_hit = timed_out or (ran_s is not None and ran_s >= timeout - 1)
+            return _RunOutcome(
+                exit_code, stdout, stderr, oom_killed=oom_killed, ran_s=ran_s,
+                deadline_hit=deadline_hit,
+            )
         finally:
             if container is not None:
                 try:
@@ -997,7 +1027,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         token = new_firewall_token()
         exit_code, stdout, stderr = self._install_in_container(
             client, network_name, extract_path, host_target, to_install,
-            self._firewalled(cmd, egress_cidrs, token), handle,
+            self._firewalled(deadline_command(cmd, _INSTALL_TIMEOUT_S), egress_cidrs, token), handle,
         )
         if firewall_unavailable(exit_code, stderr, token):
             logger.error(
@@ -1035,14 +1065,29 @@ class DockerCodingSandbox(CodingSandboxBackend):
             if handle.cancelled.is_set():
                 raise _RunCancelled
             container.start()
-            exit_info = container.wait(timeout=300)
+            try:
+                exit_info = container.wait(timeout=_INSTALL_TIMEOUT_S + _HOST_WAIT_MARGIN_S)
+                timed_out = False
+            except Exception:
+                # The deadline inside the container failed to end it (an image
+                # without `timeout`); a raw read-timeout text would reach the model.
+                if handle.cancelled.is_set():
+                    raise _RunCancelled from None
+                timed_out = True
+                exit_info = {"StatusCode": -1}
+                try:
+                    container.kill()
+                except Exception:
+                    pass
             if handle.cancelled.is_set():
                 raise _RunCancelled
             exit_code = exit_info.get("StatusCode", -1)
-            oom_killed, _ran_s = _container_exit_state(container)
+            oom_killed, ran_s = _container_exit_state(container) if not timed_out else (False, None)
             stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
             stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
-            if oom_killed and exit_code != 0:
+            if exit_code != 0 and (timed_out or (ran_s is not None and ran_s >= _INSTALL_TIMEOUT_S - 1)):
+                stderr = _INSTALL_TIMEOUT_NOTE.format(seconds=_INSTALL_TIMEOUT_S) + stderr
+            elif oom_killed and exit_code != 0:
                 stderr = _INSTALL_OOM_NOTE.format(limit=self._memory_limit_mb) + stderr
             logger.info(
                 "_install_packages_sync: container %.12s exit_code=%d "

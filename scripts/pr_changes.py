@@ -208,6 +208,17 @@ CHECKS["redis_cluster"] = (
     )
 )
 
+# unit-test.yml's sandbox-live job: builds the sandbox image and runs the
+# Docker-marked tests against a real daemon, which the unit shards skip.
+CHECKS["sandbox_live"] = (
+    f"{PYTHON}/app/agent_loop_lib/sandbox/**",
+    f"{PYTHON}/app/sandbox/**",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/test_docker_live.py",
+    f"{PYTHON}/tests/unit/sandbox/test_docker_proxy_live.py",
+    "deployment/sandbox/**",
+    ".github/workflows/unit-test.yml",
+)
+
 # integration-tests.yml's helper unit tests (mocks only). The shards run them
 # first; a pull request that runs no shard runs them in a job of their own.
 CHECKS["integration_helpers"] = (

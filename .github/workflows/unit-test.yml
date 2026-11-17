@@ -17,6 +17,8 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The sandbox-live job builds the sandbox image from it.
+      - 'deployment/sandbox/**'
       # The knowledge-hub sort-field parity test reads it (pr_changes.py python_unit).
       - 'frontend/app/(main)/knowledge-base/sort-fields.json'
       - 'scripts/unit_shards.py'
@@ -64,6 +66,7 @@ jobs:
       node_unit: ${{ steps.changes.outputs.node_unit }}
       python_unit: ${{ steps.changes.outputs.python_unit }}
       redis_cluster: ${{ steps.changes.outputs.redis_cluster }}
+      sandbox_live: ${{ steps.changes.outputs.sandbox_live }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -459,6 +462,59 @@ jobs:
             --ignore=tests/integration/graph_db/postgres \
             --ignore=tests/integration/skills/test_npm_import_live.py \
             -v --timeout=300 --session-timeout=900
+
+  # The `-m docker` tests (real containers from the sandbox image, the Docker
+  # proxy, out-of-memory kills, the in-container deadline, the reaper, cancel
+  # and Stop) skip everywhere else, because nothing else builds the image.
+  sandbox-live:
+    needs: changes
+    if: needs.changes.outputs.sandbox_live == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Docker daemon details
+        run: docker info --format 'cgroup v{{.CgroupVersion}} ({{.CgroupDriver}}), storage {{.Driver}}, {{.NCPU}} CPUs, {{.MemTotal}} bytes'
+
+      - name: Build the sandbox image
+        run: |
+          docker pull pipeshubai/pipeshub-sandbox:latest || true
+          docker build --cache-from pipeshubai/pipeshub-sandbox:latest \
+            -t pipeshubai/pipeshub-sandbox:local deployment/sandbox
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the live Docker tests
+        working-directory: backend/python
+        env:
+          SANDBOX_TEST_IMAGE: pipeshubai/pipeshub-sandbox:local
+        run: |
+          pytest -m docker -rs \
+            tests/unit/agent_loop_lib/sandbox/test_docker_live.py \
+            tests/unit/sandbox/test_docker_proxy_live.py \
+            --timeout=600
 
   # One check for everything the single python-unit-tests job used to run, so a
   # required status check keeps one name however the shards change.

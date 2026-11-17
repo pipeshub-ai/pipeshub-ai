@@ -163,7 +163,19 @@ class TestNothingTheOldTriggersCoveredIsDropped(unittest.TestCase):
     def test_unit_test_triggers(self) -> None:
         for glob in self._paths("unit-test.yml"):
             with self.subTest(glob=glob):
-                self.assertTrue(runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster"})
+                self.assertTrue(
+                    runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster", "sandbox_live"}
+                )
+
+    def test_sandbox_live_runs_on_sandbox_changes_only(self) -> None:
+        for path in (
+            "deployment/sandbox/Dockerfile",
+            "backend/python/app/sandbox/docker_proxy.py",
+            "backend/python/app/agent_loop_lib/sandbox/coding/docker.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("sandbox_live", runs(path))
+        self.assertNotIn("sandbox_live", runs("backend/python/app/connectors/core/base.py"))
 
     def test_backend_matrix_triggers(self) -> None:
         # Every old trigger still starts the storage job; every one outside Node

@@ -25,7 +25,8 @@ FILES=(
 
 # variable|default|override|where ("app", "proxy" or "app proxy")
 VARS=(
-  "SANDBOX_MAX_RUN_TIMEOUT_S|300|900|app"
+  "SANDBOX_MAX_RUN_TIMEOUT_S|300|900|app proxy"
+  "DOCKER_PROXY_INSTANCE||stack-a|proxy"
 )
 
 # render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables.

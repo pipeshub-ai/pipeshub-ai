@@ -605,6 +605,14 @@ spec:
               value: {{ .Values.config.sandboxDockerImage | quote }}
             - name: SANDBOX_EGRESS_NETWORK
               value: {{ .Values.config.sandboxEgressNetwork | quote }}
+            # The same value the app gets: the reaper removes sandbox
+            # containers older than this cap plus a margin.
+            - name: SANDBOX_MAX_RUN_TIMEOUT_S
+              value: {{ .Values.config.sandboxMaxRunTimeoutS | quote }}
+            # Labels this release's sandbox containers, so releases sharing a
+            # daemon never see or reap each other's.
+            - name: DOCKER_PROXY_INSTANCE
+              value: {{ printf "%s/%s" .Release.Namespace (include "pipeshub-ai.fullname" .) | quote }}
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
           resources:

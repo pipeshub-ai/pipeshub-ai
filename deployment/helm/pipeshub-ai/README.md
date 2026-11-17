@@ -342,6 +342,17 @@ refuses to install without one:
 - `config.dockerHost` points at a daemon you run. Put the same proxy in front
   of it. Never expose a raw dockerd.
 
+`config.sandboxMaxRunTimeoutS` (default 300, 10..3600) is the most seconds one
+`run_code` run may take; a larger timeout asked for by the model is lowered to
+it. Set the run-time cap only through `config.sandboxMaxRunTimeoutS`, never
+through `extraEnv`: `extraEnv` reaches only the app container, so the proxy's
+reaper would keep its 420 s age and kill longer runs mid-way. The proxy removes
+this release's sandbox containers that are older than the cap (at least 300 s,
+the install deadline) plus 120 s, for example after a crashed worker left one
+behind. Its containers carry the label
+`ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`, so releases that
+share a daemon through `config.dockerHost` never reach each other's containers.
+
 Mounting a container-runtime socket into the application container would give
 the app, and any code it runs, root on the node. At render time the chart refuses
 `extraVolumes`/`volumes` and `extraVolumeMounts`/`volumeMounts` that:

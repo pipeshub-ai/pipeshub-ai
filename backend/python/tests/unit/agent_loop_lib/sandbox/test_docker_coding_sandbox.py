@@ -262,7 +262,10 @@ class TestExecuteHappyPath:
             await sandbox.execute(CodeRequest(code="print(1)", language="python"))
 
         _, kwargs = fake_client.containers.create.call_args
-        assert kwargs["command"] == ["sh", "-c", "python3 main.py"]
+        # Wrapped in the in-container deadline, which carries ceil(timeout).
+        assert kwargs["command"][:2] == ["sh", "-c"]
+        assert kwargs["command"][3:5] == ["sandbox-deadline", "30"]
+        assert kwargs["command"][5:] == ["sh", "-c", "python3 main.py"]
         assert kwargs["network_mode"] == "none"
         assert kwargs["network_disabled"] is True
 
@@ -380,7 +383,8 @@ class TestNetworkAccess:
         assert kwargs["network_disabled"] is False
         assert "network_mode" not in kwargs
         # Firewall first, then the program as `sandbox` with nothing left.
-        assert kwargs["command"][4:] == ["sh", "-c", "python3 main.py"]
+        assert kwargs["command"][4:8] == ["sh", "-c", kwargs["command"][6], "sandbox-deadline"]
+        assert kwargs["command"][9:] == ["sh", "-c", "python3 main.py"]
         assert kwargs["user"] == "0"
         assert kwargs["cap_drop"] == ["ALL"]
         script = kwargs["command"][2]
@@ -575,7 +579,8 @@ class TestInstallPackagesIdempotency:
             assert fake_client.containers.create.call_count == 1
             kwargs = fake_client.containers.create.call_args.kwargs
             assert kwargs["network"] == "sandbox_egress"
-            assert "pip install" in kwargs["command"][6]
+            assert kwargs["command"][7:9] == ["sandbox-deadline", "300"]
+            assert "pip install" in kwargs["command"][11]
             assert "-d 169.254.0.0/16 -j REJECT" in kwargs["command"][2]
 
             second = await sandbox.install_packages(["pandas"], "python")
@@ -1121,3 +1126,64 @@ async def _immediate_timeout(awaitable: object, timeout: float) -> None:
     await asyncio.sleep(0.05)
     inner.cancel()
     raise asyncio.TimeoutError
+
+
+class TestInContainerDeadline:
+    async def _run(self, tmp_path, container, timeout: float = 30) -> object:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        with patch("docker.from_env", return_value=fake_client):
+            return await sandbox.execute(CodeRequest(code="while True: pass", language="python", timeout=timeout))
+
+    async def test_host_waits_past_the_in_container_deadline(self, tmp_path) -> None:
+        container = _fake_container(exit_code=0)
+        await self._run(tmp_path, container, timeout=30)
+        container.wait.assert_called_once_with(timeout=40)
+
+    async def test_a_kill_after_the_whole_timeout_is_a_timeout(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(started="2026-01-01T00:00:00Z", finished="2026-01-01T00:00:30.2Z")
+        result = await self._run(tmp_path, container, timeout=30)
+
+        assert result.exit_code == -1
+        assert result.stderr.startswith("Execution timed out after 30")
+        assert result.error_analysis.category == ErrorCategory.TIMEOUT
+
+    async def test_an_early_kill_without_the_oom_flag_is_a_hedged_out_of_memory(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(started="2026-01-01T00:00:00Z", finished="2026-01-01T00:00:02Z")
+        result = await self._run(tmp_path, container, timeout=30)
+
+        assert result.exit_code == 137
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert result.error_analysis.message.startswith("The run was killed (SIGKILL)")
+
+    async def test_install_past_its_deadline_says_so(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(started="2026-01-01T00:00:00Z", finished="2026-01-01T00:05:00.5Z")
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.install_packages(["pandas"], "python")
+
+        container.wait.assert_called_once_with(timeout=310)
+        assert result.success is False
+        assert result.stderr.startswith("[sandbox] Package installation timed out after 300s.")
+
+    async def test_install_host_wait_timeout_is_not_a_raw_read_timeout(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=0)
+        container.wait.side_effect = TimeoutError("UnixHTTPConnectionPool: Read timed out.")
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.install_packages(["pandas"], "python")
+
+        assert result.success is False
+        assert result.stderr.startswith("[sandbox] Package installation timed out after 300s.")
+        assert "UnixHTTPConnectionPool" not in result.stderr
+        container.kill.assert_called_once()

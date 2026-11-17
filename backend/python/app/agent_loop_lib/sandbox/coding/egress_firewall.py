@@ -39,6 +39,7 @@ __all__ = [
     "FIREWALL_UNAVAILABLE_EXIT_CODE",
     "build_firewall_script",
     "create_sandbox_container",
+    "deadline_command",
     "ensure_egress_network_sync",
     "firewall_unavailable",
     "firewalled_container_kwargs",
@@ -261,6 +262,25 @@ def firewalled_container_kwargs(
         "user": "0",
         "cap_add": list(_FIREWALL_SETUP_CAPS),
     }
+
+
+# `timeout -s KILL` ends the program (and, through its process group, any
+# children it started) after N seconds even if nothing on the host is left to
+# do it, e.g. after the worker that started the run crashed. An image without
+# `timeout` still runs the command; the Docker proxy's reaper is then the
+# only backstop for an orphaned container.
+_DEADLINE_SCRIPT = (
+    "s=$1; shift\n"
+    'if command -v timeout >/dev/null 2>&1; then exec timeout -s KILL "$s" "$@"; fi\n'
+    'exec "$@"\n'
+)
+
+
+def deadline_command(command: list[str], seconds: int) -> list[str]:
+    """``command`` wrapped so it is SIGKILLed after ``seconds`` from inside
+    the container. Composes with ``firewalled_container_kwargs``: passed as
+    its ``command``, the deadline starts after the privilege drop."""
+    return ["sh", "-c", _DEADLINE_SCRIPT, "sandbox-deadline", str(int(seconds)), *command]
 
 
 def firewall_unavailable(exit_code: int, stderr: str, token: str) -> bool:
