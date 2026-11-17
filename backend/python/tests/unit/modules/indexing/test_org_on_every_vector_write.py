@@ -263,7 +263,7 @@ async def test_membership_sync_without_an_org_raises(db) -> None:
 async def test_rewrite_or_delete_deletes_only_its_orgs_points(db) -> None:
     with _as(B):
         outcome = await rewrite_or_delete_virtual_record(db, StaticCollectionLocator([COLL]), _graph([]), VRID, MagicMock())
-    assert outcome == "deleted"
+    assert outcome == "kept"  # B's points went; A's keep the mapping row
     assert _ids(db) == {"a-b1", "a-b2"}
 
 
@@ -351,7 +351,7 @@ async def test_a_shared_vrid_is_deleted_per_org_as_each_orgs_last_record_goes(db
         outcome = await rewrite_or_delete_virtual_record(
             db, StaticCollectionLocator([COLL]), _shared_graph({"rb": B}), VRID, MagicMock()
         )
-    assert outcome == "deleted"
+    assert outcome == "kept"
     assert _ids(db) == {"b-b1", "b-b2"}
     with _as(B):  # now B's goes too
         outcome = await rewrite_or_delete_virtual_record(
@@ -450,7 +450,7 @@ async def test_the_mapping_row_is_kept_while_another_org_still_has_points(db) ->
             outcome = await rewrite_or_delete_virtual_record(
                 db, StaticCollectionLocator([COLL]), _shared_graph({}), VRID, MagicMock(), release_mapping=release,
             )
-    assert outcome == "deleted"
+    assert outcome == "kept"
     assert _ids(db) == {"b-b1", "b-b2"}
     assert released == []
     with _as(B):

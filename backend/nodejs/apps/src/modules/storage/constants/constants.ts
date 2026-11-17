@@ -30,3 +30,9 @@ export const ARTIFACT_RETIRING_STALE_MS = 15 * 60 * 1000;
 // must agree to within the stale bound minus this interval (12 minutes): the
 // claim is stamped by the deleting replica and judged by the writing one.
 export const ARTIFACT_RETIRING_HEARTBEAT_MS = 3 * 60 * 1000;
+
+// Paid-result cache: durable model outputs filed per (org, record) in the blob store.
+export const PAID_RESULT_URL_TTL_SECONDS = 15 * 60;
+export const PAID_RESULT_MAX_FILES_PER_CALL = 1000;
+export const PAID_RESULT_LIST_PAGE = 1000;
+export const PAID_RESULT_FILE_MAX_BYTES = 16 * 1024 * 1024;

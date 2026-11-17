@@ -38,7 +38,7 @@ from app.services.llm_gateway.gateway import (
     provider_key,
 )
 from app.services.model_identity.errors import policy_error_from_exception
-from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.image_utils import to_llm_image_format
 from app.utils.llm import (
     LLMNotConfiguredError,
@@ -723,7 +723,9 @@ class DocumentExtraction(Transformer):
                 summary produced anything.
         """
         # A local, not an attribute: one instance classifies documents of different orgs at once.
-        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        llm, config = await get_llm_for_role(
+            self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         self.logger.debug(f"Context length: {context_length}")
         # Off the loop: PIL resizing and tiktoken on a large deck stall it for seconds.
@@ -912,7 +914,9 @@ class DocumentExtraction(Transformer):
         or ``ExtractionLLMError`` when neither the structured call nor the fallback answered.
         """
         # A local, not an attribute: one instance classifies documents of different orgs at once.
-        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        llm, config = await get_llm_for_role(
+            self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         summary_data = summary_block.data if isinstance(summary_block.data, dict) else {}
         file_path = summary_data.get("file_path") or summary_block.name or "unknown"

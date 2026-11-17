@@ -55,8 +55,14 @@ def _at(caplog, level: int) -> list[str]:
     return [r.getMessage() for r in _ours(caplog) if r.levelno == level]
 
 
+def _container() -> MagicMock:
+    container = MagicMock()
+    container.messaging_producer = AsyncMock()  # the org-deleted handler schedules a delayed re-purge with it
+    return container
+
+
 def _service(graph_provider: AsyncMock | None = None) -> EntityEventService:
-    return EntityEventService(logger=log, graph_provider=graph_provider or AsyncMock(), app_container=MagicMock())
+    return EntityEventService(logger=log, graph_provider=graph_provider or AsyncMock(), app_container=_container())
 
 
 ORG_UPDATED = {"orgId": "org_a", "registeredName": SEEDED_NAME}
@@ -107,6 +113,20 @@ class TestEntityEvents:
         svc._remove_api_toolset_data = AsyncMock()
         svc._wait_for_sync_to_stop = AsyncMock(return_value=True)
         await svc.process_event(event_type, payload)
+        _assert_no_seeds(caplog)
+
+    async def test_org_delete_completes_without_a_producer_and_logs_no_payload(self, caplog) -> None:
+        container = MagicMock()
+        container.messaging_producer = None  # the delayed re-purge cannot be scheduled
+        svc = EntityEventService(logger=log, graph_provider=AsyncMock(), app_container=container)
+        svc._remove_mcp_data = AsyncMock()
+        svc._remove_personal_toolsets = AsyncMock()
+        svc._remove_api_toolset_data = AsyncMock()
+        svc._wait_for_sync_to_stop = AsyncMock(return_value=True)
+        with caplog.at_level(logging.DEBUG):
+            assert await svc.process_event("orgDeleted", {"orgId": "org_a", "credentialsRoute": SEEDED_ROUTE}) is True
+        assert any("re-purge was not scheduled" in m for m in _at(caplog, logging.WARNING))
+        assert not _at(caplog, logging.ERROR)
         _assert_no_seeds(caplog)
 
     @pytest.mark.parametrize(("event_type", "payload"), [
