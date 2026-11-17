@@ -699,11 +699,9 @@ def test_a_flood_of_new_silent_connections_is_refused_new_not_old(tmp_path: Path
     server._max = 2
     socks = []
     try:
-        for _ in range(2):
-            socks.append(socket.create_connection((HOST, exporter._port)))
+        socks.extend(socket.create_connection((HOST, exporter._port)) for _ in range(2))
         assert _wait_until(lambda: len(server._live) == 2, 5)
-        for _ in range(ox.ADMIT_QUEUE_MAX):
-            socks.append(socket.create_connection((HOST, exporter._port)))
+        socks.extend(socket.create_connection((HOST, exporter._port)) for _ in range(ox.ADMIT_QUEUE_MAX))
         assert _wait_until(lambda: len(server._queue) == ox.ADMIT_QUEUE_MAX, 5)
         newest = socket.create_connection((HOST, exporter._port), timeout=5)
         socks.append(newest)
