@@ -80,7 +80,8 @@ ENV_HOST_CPU_MILLIS = "SANDBOX_HOST_CPU_MILLIS"
 ENV_HOST_PID_LIMIT = "SANDBOX_HOST_PID_LIMIT"
 ENV_CAPACITY_DIVISOR = "SANDBOX_CAPACITY_DIVISOR"
 
-DEFAULT_MAX_PER_ORG = 10
+# The fewest slots a per-org share leaves one org.
+MIN_ORG_SHARE = 2
 DEFAULT_MIN_TOTAL = 2
 DEFAULT_MEMORY_SHARE = 0.25
 DEFAULT_CPU_FACTOR = 0.75
@@ -165,8 +166,8 @@ class CapacitySettings:
     ``max_total``: an explicit ceiling, or ``None`` to size it. Zero or less
     used to mean unlimited, which a fixed set of slot files cannot offer, so
     it is the largest ceiling there is (with a warning).
-    ``max_per_org``: an explicit per-org cap, ``0`` for none, or ``None`` for
-    the default.
+    ``max_per_org``: an explicit per-org cap, ``0`` for none, or ``None`` to
+    leave it to the edition's per-org share.
     ``divisor``: how many app copies share one Docker daemon; each sizes
     itself to its share of it.
     """
@@ -453,6 +454,9 @@ async def read_machine_size(
     return machine, info
 
 
+_UNREAD = object()
+
+
 def _gib(value: int | None) -> str:
     return "?" if value is None else f"{value / 2**30:.1f}GiB"
 
@@ -490,17 +494,18 @@ class SandboxCapacity:
         self._task: asyncio.Task[None] | None = None
         self._first_attempt: asyncio.Event | None = None
         self._measured = mode == "e2b"
+        self._share: object = _UNREAD
 
     @classmethod
     def fixed(
         cls, total: int, per_org: int | None = None, *, mode: Mode = "compose",
         slot_files: int | None = None,
     ) -> SandboxCapacity:
-        """A capacity with an explicit ceiling (and per-org cap; ``None`` for
-        none) that never reads the machine or the environment."""
+        """A capacity with an explicit ceiling (and per-org cap; ``None``
+        leaves it to the per-org share) that never reads the machine."""
         files = slot_files if slot_files is not None else max(total, 1)
         capacity = cls(
-            mode, CapacitySettings(max_total=total, max_per_org=per_org or 0), slot_files=files,
+            mode, CapacitySettings(max_total=total, max_per_org=per_org), slot_files=files,
         )
         capacity._measured = True
         return capacity
@@ -534,9 +539,21 @@ class SandboxCapacity:
         """The most slots one org may hold at the current *limit*, or ``None``
         for no per-org cap."""
         explicit = self._settings.max_per_org
-        if explicit == 0:
+        if explicit is not None:
+            return min(explicit, limit) if explicit > 0 else None
+        share = self._org_share()
+        if share is None:
             return None
-        return min(explicit if explicit is not None else DEFAULT_MAX_PER_ORG, limit)
+        # The current limit, not the ceiling: when the limit shrinks, one org
+        # still cannot take every slot left.
+        return min(limit, max(MIN_ORG_SHARE, math.floor(share * limit)))
+
+    def _org_share(self) -> float | None:
+        if self._share is _UNREAD:
+            from app import edition
+
+            self._share = edition.sandbox_org_share()
+        return self._share  # type: ignore[return-value]
 
     def add_listener(self, callback: Callable[[], None]) -> None:
         """Call bound method *callback* whenever the ceiling may have risen.

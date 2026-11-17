@@ -163,7 +163,7 @@ class TestStartupSizing:
         assert (cap.ceiling(), cap.sized, cap.plan.binding) == (6, True, "cpu")
         assert woken == [True]
         assert caplog.text.count("Docker unreachable") == 1
-        assert "ceiling=6 (cpu) floor=2 slot_files=256 per_org=6" in caplog.text
+        assert "ceiling=6 (cpu) floor=2 slot_files=256 per_org=all" in caplog.text
 
     async def test_a_reachable_daemon_is_sized_before_the_first_run(self) -> None:
         machine = (MachineSize(64 * GiB, 16, 4_194_304, "docker_info", True), None)

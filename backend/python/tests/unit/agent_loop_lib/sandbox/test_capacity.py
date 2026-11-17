@@ -197,6 +197,27 @@ class TestPerOrgLimit:
         cap = SandboxCapacity("compose", CapacitySettings(max_per_org=max_per_org), slot_files=256)
         assert cap.per_org_limit(limit) == expected
 
+    def test_without_a_share_one_org_may_use_every_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.edition.sandbox_org_share", lambda: None)
+        cap = SandboxCapacity("compose", CapacitySettings(), slot_files=256)
+        assert cap.per_org_limit(6) is None
+
+    @pytest.mark.parametrize(("limit", "expected"), [(1, 1), (2, 2), (3, 2), (6, 3), (72, 36)])
+    def test_a_share_of_the_current_limit(
+        self, monkeypatch: pytest.MonkeyPatch, limit: int, expected: int,
+    ) -> None:
+        monkeypatch.setattr("app.edition.sandbox_org_share", lambda: 0.5)
+        cap = SandboxCapacity("compose", CapacitySettings(), slot_files=256)
+        assert cap.per_org_limit(limit) == expected
+
+    @pytest.mark.parametrize(("max_per_org", "expected"), [(4, 3), (0, None)])
+    def test_an_explicit_cap_wins_over_the_share(
+        self, monkeypatch: pytest.MonkeyPatch, max_per_org: int, expected: int | None,
+    ) -> None:
+        monkeypatch.setattr("app.edition.sandbox_org_share", lambda: 0.5)
+        cap = SandboxCapacity("compose", CapacitySettings(max_per_org=max_per_org), slot_files=256)
+        assert cap.per_org_limit(3) == expected
+
 
 class TestRunSize:
     def test_docker_runs_use_the_factory_limits(self) -> None:

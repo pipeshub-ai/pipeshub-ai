@@ -21,3 +21,13 @@ def structured_logging_provider() -> object:
     ``object`` so this module stays import-free; ``get_provider`` checks it.
     """
     return None
+
+
+def sandbox_org_share() -> float | None:
+    """Share of the code sandbox slots one org may hold at once, or ``None``
+    for no per-org cap (one org may use every slot).
+
+    ``SANDBOX_MAX_PER_ORG`` wins when set. Otherwise the cap is this share of
+    the current limit, and never below 2 slots.
+    """
+    return None

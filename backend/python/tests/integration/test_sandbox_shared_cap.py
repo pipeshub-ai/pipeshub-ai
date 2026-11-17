@@ -45,12 +45,21 @@ class _Outcomes:
         self.outcomes.append((outcome, reason.value if reason is not None else None))
 
 
-def _governor(directory: str, observers: tuple[_Outcomes, ...] = ()) -> SandboxResourceGovernor:
+def _governor(
+    directory: str, observers: tuple[_Outcomes, ...] = (), org_share: float | None = None,
+) -> SandboxResourceGovernor:
     from app.agent_loop_lib.sandbox.capacity import FixedLimit, SandboxCapacity
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
     from app.services.resource_governor.shared_slots import SharedSlots
 
-    capacity = SandboxCapacity.fixed(LIMIT, PER_ORG, slot_files=SLOT_FILES)
+    if org_share is None:
+        capacity = SandboxCapacity.fixed(LIMIT, PER_ORG, slot_files=SLOT_FILES)
+    else:
+        from app import edition
+
+        # The per-org cap comes from the edition's share of the limit.
+        edition.sandbox_org_share = lambda: org_share
+        capacity = SandboxCapacity.fixed(LIMIT, slot_files=SLOT_FILES)
     return SandboxResourceGovernor(
         capacity, SharedSlots(Path(directory), SLOT_FILES),
         limit_provider=FixedLimit(capacity), observers=observers, poll_s=0.05,
@@ -59,12 +68,12 @@ def _governor(directory: str, observers: tuple[_Outcomes, ...] = ()) -> SandboxR
 
 def _worker(
     directory: str, out: str, runs: int, orgs: list[str], wait_s: float,
-    ready: Queue[int], go: Event,
+    ready: Queue[int], go: Event, org_share: float | None = None,
 ) -> None:
     from app.agent_loop_lib.sandbox.manager import SandboxLimitExceeded
 
     recorder = _Outcomes()
-    governor = _governor(directory, (recorder,))
+    governor = _governor(directory, (recorder,), org_share)
     rng = random.Random(os.getpid())
     intervals: list[tuple[float, float, str]] = []
     refusals: list[str] = []
@@ -106,12 +115,16 @@ def _holder(directory: str, held: int, ready: Queue[int]) -> None:
 
 def _run_workers(
     tmp_path: Path, *, workers: int, runs: int, orgs: list[str], wait_s: float,
+    org_share: float | None = None,
 ) -> list[dict[str, Any]]:
     ctx = multiprocessing.get_context("spawn")
     ready, go = ctx.Queue(), ctx.Event()
     outs = [tmp_path / f"w{i}.json" for i in range(workers)]
     procs = [
-        ctx.Process(target=_worker, args=(str(tmp_path / "slots"), str(out), runs, orgs, wait_s, ready, go))
+        ctx.Process(
+            target=_worker,
+            args=(str(tmp_path / "slots"), str(out), runs, orgs, wait_s, ready, go, org_share),
+        )
         for out in outs
     ]
     for proc in procs:
@@ -150,7 +163,7 @@ def test_forty_runs_over_four_workers_never_exceed_the_cap(tmp_path: Path) -> No
 
 
 def test_no_org_exceeds_its_cap_across_workers(tmp_path: Path) -> None:
-    results = _run_workers(tmp_path, workers=4, runs=10, orgs=["a", "b"], wait_s=30)
+    results = _run_workers(tmp_path, workers=4, runs=10, orgs=["a", "b"], wait_s=30, org_share=0.5)
     intervals = [tuple(i) for r in results for i in r["intervals"]]
     assert len(intervals) == 40
     for org in ("a", "b"):
