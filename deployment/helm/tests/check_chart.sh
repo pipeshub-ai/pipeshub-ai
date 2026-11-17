@@ -68,6 +68,8 @@ VARIANTS=(
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "external-daemon-2-pods|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false"
   "external-daemon-max-total|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
+  "external-daemon-max-total-0|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=0"
+  "dind-max-total-0|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set-string sandbox.capacity.maxTotal=0 --set sandbox.proxy.reapUnlabeled=true"
   "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
   "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
@@ -254,6 +256,28 @@ expect_env external-daemon-2-pods SANDBOX_CAPACITY_DIVISOR '"2"'
 expect_env external-daemon-2-pods SANDBOX_HOST_MEMORY_BYTES missing
 expect_env external-daemon-max-total SANDBOX_CAPACITY_DIVISOR missing
 expect_env external-daemon-max-total SANDBOX_MAX_TOTAL '"10"'
+# maxTotal 0 means "sized automatically", like empty: never the app's 1024,
+# and pods sharing an external daemon still split it.
+expect_env external-daemon-max-total-0 SANDBOX_MAX_TOTAL missing
+expect_env external-daemon-max-total-0 SANDBOX_CAPACITY_DIVISOR '"2"'
+expect_env dind-max-total-0 SANDBOX_MAX_TOTAL missing
+
+# docker-proxy reaps unlabelled sandbox containers only when asked.
+proxy_env() { # variant, name -> value or "missing"
+  python3 - "$OUT/$1.yaml" "$2" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+proxy = next(c for c in pod["containers"] if c["name"] == "docker-proxy")
+print(next((e.get("value") for e in proxy.get("env") or [] if e["name"] == sys.argv[2]), "missing"))
+PY
+}
+for pair in defaults-dind:false dind-max-total-0:true; do
+  v="${pair%%:*}" want="${pair#*:}"
+  [[ -f "$OUT/$v.yaml" ]] || continue
+  got="$(proxy_env "$v" DOCKER_PROXY_REAP_UNLABELED)"
+  if [[ "$got" == "$want" ]]; then echo "ok $v: DOCKER_PROXY_REAP_UNLABELED = $want"; else echo "!! $v: DOCKER_PROXY_REAP_UNLABELED is $got, expected $want"; failed=1; fi
+done
 expect_env external-daemon-1-pod SANDBOX_CAPACITY_DIVISOR missing
 expect_env external-daemon-autoscaled SANDBOX_CAPACITY_DIVISOR '"3"'
 
@@ -466,6 +490,46 @@ if helm template ci . "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteM
 else
   echo "ok refused: docker sandbox without a daemon suggests no socket mount"
 fi
+
+# NOTES.txt, rendered without a cluster: a copy of the chart serves it
+# through tpl from a ConfigMap.
+NOTES_CHART="$OUT/notes-chart"
+cp -r . "$NOTES_CHART"
+mv "$NOTES_CHART/templates/NOTES.txt" "$NOTES_CHART/notes.tpl"
+cat > "$NOTES_CHART/templates/zz-notes.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notes
+data:
+  notes: {{ tpl (.Files.Get "notes.tpl") . | quote }}
+YAML
+notes() { # args... -> the rendered NOTES on stdout
+  helm template ci "$NOTES_CHART" "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteMany}' "$@" \
+    --show-only templates/zz-notes.yaml | python3 -c 'import sys, yaml; print(yaml.safe_load(sys.stdin)["data"]["notes"])'
+}
+check_notes() { # name, "has"|"lacks", text, args...
+  local name="$1" mode="$2" text="$3" out; shift 3
+  if ! out="$(notes "$@" 2>&1)"; then echo "!! notes $name: render failed: $out"; failed=1; return; fi
+  if grep -qF -- "$text" <<<"$out"; then found=has; else found=lacks; fi
+  if [[ "$found" == "$mode" ]]; then echo "ok notes $name: $mode '$text'"; else echo "!! notes $name: expected it $mode '$text'"; failed=1; fi
+}
+DIND=(--set sandbox.dind.enabled=true)
+EVICT="requests differ from its limits"
+check_notes "dind defaults" lacks "$EVICT" "${DIND[@]}"
+check_notes "dind requests 2000m / limits 2" lacks "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.cpu=2000m
+check_notes "dind requests 4096Mi / limits 4Gi" lacks "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.memory=4096Mi
+check_notes "dind requests 1.5 / limits 1500m" lacks "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.cpu=1.5 --set-string sandbox.dind.resources.limits.cpu=1500m
+check_notes "dind requests 4G / limits 4Gi" has "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.memory=4G
+check_notes "dind requests 250m" has "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.cpu=250m
+check_notes "dind no requests" has "$EVICT" "${DIND[@]}" --set sandbox.dind.resources.requests=null
+check_notes "dind sized" has "the smallest of" "${DIND[@]}"
+check_notes "dind maxTotal 5" has "Each pod runs at most 5 code sandboxes" "${DIND[@]}" --set sandbox.capacity.maxTotal=5
+check_notes "dind maxTotal 0" has "the smallest of" "${DIND[@]}" --set sandbox.capacity.maxTotal=0
+check_notes "external 2 pods" has "each pod uses 1/2 of its capacity" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false
+check_notes "external 2 pods maxTotal 0" has "each pod uses 1/2 of its capacity" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=0
+check_notes "external 2 pods maxTotal 4" lacks "each pod uses 1/2" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=4
+check_notes "external run cap" has "SANDBOX_MAX_RUN_TIMEOUT_S=900" "${EXTERNAL[@]}" --set config.sandboxMaxRunTimeoutS=900
 
 if [[ "$failed" -ne 0 ]]; then
   echo "check_chart: FAILED" >&2

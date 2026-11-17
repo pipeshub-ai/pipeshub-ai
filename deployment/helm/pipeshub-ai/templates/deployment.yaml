@@ -176,7 +176,11 @@ spec:
             - name: SANDBOX_CAPACITY_DIVISOR
               value: {{ . | quote }}
             {{- end }}
-            {{- range $name, $key := dict "SANDBOX_MAX_TOTAL" "maxTotal" "SANDBOX_MAX_PER_ORG" "maxPerOrg" "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_SLOT_WAIT_S" "slotWaitSeconds" "SANDBOX_HOST_PID_LIMIT" "pidLimit" "SANDBOX_MEMORY_OVERCOMMIT" "memoryOvercommit" }}
+            {{- with (include "pipeshub-ai.sandboxMaxTotal" .) }}
+            - name: SANDBOX_MAX_TOTAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $name, $key := dict "SANDBOX_MAX_PER_ORG" "maxPerOrg" "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_SLOT_WAIT_S" "slotWaitSeconds" "SANDBOX_HOST_PID_LIMIT" "pidLimit" "SANDBOX_MEMORY_OVERCOMMIT" "memoryOvercommit" }}
             {{- with (index $.Values.sandbox.capacity $key) }}
             - name: {{ $name }}
               value: {{ . | toString | quote }}
@@ -670,6 +674,8 @@ spec:
             # daemon never see or reap each other's.
             - name: DOCKER_PROXY_INSTANCE
               value: {{ printf "%s/%s" .Release.Namespace (include "pipeshub-ai.fullname" .) | quote }}
+            - name: DOCKER_PROXY_REAP_UNLABELED
+              value: {{ .Values.sandbox.proxy.reapUnlabeled | default false | toString | quote }}
             {{- if .Values.sandbox.dind.liveLimit.enabled }}
             # Written by the loop in the dind container; served as GET /_pipeshub/usage.
             - name: DOCKER_PROXY_SIDECAR_STATS_FILE

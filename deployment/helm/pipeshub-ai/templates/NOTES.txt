@@ -116,9 +116,9 @@ application reaches it only through the `docker-proxy` sidecar
 containers, host mounts, devices, host namespaces and images other than
 {{ .Values.sandbox.proxy.allowedImages | default .Values.config.sandboxDockerImage }}.
 
-{{- if .Values.sandbox.capacity.maxTotal }}
+{{- with (include "pipeshub-ai.sandboxMaxTotal" .) }}
 
-Each pod runs at most {{ .Values.sandbox.capacity.maxTotal }} code sandboxes at once (sandbox.capacity.maxTotal).
+Each pod runs at most {{ . }} code sandboxes at once (sandbox.capacity.maxTotal).
 {{- else }}
 
 Each pod sizes its code sandbox cap from the sidecar's limits: the smallest of
@@ -169,7 +169,7 @@ pods can run). Set sandbox.capacity.maxTotal to override.
     sidecar crash-loops; set sandbox.proxy.image to a newer one.
 {{- $requests := .Values.sandbox.dind.resources.requests | default dict }}
 {{- $limits := .Values.sandbox.dind.resources.limits | default dict }}
-{{- if or (ne (toString $requests.cpu) (toString $limits.cpu)) (ne (toString $requests.memory) (toString $limits.memory)) }}
+{{- if or (ne (include "pipeshub-ai.quantity" $requests.cpu) (include "pipeshub-ai.quantity" $limits.cpu)) (ne (include "pipeshub-ai.quantity" $requests.memory) (include "pipeshub-ai.quantity" $limits.memory)) }}
   * The sidecar's requests differ from its limits: the node may evict the pod
     when sandboxes use their limit. Set requests equal to limits.
 {{- end }}

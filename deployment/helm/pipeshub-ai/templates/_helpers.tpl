@@ -487,13 +487,49 @@ Describing one in terms of the other is how the notes came to claim
 Docker-in-Docker for an e2b deployment.
 */}}
 {{/*
+sandbox.capacity.maxTotal when it is a number above 0, else empty: 0 (or
+anything not a positive number) means "sized automatically", like "", so it
+never turns into the app's 1024 or drops the external-daemon split.
+*/}}
+{{- define "pipeshub-ai.sandboxMaxTotal" -}}
+{{- $raw := .Values.sandbox.capacity.maxTotal -}}
+{{- if and $raw (gt (float64 $raw) 0.0) -}}
+{{- $raw -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A Kubernetes quantity as a plain number, so equal amounts written
+differently compare equal ("2" and "2000m", "1Gi" and "1024Mi"). Anything
+it cannot read is returned unchanged.
+*/}}
+{{- define "pipeshub-ai.quantity" -}}
+{{- $q := toString . | trim -}}
+{{- $num := regexFind "^[0-9]+(\\.[0-9]+)?" $q -}}
+{{- $suffix := trimPrefix $num $q -}}
+{{- $binary := dict "Ki" 1024.0 "Mi" 1048576.0 "Gi" 1073741824.0 "Ti" 1099511627776.0 "Pi" 1125899906842624.0 -}}
+{{- $decimal := dict "" 1.0 "k" 1000.0 "M" 1000000.0 "G" 1000000000.0 "T" 1000000000000.0 "P" 1000000000000000.0 -}}
+{{- if not $num -}}
+{{- $q -}}
+{{- else if eq $suffix "m" -}}
+{{- divf (float64 $num) 1000.0 -}}
+{{- else if hasKey $binary $suffix -}}
+{{- mulf (float64 $num) (index $binary $suffix) -}}
+{{- else if hasKey $decimal $suffix -}}
+{{- mulf (float64 $num) (index $decimal $suffix) -}}
+{{- else -}}
+{{- $q -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 How many pods share one external Docker daemon, when each must size its
 code sandbox cap to its share of it: the most pods that can run, with
 config.dockerHost set, sandbox.capacity.maxTotal empty, and more than one
 pod. Empty otherwise.
 */}}
 {{- define "pipeshub-ai.sandboxCapacityDivisor" -}}
-{{- if and (eq (include "pipeshub-ai.sandboxPath" .) "external") (not .Values.sandbox.capacity.maxTotal) -}}
+{{- if and (eq (include "pipeshub-ai.sandboxPath" .) "external") (not (include "pipeshub-ai.sandboxMaxTotal" .)) -}}
 {{- $pods := int .Values.replicaCount -}}
 {{- if .Values.autoscaling.enabled -}}
 {{- $pods = int .Values.autoscaling.maxReplicas -}}

@@ -351,14 +351,18 @@ this release's sandbox containers that are older than the cap (at least 300 s,
 the install deadline) plus 120 s, for example after a crashed worker left one
 behind. Its containers carry the label
 `ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`. A sandbox
-container started by a proxy from before that label (one in flight during an
-upgrade) has no instance label; no proxy serves it, and the reaper removes it
-once past the same age.
+container started by a proxy from before that label (one left over from before
+an upgrade) has no instance label and no proxy serves it. The reaper leaves it
+alone and logs how many there are, at most once an hour; set
+`sandbox.proxy.reapUnlabeled=true` (`DOCKER_PROXY_REAP_UNLABELED`) to remove
+them too once past the same age.
 
 With `config.dockerHost` the chart runs no `docker-proxy`: the proxy in front
 of your daemon is yours, and its reaper reads its own environment. Give it the
 same `SANDBOX_MAX_RUN_TIMEOUT_S` as `config.sandboxMaxRunTimeoutS`, or it
-removes runs longer than 300 s mid-way. Releases that share one daemon should
+removes runs longer than 300 s mid-way. Leave its `DOCKER_PROXY_REAP_UNLABELED`
+off while any stack on that daemon still runs an older version: their sandbox
+containers carry no instance label either. Releases that share one daemon should
 each have their own proxy with its own `DOCKER_PROXY_INSTANCE`; releases behind
 one proxy share its label and can reach each other's sandbox containers.
 
@@ -390,7 +394,7 @@ keep lower requests. The release notes warn when requests and limits differ.
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| `sandbox.capacity.maxTotal` | sized | The most sandboxes at once per pod (up to 1024). |
+| `sandbox.capacity.maxTotal` | sized | The most sandboxes at once per pod (up to 1024). Empty or 0: sized automatically, and split between pods that share `config.dockerHost`. |
 | `sandbox.capacity.maxPerOrg` | none | The most one org may hold at once per pod. |
 | `sandbox.capacity.minTotal` | 2 | The floor, and the cap until the size is known. |
 | `sandbox.capacity.memoryShare` | 0.9 | Share of the sidecar's memory limit (dind only). |

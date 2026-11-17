@@ -583,7 +583,8 @@ sandbox:
   # than one pod can run (replicaCount, or autoscaling.maxReplicas) and
   # maxTotal is empty, each pod takes 1/<pods> of it.
   capacity:
-    # Replaces the computed cap per pod (up to 1024).
+    # Replaces the computed cap per pod (up to 1024). Empty or 0: sized
+    # automatically (and split between pods sharing config.dockerHost).
     maxTotal: ""
     # The most sandboxes one org may hold at once in a pod (empty: no cap).
     maxPerOrg: ""
@@ -617,6 +618,10 @@ sandbox:
     # allows only config.sandboxDockerImage; a value replaces it, so list
     # that image too.
     allowedImages: ""
+    # Also remove sandbox containers with no instance label (left by a proxy
+    # from before the label, e.g. on a persisted dind volume) once past the
+    # reap age. Off: they are only counted in the proxy log.
+    reapUnlabeled: false
     resources:
       requests:
         cpu: "50m"
