@@ -5,6 +5,7 @@ Each test fails when the line it names is removed or changed (scratch reverts in
 from __future__ import annotations
 
 import random
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest_asyncio
@@ -21,6 +22,7 @@ from app.models.blocks import (
 )
 from app.modules.reconciliation.block_identity import BlockIdentity
 from app.services.vector_db.collection_locator import StaticCollectionLocator
+from app.services.vector_db.errors import PartialResult
 from app.services.vector_db.models import CollectionConfig, ScrollResult, VectorPoint
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.support.index_world import (
@@ -33,6 +35,10 @@ from tests.support.index_world import (
     record_of,
     run,
 )
+
+if TYPE_CHECKING:
+    import pytest
+
 
 WORDS = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau".split()
 
@@ -224,3 +230,72 @@ async def test_a_block_that_never_had_a_point_is_not_embedded(db) -> None:
     store = make_store(db)
     await run(store, blob, _text_container([*paras, ""]))
     assert store._embed_documents_with_retry.await_count == 0
+
+
+async def test_a_failed_read_of_one_batch_does_not_drop_rows_grouped_under_a_row_of_that_batch(db, monkeypatch) -> None:
+    """Policy C, one table of 240 rows (4 per point), several read batches, the second read fails: its rows are embedded again, and
+    every row must still be in a point. A row held only by a grouped point of the failed batch is not counted as moved."""
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    monkeypatch.setenv("EMBED_TABLE_ROWS_PER_POINT", "4")
+    rng = random.Random(31416)
+    rows = [f"row {i}: " + " ".join(rng.choice(WORDS) for _ in range(5)) for i in range(240)]
+    _, blob = await legacy_record(db, _table_container(rows))
+    store = make_store(db)
+    real = db.scroll_with_vectors
+    calls = {"n": 0}
+
+    async def second_read_fails(*args: object, **kwargs: object) -> ScrollResult:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PartialResult("the scroll saw 99 points and the store counts 100")
+        return await real(*args, **kwargs)
+
+    db.scroll_with_vectors = second_read_fails
+    await run(store, blob, _table_container(rows))
+    texts = "\n".join(p.payload["page_content"] for p in db.collections[COLL].values())
+    missing = [r for r in rows if r not in texts]
+    assert not missing, f"{len(missing)} of {len(rows)} rows are in no point after the re-key, e.g. {missing[:3]}"
+    held = [r for r in rows if sum(r in p.payload["page_content"] for p in db.collections[COLL].values()) != 1]
+    assert not held, "every row is in exactly one point"
+
+
+def _code_container() -> BlocksContainer:
+    from app.modules.parsers.code_parser.code_file_parser import parse_code_to_blocks
+
+    source = "\n\n".join(
+        f"def function_{i}(value):\n    total = value + {i}\n    for step in range({i + 3}):\n        total += step * {i + 1}\n    return total\n"
+        for i in range(6)
+    ) + "\n\nclass Holder:\n    def method(self, value):\n        result = value * 2\n        return result + 1\n"
+    container = parse_code_to_blocks(source.encode(), "module.py", "module.py", "python")
+    assert container is not None
+    return container
+
+
+async def test_a_code_symbol_whose_point_was_lost_is_embedded_not_counted_as_moved(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A code block's text is data["text"], not a string: the check for a lost point must still see it."""
+    monkeypatch.setattr("app.modules.transformers.vectorstore._record_context_line", lambda _record: "")
+    container = _code_container()
+    _, blob = await legacy_record(db, container)
+    symbol_points = {pid: p for pid, p in db.collections[COLL].items() if p.payload["metadata"].get("blockType") != "residue"}
+    assert symbol_points
+    victim_id, victim = next((pid, p) for pid, p in symbol_points.items() if "function_3" in p.payload["page_content"])
+    del db.collections[COLL][victim_id]
+    store = make_store(db)
+    await run(store, blob, _code_container())
+    embedded = [t for call in store._embed_documents_with_retry.await_args_list for t in call.args[0]]
+    assert any("function_3" in t for t in embedded), "the lost symbol is embedded again"
+    assert any("function_3" in p.payload["page_content"] for p in db.collections[COLL].values())
+    assert victim_id not in {"unused"}
+
+
+async def test_a_table_summary_whose_point_was_lost_is_embedded_not_counted_as_moved(db) -> None:
+    """A group is not in the blocks of the container: its lost point has to be seen through the groups."""
+    rows = [f"row {i} " + " ".join(WORDS[(i + j) % len(WORDS)] for j in range(6)) for i in range(4)]
+    _, blob = await legacy_record(db, _table_container(rows))
+    summary = next(pid for pid, p in db.collections[COLL].items() if p.payload["metadata"].get("isBlockGroup"))
+    del db.collections[COLL][summary]
+    store = make_store(db)
+    await run(store, blob, _table_container(rows))
+    embedded = [t for call in store._embed_documents_with_retry.await_args_list for t in call.args[0]]
+    assert any("Summary of the table" in t for t in embedded), "the lost summary is embedded again"
+    assert any(p.payload["metadata"].get("isBlockGroup") for p in db.collections[COLL].values())

@@ -5,6 +5,7 @@ Run: pytest tests/integration/vector_db/test_redis_scroll_window.py -m integrati
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import random
 
@@ -35,6 +36,12 @@ def _points() -> list[VectorPoint]:
     ]
 
 
+async def _settle() -> None:
+    """RediSearch answers with repeated rows for a moment after a large write (seen in a 11,700-point load: 12,163 rows of 11,700); the
+    reads under test start once it has settled."""
+    await asyncio.sleep(5)
+
+
 async def _load(svc, col: str) -> None:
     # the window this file is about; a server that already has it (the older default) or refuses the change is left as it is
     with contextlib.suppress(Exception):
@@ -45,6 +52,7 @@ async def _load(svc, col: str) -> None:
     points = _points()
     for i in range(0, len(points), 1000):
         await svc.upsert_points(col, points[i:i + 1000])
+    await _settle()
 
 
 async def test_a_scroll_reads_every_point_of_a_record_past_the_window(redis_service) -> None:
@@ -61,8 +69,9 @@ async def test_a_scroll_reads_every_point_of_a_record_past_the_window(redis_serv
                 break
             offset = page.next_offset
         assert len(sequence) == len(set(sequence)) == KEPT + STRAYS, "every point once across the 10,000 boundary, none repeated"
-        whole = await redis_service.scroll_with_vectors(col, flt, 5, "10500")
-        assert len(whole.points) == 5 and all(p.dense_vector and p.payload["page_content"] for p in whole.points)
+        small = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": VRID, "blockId": ["keep-1", "keep-2"]})
+        whole = await redis_service.scroll_with_vectors(col, small, 5)
+        assert len(whole.points) == 2 and all(p.dense_vector and p.payload["page_content"] for p in whole.points)
     finally:
         await redis_service.delete_collection(col)
 
@@ -113,6 +122,7 @@ async def _load_spread(svc, col: str, rng: random.Random) -> set[str]:
         ))
     for i in range(0, len(points), 1000):
         await svc.upsert_points(col, points[i:i + 1000])
+    await _settle()
     return keep
 
 
@@ -146,5 +156,55 @@ async def test_strays_spread_through_a_large_record_are_all_removed_by_bounded_p
                 break
         assert resume is None and passes > 5
         assert set(await _blocks(redis_service, col)) == keep
+    finally:
+        await redis_service.delete_collection(col)
+
+
+async def test_a_scroll_past_the_window_does_not_move_with_another_collections_rewrites(redis_service) -> None:
+    """Another collection on the server (10,600 points whose payloads were rewritten) used to change the order of an unsorted
+    FT.SEARCH, so a scroll across the window repeated and skipped points. The scroll reads a large match set by one cursor."""
+    noise, col = make_collection("redis_noise"), make_collection("redis_cursor")
+    try:
+        await redis_service.create_collection(noise, make_collection_config())
+        for field in ("metadata.blockId", "metadata.virtualRecordId"):
+            await redis_service.create_index(noise, field, {"type": "keyword"})
+        points = [VectorPoint(id=point_id(f"noise-{b}-{j}"), dense_vector=make_dense([1.0, float(j % 7)]),
+                              payload={"page_content": f"n {b} {j}", "metadata": {"orgId": ORG, "virtualRecordId": "noise", "blockId": f"nb-{b}"}})
+                  for b in range(100) for j in range(106)]
+        for i in range(0, len(points), 1000):
+            await redis_service.upsert_points(noise, points[i:i + 1000])
+        await _load(redis_service, col)
+        for trial in range(6):
+            touch = await redis_service.filter_collection(must={"orgId": ORG, "blockId": [f"nb-{trial * 3 + k}" for k in range(3)]})
+            await redis_service.set_payload(noise, {"touched": str(trial)}, touch)
+            await _settle()
+            flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": VRID})
+            sequence: list[str] = []
+            offset = None
+            while True:
+                page = await redis_service.scroll(col, flt, 500, offset, with_payload=["metadata.blockId"])
+                sequence.extend(p.id for p in page.points)
+                if not page.next_offset:
+                    break
+                offset = page.next_offset
+            assert len(sequence) == len(set(sequence)) == KEPT + STRAYS, f"trial {trial}: {len(sequence)} read, {len(set(sequence))} distinct"
+    finally:
+        await redis_service.delete_collection(noise)
+        await redis_service.delete_collection(col)
+
+
+async def test_the_move_reads_a_match_set_in_one_query_or_refuses_a_set_too_large_for_one(redis_service) -> None:
+    from app.services.vector_db.errors import VectorsNotFetchable
+
+    col = make_collection("redis_onequery")
+    try:
+        await _load(redis_service, col)                         # 11,700 points of one record: more than one query returns
+        everything = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": VRID})
+        with pytest.raises(VectorsNotFetchable):
+            await redis_service.scroll_with_vectors(col, everything, 500)
+        few = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": VRID, "blockId": [f"keep-{i}" for i in range(300)]})
+        page = await redis_service.scroll_with_vectors(col, few, 50)       # the limit is not a page size: all 300 come at once
+        assert len(page.points) == 300 and page.next_offset is None and all(p.dense_vector for p in page.points)
+        assert (await redis_service.scroll_with_vectors(col, few, 50, "50")).points == []
     finally:
         await redis_service.delete_collection(col)

@@ -46,6 +46,7 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
+    BlockGroup,
     BlocksContainer,
     BlockType,
     GroupSubType,
@@ -1020,16 +1021,33 @@ def _is_code_block(block: object) -> bool:
     return str(getattr(kind, "value", kind)).lower() == BlockType.CODE.value
 
 
-def _embeds_a_point(block: Block | None) -> bool:
-    """Whether indexing writes a point for *block* itself: text-like and code blocks with text, images with a uri, table rows."""
-    if block is None:
+def _has_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _embeds_a_point(item: Block | BlockGroup | None) -> bool:
+    """Whether indexing writes a point for *item* itself (a block or a group): text and code with text (a code block's text is
+    ``data["text"]``), images with a uri, table rows with their row text, tables and groups with a summary, DDL, view text or class
+    header. A little wider than the writers on purpose (a tiny code filler is skipped there): the cost of too wide is one more embed,
+    of too narrow a point lost from search for good."""
+    if item is None:
         return False
-    kind = str(getattr(block.type, "value", block.type)).lower()
-    if kind in ("text", "paragraph", "textsection", "heading", "quote", "code"):
-        return isinstance(block.data, str) and bool(block.data.strip())
+    kind = str(getattr(item.type, "value", item.type)).lower()
+    data = item.data
+    if isinstance(item, BlockGroup):
+        sub = str(getattr(item.sub_type, "value", item.sub_type) or "").lower()
+        if kind not in ("table", "view") and sub != GroupSubType.CODE_CLASS.value:
+            return False  # other groups (a JSON root, a list) are never points
+        return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
+    if kind in ("table", "table_cell"):
+        return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
     if kind in ("image", "drawing"):
-        return isinstance(block.data, dict) and bool(block.data.get("uri"))
-    return kind == "table_row"
+        return isinstance(data, dict) and bool(data.get("uri"))
+    if kind == "table_row":
+        return isinstance(data, dict) and any(_has_text(v) for k, v in data.items() if k != "row_number")
+    if kind in ("text", "paragraph", "textsection", "heading", "quote", "code"):
+        return _has_text(data.get("text")) if isinstance(data, dict) else _has_text(data)
+    return False
 
 
 def code_residue_block_id(virtual_record_id: str) -> str:
@@ -1327,9 +1345,10 @@ class VectorStore(Transformer):
         index_of = {b.id: b.index for b in record.block_containers.blocks}
         group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
         collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
-        blocks_by_id = {b.id: b for b in record.block_containers.blocks}
+        blocks_by_id: dict[str, Block | BlockGroup] = {b.id: b for b in record.block_containers.blocks}
+        blocks_by_id.update({g.id: g for g in record.block_containers.block_groups})
         old_ids = sorted(new_by_old)
-        covered: set[str] = set()  # old ids some stored point speaks for: as its blockId or in rowBlockIds
+        covered: set[str] = set()  # old ids a point that moved speaks for: as its blockId or in rowBlockIds
         moved: set[str] = set()
         failed: dict[str, str] = {}  # old id -> reason
         for start in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ):
@@ -1350,7 +1369,6 @@ class VectorStore(Transformer):
                 meta = dict(payload.get("metadata") or {})
                 old_block = meta.get("blockId")
                 row_ids = meta.get("rowBlockIds")
-                covered.update([old_block, *(row_ids or ())])
                 if old_block not in new_by_old or point.dense_vector is None or (
                         row_ids and any(r not in new_by_old for r in row_ids)):
                     unmovable.add(old_block)
@@ -1366,6 +1384,7 @@ class VectorStore(Transformer):
                 if row_ids:
                     meta["rowBlockIds"] = [new_by_old[r] for r in row_ids]
                 new_payload = {**payload, "metadata": meta}
+                covered.update([old_block, *(row_ids or ())])
                 writes.append(VectorPoint(
                     id=deterministic_point_id(meta, payload.get("page_content", "")),
                     dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload=new_payload,
@@ -1378,6 +1397,11 @@ class VectorStore(Transformer):
             moved.update(old for old in batch if old not in failed)
         # A block with embeddable text that no stored point speaks for lost its point (an interrupted index): moving nothing would leave
         # it out of search for good, so it is embedded. A block that never had a point (no text, an image with no uri) is left as it is.
+        # The rule both ways: a row counts as moved only if the point that holds it moved. A row a moved point holds stays moved even when
+        # its own read batch failed (embedding it as well would put it in two points); a row no moved point holds is embedded.
+        for old in covered:
+            if failed.get(old) in ("error", "unsupported"):  # its read failed, but a point that did move holds it
+                del failed[old]
         for old in moved - failed.keys() - covered:
             if _embeds_a_point(blocks_by_id.get(new_by_old[old])):
                 failed[old] = "missing"
