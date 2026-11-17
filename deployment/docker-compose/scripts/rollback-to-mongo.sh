@@ -14,13 +14,13 @@
 set -euo pipefail
 
 usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
-FLAG=()
+FLAG=""   # a string, not an array: bash before 4.4 treats an empty array as unset under set -u
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage; exit 0 ;;
     --reverse|--online)
-      [ ${#FLAG[@]} -eq 0 ] || { echo "choose --reverse or --online, not both" >&2; exit 2; }
-      FLAG=("$arg") ;;
+      [ -z "$FLAG" ] || { echo "choose --reverse or --online, not both" >&2; exit 2; }
+      FLAG="$arg" ;;
     *) echo "unknown option: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -32,8 +32,8 @@ trap import_login_close EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 import_login_open
-[ "${FLAG[*]}" = --online ] || "${DC[@]}" stop pipeshub-ai
-docstore rollback "${FLAG[@]}"
+[ "$FLAG" = --online ] || "${DC[@]}" stop pipeshub-ai
+docstore rollback ${FLAG:+"$FLAG"}
 echo "MongoDB is the store again. Remove docker-compose.postgres-docstore.yml from PIPESHUB_COMPOSE_OVERRIDES in the env file and start the application:" >&2
 dc="${DC[*]}"
 echo "  ${dc/ -f docker-compose.postgres-docstore.yml/} up -d pipeshub-ai" >&2

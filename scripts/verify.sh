@@ -134,6 +134,10 @@ run shell "document-store move script tests" \
   'exists deployment/docker-compose/tests/docstore_move_scripts_test.sh' \
   bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
 
+run shell "document-store move script tests (bash 3.2, as on macOS)" \
+  '[[ -n "${BASH32:-}" && -x "${BASH32:-}" ]] || { echo "set BASH32 to a bash 3.2 binary to run"; false; }' \
+  env BASH_UNDER_TEST="${BASH32:-}" bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
+
 run shell "omnigent helper tests" \
   'exists integrations/omnigent/tests/scripts_test.sh' \
   bash integrations/omnigent/tests/scripts_test.sh

@@ -10,6 +10,8 @@
 #   - no password reaches the output, a command line, or the SQL sent to psql;
 #   - how the install is found (env file, project name, override files);
 #   - usage errors exit 2 before docker is called.
+# The scripts run under $BASH_UNDER_TEST (default: bash on PATH). Set it to a bash 3.2 binary to check them as macOS runs them;
+# scripts/verify.sh does when BASH32 names one.
 #
 # Run: bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
 # ==============================================================================
@@ -20,6 +22,7 @@ COMPOSE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MIGRATE="$COMPOSE_DIR/scripts/migrate-to-postgres.sh"
 ROLLBACK="$COMPOSE_DIR/scripts/rollback-to-mongo.sh"
 TOOL="$COMPOSE_DIR/scripts/docstore-migrate.sh"
+BASH_UNDER_TEST="${BASH_UNDER_TEST:-bash}"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -114,7 +117,7 @@ new_install() {
 # run_script <script> [args...]: runs it against $ENVF with the stub; sets OUT (stdout+stderr) and RC
 run_script() {
   OUT="$(PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" \
-         bash "$@" 2>&1)"; RC=$?
+         "$BASH_UNDER_TEST" "$@" 2>&1)"; RC=$?
 }
 steps() { paste -sd' ' "$CALLS"; }
 import_pw() { sed -n 's/^PG_IMPORT_PASSWORD=//p' "$ENVF"; }
@@ -126,7 +129,7 @@ no_secret_shown() { # no_secret_shown "desc" password
 
 echo "== Syntax =="
 for f in "$MIGRATE" "$ROLLBACK" "$TOOL"; do
-  if [[ -f "$f" ]] && bash -n "$f" 2>/dev/null; then pass "$(basename "$f") parses"; else fail "$(basename "$f") parses"; fi
+  if [[ -f "$f" ]] && "$BASH_UNDER_TEST" -n "$f" 2>/dev/null; then pass "$(basename "$f") parses"; else fail "$(basename "$f") parses"; fi
 done
 
 echo
@@ -282,7 +285,7 @@ SIGS="$INST/signals"
 (
   set -m
   PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" \
-    STUB_FOLLOW_SIGNALS="$SIGS" bash "$MIGRATE" --online >"$INST/out" 2>&1 &
+    STUB_FOLLOW_SIGNALS="$SIGS" "$BASH_UNDER_TEST" "$MIGRATE" --online >"$INST/out" 2>&1 &
   pid=$!
   for _ in $(seq 1 100); do [[ -f "$SIGS.ready" ]] && break; sleep 0.05; done
   kill -INT -- "-$pid" 2>/dev/null
@@ -298,7 +301,7 @@ check_not "and does not close it" "$(steps)" "login-close"
 echo
 echo "== the env file is edited with portable commands, keeps its mode, and stays a symlink =="
 new_install
-OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" bash "$MIGRATE" --offline 2>&1)"; RC=$?
+OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" "$BASH_UNDER_TEST" "$MIGRATE" --offline 2>&1)"; RC=$?
 check_eq "offline with BSD sed exits 0" "$RC" 0
 check_eq "and opens and closes the login" "$(steps)" \
   "verifier login-open stop:pipeshub-ai tool:preflight tool:migrate --offline login-close"
@@ -306,12 +309,12 @@ check_eq "the password is removed with BSD sed" "$(import_pw)" ""
 check_eq "the env file stays 0600" "$(stat -c %a "$ENVF")" 600
 new_install
 mv "$ENVF" "$INST/real.env"; ln -s real.env "$ENVF"
-OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" bash "$MIGRATE" --online 2>&1)"; RC=$?
+OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" "$BASH_UNDER_TEST" "$MIGRATE" --online 2>&1)"; RC=$?
 check_eq "online with BSD sed exits 0" "$RC" 0
 check "and stores the password through the symlink" "$(cat "$INST/real.env")" "PG_IMPORT_PASSWORD="
 if [[ -L "$ENVF" ]]; then pass "a symlinked env file stays a symlink"; else fail "a symlinked env file stays a symlink"; fi
 check_eq "the real file stays 0600" "$(stat -c %a "$INST/real.env")" 600
-left="$(shopt -s nullglob; f=("$INST"/*.env.* "$INST"/.env.*); echo "${f[*]}")"
+left="$(shopt -s nullglob; f=("$INST"/*.env.* "$INST"/.env.*); echo ${f[@]+"${f[*]}"})"
 if [[ -z "$left" ]]; then pass "no temporary or backup file is left beside the env file"; else fail "no temporary or backup file is left beside the env file: $left"; fi
 
 echo
@@ -324,7 +327,7 @@ new_install "COMPOSE_PROJECT_NAME=fromenv" "PIPESHUB_COMPOSE_OVERRIDES=docker-co
 run_script "$TOOL" status
 check "COMPOSE_PROJECT_NAME from the env file" "$(cat "$ARGV")" "-p fromenv"
 check "the override files from the env file" "$(cat "$ARGV")" "-f docker-compose.yml -f docker-compose.postgres-docstore.yml"
-OUT="$(PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" PIPESHUB_PROJECT=wins EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" bash "$TOOL" status 2>&1)"
+OUT="$(PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" PIPESHUB_PROJECT=wins EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" "$BASH_UNDER_TEST" "$TOOL" status 2>&1)"
 check "PIPESHUB_PROJECT wins" "$(tail -1 "$ARGV")" "-p wins"
 new_install
 rm -f "$ENVF"

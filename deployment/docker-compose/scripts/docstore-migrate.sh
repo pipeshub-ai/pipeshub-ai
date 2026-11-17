@@ -37,8 +37,12 @@ env_set() { env_del "$1"; [ -z "$(tail -c1 "$ENV_FILE")" ] || echo >>"$ENV_FILE"
 
 PROJECT="${PIPESHUB_PROJECT:-$(env_get COMPOSE_PROJECT_NAME)}"
 DC=(docker compose --env-file "$ENV_FILE" -p "${PROJECT:-pipeshub-ai}" -f docker-compose.yml)
-IFS=':' read -r -a _overrides <<<"${PIPESHUB_COMPOSE_OVERRIDES:-$(env_get PIPESHUB_COMPOSE_OVERRIDES)}"
-for _o in "${_overrides[@]}"; do [ -n "$_o" ] && DC+=(-f "$_o"); done
+# guarded as in install.sh: bash before 4.4 (macOS ships 3.2) treats an empty array's "${a[@]}" as unset under set -u
+_ov="${PIPESHUB_COMPOSE_OVERRIDES:-$(env_get PIPESHUB_COMPOSE_OVERRIDES)}"
+if [ -n "$_ov" ]; then
+  IFS=':' read -r -a _overrides <<<"$_ov"
+  for _o in "${_overrides[@]}"; do [ -n "$_o" ] && DC+=(-f "$_o"); done
+fi
 PSQL=("${DC[@]}" exec -T postgres psql -q -v ON_ERROR_STOP=1 -U postgres -d pipeshub)
 
 # The tool, as the guide runs it: MongoDB's address comes from the application service's own environment, the schema job already
