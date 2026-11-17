@@ -40,6 +40,9 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
+from app.services.messaging.redis_streams import (
+    indexing_consumer as indexing_consumer_module,
+)
 from app.services.messaging.redis_streams.indexing_consumer import (
     _BUSYGROUP_ERROR,
     _MESSAGE_VALUE_FIELD,
@@ -492,14 +495,20 @@ class TestWaitForActiveFutures:
         with consumer._futures_lock:
             consumer._active_futures.update(futures)
 
+        # The waits it asks for, not their wall time: a busy runner could stretch a 0.2 s wait past any small bound.
+        waits: list[tuple[int, float]] = []
+
+        def recording_wait(fs: list[Future], timeout: float | None = None, **kw: object) -> object:
+            waits.append((len(fs), timeout))
+            return real_wait(fs, timeout=timeout, **kw)
+
+        real_wait = indexing_consumer_module.futures_wait
         with patch.object(
             type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
-        ):
-            start = time.monotonic()
+        ), patch.object(indexing_consumer_module, "futures_wait", recording_wait):
             consumer._wait_for_active_futures()
-            elapsed = time.monotonic() - start
 
-        assert elapsed < 1.0
+        assert waits == [(5, 0.2)]  # one shared 0.2 s window for all five, not one per future
 
 
 # ===================================================================

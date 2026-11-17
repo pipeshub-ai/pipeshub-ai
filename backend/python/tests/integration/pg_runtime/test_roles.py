@@ -98,6 +98,29 @@ async def test_the_services_that_bind_the_spend_guard_start_its_key_path_in_eith
         await admin.close()
 
 
+async def test_indexing_reads_the_parse_admission_numbers_an_admin_saved_in_either_mode(runtime, monkeypatch) -> None:
+    """The class admission's live numbers, read the way indexing does (``indexing_main.attach_parse_admission_config``):
+    ``LiveAdmissionConfig.refresh`` on the indexing login. Refused, the read sees no row and the environment defaults stay."""
+    from app.modules.parse_engine.admission import (
+        ADMISSION_CONFIG_KEY,
+        AdmissionNumbers,
+        LiveAdmissionConfig,
+    )
+
+    admin = _config_as(runtime, monkeypatch, "node")
+    try:
+        assert await admin.set_config(ADMISSION_CONFIG_KEY, {"largeCap": 0.6, "agingS": 120})
+        svc = _config_as(runtime, monkeypatch, "indexing")
+        try:
+            got = await LiveAdmissionConfig(svc, env_defaults=AdmissionNumbers()).refresh()
+            assert (got.large_cap, got.aging_s) == (0.6, 120)
+        finally:
+            await svc.close()
+    finally:
+        await admin.delete_config(ADMISSION_CONFIG_KEY)
+        await admin.close()
+
+
 async def test_the_kv_role_holds_nothing_else(runtime) -> None:
     db = await runtime.db()
     async with db.runtime_uow() as tx:
