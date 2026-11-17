@@ -15,3 +15,12 @@ fetch() {
   echo "$f"
 }
 os=$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$(uname -m); jobs=$( (nproc || sysctl -n hw.ncpu) 2>/dev/null )
+# Ad hoc signature (codesign -s -) on every Mach-O file under $1: Apple silicon runs nothing unsigned, and a signed process
+# refuses an unsigned library or addon (sharp's *.node). Scripts and data files are skipped; a codesign failure fails the call.
+adhoc_sign() {
+  local f
+  while IFS= read -r f; do
+    file -b "$f" | grep -q Mach-O || continue
+    codesign --force -s - "$f" || { echo "adhoc_sign: could not sign $f" >&2; return 1; }
+  done < <(find "$1" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \))
+}

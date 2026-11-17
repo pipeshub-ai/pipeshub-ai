@@ -18,11 +18,6 @@ here=$(cd "$(dirname "$0")" && pwd)
 exec "$here/node/bin/node" "$here/launcher/src/main.ts" "$@"
 SH
 chmod 0755 "$out/pipeshub-native"
-if [ "$os" = darwin ]; then
-  # Native addons (sharp's *.node) count too: a signed node refuses to load an unsigned one on Apple silicon.
-  find "$out" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) | while read -r f; do
-    file -b "$f" | grep -q Mach-O && codesign --force -s - "$f"
-  done
-fi
+[ "$os" = darwin ] && adhoc_sign "$out"
 du -sh "$out"
 if [ -n "$archive" ]; then tar -C "$(dirname "$out")" -czf "$archive" "$(basename "$out")"; ls -la "$archive"; fi
