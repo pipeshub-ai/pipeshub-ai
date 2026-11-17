@@ -414,7 +414,7 @@ export class UserController {
       includeServiceAccounts: maySeeServiceAccounts,
     });
 
-    res.status(200).json(users.map(withoutHiddenEmail));
+    res.status(200).json(users);
   }
 
   async getUserById(

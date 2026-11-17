@@ -32422,9 +32422,6 @@ paths:
         check on the route itself, only on that flag. Not paginated, and
         `includeServiceAccounts` is the only query parameter it reads; any
         other is ignored.
-
-        The `email` field is omitted from every user when the `HIDE_EMAIL` environment variable
-        is set to `true`, as it is from `GET /users/{id}`.
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
