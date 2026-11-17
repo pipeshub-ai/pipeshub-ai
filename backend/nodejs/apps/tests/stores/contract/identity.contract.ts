@@ -718,6 +718,18 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await groups.summariesForUsers(org, [u])).map((g) => g._id)).to.deep.equal([...made].sort());
     });
 
+    it('memberIdsOfTypes lists members group by group in id order, each group in its own member order, repeats kept', async () => {
+      const org = await fx.newOrg();
+      const tag = uniq('Typ');
+      const [u1, u2, u3] = [fx.newId(), fx.newId(), fx.newId()];
+      const made: string[] = [];
+      for (const name of [`${tag}-z`, `${tag}-B`, `${tag}-a`]) made.push((await groups.create(org, { name, type: 'custom' }))._id);
+      const members: Record<string, string[]> = { [made[0]!]: [u1, u2], [made[1]!]: [u3, u1], [made[2]!]: [u2] };
+      for (const g of made) for (const u of members[g]!) await groups.addMembers(org, [g], [u]);
+      const expected = [...made].sort().flatMap((g) => members[g]!);
+      expect(await groups.memberIdsOfTypes(org, ['custom'])).to.deep.equal(expected);
+    });
+
     it('stats lists the names in code-point order', async () => {
       const org = await fx.newOrg();
       const tag = uniq('St');
