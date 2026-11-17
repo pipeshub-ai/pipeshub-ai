@@ -12,7 +12,7 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useToastStore } from '@/lib/store/toast-store';
 import { WebSearchApi } from './api';
-import { WebSearchProviderRow, ConfigurePanel } from './components';
+import { WebSearchProviderRow, ConfigurePanel, SendImagesRow } from './components';
 import {
   DUCKDUCKGO_PROVIDER_ID,
   WEB_SEARCH_PROVIDER_META,
@@ -21,6 +21,7 @@ import {
   type ConfiguredWebSearchProvider,
   type WebSearchProviderAgentUsage,
   type WebSearchProviderType,
+  type WebSearchSettings,
 } from './types';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 import { SWR_NS, revalidateSwrNamespace } from '@/lib/api/swr-cache';
@@ -73,6 +74,10 @@ export default function WebSearchPage() {
   const [deleteUsageAgents, setDeleteUsageAgents] = useState<WebSearchProviderAgentUsage[]>([]);
   const [isCheckingUsage, setIsCheckingUsage] = useState(false);
 
+  // Images on fetched pages ("Send images to LLM"); off until an admin turns them on.
+  const [settings, setSettings] = useState<WebSearchSettings>({ includeImages: false, maxImages: 3 });
+  const [isSettingsSaving, setIsSettingsSaving] = useState(false);
+
   const anyActionInProgress = isLoading || settingDefaultType !== null || isDeleting;
 
   // ── Derived ───────────────────────────────────────────────
@@ -96,6 +101,7 @@ export default function WebSearchPage() {
         setConfiguredProviders(config.providers);
         setInherited(config?.inherited ?? false);
         setIsSetUp(config.configured);
+        setSettings(config.settings);
         // Chat reads the same setting to decide whether its web search switch can be turned on.
         revalidateSwrNamespace(SWR_NS.webSearchConfig);
 
@@ -112,6 +118,45 @@ export default function WebSearchPage() {
       }
     },
     [addToast],
+  );
+
+  // ── Handlers: images on fetched pages ─────────────────────
+  const saveSettings = useCallback(
+    async (next: WebSearchSettings, successMessage: string) => {
+      setIsSettingsSaving(true);
+      const previous = settings;
+      setSettings(next);
+      try {
+        setSettings(await WebSearchApi.updateSettings(next));
+        addToast({ variant: 'success', title: successMessage, duration: 3000 });
+      } catch (err) {
+        setSettings(previous);
+        addToast({
+          variant: 'error',
+          title: t('workspace.webSearch.toasts.updateError'),
+          description: err instanceof Error ? err.message : undefined,
+          duration: 5000,
+        });
+      } finally {
+        setIsSettingsSaving(false);
+      }
+    },
+    [settings, addToast, t],
+  );
+
+  const handleSendImagesToggle = useCallback(
+    (includeImages: boolean) =>
+      saveSettings(
+        { ...settings, includeImages },
+        t(includeImages ? 'workspace.webSearch.toasts.imagesEnabled' : 'workspace.webSearch.toasts.imagesDisabled'),
+      ),
+    [settings, saveSettings, t],
+  );
+
+  const handleMaxImagesCommit = useCallback(
+    (maxImages: number) =>
+      saveSettings({ ...settings, maxImages }, t('workspace.webSearch.toasts.maxImagesUpdated', { count: maxImages })),
+    [settings, saveSettings, t],
   );
 
   useEffect(() => {
@@ -384,6 +429,38 @@ export default function WebSearchPage() {
               })}
             </Flex>
           )}
+        </Flex>
+
+        {/* ── Images section ── */}
+        <Flex
+          direction="column"
+          style={{
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
+            marginBottom: 'var(--space-5)',
+          }}
+        >
+          <Box style={{ padding: '14px 16px' }}>
+            <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+              {t('workspace.webSearch.imageSettingsTitle')}
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}>
+              {t('workspace.webSearch.imageSettingsDescription')}
+            </Text>
+          </Box>
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+          </Box>
+          <Box style={{ padding: '12px 14px' }}>
+            <SendImagesRow
+              enabled={settings.includeImages}
+              maxImages={settings.maxImages}
+              onToggle={handleSendImagesToggle}
+              onMaxImagesCommit={handleMaxImagesCommit}
+              disabled={isLoading || isSettingsSaving || inherited}
+            />
+          </Box>
         </Flex>
 
       </SettingsPageContainer>

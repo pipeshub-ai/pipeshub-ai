@@ -11,8 +11,9 @@ import pypdfium2 as pdfium
 from bs4 import BeautifulSoup
 from charset_normalizer import from_bytes
 
-from app.utils.html_to_blocks import TextBlock, html_to_blocks
+from app.utils.html_to_blocks import ImageBlock, TextBlock, html_to_blocks
 from app.web.errors import NoText, UnsupportedContent
+from app.web.models import WebImage
 
 MAX_PDF_PAGES = 200
 
@@ -20,6 +21,10 @@ _HTML = "text/html"
 _PDF = "application/pdf"
 _TEXT = "text/plain"
 _MAX_TITLE_CHARS = 300
+# Images kept per page: a gallery page lists thousands, and only the first few are ever sent.
+MAX_PAGE_IMAGES = 50
+# Drawn, animated or icon formats: no model reads them, and they are rarely the content.
+_SKIPPED_IMAGE_SUFFIXES = (".svg", ".gif", ".ico")
 # Headers that say nothing about the body; the bytes decide instead.
 _GENERIC_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream", "application/unknown"})
 
@@ -28,6 +33,26 @@ _GENERIC_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream
 class ParsedDocument:
     title: str = ""
     blocks: list[TextBlock] = field(default_factory=list)
+    images: list[WebImage] = field(default_factory=list)
+
+
+def _page_images(blocks: list[object]) -> list[WebImage]:
+    """The page's http(s) images in reading order, each address once, skipping
+    the formats no model reads."""
+    seen: set[str] = set()
+    images: list[WebImage] = []
+    for block in blocks:
+        if not isinstance(block, ImageBlock):
+            continue
+        url = block.url.strip()
+        path = url.split("?", 1)[0].split("#", 1)[0].lower()
+        if not url.lower().startswith(("http://", "https://")) or path.endswith(_SKIPPED_IMAGE_SUFFIXES) or url in seen:
+            continue
+        seen.add(url)
+        images.append(WebImage(url=url, alt=" ".join(block.alt.split())))
+        if len(images) >= MAX_PAGE_IMAGES:
+            break
+    return images
 
 
 def _media_type(content_type: str | None) -> tuple[str, str | None]:
@@ -68,7 +93,7 @@ def _parse_html(body: bytes, url: str, charset: str | None) -> ParsedDocument:
     title_tag = BeautifulSoup(html, "html.parser").title
     title = " ".join(title_tag.get_text().split())[:_MAX_TITLE_CHARS] if title_tag else ""
     blocks = html_to_blocks(html, base_url=url, use_trafilatura=False)
-    return ParsedDocument(title, [b for b in blocks if isinstance(b, TextBlock)])
+    return ParsedDocument(title, [b for b in blocks if isinstance(b, TextBlock)], _page_images(blocks))
 
 
 def _parse_pdf(body: bytes, url: str, charset: str | None) -> ParsedDocument:

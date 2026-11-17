@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 import pytest
+from web_behaviour_fakes import FakeWeb, Page
 
 from app.web.chain import ChainFailed, Cooldowns
 from app.web.container import (
@@ -116,6 +117,53 @@ class TestFetch:
         gate = RecordingGate(denied={"https://start.example/"})
         with pytest.raises(AccessDenied):
             await WebFetchService([fetcher], gate, cooldowns=Cooldowns()).fetch("https://start.example/", CALLER)
+
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+IMG = "http://site.test"
+
+
+class TestFetchImages:
+    """A page's images: each asked of the gate like a page, read through the guarded fetch,
+    and never failing the page (a missing image is None)."""
+
+    @staticmethod
+    def _service(gate: RecordingGate) -> WebFetchService:
+        return WebFetchService([], gate, cooldowns=Cooldowns())
+
+    async def test_each_image_in_order_and_one_that_cannot_be_read_is_none(self, fake_web: FakeWeb) -> None:
+        fake_web.add(f"{IMG}/a.png", Page(body=PNG, content_type="image/png"))
+        fake_web.add(f"{IMG}/page", Page(body=b"<html>not an image</html>"))
+        fake_web.add(f"{IMG}/b.png", Page(body=PNG, content_type="image/png"))
+
+        uris = await self._service(RecordingGate()).fetch_images(
+            [f"{IMG}/a.png", f"{IMG}/page", f"{IMG}/missing.png", f"{IMG}/b.png"], CALLER,
+        )
+
+        assert [u is not None and u.startswith("data:image/png;base64,") for u in uris] == [True, False, False, True]
+
+    async def test_an_image_the_gate_refuses_is_never_requested(self, fake_web: FakeWeb) -> None:
+        fake_web.add(f"{IMG}/a.png", Page(body=PNG, content_type="image/png"))
+        gate = RecordingGate(denied={f"{IMG}/a.png"})
+
+        assert await self._service(gate).fetch_images([f"{IMG}/a.png"], CALLER) == [None]
+        assert fake_web.gets(f"{IMG}/a.png") == 0
+        assert [(r.action, r.target, r.caller) for r in gate.seen] == [("fetch", f"{IMG}/a.png", CALLER)]
+
+    async def test_a_redirect_the_gate_refuses_is_not_followed(self, fake_web: FakeWeb) -> None:
+        fake_web.redirect(f"{IMG}/a.png", "http://elsewhere.test/b.png").add(
+            "http://elsewhere.test/b.png", Page(body=PNG, content_type="image/png"),
+        )
+        gate = RecordingGate(denied={"http://elsewhere.test/b.png"})
+
+        assert await self._service(gate).fetch_images([f"{IMG}/a.png"], CALLER) == [None]
+        assert fake_web.gets("http://elsewhere.test/b.png") == 0
+
+    async def test_no_images_asks_nothing(self) -> None:
+        gate = RecordingGate()
+        assert await self._service(gate).fetch_images([], CALLER) == []
+        assert gate.seen == []
 
 
 class TestContainer:
