@@ -63,11 +63,11 @@ def generate(rng: random.Random, n: int) -> list[dict[str, Any]]:
     pools: dict[str, list[Any]] = {
         "indexingStatus": [*STATUSES, _ABSENT],
         "firstQueuedAt": [_ABSENT, None, big(), big(), float(big()), "abc", True, 1.5e12],
-        "queuedAtTimestamp": [_ABSENT, None, big(), "x", False],
+        "queuedAtTimestamp": [_ABSENT, None, big(), float(big()), "x", False],
         "indexingAttempts": [_ABSENT, None, rng.randint(0, 9), "x", 2.0],
-        "failedAt": [_ABSENT, _ABSENT, None, big(), "x"],
-        "lastIndexTimestamp": [_ABSENT, _ABSENT, None, big(), "x", True],
-        "restoredAtTimestamp": [_ABSENT, _ABSENT, _ABSENT, None, big(), "x"],
+        "failedAt": [_ABSENT, _ABSENT, None, big(), float(big()), "x"],
+        "lastIndexTimestamp": [_ABSENT, _ABSENT, None, big(), float(big()), "x", True],
+        "restoredAtTimestamp": [_ABSENT, _ABSENT, _ABSENT, None, big(), float(big()), "x"],
         "contentRev": [_ABSENT, REV, "rev-2", 5],
         "pageCount": [_ABSENT, _ABSENT, 7],
     }
@@ -77,7 +77,8 @@ def generate(rng: random.Random, n: int) -> list[dict[str, Any]]:
         for name, pool in pools.items():
             value = rng.choice(pool)
             if name in ("firstQueuedAt", "queuedAtTimestamp", "failedAt", "lastIndexTimestamp", "restoredAtTimestamp") and value is not _ABSENT and is_number(value):
-                value = rng.choice([NOW - 10**9, NOW - 10**6, NOW - 10**3, NOW - 7, NOW - 1, NOW - 10**6 + 1])
+                picked = rng.choice([NOW - 10**9, NOW - 10**6, NOW - 10**3, NOW - 7, NOW - 1, NOW - 10**6 + 1])
+                value = float(picked) if isinstance(value, float) else picked  # a float stays a float: the number test must see both
             if value is not _ABSENT:
                 doc[name] = value
         rows.append(doc)

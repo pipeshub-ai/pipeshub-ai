@@ -7,6 +7,8 @@ import os
 import random
 import uuid
 
+import asyncpg
+
 import pytest
 
 from tests.integration.graph_db.record_diagnostics_conformance_support import (
@@ -54,6 +56,6 @@ async def test_a_rule_with_a_part_left_out_is_seen_to_differ(runner, control: st
         await runner.load(stored)
         try:
             seen += len(mismatches(stored, await runner.apply(case, CONTROLS[control]), case))
-        except Exception:
+        except asyncpg.PostgresError:  # a defect that the server itself refuses is a defect seen; a dropped connection or a typo is not
             seen += 1
     assert seen > 0, f"{control}: the comparison did not see the defect"

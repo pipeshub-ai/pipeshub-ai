@@ -95,3 +95,11 @@ async def test_a_rule_with_a_part_left_out_is_seen_to_differ(runner: Any, contro
         except Exception:
             seen += 1  # a statement the store refuses is a difference too
     assert seen > 0, f"{control}: the comparison did not see the defect"
+
+
+def test_the_generated_records_hold_floats_and_integers_in_the_timestamp_fields() -> None:
+    """No store: the float shape of a stored time reaches the comparison, so a number test that drops the float branch is seen."""
+    stored = generate(random.Random(7), 600)
+    for field in ("firstQueuedAt", "queuedAtTimestamp", "failedAt", "lastIndexTimestamp", "restoredAtTimestamp"):
+        kinds = {type(doc[field]) for doc in stored if field in doc and isinstance(doc[field], (int, float)) and not isinstance(doc[field], bool)}
+        assert kinds == {int, float}, f"{field}: {kinds}"

@@ -8,7 +8,7 @@ An older image applies its own, narrower record schema; records that hold the ne
 (b) inside a transaction: the 1620 aborts it before the caller's handler runs, a caller that catches and carries on
     cannot commit, nothing the transaction wrote is kept, and the owner's rerun leaves every write in place;
 (c) a stream transaction held open during a widening: no other records write waits longer than the stall bound X
-    (``STALL_BOUND_S``, measured in ``test_record_diagnostics_stall_bound_arango.py``);
+    (``STALL_BOUND_S``, measured in ``test_record_diagnostics_save_transaction_arango.py``);
 (d) three processes that see the narrowing issue at most one change (the Redis lock);
 (e) a narrowed ``indexingStatus`` enum and a record holding the newer value: the record updates after the widening,
     and not when the widening keeps the narrowed definition (the union control);

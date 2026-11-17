@@ -66,18 +66,21 @@ async def _update_every_record_under_the_older_schema(store: Store, keys: list[s
         from tests.integration.graph_db.record_diagnostics_support import narrow_schema
 
         assert await store.raw_provider.http_client.update_collection_schema(RECORDS, narrow_schema())
+        restored = False
         try:
             for key in keys:
                 assert await store.p.update_node(key, RECORDS, {"indexingStatus": "QUEUED"})
         finally:
             from app.schema.arango.documents import record_schema
 
-            await store.raw_provider.http_client.update_collection_schema(RECORDS, record_schema)
+            restored = await store.raw_provider.http_client.update_collection_schema(RECORDS, record_schema)
+        assert restored, "the records collection was left on the narrowed schema"
     else:
         use_pre_diagnostics_validator(monkeypatch)
         for key in keys:
             assert await store.p.update_node(key, RECORDS, {"indexingStatus": "QUEUED"})
-            assert await store.p.update_node_if_match(key, RECORDS, {**(await store.doc(key)), "id": key, "_key": key}, "version", 1) in (True, False)
+            # the stored version is 1: a refusal by the older validator (or a mismatch) is a failure, not an outcome
+            assert await store.p.update_node_if_match(key, RECORDS, {**(await store.doc(key)), "id": key, "_key": key}, "version", 1)
 
 
 async def test_the_script_can_be_stopped_and_run_again(store: Store) -> None:

@@ -1,5 +1,5 @@
 """The store cost of the diagnostics writes on ArangoDB and Neo4j (PostgreSQL in
-``postgres/test_record_diagnostics_cost_pg.py``). The save-transaction duration is in ``test_record_diagnostics_stall_bound_arango.py``."""
+``postgres/test_record_diagnostics_cost_pg.py``). The save-transaction duration is in ``test_record_diagnostics_save_transaction_arango.py``."""
 
 from __future__ import annotations
 
