@@ -28,6 +28,7 @@ the machine answers, the ceiling is the minimum.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import math
@@ -631,6 +632,22 @@ class SandboxCapacity:
             except TimeoutError:
                 pass
         return self.plan
+
+    @property
+    def measured(self) -> bool:
+        """True once the machine has been read (or never needs reading)."""
+        return self._measured
+
+    async def wait_measured(self, timeout: float | None = None) -> None:
+        """Start sizing if needed and wait up to *timeout* for its first
+        attempt, even with an explicit ceiling: ``docker_info`` is only known
+        after it."""
+        if self._measured:
+            return
+        self.start_sizing()
+        if self._first_attempt is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._first_attempt.wait(), timeout)
 
     async def _size_until_known(self) -> None:
         delays = iter(_SIZING_RETRY_S)

@@ -82,6 +82,10 @@ STALE_S = 120.0
 DEAD_OWNER_S = 30.0
 READING_LOST_S = 300.0
 RERESOLVE_S = 300.0
+# While the machine has not been read yet, resolve again sooner: after 15 s,
+# doubling up to RERESOLVE_S.
+UNREAD_RERESOLVE_S = 15.0
+FIRST_READING_WAIT_S = 30.0
 STEP_LOCK_BUDGET = 0.020
 ADMIT_LOCK_BUDGET = 0.050
 HELD_BUDGET = 0.050
@@ -406,6 +410,7 @@ class LiveLimit:
         self._profile: LiveProfile | None = None
         self._overcommit = 1.0
         self._resolved_at: float | None = None
+        self._unread_tries = 0
         self._lock = threading.Lock()
         self._view: tuple[float, LiveView] | None = None
         self._last_limit: int | None = None
@@ -467,6 +472,7 @@ class LiveLimit:
         """Use *mode* from now on, logging a change. Never reads the machine:
         it runs on the event loop."""
         changed = mode.mode != self._mode.mode
+        self._unread_tries = self._unread_tries + 1 if mode.mode == "off:unread" else 0
         self._mode = mode
         self._profile = self._profile_for(mode, log=changed) if mode.on else None
         self._overcommit = self._effective_overcommit(mode, log=changed)
@@ -485,7 +491,10 @@ class LiveLimit:
                 self._ceiling(self._overcommit), self._capacity.floor(),
             )
         else:
-            level = logging.INFO if mode.mode in ("off:disabled", "off:remote") else logging.WARNING
+            level = (
+                logging.INFO if mode.mode in ("off:disabled", "off:remote", "off:unread")
+                else logging.WARNING
+            )
             logger.log(
                 level, "sandbox live limit: off (%s); runs are capped at the fixed ceiling C=%d",
                 mode.reason, self._capacity.ceiling(),
@@ -566,8 +575,16 @@ class LiveLimit:
             mode = LiveMode.off("error", "choosing what to read failed", retry=True)
         self.apply_mode(mode)
 
+    def reresolve_after_s(self) -> float:
+        """How long after the last resolve a retryable mode is resolved again."""
+        if self._mode.mode == "off:unread" and self._unread_tries > 0:
+            return min(RERESOLVE_S, UNREAD_RERESOLVE_S * 2 ** (self._unread_tries - 1))
+        return RERESOLVE_S
+
     async def _run(self) -> None:
-        await self._capacity.ensure_sized(timeout=30.0)
+        # Wait for the first reading of the machine even when the ceiling is
+        # explicit: the same-machine check needs the daemon's /info.
+        await self._capacity.wait_measured(timeout=FIRST_READING_WAIT_S)
         await self.resolve()
         while True:
             if self._mode.on:
@@ -583,7 +600,7 @@ class LiveLimit:
                     logger.debug("sandbox live limit: after_sample failed", exc_info=True)
             await asyncio.sleep(self._settings.interval_s + self._rng.uniform(0.0, JITTER_S))
             again = self._mode.retry or self._lost(self._ledger.read(), self._clock())
-            if again and self._resolved_at is not None and self._clock() - self._resolved_at >= RERESOLVE_S:
+            if again and self._resolved_at is not None and self._clock() - self._resolved_at >= self.reresolve_after_s():
                 await self.resolve()
 
     def _stale(self, rec: LiveRecord, now: float) -> bool:
