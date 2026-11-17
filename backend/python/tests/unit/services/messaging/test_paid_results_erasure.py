@@ -327,12 +327,10 @@ async def test_a_retried_refresh_request_pays_no_page_again_that_the_first_attem
 async def test_a_refresh_delivery_that_overlaps_a_purge_is_handed_back_without_an_attempt_and_runs_nothing(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services.messaging.consumer_concurrency import (
-        RefreshPurgeHeld,
-        RequeueWithoutAttempt,
-    )
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
     from app.services.paid_cache import cache as cache_module
     from app.services.paid_cache.locks import refresh_name
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.05)
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
@@ -358,8 +356,8 @@ async def test_a_long_purge_and_its_duplicate_both_end_with_the_record_completed
     without an attempt being spent, and once the holder has marked it reuses and completes."""
     import asyncio
 
-    from app.services.messaging.consumer_concurrency import RefreshPurgeHeld
     from app.services.paid_cache import cache as cache_module
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.02)
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.005)

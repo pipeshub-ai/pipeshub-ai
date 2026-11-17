@@ -114,7 +114,6 @@ from app.services.messaging.config import (
     Topic,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import RefreshPurgeHeld
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -128,6 +127,7 @@ from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.cache import RefreshPurgeInProgress
+from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.vector_db.rebuild_state import (
