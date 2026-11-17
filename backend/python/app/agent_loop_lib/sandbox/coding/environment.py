@@ -10,6 +10,7 @@ from app.agent_loop_lib.sandbox.coding.base import (
     EnvironmentSetupError,
     InstallResult,
 )
+from app.agent_loop_lib.sandbox.coding.output_limits import read_stdio_capped
 from app.agent_loop_lib.sandbox.coding.validation import (
     canonical_package_key,
     matches_package_set,
@@ -39,6 +40,11 @@ Key safety decisions (see the design plan's "Safety Practices Summary"):
 """
 
 __all__ = ["EnvironmentManager"]
+
+# The same limit Docker installs get (`docker.py` `_INSTALL_TIMEOUT_S`): a
+# slow mirror or a build that hangs must not hold a sandbox slot forever.
+_INSTALL_TIMEOUT_S = 300
+_INSTALL_TIMEOUT_NOTE = "[sandbox] Package installation timed out after {seconds}s.\n"
 
 
 def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
@@ -247,7 +253,13 @@ class EnvironmentManager:
             stderr=result.stderr,
         )
 
-    async def _run_confined(self, cmd: list[str], *, allow_network: bool) -> ExecResult:
+    async def _run_confined(
+        self, cmd: list[str], *, allow_network: bool, timeout: float | None = None,
+    ) -> ExecResult:
+        """Run an install step, killing its process group after `timeout`
+        seconds (`_INSTALL_TIMEOUT_S` by default). Only the head and tail of
+        its output are kept."""
+        timeout = _INSTALL_TIMEOUT_S if timeout is None else timeout
         confined_cmd = confine_command(cmd, self._working_dir, allow_network=allow_network)
         proc = await asyncio.create_subprocess_exec(
             *confined_cmd,
@@ -257,9 +269,18 @@ class EnvironmentManager:
             stderr=asyncio.subprocess.PIPE,
             start_new_session=sys.platform != "win32",
         )
-        stdout_bytes, stderr_bytes = await _communicate_or_kill(proc)
+        try:
+            stdout, stderr = await asyncio.wait_for(read_stdio_capped(proc), timeout=timeout)
+        except asyncio.TimeoutError:
+            await _kill_process_tree(proc)
+            return ExecResult(
+                stdout="", stderr=_INSTALL_TIMEOUT_NOTE.format(seconds=f"{timeout:g}"), exit_code=-1,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(_kill_process_tree(proc))
+            raise
         return ExecResult(
-            stdout=stdout_bytes.decode(errors="replace"),
-            stderr=stderr_bytes.decode(errors="replace"),
+            stdout=stdout,
+            stderr=stderr,
             exit_code=proc.returncode if proc.returncode is not None else -1,
         )

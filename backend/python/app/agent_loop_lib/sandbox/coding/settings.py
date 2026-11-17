@@ -135,7 +135,10 @@ def _warn_about_host_isolation() -> None:
     if _warned_about_host_isolation:
         return
     _warned_about_host_isolation = True
-    from app.agent_loop_lib.sandbox.confinement import confinement_available
+    from app.agent_loop_lib.sandbox.confinement import (
+        confinement_available,
+        report_unconfined_local_mode,
+    )
 
     logger.warning(
         "%s=local with %s=true: model-generated code runs as a subprocess of "
@@ -145,6 +148,7 @@ def _warn_about_host_isolation() -> None:
         "available" if confinement_available() else "UNAVAILABLE (no bwrap/sandbox-exec)",
         _ENV_SANDBOX_MODE,
     )
+    report_unconfined_local_mode()
 
 
 def _env_bool(key: str, default: bool = True) -> bool:

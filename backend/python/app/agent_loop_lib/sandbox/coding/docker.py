@@ -5,6 +5,7 @@ import io
 import logging
 import math
 import os
+import re
 import shlex
 import shutil
 import tarfile
@@ -17,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
+from app.agent_loop_lib.sandbox.coding import egress_firewall as _egress_firewall
 from app.agent_loop_lib.sandbox.coding.base import (
     CodeRequest,
     CodeResult,
@@ -30,6 +32,7 @@ from app.agent_loop_lib.sandbox.coding.base import (
     SandboxCapabilities,
     SandboxContext,
     normalize_sandbox_path,
+    validate_entry_file,
 )
 from app.agent_loop_lib.sandbox.coding.cleanup import (
     register_sandbox_dir,
@@ -47,6 +50,11 @@ from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     firewalled_container_kwargs,
     new_firewall_token,
     parse_cidrs,
+)
+from app.agent_loop_lib.sandbox.coding.output_limits import (
+    ExtractBudget,
+    extract_tar_stream,
+    read_capped_stream,
 )
 from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
 from app.agent_loop_lib.sandbox.coding.validation import (
@@ -145,11 +153,6 @@ def _snapshot_mtimes(root: str) -> dict[str, float]:
                 continue
     return snapshot
 
-# Keep up to 16 MiB of tar data in memory; anything larger spills to disk —
-# avoids OOM on large artifact/dependency directories while staying fast for
-# the common small-output case.
-_TAR_SPOOL_MAX_SIZE = 16 * 1024 * 1024
-
 _NETWORK_UNAVAILABLE_NOTE = (
     "[sandbox] Network access is unavailable for this run: the egress "
     "firewall could not be installed, so the code ran with no network.\n"
@@ -218,6 +221,10 @@ class _RunOutcome:
     # The program ran for (about) its whole timeout: the in-container
     # deadline or the host killed it.
     deadline_hit: bool = False
+    # The disk watchdog stopped the run: bytes its writable layer had.
+    disk_exceeded_bytes: int | None = None
+    # What collecting its files left out ("" when nothing).
+    collection_note: str = ""
 
 
 def _parse_docker_time(value: object) -> float | None:
@@ -254,6 +261,172 @@ def _container_exit_state(container: Any) -> tuple[bool, float | None]:
     finished = _parse_docker_time(state.get("FinishedAt"))
     ran_s = finished - started if started is not None and finished is not None and finished >= started else None
     return state.get("OOMKilled") is True, ran_s
+
+
+# ------------------------------------------------------------------
+# Disk quota fallback
+# ------------------------------------------------------------------
+
+_ENV_DISK_WATCHDOG = "SANDBOX_DISK_WATCHDOG"
+_DISK_WATCH_INTERVAL_S = 1.0
+# Graph drivers that enforce `storage_opt size` whenever they accept it:
+# overlay2 refuses the option unless its backing filesystem is xfs with
+# pquota. The containerd snapshotters (Driver "overlayfs", or a DriverStatus
+# naming io.containerd.snapshotter) accept it and ignore it.
+_QUOTA_ENFORCING_DRIVERS = frozenset({"overlay2", "btrfs", "zfs", "devicemapper", "windowsfilter"})
+_SIZE_UNITS = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4, "p": 1024**5}
+_DISK_QUOTA_NOTE = (
+    "[sandbox] The run was stopped because it wrote more than {limit} to the sandbox's "
+    "disk. Write less data (process it in chunks, or keep only what is needed).\n"
+)
+_INSTALL_DISK_QUOTA_NOTE = (
+    "[sandbox] Package installation was stopped because it wrote more than {limit} to the "
+    "sandbox's disk. Install fewer or smaller packages.\n"
+)
+
+_disk_watch_lock = threading.Lock()
+# None = not decided yet; otherwise the byte limit to watch for (0 = no watch).
+_disk_watch_limit: int | None = None
+
+
+def _parse_size(text: str) -> int | None:
+    """Bytes in a Docker size string (``10g``, ``512m``, ``1.5GB``; binary
+    units, as the daemon reads them), or None when it is not one."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmgtp]?)(?:i?b)?\s*", text.lower())
+    if not m:
+        return None
+    return int(float(m.group(1)) * _SIZE_UNITS[m.group(2)])
+
+
+def _daemon_enforces_quota(client: Any) -> tuple[bool, str]:
+    """Whether the daemon behind ``client`` enforces ``storage_opt size``,
+    and the storage driver it named. Unknown counts as not enforced."""
+    if _egress_firewall._storage_opt_usable is not True:
+        return False, "rejected the option"
+    try:
+        info = client.info()
+    except Exception as exc:
+        return False, f"unknown ({exc})"
+    if not isinstance(info, dict):
+        return False, "unknown"
+    driver = str(info.get("Driver") or "")
+    status = info.get("DriverStatus")
+    status_map: dict[str, str] = {}
+    if isinstance(status, list):
+        for pair in status:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                status_map[str(pair[0]).lower()] = str(pair[1])
+    if "io.containerd.snapshotter" in status_map.get("driver-type", ""):
+        return False, f"{driver or '?'} (containerd snapshotter)"
+    backing = status_map.get("backing filesystem")
+    label = f"{driver or '?'}{f' on {backing}' if backing else ''}"
+    return driver in _QUOTA_ENFORCING_DRIVERS, label
+
+
+def _disk_watch_limit_for(client: Any) -> int:
+    """Bytes a run's writable layer may reach before the watchdog stops it,
+    or 0 for no watchdog. Decided once per process, after the first
+    container create has shown whether the daemon accepts the quota.
+
+    ``SANDBOX_DISK_WATCHDOG``: ``auto`` (default) watches only when the
+    daemon does not enforce ``SANDBOX_DISK_QUOTA``; ``on`` always watches;
+    ``off`` never does.
+    """
+    global _disk_watch_limit
+    if _disk_watch_limit is not None:
+        return _disk_watch_limit
+    with _disk_watch_lock:
+        if _disk_watch_limit is not None:
+            return _disk_watch_limit
+        mode = (os.environ.get(_ENV_DISK_WATCHDOG) or "auto").strip().lower()
+        quota = _egress_firewall._disk_quota()
+        limit = _parse_size(quota) if quota else None
+        if quota and limit is None:
+            logger.error(
+                "SANDBOX_DISK_QUOTA=%r is not a size; sandbox runs are not watched for disk use",
+                quota,
+            )
+        if not limit or mode in {"off", "false", "0", "no"}:
+            _disk_watch_limit = 0
+            return 0
+        if mode in {"on", "true", "1", "yes"}:
+            _disk_watch_limit = limit
+            logger.info("Sandbox disk watchdog on: runs are stopped past %s written", quota)
+            return limit
+        enforced, driver = _daemon_enforces_quota(client)
+        if enforced:
+            _disk_watch_limit = 0
+            logger.info(
+                "Sandbox disk quota SANDBOX_DISK_QUOTA=%s is enforced by the Docker daemon "
+                "(storage driver %s)", quota, driver,
+            )
+            return 0
+        _disk_watch_limit = limit
+        logger.warning(
+            "The Docker daemon does not enforce the sandbox disk quota SANDBOX_DISK_QUOTA=%s "
+            "(storage driver %s). Each run's writable layer is checked every %gs instead and "
+            "the run is stopped once it is past the quota; a fast writer can go somewhat past "
+            "it between checks. For a hard limit, run the daemon on overlay2 over xfs with "
+            "the pquota mount option.", quota, driver, _DISK_WATCH_INTERVAL_S,
+        )
+        return limit
+
+
+def _container_size_rw(client: Any, container_id: str) -> int | None:
+    """``SizeRw`` of a container (bytes in its writable layer)."""
+    api = client.api
+    res = api._get(api._url("/containers/{0}/json", container_id), params={"size": 1})
+    data = api._result(res, True)
+    size = data.get("SizeRw") if isinstance(data, dict) else None
+    return size if isinstance(size, int) and not isinstance(size, bool) else None
+
+
+class _DiskWatch:
+    """Polls a running container's writable-layer size and kills the
+    container once it is past ``limit``. Runs on its own daemon thread next
+    to the blocking ``container.wait``."""
+
+    def __init__(self, client: Any, container_id: str, limit: int) -> None:
+        self._client = client
+        self._id = container_id
+        self._limit = limit
+        self._stop = threading.Event()
+        self.exceeded_bytes: int | None = None
+        self._thread = threading.Thread(target=self._run, name="sandbox-disk-watch", daemon=True)
+
+    @classmethod
+    def start(cls, client: Any, container_id: str, limit: int) -> _DiskWatch | None:
+        if limit <= 0:
+            return None
+        watch = cls(client, container_id, limit)
+        watch._thread.start()
+        return watch
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._stop.wait(_DISK_WATCH_INTERVAL_S):
+            try:
+                size = _container_size_rw(self._client, self._id)
+            except Exception as exc:
+                failures += 1
+                if failures == 3:
+                    logger.warning("sandbox disk watch: cannot read the size of %.12s: %s", self._id, exc)
+                continue
+            if size is not None and size > self._limit:
+                self.exceeded_bytes = size
+                logger.warning(
+                    "sandbox container %.12s wrote %d bytes, past the %d-byte disk quota; stopping it",
+                    self._id, size, self._limit,
+                )
+                try:
+                    self._client.api.kill(self._id)
+                except Exception as exc:
+                    logger.debug("killing %.12s after the disk quota failed: %s", self._id, exc)
+                return
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
 
 
 class DockerCodingSandbox(CodingSandboxBackend):
@@ -345,6 +518,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
 
     async def provision(self) -> SandboxInfo:
         if not self._provisioned:
+            _make_private_dir(self._working_dir)
             os.makedirs(self._output_dir, exist_ok=True)
             register_sandbox_dir(self._working_dir)
             self._provisioned = True
@@ -380,15 +554,17 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 )
 
         start = time.monotonic()
-        entry = request.entry_file or _ENTRY_FILES[request.language]
+        entry = validate_entry_file(request.entry_file or _ENTRY_FILES[request.language])
         src_dir = os.path.join(self._working_dir, "_src")
         shutil.rmtree(src_dir, ignore_errors=True)
         os.makedirs(src_dir, exist_ok=True)
-        with open(os.path.join(src_dir, entry), "w", encoding="utf-8") as f:
+        entry_path = os.path.join(src_dir, entry)
+        os.makedirs(os.path.dirname(entry_path), exist_ok=True)
+        with open(entry_path, "w", encoding="utf-8") as f:
             f.write(request.code)
 
         run_cmd = deadline_command(
-            ["sh", "-c", _RUN_COMMANDS[request.language].format(file=entry)],
+            ["sh", "-c", _RUN_COMMANDS[request.language].format(file=shlex.quote(entry))],
             math.ceil(request.timeout),
         )
 
@@ -491,8 +667,18 @@ class DockerCodingSandbox(CodingSandboxBackend):
         still exited 0 (a child process was killed and the parent carried
         on), the run stays a success and only gets the note.
         """
-        stderr = network_note + outcome.stderr
+        stderr = network_note + outcome.collection_note + outcome.stderr
         exit_code = outcome.exit_code
+        if outcome.disk_exceeded_bytes is not None:
+            quota = _egress_firewall._disk_quota() or "its quota"
+            stderr = _DISK_QUOTA_NOTE.format(limit=quota) + stderr
+            result = CodeResult(
+                stdout=outcome.stdout, stderr=stderr, exit_code=exit_code if exit_code else 137,
+                language=request.language, duration_ms=duration_ms, artifacts=artifacts,
+            )
+            return result.model_copy(update={
+                "error_analysis": self._reflection.disk_quota_hit(stderr, quota),
+            })
         if outcome.deadline_hit and exit_code != 0:
             result = CodeResult(
                 stdout=outcome.stdout,
@@ -635,6 +821,12 @@ class DockerCodingSandbox(CodingSandboxBackend):
         full_path = self._resolve_path(path)
         with open(full_path, "rb") as f:
             return f.read()
+
+    async def read_file_head(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        return read_local_file_head(self._resolve_path(path), max_bytes)
+
+    async def file_size(self, path: str) -> int | None:
+        return os.stat(self._resolve_path(path)).st_size
 
     async def list_files(self) -> list[str]:
         results: list[str] = []
@@ -914,6 +1106,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             if handle.cancelled.is_set():
                 raise _RunCancelled
             container.start()
+            watch = _DiskWatch.start(client, container.id, _disk_watch_limit_for(client))
 
             timed_out = False
             oom_killed, ran_s = False, None
@@ -929,11 +1122,15 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     pass
             else:
                 oom_killed, ran_s = _container_exit_state(container)
+            finally:
+                if watch is not None:
+                    watch.stop()
+            disk_exceeded = watch.exceeded_bytes if watch is not None else None
             if handle.cancelled.is_set():
                 raise _RunCancelled
 
-            stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
+            stdout = _capped_logs(container, stdout=True)
+            stderr = _capped_logs(container, stdout=False)
             if timed_out:
                 stderr = f"Execution timed out after {timeout}s\n{stderr}".strip()
 
@@ -946,14 +1143,19 @@ class DockerCodingSandbox(CodingSandboxBackend):
             )
 
             os.makedirs(self._output_dir, exist_ok=True)
-            _extract_container_dir(container, "/output", self._output_dir)
-            _extract_container_dir(container, "/src", src_dir)
+            # One budget for both directories: together they are what this
+            # run hands back to the host.
+            budget = ExtractBudget.for_output()
+            _extract_container_dir(container, "/output", self._output_dir, budget=budget)
+            _extract_container_dir(container, "/src", src_dir, budget=budget)
             # The exit status after `timeout -s KILL` is not a reliable signal
             # (137, or 124 from some builds), so the run time decides.
             deadline_hit = timed_out or (ran_s is not None and ran_s >= timeout - 1)
             return _RunOutcome(
                 exit_code, stdout, stderr, oom_killed=oom_killed, ran_s=ran_s,
-                deadline_hit=deadline_hit,
+                deadline_hit=deadline_hit and disk_exceeded is None,
+                disk_exceeded_bytes=disk_exceeded,
+                collection_note=budget.note(),
             )
         finally:
             if container is not None:
@@ -1070,6 +1272,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             if handle.cancelled.is_set():
                 raise _RunCancelled
             container.start()
+            watch = _DiskWatch.start(client, container.id, _disk_watch_limit_for(client))
             try:
                 exit_info = container.wait(timeout=_INSTALL_TIMEOUT_S + _HOST_WAIT_MARGIN_S)
                 timed_out = False
@@ -1084,13 +1287,21 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     container.kill()
                 except Exception:
                     pass
+            finally:
+                if watch is not None:
+                    watch.stop()
             if handle.cancelled.is_set():
                 raise _RunCancelled
             exit_code = exit_info.get("StatusCode", -1)
             oom_killed, ran_s = _container_exit_state(container) if not timed_out else (False, None)
-            stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
-            if exit_code != 0 and (timed_out or (ran_s is not None and ran_s >= _INSTALL_TIMEOUT_S - 1)):
+            stdout = _capped_logs(container, stdout=True)
+            stderr = _capped_logs(container, stdout=False)
+            if watch is not None and watch.exceeded_bytes is not None:
+                exit_code = exit_code or 137
+                stderr = _INSTALL_DISK_QUOTA_NOTE.format(
+                    limit=_egress_firewall._disk_quota() or "its quota",
+                ) + stderr
+            elif exit_code != 0 and (timed_out or (ran_s is not None and ran_s >= _INSTALL_TIMEOUT_S - 1)):
                 stderr = _INSTALL_TIMEOUT_NOTE.format(seconds=_INSTALL_TIMEOUT_S) + stderr
             elif oom_killed and exit_code != 0:
                 stderr = _INSTALL_OOM_NOTE.format(limit=self._memory_limit_mb) + stderr
@@ -1111,7 +1322,14 @@ class DockerCodingSandbox(CodingSandboxBackend):
             # Dependency archive (pip --target / npm node_modules): keep in-tree
             # symlinks such as node_modules/.bin so installed CLIs survive the
             # round trip; filter="data" still blocks links that escape the dir.
-            _extract_container_dir(container, extract_path, host_target, allow_symlinks=True)
+            budget = ExtractBudget.for_dependencies()
+            _extract_container_dir(
+                container, extract_path, host_target, allow_symlinks=True, budget=budget,
+            )
+            note = budget.note()
+            if note:
+                logger.warning("_install_packages_sync: %s", note.strip())
+                return 1, stdout, note + stderr
             return exit_code, stdout, stderr
         finally:
             try:
@@ -1221,12 +1439,16 @@ def _tar_empty_dir(name: str, *, mode: int = 0o755) -> bytes:
 
 def _extract_container_dir(
     container: object, container_path: str, local_dir: str, *, allow_symlinks: bool = False,
-) -> None:
+    budget: ExtractBudget | None = None,
+) -> ExtractBudget:
     """Pull a directory from a container via `get_archive` and extract it
     into `local_dir`, merging with (not clearing) whatever's already there.
 
-    Streamed chunk-by-chunk into a `SpooledTemporaryFile` so small archives
-    stay in memory while large ones transparently spill to disk.
+    The archive is read as it streams in, within `budget` (a fresh output
+    budget when none is given): files over the per-file limit are skipped,
+    collection stops at the total or file-count limit, and nothing larger
+    than the limits is ever held in memory or written to disk. See
+    `output_limits.extract_tar_stream`.
 
     For untrusted archives (``/output``, ``/src``) only regular files are
     extracted: a symlink left on the host would be followed by the next run's
@@ -1238,45 +1460,45 @@ def _extract_container_dir(
     own path would land outside `local_dir` is skipped. One bad member is
     skipped, not fatal, so the rest of the archive still extracts.
     """
+    budget = budget or ExtractBudget.for_output()
     try:
         bits, _ = container.get_archive(container_path)
-        with tempfile.SpooledTemporaryFile(max_size=_TAR_SPOOL_MAX_SIZE) as tar_stream:
-            for chunk in bits:
-                if chunk:
-                    tar_stream.write(chunk)
-            tar_stream.seek(0)
-            resolved_root = os.path.realpath(local_dir)
-            with tarfile.open(fileobj=tar_stream, mode="r|*") as tar:
-                prefix = os.path.basename(container_path.rstrip("/")) + "/"
-                for member in tar:
-                    if member.isdir():
-                        continue
-                    is_link = member.issym() or member.islnk()
-                    if not member.isfile() and not (allow_symlinks and is_link):
-                        logger.warning(
-                            "Skipping non-regular tar member %r (type %r) from %s",
-                            member.name, member.type, container_path,
-                        )
-                        continue
-                    if member.name.startswith(prefix):
-                        member.name = member.name[len(prefix):]
-                    if not member.name:
-                        continue
-                    target = os.path.realpath(os.path.join(local_dir, member.name))
-                    if not target.startswith(resolved_root + os.sep) and target != resolved_root:
-                        logger.warning(
-                            "Skipping tar member with path traversal: %s -> %s",
-                            member.name, target,
-                        )
-                        continue
-                    try:
-                        # `data` filter rejects a link whose target escapes the
-                        # destination; skip that member rather than abort the run.
-                        tar.extract(member, local_dir, filter="data")
-                    except Exception as exc:
-                        logger.warning(
-                            "Skipping unsafe tar member %r from %s: %s",
-                            member.name, container_path, exc,
-                        )
+        extract_tar_stream(bits, container_path, local_dir, budget, allow_symlinks=allow_symlinks)
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)
+    return budget
+
+
+def _capped_logs(container: Any, *, stdout: bool) -> str:
+    """One of a finished container's streams, keeping only its first and
+    last bytes (`output_limits.stdio_limits`); the rest is read past and
+    dropped, never held."""
+    try:
+        try:
+            stream = container.logs(stdout=stdout, stderr=not stdout, stream=True)
+        except TypeError:
+            # A client without streaming logs.
+            stream = container.logs(stdout=stdout, stderr=not stdout)
+    except Exception as exc:
+        logger.debug("reading container logs failed: %s", exc)
+        return ""
+    return read_capped_stream(stream)
+
+
+def _make_private_dir(path: str) -> None:
+    """Create `path` readable only by this user (0700), whatever the umask:
+    other local users must not read another chat's inputs and outputs."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        logger.warning("could not make sandbox dir %s private: %s", path, exc)
+
+
+def read_local_file_head(full_path: str, max_bytes: int) -> tuple[bytes, bool]:
+    """At most `max_bytes` of a host file, and whether it has more. Reads
+    only what it returns (plus one byte)."""
+    max_bytes = max(0, int(max_bytes))
+    with open(full_path, "rb") as f:
+        data = f.read(max_bytes + 1)
+    return data[:max_bytes], len(data) > max_bytes

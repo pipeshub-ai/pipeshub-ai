@@ -64,7 +64,7 @@ from app.agent_loop_lib.hooks.middleware.context import (
     ToolCallContext,
     ToolResultContext,
 )
-from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.base import CodingSandboxBackend, SandboxContext
 from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
 from app.agent_loop_lib.sandbox.coding.settings import (
     EnvSandboxSettingsLoader,
@@ -99,6 +99,7 @@ from app.sandbox.package_policy import (
     get_allowlist,
 )
 from app.sandbox.redact import redact_sandbox_paths
+from app.services.artifact_registry import MAX_ARTIFACT_BYTES
 from app.services.artifact_registry.access import (
     AccessDeniedError,
     ArtifactNotFoundError,
@@ -1130,16 +1131,7 @@ async def _register_run_code_artifacts(
         )
         return
 
-    fetched: list[tuple[str, bytes]] = []
-    for rel_path in deliverable_paths:
-        try:
-            content = await backend.download_file(rel_path)
-        except Exception:
-            logger.warning(
-                "artifact download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
-            )
-            continue
-        fetched.append((rel_path, content))
+    fetched, oversized = await _fetch_within_cap(backend, deliverable_paths, registry, sandbox_id)
 
     if not fetched:
         logger.warning(
@@ -1147,6 +1139,7 @@ async def _register_run_code_artifacts(
             deliverable_paths, sandbox_id,
         )
         data["artifacts"] = []
+        _add_artifact_errors(data, oversized)
         return
 
     names = _artifact_names_for(fetched)
@@ -1155,6 +1148,59 @@ async def _register_run_code_artifacts(
         source_tool=source_tool, code_artifact_id=code_artifact_id,
         code_artifact_version=code_artifact_version,
     )
+    _add_artifact_errors(data, oversized)
+
+
+def _artifact_cap(registry: object) -> int:
+    cap = getattr(registry, "_max_bytes", None)
+    return cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else MAX_ARTIFACT_BYTES
+
+
+async def _fetch_within_cap(
+    backend: CodingSandboxBackend, rel_paths: list[str], registry: object, sandbox_id: str,
+) -> tuple[list[tuple[str, bytes]], list[dict[str, str]]]:
+    """Download each path whose size is within the artifact cap. A file
+    over the cap is never read (its size is checked first), so a huge or
+    sparse output file cannot fill this process's memory; it is reported in
+    the second list instead, in the `artifact_errors` shape."""
+    cap = _artifact_cap(registry)
+    fetched: list[tuple[str, bytes]] = []
+    oversized: list[dict[str, str]] = []
+    for rel_path in rel_paths:
+        try:
+            size = await backend.file_size(rel_path) if hasattr(backend, "file_size") else None
+        except Exception:
+            size = None
+        if isinstance(size, int) and not isinstance(size, bool) and size > cap:
+            logger.warning(
+                "artifact %r in sandbox %s is %d bytes, over the %d-byte cap; not collected",
+                rel_path, sandbox_id, size, cap,
+            )
+            oversized.append({
+                "file": redact_sandbox_paths(os.path.basename(rel_path)),
+                "error": f"FileTooLarge: {size} bytes exceeds the {cap}-byte cap; not collected",
+            })
+            continue
+        try:
+            content = await backend.download_file(rel_path)
+        except Exception:
+            logger.warning(
+                "artifact download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
+            )
+            continue
+        fetched.append((rel_path, content))
+    return fetched, oversized
+
+
+def _add_artifact_errors(data: dict[str, Any], errors: list[dict[str, str]]) -> None:
+    if not errors:
+        return
+    data["artifact_errors"] = [*(data.get("artifact_errors") or []), *errors]
+    data.setdefault("artifact_errors_note", (
+        "These files were produced but are larger than the artifact size limit, so they "
+        "were NOT saved and are NOT downloadable. Do NOT tell the user the file is ready. "
+        "Write a smaller file (split, compress, or keep only what is needed) and run again."
+    ))
 
 
 async def _register_and_deliver(
@@ -1342,16 +1388,7 @@ async def _rescue_scratch_files(
             )
             continue
 
-        fetched: list[tuple[str, bytes]] = []
-        for rel_path in call["paths"]:
-            try:
-                content = await backend.download_file(rel_path)
-            except Exception:
-                logger.warning(
-                    "scratch rescue: download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
-                )
-                continue
-            fetched.append((rel_path, content))
+        fetched, _oversized = await _fetch_within_cap(backend, call["paths"], registry, sandbox_id)
         if not fetched:
             continue
 

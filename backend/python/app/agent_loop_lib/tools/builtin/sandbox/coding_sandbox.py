@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.sandbox.coding.base import (
     CodeRequest,
     CodeResult,
+    CodingSandboxBackend,
     ErrorCategory,
 )
 from app.agent_loop_lib.sandbox.manager import (
@@ -394,6 +395,27 @@ async def _upload_staged_files(backend: Any) -> list[str]:
     if not uploaded:
         _logger.info("_upload_staged_files: nothing to upload (no staged files in context)")
     return uploaded
+
+
+_READ_MAX_BYTES = 1_000_000
+
+
+def _clamp_read_bytes(value: Any) -> int:
+    """`max_bytes` from the model, held to 0..`_READ_MAX_BYTES`; anything
+    that is not a number gets the maximum."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return _READ_MAX_BYTES
+    return min(max(n, 0), _READ_MAX_BYTES)
+
+
+async def _read_head(backend: Any, path: str, max_bytes: int) -> tuple[bytes, bool]:
+    """At most `max_bytes` of `path`, and whether the file has more."""
+    if isinstance(backend, CodingSandboxBackend):
+        return await backend.read_file_head(path, max_bytes)
+    content = await backend.download_file(path)
+    return content[:max_bytes], len(content) > max_bytes
 
 
 class CodingSandboxTool(Tool):
@@ -842,8 +864,8 @@ class ReadSandboxFileTool(Tool):
                 ),
             ),
             ToolParameter(
-                name="max_bytes", type=ParameterType.INTEGER, required=False, default=1_000_000,
-                description="Maximum number of bytes to read.",
+                name="max_bytes", type=ParameterType.INTEGER, required=False, default=_READ_MAX_BYTES,
+                description=f"Maximum number of bytes to read (at most {_READ_MAX_BYTES}).",
             ),
         ]
 
@@ -851,9 +873,10 @@ class ReadSandboxFileTool(Tool):
         self,
         sandbox_id: str,
         path: str,
-        max_bytes: int = 1_000_000,
+        max_bytes: int = _READ_MAX_BYTES,
         **kwargs: Any,
     ) -> ToolOutput:
+        max_bytes = _clamp_read_bytes(max_bytes)
         try:
             backend = self._manager.get(SandboxType.CODING, sandbox_id)
         except UnknownSandboxError as e:
@@ -862,15 +885,15 @@ class ReadSandboxFileTool(Tool):
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         try:
-            content = await backend.download_file(path)
+            # Reads only `max_bytes` (plus one) where the backend can, so a
+            # large file is never read whole to return its first bytes.
+            content, truncated = await _read_head(backend, path, max_bytes)
         except ValueError as e:
             # Path traversal — a rejected request, not an infra failure.
             return ToolOutput(success=True, data={"error": str(e)})
         except (FileNotFoundError, IsADirectoryError) as e:
             return ToolOutput(success=True, data={"error": str(e)})
 
-        truncated = len(content) > max_bytes
-        content = content[:max_bytes]
         try:
             return ToolOutput(success=True, data={
                 "content": content.decode("utf-8"), "encoding": "utf-8", "truncated": truncated,

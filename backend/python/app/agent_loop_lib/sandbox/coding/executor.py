@@ -6,12 +6,17 @@ import sys
 import time
 from dataclasses import dataclass
 
-from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult
+from app.agent_loop_lib.sandbox.coding.base import (
+    CodeRequest,
+    CodeResult,
+    validate_entry_file,
+)
 from app.agent_loop_lib.sandbox.coding.environment import (
     EnvironmentManager,
     _kill_process_tree,
     sanitized_subprocess_env,
 )
+from app.agent_loop_lib.sandbox.coding.output_limits import read_stdio_capped
 from app.agent_loop_lib.sandbox.confinement import confine_command
 
 """`CodeExecutor`: runs one `CodeRequest` as a confined subprocess.
@@ -168,7 +173,9 @@ class CodeExecutor:
         else:
             await self._env.ensure_python_venv()
 
-        entry_name = request.entry_file or ("main.ts" if request.language == "typescript" else "main.py")
+        entry_name = validate_entry_file(
+            request.entry_file or ("main.ts" if request.language == "typescript" else "main.py")
+        )
 
         before = _snapshot_mtimes(self._working_dir)
         if request.language == "typescript":
@@ -196,8 +203,9 @@ class CodeExecutor:
         )
 
     async def _run_typescript(self, request: CodeRequest) -> tuple[str, str, int]:
-        entry = request.entry_file or "main.ts"
+        entry = validate_entry_file(request.entry_file or "main.ts")
         entry_path = os.path.join(self._working_dir, entry)
+        os.makedirs(os.path.dirname(entry_path), exist_ok=True)
         with open(entry_path, "w", encoding="utf-8") as f:
             f.write(request.code)
 
@@ -213,8 +221,9 @@ class CodeExecutor:
         return await self._run([self._env.tsx_binary, entry], request.timeout, allow_network=request.allow_network)
 
     async def _run_python(self, request: CodeRequest) -> tuple[str, str, int]:
-        entry = request.entry_file or "main.py"
+        entry = validate_entry_file(request.entry_file or "main.py")
         entry_path = os.path.join(self._working_dir, entry)
+        os.makedirs(os.path.dirname(entry_path), exist_ok=True)
         with open(entry_path, "w", encoding="utf-8") as f:
             f.write(request.code)
         return await self._run([self._env.python_bin, entry], request.timeout, allow_network=request.allow_network)
@@ -232,7 +241,9 @@ class CodeExecutor:
             start_new_session=is_posix,
         )
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            # Only the head and tail of each stream are kept: a program that
+            # prints gigabytes must not put them in this process's memory.
+            stdout, stderr = await asyncio.wait_for(read_stdio_capped(proc), timeout=timeout)
         except asyncio.TimeoutError:
             await _kill_process_tree(proc)
             return "", f"Timed out after {timeout}s", -1
@@ -242,8 +253,4 @@ class CodeExecutor:
             # skip the kill.
             await asyncio.shield(_kill_process_tree(proc))
             raise
-        return (
-            stdout_bytes.decode(errors="replace"),
-            stderr_bytes.decode(errors="replace"),
-            proc.returncode if proc.returncode is not None else -1,
-        )
+        return stdout, stderr, proc.returncode if proc.returncode is not None else -1

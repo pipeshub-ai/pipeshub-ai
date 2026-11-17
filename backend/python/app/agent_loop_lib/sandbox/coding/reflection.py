@@ -226,6 +226,20 @@ class ReflectionEngine:
             is_retryable=True,
         )
 
+    def disk_quota_hit(self, text: str, limit: str) -> ErrorAnalysis:
+        """The run was stopped for writing more than its disk quota."""
+        return ErrorAnalysis(
+            category=ErrorCategory.RUNTIME,
+            message=f"[sandbox] The run was stopped because it wrote more than {limit} to its disk.",
+            suggestion=(
+                "Write less data: process it in chunks, stream it instead of saving it, "
+                "or keep only the part you need."
+            ),
+            stack_trace=text or None,
+            # The same code writes the same amount again.
+            is_retryable=False,
+        )
+
     def analyze(self, result: CodeResult) -> ErrorAnalysis | None:
         if result.success:
             return None
