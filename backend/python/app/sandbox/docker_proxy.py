@@ -1854,8 +1854,10 @@ class Reaper:
         times = info.get("State") if status == 200 and isinstance(info, dict) else None
         if not isinstance(times, dict):
             return upload_bound
-        stamps = [_docker_time(times.get(key)) for key in ("StartedAt", "FinishedAt")]
-        return max([created, *(t for t in stamps if t is not None)])
+        stamps = [t for t in (_docker_time(times.get(key)) for key in ("StartedAt", "FinishedAt")) if t is not None]
+        if not stamps:
+            return upload_bound
+        return max([created, *stamps])
 
     def _log_unlabeled(self, count: int, now: float) -> None:
         if not count:
