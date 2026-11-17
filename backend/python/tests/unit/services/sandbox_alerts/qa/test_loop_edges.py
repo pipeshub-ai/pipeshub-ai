@@ -110,8 +110,13 @@ async def test_a_store_lost_between_claim_and_release_does_not_break_the_loop(
     env.producer.result = False
     original = env.store.get_config
 
+    reads = 0
+
     async def failing_get(*args, **kwargs):  # noqa: ANN202
-        env.store.fail = True
+        nonlocal reads
+        reads += 1
+        if reads > 1:  # the first read (the critical level's last email) works
+            env.store.fail = True
         return await original(*args, **kwargs)
 
     env.store.get_config = failing_get  # type: ignore[method-assign]
@@ -139,7 +144,7 @@ async def test_load_that_flaps_without_a_full_clear_window_alerts_once_a_day(env
     assert "SANDBOX_CAPACITY_RESOLVED" not in types(env)
 
 
-async def test_a_resolved_alert_can_fire_again_the_same_day_with_email(env: Env) -> None:
+async def test_a_resolved_alert_fires_again_the_same_day_in_app_only(env: Env) -> None:
     runner = env.runner()
     env.warn()
     await runner.run_once()
@@ -151,7 +156,7 @@ async def test_a_resolved_alert_can_fire_again_the_same_day_with_email(env: Env)
     env.warn()
     await runner.run_once()
     assert types(env) == ["SANDBOX_CAPACITY_WARNING", "SANDBOX_CAPACITY_RESOLVED", "SANDBOX_CAPACITY_WARNING"]
-    assert [e["email"] for _, e, _ in env.producer.sent] == [True, False, True]
+    assert [e["email"] for _, e, _ in env.producer.sent] == [True, False, False]
 
 
 async def test_a_scope_of_its_own_does_not_share_the_cooldown(env: Env) -> None:

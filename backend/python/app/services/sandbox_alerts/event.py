@@ -102,9 +102,11 @@ def build_alert_event(
     host: str,
     fired_at: float,
     slot_wait_s: int | None = None,
+    email: bool = True,
 ) -> dict[str, Any]:
     """The event for a warning or critical *decision*; *snapshot* is the
-    governor's ``snapshot()``."""
+    governor's ``snapshot()``. *email* false: in-app only, because this level
+    was already emailed within the cooldown."""
     level = decision.level
     if level is None:
         raise ValueError("no alert to build")
@@ -171,7 +173,7 @@ def build_alert_event(
         "title": _TITLES[level],
         "message": message,
         "redirectLink": DOCS_URL,
-        "email": True,
+        "email": email,
         "isDeleted": False,
         "payload": payload,
     }

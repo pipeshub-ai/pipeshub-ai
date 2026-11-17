@@ -14,7 +14,13 @@ from typing import TYPE_CHECKING, Any
 
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.sandbox_alerts.config import AlertSettings
-from app.services.sandbox_alerts.cooldown import STATE_CLAIMED, AlertCooldown
+from app.services.sandbox_alerts.cooldown import (
+    STATE_CLAIMED,
+    STORE_TIMEOUT_S,
+    AlertClaim,
+    AlertCooldown,
+    emailed_at_ms,
+)
 from app.services.sandbox_alerts.evaluator import AlertDecision, evaluate
 from app.services.sandbox_alerts.event import build_alert_event, build_resolved_event
 from app.services.sandbox_alerts.leader import AlertLeader
@@ -27,6 +33,8 @@ if TYPE_CHECKING:
 
 NOTIFICATION_TOPIC = "notification"
 _SUPPRESSED_LOG_EVERY_S = 900.0
+# A publish (or building the producer) that takes longer is a failure.
+PUBLISH_TIMEOUT_S = 10.0
 _LEVELS = ("critical", "warning")
 
 ProducerFactory = Callable[[], Awaitable[IMessagingProducer]]
@@ -69,8 +77,13 @@ class SandboxAlertRunner:
         logger: logging.Logger | None = None,
         clock: Callable[[], float] = time.time,
         host: str | None = None,
+        store_timeout_s: float = STORE_TIMEOUT_S,
+        publish_timeout_s: float = PUBLISH_TIMEOUT_S,
     ) -> None:
         self._settings = settings
+        self._publish_timeout_s = publish_timeout_s
+        # Failures already logged at WARNING, until the next success.
+        self._failing: set[str] = set()
         self._directory = state_directory / "load"
         self._leader = AlertLeader(state_directory)
         self._producer_factory = producer_factory
@@ -81,6 +94,7 @@ class SandboxAlertRunner:
         self._host = host or socket.gethostname()
         self._cooldown = AlertCooldown(
             config_service, settings.scope, settings.cooldown_s, clock=clock, host=self._host,
+            timeout_s=store_timeout_s,
         )
         self._suppressed_logged_at: dict[str, float] = {}
         self._clear_since: float | None = None
@@ -115,50 +129,89 @@ class SandboxAlertRunner:
             await self._resolve(now)
         return decision
 
+    def _warn_once(self, kind: str, message: str, *args: object, exc_info: bool = False) -> None:
+        """WARNING the first time *kind* fails in a row, DEBUG after that."""
+        level = logging.DEBUG if kind in self._failing else logging.WARNING
+        self._failing.add(kind)
+        self._logger.log(level, message, *args, exc_info=exc_info)
+
+    def _recovered(self, kind: str) -> None:
+        self._failing.discard(kind)
+
+    async def _stronger_emailed_at(self, level: str) -> int | None:
+        """When the critical level was last emailed, for a warning: a weaker
+        email never follows a stronger one within the cooldown."""
+        if level != "warning":
+            return None
+        try:
+            return emailed_at_ms(await self._cooldown.read("critical"))
+        except Exception:
+            self._logger.debug("sandbox load alert: critical claim unreadable", exc_info=True)
+            return None
+
+    async def _release(self, claims: list[AlertClaim], level: str, alert_id: str) -> None:
+        # A claim that failed (or timed out) may still have been written.
+        targets = [(c.level, c.previous) for c in claims] or [(level, None)]
+        for claimed, previous in targets:
+            try:
+                await self._cooldown.release_if_ours(claimed, alert_id, previous)
+            except Exception:
+                self._logger.warning("sandbox load alert %s: could not release the claim", claimed, exc_info=True)
+
     async def _fire(self, decision: AlertDecision, now: float) -> None:
         level = decision.level
         assert level is not None
         alert_id = str(uuid.uuid4())
-        claimed_levels: list[str] = []
+        claims: list[AlertClaim] = []
         try:
-            if not await self._cooldown.claim(level, alert_id):
+            claim = await self._cooldown.claim_alert(
+                level, alert_id, stronger_emailed_at_ms=await self._stronger_emailed_at(level),
+            )
+            self._recovered("store")
+            if claim is None:
                 self._log_suppressed(level, now)
                 return
-            claimed_levels.append(level)
+            claims.append(claim)
             if level == "critical":
-                # So a weaker email never follows a stronger one.
+                # The critical email also counts for the warning.
                 try:
-                    if await self._cooldown.claim("warning", alert_id):
-                        claimed_levels.append("warning")
-                except Exception:
+                    warning = await self._cooldown.claim_alert(
+                        "warning", alert_id, stronger_emailed_at_ms=claim.emailed_at_ms,
+                    )
+                    if warning is not None:
+                        claims.append(warning)
+                except Exception as exc:
                     self._logger.debug("sandbox load alert: warning claim failed", exc_info=True)
+                    if isinstance(exc, TimeoutError):
+                        # It may have been written: give it back too if the send fails.
+                        claims.append(AlertClaim("warning", alert_id, email=False, emailed_at_ms=0))
         except Exception as exc:
-            self._logger.warning("sandbox load alert %s not sent: config store unavailable (%s)", level, exc)
+            self._warn_once("store", "sandbox load alert %s not sent: config store unavailable (%r)", level, exc)
+            if isinstance(exc, TimeoutError):
+                await self._release(claims, level, alert_id)
             return
+        email = claims[0].email
         try:
             event = build_alert_event(
                 decision, self._snapshot(), self._settings,
-                alert_id=alert_id, host=self._host, fired_at=now,
+                alert_id=alert_id, host=self._host, fired_at=now, email=email,
             )
         except Exception:
             self._logger.warning("sandbox load alert %s: building the alert failed", level, exc_info=True)
             event = None
         if event is not None and await self._publish(event, alert_id):
+            self._recovered("send")
             totals = decision.totals
             self._logger.warning(
                 "sandbox load alert fired level=%s alert_id=%s host=%s runs=%d waited=%d "
-                "refused=%d busy_pct=%d reason=%s indexing_slowed=%s",
+                "refused=%d busy_pct=%d reason=%s indexing_slowed=%s email=%s",
                 level, alert_id, self._host, totals.runs, totals.waited, totals.refused,
                 round(decision.busy_percent), event["payload"]["reason"],
-                event["payload"]["indexingSlowed"],
+                event["payload"]["indexingSlowed"], email,
             )
             return
-        for claimed in claimed_levels:
-            try:
-                await self._cooldown.release_if_ours(claimed, alert_id)
-            except Exception:
-                self._logger.warning("sandbox load alert %s: could not release the claim", claimed, exc_info=True)
-        self._logger.warning("sandbox load alert %s not sent; retrying next interval", level)
+        await self._release(claims, level, alert_id)
+        self._warn_once("send", "sandbox load alert %s not sent; retrying next interval", level)
 
     async def _resolve(self, now: float) -> None:
         try:
@@ -196,14 +249,28 @@ class SandboxAlertRunner:
     async def _publish(self, event: dict[str, Any], alert_id: str) -> bool:
         try:
             if self._producer is None:
-                self._producer = await self._producer_factory()
-            sent = await self._producer.send_message(
-                NOTIFICATION_TOPIC, event, key=f"sandbox-capacity-{alert_id}",
+                self._producer = await asyncio.wait_for(self._producer_factory(), self._publish_timeout_s)
+            sent = await asyncio.wait_for(
+                self._producer.send_message(NOTIFICATION_TOPIC, event, key=f"sandbox-capacity-{alert_id}"),
+                self._publish_timeout_s,
             )
         except Exception as exc:
-            self._logger.warning("sandbox load alert: publish failed (%s)", exc)
+            if isinstance(exc, TimeoutError):
+                # A producer that hung once is rebuilt on the next try.
+                await self._drop_producer()
+            self._warn_once("publish", "sandbox load alert: publish failed (%r)", exc)
             return False
-        return sent is not False
+        if sent is False:
+            self._warn_once("publish", "sandbox load alert: publish failed (not accepted)")
+            return False
+        self._recovered("publish")
+        return True
+
+    async def _drop_producer(self) -> None:
+        producer, self._producer = self._producer, None
+        if producer is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(producer.cleanup(), self._publish_timeout_s)
 
     def _log_suppressed(self, level: str, now: float) -> None:
         last = self._suppressed_logged_at.get(level)
@@ -216,10 +283,7 @@ class SandboxAlertRunner:
         )
 
     async def close(self) -> None:
-        producer, self._producer = self._producer, None
-        if producer is not None:
-            with contextlib.suppress(Exception):
-                await producer.cleanup()
+        await self._drop_producer()
         self._leader.release()
 
 
