@@ -24973,6 +24973,16 @@ components:
         message:
           type: string
           description: Set when nothing matched.
+        incomplete:
+          type: boolean
+          description: >-
+            Present (true) when the search ran out of time before every match could be checked against
+            the caller's access, so an entity the caller can reach may be missing. Every listed result
+            was checked; search again for the rest. Absent when the search finished. A search that
+            checked nothing at all fails with 503 instead.
+        incompleteNote:
+          type: string
+          description: Set with `incomplete`; says what it means for the results.
         results:
           type: array
           items:
