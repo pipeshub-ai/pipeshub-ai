@@ -511,7 +511,7 @@ def extract_tar_stream(
                 target = os.path.realpath(os.path.join(local_dir, member.name))
                 if not target.startswith(resolved_root + os.sep) and target != resolved_root:
                     logger.warning(
-                        "Skipping tar member with path traversal: %s -> %s",
+                        "Skipping tar member with path traversal: %r -> %r",
                         member.name, target,  # log-pii: ok tar member path, not a person
                     )
                     continue
@@ -544,18 +544,18 @@ def extract_tar_stream(
                             f"{_human(limits.max_file_bytes)} per-file limit, so it and any later "
                             "files were not collected"
                         )
-                        logger.warning("sandbox output: stopped at oversized member %s", shown)
+                        logger.warning("sandbox output: stopped at oversized member %r", shown)
                         return
                     budget.streamed_bytes += size
                     budget.skipped.append(shown)
-                    logger.warning("sandbox output: skipped oversized member %s", shown)
+                    logger.warning("sandbox output: skipped oversized member %r", shown)
                     continue
                 if budget.extracted_bytes + size > limits.max_total_bytes:
                     budget.stopped_reason = (
                         f"collection stopped at {shown} because the run's output reached "
                         f"the {_human(limits.max_total_bytes)} total limit"
                     )
-                    logger.warning("sandbox output: total limit reached at %s", shown)
+                    logger.warning("sandbox output: total limit reached at %r", shown)
                     return
                 replaced = _kept_size(os.path.join(kept_dir or local_dir, member.name))
                 grows_by = size - (replaced or 0)
@@ -571,7 +571,7 @@ def extract_tar_stream(
                         f"at most {_human(retention.max_bytes)} or {retention.max_files} files "
                         "across all runs"
                     )
-                    logger.warning("sandbox output: sandbox retention limit reached at %s", shown)
+                    logger.warning("sandbox output: sandbox retention limit reached at %r", shown)
                     return
                 current_target = target
                 try:
