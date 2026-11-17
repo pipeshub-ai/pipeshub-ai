@@ -110,6 +110,31 @@ async def _build(
     return records[0]
 
 
+class TestSecuredSubtasks:
+    """A sub-task carries its parent's level, but a per-issue holder of that level is resolved on the sub-task."""
+
+    @staticmethod
+    def _subtask(level: str) -> dict:
+        sub = _issue({"id": level, "name": "L"}, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        return sub
+
+    @pytest.mark.asyncio
+    async def test_its_own_assignee_reads_it_without_reading_the_parent(self) -> None:
+        record, perms, _ = await _build(_connector(), self._subtask("10102"), _present())
+        assert record.parent_external_record_id is None, "filed under the parent it would need the parent's readers"
+        assert record.access_rule == AccessRule.RESTRICTED
+        assert {"rep@x.com", "asg@x.com"} <= {p.email for p in perms}
+
+    @pytest.mark.asyncio
+    async def test_a_level_that_names_the_same_people_everywhere_keeps_it_under_the_parent(self) -> None:
+        context = _present({"10102": [{"type": "group", "value": "group-1"}]})
+        record, perms, _ = await _build(_connector(), self._subtask("10102"), context)
+        assert record.parent_external_record_id == "1001"
+        assert [(p.entity_type, p.external_id) for p in perms] == [(EntityType.GROUP, "group-1")]
+
+
 class TestSecuredIssues:
     @pytest.mark.asyncio
     async def test_leveled_issue_is_restricted_and_granted_to_level_members_only(self) -> None:
@@ -1372,12 +1397,32 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == []
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_follows_its_parent_and_is_not_granted(self) -> None:
+    async def test_a_sub_task_hangs_off_its_project_and_is_granted_its_own_people(self) -> None:
+        # Jira grants Browse on each issue to that issue's reporter and assignee, so the sub-task's
+        # own people read it without reading its parent.
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
         record, perms, _ = await _build(_connector(), sub, self._none(self.HOLDERS))
+        assert record.parent_external_record_id is None
+        assert {p.email for p in perms} == {"rep@x.com", "asg@x.com"} and record.access_rule == AccessRule.OPEN
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_follows_its_parent_when_no_holder_names_people(self) -> None:
+        sub = _issue(None, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        record, perms, _ = await _build(_connector(), sub, self._none([]))
+        assert record.parent_external_record_id == "1001"
         assert perms == [] and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_stays_under_its_parent_while_the_holders_are_unknown(self) -> None:
+        sub = _issue(None, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        record, _, _ = await _build(_connector(), sub, self._none(None))
+        assert record.parent_external_record_id == "1001"
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()

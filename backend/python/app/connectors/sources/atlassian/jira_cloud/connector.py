@@ -103,6 +103,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     read_security_level,
     refuses_a_scope,
     scheme_has_no_levels,
+    subtask_files_under_parent,
     unreadable_reason,
     unreadable_security_notices,
 )
@@ -5308,6 +5309,11 @@ class JiraConnector(BaseConnector):
             if filed is None:
                 parent_unread = str(parent_external_id)
             if not filed:
+                parent_external_id = None
+        elif parent_external_id:
+            if security is None:
+                security = self._issue_security.get(self._issue_project_id(issue))
+            if not subtask_files_under_parent(security, fields):
                 parent_external_id = None
         if parent_external_id and self._parent_outside_synced_projects(fields):
             # A parent that never syncs stays a placeholder, which hides the issue under it;

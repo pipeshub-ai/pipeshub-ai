@@ -32,6 +32,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     refuses_a_scope,
     resolve_scheme_knowledge,
     scheme_has_no_levels,
+    subtask_files_under_parent,
     unreadable_reason,
     unreadable_security_notices,
 )
@@ -538,6 +539,46 @@ class TestLevelReadsAlike:
 
     def test_a_personal_connector_enforces_no_levels(self) -> None:
         assert not level_reads_alike(self._context([{"type": "group"}], enforce=False), "10")
+
+
+class TestSubtaskFilesUnderParent:
+    """A sub-task is filed under its parent only when everyone who reads it reads the parent.
+
+    Jira copies the parent's level onto a sub-task but resolves a holder that names people on the
+    sub-task itself: the sub-task's own assignee reads it without reading the parent.
+    """
+
+    @staticmethod
+    def _context(holders: list[dict], **kw: object) -> IssueSecurityContext:
+        return IssueSecurityContext(**{
+            "knowledge": SchemeKnowledge.PRESENT, "scheme_id": "1", "members_readable": True,
+            "members_by_level": {"10": holders}, **kw})
+
+    @pytest.mark.parametrize("holder_type", ["user", "group", "projectRole", "projectLead"])
+    def test_a_level_that_names_the_same_people_on_every_issue_keeps_it_under_the_parent(self, holder_type) -> None:
+        assert subtask_files_under_parent(self._context([{"type": holder_type}]), {"security": {"id": "10"}})
+
+    @pytest.mark.parametrize("holder_type", ["reporter", "assignee", "userCustomField", "groupCustomField"])
+    def test_a_level_that_names_people_on_each_issue_takes_it_off_the_parent(self, holder_type) -> None:
+        context = self._context([{"type": "group"}, {"type": holder_type}])
+        assert not subtask_files_under_parent(context, {"security": {"id": "10"}})
+
+    def test_browse_holders_that_name_people_take_it_off_the_parent_even_without_a_level(self) -> None:
+        context = self._context([{"type": "group"}], browse_holders=[{"type": "reporter"}])
+        assert not subtask_files_under_parent(context, {"security": None})
+        assert not subtask_files_under_parent(context, {"security": {"id": "10"}})
+
+    def test_no_level_or_unknown_state_keeps_it_under_the_parent(self) -> None:
+        context = self._context([{"type": "assignee"}])
+        assert subtask_files_under_parent(context, {"security": None})
+        assert subtask_files_under_parent(context, {}), "a level not returned closes it wherever it is filed"
+        assert subtask_files_under_parent(self._context([{"type": "assignee"}], members_readable=False),
+                                          {"security": {"id": "10"}})
+        assert subtask_files_under_parent(self._context([{"type": "group"}], browse_holders=None),
+                                          {"security": {"id": "10"}})
+        assert subtask_files_under_parent(None, {"security": {"id": "10"}})
+        assert subtask_files_under_parent(self._context([{"type": "assignee"}], enforce=False),
+                                          {"security": {"id": "10"}})
 
 
 class TestBrowseHoldersNamingPeoplePerIssue:

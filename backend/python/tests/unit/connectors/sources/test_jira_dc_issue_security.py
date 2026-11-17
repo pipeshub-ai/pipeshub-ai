@@ -533,3 +533,81 @@ class TestSweepAncestorReads:
         c._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=status))
         result = await c._sweep_placeholder_records({"10"}, {"10"})
         assert (result is not None) is swept
+
+
+class TestLevelsJiraLeavesOut:
+    """Data Center leaves ``security`` out of an issue with no level, where Cloud returns null."""
+
+    @staticmethod
+    def _search(status: int, ids: list[str]) -> AsyncMock:
+        body = {"issues": [{"id": i} for i in ids], "total": len(ids)}
+        return AsyncMock(return_value=MagicMock(status=status, json=MagicMock(return_value=body)))
+
+    async def test_an_issue_jql_finds_without_a_level_gets_an_explicit_null(self) -> None:
+        connector = _connector()
+        connector._search_issues_with_retry = self._search(200, ["1"])
+        open_issue = {"id": "1", "fields": {"project": {"id": "10"}}}
+        hidden_field = {"id": "2", "fields": {"project": {"id": "10"}}}
+        leveled = {"id": "3", "fields": {"security": {"id": "7"}}}
+
+        await connector._null_levels_jira_left_out([open_issue, hidden_field, leveled, None])
+
+        jql = connector._search_issues_with_retry.await_args.kwargs["jql"]
+        assert jql == "id in (1, 2) AND level IS EMPTY", "only the issues missing the key are asked about"
+        assert open_issue["fields"]["security"] is None
+        assert "security" not in hidden_field["fields"], "a key hidden by the field configuration stays missing"
+        assert leveled["fields"]["security"] == {"id": "7"}
+
+    @pytest.mark.parametrize("failure", ["http", "raise"])
+    async def test_a_failed_check_leaves_the_key_missing_so_the_issue_stays_closed(self, failure) -> None:
+        connector = _connector()
+        connector._search_issues_with_retry = (
+            self._search(400, ["1"]) if failure == "http" else AsyncMock(side_effect=RuntimeError("down")))
+        issue = {"id": "1", "fields": {}}
+        await connector._null_levels_jira_left_out([issue])
+        assert "security" not in issue["fields"]
+
+    async def test_nothing_is_asked_when_every_issue_carries_the_key(self) -> None:
+        connector = _connector()
+        connector._search_issues_with_retry = AsyncMock()
+        await connector._null_levels_jira_left_out([{"id": "1", "fields": {"security": None}}])
+        connector._search_issues_with_retry.assert_not_awaited()
+
+    async def test_a_parent_with_no_level_is_read_as_one_not_failed(self) -> None:
+        connector = _connector()
+        parent = {"id": "5", "fields": {"project": {"id": "10"}}}
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
+        connector._search_issues_with_retry = self._search(200, ["5"])
+        assert await connector._parent_level("5") == ("10", None)
+
+    async def test_a_no_level_issue_in_a_project_with_a_scheme_follows_the_project(self) -> None:
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        issue = _issue("1", "P-1")
+        del issue["fields"]["security"]
+        connector._search_issues_with_retry = self._search(200, ["1"])
+        await connector._null_levels_jira_left_out([issue])
+
+        built = await connector._build_issue_records([issue], "10", [])
+
+        record = next(r for r, _ in built if isinstance(r, TicketRecord))
+        assert record.access_rule == AccessRule.STRICT, "readable by the project, not hidden from everyone"
+
+
+class TestSecuredSubtasks:
+    async def test_a_sub_task_whose_level_names_its_assignee_hangs_off_the_project(self) -> None:
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "group", "parameter": "admins"}, {"type": "assignee"}]})
+        sub = _issue("2", "P-2", level="1")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        sub["fields"]["parent"] = {"id": "1", "key": "P-1"}
+        sub["fields"]["assignee"] = {"key": "vansh-key", "name": "vansh"}
+
+        built = await connector._build_issue_records([sub], "10", [_user("vansh-key", "vansh@example.com")])
+
+        record, grants = next((r, g) for r, g in built if isinstance(r, TicketRecord))
+        assert record.parent_external_record_id is None
+        assert record.access_rule == AccessRule.RESTRICTED
+        assert "vansh@example.com" in {g.email for g in grants}
