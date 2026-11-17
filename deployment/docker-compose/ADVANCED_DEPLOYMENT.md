@@ -517,6 +517,29 @@ The query log shows each change as `sandbox live limit` and `asking indexing to 
 | `SANDBOX_YIELD_INDEXING` | on | Runs waiting for memory slow indexing down. |
 | `SANDBOX_YIELD_TTL_S` | 20 | How long one request lasts once runs stop waiting (10–120). |
 
+### Load alerts
+
+When code runs in chat keep waiting for a sandbox, or are refused, the admins get a notification in the app, and an email if mail (SMTP) is set up. One query worker checks the last 30 minutes (`SANDBOX_ALERT_WINDOW_S`) every minute:
+
+- **Warning** ("Code runs are waiting for capacity"): runs were held back during at least 60 % of the window, and at least 30 runs waited.
+- **Critical** ("Code runs are being refused"): at least 10 runs were refused after waiting `SANDBOX_SLOT_WAIT_S`, and they are at least 5 % of all runs.
+
+Not counted: waits for one organisation's own share of sandboxes (a bigger machine would not help), runs cancelled while waiting, and memory waits before indexing has slowed down for them (slowing indexing may still free the memory). CPU and full-slot waits count at once. The alert says why runs were held back (memory, CPU, or all slots in use) and what to do about it. Each level is sent at most once a day; a critical alert also stands in for the warning. Once neither level has held for a full window, admins get an in-app "Code runs are no longer held back" notice, without email. The query log shows `sandbox load alert fired level=…`. E2B installs never alert.
+
+The cooldown is kept in the configuration store, so restarts do not resend. `SANDBOX_ALERT_SCOPE` names the machine whose sandboxes are counted; leave it unset in Compose. Stacks whose services run directly on one host as one user need their own `SANDBOX_STATE_ID` (above), or they share one evaluator.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_ALERTS` | true | `false` turns the alerts off (runs are still recorded). |
+| `SANDBOX_ALERT_WINDOW_S` | 1800 | Window both levels look at (120–3600). |
+| `SANDBOX_ALERT_EVAL_S` | 60 | Seconds between checks (10–600). |
+| `SANDBOX_ALERT_WARN_BUSY_PCT` | 60 | Share of the window with runs held back, for a warning (1–100). |
+| `SANDBOX_ALERT_WARN_MIN_WAITED` | 30 | Runs that waited, for a warning. |
+| `SANDBOX_ALERT_CRIT_MIN_REFUSED` | 10 | Runs refused, for a critical alert. |
+| `SANDBOX_ALERT_CRIT_REFUSED_PCT` | 5 | Refused runs as a share of all runs, for a critical alert (0–100). |
+| `SANDBOX_ALERT_COOLDOWN_S` | 86400 | Each level is sent at most once in this time (60–604800). |
+| `SANDBOX_ALERT_SCOPE` | install | Names the cooldown; one per machine whose sandboxes are counted. |
+
 ---
 
 ## Container outbound connectivity

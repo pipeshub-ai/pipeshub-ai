@@ -44,6 +44,15 @@ VARS=(
   "SANDBOX_MEMORY_OVERCOMMIT||2|app"
   "SANDBOX_YIELD_INDEXING||off|app"
   "SANDBOX_YIELD_TTL_S||30|app"
+  "SANDBOX_ALERTS||false|app"
+  "SANDBOX_ALERT_WINDOW_S||600|app"
+  "SANDBOX_ALERT_EVAL_S||30|app"
+  "SANDBOX_ALERT_WARN_BUSY_PCT||50|app"
+  "SANDBOX_ALERT_WARN_MIN_WAITED||10|app"
+  "SANDBOX_ALERT_CRIT_MIN_REFUSED||5|app"
+  "SANDBOX_ALERT_CRIT_REFUSED_PCT||10|app"
+  "SANDBOX_ALERT_COOLDOWN_S||3600|app"
+  "SANDBOX_ALERT_SCOPE||host-a|app"
 )
 
 # render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables.

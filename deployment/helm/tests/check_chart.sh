@@ -274,6 +274,11 @@ expect_env dind-live-tuned SANDBOX_SIDECAR_MEM_HIGH '"0.85"'
 expect_env dind-live-tuned SANDBOX_SIDECAR_CPU_THROTTLE '"0.3"'
 expect_env dind-live-tuned SANDBOX_SIDECAR_MEM_HARD missing
 expect_env dind-live-tuned SANDBOX_MEMORY_OVERCOMMIT '"2"'
+
+# Load alerts: each pod has its own cooldown, named after the pod.
+for v in local-neo4j-kafka defaults-dind; do
+  expect_env "$v" SANDBOX_ALERT_SCOPE '{"fieldRef": {"fieldPath": "metadata.name"}}'
+done
 check_live_limit() { # variant, "on" | "off"
   local doc="$OUT/$1.yaml"
   [[ -f "$doc" ]] || return 0

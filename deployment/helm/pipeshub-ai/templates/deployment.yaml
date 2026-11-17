@@ -182,6 +182,12 @@ spec:
               value: {{ . | toString | quote }}
             {{- end }}
             {{- end }}
+            # Each pod has its own sandboxes and load alert evaluator, so each
+            # gets its own alert cooldown.
+            - name: SANDBOX_ALERT_SCOPE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
               value: {{ . | quote }}
