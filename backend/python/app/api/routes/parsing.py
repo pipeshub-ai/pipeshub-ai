@@ -42,7 +42,12 @@ from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.services.paid_cache import locks as lock_limits
-from app.services.paid_cache.access import abandon_run, claim_refresh, complete_run, start_run
+from app.services.paid_cache.access import (
+    abandon_run,
+    claim_refresh,
+    complete_run,
+    start_run,
+)
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
