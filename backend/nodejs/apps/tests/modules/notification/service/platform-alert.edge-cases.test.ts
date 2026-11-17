@@ -142,15 +142,46 @@ describe('notification/service/platform-alert.handler edge cases', () => {
     await handler.handle(event());
     await handler.handle(event());
     expect(insertMany.callCount).to.equal(2);
-    expect(mailProducer.publishEvent.callCount).to.equal(2);
+    expect(mailProducer.publishEvent.callCount).to.equal(4);
   });
 
-  it('delivers to many admins with one store call and one email job', async () => {
+  it('delivers to many admins with one store call and one email job per admin', async () => {
     admins = Array.from({ length: 500 }, id);
     await handler.handle(event());
     expect(insertMany.firstCall.args[0]).to.have.length(500);
-    expect(mailProducer.publishEvent.calledOnce).to.be.true;
-    expect(mailProducer.publishEvent.firstCall.args[0].payload.mail.sendEmailTo).to.have.length(500);
+    expect(mailProducer.publishEvent.callCount).to.equal(500);
+    const sentTo = mailProducer.publishEvent.getCalls().map((call) => call.args[0].payload.mail.sendEmailTo);
+    expect(sentTo.every((to) => to.length === 1)).to.be.true;
+    expect(new Set(sentTo.map((to) => to[0])).size).to.equal(500);
+  });
+
+  it('never shows one admin the address of another', async () => {
+    await handler.handle(event());
+    for (const call of mailProducer.publishEvent.getCalls()) {
+      const mail = call.args[0].payload.mail;
+      expect(mail.sendEmailTo).to.have.length(1);
+      expect(mail).to.not.have.any.keys('cc', 'bcc');
+    }
+  });
+
+  it('queues the other admins when one mail job fails', async () => {
+    mailProducer.publishEvent.onFirstCall().rejects(new Error('broker hiccup'));
+    await handler.handle(event());
+    expect(mailProducer.publishEvent.callCount).to.equal(2);
+    expect(logger.info.calledWithMatch('Platform alert delivered', { emailQueued: 1 })).to.be.true;
+  });
+
+  it('sends in-app only when the event says the level was already emailed today', async () => {
+    await handler.handle(event({ email: false }));
+    expect(insertMany.calledOnce).to.be.true;
+    expect(mailProducer.publishEvent.called).to.be.false;
+  });
+
+  it('emails when an older event carries no email field', async () => {
+    const legacy: Record<string, unknown> = event();
+    delete legacy.email;
+    await handler.handle(legacy);
+    expect(mailProducer.publishEvent.callCount).to.equal(2);
   });
 
   it('skips the email when no admin has an address, after notifying in-app', async () => {
@@ -233,8 +264,10 @@ describe('notification/service/platform-alert.handler edge cases', () => {
       expect(html).to.not.contain('Infinity');
     });
 
-    it('does not promise one email a day, since a resolved alert can fire again', () => {
-      expect(render(event())).to.contain('or again after a back-to-normal notice');
+    it('says alerts repeat in the app and the email comes at most once a day', () => {
+      const html = render(event());
+      expect(html).to.contain('notified in the app each time');
+      expect(html).to.contain('this email is sent at most once a day for each level');
     });
   });
 });

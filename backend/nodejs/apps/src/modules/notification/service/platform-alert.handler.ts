@@ -83,8 +83,8 @@ function asPlatformEvent(raw: unknown): PlatformAlertEvent | null {
 
 /**
  * Delivers an event about the whole installation, such as a code sandbox load
- * alert: an in-app notification for each recipient `src/config.ts` picks, and,
- * when the event asks for it, one email per recipient org.
+ * alert: an in-app notification for each recipient `src/config.ts` picks, and
+ * an email to each of them unless the event says `email: false`.
  *
  * Dedup is the publisher's job; the same event delivered twice notifies twice.
  */
@@ -147,10 +147,11 @@ export class PlatformAlertHandler {
       });
     }
 
+    // Only an explicit `email: false` means in-app only; older events have no field.
     let emailQueued = 0;
-    if (event.email === true) {
+    if (event.email !== false) {
       for (const org of orgs) {
-        if (await this.queueEmail(event, org)) emailQueued += 1;
+        emailQueued += await this.queueEmail(event, org);
       }
     }
 
@@ -180,11 +181,15 @@ export class PlatformAlertHandler {
     };
   }
 
-  /** Whether a mail job was queued for *org*. Never throws. */
+  /**
+   * Queues one mail job per admin of *org*, so no admin sees the others'
+   * addresses and a long list never meets a server's recipient limit.
+   * Returns how many were queued. Never throws.
+   */
   private async queueEmail(
     event: PlatformAlertEvent,
     org: PlatformRecipientOrg,
-  ): Promise<boolean> {
+  ): Promise<number> {
     try {
       const mail = buildSandboxCapacityMail(
         event,
@@ -198,7 +203,7 @@ export class PlatformAlertHandler {
             alertId: event.payload.alertId,
           },
         );
-        return false;
+        return 0;
       }
       const emails = await forOrg(
         org.orgId,
@@ -219,23 +224,35 @@ export class PlatformAlertHandler {
             );
         },
       );
-      if (emails.length === 0) return false;
-      await this.mailProducer.publishEvent({
-        eventType: MailEventType.SendMailEvent,
-        timestamp: Date.now(),
-        payload: {
-          mail: {
+      let queued = 0;
+      for (const email of new Set(emails)) {
+        try {
+          await this.mailProducer.publishEvent({
+            eventType: MailEventType.SendMailEvent,
+            timestamp: Date.now(),
+            payload: {
+              mail: {
+                orgId: org.orgId,
+                emailTemplateType: EmailTemplateType.SandboxCapacityAlert,
+                sendEmailTo: [email],
+                subject: mail.subject,
+                templateData: mail.templateData,
+              },
+              orgId: org.orgId,
+              ifSmtpConfigured: true,
+            },
+          });
+          queued += 1;
+        } catch (error) {
+          this.logger.error('Platform alert email not queued', {
+            type: event.type,
+            alertId: event.payload.alertId,
             orgId: org.orgId,
-            emailTemplateType: EmailTemplateType.SandboxCapacityAlert,
-            sendEmailTo: emails,
-            subject: mail.subject,
-            templateData: mail.templateData,
-          },
-          orgId: org.orgId,
-          ifSmtpConfigured: true,
-        },
-      });
-      return true;
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return queued;
     } catch (error) {
       this.logger.error('Platform alert email not queued', {
         type: event.type,
@@ -243,7 +260,7 @@ export class PlatformAlertHandler {
         orgId: org.orgId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return false;
+      return 0;
     }
   }
 }

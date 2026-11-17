@@ -116,15 +116,16 @@ describe('notification/service/platform-alert.handler', () => {
     expect((notificationService.sendToUser as sinon.SinonStub).callCount).to.equal(2);
   });
 
-  it('queues one email for both admins, sent only if SMTP is configured', async () => {
+  it('queues one email per admin, sent only if SMTP is configured', async () => {
     await handler.handle(event());
 
-    expect(mailProducer.publishEvent.calledOnce).to.be.true;
+    expect(mailProducer.publishEvent.callCount).to.equal(2);
+    expect(mailProducer.publishEvent.secondCall.args[0].payload.mail.sendEmailTo).to.deep.equal([`${admin2}@example.com`]);
     const payload = mailProducer.publishEvent.firstCall.args[0].payload;
     expect(payload.orgId).to.equal(orgA);
     expect(payload.ifSmtpConfigured).to.be.true;
     expect(payload.mail.emailTemplateType).to.equal('sandboxCapacityAlert');
-    expect(payload.mail.sendEmailTo).to.deep.equal([`${admin1}@example.com`, `${admin2}@example.com`]);
+    expect(payload.mail.sendEmailTo).to.deep.equal([`${admin1}@example.com`]);
     expect(payload.mail.subject).to.equal('PipesHub: code runs in chat are waiting for capacity');
     // The queued data renders.
     expect(getEmailContent('sandboxCapacityAlert', payload.mail.templateData)).to.contain('Already done');
