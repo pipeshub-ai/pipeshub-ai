@@ -1820,10 +1820,10 @@ class TestExcludePaths:
         assert "/admin/webhook" in EXCLUDE_PATHS
 
     def test_exclude_paths_length(self):
-        """EXCLUDE_PATHS has exactly 6 entries."""
+        """EXCLUDE_PATHS has exactly 10 entries: six service paths and the four public connect-link routes."""
         from app.connectors_main import EXCLUDE_PATHS
 
-        assert len(EXCLUDE_PATHS) == 6
+        assert len(EXCLUDE_PATHS) == 10
 
 
 # ---------------------------------------------------------------------------
