@@ -327,7 +327,10 @@ async def test_a_retried_refresh_request_pays_no_page_again_that_the_first_attem
 async def test_a_refresh_delivery_that_overlaps_a_purge_is_handed_back_and_runs_nothing(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
     from app.services.paid_cache import cache as cache_module
 
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.05)
