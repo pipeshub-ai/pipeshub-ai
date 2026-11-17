@@ -493,6 +493,29 @@ class MessagingEnvConfig:
         return _env_seconds("REVISION_RETENTION_TICK_BUDGET_SECONDS", 20.0)
 
     @property
+    def record_deferral_fields_write(self) -> bool:
+        """Whether a record handed back for a model provider's rate limit is given ``deferredUntilMs`` and ``rateLimitedSinceMs``.
+
+        Off (the default) in the release that adds the fields: a process on an older record schema re-applies it at start and
+        refuses a write of a field it does not know, so the fields are accepted by the schema first and written one release
+        later. With it off a rate-limited record is not handed back; it is retried and failed on its delivery attempts, as
+        before. The next release turns it on by default.
+        """
+        return os.getenv("RECORD_DEFERRAL_FIELDS_WRITE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    @property
+    def rate_limit_max_wait_seconds(self) -> float:
+        """How long a record may be rate-limited by a model provider, counted in wall time from its first hand-back.
+
+        Each hand-back (a call past its sleep allowance, a Retry-After the gateway did not wait out) is uncounted: no delivery
+        attempt, no broker redelivery budget. What bounds them is the time since the first one (``rateLimitedSinceMs``, set
+        once): past this the record fails with a reason saying so. Not set or not positive: six hours. Needs
+        ``RECORD_DEFERRAL_FIELDS_WRITE``.
+        """
+        value = _env_seconds("RATE_LIMIT_MAX_WAIT_S", 6 * 3600.0)
+        return value if value > 0 else 6 * 3600.0
+
+    @property
     def rate_limit_defer_max_seconds(self) -> float:
         """How long a record may wait in total on its source's rate limit.
 

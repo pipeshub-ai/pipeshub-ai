@@ -2,8 +2,8 @@ import asyncio
 import functools
 import io
 import json
-from datetime import datetime
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar, Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -21,7 +21,6 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers import parse_pool
-from app.services.resource_governor.kinds import ParseKind
 from app.modules.parsers.csv import table_detection
 from app.modules.parsers.csv.table_detection import DelimitedReadError, read_csv_tables
 from app.modules.parsers.excel.prompt_template import (
@@ -42,7 +41,8 @@ from app.services.paid_cache.keys import (
     KIND_TABLE_SUMMARY,
 )
 from app.services.parsing.interface import ParseResult
-from app.utils.aimodels import coerce_message_content_to_text
+from app.services.resource_governor.kinds import ParseKind
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.is_truncated import is_truncated
@@ -134,7 +134,9 @@ class CSVParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await get_llm_for_role(
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
 
             if parse_pool.should_offload(len(content)):
                 tables = await self.read_tables_in_worker(content, record_name)

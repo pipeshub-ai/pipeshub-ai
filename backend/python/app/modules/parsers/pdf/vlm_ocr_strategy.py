@@ -30,6 +30,7 @@ from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.paid_cache import NotCached, cache_key, paid_cache_for
 from app.services.paid_cache.keys import KIND_OCR_PAGE, sha256_hex
 from app.utils.aimodels import (
+    INDEXING_SDK_RETRIES,
     LLMProvider,
     coerce_message_content_to_text,
     get_generator_model,
@@ -51,6 +52,10 @@ DEFAULT_MAX_PAGES = 500
 def vlm_ocr_max_pages() -> int:
     return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
 
+
+
+class VlmOutputTruncated(DocumentProcessingError):
+    """The model's answer for a page was cut off at its output-token cap."""
 
 
 def _without_frames(error: BaseException) -> BaseException:
@@ -195,7 +200,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             model_name = model_names[0] if model_names else None
         else:
             model_name = None
-        return get_generator_model(provider, config, model_name)
+        # The gateway is the one retry layer of a page's paid call: the SDK client repeats nothing.
+        return get_generator_model(provider, config, model_name, sdk_retries=INDEXING_SDK_RETRIES)
 
     async def _get_multimodal_llm(self) -> BaseChatModel:
         """
@@ -218,7 +224,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         try:
             # 1. Check indexing role assignment first — use it if multimodal
             try:
-                _, role_config = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                _, role_config = await get_llm_for_role(
+                    self.config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+                )
                 if is_multimodal_llm(role_config):
                     self.logger.info(
                         f"✅ Using indexing-role LLM for VLM OCR: {role_config.get('provider')}"
@@ -432,7 +440,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             )
 
             if is_truncated(response):
-                raise DocumentProcessingError(
+                raise VlmOutputTruncated(
                     f"VLM OCR output was truncated for page {page_number}"
                 )
 
@@ -516,6 +524,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             nonlocal unreadable_count, last_unreadable
             async with semaphore:
                 last_error = None
+                truncated_seen = False
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
                         result = await self.process_page(page, page_number)
@@ -528,7 +537,11 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                         raise
                     except Exception as e:
                         last_error = e
-                        if attempt < self.MAX_RETRY_ATTEMPTS:
+                        # A cut-off page is paid for each time it is sent and usually comes back cut again: it
+                        # gets one more send (two in all), not the full retry allowance.
+                        truncated_seen = truncated_seen or isinstance(e, VlmOutputTruncated)
+                        retries = 1 if truncated_seen else self.MAX_RETRY_ATTEMPTS
+                        if attempt < retries:
                             self.logger.warning(
                                 f"⚠️ Retry {attempt + 1}/2 for page {page_number}: {str(e)}"
                             )
