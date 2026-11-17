@@ -42,6 +42,8 @@ VARS=(
   "SANDBOX_HOST_CPU_BRAKE||0.8|app"
   "SANDBOX_HOST_CPU_PSI_BRAKE||0.6|app"
   "SANDBOX_MEMORY_OVERCOMMIT||2|app"
+  "SANDBOX_YIELD_INDEXING||off|app"
+  "SANDBOX_YIELD_TTL_S||30|app"
 )
 
 # render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables.

@@ -128,6 +128,9 @@ services:
       - SANDBOX_HOST_CPU_BRAKE=${SANDBOX_HOST_CPU_BRAKE:-}
       - SANDBOX_HOST_CPU_PSI_BRAKE=${SANDBOX_HOST_CPU_PSI_BRAKE:-}
       - SANDBOX_MEMORY_OVERCOMMIT=${SANDBOX_MEMORY_OVERCOMMIT:-}
+      # Runs waiting for memory ask indexing to slow down (off disables it).
+      - SANDBOX_YIELD_INDEXING=${SANDBOX_YIELD_INDEXING:-}
+      - SANDBOX_YIELD_TTL_S=${SANDBOX_YIELD_TTL_S:-}
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-true}
 
       # Key-Value Store Configuration

@@ -29,6 +29,8 @@ ENV_SIDECAR_MEM_HIGH = "SANDBOX_SIDECAR_MEM_HIGH"
 ENV_SIDECAR_MEM_HARD = "SANDBOX_SIDECAR_MEM_HARD"
 ENV_SIDECAR_CPU_BRAKE = "SANDBOX_SIDECAR_CPU_BRAKE"
 ENV_SIDECAR_CPU_THROTTLE = "SANDBOX_SIDECAR_CPU_THROTTLE"
+ENV_YIELD_INDEXING = "SANDBOX_YIELD_INDEXING"
+ENV_YIELD_TTL_S = "SANDBOX_YIELD_TTL_S"
 
 DEFAULT_LIVE_INTERVAL_S = 15.0
 DEFAULT_HOST_CPU_BRAKE = 0.90
@@ -43,6 +45,8 @@ DEFAULT_SIDECAR_MEM_HIGH = 0.90
 DEFAULT_SIDECAR_MEM_HARD = 0.95
 DEFAULT_SIDECAR_CPU_BRAKE = 0.95
 DEFAULT_SIDECAR_CPU_THROTTLE = 0.25
+# How long one refresh of the indexing back-off signal lasts.
+DEFAULT_YIELD_TTL_S = 20.0
 _MIN_MEM_MB = 256
 
 SidecarSource = Literal["auto", "cgroup", "containers"]
@@ -83,6 +87,8 @@ class LiveSettings:
     sidecar_mem_hard: float = DEFAULT_SIDECAR_MEM_HARD
     sidecar_cpu_brake: float = DEFAULT_SIDECAR_CPU_BRAKE
     sidecar_cpu_throttle: float = DEFAULT_SIDECAR_CPU_THROTTLE
+    yield_indexing: bool = True
+    yield_ttl_s: float = DEFAULT_YIELD_TTL_S
 
     @property
     def host_tuned(self) -> bool:
@@ -122,5 +128,7 @@ class LiveSettings:
             sidecar_cpu_throttle=_float_in(
                 env, ENV_SIDECAR_CPU_THROTTLE, DEFAULT_SIDECAR_CPU_THROTTLE, 0.01, 1.0,
             ),
+            yield_indexing=_choice(env, ENV_YIELD_INDEXING, ("on", "off")) == "on",
+            yield_ttl_s=_float_in(env, ENV_YIELD_TTL_S, DEFAULT_YIELD_TTL_S, 10.0, 120.0),
         )
 

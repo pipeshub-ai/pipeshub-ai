@@ -357,6 +357,8 @@ class LiveLimit:
         # Called (on the event loop, never blocking) while a run waits for
         # memory where indexing shares it; see ``waiting()``.
         self.on_memory_wait: Callable[[HoldReason, float], None] | None = None
+        # Called off the event loop after each sampler pass.
+        self.after_sample: Callable[[], None] | None = None
 
     @staticmethod
     def _open_ledger(directory: Any) -> LiveLedger:
@@ -379,6 +381,10 @@ class LiveLimit:
     @property
     def profile(self) -> LiveProfile | None:
         return self._profile
+
+    @property
+    def settings(self) -> LiveSettings:
+        return self._settings
 
     def _profile_for(self, mode: LiveMode, *, log: bool) -> LiveProfile | None:
         if mode.profile == "host":
@@ -507,6 +513,11 @@ class LiveLimit:
                 except Exception:
                     logger.warning("sandbox live limit: sample failed", exc_info=True)
             self.view(fresh=True)
+            if self.after_sample is not None:
+                try:
+                    await asyncio.to_thread(self.after_sample)
+                except Exception:
+                    logger.debug("sandbox live limit: after_sample failed", exc_info=True)
             await asyncio.sleep(self._settings.interval_s + self._rng.uniform(0.0, JITTER_S))
             again = self._mode.retry or self._lost(self._ledger.read(), self._clock())
             if again and self._resolved_at is not None and self._clock() - self._resolved_at >= RERESOLVE_S:
@@ -728,6 +739,14 @@ class LiveLimit:
             return False
         view = self.view()
         return view.target is not None and view.target <= view.limit
+
+    def hard_floor_bytes(self) -> int | None:
+        """The per-run free-memory floor at the last reading, if any."""
+        view, profile = self.view(), self._profile
+        if profile is None or view.mem_total_bytes is None:
+            return None
+        k = 1.0 if view.mode == "off:reading-lost" else self._overcommit
+        return profile.memory_lines(view.mem_total_bytes, self._run_bytes(k))[0]
 
     def wait_ended(self, *, granted: bool) -> None:
         return None

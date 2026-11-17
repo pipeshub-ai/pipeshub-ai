@@ -60,6 +60,8 @@ from app.services.resource_governor.shared_slots import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from app.agent_loop_lib.sandbox.live_limit import LiveLimit
+
 __all__ = [
     "GovernorLimits",
     "GovernorLease",
@@ -483,6 +485,7 @@ def get_default_governor(
                     live = LiveLimit(capacity, _default_governor)
                     _default_governor.limit_provider = live
                     set_live_limit(live)
+                    _attach_indexing_yield(live)
                 logger.info(
                     "sandbox governor: mode=%s ceiling=%s floor=%s slot_files=%s shared=%s",
                     capacity.mode, capacity.ceiling(), capacity.floor(),
@@ -494,6 +497,23 @@ def get_default_governor(
             "sandbox governor: ignoring limits %s; the process governor is already built", limits,
         )
     return _default_governor
+
+
+def _attach_indexing_yield(live: LiveLimit) -> None:
+    """Let runs waiting for memory ask indexing to slow down, where the
+    setting allows it. ``LiveLimit.waits_for_memory`` decides where indexing
+    shares the memory."""
+    from app.agent_loop_lib.sandbox.live_yield import IndexingYield
+    from app.services.resource_governor.yield_signal import YieldSignal
+
+    settings = live.settings
+    if not settings.yield_indexing:
+        logger.info("sandbox runs waiting for memory do not slow indexing (SANDBOX_YIELD_INDEXING=off)")
+        return
+    writer = IndexingYield(live, YieldSignal.open_default(role="code sandbox"), settings)
+    if writer.enabled:
+        live.on_memory_wait = writer.on_memory_wait
+        live.after_sample = writer.check_lapsed
 
 
 def reset_default_governor() -> None:
