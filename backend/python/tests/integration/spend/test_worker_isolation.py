@@ -29,14 +29,24 @@ def test_more_workers_than_databases_fails_instead_of_sharing(monkeypatch: pytes
         worker_redis_url(URL)
 
 
-@pytest.mark.parametrize("url", ["redis://127.0.0.1:6379/0?db=0", "redis://127.0.0.1:6379?db=2", "redis://127.0.0.1:6379/9?db=2&socket_timeout=3"])
+@pytest.mark.parametrize("url", ["redis://127.0.0.1:6379/0?db=0", "redis://127.0.0.1:6379?db=2", "redis://127.0.0.1:6379/9?db=2&socket_timeout=3",
+                                 "redis://127.0.0.1:6379/0?db=2&db=0", "redis://127.0.0.1:6379/0?db=&db=5", "unix:///tmp/redis.sock?db=0", "unix:///tmp/redis.sock"])
 def test_a_db_query_parameter_cannot_undo_the_offset(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
     """redis-py selects ``?db=`` over the path, so the database Redis will select is what must differ per worker."""
     from redis.asyncio.connection import parse_url
 
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-    base = parse_url(worker_redis_url(url))["db"]
+    base = parse_url(worker_redis_url(url)).get("db", 0)
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
     shifted = parse_url(worker_redis_url(url))
     assert shifted["db"] == base + 1
-    assert parse_url(url)["db"] == base
+    assert parse_url(url).get("db", 0) == base
+
+
+def test_a_unix_socket_url_keeps_its_socket_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from redis.asyncio.connection import parse_url
+
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    parsed = parse_url(worker_redis_url("unix:///tmp/redis.sock?db=0"))
+    assert parsed["path"] == "/tmp/redis.sock"
+    assert parsed["db"] == 1

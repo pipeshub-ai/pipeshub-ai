@@ -22,7 +22,8 @@ SPEND_PATHS = [
 
 
 def _collect(*extra: str, extra_env: dict[str, str] | None = None) -> list[str]:
-    env = {k: v for k, v in os.environ.items() if k != "PYTEST_XDIST_WORKER"}
+    # a contributor's own PYTEST_ADDOPTS (a shard, verbosity) must not change what the baseline collection sees
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTEST_XDIST_WORKER", "PYTEST_ADDOPTS")}
     env.update(extra_env or {})
     out = subprocess.run(
         [sys.executable, "-m", "pytest", *SPEND_PATHS, "-m", "not live_smoke", "--collect-only", "-p", "no:cacheprovider",
@@ -50,6 +51,12 @@ def test_every_spend_test_lands_in_exactly_one_shard() -> None:
 def test_an_inherited_verbosity_does_not_change_what_collection_prints() -> None:
     """A contributor's ``PYTEST_ADDOPTS=-v`` must not turn the collected ids into a tree."""
     assert len(_collect("--shard=1/3", extra_env={"PYTEST_ADDOPTS": "-v"})) > 20
+
+
+@pytest.mark.timeout(300)
+def test_an_inherited_shard_option_does_not_narrow_the_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--shard=1/3")
+    assert len(_collect()) > 2 * len(_collect("--shard=1/3"))  # the whole suite, not one slice of it
 
 
 def test_the_workflow_runs_every_shard_of_the_matrix() -> None:

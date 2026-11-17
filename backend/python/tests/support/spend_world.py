@@ -48,19 +48,23 @@ def worker_redis_url(url: str) -> str:
     databases by default; a run with more workers than that fails here instead of sharing one."""
     from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+    from redis.asyncio.connection import parse_url
+
     index = _worker_index()
     if not index:
         return url
-    parts = urlsplit(url)
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    # redis-py gives ``?db=`` precedence over the path, so the effective database is read the same way and written back to
-    # both places, or the query parameter would undo the offset.
-    base = int(query.get("db") or parts.path.lstrip("/") or 0)
+    # The effective database is whatever redis-py will select (``?db=`` over the path, the first non-empty value of a
+    # repeated parameter), read with its own parser so the two can never disagree.
+    base = int(parse_url(url).get("db") or 0)
     if base + index > 15:
         raise RuntimeError(f"worker gw{index} needs Redis database {base + index}; use fewer workers or a lower base database")
-    if "db" in query:
-        query["db"] = str(base + index)
-    return urlunsplit(parts._replace(path=f"/{base + index}", query=urlencode(query)))
+    database = str(base + index)
+    parts = urlsplit(url)
+    others = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "db"]
+    if parts.scheme == "unix":
+        # the path is the socket, so the database can only go in the query
+        return urlunsplit(parts._replace(query=urlencode([*others, ("db", database)])))
+    return urlunsplit(parts._replace(path=f"/{database}", query=urlencode(others)))
 
 
 async def _client():  # noqa: ANN202
