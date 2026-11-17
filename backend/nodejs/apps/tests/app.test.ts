@@ -1092,6 +1092,26 @@ describe('Application', () => {
       }
     });
 
+    it('should listen on PIPESHUB_BIND_HOST when it is set, and on every interface when it is not', async () => {
+      const original = process.env.PIPESHUB_BIND_HOST;
+      process.env.PIPESHUB_BIND_HOST = '127.0.0.1';
+      try {
+        const app = new Application();
+        (app as any).logger = mockLogger;
+
+        const server = (app as any).server as http.Server;
+        const listenStub = sandbox.stub(server, 'listen').callsFake((...args: any[]) => {
+          args[args.length - 1]();
+          return server;
+        });
+
+        await app.start();
+        expect(listenStub.firstCall.args.slice(0, 2)).to.deep.equal([3000, '127.0.0.1']);
+      } finally {
+        restoreEnv('PIPESHUB_BIND_HOST', original);
+      }
+    });
+
     it('should throw if server.listen fails', async () => {
       const app = new Application();
       (app as any).logger = mockLogger;
