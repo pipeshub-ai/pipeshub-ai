@@ -76,6 +76,7 @@ VARIANTS=(
   "external-daemon-max-total-0|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=0"
   "dind-max-total-0|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set-string sandbox.capacity.maxTotal=0 --set sandbox.proxy.reapUnlabeled=true"
   "dind-capacity-zeros|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.capacity.slotWaitSeconds=0 --set sandbox.capacity.maxPerOrg=0"
+  "external-daemon-max-total-float|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=4.0"
   "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
   "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
@@ -412,6 +413,9 @@ for pair in defaults-dind:false dind-max-total-0:true; do
   if [[ "$got" == "$want" ]]; then echo "ok $v: DOCKER_PROXY_REAP_UNLABELED = $want"; else echo "!! $v: DOCKER_PROXY_REAP_UNLABELED is $got, expected $want"; failed=1; fi
 done
 expect_env external-daemon-1-pod SANDBOX_CAPACITY_DIVISOR missing
+# A whole number written as 4.0 reaches the app as an integer it can read.
+expect_env external-daemon-max-total-float SANDBOX_MAX_TOTAL '"4"'
+expect_env external-daemon-max-total-float SANDBOX_CAPACITY_DIVISOR missing
 # A numeric 0 is passed on, like a quoted one; an empty value is left out.
 expect_env dind-capacity-zeros SANDBOX_SLOT_WAIT_S '"0"'
 expect_env dind-capacity-zeros SANDBOX_MAX_PER_ORG '"0"'
@@ -503,6 +507,11 @@ stub = os.path.join(bin_dir, "dockerd-entrypoint.sh")
 with open(stub, "w") as f:
     f.write("#!/bin/sh\nexit 0\n")
 os.chmod(stub, 0o755)
+# No dockerd or containerd process to read RSS from (as on a CI host): the counters are still published.
+pidof = os.path.join(bin_dir, "pidof")
+with open(pidof, "w") as f:
+    f.write("#!/bin/sh\nexit 1\n")
+os.chmod(pidof, 0o755)
 out = os.path.join(work, "stats")
 env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "PIPESHUB_CGROUP_DIR": cg,
        "PIPESHUB_SIDECAR_STATS": out, "PIPESHUB_EXPORT_ONCE": "1"}
@@ -562,6 +571,8 @@ REFUSED=(
   "live limit memHigh above memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.95 --set sandbox.dind.liveLimit.memHard=0.9"
   "live limit memHigh above the default memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.96"
   "live limit memHard below the default memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHard=0.9"
+  "live limit memHard just under 0.01 above memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.70 --set sandbox.dind.liveLimit.memHard=0.70995"
+  "fractional sandbox maxTotal|must be a whole number of sandboxes|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=4.5"
   "live limit memHard closer than 0.01 to memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.9 --set sandbox.dind.liveLimit.memHard=0.905"
   "live limit export interval out of range|exportIntervalSeconds must be 2..15|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=1"
   "live limit export interval past the proxy's staleness|exportIntervalSeconds must be 2..15|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=16"
@@ -608,6 +619,7 @@ done
 ACCEPTED=(
   "live limit export interval at its maximum|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=15"
   "live limit export interval at its minimum|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=2"
+  "live limit memHigh exactly 0.01 below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.93 --set sandbox.dind.liveLimit.memHard=0.94"
   "live limit memHigh alone, 0.01 below the default memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.94"
   "live limit memHard alone, above the default memHigh|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHard=0.98"
   "live limit off ignores its tuning|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.enabled=false --set sandbox.dind.liveLimit.exportIntervalSeconds=1 --set sandbox.dind.liveLimit.memHigh=0.99"

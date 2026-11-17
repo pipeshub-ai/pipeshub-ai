@@ -406,7 +406,7 @@ the raw daemon API with no policy in between, i.e. root on the node.
     {{- if or $live.memHigh $live.memHard }}
       {{- $high := float64 ($live.memHigh | default "0.90") }}
       {{- $hard := float64 ($live.memHard | default "0.95") }}
-      {{- if lt (subf $hard $high) 0.0099 }}
+      {{- if lt (subf $hard $high) 0.01 }}
         {{- fail "sandbox.dind.liveLimit.memHigh must be below memHard by at least 0.01 (empty values are 0.90 and 0.95): runs are held back above memHigh and the limit halves above memHard." }}
       {{- end }}
     {{- end }}
@@ -532,7 +532,11 @@ never turns into the app's 1024 or drops the external-daemon split.
 {{- define "pipeshub-ai.sandboxMaxTotal" -}}
 {{- $raw := .Values.sandbox.capacity.maxTotal -}}
 {{- if and $raw (gt (float64 $raw) 0.0) -}}
-{{- $raw -}}
+{{- $total := float64 $raw -}}
+{{- if or (ne $total (float64 (int64 $total))) (not (regexMatch "^[0-9]+(\\.0*)?$" (toString $raw | trim))) -}}
+{{- fail (printf "sandbox.capacity.maxTotal must be a whole number of sandboxes, got %v" $raw) -}}
+{{- end -}}
+{{- int64 $total -}}
 {{- end -}}
 {{- end -}}
 
@@ -600,7 +604,7 @@ iv="${PIPESHUB_EXPORT_INTERVAL:-5}"
     {
       echo "v 1"; echo "seq $n"
       for f in memory.max memory.current cpu.max; do
-        [ -r "$cg/$f" ] && echo "$f $(cat "$cg/$f")"
+        if [ -r "$cg/$f" ]; then echo "$f $(cat "$cg/$f")"; fi
       done
       awk '$1=="file"||$1=="shmem"||$1=="anon"{print "memory.stat."$1, $2}' "$cg/memory.stat" 2>/dev/null
       awk '{print "memory.events.local."$1, $2}' "$cg/memory.events.local" 2>/dev/null
@@ -609,7 +613,8 @@ iv="${PIPESHUB_EXPORT_INTERVAL:-5}"
       awk '$1=="some"{split($2,a,"=");print "cpu.pressure.some.avg10", a[2]}' "$cg/cpu.pressure" 2>/dev/null
       for p in dockerd containerd; do
         pid=$(pidof "$p" 2>/dev/null | cut -d' ' -f1)
-        [ -n "$pid" ] && awk -v p="$p" '/^VmRSS:/{print p".rss_kb", $2}' "/proc/$pid/status" 2>/dev/null
+        # Optional: a missing process or an unreadable status must not stop the counters being published.
+        if [ -n "$pid" ]; then awk -v p="$p" '/^VmRSS:/{print p".rss_kb", $2}' "/proc/$pid/status" 2>/dev/null || true; fi
       done
     } > "$out.tmp" && mv -f "$out.tmp" "$out"
     [ "${PIPESHUB_EXPORT_ONCE:-0}" = 1 ] && exit 0
