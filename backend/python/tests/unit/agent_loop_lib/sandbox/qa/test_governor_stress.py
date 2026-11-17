@@ -247,9 +247,8 @@ class TestCancelAtEveryAwait:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        # Cancelled before its first try: no outcome yet is fine, but never a slot.
         assert governor.held_total() == 0
-        assert len(recorder.outcomes) <= 1
+        assert recorder.outcomes == [("cancelled", None)]
         # The next call does not wait for sizing again.
         lease = await asyncio.wait_for(governor.acquire(), 0.5)
         await governor.release(lease)

@@ -236,12 +236,8 @@ class SandboxResourceGovernor:
         # shortcut: waiters are woken all at once and re-check, not served in
         # arrival order, and a call arriving just as a slot frees can take it
         # before them; add a FIFO queue if waits near slot_wait_s show up.
-        if not self._sizing_awaited:
-            self._sizing_awaited = True
-            await self.capacity.ensure_sized(timeout=2.0)
         tag = org_tag(org_id)
         start = self._clock()
-        deadline = start + wait_s
         told = on_wait is None
         busy_tries = 0
         last_reason: HoldReason | None = None
@@ -253,6 +249,12 @@ class SandboxResourceGovernor:
         org_limit: int | None = None
         counted = False
         try:
+            if not self._sizing_awaited:
+                # Inside the try: a cancel here is still one "cancelled" outcome.
+                self._sizing_awaited = True
+                await self.capacity.ensure_sized(timeout=2.0)
+                start = self._clock()
+            deadline = start + wait_s
             while True:
                 view = self.limit_provider.view()
                 limit = view.limit
