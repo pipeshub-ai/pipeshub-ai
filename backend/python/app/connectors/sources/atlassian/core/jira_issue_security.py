@@ -65,8 +65,6 @@ HOLDER_ANYONE = "anyone"
 HOLDER_USER_FIELD = "userCustomField"
 HOLDER_GROUP_FIELD = "groupCustomField"
 _FIELD_HOLDERS = (HOLDER_USER_FIELD, HOLDER_GROUP_FIELD)
-# The Browse holders that read an unleveled sub-task without its parent (see ``project_open``).
-_SUBTASK_OWN_HOLDERS = (HOLDER_ASSIGNEE, HOLDER_USER_FIELD)
 # Holders that name the same people on every issue of a project. Reporter, assignee and
 # the field holders name people on each issue, so two issues in one level can differ.
 _SAME_ON_EVERY_ISSUE = frozenset({
@@ -743,30 +741,23 @@ def apply_issue_access_settled(
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
-        own_subtask = not top_level and is_subtask and not getattr(record, "is_placeholder", False)
-        if (top_level or own_subtask) and context.browse_holders is None and not present:
+        # shortcut: Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its
+        # parent (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). The read rule cannot grant them: an OPEN
+        # sub-task is read below its parent by the parent's own holders, who may not read it in Jira
+        # (tests/permissions/test_subtask_own_holders.py). It stays STRICT, read with its parent, until the rule can say
+        # "the project, plus its own holders".
+        if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
             # been RESTRICTED, and its old level members must lose it (OPEN would accept their grant alone).
             record.access_rule = AccessRule.OPEN
             record.rewrite_permissions = False
             return [], [], True
-        holders = context.browse_holders or []
-        if own_subtask:
-            # An unleveled sub-task's own assignee and user-field holders read it without its parent: Atlassian accepted
-            # as expected that "Sub-tasks should be visible ... as the user has access to those issues" for a user with
-            # Browse Projects "through Current assignee/User custom field value" who cannot browse the parent
-            # (JSWCLOUD-25762, fixed 2023-10-03, https://jira.atlassian.com/browse/JSWCLOUD-25762).
-            # shortcut: a reporter holder (not named there), a group field holder and a leveled sub-task (its parent's
-            # level applies) still read it only with its parent; only a live Jira Cloud check can settle them.
-            holders = [h for h in holders if isinstance(h, dict) and h.get("type") in _SUBTASK_OWN_HOLDERS]
-        elif not top_level:
-            holders = []
         grants = browse_holder_grants(
-            holders, project_key=project_key, fields=fields or {},
+            context.browse_holders or [], project_key=project_key, fields=fields or {},
             user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
             reporter_account=reporter_account, assignee_account=assignee_account,
-        ) if holders else []
+        ) if top_level else []
         record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
         return grants, [], True

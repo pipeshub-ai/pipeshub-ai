@@ -584,19 +584,15 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         record, grants, _ = self._apply([{"type": "reporter"}], record=_record(parent_external_record_id="99"))
         assert grants == set() and record.access_rule == AccessRule.STRICT
 
-    def test_an_unleveled_sub_task_is_read_by_its_own_assignee_holder_without_its_parent(self) -> None:
-        """JSWCLOUD-25762: Browse Projects through Current assignee gives access to a sub-task whose parent the user cannot
-        browse. OPEN, so the grant alone opens it; the parent's readers still read it through the parent."""
-        record, grants, _ = self._apply([{"type": "assignee"}], record=_record(parent_external_record_id="99"), is_subtask=True)
-        assert grants == {(EntityType.USER, "asg@ex.com")}
-        assert record.access_rule == AccessRule.OPEN and record.rewrite_permissions is True
-
-    def test_an_unleveled_sub_task_is_read_by_its_own_user_field_holder_without_its_parent(self) -> None:
-        record, grants, _ = self._apply(
-            [{"type": "userCustomField", "parameter": "customfield_10"}], {"customfield_10": [{"accountId": "acc-7"}]},
-            record=_record(parent_external_record_id="99"), is_subtask=True,
-            user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
-        assert grants == {(EntityType.USER, "seven@ex.com")} and record.access_rule == AccessRule.OPEN
+    @pytest.mark.parametrize("holder", [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_10"}],
+                             ids=["assignee", "user_field"])
+    def test_an_unleveled_sub_task_gives_its_own_assignee_or_user_field_holder_no_grant(self, holder: dict) -> None:
+        """Jira shows it to them (JSWCLOUD-25762), but an OPEN sub-task would also be read by its parent's own holders
+        (tests/permissions/test_subtask_own_holders.py): it stays STRICT, read with its parent."""
+        record, grants, _ = self._apply([holder], {"customfield_10": [{"accountId": "acc-7"}]},
+                                        record=_record(parent_external_record_id="99"), is_subtask=True,
+                                        user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
+        assert grants == set() and record.access_rule == AccessRule.STRICT
 
     @pytest.mark.parametrize("holder", [{"type": "reporter"}, {"type": "groupCustomField", "parameter": "customfield_11"}],
                              ids=["reporter", "group_field"])

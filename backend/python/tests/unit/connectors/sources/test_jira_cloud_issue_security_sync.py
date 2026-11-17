@@ -1372,14 +1372,12 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == []
 
     @pytest.mark.asyncio
-    async def test_an_unleveled_sub_task_grants_its_own_assignee_and_not_its_reporter(self) -> None:
-        """Browse held by the reporter and the assignee: the sub-task's assignee reads it without its parent
-        (JSWCLOUD-25762); its reporter still reads it only with the parent."""
+    async def test_a_sub_task_follows_its_parent_and_is_not_granted(self) -> None:
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
         record, perms, _ = await _build(_connector(), sub, self._none(self.HOLDERS))
-        assert {p.email for p in perms} == {"asg@x.com"} and record.access_rule == AccessRule.OPEN
+        assert perms == [] and record.access_rule == AccessRule.STRICT
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()
