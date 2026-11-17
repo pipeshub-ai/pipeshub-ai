@@ -12,7 +12,6 @@ import logging
 import os
 import random
 import re
-import timeit
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -372,18 +371,50 @@ class TestParseNow:
 
 # ---- build cost ---------------------------------------------------------------------------------------------
 
-def test_fragment_and_reference_build_cost() -> None:
-    """The cached fragments cost under 1 us a use; the Python reference is reported (about 1 us)."""
-    runs = 100_000
-    best = {
-        "aql": min(timeit.repeat(lambda: aql_parts("doc", WriteKind.ATTEMPT_START, rev="@rev"), number=runs, repeat=5)) / runs * 1e6,
-        "cypher": min(timeit.repeat(lambda: cypher_parts("n", WriteKind.ATTEMPT_START, rev="$rev"), number=runs, repeat=5)) / runs * 1e6,
-        "sql": min(timeit.repeat(lambda: sql_patch("doc", WriteKind.ATTEMPT_START, rev="$5::text"), number=runs, repeat=5)) / runs * 1e6,
-    }
-    stored = {"indexingStatus": "QUEUED", "firstQueuedAt": 5, "indexingAttempts": 2, "contentRev": "a"}
-    best["reference"] = min(timeit.repeat(lambda: reference(stored, WriteKind.ATTEMPT_START, 100, content_rev="a"), number=runs, repeat=5)) / runs * 1e6
-    print(f"fragment build us: {best}")
-    assert best["aql"] <= 1.0 and best["cypher"] <= 1.0 and best["sql"] <= 1.0
-    assert best["reference"] <= 5.0
+class _CountingStored(dict):
+    """A stored record that counts every read, so the work ``reference`` does is a number, not a duration."""
+
+    reads = 0
+
+    def get(self, key: str, default: Any = None) -> Any:  # noqa: ANN401
+        type(self).reads += 1
+        return super().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:  # noqa: ANN401
+        type(self).reads += 1
+        return super().__getitem__(key)
+
+    def __iter__(self) -> Any:  # noqa: ANN401
+        type(self).reads += len(self)
+        return super().__iter__()
+
+    def items(self) -> Any:  # noqa: ANN401
+        type(self).reads += len(self)
+        return super().items()
 
 
+def test_fragments_are_built_once_per_distinct_call_and_reused() -> None:
+    """The statement fragments are cached: a repeat of the same call builds nothing, and the cache holds one entry per distinct call."""
+    for build, call in (
+        (aql_parts, lambda: aql_parts("doc", WriteKind.ATTEMPT_START, rev="@rev")),
+        (cypher_parts, lambda: cypher_parts("n", WriteKind.ATTEMPT_START, rev="$rev")),
+        (sql_patch, lambda: sql_patch("doc", WriteKind.ATTEMPT_START, rev="$5::text")),
+    ):
+        build.cache_clear()
+        first = call()
+        for _ in range(1000):
+            assert call() is first
+        info = build.cache_info()
+        assert (info.misses, info.hits) == (1, 1000), build.__name__
+
+
+def test_reference_reads_a_fixed_number_of_fields_whatever_the_record_holds() -> None:
+    """The reference's cost does not grow with the stored record: it reads the same few fields of a 5-field record and a 5000-field one."""
+    small = {"indexingStatus": "QUEUED", "firstQueuedAt": 5, "indexingAttempts": 2, "contentRev": "a"}
+    reads = {}
+    for name, extra in (("small", 0), ("large", 5000)):
+        stored = _CountingStored(small, **{f"x{i}": i for i in range(extra)})
+        _CountingStored.reads = 0
+        reference(stored, WriteKind.ATTEMPT_START, 100, content_rev="a")
+        reads[name] = _CountingStored.reads
+    assert reads["small"] == reads["large"] and 0 < reads["large"] <= 20
