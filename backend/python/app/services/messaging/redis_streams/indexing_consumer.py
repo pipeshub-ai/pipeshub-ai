@@ -3139,7 +3139,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Counted against the connector's share from dispatch until the
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
-            # arrival order.
+            # arrival order. Until it is admitted it also marks the connector
+            # as waiting, since it may be held up before the gate.
             slot_share.started(
                 (stream_name, message_id), slot_key, self._slot_pool_of(slot_key)
             )
@@ -3659,6 +3660,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
+            if self._slot_share is not None:
+                self._slot_share.admitted((stream_name, message_id))
             if waiter_token is not None:
                 waiter_token.admit()
 

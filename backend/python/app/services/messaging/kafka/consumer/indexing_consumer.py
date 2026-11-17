@@ -2240,7 +2240,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Counted against the connector's share from dispatch until the
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
-            # arrival order.
+            # arrival order. Until it is admitted it also marks the connector
+            # as waiting, since it may be held up before the gate.
             slot_share.started(slot_token, slot_key, self._slot_pool_of(slot_key))
         try:
             future = asyncio.run_coroutine_threadsafe(
@@ -2788,6 +2789,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
+            if self._slot_share is not None:
+                self._slot_share.admitted(
+                    (message.topic, message.partition, message.offset)
+                )
             if waiter_token is not None:
                 waiter_token.admit()
 
