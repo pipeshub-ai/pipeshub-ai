@@ -48,7 +48,7 @@ async def test_fragment_equals_reference(runner) -> None:
     assert report == [], f"postgres: fragment and reference differ: {report}"
 
 
-async def _defects_seen(runner, controls) -> int:  # noqa: ANN001
+async def _defects_seen(runner, controls) -> int:
     """Records the control's statement got wrong, plus the statements the server refused for the one defect these controls make: a
     number test left out, so a stored string reaches a ``::numeric`` cast (22P02). Any other database error (a syntax error in the
     control, a missing column) is a broken test, not a defect seen, and is raised."""

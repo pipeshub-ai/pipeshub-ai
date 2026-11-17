@@ -224,7 +224,7 @@ def aql_parts(
         # a new run starts after the last outcome (see ``_start``)
         f"LET _start = ((_lo != null AND _lo >= {now}) ? _lo + 1 : {now})"
     )
-    queue = f"(_open ? {{ firstQueuedAt: _fill }} : {{ firstQueuedAt: _start, indexingAttempts: 0 }})"
+    queue = "(_open ? { firstQueuedAt: _fill } : { firstQueuedAt: _start, indexingAttempts: 0 })"
     if kind is WriteKind.QUEUE:
         return lets, queue
     if kind is WriteKind.START:
