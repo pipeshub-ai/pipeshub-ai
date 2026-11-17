@@ -234,16 +234,19 @@ test('parseLauncherLine: protocol lines vs log noise', () => {
   assert.equal(parseLauncherLine('{"event":"progress","message":"loading models"}')?.phase, 'loading models');
 });
 
-test('resolveLauncher: packaged path, dev override ignored when packaged, missing bundle', () => {
+test('resolveLauncher: the bundle\'s Node runs launcher/src/main.ts; dev override ignored when packaged; missing bundle; no Windows', () => {
   const base = { resourcesPath: '/Applications/PipesHub.app/Contents/Resources', platform: 'darwin' as const, devBundleDir: '/dev/res' };
   const env = { PIPESHUB_LAUNCHER: '/bin/evil', PIPESHUB_LAUNCHER_ARGS: '[]' };
+  const bundle = '/Applications/PipesHub.app/Contents/Resources/pipeshub-native';
   const packaged = resolveLauncher({ ...base, isPackaged: true, env, exists: () => true });
-  assert.equal(packaged?.command, '/Applications/PipesHub.app/Contents/Resources/pipeshub-native/pipeshub-native');
+  assert.deepEqual(packaged, { command: `${bundle}/node/bin/node`, args: [`${bundle}/launcher/src/main.ts`], bundleDir: bundle });
   assert.equal(resolveLauncher({ ...base, isPackaged: true, env: {}, exists: () => false }), null);
+  // a bundle with Node but without the launcher (or the reverse) is not a bundle
+  assert.equal(resolveLauncher({ ...base, isPackaged: true, env: {}, exists: (p) => p.endsWith('/node') }), null);
+  assert.equal(resolveLauncher({ ...base, isPackaged: true, env: {}, exists: (p) => p.endsWith('main.ts') }), null);
   const dev = resolveLauncher({ ...base, isPackaged: false, env: { PIPESHUB_LAUNCHER: 'node', PIPESHUB_LAUNCHER_ARGS: '["stub.js"]' } });
   assert.deepEqual([dev?.command, dev?.args], ['node', ['stub.js']]);
-  const win = resolveLauncher({ ...base, platform: 'win32', isPackaged: true, env: {}, exists: () => true });
-  assert.match(win?.command as string, /pipeshub-native\.exe$/);
+  assert.equal(resolveLauncher({ ...base, platform: 'win32', isPackaged: true, env: {}, exists: () => true }), null);
 });
 
 test('settings: first run is null, choices persist, a corrupt file reads as defaults', () => {
