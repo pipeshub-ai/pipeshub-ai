@@ -38,11 +38,14 @@ from app.modules.retrieval.entity_permissions import (
     search_entities_for_user,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
+from app.modules.retrieval.title_hits import MIN_TITLE_COSINE
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 from app.utils.not_indexed import not_indexed_note
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
@@ -78,6 +81,104 @@ def _mark_incomplete(payload: dict[str, Any], hits: list[EntityHit]) -> None:
     if isinstance(hits, EntitySearchHits) and hits.incomplete:
         payload["incomplete"] = True
         payload["incompleteNote"] = INCOMPLETE_NOTE
+
+
+def _other_types_note(query: str, types: list[str]) -> str:
+    return (
+        f"Nothing named like {query!r} among the entity types asked for ({', '.join(types)}). "
+        "These matches are of other types and may be what was meant. Omit entity_types "
+        "unless the user named the kind of thing they want."
+    )
+
+
+# Words models put in entity_types that are not entity types, with the type
+# that holds them.
+_TYPE_HINTS: dict[str, str] = {
+    "project": "a Jira project or Confluence space is 'record_group'; an epic or initiative is 'record'",
+    "epic": "an epic is a 'record'",
+    "issue": "an issue or ticket is a 'record'",
+    "ticket": "an issue or ticket is a 'record'",
+    "task": "a task is a 'record'",
+    "page": "a page, document or file is a 'record'",
+    "document": "a page, document or file is a 'record'",
+    "file": "a page, document or file is a 'record'",
+    "space": "a Confluence space is a 'record_group'",
+    "channel": "a channel is a 'record_group'",
+    "folder": "a folder is a 'record_group'",
+    "team": "a team is a 'department' or a 'record_group'",
+}
+
+
+def _entity_types_note(ignored: list[str]) -> str:
+    hints = list(dict.fromkeys(_TYPE_HINTS[t] for t in ignored if t in _TYPE_HINTS))
+    return (
+        f"Not entity types, so not searched as such: {', '.join(ignored)}."
+        + (f" {'; '.join(hints)[:1].upper()}{'; '.join(hints)[1:]}." if hints else "")
+        + " Omit entity_types to search every type."
+    )
+
+
+async def _other_type_matches(
+    store: "EntityVectorStore",
+    graph: "IGraphDBProvider",
+    context: EntityAccessContext,
+    query: str,
+    hits: list[EntityHit],
+    *,
+    top_k: int,
+    include_named: bool,
+) -> list[EntityHit]:
+    """Entities of any type whose names match ``query``, when none of ``hits``
+    (a search narrowed to some types) does. A model guesses the type of a name
+    it has never seen ("SAAS Launch" as a project when it is an epic), and the
+    narrowed search then returns its nearest, unrelated entities as if they
+    matched: its scores are rank fused, so only the cosine of a name to the
+    query says whether it matches. Every entity returned passed the access
+    check. Best effort: on any failure the narrowed answer stands alone."""
+    try:
+        if hits and any(c >= MIN_TITLE_COSINE for c in await store.dense_similarities(query, [h.name for h in hits])):
+            return []
+        shown = {(h.entity_type, h.entity_id) for h in hits}
+        wider = [
+            h for h in await search_entities_for_user(
+                store, graph, context, query, top_k=top_k, include_named=include_named,
+            )
+            if (h.entity_type, h.entity_id) not in shown
+        ]
+        cosines = await store.dense_similarities(query, [h.name for h in wider])
+        return [h for h, c in zip(wider, cosines) if c >= MIN_TITLE_COSINE]
+    except Exception:
+        logger.warning("search_entities: the search of other entity types failed", exc_info=True)
+        return []
+
+
+def _show(
+    state: "ChatState", context: EntityAccessContext, hits: list[EntityHit], *, with_kind: bool,
+) -> list[dict[str, Any]]:
+    """Render ``hits`` for the agent and remember what it was shown, so later
+    calls can resolve the entity ids and the record ids it may cite."""
+    remember_entities(
+        state,
+        [
+            {
+                "entityId": h.entity_id, "entityType": h.entity_type, "name": h.name,
+                "filterName": h.graph_filter_name,
+            }
+            for h in hits
+        ],
+    )
+    shortener = get_record_id_shortener_if_enabled(state)
+    results, shown_record_ids = _render_hits(hits, context, shortener, with_kind=with_kind)
+    names = {h.entity_id: h.name for h in hits}
+    names.update(
+        (r["_key"], r.get("recordName") or "") for h in hits for r in h.records if r.get("_key")
+    )
+    remember_record_ids(state, shown_record_ids, names=names)
+    shown = set(shown_record_ids)
+    note_retrieved_by(state, "entity", graph_record_refs(
+        row for hit in hits for row in hit.records if row.get("_key") in shown
+    ))
+    return results
 
 
 def _error(message: str, *, retryable: bool = False) -> str:
@@ -155,7 +256,9 @@ async def execute_search_entities(
     valid_types = [t for t in dict.fromkeys(requested) if t in SEARCHABLE_ENTITY_TYPES]
     if requested and not valid_types:
         supported = ", ".join(sorted(SEARCHABLE_ENTITY_TYPES))
-        return False, _error(f"Unsupported entity_types {requested}; supported: {supported}")
+        return False, _error(
+            f"Unsupported entity_types {requested}; supported: {supported}. {_entity_types_note(requested)}"
+        )
 
     bounded_top_k = max(
         1, min(top_k if top_k is not None else _DEFAULT_TOP_K, _MAX_TOP_K)
@@ -184,46 +287,24 @@ async def execute_search_entities(
         return False, _error("Entity search failed — try again.", retryable=True)
 
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
-    if not hits:
-        payload: dict[str, Any] = {
-            "status": "success",
-            "message": "No accessible entities matched",
-            "results": [],
-        }
+    others = await _other_type_matches(
+        entity_vector_store, graph_provider, context, query, hits,
+        top_k=bounded_top_k, include_named=enabled,
+    ) if valid_types else []
+
+    payload: dict[str, Any] = {"status": "success"}
+    if hits:
+        payload["results"] = _show(state, context, hits, with_kind=entity_search_offered)
+    else:
+        payload.update(message="No accessible entities matched", results=[])
         if note := limited_scope_note(context):
             payload["scopeNote"] = note
-        if ignored:
-            payload["ignoredEntityTypes"] = ignored
-        if kind_notes:
-            payload["kindNotes"] = kind_notes
-        _mark_incomplete(payload, hits)
-        return True, json.dumps(payload)
-
-    remember_entities(
-        state,
-        [
-            {
-                "entityId": h.entity_id, "entityType": h.entity_type, "name": h.name,
-                "filterName": h.graph_filter_name,
-            }
-            for h in hits
-        ],
-    )
-    shortener = get_record_id_shortener_if_enabled(state)
-    results, shown_record_ids = _render_hits(hits, context, shortener, with_kind=entity_search_offered)
-    names = {h.entity_id: h.name for h in hits}
-    names.update(
-        (r["_key"], r.get("recordName") or "") for h in hits for r in h.records if r.get("_key")
-    )
-    remember_record_ids(state, shown_record_ids, names=names)
-    shown = set(shown_record_ids)
-    note_retrieved_by(state, "entity", graph_record_refs(
-        row for hit in hits for row in hit.records if row.get("_key") in shown
-    ))
-
-    payload = {"status": "success", "results": results}
+    if others:
+        payload["otherTypeMatches"] = _show(state, context, others, with_kind=entity_search_offered)
+        payload["otherTypeNote"] = _other_types_note(query, valid_types)
     if ignored:
         payload["ignoredEntityTypes"] = ignored
+        payload["entityTypesNote"] = _entity_types_note(ignored)
     if kind_notes:
         payload["kindNotes"] = kind_notes
     _mark_incomplete(payload, hits)
