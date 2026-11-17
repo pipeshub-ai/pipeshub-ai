@@ -1798,6 +1798,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._apply_schema(
                 self._generate_fulltext_indexes(), "full-text indexes", failure_level=logging.DEBUG,
             )
+            # A query that reads a property key no node has ever held carries a notification, which the driver logs with
+            # the whole query on every run: the listing reads accessOnly long before most graphs hold an access-only group.
+            await self._apply_schema(["CALL db.createProperty('accessOnly')"], "property keys")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             try:
