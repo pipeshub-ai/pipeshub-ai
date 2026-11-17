@@ -646,7 +646,7 @@ async def test_redrive_unchanged_leaves_finished_and_deferred_stages_alone(fleet
 @pytest.mark.asyncio
 async def test_the_claim_itself_refuses_a_stage_that_finished_after_the_snapshot(fleet) -> None:
     """The snapshot said PAUSED; by the claim the stage is COMPLETED. The restricted claim does not queue it again."""
-    from app.modules.pipeline.coordinator import _UNFINISHED  # noqa: PLC0415
+    from app.modules.pipeline.coordinator import _UNFINISHED
 
     h = _Harness(_classify_after_embed())
     h.complete("embed")
@@ -672,3 +672,24 @@ async def test_redrive_unchanged_recovers_an_interrupted_classify_hand_off(fleet
 
     assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [f"{stage_state_key(VRID, REV, 'classify')}@1"]
     assert h.status("classify") is ProgressStatus.QUEUED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.FAILED, ProgressStatus.PAUSED, ProgressStatus.IN_PROGRESS])
+async def test_redrive_unchanged_claims_only_a_failed_or_paused_stage(fleet, status: ProgressStatus) -> None:
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(_view(), stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            status, h.clock(),
+        )
+    )
+
+    dispatched = await ingress.redrive_unchanged(VRID, REV)
+
+    if status is ProgressStatus.IN_PROGRESS:
+        assert dispatched == [] and h.producer.sent == []
+    else:
+        assert dispatched == [f"{stage_state_key(VRID, REV, 'classify')}@1"]

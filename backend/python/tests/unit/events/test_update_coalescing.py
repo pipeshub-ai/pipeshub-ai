@@ -225,6 +225,16 @@ async def test_code_files_are_not_skipped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_repository_file_read_as_code_is_not_skipped_whatever_its_mime() -> None:
+    """A CODE_FILE record of a type no code extension catches (a repository's values.yaml) is still code."""
+    world = _World(node={"contentRev": content_revision(NEW), "recordType": "CODE_FILE", "mimeType": "application/x-yaml"})
+    await world.run(world.event(NEW, mime="application/x-yaml", ext="yml"))
+
+    world.ingress.redrive_unchanged.assert_not_awaited()
+    world.processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mime", [MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value])
 async def test_sql_tables_and_views_are_not_skipped(mime: str) -> None:
     world = _World(node={"contentRev": content_revision(NEW), "mimeType": mime})

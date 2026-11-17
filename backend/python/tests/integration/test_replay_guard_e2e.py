@@ -191,7 +191,7 @@ async def test_a_forced_reindex_still_runs_and_takes_no_point_out_first(
 
     # The run goes on to download the file, which this world cannot do: it fails there, which a replay
     # (acknowledged with both completion events) never does.
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception):  # noqa: B017
         _ = [
             e async for e in world.handler().process_event(
                 EventTypes.REINDEX_RECORD.value, world.payload(forceReindex=True)
