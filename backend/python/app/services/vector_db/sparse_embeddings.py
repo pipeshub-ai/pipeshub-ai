@@ -32,7 +32,8 @@ _MODEL_NAME = "Qdrant/bm25"
 
 
 def _hf_hub_offline_enabled() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes"}
+    # Mirror huggingface_hub exactly (no strip(), "ON" accepted) so both agree on offline mode.
+    return os.environ.get("HF_HUB_OFFLINE", "").upper() in {"1", "ON", "YES", "TRUE"}
 
 
 class SparseEmbedder:
