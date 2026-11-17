@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -35,6 +36,7 @@ class _Daemon:
     def __init__(self) -> None:
         self.containers: list[dict[str, Any]] = []
         self.inspect: dict[str, dict[str, Any]] = {}
+        self.inspect_fails: set[str] = set()
         self.requests: list[tuple[str, str]] = []
         self.list_status = 200
 
@@ -53,8 +55,16 @@ class _Daemon:
                 status = "200 OK"
                 payload = [c for c in self.containers if (c.get("Labels") or {}).get(key) == value]
         elif method == "GET" and url.path.endswith("/json"):
-            info = self.inspect.get(unquote(url.path.split("/")[2]))
-            if info is not None:
+            ident = unquote(url.path.split("/")[2])
+            info = self.inspect.get(ident)
+            listed = next((c for c in self.containers if c["Id"] == ident), None)
+            if info is None and listed is not None and ident not in self.inspect_fails:
+                # A listed container that never had its own record started when it was created.
+                started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(listed["Created"]))
+                info = {"State": {"StartedAt": started, "FinishedAt": "0001-01-01T00:00:00Z"}}
+            if ident in self.inspect_fails:
+                status, payload = "500 Server Error", {"message": "inspect failed"}
+            elif info is not None:
                 status, payload = "200 OK", info
         elif method == "DELETE":
             ident = url.path.split("/")[2]

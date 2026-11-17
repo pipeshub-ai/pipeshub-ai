@@ -1840,17 +1840,20 @@ class Reaper:
         """When the container's age starts counting. A container that is not
         started yet may still be receiving its input archive, for up to the
         proxy's body timeout; one that started (or exited) counts from its
-        latest start or exit, so a slow upload does not use up its run."""
+        latest start or exit, so a slow upload does not use up its run.
+        When the start cannot be read, the container is assumed to have
+        started as late as an upload allows."""
         state = item.get("State")
+        upload_bound = created + self._proxy.limits.body_timeout_s
         if state == "created":
-            return created + self._proxy.limits.body_timeout_s
+            return upload_bound
         try:
             status, info = await self._proxy._upstream_call("GET", f"/containers/{quote(ident, safe='')}/json")
         except Exception:
-            return created
+            return upload_bound
         times = info.get("State") if status == 200 and isinstance(info, dict) else None
         if not isinstance(times, dict):
-            return created
+            return upload_bound
         stamps = [_docker_time(times.get(key)) for key in ("StartedAt", "FinishedAt")]
         return max([created, *(t for t in stamps if t is not None)])
 

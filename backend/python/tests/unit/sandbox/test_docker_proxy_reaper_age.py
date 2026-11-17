@@ -51,3 +51,16 @@ async def test_a_container_still_receiving_its_inputs_waits_for_the_body_timeout
     assert await _reaper(sock).reap_once() == 0
     fake.containers = [_container("abandoned", 900 + 1800, state="created")]
     assert await _reaper(sock).reap_once() == 1
+
+
+async def test_an_unreadable_start_does_not_reap_a_container_that_may_still_run(
+    daemon: tuple[_Daemon, str],  # noqa: F811
+) -> None:
+    fake, sock = daemon
+    # Created 500 s ago; its start cannot be read, and the upload may have taken most of that.
+    fake.containers = [_container("unknown", 500)]
+    fake.inspect_fails.add("unknown")
+    assert await _reaper(sock).reap_once() == 0
+    # Past the reap age even if the upload used the whole body timeout.
+    fake.containers = [_container("unknown", 420 + 1800 + 10)]
+    assert await _reaper(sock).reap_once() == 1
