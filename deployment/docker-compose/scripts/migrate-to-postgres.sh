@@ -4,8 +4,9 @@
 #   scripts/migrate-to-postgres.sh --offline       open the import login, stop the application, preflight, copy and verify
 #                                                  (migrate --offline), close the import login
 #   scripts/migrate-to-postgres.sh --online        open the import login, preflight, copy while the application runs
-#                                                  (migrate --online), then follow MongoDB until Ctrl+C or SIGTERM. The login
-#                                                  stays open: cutover, reverse and rollback --online write as it
+#                                                  (migrate --online), then follow MongoDB until Ctrl+C (or a signal to its
+#                                                  process group). The login stays open: cutover, reverse and rollback
+#                                                  --online write as it
 #   scripts/migrate-to-postgres.sh --close-login   close the import login (after an online move, or when `status` warns)
 #   scripts/migrate-to-postgres.sh --reset         empty the copied tables after a failed copy, so it can run again
 #
@@ -15,7 +16,7 @@
 # the install is found; no password is printed.
 set -euo pipefail
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
 MODE=""
 for arg in "$@"; do
   case "$arg" in
