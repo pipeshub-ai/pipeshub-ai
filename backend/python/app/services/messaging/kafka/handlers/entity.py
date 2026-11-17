@@ -403,7 +403,10 @@ class EntityEventService(BaseEventService):
                 written = bool(await self._handle_user_added(user_payload, bootstrap=True))
             finally:
                 await notify_principals_changed(org_id)  # as process_event does for a userAdded
-            self.logger.info("Wrote the graph user of %s ahead of its userAdded event (written=%s)", user_id, written)
+            if written:
+                self.logger.info("Wrote the graph user of %s ahead of its userAdded event", user_id)
+            else:
+                self.logger.info("Wrote no graph user for %s ahead of its userAdded event: it exists, or was left to the event", user_id)
             return written
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="ensure_user")
