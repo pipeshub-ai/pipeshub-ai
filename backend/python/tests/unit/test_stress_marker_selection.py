@@ -61,3 +61,4 @@ def test_the_stress_files_collect_under_the_marker_and_a_nightly_job_runs_them()
     }, out
     workflow = (ROOT.parent.parent / ".github" / "workflows" / "stress-nightly.yml").read_text()
     assert "schedule:" in workflow and "RUN_STRESS_TESTS" in workflow and "-m stress" in workflow
+    assert "LITELLM_LOCAL_MODEL_COST_MAP" in workflow  # no external price-map fetch at collection

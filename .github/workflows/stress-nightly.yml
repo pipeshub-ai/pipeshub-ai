@@ -46,6 +46,8 @@ jobs:
         working-directory: backend/python
         env:
           RUN_STRESS_TESTS: '1'
+          # No external call at collection: LiteLLM would otherwise fetch its model price map.
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
         run: |
           pytest tests/unit -m stress -p no:cacheprovider --timeout=600 -v --junitxml="$RUNNER_TEMP/stress.xml"
 
