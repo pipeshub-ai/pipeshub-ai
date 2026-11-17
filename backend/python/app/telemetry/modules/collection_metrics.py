@@ -1,9 +1,8 @@
 """Self-telemetry: whether this install currently consents to metric collection.
 
-Set every push tick from the shared ``enableMetricCollection`` flag. While
-consent is off the pusher does not transmit, so the ``0`` value is only visible
-to a local scrape; at the collector an opt-out shows up as the series going
-stale rather than an explicit ``0``.
+Set to ``1`` every push tick while the shared ``enableMetricCollection`` flag
+is on. Nothing is recorded or sent while consent is off, so at the collector an
+opt-out shows up as the series going stale rather than an explicit ``0``.
 """
 
 from app.telemetry.backend import METRICS_BACKEND

@@ -240,7 +240,8 @@ class TestRunLoop:
             except asyncio.CancelledError:
                 pass
 
-        consent_mock.assert_called_once_with("query_service", False)
+        # The gauge is not written on an opt-out: nothing is recorded once consent is off.
+        consent_mock.assert_not_called()
         pusher._push.assert_not_called()
         pusher._ship_events.assert_not_called()
 

@@ -59,6 +59,21 @@ class MetricsBackend(ABC):
         ...
 
 
+def _child(metric: Counter | Gauge | Histogram, labels: Sequence[str]) -> Counter | Gauge | Histogram:
+    """The series to write: ``labels()`` raises on a metric declared without labels."""
+    return metric.labels(*labels) if labels else metric
+
+
+def _zero(metric: Counter | Gauge | Histogram) -> None:
+    """Reset a metric declared without labels, which has no ``clear()``."""
+    for attr in ("_value", "_sum"):
+        value = getattr(metric, attr, None)
+        if value is not None:
+            value.set(0)
+    for bucket in getattr(metric, "_buckets", ()):
+        bucket.set(0)
+
+
 class _PromCounter:
     def __init__(self, metric: Counter) -> None:
         self._metric = metric
@@ -66,7 +81,7 @@ class _PromCounter:
     def inc(self, *labels: str, value: float = 1.0) -> None:
         if not telemetry_collecting():
             return
-        (self._metric.labels(*labels) if labels else self._metric).inc(value)
+        _child(self._metric, labels).inc(value)
 
 
 class _PromGauge:
@@ -76,7 +91,7 @@ class _PromGauge:
     def set(self, *labels: str, value: float) -> None:
         if not telemetry_collecting():
             return
-        (self._metric.labels(*labels) if labels else self._metric).set(value)
+        _child(self._metric, labels).set(value)
 
     def clear(self) -> None:
         self._metric.clear()
@@ -89,7 +104,7 @@ class _PromHistogram:
     def observe(self, *labels: str, value: float) -> None:
         if not telemetry_collecting():
             return
-        (self._metric.labels(*labels) if labels else self._metric).observe(value)
+        _child(self._metric, labels).observe(value)
 
 
 class PrometheusBackend(MetricsBackend):
@@ -124,9 +139,10 @@ class PrometheusBackend(MetricsBackend):
 
     def reset(self) -> None:
         for metric in self._instruments:
-            # clear() raises on unlabelled metrics
             if getattr(metric, "_labelnames", ()):
                 metric.clear()
+            else:
+                _zero(metric)
 
 
 class _NoopCounter:
