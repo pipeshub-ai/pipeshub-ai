@@ -184,4 +184,5 @@ upgrade = "stack:upgrade"
 [compose_profiles]
 selfhosted-sources = ["nextcloud", "bookstack"]
 zammad-source = ["zammad"]
+smb-source = ["smb"]
 kafka = ["requires_kafka"]
