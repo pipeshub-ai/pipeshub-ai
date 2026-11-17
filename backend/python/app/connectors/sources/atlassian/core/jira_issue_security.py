@@ -102,6 +102,9 @@ class IssueSecurityContext:
     # Browse Projects holders that name people on each issue (reporter, assignee, user or group
     # field). None when the project's permission scheme could not be read.
     browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
+    # Jira Cloud shows an unleveled sub-task to its own Browse assignee and user-field holders (JSWCLOUD-25762); Data Center
+    # documents no such thing, so its sub-tasks keep following their parent alone.
+    sub_task_holders: bool = False
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -741,11 +744,13 @@ def apply_issue_access_settled(
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
-        # shortcut: Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its
-        # parent (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). The read rule cannot grant them: an OPEN
-        # sub-task is read below its parent by the parent's own holders, who may not read it in Jira
-        # (tests/permissions/test_subtask_own_holders.py). It stays STRICT, read with its parent, until the rule can say
-        # "the project, plus its own holders".
+        # Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its parent
+        # (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). STRICT_OR_GRANT reads it from the project, or by
+        # their grant alone, which neither the parent's own holders reach nor opens what hangs below it.
+        # shortcut: its reporter and group-field holders still read it only with its parent; open them after a live
+        # Jira Cloud check shows they see it.
+        sub_task = context.sub_task_holders and is_subtask and bool(record.parent_external_record_id) \
+            and not getattr(record, "is_placeholder", False)
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
@@ -753,12 +758,15 @@ def apply_issue_access_settled(
             record.access_rule = AccessRule.OPEN
             record.rewrite_permissions = False
             return [], [], True
+        holders = context.browse_holders or []
+        if sub_task:
+            holders = [h for h in holders if isinstance(h, dict) and h.get("type") in (HOLDER_ASSIGNEE, HOLDER_USER_FIELD)]
         grants = browse_holder_grants(
-            context.browse_holders or [], project_key=project_key, fields=fields or {},
+            holders, project_key=project_key, fields=fields or {},
             user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
             reporter_account=reporter_account, assignee_account=assignee_account,
-        ) if top_level else []
-        record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
+        ) if top_level or sub_task else []
+        record.access_rule = (AccessRule.STRICT_OR_GRANT if sub_task else AccessRule.OPEN) if grants else AccessRule.STRICT
         record.rewrite_permissions = True
         return grants, [], True
 

@@ -4323,6 +4323,7 @@ class JiraConnector(BaseConnector):
             defer_checkpoint=http_status_is_transient(response.status),
             read_status=response.status if knowledge == SchemeKnowledge.UNKNOWN else None,
             scope_refused=knowledge == SchemeKnowledge.UNKNOWN and refuses_a_scope(body),
+            sub_task_holders=True,
         )
         if knowledge != SchemeKnowledge.PRESENT or scheme_id is None:
             return context
