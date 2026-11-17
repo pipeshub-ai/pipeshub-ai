@@ -252,10 +252,10 @@ async def test_a_repository_file_read_as_code_is_not_skipped_whatever_its_mime()
 @pytest.mark.parametrize("mime", [MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value])
 async def test_sql_tables_and_views_are_not_skipped(mime: str) -> None:
     world = _World(node={"contentRev": content_revision(NEW), "mimeType": mime})
-    world.processor.process_sql_table = MagicMock(side_effect=world._parse)
-    world.processor.process_sql_view = MagicMock(side_effect=world._parse)
-    await world.run(world.event(NEW, mime=mime, ext=""))
+    world.processor.process_sql_structured_data = MagicMock(side_effect=world._parse)
+    events = await world.run(world.event(NEW, mime=mime, ext=""))
 
+    assert world.parses == 1 and events[-1] is IndexingEvent.INDEXING_COMPLETE
     world.ingress.redrive_unchanged.assert_not_awaited()
     world.processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
 
