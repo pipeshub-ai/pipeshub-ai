@@ -251,3 +251,21 @@ async def test_the_vector_only_reindex_delete_runs_under_the_virtual_records_lea
         assert spied == ["delete"] and manager.owner == {}
     finally:
         monkey.undo()
+
+
+async def test_renewals_that_keep_failing_cancel_the_delete_in_flight(db, manager) -> None:
+    """A delete slower than the lease term, with the lease store unreachable for the rest of the term: the hold's renewer (it keeps
+    renewing while the call is in flight) gives up once the term is nearly out, and the delete does not land."""
+    store = make_store(db)
+    landed: list[str] = []
+
+    async def slow_delete(*args: object, **kwargs: object) -> None:
+        manager.errors = 10_000          # every renewal from now on fails
+        await asyncio.sleep(1.0)         # far longer than the 0.15 s term
+        landed.append("delete landed")
+
+    db.delete_points = slow_delete  # type: ignore[method-assign]
+    with pytest.raises(VirtualRecordBusy):
+        async with store._vrid_lease("t", ORG, VRID):
+            await store.delete_embeddings(VRID, COLL, org_id=ORG)
+    assert landed == []

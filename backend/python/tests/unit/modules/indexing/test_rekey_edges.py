@@ -500,17 +500,31 @@ async def test_a_described_images_lost_point_is_embedded_not_counted_as_moved(db
 
 
 @pytest.mark.parametrize("described", [False, True])
-async def test_on_a_multimodal_model_an_image_is_not_counted(db, described: bool) -> None:
-    """Whether an image has a point there depends on the provider returning an embedding for it, which nothing stored says: a provider
-    that skipped it must not make the whole record embed again."""
+async def test_a_legacy_multimodal_record_with_a_lost_image_point_re_embeds(db, described: bool) -> None:
+    """No recorded set (the record predates it) and a multimodal model: every image with a uri is expected to have a point, so a lost
+    one is healed (conservative: the writers' behaviour for an image depends on the provider and is not stored)."""
     _, blob = await legacy_record(db, _image_record(described))
+    for pid in [pid for pid, p in db.collections[COLL].items() if "bar chart" in p.payload["page_content"]]:
+        del db.collections[COLL][pid]                       # the image has no point (lost, or never written)
     store = make_store(db)
     store.get_embedding_model_instance = AsyncMock(return_value=True)
-    victim = [pid for pid, p in db.collections[COLL].items() if "bar chart" in p.payload["page_content"]]
-    for pid in victim:
-        del db.collections[COLL][pid]            # the image has no point (the provider returned nothing for it)
     await run(store, blob, _image_record(described))
-    assert store._embed_documents_with_retry.await_count == 0
+    embedded = [t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]
+    assert len(embedded) >= 5, "the record was embedded: the image without a point was expected to have one"
+
+
+async def test_a_legacy_multimodal_record_with_a_provider_skipped_image_re_embeds_once_then_records_its_set(db) -> None:
+    """The conservative rule costs one re-embed for an image the provider skipped; the pass records the set, so the next one is exact."""
+    _, blob = await legacy_record(db, _image_record(False))
+    store = make_store(db)
+    store.get_embedding_model_instance = AsyncMock(return_value=True)
+    await run(store, blob, _image_record(False))
+    assert len([t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]) >= 5
+    assert "pointedBlocks" in blob.saved, "the pass recorded which blocks have a point"
+    again = make_store(db)
+    again.get_embedding_model_instance = AsyncMock(return_value=True)
+    await run(again, blob, _image_record(False))
+    assert [t for c in again._embed_documents_with_retry.await_args_list for t in c.args[0]] == [], "a recorded record stays exact"
 
 
 def _anchors(db: InMemoryVectorDBService) -> list[str]:

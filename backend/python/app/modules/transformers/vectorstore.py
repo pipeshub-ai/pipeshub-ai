@@ -1130,9 +1130,12 @@ def _embeds_a_point(item: Block | BlockGroup | None, *, code_unit_ids: frozenset
         return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
     if kind in ("image", "drawing"):
         # On a text model an image has a point exactly when it has a description. On a multimodal model whether it has one depends on
-        # whether the provider returned an embedding for it, which nothing stored says: it is not counted (a lost image point is not
-        # told from one the provider never gave).
-        return isinstance(data, dict) and bool(data.get("uri")) and not multimodal and bool(VectorStore._image_block_description(item))
+        # whether the provider returned an embedding for it, which nothing stored says: for a record that predates the recorded set
+        # every image with a uri is expected to have a point (conservative: a provider-skipped image costs one re-embed, after which the
+        # set is recorded and exact).
+        if not isinstance(data, dict) or not data.get("uri"):
+            return False
+        return True if multimodal else bool(VectorStore._image_block_description(item))
     if kind == "table_row":
         return isinstance(data, dict) and any(_has_text(v) for k, v in data.items() if k != "row_number")
     if kind in ("text", "paragraph", "textsection", "heading", "quote"):
