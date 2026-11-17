@@ -68,6 +68,8 @@ T = TypeVar("T")
 # How long a stopped call waits for the backend to clean up after its cancel:
 # the Docker backend's own 30 s bound for removing the container, plus a margin.
 _STOP_DRAIN_S = 35.0
+# Longest the slot-wait note may take to clear before the granted slot is used anyway.
+_SLOT_NOTE_CLEAR_S = 5.0
 
 
 class SandboxType(str, Enum):
@@ -551,7 +553,10 @@ class SandboxManager:
             # Granted, timed out or cancelled: the note is taken down either way.
             if shown and notify is not None:
                 try:
-                    await notify(tool, waiting=False)
+                    # Bounded: a stalled event stream must not hold a granted slot.
+                    await asyncio.wait_for(notify(tool, waiting=False), _SLOT_NOTE_CLEAR_S)
+                except TimeoutError:
+                    logger.warning("clearing the slot-wait note took over %gs; going on", _SLOT_NOTE_CLEAR_S)
                 except asyncio.CancelledError:
                     # The slot was granted but the caller will never see it.
                     if lease is not None:
