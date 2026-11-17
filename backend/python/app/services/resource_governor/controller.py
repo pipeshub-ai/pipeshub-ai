@@ -388,9 +388,17 @@ class ResourceGovernor:
             return SlotHold()
         with self._stats_lock:
             snapshot = self._last_snapshot
-        return self._heavy_parse_slots.try_acquire(
-            cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set()), count
-        )
+        limit = cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set())
+        if self._yield is not None:
+            with self._state_lock:
+                holdoff = self._state.get(Pool.HEAVY_PARSE).yield_holdoff
+            if self._yield_state.active or holdoff > 0:
+                # Each worker's own heavy limit stops at its floor, so N workers
+                # would keep N floors running while code sandbox runs wait for
+                # memory. Until this worker's holdoff runs out, the workers
+                # together hold to the floor one worker alone would have.
+                limit = min(limit, floor_for(Pool.HEAVY_PARSE, self._fleet_ceilings.heavy))
+        return self._heavy_parse_slots.try_acquire(limit, count)
 
     @property
     def heavy_working_set(self) -> HeavyWorkingSet:
