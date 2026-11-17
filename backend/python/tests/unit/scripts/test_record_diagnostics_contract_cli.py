@@ -80,3 +80,22 @@ async def test_apply_reports_what_is_left(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setitem(script._STORES, "arango", stuck)
 
     assert await script.apply(FakeArango(), "org", batch_size=10, out=io.StringIO()) == 3
+
+
+def test_log_lines_go_to_stderr_so_stdout_stays_the_commands_json(capsys: pytest.CaptureFixture[str]) -> None:
+    import logging
+    import sys
+
+    root = logging.getLogger()
+    handler = logging.StreamHandler(sys.stdout)  # what the service logger installs on root
+    root.addHandler(handler)
+    previous = root.level
+    root.setLevel(logging.INFO)
+    try:
+        script.logs_to_stderr()
+        logging.getLogger("record_diagnostics_contract_test").info("starting up")
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+    out, err = capsys.readouterr()
+    assert out == "" and "starting up" in err

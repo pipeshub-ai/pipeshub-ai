@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from typing import TYPE_CHECKING, Any, TextIO
 
@@ -130,11 +131,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def logs_to_stderr() -> None:
+    """The service logger writes to stdout; here stdout is the command's JSON, so every log line goes to stderr."""
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.StreamHandler) and handler.stream is sys.stdout:
+            handler.setStream(sys.stderr)
+
+
 async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.containers.indexing import IndexingAppContainer
     from app.core.org_context import for_org
 
+    logs_to_stderr()  # before the container logs its start-up
     container = IndexingAppContainer.init("record_diagnostics_contract")
     graph = await container.graph_provider()
     try:
