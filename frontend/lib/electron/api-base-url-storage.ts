@@ -70,6 +70,13 @@ export function forgetElectronServerUrl(): void {
 type ApiBaseUrlMode = { kind: 'unknown' } | { kind: 'server' } | { kind: 'local'; url: string | null };
 let mode: ApiBaseUrlMode = { kind: 'unknown' };
 let waiters: (() => void)[] = [];
+const urlListeners = new Set<(url: string) => void>();
+
+/** Called with the new base URL whenever local mode's URL changes (a restarted launcher picks a new port). */
+export function onApiBaseUrlChange(listener: (url: string) => void): () => void {
+  urlListeners.add(listener);
+  return () => urlListeners.delete(listener);
+}
 
 function settle(): void {
   if (mode.kind === 'unknown' || (mode.kind === 'local' && !mode.url)) return;
@@ -80,8 +87,10 @@ function settle(): void {
 
 /** Local mode: `url` is this launch's server once it reports ready, null before. Never written to storage. */
 export function setLocalModeApiBaseUrl(url: string | null): void {
+  const before = getElectronApiBaseUrl();
   mode = { kind: 'local', url };
   settle();
+  if (url && url !== before) urlListeners.forEach((listener) => listener(url));
 }
 
 /** Connecting to a server: its saved URL applies. */
