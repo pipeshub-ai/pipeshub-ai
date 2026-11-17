@@ -135,11 +135,15 @@ class SandboxAlertRunner:
         except Exception as exc:
             self._logger.warning("sandbox load alert %s not sent: config store unavailable (%s)", level, exc)
             return
-        event = build_alert_event(
-            decision, self._snapshot(), self._settings,
-            alert_id=alert_id, host=self._host, fired_at=now,
-        )
-        if await self._publish(event, alert_id):
+        try:
+            event = build_alert_event(
+                decision, self._snapshot(), self._settings,
+                alert_id=alert_id, host=self._host, fired_at=now,
+            )
+        except Exception:
+            self._logger.warning("sandbox load alert %s: building the alert failed", level, exc_info=True)
+            event = None
+        if event is not None and await self._publish(event, alert_id):
             totals = decision.totals
             self._logger.warning(
                 "sandbox load alert fired level=%s alert_id=%s host=%s runs=%d waited=%d "
@@ -154,7 +158,7 @@ class SandboxAlertRunner:
                 await self._cooldown.release_if_ours(claimed, alert_id)
             except Exception:
                 self._logger.warning("sandbox load alert %s: could not release the claim", claimed, exc_info=True)
-        self._logger.warning("sandbox load alert %s not sent: publish failed; retrying next interval", level)
+        self._logger.warning("sandbox load alert %s not sent; retrying next interval", level)
 
     async def _resolve(self, now: float) -> None:
         try:

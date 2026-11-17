@@ -146,6 +146,32 @@ async def test_a_failed_publish_releases_the_claim_and_retries(env: Env) -> None
     assert env.store.values[WARN_KEY]["alertId"] == env.producer.sent[-1][1]["payload"]["alertId"]
 
 
+async def test_a_failed_snapshot_releases_the_claim_and_retries(env: Env, caplog: pytest.LogCaptureFixture) -> None:
+    env.warn()
+    calls = 0
+
+    def snapshot() -> dict:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("governor gone")
+        return dict(SNAPSHOT)
+
+    runner = SandboxAlertRunner(
+        env.store, SETTINGS, env.state,  # type: ignore[arg-type]
+        producer_factory=env.factory, snapshot=snapshot, clock=env.clock, host="test-host",
+    )
+    with caplog.at_level(logging.WARNING):
+        await runner.run_once()
+    assert env.producer.sent == []
+    assert WARN_KEY not in env.store.values
+    assert any("not sent" in r.getMessage() for r in caplog.records)
+    env.clock.now += 10
+    env.warn()
+    await runner.run_once()
+    assert [e["type"] for _, e, _ in env.producer.sent] == ["SANDBOX_CAPACITY_WARNING"]
+
+
 async def test_a_store_outage_sends_nothing(env: Env, caplog: pytest.LogCaptureFixture) -> None:
     env.warn()
     env.store.fail = True
