@@ -611,7 +611,9 @@ sandbox:
   # the process limit / 256, at least minTotal (2). The defaults give 3.
   # With config.dockerHost, each pod sizes itself from that daemon; when more
   # than one pod can run (replicaCount, or autoscaling.maxReplicas) and
-  # maxTotal is empty, each pod takes 1/<pods> of it.
+  # maxTotal is empty, each pod takes 1/<pods> of it, but never below minTotal,
+  # so many pods on a small daemon together can admit more runs than it fits.
+  # Set maxTotal to cap each pod exactly.
   capacity:
     # Replaces the computed cap per pod (up to 1024). Empty or 0: sized
     # automatically (and split between pods sharing config.dockerHost).
