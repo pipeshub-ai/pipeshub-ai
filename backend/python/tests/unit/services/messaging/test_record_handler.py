@@ -6663,6 +6663,34 @@ class TestMembershipRepairAfterAGiveUp:
         )
 
     @pytest.mark.asyncio
+    async def test_a_second_request_neither_overwrites_nor_claims_the_original_reason(self) -> None:
+        """Another give-up finds the pending reason already set: it queues a sync, but that sync carries no reason to
+        clear, so it cannot erase what the first request will restore."""
+        handler = self._handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value={**self.RECORD, "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        )
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
+        payload = handler.producer.send_event.await_args.kwargs["payload"]
+        assert "pendingReasonRecordId" not in payload and "priorReason" not in payload
+
+    @pytest.mark.asyncio
+    async def test_a_refused_mark_leaves_the_sync_without_a_reason_to_clear(self) -> None:
+        handler = self._handler()
+        handler.event_processor.graph_provider.update_node_fields_if_match = AsyncMock(return_value=False)
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        assert "pendingReasonRecordId" not in handler.producer.send_event.await_args.kwargs["payload"]
+
+    @pytest.mark.asyncio
     async def test_a_give_up_of_anything_else_queues_nothing(self) -> None:
         """An update that was handed back for another reason (a download slot that never freed) never reached the
         skip: its record is not repaired and keeps whatever reason it showed."""

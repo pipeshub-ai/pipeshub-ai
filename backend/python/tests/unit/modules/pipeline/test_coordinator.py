@@ -861,3 +861,34 @@ async def test_a_stage_behind_a_missing_prerequisite_waits_for_it(fleet) -> None
     assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "NOT_STARTED"}) == []
     assert h.status("classify") is None and h.status("after-classify") is None
     assert h.producer.sent == []
+
+
+def _registry_with_entities_that_runs_when_off() -> StageRegistry:
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_stage("classify", "embed", applicable=False, headline=HeadlineField.EXTRACTION))
+    entities = _stage("entities", "embed", applicable=False)
+    entities.runs_when_not_applicable = True
+    registry.register(entities)
+    return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.FAILED, ProgressStatus.PAUSED, ProgressStatus.NOT_STARTED])
+async def test_an_unfinished_stage_that_no_longer_applies_ends_skipped_and_is_not_claimed(fleet, status: ProgressStatus) -> None:
+    """Classification turned off after its job failed or paused: the redrive records SKIPPED and spends nothing. The
+    entities stage is the exception (it must run to clear what it wrote), so it is still claimed."""
+    registry = _registry_with_entities_that_runs_when_off()
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+    for stage in ("classify", "entities"):
+        job = StageJob.for_view(_view(), stage=stage, stage_version=1, priority=Priority.BULK, trigger="t", force=False)
+        h.states.put(StageState.from_job(job, status, h.clock()))
+
+    dispatched = await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"})
+
+    assert h.status("classify") is ProgressStatus.SKIPPED
+    assert dispatched == [f"{stage_state_key(VRID, REV, 'entities')}@1"]
+    assert [t for t, *_ in h.producer.sent] == ["pipeline.entities"]
+    assert h.headlines.writes and h.headlines.writes[-1][2] is ProgressStatus.SKIPPED

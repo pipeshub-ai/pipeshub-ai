@@ -231,6 +231,13 @@ class Coordinator:
                 present = by_stage.get(stage)
                 if present is not None and present.status not in only_from:
                     continue
+                if present is not None:
+                    target = self._registry.get(stage)
+                    if not getattr(target, "runs_when_not_applicable", False) and not target.applies(view, policy):
+                        # Turned off since it was queued (or never applicable): it ends SKIPPED, as a normal dispatch
+                        # would have left it, instead of being claimed back to run and spend a model call.
+                        await self._skip_unfinished(target, present, view)
+                        continue
                 if present is None:
                     target = self._registry.get(stage)
                     if not recover_missing or stage in defer or not all(
@@ -387,6 +394,16 @@ class Coordinator:
                             view.record_ids, stage.headline, ProgressStatus.QUEUED, rev=view.rev
                         )
         return published
+
+    async def _skip_unfinished(self, stage: Stage[Any], state: StageState, view: RecordView) -> None:
+        """End a FAILED, PAUSED or never-started stage that does not apply as SKIPPED, while it is still in that status."""
+        reason = "not applicable to this record"
+        if await self._states.cas(
+            state.key, expected=state.status, new=ProgressStatus.SKIPPED, patch=StageStatePatch(reason=reason)
+        ) and stage.headline is not None:
+            _ = await self._headlines.set_headline(
+                view.record_ids, stage.headline, ProgressStatus.SKIPPED, rev=view.rev, reason=reason
+            )
 
     async def _skip(self, stage: Stage[Any], view: RecordView, *, priority: Priority, trigger: str) -> None:
         job = self._job_for(stage.name, stage.version, view, priority=priority, trigger=trigger, force=False)

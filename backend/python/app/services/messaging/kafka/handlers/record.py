@@ -604,16 +604,19 @@ class RecordEventHandler(BaseEventService):
         )
         graph = self.event_processor.graph_provider
         prior_reason = record.get("reason")
-        if prior_reason == MEMBERSHIP_SYNC_PENDING:
-            prior_reason = None
         content_rev = record.get("contentRev")
+        # Whether this request owns the pending reason, and so the reason to put back. When an earlier request already
+        # did (the record shows the pending reason), this one only queues a sync: the earlier one carries the original.
+        marked = False
         try:
             # Only while the record still has the revision and the reason this give-up read: a real update, or a
             # reason written since, owns the record. The reason it had is carried on the queued sync, to be put back.
-            if content_rev:
-                await graph.update_node_fields_if_match(
-                    record_id, CollectionNames.RECORDS.value, {"reason": MEMBERSHIP_SYNC_PENDING},
-                    {"contentRev": str(content_rev), "reason": prior_reason},
+            if content_rev and prior_reason != MEMBERSHIP_SYNC_PENDING:
+                marked = bool(
+                    await graph.update_node_fields_if_match(
+                        record_id, CollectionNames.RECORDS.value, {"reason": MEMBERSHIP_SYNC_PENDING},
+                        {"contentRev": str(content_rev), "reason": prior_reason},
+                    )
                 )
         except Exception as exc:
             self.logger.error("Could not record the pending membership sync of %s: %s", record_id, type(exc).__name__)
@@ -637,9 +640,9 @@ class RecordEventHandler(BaseEventService):
                         "virtualRecordId": str(vrid),
                         "orgId": str(org_id),
                         "connectorId": record.get("connectorId"),
-                        # Which record shows the pending reason, for the sync to clear once it has run.
-                        "pendingReasonRecordId": record_id,
-                        "priorReason": prior_reason,
+                        # Which record shows the pending reason this request set, for the sync to put right once it has
+                        # run; absent when this request set nothing, so it cannot clear what another one will restore.
+                        **({"pendingReasonRecordId": record_id, "priorReason": prior_reason} if marked else {}),
                     },
                     key=str(vrid),
                 ),
