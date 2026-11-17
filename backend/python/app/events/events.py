@@ -40,7 +40,11 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.models.entities import Record
 from app.modules.indexing import replay_set
-from app.modules.indexing.connector_off_events import enrichment_cut_short
+from app.modules.indexing.connector_off_events import (
+    SAME_BYTES_SKIP_RETRY_DELAY_S,
+    SameBytesSkipPending,
+    enrichment_cut_short,
+)
 from app.modules.indexing.embed_resume import (
     DELIVERY_ID_KEY,
     EMBED_DELIVERY_ID,
@@ -271,29 +275,30 @@ class EventProcessor:
         3. The delivery is remembered in the replay set, as the record's COMPLETED write would.
 
         A revision the stage runtime never saw (a lost hand-off, or content indexed before it existed)
-        is not skipped, and neither is one whose sync or redrive failed: the full run dispatches every
-        stage.
+        is not skipped: the full run dispatches every stage. A sync, redrive or state read that fails
+        raises ``SameBytesSkipPending``: the record is left untouched and the delivery handed back.
         """
         ingress = self.stage_ingress
         if ingress is None:
             return False
         vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
-        if await ingress.handoff_lost(record):
-            return False
         try:
+            if await ingress.handoff_lost(record):
+                return False
             await self.sync_vector_membership(vrid)
             dispatched = await ingress.redrive_unchanged(vrid, rev, record)
         except Exception as exc:
-            # Not a reason to book an indexing failure on a record that is indexed: a retry of this
-            # delivery that ran out of attempts would write FAILED over a COMPLETED record, and a
-            # stage row released after a refused publish would have no later caller. The full run does
-            # what the skip could not (it syncs membership and dispatches the stages), and fails as
-            # an update always did if the stores are really down.
+            # The record is indexed and stays as it is: no status is written and nothing is re-indexed
+            # (a full run of a type not reconciled block by block replaces its vrid and takes its points
+            # out before it parses). The delivery is handed back instead; the broker's backstop bounds it.
             self.logger.warning(
-                "Record %s: the same-bytes skip could not finish (%s); running the update in full",
+                "Record %s: the same-bytes skip could not finish (%s); handing the update back, record untouched",
                 record_id, type(exc).__name__,
             )
-            return False
+            raise SameBytesSkipPending(
+                f"{record_id}: same-bytes skip could not finish: {type(exc).__name__}",
+                delay_s=SAME_BYTES_SKIP_RETRY_DELAY_S,
+            ) from exc
         if dispatched is None:
             return False
         self.logger.info(

@@ -153,17 +153,19 @@ class Coordinator:
         priority: Priority,
         force: bool,
         only_from: frozenset[ProgressStatus] | None = None,
+        keep_claim_on_publish_failure: bool = False,
     ) -> str | None:
         """Re-dispatch one stage for one revision; None when it is already queued or running, or a newer
         release owns its state. With ``only_from``, the claim itself refuses a state whose status is not in
         the set (NOT_STARTED there also lets a missing state be created), so a stage that finished since the
-        caller looked is not queued again."""
+        caller looked is not queued again. With ``keep_claim_on_publish_failure`` a refused publish leaves the
+        claim QUEUED and unpublished, for the sweep to publish, instead of releasing it and raising."""
         target = self._registry.get(stage)
         job = self._job_for(target.name, target.version, view, priority=priority, trigger="redrive", force=force)
         claimed_from = await self._claim(job, only_from)
         if claimed_from is None:
             return None
-        await self._publish(job, release_to=claimed_from)
+        await self._publish(job, release_to=None if keep_claim_on_publish_failure else claimed_from)
         if target.headline is not None:
             _ = await self._headlines.set_headline(view.record_ids, target.headline, ProgressStatus.QUEUED, rev=view.rev)
         return job.job_id
@@ -190,6 +192,7 @@ class Coordinator:
         only_unfinished: bool = False,
         recover_missing: bool = False,
         defer: frozenset[str] = frozenset(),
+        keep_claim_on_publish_failure: bool = False,
     ) -> list[str] | None:
         """Re-dispatch ``stages`` for a revision the runtime has seen, from what its external
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
@@ -239,7 +242,10 @@ class Coordinator:
                         by_stage = {s.stage: s for s in (await self._states.get_many(virtual_record_id, rev)).values()}
                         continue
                     only_from = frozenset({ProgressStatus.NOT_STARTED})
-            job_id = await self.redrive(view, stage, priority=priority, force=force, only_from=only_from)
+            job_id = await self.redrive(
+                view, stage, priority=priority, force=force, only_from=only_from,
+                keep_claim_on_publish_failure=keep_claim_on_publish_failure,
+            )
             if job_id is not None:
                 dispatched.append(job_id)
         return dispatched

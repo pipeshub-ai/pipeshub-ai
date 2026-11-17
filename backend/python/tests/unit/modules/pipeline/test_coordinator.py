@@ -796,18 +796,23 @@ async def test_a_stage_that_finishes_after_the_snapshot_is_not_requeued(fleet) -
 
 
 @pytest.mark.asyncio
-async def test_a_publish_the_broker_refused_during_the_recovery_is_retried_by_the_next_one(fleet) -> None:
-    """The recovery creates the missing classify state; the broker refuses the publish and the claim is released to
-    NOT_STARTED. That row is still owed: the next same-bytes update claims it and publishes."""
-    h = _Harness(_classify_after_embed(), reject_next=1)
+async def test_a_refused_publish_in_the_recovery_stays_queued_and_is_retried_once_per_sweep_pass(fleet) -> None:
+    """The recovery creates the missing classify state and the broker refuses the publish. The claim stays QUEUED and
+    unpublished (nothing is raised, so nothing books a failure); each sweep pass sends it once, and once it is on the
+    broker the next pass sends nothing."""
+    h = _Harness(_classify_after_embed(), reject_next=2)
     ingress = _ingress_for(h, PauseStore())
     h.complete("embed")
+    key = stage_state_key(VRID, REV, "classify")
 
-    with pytest.raises(StagePublishError):
-        await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"})
-    assert h.status("classify") is ProgressStatus.NOT_STARTED
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [f"{key}@1"]
+    assert h.status("classify") is ProgressStatus.QUEUED and h.producer.sent == []
 
-    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [
-        f"{stage_state_key(VRID, REV, 'classify')}@1"
-    ]
-    assert h.status("classify") is ProgressStatus.QUEUED
+    h.clock.advance(120_000)
+    first = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)  # refused again
+    assert (first.republished, h.producer.sent) == (0, [])
+    h.clock.advance(120_000)
+    second = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
+    assert second.republished == 1 and [t for t, *_ in h.producer.sent] == ["pipeline.classify"]
+    third = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
+    assert third.republished == 0 and len(h.producer.sent) == 1

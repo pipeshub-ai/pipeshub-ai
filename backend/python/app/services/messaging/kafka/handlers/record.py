@@ -52,6 +52,7 @@ from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
     ConnectorState,
     RecordHeldForDelete,
+    SameBytesSkipPending,
     already_indexed,
     connector_gated_event,
     connector_state,
@@ -1728,6 +1729,8 @@ class RecordEventHandler(BaseEventService):
         handed_back = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
+        # A same-bytes update handed back: the record is indexed and nothing of it is written.
+        skip_pending = False
         record = None
         resuming_enrichment = False
         source_name: str | None = None
@@ -2614,6 +2617,9 @@ class RecordEventHandler(BaseEventService):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=delay) from ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
+        except SameBytesSkipPending:
+            skip_pending = True
+            raise
         except RecordHeldForDelete:
             # Not a failure: the consumer hands the message back, and nothing is written for it.
             self.logger.info(f"Record {record_id} held: its connector is being deleted")
@@ -2649,7 +2655,7 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if stage_redrive or held_for_delete:
+            if stage_redrive or held_for_delete or skip_pending:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
                 # A held event has done nothing yet, and its record is the delete's.
@@ -2864,7 +2870,7 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not held_for_delete and not in_trash and not parse_now_refused and not store_only:
+            if not cancelled and not held_for_delete and not skip_pending and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
 
             # Last, so every status write above is shaped by the run.

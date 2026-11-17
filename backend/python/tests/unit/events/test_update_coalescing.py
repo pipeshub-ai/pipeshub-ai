@@ -19,6 +19,7 @@ from app.config.constants.arangodb import EventTypes, MimeTypes
 from app.events.dedup import DedupDecision
 from app.events.events import EventProcessor
 from app.modules.indexing import replay_set
+from app.modules.indexing.connector_off_events import SameBytesSkipPending
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.messaging.config import (
     IndexingEvent,
@@ -203,29 +204,49 @@ async def test_without_a_stage_runtime_the_update_runs_in_full() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_membership_sync_runs_the_update_in_full_instead_of_failing_the_record() -> None:
+async def test_a_persistent_sync_failure_never_re_indexes_the_record() -> None:
+    """Many same-bytes updates while the vector store is down: each is handed back, the record is never written and
+    nothing is parsed or embedded."""
     world = _World(node={"contentRev": content_revision(NEW)})
     world.processor.indexing_pipeline.sync_vector_membership = AsyncMock(side_effect=RuntimeError("vector store down"))
+    before = dict(world.state)
 
-    events = await world.run(world.event(NEW))
+    for _ in range(25):
+        with pytest.raises(SameBytesSkipPending):
+            await world.run(world.event(NEW))
 
-    assert events[-1] is IndexingEvent.INDEXING_COMPLETE
-    assert world.parses == 1
+    assert world.parses == 0
     world.ingress.redrive_unchanged.assert_not_awaited()
+    world.graph.update_node.assert_not_awaited()
+    assert world.state == before
 
 
 @pytest.mark.asyncio
-async def test_a_refused_stage_publish_runs_the_update_in_full_instead_of_failing_the_record() -> None:
-    from app.modules.pipeline.coordinator import StagePublishError
+async def test_a_transient_sync_failure_heals_on_the_next_delivery() -> None:
+    world = _World(node={"contentRev": content_revision(NEW)})
+    sync = AsyncMock(side_effect=[RuntimeError("blip"), None])
+    world.processor.indexing_pipeline.sync_vector_membership = sync
 
-    world = _World(node={"contentRev": content_revision(NEW), "extractionStatus": "QUEUED"})
-    world.ingress.redrive_unchanged = AsyncMock(side_effect=StagePublishError("job"))
-
+    with pytest.raises(SameBytesSkipPending):
+        await world.run(world.event(NEW))
     events = await world.run(world.event(NEW))
 
-    assert events[-1] is IndexingEvent.INDEXING_COMPLETE
-    assert world.parses == 1
-    assert world.state["indexingStatus"] == "COMPLETED"
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert world.parses == 0 and sync.await_count == 2
+    world.ingress.redrive_unchanged.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["handoff_lost", "redrive_unchanged"])
+async def test_a_failed_state_read_or_redrive_is_handed_back_not_failed(failing: str) -> None:
+    world = _World(node={"contentRev": content_revision(NEW), "extractionStatus": "QUEUED"})
+    setattr(world.ingress, failing, AsyncMock(side_effect=ConnectionError("graph down")))
+
+    with pytest.raises(SameBytesSkipPending):
+        await world.run(world.event(NEW))
+
+    assert world.parses == 0
+    world.graph.update_node.assert_not_awaited()
 
 
 @pytest.mark.asyncio

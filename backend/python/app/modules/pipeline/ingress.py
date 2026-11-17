@@ -68,7 +68,8 @@ class StageIngress:
 
         Only a failed, paused or never-started stage is claimed: a finished one is left alone, so the record's statuses
         and `reason` stay as they are and its queued copies are not held. Unforced and at bulk priority,
-        so the claim keeps the stage's pause budget (only a forced claim resets it). None when the
+        so the claim keeps the stage's pause budget (only a forced claim resets it). A refused publish leaves the
+        claim QUEUED for the sweep, which republishes it once per pass. None when the
         runtime holds no state for the revision, which the caller treats as "run the record in full".
         A stage with no state whose prerequisites are done is a hand-off the process stopped in the middle
         of: it is recorded SKIPPED when it does not apply and dispatched otherwise. Classification is the
@@ -80,6 +81,7 @@ class StageIngress:
             only_unfinished=True,
             recover_missing=True,
             defer=defer,
+            keep_claim_on_publish_failure=True,
         )
 
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:

@@ -746,3 +746,27 @@ def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_fla
         "a completion the set does not know came after it"
     )
     assert not replay_candidate("deleteRecord", payload, done)
+
+
+async def test_a_same_bytes_update_handed_back_writes_no_status_even_on_its_last_delivery() -> None:
+    """The record is indexed and stays so: the handler books no failure for a skip that could not finish, which the
+    consumer's delivery backstop ends instead."""
+    from app.modules.indexing.connector_off_events import SameBytesSkipPending
+
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value, extractionStatus="QUEUED")
+    handler, event_processor = _handler(graph)
+    event_processor.on_event = MagicMock(side_effect=SameBytesSkipPending("r1: sync failed", delay_s=1))
+
+    payload = dict(_payload(mimeType="application/pdf", extension="pdf", signedUrl="https://example.com/r1.pdf"))
+    with (
+        patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"%PDF-1.4"),
+        pytest.raises(SameBytesSkipPending),
+    ):
+        _ = [e async for e in handler.process_event(UPDATE, payload)]
+
+    event_processor.on_event.assert_called_once()
+    assert _writes(graph) == {}
+    assert graph.records["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+    assert graph.records["r1"]["extractionStatus"] == "QUEUED"

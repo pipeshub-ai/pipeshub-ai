@@ -76,6 +76,21 @@ class RecordHeldForDelete(RequeueWithoutAttempt):
     pauses_consumer = False
 
 
+# How long a same-bytes update whose skip could not finish waits before it is delivered again.
+SAME_BYTES_SKIP_RETRY_DELAY_S = 30.0
+
+
+class SameBytesSkipPending(RequeueWithoutAttempt):
+    """An update of the bytes a record is already indexed from could not finish its cheap work (the membership
+    sync, the stage re-dispatch, the stage-state read): handed back with the record left exactly as it is, still
+    COMPLETED, and no paid re-index. The hand-backs count toward the delivery backstop, which ends them: a message
+    handed back that many times is given up on with a reason naming the count, so a store that stays down is
+    neither a silent loop nor a re-parse of an indexed record."""
+
+    counts_toward_backstop = True
+    pauses_consumer = False
+
+
 class ReadTimeOutcome(Enum):
     PASS = "pass"
     # The handler acknowledges without writing anything.
