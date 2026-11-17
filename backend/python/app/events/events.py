@@ -271,7 +271,8 @@ class EventProcessor:
         3. The delivery is remembered in the replay set, as the record's COMPLETED write would.
 
         A revision the stage runtime never saw (a lost hand-off, or content indexed before it existed)
-        is not skipped: the full run dispatches every stage.
+        is not skipped, and neither is one whose sync or redrive failed: the full run dispatches every
+        stage.
         """
         ingress = self.stage_ingress
         if ingress is None:
@@ -279,8 +280,20 @@ class EventProcessor:
         vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
         if await ingress.handoff_lost(record):
             return False
-        await self.sync_vector_membership(vrid)
-        dispatched = await ingress.redrive_unchanged(vrid, rev, record)
+        try:
+            await self.sync_vector_membership(vrid)
+            dispatched = await ingress.redrive_unchanged(vrid, rev, record)
+        except Exception as exc:
+            # Not a reason to book an indexing failure on a record that is indexed: a retry of this
+            # delivery that ran out of attempts would write FAILED over a COMPLETED record, and a
+            # stage row released after a refused publish would have no later caller. The full run does
+            # what the skip could not (it syncs membership and dispatches the stages), and fails as
+            # an update always did if the stores are really down.
+            self.logger.warning(
+                "Record %s: the same-bytes skip could not finish (%s); running the update in full",
+                record_id, type(exc).__name__,
+            )
+            return False
         if dispatched is None:
             return False
         self.logger.info(

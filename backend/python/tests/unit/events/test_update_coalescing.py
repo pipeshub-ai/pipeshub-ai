@@ -203,15 +203,29 @@ async def test_without_a_stage_runtime_the_update_runs_in_full() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_membership_sync_retries_instead_of_acknowledging() -> None:
+async def test_a_failed_membership_sync_runs_the_update_in_full_instead_of_failing_the_record() -> None:
     world = _World(node={"contentRev": content_revision(NEW)})
     world.processor.indexing_pipeline.sync_vector_membership = AsyncMock(side_effect=RuntimeError("vector store down"))
 
-    with pytest.raises(RuntimeError, match="vector store down"):
-        await world.run(world.event(NEW))
+    events = await world.run(world.event(NEW))
 
+    assert events[-1] is IndexingEvent.INDEXING_COMPLETE
+    assert world.parses == 1
     world.ingress.redrive_unchanged.assert_not_awaited()
-    assert world.parses == 0
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stage_publish_runs_the_update_in_full_instead_of_failing_the_record() -> None:
+    from app.modules.pipeline.coordinator import StagePublishError
+
+    world = _World(node={"contentRev": content_revision(NEW), "extractionStatus": "QUEUED"})
+    world.ingress.redrive_unchanged = AsyncMock(side_effect=StagePublishError("job"))
+
+    events = await world.run(world.event(NEW))
+
+    assert events[-1] is IndexingEvent.INDEXING_COMPLETE
+    assert world.parses == 1
+    assert world.state["indexingStatus"] == "COMPLETED"
 
 
 @pytest.mark.asyncio
