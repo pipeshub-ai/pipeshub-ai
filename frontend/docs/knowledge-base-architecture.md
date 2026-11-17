@@ -612,9 +612,9 @@ The page uses query params to track navigation state:
 
 **Reading Query Params:**
 
-`page.tsx` reads `nodeType` and `nodeId` from the URL (`searchParams.get('nodeType')`, `page.tsx:391` and `:1156`) and passes them unchanged to `KnowledgeHubApi.loadFolderData(nodeType, nodeId, filters)` (`api.ts:145`), which calls `GET /api/v1/knowledgeBase/knowledge-hub/nodes/{nodeType}/{nodeId}`. `nodeType` is the Knowledge Hub parent type: `app` (a collection), `recordGroup`, `folder` or `record`. Any other value, including `kb`, is refused with 400 (`knowledge_hub_router.py`). A `recordGroup` or `record` selection keeps its own type in the URL; it is not rewritten to `app`.
+An effect in `page.tsx` (around line 1156) reads `nodeType` and `nodeId` from the URL and calls `fetchTableData(nodeType, nodeId)`, which loads the node's contents with `KnowledgeHubApi.loadFolderData(nodeType, nodeId, filters)` (`api.ts:145`): `GET /api/v1/knowledgeBase/knowledge-hub/nodes/{nodeType}/{nodeId}`. `nodeType` is the Knowledge Hub parent type: `app` (a collection), `recordGroup`, `folder` or `record`. Any other value, including `kb`, is refused with 400 (`knowledge_hub_router.py`). A `recordGroup` or `record` selection keeps its own type in the URL; it is not rewritten to `app`.
 
-URLs are built with `buildNavUrl` and pushed with `pushKbUrl` / `replaceKbUrl` from `utils/nav.ts`, which keep the current filters and search.
+A second effect (around line 391) writes the current filters, sort and page back into the URL with `buildFilterUrl` and `replaceKbUrl`, keeping `nodeType` and `nodeId`. In `utils/nav.ts`, `buildNavUrl` builds a fresh `/knowledge-base` query from the parameters it is given (plus the all-records view flag) and does not carry other parameters over; `pushKbUrl` and `replaceKbUrl` update the address through the History API without a route fetch.
 
 ---
 
