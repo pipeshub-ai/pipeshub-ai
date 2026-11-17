@@ -140,14 +140,13 @@ class SandboxAlertRunner:
 
     async def _stronger_emailed_at(self, level: str) -> int | None:
         """When the critical level was last emailed, for a warning: a weaker
-        email never follows a stronger one within the cooldown."""
+        email never follows a stronger one within the cooldown. A store that
+        fails here fails the alert like any other store call, so it is tried
+        again next interval: claiming the warning without knowing would email
+        it, when the critical alert's own warning claim may have failed."""
         if level != "warning":
             return None
-        try:
-            return emailed_at_ms(await self._cooldown.read("critical"))
-        except Exception:
-            self._logger.debug("sandbox load alert: critical claim unreadable", exc_info=True)
-            return None
+        return emailed_at_ms(await self._cooldown.read("critical"))
 
     async def _release(self, claims: list[AlertClaim], level: str, alert_id: str) -> None:
         # A claim that failed (or timed out) may still have been written.
