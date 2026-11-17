@@ -348,11 +348,18 @@ export async function health(o: Options, fetchFn: typeof fetch = fetch): Promise
   return { code: healthy ? 0 : 1, body: { healthy, phase: st.body.phase, url: st.body.url, checks } };
 }
 
-/** `start --detach`: run the launcher in the background and return once it is ready (or failed). */
+/** `start --detach`: run the launcher in the background and return once it is ready (or failed, with its own error). */
 export async function startDetached(o: Options, emit: Emit, args: string[], selfCmd: string[]): Promise<number> {
   const { dataDir, lay } = resolve(o);
   mkdirSync(lay.logs, { recursive: true, mode: 0o700 });
-  const log = join(lay.logs, "launcher.log"), fd = openSync(log, "w", 0o600);
+  const holder = (() => { try { return Number(readFileSync(lockPath(dataDir), "utf8").trim()); } catch { return 0; } })();
+  if (holder && alive(holder)) {
+    emit({ event: "error", code: "already_running", message: `already running (pid ${holder})`, phase: readState(dataDir)?.phase ?? "starting" });
+    return 1;
+  }
+  // Appended, not truncated: a second start racing this one must not wipe its log; this run's lines start at `from`.
+  const log = join(lay.logs, "launcher.log"), fd = openSync(log, "a", 0o600);
+  const from = statSync(log).size;
   const p = spawn(selfCmd[0]!, [...selfCmd.slice(1), "start", "--json", ...args], { detached: true, stdio: ["ignore", fd, fd] });
   p.unref(); closeSync(fd);
   const until = Date.now() + ((o.healthTimeoutS ?? 300) + 120) * 1000;
@@ -363,6 +370,10 @@ export async function startDetached(o: Options, emit: Emit, args: string[], self
     if (exited) break;
     await sleep(300);
   }
-  emit({ event: "error", code: "not_ready", message: `did not become ready; see ${log}`, log: tail(log, 2000) });
+  const mine = (() => { try { return readFileSync(log, "utf8").slice(from); } catch { return ""; } })();
+  // The background launcher's own error (already_running, start_failed, ...) says more than "not ready".
+  const own = mine.split("\n").reverse().map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+    .find((e) => e?.event === "error");
+  emit(own ?? { event: "error", code: "not_ready", message: `did not become ready; see ${log}`, log: mine.slice(-2000) });
   return 1;
 }
