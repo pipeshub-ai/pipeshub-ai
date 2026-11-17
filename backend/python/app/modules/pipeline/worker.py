@@ -54,8 +54,8 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
 )
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
-from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.services.messaging.precision_flip import precision_flip_in
+from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.utils.indexing_timing import ADMITTED, begin_record, end_record
 
 # Called once a stage's headline is final on the records it updated, e.g. to release the
