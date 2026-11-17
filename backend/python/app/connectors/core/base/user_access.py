@@ -67,9 +67,10 @@ def removals_prefix(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/removed/"
 
 
-def removal_path(connector_id: str, user_id: str) -> str:
-    """When the user's connection was last removed: a write of a connection made before then undoes itself."""
-    return f"{removals_prefix(connector_id)}{user_id}"
+def removal_path(connector_id: str, user_id: str, removed_at: int) -> str:
+    """One removal of the user's connection; a write of a connection made before the latest undoes itself.
+    One key per removal, never overwritten, so the latest cannot be replaced by an older one."""
+    return f"{removals_prefix(connector_id)}{user_id}/{removed_at}"
 
 
 def members_path(connector_id: str) -> str:
@@ -178,10 +179,10 @@ async def get_connection(
 
 
 async def _removed_at(config_service: ConfigurationService, connector_id: str, user_id: str) -> int:
-    marker = await config_service.get_config(
-        removal_path(connector_id, user_id), use_cache=False, keep_in_cache=False, raise_on_error=True
-    )
-    return int(marker.get("removedAt") or 0) if isinstance(marker, dict) else 0
+    """The user's latest removal (epoch ms), 0 when there was none."""
+    prefix = f"{removals_prefix(connector_id)}{user_id}/"
+    times = [key.removeprefix(prefix) for key in await config_service.list_keys_in_directory(prefix)]
+    return max((int(t) for t in times if t.isdigit()), default=0)
 
 
 def _removed(connection: UserConnection, removed_at: int) -> bool:
@@ -214,7 +215,7 @@ async def save_connection(
 async def mark_removed(config_service: ConfigurationService, connector_id: str, user_id: str, now_ms: int) -> None:
     """Record a removal before deleting the connection (see ``save_connection``)."""
     if not await config_service.set_config(
-        removal_path(connector_id, user_id), {"removedAt": now_ms}, keep_in_cache=False
+        removal_path(connector_id, user_id, now_ms), {"removedAt": now_ms}, keep_in_cache=False
     ):
         raise RuntimeError(f"Could not record the removal of user {user_id} from {connector_id}")
 
@@ -235,7 +236,7 @@ async def list_connections(config_service: ConfigurationService, connector_id: s
     # Removals listed after the connections were read: a stale write needs its removal marked before it,
     # so every marker that can make a connection read above stale is in this list.
     removed_users = {
-        key.removeprefix(removals_prefix(connector_id))
+        key.removeprefix(removals_prefix(connector_id)).split("/", 1)[0]
         for key in await config_service.list_keys_in_directory(removals_prefix(connector_id))
     }
     return [

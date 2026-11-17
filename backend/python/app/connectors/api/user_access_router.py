@@ -328,13 +328,20 @@ async def start_my_sign_in(
 ) -> dict[str, Any]:
     """The URL that signs the caller in with Notion through the connector's OAuth app. The sign-in
     returns to the connector OAuth callback page, which completes it (``complete_user_sign_in``)."""
+    started_at = get_epoch_timestamp_in_ms()
     await _per_user_connector(request, connector_id, graph_provider)
     user = await _caller(request, graph_provider)
-    return {"authorizationUrl": await _authorization_url(request, connector_id, str(user.get("userId")))}
+    return {"authorizationUrl": await _authorization_url(
+        request, connector_id, str(user.get("userId")), started_at=started_at)}
 
 
-async def _authorization_url(request: Request, connector_id: str, user_id: str, *, link_user: bool = False) -> str:
-    """Where to send ``user_id`` to sign in with Notion. Its state is kept for that user only."""
+async def _authorization_url(
+    request: Request, connector_id: str, user_id: str, *, started_at: int, link_user: bool = False
+) -> str:
+    """Where to send ``user_id`` to sign in with Notion. Its state is kept for that user only.
+
+    ``started_at`` is when the request arrived, before anything was checked: a removal any time after is
+    newer, so it undoes whatever this sign-in saves (save_connection), in any process."""
     config_service = _config_service(request)
     try:
         oauth_config = await user_oauth_config(
@@ -343,8 +350,6 @@ async def _authorization_url(request: Request, connector_id: str, user_id: str, 
         )
     except NotionAccessError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from None
-    # Taken before the session exists: a removal while this runs is newer, so it undoes what the sign-in saves.
-    started_at = get_epoch_timestamp_in_ms()
     provider = OAuthProvider(oauth_config, config_service, sign_in_path(connector_id, user_id))
     try:
         # owner=user: the token acts for this person, on the pages they pick (a Notion public connection).
@@ -835,10 +840,12 @@ async def connect_link_authorize(
     token: str = Body(..., embed=True, min_length=1, max_length=_MAX_LINK_TOKEN_LENGTH),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict[str, Any]:
+    started_at = get_epoch_timestamp_in_ms()  # before the link is checked: a removal after that wins
     link = await _open_link(request, graph_provider, token)
     with _as_user(link.org_id, link.user_id):
         await _link_target(request, graph_provider, link)
-        url = await _authorization_url(request, link.connector_id, link.user_id, link_user=True)
+        url = await _authorization_url(
+            request, link.connector_id, link.user_id, started_at=started_at, link_user=True)
     return {"authorizationUrl": url}
 
 

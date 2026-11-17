@@ -29,6 +29,7 @@ from app.connectors.core.base.user_access_invites import (
     ConnectRequest,
     send_connect_request,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _DAY = 24 * 60 * 60 * 1000
 _MOD = "app.connectors.sources.notion.connector"
@@ -193,8 +194,17 @@ class TestRemovalAcrossProcesses:
                 patch.object(routes, "OAuthProvider", return_value=provider), \
                 patch.object(routes, "user_oauth_config", new=AsyncMock()), \
                 patch.object(routes, "current_org_id", return_value="org-1"):
-            await routes._authorization_url(MagicMock(), "c1", "u1")
-        assert store.data["/services/connectors/c1/sign-in/u1"]["startedAt"] < 10**15
+            await routes._authorization_url(MagicMock(), "c1", "u1", started_at=5)
+        assert store.data["/services/connectors/c1/sign-in/u1"]["startedAt"] == 5 < 10**15
+
+    async def test_a_later_removal_is_never_replaced_by_an_earlier_one(self) -> None:
+        store = _Store()
+        await user_access.mark_removed(store, "c1", "u1", now_ms=300)
+        await user_access.mark_removed(store, "c1", "u1", now_ms=200)  # a removal that paused, landing late
+        made_between = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",
+                                                  source_email="a@acme.com", workspace_id="ws", connected_at=250)
+        assert await user_access.save_connection(store, "c1", made_between) is False
+        assert await user_access.get_connection(store, "c1", "u1") is None
 
     async def test_a_stale_connection_a_crash_left_behind_is_not_read(self) -> None:
         store = _Store()
@@ -640,6 +650,29 @@ class TestConnectLinkRoutes:
         decoded = json.loads(base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)))
         assert decoded == {"state": "s1", "connector_id": "c1", "userAccess": True,
                            "linkUser": "u1", "linkOrg": "org-1"}
+
+    async def test_a_link_sign_in_dates_from_before_its_link_was_checked(self) -> None:
+        routes = _routes()
+        store = _Store()
+        token = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
+        provider = MagicMock()
+
+        async def start_authorization(**_kw: object) -> str:
+            store.data["/services/connectors/c1/sign-in/u1"] = {"oauth": {"state": "s1"}}
+            return "https://api.notion.com/v1/oauth/authorize?state=s1"
+
+        async def slow_config(*_a: object, **_kw: object) -> MagicMock:
+            # The user is removed while this request waits; the link is gone by the time it resumes.
+            await user_access.mark_removed(store, "c1", "u1", now_ms=get_epoch_timestamp_in_ms() + 1)
+            return MagicMock()
+
+        provider.start_authorization = start_authorization
+        provider.close = AsyncMock()
+        with patch.object(routes, "user_oauth_config", new=slow_config),                 patch.object(routes, "OAuthProvider", return_value=provider):
+            await self._call(routes.connect_link_authorize, store, MagicMock(), token=token)
+        started = store.data["/services/connectors/c1/sign-in/u1"]["startedAt"]
+        # What the callback would save dates from then, so the removal undoes it.
+        assert started < await user_access._removed_at(store, "c1", "u1")
 
     def _state(self, **over) -> str:
         data = {"state": "s1", "connector_id": "c1", "userAccess": True, "linkUser": "u1", "linkOrg": "org-1", **over}
