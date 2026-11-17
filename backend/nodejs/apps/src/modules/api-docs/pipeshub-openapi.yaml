@@ -30267,6 +30267,9 @@ paths:
         Deleted users are always excluded. Any authenticated member may call it; requires
         `user:read` OAuth scope. Query parameters not listed here are ignored (a former
         `blocked` parameter, for example, no longer changes the response).
+
+        The `email` field is omitted from every user when the `HIDE_EMAIL` environment variable
+        is set to `true`, as it is from `GET /users/{id}`.
       operationId: getAllUsers
       security:
         - bearerAuth: []
@@ -32419,6 +32422,9 @@ paths:
         check on the route itself, only on that flag. Not paginated, and
         `includeServiceAccounts` is the only query parameter it reads; any
         other is ignored.
+
+        The `email` field is omitted from every user when the `HIDE_EMAIL` environment variable
+        is set to `true`, as it is from `GET /users/{id}`.
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
@@ -32527,6 +32533,9 @@ paths:
         is — nothing says it was there. Its `userId` is what binds an agent to
         it, so resolving one here would be a way around the admin-only service
         accounts screen.
+
+        The `email` field is omitted from every user when the `HIDE_EMAIL` environment variable
+        is set to `true`, as it is from `GET /users/{id}`.
       operationId: getUsersByIds
       security:
         - bearerAuth: []

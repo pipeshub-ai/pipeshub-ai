@@ -113,6 +113,16 @@ import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.
 // tokens it issues, the sign-in checks, and the first-login update.
 export const USER_LOOKUP_FIELDS = '_id orgId email fullName role hasLoggedIn';
 
+/**
+ * With HIDE_EMAIL=true no read of other users carries their email: the single read, the
+ * directory list and the bulk lookup alike, or the list would give away what the single read hides.
+ */
+export function withoutHiddenEmail<T extends object>(user: T): T {
+  if (process.env.HIDE_EMAIL !== 'true') return user;
+  const { email: _email, ...rest } = user as T & { email?: unknown };
+  return rest as T;
+}
+
 export const USER_LOOKUP_EMAIL_MISMATCH_MESSAGE =
   'This lookup token was issued for a different email address.';
 
@@ -375,7 +385,7 @@ export class UserController {
     });
 
     res.status(200).json({
-      users: enrichedUsers,
+      users: enrichedUsers.map(withoutHiddenEmail),
       pagination: buildPaginationMetadata(totalCount, page, limit),
     });
   }
@@ -404,7 +414,7 @@ export class UserController {
       includeServiceAccounts: maySeeServiceAccounts,
     });
 
-    res.status(200).json(users);
+    res.status(200).json(users.map(withoutHiddenEmail));
   }
 
   async getUserById(
@@ -415,9 +425,6 @@ export class UserController {
     const userId = req.params.id;
     const orgId = req.user?.orgId;
     try {
-      // Check if email should be included based on environment variable
-      const hideEmail = process.env.HIDE_EMAIL === 'true';
-
       const user = await getUserRepository().getLive(
         orgId as string,
         userId as string,
@@ -443,11 +450,7 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
-      if (hideEmail) {
-        delete (user as any)?.email;
-      }
-
-      res.json(user);
+      res.json(withoutHiddenEmail(user));
     } catch (error) {
       next(error);
     }
@@ -575,10 +578,9 @@ export class UserController {
         }
       }
 
-      const enrichedUsers = users.map((u) => ({
-        ...u,
-        profilePicture: dpMap.get(u._id),
-      }));
+      const enrichedUsers = users.map((u) =>
+        withoutHiddenEmail({ ...u, profilePicture: dpMap.get(u._id) }),
+      );
 
       res.status(200).json(enrichedUsers);
     } catch (error) {

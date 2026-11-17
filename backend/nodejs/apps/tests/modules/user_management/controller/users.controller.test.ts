@@ -218,6 +218,23 @@ describe('UserController', () => {
   }
 
 
+    it('leaves emails out of the directory list when HIDE_EMAIL is true', async () => {
+      process.env.HIDE_EMAIL = 'true';
+      try {
+        stubUsersFind([{ _id: '507f1f77bcf86cd799439011', fullName: 'Ada', email: 'ada@test.com' }]);
+        stubUsersCount(1);
+        stubUserEnrichment();
+
+        await controller.getAllUsers(req, res);
+
+        const [user] = res.json.firstCall.args[0].users;
+        expect(user.name).to.equal('Ada');
+        expect(user).to.not.have.property('email');
+      } finally {
+        delete process.env.HIDE_EMAIL;
+      }
+    });
+
     it('should return all non-deleted users', async () => {
       sinon.stub(Users, 'find').returns({
         sort: sinon.stub().returns({
@@ -3619,6 +3636,50 @@ describe('UserController', () => {
       }
 
       delete process.env.HIDE_EMAIL;
+    });
+  });
+
+  // The single read hid the email while the list and the bulk lookup returned it to the same caller.
+  describe('HIDE_EMAIL reaches every read of other users', () => {
+    afterEach(() => {
+      delete process.env.HIDE_EMAIL;
+    });
+
+    it('leaves emails out of the users-with-groups listing', async () => {
+      process.env.HIDE_EMAIL = 'true';
+      sinon.stub(Users, 'aggregate').resolves([{ _id: 'u1', fullName: 'Ada', email: 'ada@test.com', groups: [] }]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const [user] = res.json.firstCall.args[0];
+      expect(user.fullName).to.equal('Ada');
+      expect(user).to.not.have.property('email');
+    });
+
+    it('leaves emails out of the by-ids lookup', async () => {
+      process.env.HIDE_EMAIL = 'true';
+      const id = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [id] };
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([{ _id: id, fullName: 'Ada', email: 'ada@test.com' }]) }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+
+      await controller.getUsersByIds(req, res, next);
+
+      const [user] = res.json.firstCall.args[0];
+      expect(user.fullName).to.equal('Ada');
+      expect(user).to.not.have.property('email');
+    });
+
+    it('keeps emails when HIDE_EMAIL is not set', async () => {
+      sinon.stub(Users, 'aggregate').resolves([{ _id: 'u1', fullName: 'Ada', email: 'ada@test.com', groups: [] }]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      expect(res.json.firstCall.args[0][0].email).to.equal('ada@test.com');
     });
   });
 
