@@ -26,6 +26,8 @@ export interface LocalModeDeps {
   getWindow: () => BrowserWindow | null;
   getIcon: () => NativeImage | undefined;
   getCredentials: () => DesktopCredentialsStore | null;
+  /** Drop the token held for the local server and close the socket to it: the server is gone and its port is free. */
+  forgetCredentials?: () => void;
   /** Re-opens the main window (tray "Open"). */
   showWindow: () => void;
   env?: NodeJS.ProcessEnv;
@@ -67,7 +69,30 @@ export class LocalMode {
           extraEnv: resolved.bundleDir ? { PIPESHUB_BUNDLE: resolved.bundleDir, PYTHONDONTWRITEBYTECODE: '1' } : {},
         })
       : null;
-    this.launcher?.on('status', () => this.emit());
+    this.launcher?.on('status', (status: { state?: string; url?: string }) => {
+      this.forgetTokenWhenServerGone(status);
+      this.emit();
+    });
+  }
+
+  private lastRunningOrigin: string | null = null;
+
+  /**
+   * Once this launch's server stops or crashes its port is free, and the socket would keep reconnecting there with the
+   * token. Main forgets a token held for that origin; the renderer pushes it again for the server's next URL.
+   */
+  private forgetTokenWhenServerGone(status: { state?: string; url?: string }): void {
+    const origin = (u: string | null | undefined): string | null => {
+      try { return u ? new URL(u).origin : null; } catch { return null; }
+    };
+    if (status.state === 'running') {
+      this.lastRunningOrigin = origin(status.url);
+      return;
+    }
+    if (this.lastRunningOrigin && origin(this.deps.getCredentials()?.apiBaseUrl) === this.lastRunningOrigin) {
+      this.deps.forgetCredentials?.();
+    }
+    this.lastRunningOrigin = null;
   }
 
   /** Pushes the whole state; the renderer replaces its copy. */

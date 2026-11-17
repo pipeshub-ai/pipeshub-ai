@@ -172,7 +172,11 @@ export function startElectronDesktopTokenBridge(): void {
     });
   };
   useAuthStore.subscribe(push);
-  onApiBaseUrlChange(push);
+  onApiBaseUrlChange((url) => {
+    // The local server went away and main forgets its token then; when it is back, even on the same port, push again.
+    if (!url) lastPushed = null;
+    else push();
+  });
 }
 
 /**

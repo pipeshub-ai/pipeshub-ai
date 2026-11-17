@@ -72,7 +72,7 @@ let mode: ApiBaseUrlMode = { kind: 'unknown' };
 let waiters: (() => void)[] = [];
 const urlListeners = new Set<(url: string) => void>();
 
-/** Called with the new base URL whenever local mode's URL changes (a restarted launcher picks a new port). */
+/** Called whenever local mode's URL changes: '' when this launch's server goes away, then its URL when it is back. */
 export function onApiBaseUrlChange(listener: (url: string) => void): () => void {
   urlListeners.add(listener);
   return () => urlListeners.delete(listener);
@@ -90,7 +90,8 @@ export function setLocalModeApiBaseUrl(url: string | null): void {
   const before = getElectronApiBaseUrl();
   mode = { kind: 'local', url };
   settle();
-  if (url && url !== before) urlListeners.forEach((listener) => listener(url));
+  const now = url ?? '';
+  if (now !== before) urlListeners.forEach((listener) => listener(now));
 }
 
 /** Connecting to a server: its saved URL applies. */

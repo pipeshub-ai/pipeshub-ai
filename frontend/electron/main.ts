@@ -291,6 +291,10 @@ app.whenReady().then(() => {
     getWindow: () => mainWindow,
     getIcon: getAppIcon,
     getCredentials: () => desktopCredentials,
+    forgetCredentials: () => {
+      desktopSocket?.disconnect();
+      desktopCredentials?.clear();
+    },
     showWindow: () => {
       if (!mainWindow || mainWindow.isDestroyed()) createWindow();
       else mainWindow.show();
