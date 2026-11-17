@@ -21434,9 +21434,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The inheritance probe is spelled once: each spelling costs the planner
         # an Expand(Into) over INHERIT_PERMISSIONS. With R = accessRule, I = the
         # probe, G = the grant test:
-        #   (I AND (R IN ['STRICT','OPEN'] OR (R IN ['RESTRICTED','PARENT_AND_GRANT'] AND G)))
-        #   OR (R IN ['STRICT','OPEN'] AND G)
-        # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; any other value: false. Keep
+        #   (I AND (R IN ['STRICT','STRICT_OR_GRANT','OPEN'] OR (R IN ['RESTRICTED','PARENT_AND_GRANT'] AND G)))
+        #   OR (R IN ['STRICT','STRICT_OR_GRANT','OPEN'] AND G)
+        # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/STRICT_OR_GRANT/OPEN: I OR G; any other value: false. Keep
         # the three branches: a shorter form admits an unknown accessRule value.
         # `hideChildren` is navigation only: access checks drop it.
         hide = f"\n              AND NOT {self._kh_hides(parent, state=state)}" if navigation else ""
@@ -21444,22 +21444,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # When the grant is tested from the node (`_kh_grants_by_probe`) it is
             # the costly term (every PERMISSION edge into the node), so the grant
             # is spelled once here and inheritance twice. With I, G, R as above:
-            #   (I AND R IN ['STRICT','OPEN']) OR (G AND ((I AND R IN ['RESTRICTED','PARENT_AND_GRANT']) OR R IN ['STRICT','OPEN']))
-            # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; any other value: false.
+            #   (I AND R IN ['STRICT','STRICT_OR_GRANT','OPEN']) OR (G AND ((I AND R IN ['RESTRICTED','PARENT_AND_GRANT']) OR R IN ['STRICT','STRICT_OR_GRANT','OPEN']))
+            # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/STRICT_OR_GRANT/OPEN: I OR G; any other value: false.
             rule = f"coalesce({child}.accessRule, 'OPEN')"
             inherits = self._kh_inherits(child, parent, state=state)
             return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
-                OR ({inherits} AND {rule} IN ['STRICT', 'OPEN'])
+                OR ({inherits} AND {rule} IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN'])
                 OR ({child}.id IN $grantedIds
-                    AND (({inherits} AND {rule} IN ['RESTRICTED', 'PARENT_AND_GRANT']) OR {rule} IN ['STRICT', 'OPEN'])))"""
+                    AND (({inherits} AND {rule} IN ['RESTRICTED', 'PARENT_AND_GRANT']) OR {rule} IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN'])))"""
         return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({self._kh_inherits(child, parent, state=state)}
-                    AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
+                    AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN']
                       OR (coalesce({child}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT']
                           AND {child}.id IN $grantedIds)))
-                OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
+                OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN']
                     AND {child}.id IN $grantedIds))"""
 
     def _kh_v3_seed_hop(self, c: str, p: str, *, state: bool) -> str:
@@ -21514,6 +21514,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         member_of_open_app = f"({opens} AND {c}:Record AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
         walk_seeded = f"(NOT ({declared_p} OR ({p}:RecordGroup AND {p}.id IN $declaredScope)) OR {seed})"
         below_member_seeded = f"(NOT {member_p} OR {seed})"
+        # A STRICT_OR_GRANT parent the walk from the App does not reach is read by its own grant alone, which opens nothing below it; and a
+        # STRICT_OR_GRANT child is read by its own grant wherever it hangs.
+        below_own_grant = f"(coalesce({p}.accessRule, 'OPEN') <> 'STRICT_OR_GRANT' OR {seed})"
+        own_grant = (f"(NOT {deleted(c, state=state)} AND coalesce({c}.accessRule, 'OPEN') = 'STRICT_OR_GRANT'"
+                     f" AND {c}.id IN $grantedIds)")
         # A child listed below a seed or in a declared scope opens only where no group that hides its children lies above it, as a browse of it
         # reads its seed and admitted arms (`_kh_v3_hidden_elsewhere`; one the walk from the App reaches is listed by the parent the walk passes).
         # A child listed by an arm other than a hop of the walk from the App (an App member, below a seed, the declared scope) opens only where no
@@ -21526,7 +21531,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               OR ((kh_hp
                 OR (NOT {from_app} AND NOT {member_of_open_app}
                   AND NOT {hides(p, state=state)}
-                  AND {self._kh_v3_seed_hop(c, p, state=state)} AND {walk_seeded} AND {below_member_seeded})
+                  AND {self._kh_v3_seed_hop(c, p, state=state)} AND {walk_seeded} AND {below_member_seeded} AND {below_own_grant})
+                OR (NOT {hides(p, state=state)} AND {own_grant})
                 OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
@@ -21622,11 +21628,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND NOT coalesce({dg}.isDeleted, false)
                   AND ({dg}.id IN $grantedIds OR {from_app(dg, tag + "d")}) }}"""
 
-        def seed(v: str) -> str:
+        def seed(v: str, rule: str = "= 'OPEN'") -> str:
             return (
                 f"(({v}:Record OR {v}:RecordGroup) AND {v}.connectorId = app.id"
                 f" AND NOT coalesce({v}.isDeleted, false)"
-                f" AND coalesce({v}.accessRule, 'OPEN') = 'OPEN'"
+                f" AND coalesce({v}.accessRule, 'OPEN') {rule}"
                 f" AND {v}.id IN $grantedIds)"
             )
 
@@ -21668,7 +21674,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                OR (appOpensEverything AND t:Record AND EXISTS {{ (t)-[:BELONGS_TO]->(app) }})
                OR {in_declared_scope('t', 't')}
                OR {from_app('t', 't')}
-               OR {seed('t')}
+               // a seed, or a STRICT_OR_GRANT node read by its own grant (it is no seed: nothing below it is read through it)
+               OR {seed('t', "IN ['OPEN', 'STRICT_OR_GRANT']")}
                OR {below_seed}
             RETURN t AS ok
             UNION
@@ -22147,7 +22154,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (sd:Record|RecordGroup)
             WHERE sd.connectorId = app.id
               AND NOT {deleted("sd", state=state)}
-              AND coalesce(sd.accessRule, 'OPEN') = 'OPEN'
+              // A STRICT_OR_GRANT node is listed by its own grant, but is no seed: the walk below starts at OPEN ones only.
+              AND coalesce(sd.accessRule, 'OPEN') IN ['OPEN', 'STRICT_OR_GRANT']
               AND NOT sd IN regionA
               AND NOT sd IN belowDeclared
               AND NOT sd IN declaredScope
@@ -22159,6 +22167,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         CALL (seeds) {{
             UNWIND seeds AS sc
+            WITH sc WHERE coalesce(sc.accessRule, 'OPEN') = 'OPEN'
             MATCH (sc)
                   ((pc)-[kh_rc:NODE_RELATION]->(cc)
                    WHERE kh_rc.relationshipType {hierarchy}
@@ -22936,10 +22945,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     f" AND EXISTS {{ MATCH ({v})-[:BELONGS_TO]->({mg})"
                     f" WHERE {mg} IN declaredScope AND NOT {hides(mg, state=state)} }})")
 
-        def seed(v: str, tag: str) -> str:
+        def seed(v: str, tag: str, rule: str = "= 'OPEN'") -> str:
             return (f"(({v}:Record OR {v}:RecordGroup) AND {v}.connectorId = app.id"
                     f" AND NOT {deleted(v, state=state)}"
-                    f" AND coalesce({v}.accessRule, 'OPEN') = 'OPEN'"
+                    f" AND coalesce({v}.accessRule, 'OPEN') {rule}"
                     f" AND {v}.id IN $grantedIds"
                     f" AND NOT {v} IN declaredScope"
                     f" AND NOT {below_declared(v, tag)}"
@@ -22986,7 +22995,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                OR {from_app("kh_n", "a")}
                OR kh_n IN declaredScope
                OR {below_declared("kh_n", "b")}
-               OR {seed("kh_n", "c")}
+               // a seed, or a STRICT_OR_GRANT node read by its own grant, which opens nothing below it
+               OR {seed("kh_n", "c", "IN ['OPEN', 'STRICT_OR_GRANT']")}
                OR {below_seed("kh_n", "e")})
             RETURN collect(DISTINCT kh_n) AS allNodes
         }}
