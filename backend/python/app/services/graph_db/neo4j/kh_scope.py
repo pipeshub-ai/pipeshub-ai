@@ -7,16 +7,16 @@ request, the open scopes come from the scope tree and the user's grants, and the
 
 What the walk does, per hop from parent p to child c (``_kh_v3_granted_hop`` plus the flatten's declared stop):
 - dead:  c deleted, p hides its children, or p is a RECORD_GROUP_LEVEL group of this App;
-- free:  c inherits from p and its rule is STRICT/OPEN;
-- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting;
+- free:  c inherits from p and its rule is STRICT/STRICT_OR_GRANT/OPEN;
+- gate:  c is STRICT/STRICT_OR_GRANT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting;
 - block: anything else.
 The walk stops after ``MAX_DEPTH`` hops from the App, so a node deeper than that is never in a scope.
 
 A connector is listed this way only when the precomputation says exactly what the walk would: a RECORD_LEVEL App,
 no RECORD_GROUP_LEVEL group, no node that hides its children, no node with several parents, and no child that
 belongs to another connector. The seed arms (granted OPEN nodes the walk does not reach, and the OPEN nodes below
-them, or PARENT_AND_GRANT ones that inherit and are granted) depend on the user's grants and stay a walk per
-request. Any other case, a stale stamp, or any error falls back to the full query, and the reason is returned so
+them, or PARENT_AND_GRANT ones that inherit and are granted) and the own-grant arm (granted STRICT_OR_GRANT nodes the walk
+does not reach, listed alone) depend on the user's grants and stay a walk per request. Any other case, a stale stamp, or any error falls back to the full query, and the reason is returned so
 the caller can log it.
 
 Freshness: a sync marks its connector stale before it writes and re-stamps when it ends. The stamp sets ``fresh``
@@ -43,7 +43,7 @@ BATCH = 5000
 # The full walk's hop limit (``{1,50}`` in the flatten): a node deeper than this is only listed as a seed.
 MAX_DEPTH = 50
 # Bumped whenever what a stamp writes changes meaning; a meta of another version is restamped, never read.
-STAMP_VERSION = 3
+STAMP_VERSION = 4
 
 # The listing's sort fields and the stored property each reads. Dates are not here: the listing shows a
 # connector node's source date, which no stamped property holds, so a date sort is always the full query's.
@@ -107,7 +107,7 @@ CALL () {
     UNWIND $seeds AS gid MATCH (sd:RecordGroup {id: gid}) RETURN sd
 }
 WITH sd
-WHERE sd.connectorId = $c AND NOT sd:KhDeleted AND coalesce(sd.accessRule, 'OPEN') = 'OPEN'
+WHERE sd.connectorId = $c AND NOT sd:KhDeleted AND coalesce(sd.accessRule, 'OPEN') IN ['OPEN', 'STRICT_OR_GRANT']
   AND (sd.khScope IS NULL OR NOT sd.khScope IN $open)
   AND NOT EXISTS { MATCH above = (hid:RecordGroup)-[:NODE_RELATION*1..20]->(sd)
                    WHERE coalesce(hid.hideChildren, false)
@@ -118,6 +118,8 @@ OPTIONAL MATCH (sd) ((pc)-[h:NODE_RELATION]->(cc)
              OR (coalesce(cc.accessRule, 'OPEN') = 'PARENT_AND_GRANT' AND cc.id IN $granted))
         AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) }
              OR (coalesce(cc.accessRule, 'OPEN') = 'OPEN' AND cc.id IN $granted))){1,50} (nc)
+      // a STRICT_OR_GRANT node is listed by its own grant, and nothing below it is read through it
+      WHERE coalesce(sd.accessRule, 'OPEN') = 'OPEN'
 WITH collect(DISTINCT sd) + collect(DISTINCT nc) AS xs
 UNWIND xs AS x
 WITH DISTINCT x
@@ -320,9 +322,9 @@ def _classify(c: tuple, p: tuple) -> str:
     if p[K] == "RecordGroup" and p[PM] == "RECORD_GROUP_LEVEL":
         return "dead"
     inherits, rule = c[INH], c[RULE]
-    if inherits and rule in ("STRICT", "OPEN"):
+    if inherits and rule in ("STRICT", "STRICT_OR_GRANT", "OPEN"):
         return "free"
-    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
+    if (not inherits and rule in ("STRICT", "STRICT_OR_GRANT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
         return "gate"
     return "block"
 
