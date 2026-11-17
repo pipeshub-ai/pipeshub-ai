@@ -17959,7 +17959,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR row IN found
                     RETURN {{
                         key: row.r._key,
-                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now, firstQueuedAt: @now, indexingAttempts: 0 }}, row.fields),
+                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now, firstQueuedAt: (IS_NUMBER(row.fields.restoredAtTimestamp) ? MAX([@now, row.fields.restoredAtTimestamp + 1]) : @now), indexingAttempts: 0 }}, row.fields),
                         restored: true
                     }}
             ) : []

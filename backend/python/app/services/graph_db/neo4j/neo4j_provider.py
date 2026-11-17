@@ -15642,7 +15642,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH found
             UNWIND found AS row
             WITH row.r AS r, row.fields AS fields
-            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now, r.firstQueuedAt = $now, r.indexingAttempts = 0
+            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now, r.firstQueuedAt = CASE WHEN fields.restoredAtTimestamp >= $now THEN fields.restoredAtTimestamp + 1 ELSE $now END, r.indexingAttempts = 0
             SET r += fields
             {_cypher_kh_node_state("r")}
             RETURN r.id AS id

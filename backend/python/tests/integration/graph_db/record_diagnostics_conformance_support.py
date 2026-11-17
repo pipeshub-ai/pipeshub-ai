@@ -77,7 +77,7 @@ def generate(rng: random.Random, n: int) -> list[dict[str, Any]]:
         for name, pool in pools.items():
             value = rng.choice(pool)
             if name in ("firstQueuedAt", "queuedAtTimestamp", "failedAt", "lastIndexTimestamp", "restoredAtTimestamp") and value is not _ABSENT and is_number(value):
-                picked = rng.choice([NOW - 10**9, NOW - 10**6, NOW - 10**3, NOW - 7, NOW - 1, NOW - 10**6 + 1])
+                picked = rng.choice([NOW - 10**9, NOW - 10**6, NOW - 10**3, NOW - 7, NOW - 1, NOW - 10**6 + 1, NOW, NOW + 5])  # NOW and later: an outcome at or after the write's clock
                 value = float(picked) if isinstance(value, float) else picked  # a float stays a float: the number test must see both
             if value is not _ABSENT:
                 doc[name] = value

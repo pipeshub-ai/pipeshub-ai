@@ -95,6 +95,14 @@ def is_open(stored: Mapping[str, Any], *, outcome_stamps: tuple[str, ...] = _OUT
     return outcome is None or queued_at > outcome
 
 
+def _start(stored: Mapping[str, Any], now: int) -> Any:  # noqa: ANN401
+    """The time a new run starts at: ``now``, or one past the last outcome of the stored record when that is not earlier. The rule reads an
+    outcome at or after a run's start as the end of that run, so a start at the same time as an outcome (a clock that did not move, or a
+    ``now`` taken before a wait for the record's lock while another writer committed a later outcome) would open a run that is already closed."""
+    last = _last_outcome(stored)
+    return now if last is None or now > last else last + 1
+
+
 def _fill(stored: Mapping[str, Any], now: int) -> Any:  # noqa: ANN401
     if is_number(stored.get(FIRST_QUEUED_AT)):
         return stored[FIRST_QUEUED_AT]
@@ -126,7 +134,7 @@ def reference(
     if kind is WriteKind.QUEUE:
         if is_open(s):
             return {FIRST_QUEUED_AT: _fill(s, now)}
-        return {FIRST_QUEUED_AT: now, INDEXING_ATTEMPTS: 0}
+        return {FIRST_QUEUED_AT: _start(s, now), INDEXING_ATTEMPTS: 0}
     if kind is WriteKind.START:
         return {FIRST_QUEUED_AT: now, INDEXING_ATTEMPTS: 0}
     if kind is WriteKind.ATTEMPT_START:
@@ -137,7 +145,7 @@ def reference(
                 INDEXING_ATTEMPTS: (attempts if is_number(attempts) else 0) + 1,
             }
         else:
-            patch = {FIRST_QUEUED_AT: now, INDEXING_ATTEMPTS: 1}
+            patch = {FIRST_QUEUED_AT: _start(s, now), INDEXING_ATTEMPTS: 1}
         # a count belongs to the content it was taken from
         if content_rev is not None and s.get("contentRev") != content_rev:
             patch[PAGE_COUNT] = None
@@ -212,9 +220,11 @@ def aql_parts(
         f"LET _lo = MAX([{stamps}])\n"
         f"LET _open = {'true' if always_open else open_expr}\n"
         f"LET _fill = IS_NUMBER({d}.firstQueuedAt) ? {d}.firstQueuedAt "
-        f": (IS_NUMBER({d}.queuedAtTimestamp) ? {d}.queuedAtTimestamp : {now})"
+        f": (IS_NUMBER({d}.queuedAtTimestamp) ? {d}.queuedAtTimestamp : {now})\n"
+        # a new run starts after the last outcome (see ``_start``)
+        f"LET _start = ((_lo != null AND _lo >= {now}) ? _lo + 1 : {now})"
     )
-    queue = f"(_open ? {{ firstQueuedAt: _fill }} : {{ firstQueuedAt: {now}, indexingAttempts: 0 }})"
+    queue = f"(_open ? {{ firstQueuedAt: _fill }} : {{ firstQueuedAt: _start, indexingAttempts: 0 }})"
     if kind is WriteKind.QUEUE:
         return lets, queue
     if kind is WriteKind.START:
@@ -223,7 +233,7 @@ def aql_parts(
         patch = (
             # BIT_OR(.., 0): arithmetic on a stored value is a double, which the collection's "integer" type refuses
             f"(_open ? {{ firstQueuedAt: _fill, indexingAttempts: BIT_OR((IS_NUMBER({d}.indexingAttempts) ? {d}.indexingAttempts : 0) + 1, 0) }}"
-            f" : {{ firstQueuedAt: {now}, indexingAttempts: 1 }})"
+            f" : {{ firstQueuedAt: _start, indexingAttempts: 1 }})"
         )
         if rev is not None:
             patch = f"MERGE({patch}, (!IS_STRING({d}.contentRev) OR {d}.contentRev != {rev}) ? {{ pageCount: null }} : {{}})"
@@ -282,17 +292,19 @@ def cypher_parts(
     if always_open:
         open_ = "true"
     fill = f"CASE WHEN {_cnum('_fq')} THEN _fq WHEN {_cnum('_qa')} THEN _qa ELSE {now} END"
+    last = f"reduce(m = head({stamps}), x IN {stamps} | CASE WHEN x > m THEN x ELSE m END)"
+    start = f"CASE WHEN size({stamps}) > 0 AND {last} >= {now} THEN {last} + 1 ELSE {now} END"  # a new run starts after the last outcome
     attempts = f"coalesce(CASE WHEN {_cnum('_at')} THEN _at END, 0)"
     if kind is WriteKind.QUEUE:
         return with_clause, (
-            f"{{ firstQueuedAt: CASE WHEN {open_} THEN {fill} ELSE {now} END, "
+            f"{{ firstQueuedAt: CASE WHEN {open_} THEN {fill} ELSE {start} END, "
             f"indexingAttempts: CASE WHEN {open_} THEN _at ELSE 0 END }}"
         )
     if kind is WriteKind.START:
         return with_clause, f"{{ firstQueuedAt: {now}, indexingAttempts: 0 }}"
     if kind is WriteKind.ATTEMPT_START:
         patch = (
-            f"firstQueuedAt: CASE WHEN {open_} THEN {fill} ELSE {now} END, "
+            f"firstQueuedAt: CASE WHEN {open_} THEN {fill} ELSE {start} END, "
             f"indexingAttempts: CASE WHEN {open_} THEN {attempts} + 1 ELSE 1 END"
         )
         if rev is not None:
@@ -304,7 +316,7 @@ def cypher_parts(
         return with_clause, "{ firstQueuedAt: null }"
     if kind is WriteKind.STATUS_VAR:
         return with_clause, (
-            f"CASE WHEN {status} IN {_q(_QUEUE_STATUSES)} THEN {{ firstQueuedAt: CASE WHEN {open_} THEN {fill} ELSE {now} END, "
+            f"CASE WHEN {status} IN {_q(_QUEUE_STATUSES)} THEN {{ firstQueuedAt: CASE WHEN {open_} THEN {fill} ELSE {start} END, "
             f"indexingAttempts: CASE WHEN {open_} THEN _at ELSE 0 END }} "
             f"WHEN {status} = '{_FAILED}' THEN {{ failedAt: {now} }} ELSE {{}} END"
         )
@@ -349,15 +361,17 @@ def sql_patch(
         f"CASE WHEN {fq_num} THEN {d}->'firstQueuedAt' WHEN {_pnum(d, 'queuedAtTimestamp')} THEN {d}->'queuedAtTimestamp' "
         f"ELSE to_jsonb({now}) END"
     )
+    # a new run starts after the last outcome (see ``_start``)
+    start = f"CASE WHEN ({lo}) IS NOT NULL AND ({lo}) >= {now} THEN ({lo}) + 1 ELSE ({now})::numeric END"
     queue = (
         f"CASE WHEN {open_} THEN jsonb_build_object('firstQueuedAt', {fill}) "
-        f"ELSE jsonb_build_object('firstQueuedAt', {now}, 'indexingAttempts', 0) END"
+        f"ELSE jsonb_build_object('firstQueuedAt', {start}, 'indexingAttempts', 0) END"
     )
     if always_open:
         open_ = "true"
         queue = (
             f"CASE WHEN {open_} THEN jsonb_build_object('firstQueuedAt', {fill}) "
-            f"ELSE jsonb_build_object('firstQueuedAt', {now}, 'indexingAttempts', 0) END"
+            f"ELSE jsonb_build_object('firstQueuedAt', {start}, 'indexingAttempts', 0) END"
         )
     if kind is WriteKind.QUEUE:
         return queue
@@ -367,7 +381,7 @@ def sql_patch(
         attempts = f"coalesce(CASE WHEN {_pnum(d, 'indexingAttempts')} THEN ({d}->>'indexingAttempts')::numeric END, 0) + 1"
         patch = (
             f"CASE WHEN {open_} THEN jsonb_build_object('firstQueuedAt', {fill}, 'indexingAttempts', {attempts}) "
-            f"ELSE jsonb_build_object('firstQueuedAt', {now}, 'indexingAttempts', 1) END"
+            f"ELSE jsonb_build_object('firstQueuedAt', {start}, 'indexingAttempts', 1) END"
         )
         if rev is not None:
             patch += (

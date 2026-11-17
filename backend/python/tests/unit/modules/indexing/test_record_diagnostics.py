@@ -66,6 +66,16 @@ class TestTheRule:
         assert reference(stored, WriteKind.ATTEMPT_START, 100) == {"firstQueuedAt": 40, "indexingAttempts": 3}
         assert reference({"indexingStatus": OK}, WriteKind.ATTEMPT_START, 100) == {"firstQueuedAt": 100, "indexingAttempts": 1}
 
+    @pytest.mark.parametrize("outcome", [100, 250])
+    def test_a_new_run_starts_after_the_last_outcome_even_when_the_clock_is_not_later(self, outcome: int) -> None:
+        """An outcome at or after a run's start ends that run, so a start at the same time (or before a later outcome) is already closed."""
+        stored = {"indexingStatus": NS, "firstQueuedAt": 10, "lastIndexTimestamp": outcome}
+        for kind, extra in ((WriteKind.QUEUE, {"indexingAttempts": 0}), (WriteKind.ATTEMPT_START, {"indexingAttempts": 1})):
+            written = reference(stored, kind, 100)
+            assert written == {"firstQueuedAt": max(100, outcome + 1) if outcome >= 100 else 100, **extra}, kind
+            assert written["firstQueuedAt"] > outcome
+            assert is_open({**stored, "indexingStatus": Q, "firstQueuedAt": written["firstQueuedAt"]})
+
     def test_an_attempt_on_other_content_drops_the_stored_page_count(self) -> None:
         stored = {"indexingStatus": Q, "firstQueuedAt": 1, "contentRev": "a", "pageCount": 9}
         assert reference(stored, WriteKind.ATTEMPT_START, 100, content_rev="b")["pageCount"] is None

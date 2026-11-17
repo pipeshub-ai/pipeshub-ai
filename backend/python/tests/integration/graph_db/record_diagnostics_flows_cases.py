@@ -281,4 +281,58 @@ async def test_random_flows_match_the_oracle(store: Store) -> None:
     assert wrong == [], f"seed={seed}: {wrong[:3]}"
 
 
-TEST_NAMES = ['test_random_flows_match_the_oracle', 'test_a_write_conditional_on_the_snapshot_applies_to_an_unchanged_record', 'test_flow', 'test_f18_a_failure_handed_to_a_queued_duplicate_stamps_it', 'test_f19_a_save_that_read_a_closed_record_while_the_consumer_started_it_stays_within_the_race', 'test_f20_a_store_only_parse_now_run_writes_none_of_the_run_fields', 'test_a_record_from_before_the_fields_in_the_middle_of_a_run_continues_from_its_queue_time', 'test_f22_the_residual_of_a_failure_written_by_an_older_process_is_reported', 'test_a_rule_that_always_continues_fails_the_flow', 'test_a_rule_without_the_outcome_stamps_fails_f22', 'test_a_sink_only_end_that_keeps_the_start_fails_f9', 'test_a_restore_that_continues_the_stored_run_fails_f21', 'test_attempt_increment_in_statement', 'test_a_reset_between_the_read_and_the_write_starts_a_new_run_not_old_plus_one', 'test_a_read_modify_write_loses_increments']
+# ---- a new run starts after the last outcome ----------------------------------------------------------------------------------
+
+LATER_MS = 3_600_000  # an outcome (or a restore stamp) an hour after the statement's own clock
+
+
+async def test_a_requeue_after_a_later_outcome_starts_a_run_that_the_next_attempt_continues(store: Store) -> None:
+    """The caller's clock was read before a wait for the record's lock, and another writer committed a later outcome meanwhile: the new run
+    still starts after that outcome, so the attempt that follows continues it instead of reading it as closed."""
+    key = store.key("later")
+    later = flows.get_epoch_timestamp_in_ms() + LATER_MS
+    await store.put(key, indexingStatus="COMPLETED", firstQueuedAt=5, indexingAttempts=3, lastIndexTimestamp=later)
+
+    await store.p.update_indexing_status_for_record_ids([key], "QUEUED")
+    queued = await store.doc(key)
+    assert queued["firstQueuedAt"] > later and queued["indexingAttempts"] == 0
+
+    assert await store.p.write_attempt_start(key, {"indexingStatus": "IN_PROGRESS"})
+    started = await store.doc(key)
+    assert started["firstQueuedAt"] == queued["firstQueuedAt"] and started["indexingAttempts"] == 1
+
+
+async def test_an_attempt_start_after_a_later_outcome_starts_a_run_after_it(store: Store) -> None:
+    key = store.key("later")
+    later = flows.get_epoch_timestamp_in_ms() + LATER_MS
+    await store.put(key, indexingStatus="QUEUED", firstQueuedAt=5, indexingAttempts=4, lastIndexTimestamp=later)
+
+    assert await store.p.write_attempt_start(key, {"indexingStatus": "IN_PROGRESS"})
+    started = await store.doc(key)
+    assert started["firstQueuedAt"] > later and started["indexingAttempts"] == 1
+
+
+async def test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_the_next_attempt_continues(store: Store) -> None:
+    """The restore writes ``restoredAtTimestamp`` from the caller's clock; a run that starts at the same time would read as ended by it."""
+    key = store.key("restored")
+    await store.put(key, indexingStatus="COMPLETED", firstQueuedAt=5, indexingAttempts=2)
+    batch = "b-later"
+    await store.p.update_node(key, RECORDS, {"isDeleted": True, "deleteBatchId": batch})
+    later = flows.get_epoch_timestamp_in_ms() + LATER_MS
+
+    restored = await store.p.restore_records(
+        [{"id": key, "set": {"indexingStatus": "NOT_STARTED", "queuedAtTimestamp": later, "restoredAtTimestamp": later}}], batch
+    )
+    assert restored == [key]
+    after = await store.doc(key)
+    assert after["firstQueuedAt"] > later
+
+    assert await store.p.write_attempt_start(key, {"indexingStatus": "IN_PROGRESS"})
+    started = await store.doc(key)
+    assert started["firstQueuedAt"] == after["firstQueuedAt"] and started["indexingAttempts"] == 1
+
+
+TEST_NAMES = ['test_random_flows_match_the_oracle', 'test_a_write_conditional_on_the_snapshot_applies_to_an_unchanged_record', 'test_flow', 'test_f18_a_failure_handed_to_a_queued_duplicate_stamps_it', 'test_f19_a_save_that_read_a_closed_record_while_the_consumer_started_it_stays_within_the_race', 'test_f20_a_store_only_parse_now_run_writes_none_of_the_run_fields', 'test_a_record_from_before_the_fields_in_the_middle_of_a_run_continues_from_its_queue_time', 'test_f22_the_residual_of_a_failure_written_by_an_older_process_is_reported', 'test_a_rule_that_always_continues_fails_the_flow', 'test_a_rule_without_the_outcome_stamps_fails_f22', 'test_a_sink_only_end_that_keeps_the_start_fails_f9', 'test_a_restore_that_continues_the_stored_run_fails_f21', 'test_attempt_increment_in_statement', 'test_a_reset_between_the_read_and_the_write_starts_a_new_run_not_old_plus_one', 'test_a_read_modify_write_loses_increments',
+              'test_a_requeue_after_a_later_outcome_starts_a_run_that_the_next_attempt_continues',
+              'test_an_attempt_start_after_a_later_outcome_starts_a_run_after_it',
+              'test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_the_next_attempt_continues']
