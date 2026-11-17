@@ -488,6 +488,8 @@ Sandboxes are marked first to be killed if the host runs out of memory, ahead of
 | `DOCKER_PROXY_INSTANCE` | the Compose project | Names this stack on its sandbox containers; the proxy acts only on its own. |
 | `DOCKER_PROXY_REAP_UNLABELED` | false | Also remove sandbox containers with no stack name (left by a proxy from before stack names) once past the same age. Leave it off while another stack on the Docker host may still run an older version; the proxy logs how many there are, at most once an hour. |
 
+Without the Docker proxy (the Docker socket mounted straight into the app), nothing removes a sandbox container left behind by a killed worker; find such leftovers with `docker ps -a --filter label=ai.pipeshub.sandbox` (the `ai.pipeshub.sandbox.state-id` label holds `SANDBOX_STATE_ID` when it is set) and remove them yourself.
+
 The memory share comes on top of the app container's own limit ([App container memory](#app-container-memory)): on a small host lower `SANDBOX_MEMORY_SHARE` or set `SANDBOX_MAX_TOTAL`.
 
 **Several stacks on one Docker host.** Each stack sizes itself from the whole host, so together they would run several times the cap. Give each stack its own `SANDBOX_MAX_TOTAL` that together fit the host, and its own `SANDBOX_EGRESS_NETWORK`: every stack defaults to the same `pipeshub_sandbox_egress` network, and one stack re-creating it can break another stack's networked runs. Stacks whose services run directly on the host as one user (not in containers, e.g. several source checkouts) also share one `/tmp`; give each its own `SANDBOX_STATE_ID` (the same value for its query and indexing processes), or they share one count.

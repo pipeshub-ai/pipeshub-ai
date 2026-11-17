@@ -306,6 +306,7 @@ class DockerExecutor(BaseExecutor):
         """Deps tar from one firewalled install container."""
         container = create_sandbox_container(
             client,
+            purpose="install",
             image=SANDBOX_IMAGE,
             environment={},
             mem_limit=self.memory_limit_mb * 1024 * 1024,

@@ -1048,6 +1048,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         handle = handle or _RunHandle()
         container = create_sandbox_container(
             client,
+            purpose="install",
             image=self._image,
             environment={},
             mem_limit=self._memory_limit_mb * 1024 * 1024,

@@ -45,6 +45,7 @@ __all__ = [
     "firewalled_container_kwargs",
     "new_firewall_token",
     "parse_cidrs",
+    "sandbox_labels",
 ]
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,30 @@ def _disk_quota() -> str | None:
     return raw
 
 
-def create_sandbox_container(client: Any, **kwargs: Any) -> Any:
+# Labels on every sandbox container, so an operator (or a sweep) can find
+# the ones a stack left behind, with or without the Docker proxy.
+SANDBOX_LABEL = "ai.pipeshub.sandbox"
+SANDBOX_STATE_LABEL = "ai.pipeshub.sandbox.state-id"
+_STATE_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,63}")
+
+
+def sandbox_labels(purpose: str = "run") -> dict[str, str]:
+    """The app's labels for a sandbox container: what it is for (``run`` or
+    ``install``) and this stack's ``SANDBOX_STATE_ID`` when one is set."""
+    labels = {SANDBOX_LABEL: purpose}
+    state_id = (os.environ.get("SANDBOX_STATE_ID") or "").strip()
+    if _STATE_ID_RE.fullmatch(state_id):
+        labels[SANDBOX_STATE_LABEL] = state_id
+    return labels
+
+
+def create_sandbox_container(client: Any, *, purpose: str = "run", **kwargs: Any) -> Any:
     """``client.containers.create`` with a per-run writable-layer disk quota,
     marked first to kill when memory runs out (``oom_score_adj=1000``).
+
+    Swap is off (``memswap_limit`` equal to ``mem_limit``), as the Docker
+    proxy enforces, so the memory cap means the same with a socket mounted
+    straight from the daemon. The container carries ``sandbox_labels(purpose)``.
 
     A Docker proxy older than the field refuses every create that sets it, so
     on that refusal the container is created without it, and later creates
@@ -95,6 +117,9 @@ def create_sandbox_container(client: Any, **kwargs: Any) -> Any:
     never broken. Exceeding an enforced cap fails a write with a clean ENOSPC.
     """
     global _oom_score_adj_usable
+    kwargs["labels"] = {**sandbox_labels(purpose), **(kwargs.get("labels") or {})}
+    if kwargs.get("mem_limit") is not None:
+        kwargs.setdefault("memswap_limit", kwargs["mem_limit"])
     if _oom_score_adj_usable:
         try:
             return _create_with_quota(client, oom_score_adj=_OOM_SCORE_ADJ, **kwargs)
