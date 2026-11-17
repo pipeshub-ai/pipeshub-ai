@@ -514,18 +514,50 @@ async def test_a_purge_that_fails_leaves_no_marker_so_the_redelivery_purges() ->
         assert again is True
 
 
-async def test_a_process_that_dies_mid_purge_leaves_a_lease_that_lapses_not_a_marker() -> None:
-    """No finally runs when a process dies: its lease stays until it expires, and no 24 h marker exists."""
+async def test_a_delivery_that_overlaps_a_purge_waits_for_its_marker_and_never_reuses_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
+    cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
+    order: list[str] = []
+
+    async def holder() -> None:
+        async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
+            assert must_purge is True
+            await asyncio.sleep(0.1)                                    # the purge runs
+            order.append("purged")
+
+    async def overlapping() -> None:
+        await asyncio.sleep(0.02)                                       # arrives while the lease is held, no marker yet
+        async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
+            order.append(f"reuse={not must_purge}")
+            assert must_purge is False
+
+    await asyncio.gather(holder(), overlapping())
+    assert order == ["purged", "reuse=True"]                            # reuse only after the purge returned
+
+
+async def test_a_redelivery_while_a_dead_holders_lease_is_live_is_handed_back_then_purges_once_it_lapses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The holder died before purging: no marker, a live lease. The redelivery must not reuse the pre-refresh objects."""
+    from app.services.paid_cache.cache import RefreshPurgeInProgress
+
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.1)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
     locks = InProcessLocks()
     cache = PaidResultCache(MemoryResultStore(), locks)
     dying = cache.refresh_purge(ORG, REC, "evt")
-    assert await dying.__aenter__() is True                           # the purge starts, then the process is gone
-    async with cache.refresh_purge(ORG, REC, "evt") as concurrent:    # the lease is live: another delivery is purging
-        assert concurrent is False
-    locks.expire_all()                                                # the lease lapses
+    assert await dying.__aenter__() is True                             # the purge starts, then the process is gone
+
+    with pytest.raises(RefreshPurgeInProgress):                         # handed back for a later delivery, no reuse
+        async with cache.refresh_purge(ORG, REC, "evt"):
+            raise AssertionError("a delivery that did not see the marker ran")
+
+    locks.expire_all()                                                  # the dead holder's lease lapses
     async with cache.refresh_purge(ORG, REC, "evt") as redelivery:
-        assert redelivery is True                                     # no marker: this delivery purges
-    await dying.__aexit__(None, None, None)                           # tidy: stop the dead process's heartbeat
+        assert redelivery is True                                       # no marker: this delivery purges
+    await dying.__aexit__(None, None, None)                             # tidy: stop the dead process's heartbeat
 
 
 async def test_the_refresh_token_of_a_redelivered_event_reaches_the_parse_request() -> None:

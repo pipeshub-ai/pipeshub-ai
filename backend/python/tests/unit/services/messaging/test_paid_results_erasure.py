@@ -322,3 +322,27 @@ async def test_a_retried_refresh_request_pays_no_page_again_that_the_first_attem
         await _reindex(handler, dict(payload))                       # its retry (the same event, redelivered)
         await pay_pages()
     assert len(paid) == 3, f"the retry paid again for {len(paid) - 3} page(s)"
+
+
+async def test_a_refresh_delivery_that_overlaps_a_purge_is_handed_back_and_runs_nothing(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
+    from app.services.paid_cache import cache as cache_module
+
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_WAIT_S", 0.05)
+    monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
+    _seed(store)
+    handler = _handler()
+    cache = access.paid_cache_for(MagicMock())
+    backend = await cache._backend()
+    from app.services.paid_cache.locks import refresh_name
+
+    assert await backend.acquire(refresh_name(ORG, REC, "evt-7") + ":lease", 60_000)      # another delivery's live lease
+
+    with pytest.raises(cache_module.RefreshPurgeInProgress) as raised:
+        await _events(handler, EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-7"})
+
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT       # redelivered later
+    assert current_run() is None                                                        # no reuse run opened
+    assert store.paths(ORG, REC) != []                                                  # nothing purged by this delivery

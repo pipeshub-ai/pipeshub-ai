@@ -47,6 +47,9 @@ POLL_MAX_S = 2.0
 MAX_WAIT_S = 3600.0
 #: How often a replica asks again for a manifest lock another replica holds.
 MANIFEST_LOCK_POLL_S = 0.05
+#: How long a delivery of a refresh event waits for another delivery that is purging, and how often it looks.
+REFRESH_PURGE_WAIT_S = 20.0
+REFRESH_PURGE_POLL_S = 0.2
 #: Kept for callers: the holder's lease, not this, bounds the wait.
 DEFAULT_WAIT_S = MAX_WAIT_S
 
@@ -60,6 +63,10 @@ PAID_CACHE_TOTAL = METRICS_BACKEND.counter(
 def enabled() -> bool:
     """``PAID_CACHE=off`` switches the cache off: every call computes."""
     return os.getenv("PAID_CACHE", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+class RefreshPurgeInProgress(ConnectionError):
+    """Another delivery of the same refresh is purging and has not finished: transient, the broker redelivers it."""
 
 
 def writes_enabled() -> bool:
@@ -282,11 +289,13 @@ class PaidResultCache:
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:
-        """Yields True when this delivery of a refresh event must purge the record's results, False when it must not.
+        """Yields True when this delivery of a refresh event must purge the record's results, False when it may reuse.
 
-        A short lease (renewed while the purge runs) keeps two deliveries from purging at once, and the 24 h marker
-        that makes a redelivery reuse is written only after the purge has returned: a process that dies mid-purge
-        leaves a lease that lapses and no marker, so the redelivery purges. Without a lock backend the delivery purges.
+        False only once the 24 h marker is written, i.e. after a purge has returned. A short lease (renewed while the
+        purge runs) keeps two deliveries from purging at once; a delivery that finds it held with no marker waits for
+        its holder (bounded by ``REFRESH_PURGE_WAIT_S``): the holder marks, and this delivery reuses; or the holder's
+        lease lapses (a dead holder), and this delivery purges. Past the wait it raises ``RefreshPurgeInProgress``,
+        which the broker redelivers later, never reuse before a purge. Without a lock backend the delivery purges.
         """
         held: _Held | None = None
         backend: LockBackend | None = None
@@ -294,15 +303,26 @@ class PaidResultCache:
         must_purge = True
         try:
             backend = await self._backend()
-            if await backend.is_marked(name):
-                must_purge = False
-            else:
+            deadline = time.monotonic() + REFRESH_PURGE_WAIT_S
+            while True:
+                if await backend.is_marked(name):
+                    must_purge = False
+                    break
                 token = await backend.acquire(name + ":lease", LOCK_TTL_MS)
-                if token is None:
-                    must_purge = False                  # another delivery is purging right now
-                else:
+                if token is not None:
                     held = _Held(backend, name + ":lease", token, self.logger)  # type: ignore[arg-type]
                     held.start_heartbeat()
+                    if await backend.is_marked(name):      # a holder marked between the check and the acquire
+                        must_purge = False
+                        await _uninterrupted(held.stop_heartbeat())
+                        await _uninterrupted(held.release())
+                        held = None
+                    break
+                if time.monotonic() > deadline:
+                    raise RefreshPurgeInProgress(f"another delivery of refresh {event_id} is purging {record_id}")
+                await asyncio.sleep(REFRESH_PURGE_POLL_S)
+        except RefreshPurgeInProgress:
+            raise
         except Exception:
             self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
             must_purge = True

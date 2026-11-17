@@ -5,6 +5,7 @@ delete markers ``<ns>:pc:deleted:{<org>:<record>}`` that fence a deleted record'
 that dies simply lapses. Redis holds nothing else for the cache: results live in the blob store.
 """
 
+import logging
 import math
 import secrets
 import threading
@@ -46,10 +47,29 @@ PARSE_GATE_WAIT_S = 120
 PARSE_MEMORY_WAIT_S = 30
 
 
+_budget_clamp_warned: set[str] = set()
+
+
+def _clamped(name: str, default: float) -> float:
+    """A record budget from the environment, never above ``MAX_RECORD_BUDGET_S``: a run longer than the open-manifest
+    protection window could still be writing after it ends. A setting above it is clamped with one warning."""
+    value = env_seconds(name, default)
+    if value > MAX_RECORD_BUDGET_S:
+        if name not in _budget_clamp_warned:
+            _budget_clamp_warned.add(name)
+            logging.getLogger(__name__).warning(
+                "%s=%.0f s is above the %.0f s the paid-result cache allows (its open-manifest protection window less a "
+                "margin); the stage deadline and the re-purge horizon use %.0f s", name, value, MAX_RECORD_BUDGET_S,
+                MAX_RECORD_BUDGET_S,
+            )
+        return MAX_RECORD_BUDGET_S
+    return value
+
+
 def _budgets() -> tuple[float, float]:
-    """(general record budget, longest budget of any record type), from the environment, live."""
-    record = env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
-    return record, max(record, env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
+    """(general record budget, longest budget of any record type), from the environment, live, clamped."""
+    record = _clamped("RECORD_PROCESSING_TIMEOUT", 1800.0)
+    return record, max(record, _clamped("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
 
 
 def stage_deadline_s() -> float:
