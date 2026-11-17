@@ -17,7 +17,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function fakeBundle(): string {
   const b = mkdtempSync(join(root, "bundle-"));
   // initdb -D dir: creates the data folder. pg_ctl start: a live pid in postmaster.pid, after checking the settings file; stop ends it.
-  sh(join(b, "pg/bin/initdb"), `while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; echo x >> "${b}/initdb-calls"
+  sh(join(b, "pg/bin/initdb"), `while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; echo x >> "${b}/initdb-calls"; echo $$ > "${b}/initdb-pid"
 mkdir -p "$d"; echo 18 > "$d/PG_VERSION"; : > "$d/postgresql.conf"; [ -f "${b}/slow-initdb" ] && sleep 30; exit 0`);
   sh(join(b, "pg/bin/pg_ctl"), `while [ $# -gt 0 ]; do case "$1" in -D) d=$2;; start|stop) a=$1;; esac; shift; done
 if [ "$a" = start ]; then grep -q "^listen_addresses = '127.0.0.1'" "$d/launcher.conf" || exit 9; grep -q "include 'launcher.conf'" "$d/postgresql.conf" || exit 8
@@ -243,9 +243,12 @@ describe("launcher", () => {
     const a = launch(b, d, "start");
     await untilFile(join(b, "initdb-calls"));
     a.p.kill("SIGKILL"); await a.exited;
+    const orphan = Number(readFileSync(join(b, "initdb-pid"), "utf8"));
+    assert.ok(alive(orphan), "the killed launcher's initdb is still running");
     rmSync(join(b, "slow-initdb"));
     const w = launch(b, d, "start");
     await w.until("ready");
+    assert.ok(!alive(orphan), "the next start ended the orphaned initdb before running its own");
     assert.ok(w.events.some((e) => e.stage === "initdb"));
     assert.match(readFileSync(join(d, "pgdata/postgresql.conf"), "utf8"), /include 'launcher.conf'/);
     await cli(b, d, "stop"); await w.exited;
