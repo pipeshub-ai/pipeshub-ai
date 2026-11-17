@@ -879,6 +879,14 @@ export class OAuthTokenService {
         return { active: false };
       }
 
+      // Same rule as verifyAccessToken: revoking a registration does not touch its tokens' rows.
+      if (
+        payload.agent_registration_id !== undefined &&
+        !(await this.isAgentRegistrationLive(payload.agent_registration_id))
+      ) {
+        return { active: false };
+      }
+
       // Build introspection response per RFC 7662
       const response: IntrospectResponse = {
         active: true,

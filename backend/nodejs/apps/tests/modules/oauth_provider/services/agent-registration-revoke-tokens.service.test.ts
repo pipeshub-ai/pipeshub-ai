@@ -198,6 +198,18 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
     );
   });
 
+  it('introspection reports a token inactive once its registration is revoked', async () => {
+    sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any);
+    const r = await claimed();
+    await service.claimGrant(r.claim_token);
+    const token = accessTokenOf(r.registration_id);
+    expect((await tokens.introspectToken(token, 'pipeshub-agent')).active).to.equal(true);
+
+    await service.revokeForUser(r.registration_id, USER);
+
+    expect(await tokens.introspectToken(token, 'pipeshub-agent')).to.deep.equal({ active: false });
+  });
+
   it('an access token naming a registration that is gone or malformed is refused', async () => {
     sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any);
     for (const id of ['reg_' + 'f'.repeat(24), 'f'.repeat(24)]) {
