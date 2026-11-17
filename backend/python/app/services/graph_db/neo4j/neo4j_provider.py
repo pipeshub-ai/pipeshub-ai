@@ -23814,14 +23814,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN ref.id AS id, rows, capped
             """
 
-    def _permitted_entity_walk_cypher(self) -> str:
+    def _permitted_entity_walk_cypher(self, *, role_test: bool) -> str:
         """Walk ``win`` in order and collect up to ``$limit`` rows the user
         ``u`` may read, each with its position in the window. The UNION yields
         one row when any grant holds and none otherwise; the role fragment
         yields no row when the user has no role. Domain, "anyone" and link
-        shares grant no access, as in every other access check."""
-        record_role = self._get_permission_role_cypher("record", "rec", "u")
+        shares grant no access, as in every other access check.
+
+        Without ``role_test`` every row of the window is taken: the caller
+        has shown that each candidate's connector is app-level, so the UNION's
+        first branch admits every row. The role fragment is most of the
+        statement's text and costs Neo4j ~0.6-0.9s to plan against ~5ms to
+        run, and plans are dropped on restart and whenever a sync shifts the
+        statistics, so leaving it out is what keeps a cold search inside its
+        deadline."""
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
+        if not role_test:
+            return f"""
+              CALL {{
+                WITH win
+                UNWIND range(0, size(win) - 1) AS pos
+                WITH win[pos] AS rec, pos
+                LIMIT $limit
+                RETURN collect({{pos: pos, row: {projection}}}) AS hits
+              }}"""
+        record_role = self._get_permission_role_cypher("record", "rec", "u")
         return f"""
               CALL {{
                 WITH win, u
@@ -23843,8 +23860,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect({{pos: pos, row: {projection}}}) AS hits
               }}"""
 
-    def _permitted_entity_records_cypher(self, entity_type: str) -> str:
-        walk = self._permitted_entity_walk_cypher()
+    def _permitted_entity_records_cypher(self, entity_type: str, *, role_test: bool = True) -> str:
+        walk = self._permitted_entity_walk_cypher(role_test=role_test)
         if entity_type == KnowledgeGraphEntityType.RECORD.value:
             return f"""
             MATCH (u:User {{id: $user_key}})
@@ -24012,10 +24029,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise RuntimeError("Neo4j client is not connected")
 
         limit = max(1, limit_per_entity)
-        results: dict[tuple[str, str], PermittedEntityRows] = {}
-        for entity_type, typed_refs in self._entity_refs_by_type(refs).items():
-            rows = await self.client.execute_query(
-                self._permitted_entity_records_cypher(entity_type),
+        app_level = frozenset(app_level_connector_ids)
+        refs_by_type = self._entity_refs_by_type(refs)
+
+        async def query_type(entity_type: str, typed_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            # Candidates are already limited to their ref's connectors, so when
+            # every one of those is app-level the role test cannot drop a row.
+            role_test = any(not app_level.issuperset(ref["connectorIds"]) for ref in typed_refs)
+            return await self.client.execute_query(
+                self._permitted_entity_records_cypher(entity_type, role_test=role_test),
                 parameters={
                     "refs": typed_refs,
                     "org_id": org_id,
@@ -24031,6 +24053,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 },
                 **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
             )
+
+        # Concurrent: each type is its own statement, and on a cold plan cache
+        # run one after another their planning times add up past the caller's deadline.
+        typed_rows = await asyncio.gather(
+            *(query_type(entity_type, typed_refs) for entity_type, typed_refs in refs_by_type.items())
+        )
+        results: dict[tuple[str, str], PermittedEntityRows] = {}
+        for (entity_type, typed_refs), rows in zip(refs_by_type.items(), typed_rows):
             for typed_ref in typed_refs:
                 results.setdefault((entity_type, typed_ref["id"]), PermittedEntityRows())
             for row in rows or []:
