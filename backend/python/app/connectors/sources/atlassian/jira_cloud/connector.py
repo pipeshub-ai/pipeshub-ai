@@ -298,6 +298,8 @@ ANONYMOUS_GATE_MAX_AGE_MS: int = 24 * 60 * 60 * 1000
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
+# The linked accounts with a hidden email the directory held at the last sync that knew product access.
+ADMITTED_WITHOUT_EMAIL_KEY: str = "admitted_without_email"
 # An Atlassian account id ("557058:f58131cb-...", "5b10ac8d82e05b22cc7d4ef5"), safe to quote in JQL.
 JIRA_ACCOUNT_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}")
 # What _files_under_parent needs to know about a parent, which Jira's `parent` field does
@@ -1006,7 +1008,7 @@ class JiraConnector(BaseConnector):
                 )
             self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
             licensed_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
-            unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+            unlicensed_ids = self._unlicensed_ids(jira_users, licensed_users)
             jira_users = licensed_users
             # Their issues were written without their own grants (or lost them when withdrawn).
             self._newly_listed_account_ids = await self._note_newly_listed(jira_users)
@@ -2857,6 +2859,17 @@ class JiraConnector(BaseConnector):
         if self._directory_read_complete():
             return []
         return [u for u in self._stored_app_users if u.source_user_id not in self._seen_account_ids]
+
+    def _unlicensed_ids(self, jira_users: list[AppUser], licensed_users: list[AppUser]) -> set[str]:
+        """The listed accounts without product access: those the directory read dropped, and the linked accounts the list
+        shows active whose email is hidden (``_fetch_users`` keeps a cached account only with an email, so they are not in
+        ``jira_users``). None of the latter while product access is unknown."""
+        dropped = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+        licensed = self._licensed_account_ids
+        if licensed is None:
+            return dropped
+        return dropped | {u.source_user_id for u in self._stored_app_users if u.source_user_id and not u.email
+                          and u.source_user_id in self._listed_account_ids and u.source_user_id not in licensed}
 
     def _listed_without_email(self) -> list[AppUser]:
         """The linked accounts the user list shows active and with product access whose email is hidden: synced, yet
@@ -4892,9 +4905,25 @@ class JiraConnector(BaseConnector):
                 await self._process_new_records(batch, project_key, stats)
 
     async def _note_newly_listed(self, jira_users: list[AppUser]) -> list[str]:
-        """``_note_people_to_reread`` for the listed accounts no stored link names yet."""
+        """``_note_people_to_reread`` for the listed accounts no stored link names yet, and for the linked accounts with a
+        hidden email the directory now holds that it did not before (``_listed_without_email``: an issue written while
+        product access was unknown, or before they were listed, left out their grants)."""
         linked_before = {u.source_user_id for u in self._stored_app_users}
-        return await self._note_people_to_reread({u.source_user_id for u in jira_users if u.source_user_id} - linked_before)
+        newly = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+        admitted: set[str] | None = None
+        if self._licensed_account_ids is not None:
+            admitted = {u.source_user_id for u in self._listed_without_email()}
+            try:
+                held = set(json.loads(
+                    ((await self.issues_sync_point.read_sync_point(ADMITTED_WITHOUT_EMAIL_KEY)) or {}).get("accounts") or "[]"))
+            except (TypeError, ValueError):
+                held = set()
+            newly |= admitted - held
+        pending = await self._note_people_to_reread(newly)
+        if admitted is not None and admitted != held:
+            # After the accounts to re-read are saved: a sync that fails in between re-reads them, never forgets them.
+            await self.issues_sync_point.update_sync_point(ADMITTED_WITHOUT_EMAIL_KEY, {"accounts": json.dumps(sorted(admitted))})
+        return pending
 
     async def _note_people_to_reread(self, newly_listed: set[str]) -> list[str]:
         """The accounts whose issues need reading again: these, and those an earlier sync saved but did not

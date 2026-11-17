@@ -1280,6 +1280,38 @@ class TestFetchUsersPhases:
         connector._authenticated_jira_account_id = "own"
         return users
 
+    @pytest.mark.parametrize(("licensed", "withdrawn"), [({"lic"}, {"hidden"}), ({"lic", "hidden"}, set()), (None, set())],
+                             ids=["without_product_access", "with_product_access", "product_access_unknown"])
+    def test_a_linked_account_with_a_hidden_email_and_no_product_access_is_withdrawn(self, licensed, withdrawn) -> None:
+        """``_fetch_users`` leaves a linked account with a hidden email out of the users it returns, so the licence filter
+        never sees it: it is classified against the licence set here, and only while that set is known."""
+        connector = _make_connector()
+        hidden = AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="hidden", email="", full_name="h")
+        lic = AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="lic", email="lic@x.com", full_name="l")
+        connector._stored_app_users = [hidden, lic]
+        connector._listed_account_ids = {"hidden", "lic"}
+        connector._licensed_account_ids = licensed
+        assert connector._unlicensed_ids([lic], [lic]) == withdrawn
+
+    @pytest.mark.asyncio
+    async def test_a_linked_account_with_a_hidden_email_newly_held_by_the_directory_has_its_issues_read_again(self) -> None:
+        """Written while product access was unknown, its issues left out its grants: the first sync that holds it reads
+        them again (saved before it is noted as held), and the next one does not."""
+        connector = _make_connector()
+        hidden = AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="hidden", email="", full_name="h")
+        connector._stored_app_users = [hidden]
+        connector._listed_account_ids = {"hidden"}
+        points: dict = {}
+        connector.issues_sync_point = MagicMock()
+        connector.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: points.get(k))
+        connector.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: points.__setitem__(k, v))
+        connector._licensed_account_ids = None  # product access unknown: no one held, nothing noted
+        assert await connector._note_newly_listed([]) == []
+        connector._licensed_account_ids = {"hidden"}
+        assert await connector._note_newly_listed([]) == ["hidden"]
+        points["people_reread"] = {"accounts": "[]"}  # handed on to every project
+        assert await connector._note_newly_listed([]) == []
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cause", ["roles_unread", "members_unread"])
     async def test_product_access_unknown_links_no_new_user(self, cause: str) -> None:

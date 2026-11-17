@@ -415,6 +415,23 @@ class TestWithdrawnAccounts:
             [Permission(entity_type=EntityType.USER, external_id="bob-key", type=PermissionType.READ)], {})
         assert ("bob-key" in users) is listed and bool(grants) is listed
 
+    def test_a_level_holder_named_by_username_resolves_to_a_linked_account_with_a_hidden_email(self) -> None:
+        """The level names bob by username; bob is linked with a hidden email, so only the extra accounts hold him. The
+        username aliases cover them too."""
+        c = _connector()
+        c._stored_app_users = [_user("bob-key", "")]
+        c._listed_user_keys = {"alice-key", "bob-key"}
+        c._seen_user_keys = {"alice-key", "bob-key"}
+        c._dc_name_to_source_id = {"bob": "bob-key"}
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "bob", "user": {"name": "bob"}}]},
+        )
+        issue = {"id": "9", "key": "P-9", "fields": {
+            "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, c._users_with_usernames({}))
+        assert [(g.email, g.external_id) for g in grants] == [(None, "bob-key")]
+
     def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
         """"left" has no access in Jira (not in the directory) but carries alice's email: alice must not get left's level."""
         c = _connector()
