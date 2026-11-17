@@ -3,8 +3,8 @@ interleaved batch by batch (the in-process A/B method, so run-to-run and host no
 
     python -m tests.integration.graph_db.record_diagnostics_ab --store arango [--pairs 40] [--batch 100] [--canary]
 
-One "record" is the status-write sequence of an indexing attempt plus a synthetic 1.4 ms of CPU for its processing
-(about the record size of a light indexing step):
+One "record" is the status-write sequence of an indexing attempt plus a synthetic 100 ms of CPU for its processing
+(``--processing-ms``, a light indexing step):
 
 * A (before): ``update_node`` for IN_PROGRESS, ``update_node`` for the parse-complete status, ``update_node`` for COMPLETED;
 * B (after): ``write_attempt_start`` (the one AQL statement), the parse-complete status with the page count in one
@@ -33,7 +33,7 @@ from tests.integration.graph_db.record_diagnostics_support import (
 )
 from tests.integration.real_graph import connect_arango, connect_neo4j
 
-PROCESSING_US = 1400  # overridden by --processing-ms
+PROCESSING_US = 100_000  # overridden by --processing-ms
 
 
 def spin(microseconds: float) -> None:
@@ -63,9 +63,12 @@ async def one_batch(store: Store, keys: list[str], new: bool, canary_us: float, 
         spin(PROCESSING_US + (canary_us if new else 0))
         fields = {"indexingStatus": "IN_PROGRESS", "processingStartedAt": 1, "contentRev": rev}
         if new:
-            await p.write_attempt_start(key, fields)
+            # a guard that refuses makes B do less work than A and the measured slowdown smaller, so a refused write stops the run
+            assert await p.write_attempt_start(key, fields), f"write_attempt_start wrote nothing for {key}"
             snapshot = await p.get_document(key, RECORDS)
-            await p.update_node_if_unchanged(key, RECORDS, {"parsingStatus": "COMPLETED", "pageCount": 12}, snapshot, {"contentRev": rev, "indexingStatus": "IN_PROGRESS"})
+            assert await p.update_node_if_unchanged(
+                key, RECORDS, {"parsingStatus": "COMPLETED", "pageCount": 12}, snapshot, {"contentRev": rev, "indexingStatus": "IN_PROGRESS"}
+            ), f"the conditional write refused for {key}"
         else:
             await p.update_node(key, RECORDS, fields)
             await p.get_document(key, RECORDS)
@@ -112,7 +115,7 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=100)
     parser.add_argument("--canary", action="store_true")
     parser.add_argument("--gate", type=float, default=2.0, help="fail when the one-sided 95 %% upper bound of the slowdown is above this")
-    parser.add_argument("--processing-ms", type=float, default=1.4, help="CPU spent on a record besides its status writes")
+    parser.add_argument("--processing-ms", type=float, default=100.0, help="CPU spent on a record besides its status writes")
     args = parser.parse_args()
     global PROCESSING_US  # noqa: PLW0603
     PROCESSING_US = args.processing_ms * 1000
