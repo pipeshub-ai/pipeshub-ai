@@ -47,3 +47,25 @@ export async function importCounterDocs(
   }
   return stats;
 }
+
+/**
+ * Raises each organisation's counter to at least the highest slug number its users and groups hold. The follower copies users and
+ * groups but not the counter changes behind their slugs (counters are per name in MongoDB), so before PostgreSQL becomes the store
+ * the counters must catch up, or the next claim (`next_value + 1`) takes a slug already held. Never lowers a counter.
+ */
+export async function raiseCountersToSlugs(k: KernelTx): Promise<number> {
+  let n = 0;
+  for (const [name, kind] of Object.entries(KINDS)) {
+    const { rowCount } = await k.query(
+      fill(
+        `/* pipeshub:import.slug_counters_raise */ INSERT INTO identity.slug_counters (org_id, kind, next_value)
+          SELECT x.org_id, $1, max(substring(x.slug from '[0-9]+$')::int) FROM @{T} x WHERE x.slug ~ $2 GROUP BY x.org_id
+          ON CONFLICT (org_id, kind) DO UPDATE SET next_value = EXCLUDED.next_value WHERE identity.slug_counters.next_value < EXCLUDED.next_value`,
+        { T: kind.table },
+      ),
+      [name, kind.pattern],
+    );
+    n += rowCount ?? 0;
+  }
+  return n;
+}
