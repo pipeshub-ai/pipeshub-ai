@@ -57,6 +57,7 @@ from app.utils.kh_cursor import (
     derive_cursor_secret,
     encode,
 )
+from app.utils.user_lookup import get_caller_user
 from app.utils.user_messages import action_failed
 
 _T = TypeVar("_T")
@@ -672,7 +673,7 @@ class KnowledgeHubService:
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
         """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
-        return await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        return await get_caller_user(self.graph_provider, user_id)
 
     async def _get_user_app_ids(
         self, user_key: str, org_id: str

@@ -357,17 +357,16 @@ async def test_worker_has_no_core_files_and_an_address_space_limit(spool) -> Non
 async def test_an_unclosed_string_body_does_not_hold_the_worker(spool) -> None:
     evil = b'{"recordName":"' + b'\\"' * 20_000      # 40 KB; the quadratic lexer held the worker for 50 s
     good = raw(envelope())
-    w = W.PushWorker(lease_wait_s=5, kill_after_s=30)
+    # The worker's own deadline is the bound: 5 s, against the 50 s the quadratic lexer took. A body that held the
+    # worker that long ends as PUSH_TIMEOUT, not INVALID_JSON, so the outcome tells the two apart and no wall-clock
+    # bound (which a busy runner stretches) is needed.
+    w = W.PushWorker(lease_wait_s=5, kill_after_s=5)
     try:
         await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)  # warm up
-        started = time.monotonic()
         with pytest.raises(PushRefusal) as e:
             await w.validate(spool.write(evil), spool.new_path("out"), schema_id=None, schema=None)
-        refused_after = time.monotonic() - started
         assert (e.value.status, e.value.reason) == (400, "INVALID_JSON")
-        started = time.monotonic()
-        await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)
-        assert refused_after < 2.0 and time.monotonic() - started < 2.0
+        await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)  # the worker is free
         assert w.deaths == 0
     finally:
         await w.close()
@@ -579,17 +578,34 @@ async def test_a_reused_worker_death_after_a_long_run_is_the_bodys_own_and_is_no
 
 
 @needs_proc
-async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool) -> None:
-    events, w = Events(), W.PushWorker(kill_after_s=0.6)
+async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool, monkeypatch) -> None:
+    from multiprocessing.connection import Connection
+
+    # The wait the worker gave each attempt, read from the poll it made, rather than the wall time of the whole push.
+    polls: list[float | None] = []
+    real_poll = Connection.poll
+
+    def poll(self: Connection, timeout: float | None = 0.0) -> bool:
+        polls.append(timeout)
+        return real_poll(self, timeout)
+
+    events, w = Events(), W.PushWorker(kill_after_s=3.0)
     try:
         await push_small(w, spool)
+        polls.clear()
+        monkeypatch.setattr(Connection, "poll", poll)
         task = await start_accounted(w, spool, big_body(150_000), events)
         os.kill(w._proc.pid, signal.SIGSEGV)
-        started = time.monotonic()
         with pytest.raises(PushRefusal) as e:
             await task
-        assert e.value.reason == "PUSH_TIMEOUT"  # the replay hit the same 0.6 s wall budget
-        assert time.monotonic() - started < 2.0
+        # The replay either ran out of what was left (PUSH_TIMEOUT) or finished first and refused the body (its blocks
+        # are past the cap): which one depends on the runner's speed. The budget it was given is what the test checks.
+        assert e.value.reason in ("PUSH_TIMEOUT", "BLOCKS_INVALID")
+        assert w.deaths == 1  # the first attempt died and was replayed on a fresh process
+        # the first attempt got the whole 3 s; the replay got only what was left of it, not a fresh 3 s (the start-up
+        # handshake of the fresh process waits on its own, longer timeout)
+        attempts = [t for t in polls if t is not None and t <= 3.0]
+        assert len(attempts) == 2 and attempts[0] == pytest.approx(3.0) and attempts[1] < attempts[0], polls
     finally:
         await w.close()
 

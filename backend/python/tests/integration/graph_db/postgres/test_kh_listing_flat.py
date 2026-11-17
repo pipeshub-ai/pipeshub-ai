@@ -19,6 +19,7 @@ from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
@@ -366,8 +367,8 @@ async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
                 assert not seq, f"{at}: sequential scan of {seq}"
                 # once analyzed (with no statistics the planner may take a wider range of a small table: the plan without a scan above is what holds then)
-                loose = [n["Index Name"] for n in _nodes(plan) if analyzed and str(n.get("Index Name")).startswith(("records_", "links_")) and not NODE_COND.search(n.get("Index Cond") or "")]
-                assert not loose, f"{at}: reads {loose} without the node in its index condition: {[n.get('Index Cond') for n in _nodes(plan) if n.get('Index Name') in loose]}"
+                loose = plan_gate.unkeyed(plan, ("records", "links"), NODE_COND.pattern) if analyzed else []
+                assert not loose, f"{at}: reads without the node in its index condition: {loose}"
                 if name == "hiders":      # the connector's hiders by their own index, not a pass over the connector's rows
                     assert {n.get("Index Name") for n in _nodes(plan)} & {"records_hiders"}, f"{at}: {plan}"
     finally:

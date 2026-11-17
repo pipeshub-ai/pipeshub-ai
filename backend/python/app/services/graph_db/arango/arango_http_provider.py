@@ -53,6 +53,8 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
+from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
+from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -94,6 +96,7 @@ from app.models.source_dates import (
     upload_times_undated,
 )
 from app.modules.code_graph.edge_build_trigger import is_code_record
+from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
     agent_schema,
     agent_skill_candidates_schema,
@@ -108,9 +111,6 @@ from app.schema.arango.documents import (
     comment_record_schema,
     deal_record_schema,
     department_schema,
-    named_entity_schema,
-    named_entity_persist_retry_schema,
-    value_mention_schema,
     file_record_schema,
     knowledge_schema,
     link_record_schema,
@@ -118,6 +118,8 @@ from app.schema.arango.documents import (
     mcp_server_schema,
     meeting_record_schema,
     message_record_schema,
+    named_entity_persist_retry_schema,
+    named_entity_schema,
     orgs_schema,
     people_schema,
     product_record_schema,
@@ -134,6 +136,7 @@ from app.schema.arango.documents import (
     tool_schema,
     toolset_schema,
     user_schema,
+    value_mention_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
@@ -155,19 +158,18 @@ from app.schema.arango.edges import (
     lead_schema,
     mcp_server_has_tool_schema,
     member_of_schema,
+    mentions_entity_schema,
+    node_relations_schema,
     permissions_schema,
     prospect_schema,
-    node_relations_schema,
     record_links_schema,
     sold_in_schema,
-    mentions_entity_schema,
     taxonomy_edge_schema,
     toolset_has_tool_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
-from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.services.graph_db import edge_effects
 from app.services.graph_db.arango.arango_http_client import (
     ARANGO_CONFLICT,
@@ -177,6 +179,11 @@ from app.services.graph_db.arango.arango_http_client import (
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
+from app.services.graph_db.common.cascade_retry import (
+    CASCADE_ATTEMPTS,
+    CONNECTOR_DELETE_BASE_SECONDS,
+)
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -209,15 +216,15 @@ from app.services.graph_db.common.utils import (
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     AncestorChainLimitError,
-    ancestor_chain_rows,
     EntityCandidateRows,
     PermittedEntityRows,
+    ancestor_chain_rows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
-    jira_issue_browse_url_regex,
     is_full_address,
+    jira_issue_browse_url_regex,
     person_query_ref,
     record_status_field,
     restore_items,
@@ -227,6 +234,13 @@ from app.services.graph_db.common.utils import (
     trash_purge_row,
     uploaded_document_id,
     within_param,
+)
+from app.services.graph_db.conditions import (
+    EQ,
+    IS_NULL,
+    NULL_OR_EQ,
+    Cond,
+    check_conditions,
 )
 from app.services.graph_db.dated_scope import (
     DatedRow,
@@ -247,7 +261,6 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
-    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     REF_LINKS_PER_DOC,
@@ -259,22 +272,15 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     _distinct_connector_types,
     _unsupported_container_filters,
+    promoted_duplicate_extraction_status,
     requested_scope_ids,
 )
-from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
-from app.services.graph_db.common.cascade_retry import (
-    CASCADE_ATTEMPTS,
-    CONNECTOR_DELETE_BASE_SECONDS,
+from app.services.graph_db.push_claim import (
+    KB_DELETING_STATUS,
+    PushClaim,
+    PushExpect,
+    PushSet,
 )
-from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
-from app.services.graph_db.conditions import (
-    EQ,
-    IS_NULL,
-    NULL_OR_EQ,
-    Cond,
-    check_conditions,
-)
-from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
@@ -282,7 +288,6 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     global_department_key,
@@ -291,12 +296,15 @@ from app.services.graph_db.taxonomy import (
     own_record_labels,
     subcategory_level,
 )
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
+)
 from app.services.graph_db.user_email_identity import (
-    GraphUserEmailConflictError,
     PERMISSION_ROLE_RANK,
     STUB_EDGE_COLLECTIONS,
     STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    GraphUserEmailConflictError,
     classify_email_peer,
     connector_ids_of_users,
     graph_user_key,
@@ -307,10 +315,9 @@ from app.services.graph_db.vector_membership_queries import (
     build_page_records_for_vector_membership_backfill_aql,
     can_use_membership_cleanup,
 )
-from app.utils.user_messages import action_failed
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import folder_in_trash
+from app.utils.user_messages import action_failed, folder_in_trash
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -8287,18 +8294,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> User | None:
         """
-        Get user by email; with ``org_id``, only a user of that organisation.
+        Get the user of org ``org_id`` with this email.
         """
-        scoped = org_id is not None
-        org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        bind_vars = {"email": email, **({"org_id": org_id} if scoped else {})}
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        bind_vars = {"email": email, "org_id": org_id}
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             FILTER LOWER(user.email) == LOWER(@email)
-            {org_filter}
+            FILTER user.orgId == @org_id
             LIMIT 1
             RETURN user
         """
@@ -8714,25 +8721,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN a
                 )
 
-                // Then find the user by email
-                LET user = FIRST(
+                // The user of this address that the connector holds: other orgs can have a user with the same address
+                LET found = FIRST(
                     FOR u IN {CollectionNames.USERS.value}
                         FILTER LOWER(u.email) == LOWER(@email)
-                        RETURN u
+                        FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                            FILTER e._from == u._id AND e._to == app._id
+                            SORT u._key
+                            RETURN {{ user: u, sourceUserId: e.sourceUserId }}
                 )
 
-                // Find the edge connecting user to app
-                LET edge = FIRST(
-                    FOR e IN {CollectionNames.USER_APP_RELATION.value}
-                        FILTER e._from == user._id
-                        FILTER e._to == app._id
-                        RETURN e
-                )
-
-                // Return user merged with sourceUserId if edge exists
-                RETURN edge != null ? MERGE(user, {{
-                    sourceUserId: edge.sourceUserId
-                }}) : null
+                RETURN found != null ? MERGE(found.user, {{ sourceUserId: found.sourceUserId }}) : null
             """
 
             results = await self.http_client.execute_aql(
@@ -9948,6 +9947,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """
         Get organization apps.
@@ -9955,18 +9955,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             active_filter = "FILTER app.isActive == true" if active_only else ""
             type_filter = "FILTER app.type == @app_type" if app_type is not None else ""
+            ids_filter = "FILTER app._key IN @app_ids" if app_ids is not None else ""
             query = f"""
             FOR app IN OUTBOUND
                 '{CollectionNames.ORGS.value}/{org_id}'
                 {CollectionNames.ORG_APP_RELATION.value}
             {active_filter}
             {type_filter}
+            {ids_filter}
             RETURN app
             """
+            bind_vars: dict[str, Any] = {}
+            if app_type is not None:
+                bind_vars["app_type"] = app_type
+            if app_ids is not None:
+                bind_vars["app_ids"] = app_ids
 
-            results = await self.http_client.execute_aql(
-                query, bind_vars={"app_type": app_type} if app_type is not None else None,
-            )
+            results = await self.http_client.execute_aql(query, bind_vars=bind_vars or None)
             return results if results else []
         except Exception as e:
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
@@ -11034,7 +11039,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_app_users(
         self,
         users: list[AppUser],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> None:
         """
         Batch upsert app users.
@@ -11045,11 +11052,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs()
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0]["_key"]
+            if not org_id:
+                raise MissingOrgContext("batch_upsert_app_users needs the org of the connector the users come from")
             connector_id = users[0].connector_id
 
             app = await self.get_document(connector_id, CollectionNames.APPS.value)
@@ -11060,7 +11064,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             for user in users:
                 # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -11070,7 +11074,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -11497,10 +11501,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
         """
-        Get entity ID by email (searches users and groups).
+        Get the entity ID of the org with this email (searches users, groups and people of org ``org_id``).
 
         Generic method that works for both users and groups.
 
@@ -11511,10 +11517,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[str]: Entity key (_key) or None
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         # First check users
         query = f"""
         FOR doc IN {CollectionNames.USERS.value}
-            FILTER doc.email == @email
+            FILTER doc.email == @email AND doc.orgId == @org_id
             LIMIT 1
             RETURN doc._key
         """
@@ -11522,7 +11530,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
             if results:
@@ -11531,14 +11539,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # If not found in users, check groups
             query = f"""
             FOR doc IN {CollectionNames.GROUPS.value}
-                FILTER doc.email == @email
+                FILTER doc.email == @email AND doc.orgId == @org_id
                 LIMIT 1
                 RETURN doc._key
             """
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
             if results:
@@ -11546,14 +11554,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.email == LOWER(@email)
+                FILTER doc.email == LOWER(@email) AND doc.orgId == @org_id
                 LIMIT 1
                 RETURN doc._key
             """
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
             if results:
@@ -11567,7 +11575,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """
         Bulk get entity IDs for multiple emails across users, groups, and people collections.
@@ -11586,6 +11596,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "external@example.com": ("789ghi", "person", "USER")
             }
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         if not emails:
             return {}
 
@@ -11600,13 +11612,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # QUERY 1: Check users collection
             user_query = f"""
             FOR doc IN {CollectionNames.USERS.value}
-                FILTER doc.email IN @emails
+                FILTER doc.email IN @emails AND doc.orgId == @org_id
                 RETURN {{email: doc.email, id: doc._key}}
             """
             try:
                 users = await self.http_client.execute_aql(
                     user_query,
-                    bind_vars={"emails": unique_emails},
+                    bind_vars={"emails": unique_emails, "org_id": org_id},
                     txn_id=transaction
                 )
                 for user in users:
@@ -11624,13 +11636,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if remaining_emails:
                 group_query = f"""
                 FOR doc IN {CollectionNames.GROUPS.value}
-                    FILTER doc.email IN @emails
+                    FILTER doc.email IN @emails AND doc.orgId == @org_id
                     RETURN {{email: doc.email, id: doc._key}}
                 """
                 try:
                     groups = await self.http_client.execute_aql(
                         group_query,
-                        bind_vars={"emails": remaining_emails},
+                        bind_vars={"emails": remaining_emails, "org_id": org_id},
                         txn_id=transaction
                     )
                     for group in groups:
@@ -11648,13 +11660,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if remaining_emails:
                 people_query = f"""
                 FOR doc IN {CollectionNames.PEOPLE.value}
-                    FILTER doc.email IN @emails
+                    FILTER doc.email IN @emails AND doc.orgId == @org_id
                     RETURN {{email: doc.email, id: doc._key}}
                 """
                 try:
                     people = await self.http_client.execute_aql(
                         people_query,
-                        bind_vars={"emails": remaining_emails},
+                        bind_vars={"emails": remaining_emails, "org_id": org_id},
                         txn_id=transaction
                     )
                     for person in people:
@@ -11958,7 +11970,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles."""
         query = """
         FOR perm IN permission
             FILTER perm._from == @user
@@ -11972,7 +11984,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query=query,
             bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
                        "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
-                                   CollectionNames.GROUPS.value]},
+                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
             txn_id=transaction,
         )
         return len(result or [])
@@ -14338,28 +14350,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_user_sync_state(
         self,
         user_email: str,
-        service_type: str
+        service_type: str,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Get user's sync state for a specific service.
 
         Queries the user-app relation edge to get sync state.
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
-            user_key = await self.get_entity_id_by_email(user_email)
+            user_key = await self.get_entity_id_by_email(user_email, org_id=org_id)
             if not user_key:
                 return None
 
+            # Orgs can hold apps of the same name; an app written before apps carried orgId is the org's by its relation.
             query = f"""
-            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
-                          FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{ _key: a._key, name: a.name }})
-
             LET edge = FIRST(
-                FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', @user_key)
-                    FILTER rel._to == CONCAT('apps/', app._key)
-                    RETURN rel
+                FOR app IN {CollectionNames.APPS.value}
+                    FILTER LOWER(app.name) == LOWER(@service_type)
+                    FILTER app.orgId == @org_id OR (app.orgId IN [null, ""] AND LENGTH(
+                        FOR o IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER o._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND o._to == app._id
+                            LIMIT 1 RETURN 1) > 0)
+                    FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                        FILTER rel._from == CONCAT('users/', @user_key)
+                        FILTER rel._to == app._id
+                        RETURN rel
             )
 
             RETURN edge
@@ -14367,7 +14386,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"user_key": user_key, "service_type": service_type}
+                bind_vars={"user_key": user_key, "service_type": service_type, "org_id": org_id}
             )
 
             return results[0] if results else None
@@ -14379,7 +14398,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_email: str,
         state: str,
-        service_type: str = Connectors.GOOGLE_DRIVE.value
+        service_type: str = Connectors.GOOGLE_DRIVE.value,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Update user's sync state in USER_APP_RELATION collection for specific service.
@@ -14392,29 +14413,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[Dict]: Updated relation document if successful, None otherwise
         """
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             self.logger.debug("Updating a user's %s sync state to %s", service_type, state)
 
-            user_key = await self.get_entity_id_by_email(user_email)
+            user_key = await self.get_entity_id_by_email(user_email, org_id=org_id)
             if not user_key:
                 self.logger.warning("No user found by email for the %s sync state update", service_type)
                 return None
 
             # Get user key and app key based on service type and update the sync state
             query = f"""
-            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
-                          FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{
-                              _key: a._key,
-                              name: a.name
-                          }})
-
             LET edge = FIRST(
-                FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', @user_key)
-                    FILTER rel._to == CONCAT('apps/', app._key)
-                    UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
-                    RETURN NEW
+                FOR app IN {CollectionNames.APPS.value}
+                    FILTER LOWER(app.name) == LOWER(@service_type)
+                    FILTER app.orgId == @org_id OR (app.orgId IN [null, ""] AND LENGTH(
+                        FOR o IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER o._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND o._to == app._id
+                            LIMIT 1 RETURN 1) > 0)
+                    FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                        FILTER rel._from == CONCAT('users/', @user_key)
+                        FILTER rel._to == app._id
+                        UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
+                        RETURN NEW
             )
 
             RETURN edge
@@ -14425,6 +14447,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={
                     "user_key": user_key,
                     "service_type": service_type,
+                    "org_id": org_id,
                     "state": state,
                     "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                 }
@@ -28196,7 +28219,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     LET knowledge = DOCUMENT(edge._to)
                     FILTER knowledge != null
 
-                    LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    LET app_doc = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    // Only an app of the agent's organisation (through its org edge) is resolved; another org's reads as UNKNOWN.
+                    LET connector_instance = app_doc != null AND @org_id != null AND LENGTH(
+                        FOR oe IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER oe._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND oe._to == app_doc._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0 ? app_doc : null
                     LET is_kb = connector_instance != null AND connector_instance.type == @kb_type
 
                     LET kb_info = is_kb ? (
@@ -28702,7 +28732,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             LET knowledge = DOCUMENT(edge._to)
                             FILTER knowledge != null
 
-                            LET connector_instance2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            LET app_doc2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            // Only an app of the agent's organisation (through its org edge) is resolved; another org's reads as UNKNOWN.
+                            LET connector_instance2 = app_doc2 != null AND @org_id != null AND LENGTH(
+                                FOR oe IN {CollectionNames.ORG_APP_RELATION.value}
+                                    FILTER oe._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id) AND oe._to == app_doc2._id
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0 ? app_doc2 : null
                             LET is_kb2 = connector_instance2 != null AND connector_instance2.type == @kb_type
 
                             LET kb_info = is_kb2 ? (

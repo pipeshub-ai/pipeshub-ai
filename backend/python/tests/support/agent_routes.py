@@ -155,7 +155,7 @@ class InMemoryGraph:
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list[Any],
-        return_fields: list[str] | None = None, transaction: str | None = None,
+        return_fields: list[str] | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
     ) -> list[dict]:
         self._enter("get_nodes_by_field_in", collection, field, values)
         stored_field = "_key" if field == "id" else field
@@ -179,6 +179,18 @@ class InMemoryGraph:
                 doc.get("scope") == team_scope
                 or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id)
             )
+        ]
+
+    async def get_org_apps(
+        self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
+    ) -> list[dict]:
+        self._enter("get_org_apps", org_id)
+        return [
+            {**copy.deepcopy(doc), "id": doc["_key"]} for doc in self.nodes.get("apps", {}).values()
+            if doc.get("orgId") == org_id and (not active_only or doc.get("isActive"))
+            and (app_type is None or doc.get("type") == app_type)
+            and (app_ids is None or doc["_key"] in app_ids)
         ]
 
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
@@ -313,7 +325,7 @@ class InMemoryGraph:
         if role is None:
             return None
         return {**copy.deepcopy(self.nodes[TEMPLATES][template_id]), "user_role": role,
-                "can_edit": role in _EDIT_ROLES, "can_delete": role == "OWNER"}
+                "can_edit": role == "OWNER", "can_delete": role == "OWNER"}
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         # The real provider reads the template with no permission check.

@@ -28,6 +28,15 @@ def _fresh_connector_name_cache() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_registered_caller_node_ensurer() -> None:
+    """Building the entity message handler registers its caller-node ensurer process-wide; a test must not see
+    another's (a mocked one would answer every missing-user lookup)."""
+    user_lookup = sys.modules.get("app.utils.user_lookup")
+    if user_lookup is not None:
+        user_lookup._ensurer.clear()
+
+
+@pytest.fixture(autouse=True)
 def _service_container_leaves_no_wiring() -> Iterator[None]:
     """Unwire the connector service's container after each test.
 
