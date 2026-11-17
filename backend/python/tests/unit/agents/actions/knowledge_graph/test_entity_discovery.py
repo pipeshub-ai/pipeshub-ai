@@ -10,6 +10,7 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     INCOMPLETE_NOTE,
     execute_search_entities,
 )
+from app.modules.retrieval.title_hits import TITLE_SEARCH_TOP_K
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     ENTITY_INDEX_CACHE_KEY,
@@ -274,10 +275,10 @@ class TestATypeFilterThatMatchesNoName:
         assert [r["entityId"] for r in payload["results"]] == ["rg-sd", "rg-es"]
         assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-1"]
         assert "SAAS Launch" in payload["otherTypeNote"] and "record_group" in payload["otherTypeNote"]
-        # The wider search is of every type, as big and as wide as the narrowed one.
+        # The wider search is of every type, and reads more candidates than it shows.
         wider = patched[1].call_args_list[1].kwargs
         assert "entity_types" not in wider or wider["entity_types"] is None
-        assert wider["top_k"] == patched[1].call_args_list[0].kwargs["top_k"]
+        assert wider["top_k"] == TITLE_SEARCH_TOP_K
         # An entity id the agent was shown can be used by the next call.
         assert state[ENTITY_INDEX_CACHE_KEY]["epic-1"]["type"] == "record"
         assert "epic-1" in state["known_record_ids"]
@@ -334,9 +335,10 @@ class TestATypeFilterThatMatchesNoName:
         assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-1"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("failure", [EntitySearchTimedOut("deadline"), EntityAccessError("down")])
-    async def test_a_failed_wider_search_leaves_the_filtered_answer_standing(self, patched, failure) -> None:
-        patched[1].side_effect = [self.UNRELATED, failure]
+    async def test_a_wider_search_cut_by_its_deadline_marks_the_answer_incomplete(self, patched) -> None:
+        """The filtered names matched nothing, and the search that could find the meant entity
+        ran out of time: "nothing else matched" would be a guess."""
+        patched[1].side_effect = [self.UNRELATED, EntitySearchTimedOut("deadline")]
         state = _state(entity_vector_store=_matching_store("no name matches"))
 
         ok, text = await execute_search_entities(state, "SAAS Launch", entity_types=["record_group"])
@@ -345,6 +347,55 @@ class TestATypeFilterThatMatchesNoName:
         assert ok is True
         assert [r["entityId"] for r in payload["results"]] == ["rg-sd", "rg-es"]
         assert "otherTypeMatches" not in payload
+        assert payload["incomplete"] is True and payload["incompleteNote"] == INCOMPLETE_NOTE
+
+    @pytest.mark.asyncio
+    async def test_a_wider_search_left_incomplete_marks_the_answer_incomplete(self, patched) -> None:
+        patched[1].side_effect = [self.UNRELATED, EntitySearchHits([self.EPIC], incomplete=True)]
+        state = _state(entity_vector_store=_matching_store(*self._names("epic-1")))
+
+        payload = json.loads((await execute_search_entities(state, "SAAS Launch", entity_types=["record_group"]))[1])
+
+        assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-1"]
+        assert payload["incomplete"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_wider_search_that_fails_says_so(self, patched) -> None:
+        patched[1].side_effect = [self.UNRELATED, EntityAccessError("down")]
+        state = _state(entity_vector_store=_matching_store("no name matches"))
+
+        ok, text = await execute_search_entities(state, "SAAS Launch", entity_types=["record_group"])
+
+        payload = json.loads(text)
+        assert ok is True
+        assert [r["entityId"] for r in payload["results"]] == ["rg-sd", "rg-es"]
+        assert "could not be searched" in payload["otherTypeNote"]
+        assert "incomplete" not in payload
+
+    @pytest.mark.asyncio
+    async def test_a_match_ranked_past_the_results_shown_is_still_found(self, patched) -> None:
+        """The epic ranks after more than top_k other entities of every type."""
+        crowd = [_hit(f"t-{i}", "topic") for i in range(TITLE_SEARCH_TOP_K - 1)]
+        patched[1].side_effect = [self.UNRELATED, [*crowd, self.EPIC]]
+        state = _state(entity_vector_store=_matching_store(*self._names("epic-1")))
+
+        payload = json.loads((await execute_search_entities(
+            state, "SAAS Launch", entity_types=["record_group"], top_k=3,
+        ))[1])
+
+        assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-1"]
+
+    @pytest.mark.asyncio
+    async def test_other_type_matches_stop_at_top_k(self, patched) -> None:
+        epics = [_hit(f"epic-{i}", "record") for i in range(5)]
+        patched[1].side_effect = [self.UNRELATED, epics]
+        state = _state(entity_vector_store=_matching_store(*self._names(*(f"epic-{i}" for i in range(5)))))
+
+        payload = json.loads((await execute_search_entities(
+            state, "SAAS Launch", entity_types=["record_group"], top_k=2,
+        ))[1])
+
+        assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-0", "epic-1"]
 
     @pytest.mark.asyncio
     async def test_a_word_that_is_no_entity_type_is_explained_not_dropped(self, patched) -> None:

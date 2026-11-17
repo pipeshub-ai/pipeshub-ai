@@ -24988,7 +24988,9 @@ components:
             $ref: '#/components/schemas/EntitySearchResult'
         otherTypeNote:
           type: string
-          description: Set with `otherTypeMatches`; says why they are listed.
+          description: >-
+            Set with `otherTypeMatches` (why they are listed), or alone when no name matched the
+            requested `entityTypes` and entities of other types could not be searched.
         ignoredEntityTypes:
           type: array
           description: Requested `entityTypes` that are not entity types and were not searched.

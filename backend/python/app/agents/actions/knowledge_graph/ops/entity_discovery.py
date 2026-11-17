@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
@@ -38,7 +39,7 @@ from app.modules.retrieval.entity_permissions import (
     search_entities_for_user,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
-from app.modules.retrieval.title_hits import MIN_TITLE_COSINE
+from app.modules.retrieval.title_hits import MIN_TITLE_COSINE, TITLE_SEARCH_TOP_K
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 from app.utils.not_indexed import not_indexed_note
 
@@ -76,11 +77,19 @@ INCOMPLETE_NOTE = (
 )
 
 
-def _mark_incomplete(payload: dict[str, Any], hits: list[EntityHit]) -> None:
+def _mark_incomplete(payload: dict[str, Any], hits: list[EntityHit], *, others_incomplete: bool = False) -> None:
     # Only ``EntitySearchHits`` reports a cut-short search; any other list is complete.
-    if isinstance(hits, EntitySearchHits) and hits.incomplete:
+    if others_incomplete or (isinstance(hits, EntitySearchHits) and hits.incomplete):
         payload["incomplete"] = True
         payload["incompleteNote"] = INCOMPLETE_NOTE
+
+
+def _other_types_failed_note(query: str, types: list[str]) -> str:
+    return (
+        f"Nothing named like {query!r} among the entity types asked for ({', '.join(types)}), "
+        "and entities of other types could not be searched, so the entity meant may be of "
+        "another type. Search again without entity_types."
+    )
 
 
 def _other_types_note(query: str, types: list[str]) -> str:
@@ -118,6 +127,16 @@ def _entity_types_note(ignored: list[str]) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _OtherTypes:
+    """What the search of every type found, when a type filter matched no name.
+    ``incomplete``: its deadline left matches unchecked. ``failed``: it could not run."""
+
+    hits: list[EntityHit] = field(default_factory=list)
+    incomplete: bool = False
+    failed: bool = False
+
+
 async def _other_type_matches(
     store: "EntityVectorStore",
     graph: "IGraphDBProvider",
@@ -127,29 +146,36 @@ async def _other_type_matches(
     *,
     top_k: int,
     include_named: bool,
-) -> list[EntityHit]:
+) -> _OtherTypes:
     """Entities of any type whose names match ``query``, when none of ``hits``
     (a search narrowed to some types) does. A model guesses the type of a name
     it has never seen ("SAAS Launch" as a project when it is an epic), and the
     narrowed search then returns its nearest, unrelated entities as if they
     matched: its scores are rank fused, so only the cosine of a name to the
     query says whether it matches. Every entity returned passed the access
-    check. Best effort: on any failure the narrowed answer stands alone."""
+    check.
+
+    The search reads ``TITLE_SEARCH_TOP_K`` candidates before names are
+    compared, as the record-title lookup does, so a match ranked just past the
+    few results shown is still found. A deadline or a failure is reported, not
+    read as "nothing else matched": the narrowed answer is exactly the one the
+    model would otherwise take as complete."""
     try:
         if hits and any(c >= MIN_TITLE_COSINE for c in await store.dense_similarities(query, [h.name for h in hits])):
-            return []
+            return _OtherTypes()
+        wider = await search_entities_for_user(
+            store, graph, context, query, top_k=max(top_k, TITLE_SEARCH_TOP_K), include_named=include_named,
+        )
         shown = {(h.entity_type, h.entity_id) for h in hits}
-        wider = [
-            h for h in await search_entities_for_user(
-                store, graph, context, query, top_k=top_k, include_named=include_named,
-            )
-            if (h.entity_type, h.entity_id) not in shown
-        ]
-        cosines = await store.dense_similarities(query, [h.name for h in wider])
-        return [h for h, c in zip(wider, cosines) if c >= MIN_TITLE_COSINE]
+        candidates = [h for h in wider if (h.entity_type, h.entity_id) not in shown]
+        cosines = await store.dense_similarities(query, [h.name for h in candidates])
+    except EntitySearchTimedOut:
+        return _OtherTypes(incomplete=True)
     except Exception:
         logger.warning("search_entities: the search of other entity types failed", exc_info=True)
-        return []
+        return _OtherTypes(failed=True)
+    matched = [h for h, c in zip(candidates, cosines) if c >= MIN_TITLE_COSINE][:top_k]
+    return _OtherTypes(matched, incomplete=isinstance(wider, EntitySearchHits) and wider.incomplete)
 
 
 def _show(
@@ -290,7 +316,7 @@ async def execute_search_entities(
     others = await _other_type_matches(
         entity_vector_store, graph_provider, context, query, hits,
         top_k=bounded_top_k, include_named=enabled,
-    ) if valid_types else []
+    ) if valid_types else _OtherTypes()
 
     payload: dict[str, Any] = {"status": "success"}
     if hits:
@@ -299,15 +325,17 @@ async def execute_search_entities(
         payload.update(message="No accessible entities matched", results=[])
         if note := limited_scope_note(context):
             payload["scopeNote"] = note
-    if others:
-        payload["otherTypeMatches"] = _show(state, context, others, with_kind=entity_search_offered)
+    if others.hits:
+        payload["otherTypeMatches"] = _show(state, context, others.hits, with_kind=entity_search_offered)
         payload["otherTypeNote"] = _other_types_note(query, valid_types)
+    elif others.failed:
+        payload["otherTypeNote"] = _other_types_failed_note(query, valid_types)
     if ignored:
         payload["ignoredEntityTypes"] = ignored
         payload["entityTypesNote"] = _entity_types_note(ignored)
     if kind_notes:
         payload["kindNotes"] = kind_notes
-    _mark_incomplete(payload, hits)
+    _mark_incomplete(payload, hits, others_incomplete=others.incomplete)
     return True, json.dumps(payload)
 
 
