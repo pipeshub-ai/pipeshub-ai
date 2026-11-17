@@ -29,7 +29,7 @@ class _FailingSet:
         self.calls = 0
         self._real = env.store.set_config
 
-    async def __call__(self, key, value, *, ttl_seconds=None):
+    async def __call__(self, key, value, *, ttl_seconds=None) -> bool:
         self.calls += 1
         if self.left > 0:
             self.left -= 1
@@ -39,7 +39,7 @@ class _FailingSet:
         return await self._real(key, value, ttl_seconds=ttl_seconds)
 
 
-async def _fire_then_clear(env: Env, failing: _FailingSet):
+async def _fire_then_clear(env: Env, failing: _FailingSet) -> object:
     runner = env.runner()
     env.warn()
     await runner.run_once()

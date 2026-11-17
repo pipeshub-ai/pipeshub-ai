@@ -47,8 +47,8 @@ MiB = 2**20
 M = 512 * MiB
 
 
-def _live(tmp_path: Path, clock: FakeClock, reader: Any, *, settings: LiveSettings | None = None,
-          cap: Any = None, mode: str = "on:host", profile: str = "host") -> LiveLimit:
+def _live(tmp_path: Path, clock: FakeClock, reader: object, *, settings: LiveSettings | None = None,
+          cap: object = None, mode: str = "on:host", profile: str = "host") -> LiveLimit:
     live_mode = LiveMode(mode=mode, reader=reader, profile=profile)  # type: ignore[arg-type]
     live = LiveLimit(
         cap or capacity(), None, settings=settings or LiveSettings(), resolver=lambda: live_mode,

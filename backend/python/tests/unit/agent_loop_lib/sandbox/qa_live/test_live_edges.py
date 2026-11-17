@@ -54,7 +54,7 @@ from tests.unit.agent_loop_lib.sandbox.live_fakes import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 GiB = 2**30
@@ -62,7 +62,7 @@ MiB = 2**20
 
 
 def _live(
-    tmp_path: Path, clock: FakeClock, reader: Any, *, mode: str = "on:host",
+    tmp_path: Path, clock: FakeClock, reader: object, *, mode: str = "on:host",
     profile: str = "host", cap: SandboxCapacity | None = None, settings: LiveSettings | None = None,
 ) -> LiveLimit:
     live_mode = LiveMode(mode=mode, reader=reader, profile=profile)  # type: ignore[arg-type]
@@ -279,7 +279,7 @@ class TestCgroupReadings:
         assert reader.read() == HostSample(source="cgroup")
 
 
-def _sidecar_get(body: Any, status: int = 200, *, delay: float = 0.0, exc: Exception | None = None) -> Callable:
+def _sidecar_get(body: object, status: int = 200, *, delay: float = 0.0, exc: Exception | None = None) -> Callable:
     def get(path: str, timeout: float) -> tuple[int, Any]:
         if delay:
             time.sleep(delay)
@@ -505,7 +505,7 @@ async def _max_lag(work: Callable[[], Any], seconds: float) -> float:
 
 class TestEventLoop:
     @pytest.fixture
-    def held_lock(self, tmp_path: Path) -> Any:
+    def held_lock(self, tmp_path: Path) -> Iterator[Callable[[], None]]:
         import fcntl
 
         def hold() -> int:
@@ -518,7 +518,7 @@ class TestEventLoop:
         for fd in fds:
             os.close(fd)
 
-    async def test_view_wait_and_admit_never_block_on_a_held_lock(self, tmp_path: Path, held_lock: Any) -> None:
+    async def test_view_wait_and_admit_never_block_on_a_held_lock(self, tmp_path: Path, held_lock: Callable[[], None]) -> None:
         clock = FakeClock()
         live = _live(tmp_path, clock, FakeReader(sample(4.0)))
         live.sample_once()

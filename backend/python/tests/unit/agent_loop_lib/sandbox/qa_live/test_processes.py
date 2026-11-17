@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from multiprocessing.queues import Queue
     from multiprocessing.synchronize import Barrier, Event
 
+    from app.agent_loop_lib.sandbox.host_reading import HostSample
+    from app.agent_loop_lib.sandbox.live_limit import LiveLimit
+
 pytest.importorskip("fcntl")
 pytestmark = [pytest.mark.integration, pytest.mark.chaos, pytest.mark.timeout(60)]
 
@@ -45,7 +48,7 @@ class _FileReader:
         except (OSError, ValueError, KeyError):
             return None
 
-    def read(self) -> Any:
+    def read(self) -> HostSample:
         from app.agent_loop_lib.sandbox.host_reading import HostSample
 
         return HostSample(mem_total=16 * GiB, mem_available=self._avail(), cpu_util=0.1, source="host")
@@ -54,7 +57,7 @@ class _FileReader:
         return self._avail(), 16 * GiB
 
 
-def _live(directory: str, reader_file: str, interval_s: float) -> Any:
+def _live(directory: str, reader_file: str, interval_s: float) -> LiveLimit:
     from app.agent_loop_lib.sandbox.capacity import (
         CapacitySettings,
         MachineSize,
