@@ -24,8 +24,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
+from app.agent_loop_lib.sandbox.capacity import slot_file_count
 from app.agent_loop_lib.sandbox.coding.egress_firewall import ensure_egress_network_sync
-from app.agent_loop_lib.sandbox.coding.settings import _env_cap
 
 __all__ = [
     "DockerClientProvider",
@@ -193,8 +193,8 @@ def get_default_provider(*, max_workers: int | None = None) -> DockerClientProvi
 
     Shared deliberately: `max_workers` doubles as the ceiling on concurrent
     blocking docker operations, which only bounds anything if every sandbox
-    in the process draws from the same pool. Defaults to the governor's
-    process-wide cap (`SANDBOX_MAX_TOTAL`).
+    in the process draws from the same pool. Defaults to the number of
+    shared sandbox slots plus a few for pings and inspects.
     """
     global _default_provider
     if _default_provider is not None:
@@ -203,9 +203,10 @@ def get_default_provider(*, max_workers: int | None = None) -> DockerClientProvi
         if _default_provider is None:
             if max_workers is None:
                 # A run blocks its thread for the container's life (`container.wait`),
-                # so size the pool to the governor's process-wide cap; an unlimited
-                # cap still needs a finite pool.
-                max_workers = _env_cap("SANDBOX_MAX_TOTAL", 50) or 50
+                # and any one worker may hold every slot the workers share, so the
+                # pool covers all of them. Threads start lazily, so this costs
+                # nothing until used.
+                max_workers = slot_file_count() + 4
             _default_provider = DockerClientProvider(max_workers=max_workers)
             atexit.register(_default_provider.close)
         return _default_provider

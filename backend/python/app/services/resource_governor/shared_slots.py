@@ -28,20 +28,30 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import stat
 import tempfile
 import threading
 import time
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - not POSIX
     fcntl = None  # type: ignore[assignment]
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 logger = logging.getLogger(__name__)
 
 _MUTEX_FILE = "mutex"
+# A tagged slot file holds its holder's tag, space-padded to this many bytes,
+# then a newline.
+_TAG_BYTES = 16
 
 
 class SlotHold:
@@ -63,6 +73,24 @@ class SlotHold:
         indices, self._indices = self._indices, []
         if self._owner is not None and indices:
             self._owner._release(indices)
+
+
+@dataclass(frozen=True)
+class SlotDenied:
+    """Why ``try_acquire_tagged`` took nothing.
+
+    ``busy``: another process was counting at that instant (``held`` and
+    ``tag_held`` are then 0). ``full``: *limit* slots are held. ``tag_full``:
+    the holders with this tag reached *tag_limit*.
+    """
+
+    reason: Literal["busy", "full", "tag_full"]
+    held: int = 0
+    tag_held: int = 0
+
+
+def _pad_tag(tag: bytes) -> bytes:
+    return tag[:_TAG_BYTES].ljust(_TAG_BYTES) + b"\n"
 
 
 def _try_lock(fd: int) -> bool:
@@ -89,6 +117,9 @@ class SharedSlots:
         # from counting through the same descriptors at once.
         self._lock = threading.Lock()
         self._held_here: set[int] = set()
+        # The tag of each slot held here, which this process cannot read back
+        # through a lock of its own.
+        self._tags: dict[int, bytes] = {}
         self._closed = False
         ensure_private_directory(directory)
         opened: list[int] = []
@@ -150,6 +181,90 @@ class SharedSlots:
             finally:
                 _unlock(self._mutex_fd)
 
+    def try_acquire_tagged(
+        self, limit: int, *, tag: bytes, tag_limit: int | None,
+    ) -> SlotHold | SlotDenied:
+        """Take one slot, stamped with *tag*, if fewer than *limit* slots are
+        held and fewer than *tag_limit* of them carry *tag*.
+
+        Never blocks: a mutex held by another process gives
+        ``SlotDenied("busy")`` at once, so this may run on an event loop. An
+        empty tag is never tag-limited. Unlike ``try_acquire`` there is no
+        "admit alone" rule; every holder costs one slot.
+
+        A tag is only read from a slot whose lock is held, and it is written
+        under the mutex before that lock is seen as held, so a stale tag left
+        in a free file is never counted. A holder that died has no lock, so its
+        slot reads as free whatever its file says.
+        """
+        tag = tag[:_TAG_BYTES].strip()
+        with self._lock:
+            if self._closed:
+                raise OSError("shared slots are closed")
+            if not _try_lock(self._mutex_fd):
+                return SlotDenied("busy")
+            free: int | None = None
+            taken = False
+            try:
+                held = tag_held = 0
+                for index, fd in enumerate(self._slot_fds):
+                    if index in self._held_here:
+                        holder = self._tags.get(index, b"")
+                    elif not _try_lock(fd):
+                        holder = os.pread(fd, _TAG_BYTES + 1, 0)[:_TAG_BYTES].strip()
+                    else:
+                        if free is None:
+                            free = index
+                        else:
+                            _unlock(fd)
+                        continue
+                    held += 1
+                    if tag and holder == tag:
+                        tag_held += 1
+                if free is None or held >= limit:
+                    return SlotDenied("full", held, tag_held)
+                if tag and tag_limit is not None and tag_held >= tag_limit:
+                    return SlotDenied("tag_full", held, tag_held)
+                os.pwrite(self._slot_fds[free], _pad_tag(tag), 0)
+                self._held_here.add(free)
+                self._tags[free] = tag
+                taken = True
+                return SlotHold(self, [free], held)
+            finally:
+                if free is not None and not taken:
+                    _unlock(self._slot_fds[free])
+                _unlock(self._mutex_fd)
+
+    def held_by_tag(self, budget: float = 0.0) -> Counter[bytes]:
+        """Held slots by tag (``b""`` for untagged), from every process.
+        Read-only, like ``held_count``.
+
+        With ``budget=0.0`` it makes one try at the mutex and raises
+        ``TimeoutError`` at once when another process holds it, so it may run
+        on an event loop. A larger budget spins and must not.
+        """
+        deadline = time.monotonic() + budget
+        while True:
+            with self._lock:
+                if self._closed:
+                    return Counter()
+                if _try_lock(self._mutex_fd):
+                    try:
+                        counts: Counter[bytes] = Counter()
+                        for index, fd in enumerate(self._slot_fds):
+                            if index in self._held_here:
+                                counts[self._tags.get(index, b"")] += 1
+                            elif not _try_lock(fd):
+                                counts[os.pread(fd, _TAG_BYTES + 1, 0)[:_TAG_BYTES].strip()] += 1
+                            else:
+                                _unlock(fd)
+                        return counts
+                    finally:
+                        _unlock(self._mutex_fd)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("shared slot mutex stayed busy")
+            time.sleep(0.001)
+
     def held_count(self, budget: float = 1.0) -> int:
         """Slots held now, by any process. Read-only: takes the mutex, then
         probes each slot and puts it straight back.
@@ -185,6 +300,7 @@ class SharedSlots:
             fds = [self._directory_fd, self._mutex_fd, *self._slot_fds]
             self._slot_fds = []
             self._held_here.clear()
+            self._tags.clear()
             for fd in fds:
                 os.close(fd)
 
@@ -193,7 +309,53 @@ class SharedSlots:
             for index in indices:
                 if index in self._held_here:
                     self._held_here.discard(index)
+                    self._tags.pop(index, None)
                     _unlock(self._slot_fds[index])
+
+
+class LocalTaggedSlots:
+    """``SharedSlots``' tagged interface, counted in this process only.
+
+    For hosts without POSIX file locks or a usable private directory: each
+    worker then counts its own slots, so N workers may hold N times the limit.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = max(1, capacity)
+        self._lock = threading.Lock()
+        self._tags: dict[int, bytes] = {}
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    def try_acquire_tagged(
+        self, limit: int, *, tag: bytes, tag_limit: int | None,
+    ) -> SlotHold | SlotDenied:
+        tag = tag[:_TAG_BYTES].strip()
+        with self._lock:
+            held = len(self._tags)
+            tag_held = sum(1 for held_tag in self._tags.values() if tag and held_tag == tag)
+            if held >= min(limit, self._capacity):
+                return SlotDenied("full", held, tag_held)
+            if tag and tag_limit is not None and tag_held >= tag_limit:
+                return SlotDenied("tag_full", held, tag_held)
+            free = next(i for i in range(self._capacity) if i not in self._tags)
+            self._tags[free] = tag
+            return SlotHold(self, [free], held)  # type: ignore[arg-type]
+
+    def held_by_tag(self, budget: float = 0.0) -> Counter[bytes]:
+        with self._lock:
+            return Counter(self._tags.values())
+
+    def close(self) -> None:
+        with self._lock:
+            self._tags.clear()
+
+    def _release(self, indices: list[int]) -> None:
+        with self._lock:
+            for index in indices:
+                self._tags.pop(index, None)
 
 
 def ensure_private_directory(directory: Path) -> None:
@@ -239,6 +401,36 @@ def shared_slots_directory(name: str) -> Path | None:
     if fcntl is None:
         return None
     return Path(tempfile.gettempdir()) / f"{name}-{os.getuid()}"
+
+
+_STATE_ID_ENV = "SANDBOX_STATE_ID"
+_STATE_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,63}")
+_warned_state_ids: set[str] = set()
+
+
+def sandbox_state_directory(env: Mapping[str, str] | None = None) -> Path | None:
+    """The private directory the code sandbox keeps its cross-worker state in.
+
+    ``/tmp/pipeshub-sandbox-<uid>``, or ``/tmp/pipeshub-sandbox-<id>-<uid>``
+    when ``SANDBOX_STATE_ID`` is set. In a container every stack has its own
+    ``/tmp``. Stacks whose services run directly on one host as one user share
+    it, so each sets its own id (the same one for its query and indexing
+    processes), or they share one set of slots. An id that is not 1-63 of
+    ``A-Z a-z 0-9 _ . -`` is ignored with one warning. ``None`` without POSIX
+    file locks.
+    """
+    env = os.environ if env is None else env
+    raw = (env.get(_STATE_ID_ENV) or "").strip()
+    name = "pipeshub-sandbox"
+    if raw:
+        if _STATE_ID_RE.fullmatch(raw):
+            name = f"{name}-{raw}"
+        elif raw not in _warned_state_ids:
+            _warned_state_ids.add(raw)
+            logger.warning(
+                "Ignoring %s=%r: use 1-63 letters, digits, '_', '.' or '-'", _STATE_ID_ENV, raw,
+            )
+    return shared_slots_directory(name)
 
 
 def open_shared_slots(directory: Path, capacity: int) -> SharedSlots | None:

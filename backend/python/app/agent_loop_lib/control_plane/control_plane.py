@@ -405,9 +405,9 @@ class ControlPlane:
 
             csc = cfg.coding_sandbox
 
-            # Process-wide, not per-ControlPlane: an instance per plane
-            # would cap each one separately, which is no cap at all once
-            # several run in the same process.
+            # Shared, not per-ControlPlane: an instance per plane would cap
+            # each one separately, which is no cap at all once several run
+            # in the same process.
             governor = get_default_governor(GovernorLimits(
                 max_total_sandboxes=csc.governor.max_total_sandboxes,
                 max_per_org=csc.governor.max_per_org,

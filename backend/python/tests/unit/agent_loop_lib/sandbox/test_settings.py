@@ -44,10 +44,10 @@ class TestSandboxSettingsDefaults:
         assert s.allow_network is False
         assert s.max_concurrent_per_request == 5
 
-    def test_governor_settings_defaults(self) -> None:
+    def test_governor_settings_default_to_unset(self) -> None:
         g = GovernorSettings()
-        assert g.max_total_sandboxes == 50
-        assert g.max_per_org == 10
+        assert g.max_total_sandboxes is None
+        assert g.max_per_org is None
 
 
 class TestEnvSandboxSettingsLoader:
@@ -94,6 +94,19 @@ class TestEnvSandboxSettingsLoader:
 
         assert settings.governor.max_total_sandboxes == 20
         assert settings.governor.max_per_org == 5
+
+    @pytest.mark.parametrize("raw", ["", "abc"])
+    async def test_an_empty_or_malformed_cap_is_unset(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str,
+    ) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
+        monkeypatch.setenv("SANDBOX_MAX_PER_ORG", raw)
+        settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert settings.governor.max_total_sandboxes is None
+        assert settings.governor.max_per_org is None
 
 
 class TestConfigServiceSandboxSettingsLoader:

@@ -307,7 +307,7 @@ class TestLiveConcurrency:
         a sandbox takes a slot only while a call runs on it."""
         _require_docker()
         provider = DockerClientProvider(max_workers=4)
-        governor = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=2))
+        governor = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=2))
         managers = []
 
         for i in range(3):
@@ -548,7 +548,7 @@ class TestLiveRunSafety:
     async def test_cancel_removes_the_container_before_the_next_slot(self, tmp_path, no_leaked_containers) -> None:
         import time
 
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         manager = SandboxManager(governor=gov, slot_wait_s=30)
         manager.register_backend_factory(SandboxType.CODING, lambda: _make_sandbox(tmp_path, f"c{time.time_ns()}"))
         sid1, sb1 = await manager.get_or_create(SandboxType.CODING)
@@ -574,7 +574,7 @@ class TestLiveRunSafety:
         from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
 
         token = CancellationToken()
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         manager = SandboxManager(governor=gov, stop_token=token)
         manager.register_backend_factory(SandboxType.CODING, lambda: _make_sandbox(tmp_path, "stop"))
         sid, sb = await manager.get_or_create(SandboxType.CODING)

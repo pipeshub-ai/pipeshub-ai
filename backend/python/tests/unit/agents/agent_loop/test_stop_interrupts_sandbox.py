@@ -72,7 +72,7 @@ def _build(
         backends.append(_Backend(finish=finish))
         return backends[-1]
 
-    governor = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=4))
+    governor = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=4))
     manager = SandboxManager(governor=governor, stop_token=token, slot_wait_s=5)
     manager.register_backend_factory(SandboxType.CODING, make)
     registry = ToolRegistry()

@@ -15,6 +15,7 @@ from app.agent_loop_lib.core.tasks import wait_owned
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import CancellationToken
+    from app.agent_loop_lib.sandbox.capacity import HoldReason
     from app.agent_loop_lib.sandbox.coding.base import SandboxContext, SandboxRef
     from app.agent_loop_lib.sandbox.coding.registry import SandboxBackendFactory
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
@@ -83,7 +84,12 @@ class UnknownSandboxError(SandboxManagerError):
 
 class SandboxLimitExceeded(SandboxManagerError):
     """Raised when creating a new sandbox would exceed the configured
-    `max_concurrent` for its type."""
+    `max_concurrent` for its type, or no governor slot came free in time.
+    `reason` is the governor's `HoldReason` (`None` for `max_concurrent`)."""
+
+    def __init__(self, *args: object, reason: "HoldReason | None" = None) -> None:
+        super().__init__(*args)
+        self.reason = reason
 
 
 class SandboxCallStopped(SandboxManagerError):

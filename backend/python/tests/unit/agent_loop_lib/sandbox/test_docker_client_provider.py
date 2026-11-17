@@ -203,6 +203,27 @@ class TestDockerClientProvider:
         assert provider._executor._max_workers == 2
         provider.close()
 
+    @pytest.mark.parametrize(("raw", "workers"), [(None, 260), ("300", 304), ("0", 1028)])
+    def test_the_default_pool_covers_every_shared_slot(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str | None, workers: int,
+    ) -> None:
+        """Any one worker may hold every slot the workers share, and a run
+        keeps its thread for the container's life."""
+        from app.agent_loop_lib.sandbox.coding.docker_client import (
+            get_default_provider,
+            reset_default_provider,
+        )
+
+        if raw is None:
+            monkeypatch.delenv("SANDBOX_MAX_TOTAL", raising=False)
+        else:
+            monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
+        reset_default_provider()
+        try:
+            assert get_default_provider()._executor._max_workers == workers
+        finally:
+            reset_default_provider()
+
     async def test_run_control_runs_while_every_run_worker_is_busy(self) -> None:
         import asyncio
         import threading

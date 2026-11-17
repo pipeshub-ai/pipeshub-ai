@@ -70,10 +70,7 @@ from app.agent_loop_lib.sandbox.coding.settings import (
     EnvSandboxSettingsLoader,
     SharedSandboxConfig,
 )
-from app.agent_loop_lib.sandbox.governor import (
-    GovernorLimits,
-    get_default_governor,
-)
+from app.agent_loop_lib.sandbox.governor import get_default_governor
 from app.agent_loop_lib.sandbox.manager import (
     SandboxLimits,
     SandboxManager,
@@ -102,7 +99,10 @@ from app.sandbox.package_policy import (
     get_allowlist,
 )
 from app.sandbox.redact import redact_sandbox_paths
-from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
+from app.services.artifact_registry.access import (
+    AccessDeniedError,
+    ArtifactNotFoundError,
+)
 from app.utils.conversation_tasks import register_task
 
 # run_code's ONE user-facing deliverable directory, backed by $OUTPUT_DIR
@@ -239,8 +239,9 @@ async def build_coding_sandbox_manager(
 
     The manager is per request; the *governor* it is given is not. Per-request
     limits bound one chat, but nothing stops N concurrent chats from each
-    spinning up their own quota — so the process-wide ceiling comes from
-    ``get_default_governor()``, shared by every request in this process.
+    spinning up their own quota — so the ceiling comes from
+    ``get_default_governor()``, whose slots every worker of the container
+    counts. It reads ``SANDBOX_MAX_TOTAL`` and ``SANDBOX_MAX_PER_ORG`` itself.
 
     ``max_concurrent``, ``max_lifetime_s`` and ``allow_network`` fall back to
     the loaded ``SandboxSettings`` when omitted, so the corresponding env vars
@@ -274,10 +275,7 @@ async def build_coding_sandbox_manager(
         allow_network = settings.allow_network
 
     manager = SandboxManager(
-        governor=get_default_governor(GovernorLimits(
-            max_total_sandboxes=settings.governor.max_total_sandboxes,
-            max_per_org=settings.governor.max_per_org,
-        )),
+        governor=get_default_governor(),
         slot_wait_s=settings.slot_wait_s,
         on_slot_wait=_slot_wait_notice(ctx),
         stop_token=getattr(ctx, "cancellation_token", None),

@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.sandbox.capacity import CapacitySettings
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 from app.agent_loop_lib.sandbox.coding.egress_firewall import parse_cidrs
 
@@ -207,24 +208,14 @@ def max_run_timeout_from_env(env: Any = None) -> float:
     return used
 
 
-def _env_cap(key: str, default: int) -> int | None:
-    """A sandbox cap: a positive int, or `None` for unlimited.
-
-    `<= 0` means unlimited rather than "block everything" — an operator
-    zeroing a cap is disabling it, and the alternative reading would make
-    the platform silently refuse every sandbox.
-    """
-    value = _env_int(key, default)
-    return value if value > 0 else None
-
-
 class GovernorSettings(BaseModel):
-    """Mirrors ``GovernorLimits`` in ``sandbox/governor.py`` — kept as a
-    separate settings model so ``SandboxSettings`` has no import-time
-    dependency on the governor module."""
+    """The explicit caps from ``SANDBOX_MAX_TOTAL`` and ``SANDBOX_MAX_PER_ORG``,
+    as ``sandbox/capacity.py`` parses them, for logs. ``None`` means not set:
+    the total is then sized from the machine. A per-org cap of ``0`` means
+    none. The governor reads the environment itself."""
 
-    max_total_sandboxes: int | None = 50
-    max_per_org: int | None = 10
+    max_total_sandboxes: int | None = None
+    max_per_org: int | None = None
 
 
 class SandboxSettings(BaseModel):
@@ -321,6 +312,7 @@ class EnvSandboxSettingsLoader:
         # `backend_options` is `dict[str, Any]` with no `SecretStr` to hide
         # behind — `E2BCodingSandboxFactory` reads `E2B_API_KEY` itself.
 
+        caps = CapacitySettings.from_env()
         return SandboxSettings(
             backend=backend,
             backend_options=backend_options,
@@ -331,8 +323,7 @@ class EnvSandboxSettingsLoader:
             slot_wait_s=_env_float(self._ENV_SLOT_WAIT_S, 120.0),
             max_run_timeout_s=max_run_timeout_from_env(),
             governor=GovernorSettings(
-                max_total_sandboxes=_env_cap(self._ENV_MAX_TOTAL, 50),
-                max_per_org=_env_cap(self._ENV_MAX_PER_ORG, 10),
+                max_total_sandboxes=caps.max_total, max_per_org=caps.max_per_org,
             ),
         )
 

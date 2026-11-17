@@ -223,12 +223,13 @@ class DockerBackendConfig(BaseModel):
 
 
 class GovernorConfig(BaseModel):
-    """Process-wide sandbox resource governance — see
-    ``sandbox/governor.py::SandboxResourceGovernor``. ``None`` on either
-    cap means unlimited for that dimension."""
+    """Container-wide sandbox resource governance — see
+    ``sandbox/governor.py::SandboxResourceGovernor``. A value set here wins
+    over ``SANDBOX_MAX_TOTAL`` / ``SANDBOX_MAX_PER_ORG``; ``None`` leaves the
+    cap to them (the total is then sized from the machine)."""
 
-    max_total_sandboxes: int | None = 50
-    max_per_org: int | None = 10
+    max_total_sandboxes: int | None = None
+    max_per_org: int | None = None
 
 
 class CodingSandboxConfig(BaseModel):

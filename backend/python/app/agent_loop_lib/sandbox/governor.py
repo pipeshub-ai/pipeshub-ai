@@ -1,4 +1,4 @@
-"""Process-wide resource governance for sandbox instances.
+"""Container-wide resource governance for sandbox instances.
 
 Prevents unbounded sandbox creation from OOMing the host: each
 ``SandboxManager`` (one per request) calls ``acquire()`` and ``release()``
@@ -7,27 +7,54 @@ backend holds its slot from provisioning to destroy; any other backend
 holds one only while a call runs (``SandboxManager.slot()``).
 
 The instance has to be shared to mean anything. Per-request limits
-(``SandboxLimits.max_concurrent``) bound one chat; only a process-wide
-governor bounds the host when N chats run at once, so both
+(``SandboxLimits.max_concurrent``) bound one chat; only a shared governor
+bounds the host when N chats run at once, so both
 ``build_coding_sandbox_manager()`` and ``ControlPlane.start()`` take theirs
 from ``get_default_governor()`` rather than constructing one.
 
-Phase 1: in-memory counters behind an ``asyncio.Lock``. A multi-instance
-deployment gets per-process caps; a KV-backed governor via
-``KeyValueStoreFactory`` is a Phase 4 option, not a hard dependency.
+A slot is a file lock in the sandbox state directory (``SharedSlots``), so
+every query worker of the container counts the same slots, and a worker that
+dies gives its slots back with it. Each held slot records a hash of its org,
+so the per-org cap is exact across workers too. Where file locks cannot be
+used, slots are counted per worker (``LocalTaggedSlots``) with a warning.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import threading
-from collections.abc import Awaitable, Callable
+import time
+from collections import Counter
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
+from app.agent_loop_lib.sandbox.capacity import (
+    AcquireObserver,
+    FixedLimit,
+    HoldReason,
+    LimitProvider,
+    LiveView,
+    SandboxCapacity,
+    get_sandbox_capacity,
+    hold_reason,
+    org_tag,
+    reset_sandbox_capacity,
+    sandbox_state_directory,
+)
 from app.agent_loop_lib.sandbox.manager import SandboxLimitExceeded
+from app.services.resource_governor.shared_slots import (
+    LocalTaggedSlots,
+    SharedSlots,
+    SlotHold,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = [
     "GovernorLimits",
@@ -35,17 +62,28 @@ __all__ = [
     "SandboxResourceGovernor",
     "SandboxLimitExceeded",
     "get_default_governor",
+    "message",
     "reset_default_governor",
 ]
 
 logger = logging.getLogger(__name__)
 
+# A mutex held by another worker is normally free again within microseconds;
+# after this many quick retries the attempt counts as full and waits normally.
+_BUSY_RETRIES = 5
+_BUSY_RETRY_S = 0.002
+_BUSY_WARN_AFTER_S = 5.0
+_BUSY_WARN_EVERY_S = 60.0
+_WAITING_LOG_EVERY_S = 10.0
+
 
 class GovernorLimits(BaseModel):
-    """``None`` on either cap means unlimited for that dimension."""
+    """Explicit caps from code, with the meaning of ``SANDBOX_MAX_TOTAL`` and
+    ``SANDBOX_MAX_PER_ORG``. ``None`` leaves that cap to the environment and
+    the machine's size."""
 
-    max_total_sandboxes: int | None = 50
-    max_per_org: int | None = 10
+    max_total_sandboxes: int | None = None
+    max_per_org: int | None = None
 
 
 @dataclass
@@ -53,52 +91,124 @@ class GovernorLease:
     """Opaque token returned by ``acquire()``; pass to ``release()``."""
 
     governor: SandboxResourceGovernor
-    org_id: str | None = None
+    hold: SlotHold
+    tag: bytes = b""
     released: bool = field(default=False, repr=False)
 
     async def release(self) -> None:
         await self.governor.release(self)
 
 
-class SandboxResourceGovernor:
-    """In-memory, ``asyncio.Lock``-guarded counters. One instance per
-    process, injected into every ``SandboxManager``.
+def message(
+    reason: HoldReason, *, held: int, limit: int, tag_held: int | None = None,
+    org_limit: int | None = None, memory_source: Literal["host", "sidecar"] = "host",
+) -> str:
+    """What the model is told when a run gives up waiting for a sandbox."""
+    if reason is HoldReason.ORG_SHARE:
+        return (
+            f"this organisation's share of code sandboxes is in use "
+            f"({tag_held}/{org_limit}); retry once one of its runs ends"
+        )
+    runner = "the code runner" if memory_source == "sidecar" else "the server"
+    if reason in (HoldReason.LIVE_MEMORY, HoldReason.HOST_MEMORY_FLOOR):
+        return (
+            f"{runner} is short of memory right now ({held}/{limit} code sandboxes "
+            f"in use); retry in a minute"
+        )
+    if reason is HoldReason.LIVE_CPU:
+        runner = "the code runner's" if memory_source == "sidecar" else "the server's"
+        return (
+            f"{runner} CPU is busy, so fewer code sandboxes run at once "
+            f"({held}/{limit}); retry in a minute"
+        )
+    return (
+        f"all {limit} code sandboxes on this server are busy ({held}/{limit}); "
+        f"retry once one is released"
+    )
 
-    A caller that would exceed a cap waits up to ``wait_s`` for a slot to
-    be released, then gets ``SandboxLimitExceeded``. ``wait_s=0`` (the
-    default) fails at once. The agent surfaces the error to the model as a
-    retryable denial.
+
+def _memory_source(view: LiveView) -> Literal["host", "sidecar"]:
+    return "sidecar" if (view.source or "").startswith("sidecar") else "host"
+
+
+def _wake(future: asyncio.Future[None]) -> None:
+    if not future.done():
+        future.set_result(None)
+
+
+class SandboxResourceGovernor:
+    """Counts code sandbox slots for every worker of the container.
+
+    A caller that would exceed the limit, or its org's cap, waits up to
+    ``wait_s`` for a slot, then gets ``SandboxLimitExceeded``. ``wait_s=0``
+    (the default) fails at once. The agent surfaces the error to the model as
+    a retryable denial.
+
+    A release in this process wakes this process's waiters at once. Releases
+    in other workers have no notification across processes, so every waiter
+    also retries on a jittered ``poll_s`` timer.
     """
 
-    def __init__(self, limits: GovernorLimits | None = None) -> None:
-        self._limits = limits or GovernorLimits()
-        self._lock = asyncio.Lock()
-        self._released = asyncio.Condition(self._lock)
-        self._total = 0
-        self._per_org: dict[str, int] = {}
+    def __init__(
+        self,
+        capacity: SandboxCapacity,
+        slots: SharedSlots | LocalTaggedSlots,
+        *,
+        limit_provider: LimitProvider,
+        observers: Sequence[AcquireObserver] = (),
+        poll_s: float = 0.25,
+        clock: Callable[[], float] = time.monotonic,
+        rng: random.Random | None = None,
+    ) -> None:
+        self.capacity = capacity
+        self._slots = slots
+        self.limit_provider = limit_provider
+        self._observers = list(observers)
+        self._poll_s = poll_s
+        self._clock = clock
+        self._rng = rng or random.Random()
+        # Futures of this process's waiters, possibly on different loops;
+        # resolved through their own loop so any thread may wake them.
+        self._waiters: set[asyncio.Future[None]] = set()
+        self._waiters_lock = threading.Lock()
+        self._waiting_here = 0
+        self._sizing_awaited = False
+        self._last_counts: Counter[bytes] = Counter()
+        self._warned_observers: set[tuple[int, str]] = set()
+        self._busy_since: float | None = None
+        self._busy_warned_at: float | None = None
+        self._waiting_logged_at: float | None = None
+        capacity.add_listener(self.capacity_changed)
+
+    @classmethod
+    def in_process(cls, limits: GovernorLimits | None = None) -> SandboxResourceGovernor:
+        """A governor whose slots this process alone counts, with explicit caps
+        (an unset total allows up to 1024). For callers that need their own
+        budget, such as tests."""
+        limits = limits or GovernorLimits()
+        total = limits.max_total_sandboxes or 1024
+        capacity = SandboxCapacity.fixed(total, limits.max_per_org)
+        return cls(
+            capacity, LocalTaggedSlots(capacity.slot_files), limit_provider=FixedLimit(capacity),
+        )
 
     @property
-    def limits(self) -> GovernorLimits:
-        return self._limits
+    def shared(self) -> bool:
+        return isinstance(self._slots, SharedSlots)
 
-    def _full_reason(self, org_id: str | None) -> str | None:
-        """Why a new slot can't be taken now, or ``None`` if it can. Call under the lock."""
-        total_cap = self._limits.max_total_sandboxes
-        if total_cap is not None and self._total >= total_cap:
-            return (
-                f"process-wide sandbox limit reached ({self._total}/{total_cap}); "
-                f"retry once another sandbox is released"
-            )
-        org_cap = self._limits.max_per_org
-        if org_id and org_cap is not None:
-            org_count = self._per_org.get(org_id, 0)
-            if org_count >= org_cap:
-                return (
-                    f"per-org sandbox limit reached for org {org_id!r} "
-                    f"({org_count}/{org_cap}); retry once another sandbox "
-                    f"in this org is released"
-                )
-        return None
+    def close(self) -> None:
+        """Close the slot files, which gives back every slot held here."""
+        self._slots.close()
+
+    def _notify(self, hook: str, *args: Any) -> None:
+        for observer in self._observers:
+            try:
+                getattr(observer, hook)(*args)
+            except Exception:
+                key = (id(observer), hook)
+                if key not in self._warned_observers:
+                    self._warned_observers.add(key)
+                    logger.warning("sandbox governor: observer %r failed in %s", observer, hook, exc_info=True)
 
     async def acquire(
         self,
@@ -107,77 +217,228 @@ class SandboxResourceGovernor:
         wait_s: float = 0.0,
         on_wait: Callable[[], Awaitable[None]] | None = None,
     ) -> GovernorLease:
-        """Reserve a slot. When the caps are full, wait up to ``wait_s`` for
-        one to be released, then raise ``SandboxLimitExceeded``.
+        """Take a slot. When none is free, wait up to ``wait_s`` for one, then
+        raise ``SandboxLimitExceeded`` (with ``.reason``).
 
-        ``on_wait`` runs once, outside the lock, when the caller starts
-        waiting, so a chat can tell its user why it paused.
+        ``on_wait`` runs once, when the caller starts waiting, so a chat can
+        tell its user why it paused. A mutex another worker holds for an
+        instant is not a wait.
+
+        Nothing here blocks the event loop: each try at the slots is one
+        non-blocking pass.
         """
         # shortcut: waiters are woken all at once and re-check, not served in
         # arrival order, and a call arriving just as a slot frees can take it
         # before them; add a FIFO queue if waits near slot_wait_s show up.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + wait_s
+        if not self._sizing_awaited:
+            self._sizing_awaited = True
+            await self.capacity.ensure_sized(timeout=2.0)
+        tag = org_tag(org_id)
+        start = self._clock()
+        deadline = start + wait_s
         told = on_wait is None
-        while True:
-            async with self._released:
-                reason = self._full_reason(org_id)
-                if reason is None:
-                    return self._take(org_id)
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise SandboxLimitExceeded(reason)
-                if told:
+        busy_tries = 0
+        last_reason: HoldReason | None = None
+        outcome: Literal["granted", "refused", "cancelled"] | None = None
+        held = limit = 0
+        tag_held: int | None = None
+        org_limit: int | None = None
+        counted = False
+        try:
+            while True:
+                view = self.limit_provider.view()
+                limit = view.limit
+                org_limit = self.capacity.per_org_limit(limit) if tag else None
+                result = self._slots.try_acquire_tagged(limit, tag=tag, tag_limit=org_limit)
+                denied: Literal["full", "tag_full"] | None = None
+                floor: HoldReason | None = None
+                if isinstance(result, SlotHold):
+                    self._busy_since = None
+                    held = result.held_before
                     try:
-                        await asyncio.wait_for(self._released.wait(), remaining)
-                    except TimeoutError:
-                        pass  # the deadline check at the top of the loop decides
+                        floor = await self.limit_provider.admit_and_charge(held=held)
+                    except BaseException:
+                        result.release()
+                        self._wake_local()
+                        raise
+                    if floor is None:
+                        outcome = "granted"
+                        return GovernorLease(governor=self, hold=result, tag=tag)
+                    result.release()
+                    self._wake_local()
+                elif result.reason == "busy":
+                    self._note_busy()
+                    if busy_tries < _BUSY_RETRIES:
+                        busy_tries += 1
+                        await asyncio.sleep(_BUSY_RETRY_S)
+                        continue
+                    denied = "full"
+                else:
+                    self._busy_since = None
+                    denied = result.reason
+                    held, tag_held = result.held, result.tag_held
+                busy_tries = 0
+                reason = hold_reason(view, denied=denied, floor=floor)
+                if last_reason is None:
+                    self._notify("wait_start", reason)
+                elif reason != last_reason:
+                    self._notify("wait_reason", reason)
+                last_reason = reason
+                now = self._clock()
+                self.limit_provider.waiting(reason, now - start)
+                if now >= deadline:
+                    outcome = "refused"
+                    raise SandboxLimitExceeded(
+                        message(
+                            reason, held=held, limit=limit, tag_held=tag_held,
+                            org_limit=org_limit, memory_source=_memory_source(view),
+                        ),
+                        reason=reason,
+                    )
+                if not counted:
+                    counted = True
+                    self._waiting_here += 1
+                self._log_waiting(now)
+                if not told:
+                    told = True
+                    try:
+                        await on_wait()  # type: ignore[misc]
+                    except Exception:
+                        logger.debug("governor: on_wait callback failed", exc_info=True)
                     continue
-            told = True
-            try:
-                await on_wait()  # type: ignore[misc]
-            except Exception:
-                logger.debug("governor: on_wait callback failed", exc_info=True)
+                await self._sleep_until_woken(
+                    min(deadline - now, self._poll_s * self._rng.uniform(0.5, 1.0)),
+                )
+        except BaseException:
+            if outcome is None:
+                outcome = "cancelled"
+            raise
+        finally:
+            if counted:
+                self._waiting_here -= 1
+            if last_reason is not None:
+                try:
+                    self.limit_provider.wait_ended(granted=outcome == "granted")
+                except Exception:
+                    logger.debug("governor: wait_ended failed", exc_info=True)
+            self._notify(
+                "outcome", outcome or "cancelled",
+                0.0 if last_reason is None else self._clock() - start, last_reason,
+            )
 
-    def _take(self, org_id: str | None) -> GovernorLease:
-        """Count a new slot. Call under the lock, after ``_full_reason`` returned ``None``."""
-        self._total += 1
-        if org_id:
-            self._per_org[org_id] = self._per_org.get(org_id, 0) + 1
-        logger.debug(
-            "governor: acquired slot (total=%d org=%s org_count=%s)",
-            self._total, org_id,
-            self._per_org.get(org_id) if org_id else "n/a",
+    async def _sleep_until_woken(self, timeout: float) -> None:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        with self._waiters_lock:
+            self._waiters.add(future)
+        try:
+            await asyncio.wait_for(future, max(0.0, timeout))
+        except TimeoutError:
+            pass
+        finally:
+            with self._waiters_lock:
+                self._waiters.discard(future)
+
+    def _wake_local(self) -> None:
+        with self._waiters_lock:
+            waiters = list(self._waiters)
+        for future in waiters:
+            loop = future.get_loop()
+            if loop.is_closed():
+                continue
+            try:
+                loop.call_soon_threadsafe(_wake, future)
+            except RuntimeError:
+                pass  # the loop closed in between
+
+    def capacity_changed(self) -> None:
+        """The limit may have risen (or sizing finished): this process's
+        waiters try again now. Safe from any thread."""
+        self._wake_local()
+
+    def _note_busy(self) -> None:
+        now = self._clock()
+        if self._busy_since is None:
+            self._busy_since = now
+            return
+        if now - self._busy_since < _BUSY_WARN_AFTER_S:
+            return
+        if self._busy_warned_at is None or now - self._busy_warned_at >= _BUSY_WARN_EVERY_S:
+            self._busy_warned_at = now
+            logger.warning(
+                "sandbox slots: the slot mutex has been busy for %.0fs; another worker "
+                "may be stopped while counting", now - self._busy_since,
+            )
+
+    def _log_waiting(self, now: float) -> None:
+        if self._waiting_logged_at is not None and now - self._waiting_logged_at < _WAITING_LOG_EVERY_S:
+            return
+        self._waiting_logged_at = now
+        snap = self.snapshot()
+        logger.info(
+            "sandbox slots: total=%s limit=%s ceiling=%s waiting_here=%s stale=%s mode=%s",
+            snap["total"], snap["limit"], snap["ceiling"], snap["waiting_here"],
+            snap["stale"], snap["mode"],
         )
-        return GovernorLease(governor=self, org_id=org_id)
 
     async def release(self, lease: GovernorLease) -> None:
         """Release a previously acquired slot. Idempotent.
 
-        The released check lives inside the lock: checking it outside lets
-        two concurrent releases of the same lease both pass and decrement
-        twice, which under-counts the process and lets the caps drift open.
+        Synchronous inside: nothing here awaits, so a cancel cannot land
+        between giving the slot back and marking the lease released.
         """
-        async with self._lock:
-            if lease.released:
-                return
-            lease.released = True
-            self._total = max(0, self._total - 1)
-            org_id = lease.org_id
-            if org_id and org_id in self._per_org:
-                remaining = max(0, self._per_org[org_id] - 1)
-                if remaining:
-                    self._per_org[org_id] = remaining
-                else:
-                    del self._per_org[org_id]
-            self._released.notify_all()
-            logger.debug(
-                "governor: released slot (total=%d org=%s)", self._total, org_id,
-            )
+        if lease.released:
+            return
+        lease.released = True
+        lease.hold.release()
+        self._wake_local()
 
-    def snapshot(self) -> dict[str, int | dict[str, int]]:
-        """Non-blocking read of current counters — for /health and logs."""
-        return {"total": self._total, "per_org": dict(self._per_org)}
+    def held_total(self, budget: float = 0.0) -> int | None:
+        """Slots held by every worker, or ``None`` when another worker held
+        the mutex for all of *budget* seconds. A budget above 0 spins: never
+        call it with one on the event loop."""
+        try:
+            return sum(self._slots.held_by_tag(budget).values())
+        except TimeoutError:
+            return None
+
+    def snapshot(self) -> dict[str, Any]:
+        """Current counts and limits, for logs and health. Never blocks: when
+        another worker is counting, the last counts seen are returned with
+        ``stale`` set."""
+        stale = False
+        try:
+            self._last_counts = self._slots.held_by_tag(0.0)
+        except TimeoutError:
+            stale = True
+        counts = self._last_counts
+        view = self.limit_provider.view()
+        return {
+            "total": sum(counts.values()),
+            "per_org": {tag.decode(): n for tag, n in counts.items() if tag},
+            "stale": stale,
+            "limit": view.limit,
+            "ceiling": self.capacity.ceiling(),
+            "floor": self.capacity.floor(),
+            "mode": self.capacity.mode,
+            "sized": self.capacity.sized,
+            "slot_files": self.capacity.slot_files,
+            "shared": self.shared,
+            "waiting_here": self._waiting_here,
+        }
+
+
+def _open_slots(directory: Path | None, capacity: int) -> SharedSlots | LocalTaggedSlots:
+    reason = "no POSIX file locks"
+    if directory is not None:
+        try:
+            return SharedSlots(directory / "slots", capacity)
+        except OSError as exc:
+            reason = str(exc)
+    logger.warning(
+        "sandbox slots are counted per worker (%s); with N workers up to N x limit can run",
+        reason,
+    )
+    return LocalTaggedSlots(capacity)
 
 
 _default_governor: SandboxResourceGovernor | None = None
@@ -187,34 +448,44 @@ _default_lock = threading.Lock()
 def get_default_governor(
     limits: GovernorLimits | None = None,
 ) -> SandboxResourceGovernor:
-    """The process-wide governor.
+    """The process's governor, counting the container's shared slots.
 
-    ``limits`` configures the instance on first call and is ignored
-    afterwards — later callers are per-request and must not be able to
-    widen a ceiling another request already set. A mismatch is logged so a
-    surprising cap is traceable.
+    ``limits`` applies on the first call only, as explicit caps that win
+    over the environment; later callers are per-request and must not be able
+    to widen a ceiling another request already set. A mismatch is logged so
+    a surprising cap is traceable.
     """
     global _default_governor
     if _default_governor is None:
         with _default_lock:
             if _default_governor is None:
-                _default_governor = SandboxResourceGovernor(limits)
+                capacity = get_sandbox_capacity()
+                if limits is not None:
+                    capacity.override(
+                        max_total=limits.max_total_sandboxes, max_per_org=limits.max_per_org,
+                    )
+                slots = _open_slots(sandbox_state_directory(), capacity.slot_files)
+                _default_governor = SandboxResourceGovernor(
+                    capacity, slots, limit_provider=FixedLimit(capacity),
+                )
                 logger.info(
-                    "sandbox governor: process-wide limits total=%s per_org=%s",
-                    _default_governor.limits.max_total_sandboxes,
-                    _default_governor.limits.max_per_org,
+                    "sandbox governor: mode=%s ceiling=%s floor=%s slot_files=%s shared=%s",
+                    capacity.mode, capacity.ceiling(), capacity.floor(),
+                    capacity.slot_files, _default_governor.shared,
                 )
                 return _default_governor
-    if limits is not None and limits != _default_governor.limits:
+    if limits is not None and limits != GovernorLimits():
         logger.debug(
-            "sandbox governor: ignoring limits %s; process governor already "
-            "configured with %s", limits, _default_governor.limits,
+            "sandbox governor: ignoring limits %s; the process governor is already built", limits,
         )
     return _default_governor
 
 
 def reset_default_governor() -> None:
-    """Drop the process-wide governor. For tests only."""
+    """Drop the process's governor and capacity, closing its slots. For tests only."""
     global _default_governor
     with _default_lock:
-        _default_governor = None
+        governor, _default_governor = _default_governor, None
+    if governor is not None:
+        governor.close()
+    reset_sandbox_capacity()

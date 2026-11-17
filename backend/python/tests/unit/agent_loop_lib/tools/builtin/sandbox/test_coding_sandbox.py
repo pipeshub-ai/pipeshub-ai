@@ -634,7 +634,7 @@ def _stoppable(backend_cls: type = _BlockingBackend, **manager_kwargs: object) -
     )
 
     token = CancellationToken()
-    gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=5))
+    gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=5))
     backends: list = []
 
     def make() -> object:

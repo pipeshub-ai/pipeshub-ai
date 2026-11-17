@@ -4,6 +4,8 @@ idempotent teardown, and the register_backend (factory) path."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -131,14 +133,14 @@ class TestSandboxManagerConcurrency:
             await mgr.get_or_create(SandboxType.CODING)
 
     async def test_governor_integration(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = _make_manager(governor=gov)
         await mgr.get_or_create(SandboxType.CODING)
         with pytest.raises(GovernorLimitExceeded):
             await mgr.get_or_create(SandboxType.CODING)
 
     async def test_governor_release_on_destroy(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=5))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=5))
         mgr = _make_manager(governor=gov)
         sid, _ = await mgr.get_or_create(SandboxType.CODING)
         assert gov.snapshot()["total"] == 1
@@ -214,7 +216,7 @@ class TestPerCallSlots:
         return mgr
 
     async def test_idle_sandbox_holds_no_slot(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = self._manager(gov)
         sid, _ = await mgr.get_or_create(SandboxType.CODING)
         await mgr.get_or_create(SandboxType.CODING)  # a second idle sandbox still fits
@@ -225,7 +227,7 @@ class TestPerCallSlots:
         assert gov.snapshot()["total"] == 0
 
     async def test_call_waits_for_a_free_slot(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = self._manager(gov, wait_s=5)
         sid1, _ = await mgr.get_or_create(SandboxType.CODING)
         sid2, _ = await mgr.get_or_create(SandboxType.CODING)
@@ -250,7 +252,7 @@ class TestPerCallSlots:
         assert gov.snapshot()["total"] == 0
 
     async def test_full_without_wait_raises(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = self._manager(gov)
         sid1, _ = await mgr.get_or_create(SandboxType.CODING)
         sid2, _ = await mgr.get_or_create(SandboxType.CODING)
@@ -260,7 +262,7 @@ class TestPerCallSlots:
                     pass
 
     async def test_the_wait_note_names_the_tool_and_is_cleared_once_the_slot_is_granted(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         notes: list[tuple[str, bool]] = []
 
         async def note(tool: str, waiting: bool) -> None:
@@ -293,7 +295,7 @@ class TestPerCallSlots:
         await t1
 
     async def test_a_call_cancelled_while_waiting_takes_no_slot(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = self._manager(gov, wait_s=5)
         sid1, _ = await mgr.get_or_create(SandboxType.CODING)
         sid2, _ = await mgr.get_or_create(SandboxType.CODING)
@@ -309,7 +311,7 @@ class TestPerCallSlots:
             assert gov.snapshot()["total"] == 1
 
     async def test_a_failing_wait_note_does_not_fail_the_call(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
 
         async def broken(tool: str, waiting: bool) -> None:
             raise RuntimeError("stream closed")
@@ -337,7 +339,7 @@ class TestPerCallSlots:
         await t1
 
     async def test_the_wait_note_is_cleared_when_the_wait_times_out(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         notes: list[tuple[str, bool]] = []
 
         async def note(tool: str, waiting: bool) -> None:
@@ -356,7 +358,7 @@ class TestPerCallSlots:
 
 class TestSlotOutlivesTheCompute:
     async def test_next_waiter_is_granted_only_after_the_cancelled_calls_cleanup(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = SandboxManager(governor=gov, slot_wait_s=5)
         mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
         sid1, _ = await mgr.get_or_create(SandboxType.CODING)
@@ -395,7 +397,7 @@ class TestMeteredSlots:
     """Metered backends (the default when a backend reports no capabilities) keep their slot for life."""
 
     async def test_calls_on_a_metered_sandbox_take_no_extra_slot(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = SandboxManager(governor=gov)
         mgr.register_backend_factory(SandboxType.CODING, _FakeBackend)
         sid, _ = await mgr.get_or_create(SandboxType.CODING)
@@ -406,7 +408,7 @@ class TestMeteredSlots:
         assert gov.snapshot()["total"] == 0
 
     async def test_a_creation_waiting_for_a_slot_does_not_hold_the_manager_lock(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         holder = SandboxManager(governor=gov)
         holder.register_backend_factory(SandboxType.CODING, _FakeBackend)
         await holder.get_or_create(SandboxType.CODING)  # takes the only slot
@@ -435,7 +437,7 @@ class TestCancelSafety:
         from app.agent_loop_lib.core.context import CancellationToken
         from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
 
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         notes: list[bool] = []
 
         async def note(tool: str, waiting: bool) -> None:
@@ -464,7 +466,7 @@ class TestCancelSafety:
         assert gov.snapshot()["total"] == 0
 
     async def test_cancel_while_clearing_the_note_after_a_grant_releases_the_slot(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         clearing = asyncio.Event()
 
         async def note(tool: str, waiting: bool) -> None:
@@ -495,7 +497,7 @@ class TestCancelSafety:
         assert gov.snapshot()["total"] == 0
 
     async def test_cancel_during_a_contended_release_still_releases(self) -> None:
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=2))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=2))
         mgr = self._manager(gov)
         sid, _ = await mgr.get_or_create(SandboxType.CODING)
         inside = asyncio.Event()
@@ -505,15 +507,20 @@ class TestCancelSafety:
                 inside.set()
                 await asyncio.sleep(0.05)
 
+        release = gov.release
+
+        async def slow_release(lease) -> None:
+            await asyncio.sleep(0.08)  # the body has returned; the release is in flight
+            await release(lease)
+
+        gov.release = slow_release  # type: ignore[method-assign]
         task = asyncio.ensure_future(call())
         await inside.wait()
-        async with gov._lock:  # the release has to wait for this lock
-            await asyncio.sleep(0.08)  # the body returns and the release blocks here
-            task.cancel()
-            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.08)
+        task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)
         assert gov.snapshot()["total"] == 0
 
     async def test_cancel_during_a_metered_provision_destroys_it_and_frees_the_slot(self) -> None:
@@ -529,7 +536,7 @@ class TestCancelSafety:
                 nonlocal destroyed
                 destroyed += 1
 
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = SandboxManager(governor=gov)
         mgr.register_backend_factory(SandboxType.CODING, _SlowMetered)
         task = asyncio.ensure_future(mgr.get_or_create(SandboxType.CODING))
@@ -546,7 +553,7 @@ class TestCancelSafety:
         from app.agent_loop_lib.core.context import CancellationToken
         from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
 
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         token = CancellationToken()
         stopped_mgr = self._manager(gov, stop_token=token)
         other_mgr = self._manager(gov)
@@ -578,3 +585,43 @@ class TestCancelSafety:
             await stopped
         await asyncio.wait_for(waiter, 1)
         assert events == ["cleanup done", "other granted"]
+
+
+class TestGovernorsSharingSlots:
+    """Two governors on one slot directory stand in for two query workers."""
+
+    @pytest.fixture
+    def governors(self, tmp_path: Path) -> Iterator[list[SandboxResourceGovernor]]:
+        from app.agent_loop_lib.sandbox.capacity import FixedLimit, SandboxCapacity
+        from app.services.resource_governor.shared_slots import SharedSlots
+
+        made = []
+        for _ in range(2):
+            capacity = SandboxCapacity.fixed(1, slot_files=4)
+            made.append(SandboxResourceGovernor(
+                capacity, SharedSlots(tmp_path, 4), limit_provider=FixedLimit(capacity),
+            ))
+        yield made
+        for gov in made:
+            gov.close()
+
+    async def test_a_metered_sandbox_holds_its_slot_for_life_across_workers(self, governors: list[SandboxResourceGovernor]) -> None:
+        one, two = (_make_manager(governor=g) for g in governors)
+        sid, _ = await one.get_or_create(SandboxType.CODING)
+        with pytest.raises(SandboxLimitExceeded):
+            await two.get_or_create(SandboxType.CODING)
+        await one.destroy(SandboxType.CODING, sid)
+        await two.get_or_create(SandboxType.CODING)
+
+    async def test_per_call_slots_are_counted_across_workers(self, governors: list[SandboxResourceGovernor]) -> None:
+        one, two = (SandboxManager(governor=g) for g in governors)
+        for mgr in (one, two):
+            mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        sid_one, _ = await one.get_or_create(SandboxType.CODING)
+        sid_two, _ = await two.get_or_create(SandboxType.CODING)
+        async with one.slot(SandboxType.CODING, sid_one):
+            with pytest.raises(SandboxLimitExceeded):
+                async with two.slot(SandboxType.CODING, sid_two):
+                    pass
+        async with two.slot(SandboxType.CODING, sid_two):
+            assert governors[0].snapshot()["total"] == 1
