@@ -1,4 +1,4 @@
-"""The live limit's shared record: one 128-byte file every query worker reads.
+"""The live limit's shared record: one 256-byte file every query worker reads.
 
 Written with one ``pwrite`` under a lock file and read with one ``pread``,
 with the same checksum scheme as the indexing lane ledger. A record that is
@@ -8,7 +8,9 @@ then keeps its last good view, so a torn read never lifts a limit.
 ``limit == 0`` means no step has been taken yet: a per-run check may already
 have written the burst charge, and the first sampler step initialises the
 rest. All times are ``time.monotonic()``, which every process in one
-container shares.
+container shares. The file can outlive a host reboot (a container restarted
+in place keeps its ``/tmp``) while the clock starts again, so a reader treats
+a time too far ahead of now as left over from before.
 """
 
 from __future__ import annotations
@@ -38,20 +40,23 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-__all__ = ["LiveLedger", "LiveRecord", "LiveTxn", "RULES"]
+__all__ = ["BURST_SLOTS", "LiveLedger", "LiveRecord", "LiveTxn", "RULES"]
 
 logger = logging.getLogger(__name__)
 
-RECORD_SIZE = 128
+RECORD_SIZE = 256
 _MAGIC = b"PXSBXLV\0"
-_VERSION = 1
+_VERSION = 2
 _HEADER = struct.Struct("<8sII")
 # limit ceiling min target slow_start_step cpu_high_streak (H), rule
 # shrink_cause in_slow_start (B), owner_pid wait_events (I), stamp
-# last_step_at cooldown_until last_wait_limit_at last_wait_mem_at burst_until
-# sample_at last_valid_at (d), burst_bytes mem_total mem_available (Q).
-_BODY = struct.Struct("<6H3B2I8d3Q")
-assert _HEADER.size + _BODY.size <= RECORD_SIZE
+# last_step_at cooldown_until last_wait_limit_at last_wait_mem_at sample_at
+# last_valid_at (d), mem_total mem_available (Q).
+_BODY = struct.Struct("<6H3B2I7d2Q")
+# One burst charge: until (d), bytes (Q).
+_CHARGE = struct.Struct("<dQ")
+BURST_SLOTS = 8
+assert _HEADER.size + _BODY.size + BURST_SLOTS * _CHARGE.size <= RECORD_SIZE
 
 RULES = (
     "", "start", "mem_hard", "mem_target", "cpu", "grow", "no_demand", "cooldown",
@@ -80,8 +85,9 @@ class LiveRecord:
     last_wait_limit_at: float = 0.0
     last_wait_mem_at: float = 0.0
     wait_events: int = 0
-    burst_bytes: int = 0
-    burst_until: float = 0.0
+    # Memory of runs admitted but maybe not yet in use: (until, bytes) each,
+    # oldest first, at most BURST_SLOTS.
+    charges: tuple[tuple[float, int], ...] = ()
     sample_at: float = 0.0
     last_valid_at: float = 0.0
     mem_total: int | None = None
@@ -107,11 +113,15 @@ class LiveRecord:
             1 if self.in_slow_start else 0,
             self.owner_pid & 0xFFFFFFFF, self.wait_events & 0xFFFFFFFF,
             self.stamp, self.last_step_at, self.cooldown_until, self.last_wait_limit_at,
-            self.last_wait_mem_at, self.burst_until, self.sample_at, self.last_valid_at,
-            nbytes(self.burst_bytes), nbytes(self.mem_total), nbytes(self.mem_available),
+            self.last_wait_mem_at, self.sample_at, self.last_valid_at,
+            nbytes(self.mem_total), nbytes(self.mem_available),
         )
         raw = bytearray(RECORD_SIZE)
         raw[_HEADER.size:_HEADER.size + len(body)] = body
+        offset = _HEADER.size + len(body)
+        for until, size in self.charges[-BURST_SLOTS:]:
+            _CHARGE.pack_into(raw, offset, until, min(max(int(size), 0), _NO_BYTES - 1))
+            offset += _CHARGE.size
         _HEADER.pack_into(raw, 0, _MAGIC, _VERSION, 0)
         _HEADER.pack_into(raw, 0, _MAGIC, _VERSION, zlib.crc32(bytes(raw)))
         return bytes(raw)
@@ -129,18 +139,22 @@ class LiveRecord:
         if zlib.crc32(bytes(zeroed)) != crc:
             return None
         (limit, ceiling, minimum, target, slow_step, cpu_streak, rule, cause, slow,
-         owner, waits, stamp, last_step, cooldown, wait_limit, wait_mem, burst_until,
-         sample_at, last_valid, burst, total, available) = _BODY.unpack_from(data, _HEADER.size)
+         owner, waits, stamp, last_step, cooldown, wait_limit, wait_mem,
+         sample_at, last_valid, total, available) = _BODY.unpack_from(data, _HEADER.size)
         if rule >= len(RULES) or cause >= len(_CAUSES):
             return None
+        charges = []
+        for slot in range(BURST_SLOTS):
+            until, size = _CHARGE.unpack_from(data, _HEADER.size + _BODY.size + slot * _CHARGE.size)
+            if size:
+                charges.append((until, size))
         return cls(
             limit=limit, ceiling=ceiling, min=minimum,
             target=None if target == _NO_TARGET else target, rule=RULES[rule],
             shrink_cause=_CAUSES[cause], stamp=stamp, owner_pid=owner, last_step_at=last_step,
             cooldown_until=cooldown, cpu_high_streak=cpu_streak, in_slow_start=bool(slow),
             slow_start_step=slow_step, last_wait_limit_at=wait_limit, last_wait_mem_at=wait_mem,
-            wait_events=waits, burst_bytes=0 if burst == _NO_BYTES else burst,
-            burst_until=burst_until, sample_at=sample_at, last_valid_at=last_valid,
+            wait_events=waits, charges=tuple(charges), sample_at=sample_at, last_valid_at=last_valid,
             mem_total=None if total == _NO_BYTES else total,
             mem_available=None if available == _NO_BYTES else available,
         )

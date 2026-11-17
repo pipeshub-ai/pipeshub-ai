@@ -17,7 +17,7 @@ RECORD = LiveRecord(
     limit=5, ceiling=6, min=2, target=4, rule="mem_target", shrink_cause="memory", stamp=12.5,
     owner_pid=4321, last_step_at=12.5, cooldown_until=42.5, cpu_high_streak=1, in_slow_start=True,
     slow_start_step=2, last_wait_limit_at=11.0, last_wait_mem_at=3.0, wait_events=9,
-    burst_bytes=2**29, burst_until=17.5, sample_at=12.5, last_valid_at=12.5,
+    charges=((17.5, 2**29), (19.0, 2**28)), sample_at=12.5, last_valid_at=12.5,
     mem_total=16 * 2**30, mem_available=4 * 2**30,
 )
 
@@ -34,7 +34,7 @@ class TestEncoding:
 
     @pytest.mark.parametrize("mangle", [
         lambda d: b"XXXXXXXX" + d[8:],
-        lambda d: d[:8] + (2).to_bytes(4, "little") + d[12:],
+        lambda d: d[:8] + (1).to_bytes(4, "little") + d[12:],
         lambda d: d[:40] + bytes([d[40] ^ 1]) + d[41:],
         lambda d: d[:100],
         lambda d: b"",
@@ -44,7 +44,7 @@ class TestEncoding:
         assert LiveRecord.decode(mangle(RECORD.encode())) is None
 
     def test_uninitialised_is_limit_zero(self) -> None:
-        assert not LiveRecord(burst_bytes=1).initialised
+        assert not LiveRecord(charges=((1.0, 1),)).initialised
         assert LiveRecord(limit=1).initialised
 
 

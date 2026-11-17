@@ -14,9 +14,9 @@ start (1, 2, 4, ...) capped at the target, after a cooldown.
 
 A 15 s sample cannot see a burst, so each run also checks free memory itself
 once it has a slot (``admit_and_charge()``): a run that would leave less than
-the hard floor gives its slot back and waits. Runs admitted within the burst
-window are charged in the record, since their memory is not yet in use.
-That check is the only thing that holds back the floor's runs.
+the hard floor gives its slot back and waits. Each run admitted is charged in
+the record for the burst window after its own start, since its memory is not
+yet in use. That check is the only thing that holds back the floor's runs.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from app.agent_loop_lib.sandbox.host_reading import (
     SidecarReader,
     resolve_live_mode,
 )
-from app.agent_loop_lib.sandbox.live_record import LiveLedger, LiveRecord
+from app.agent_loop_lib.sandbox.live_record import BURST_SLOTS, LiveLedger, LiveRecord
 from app.agent_loop_lib.sandbox.live_settings import MAX_MEMORY_OVERCOMMIT, LiveSettings
 from app.services.resource_governor.lane_ledger import pid_alive
 
@@ -213,6 +213,25 @@ def _previous_target_after_growth(rec: LiveRecord) -> int | None:
     return rec.target
 
 
+def live_charges(rec: LiveRecord, now: float, window_s: float) -> tuple[tuple[float, int], ...]:
+    """The burst charges still in their window. One ending more than a
+    window from now was written before the clock restarted (a host reboot)."""
+    return tuple((until, size) for until, size in rec.charges if now < until <= now + window_s)
+
+
+def _add_charge(
+    charges: tuple[tuple[float, int], ...], until: float, size: int,
+) -> tuple[tuple[float, int], ...]:
+    """*charges* plus one, merging the two oldest while there are too many:
+    the merged charge ends with the later of them, so none ends early and
+    none outlives the newest."""
+    merged = sorted([*charges, (until, size)])
+    while len(merged) > BURST_SLOTS:
+        (_, first), (end, second) = merged[0], merged[1]
+        merged[:2] = [(end, first + second)]
+    return tuple(merged)
+
+
 def _sample_fields(sample: HostSample, now: float) -> dict[str, Any]:
     return {
         "sample_at": now, "last_valid_at": now,
@@ -232,8 +251,7 @@ def initial_record(
         # Without a reading, how long it has been missing carries over.
         last_valid_at=previous.last_valid_at if kept and not _usable(sample) else now,
         slow_start_step=1,
-        burst_bytes=previous.burst_bytes if previous else 0,
-        burst_until=previous.burst_until if previous else 0.0,
+        charges=previous.charges if previous else (),
     )
     if not _usable(sample):
         return replace(base, limit=ceiling, rule="start")
@@ -716,10 +734,10 @@ class LiveLimit:
                 # sample still catches a real shortage.
                 return None
             rec = txn.read() or LiveRecord()
-            burst = rec.burst_bytes if now < rec.burst_until else 0
-            if available - burst - m < hard_floor:
+            charges = live_charges(rec, now, profile.burst_window_s)
+            if available - sum(size for _, size in charges) - m < hard_floor:
                 return HoldReason.HOST_MEMORY_FLOOR
-            txn.write(replace(rec, burst_bytes=int(burst + m), burst_until=now + profile.burst_window_s))
+            txn.write(replace(rec, charges=_add_charge(charges, now + profile.burst_window_s, int(m))))
         return None
 
     def waiting(self, reason: HoldReason, waited_s: float) -> None:

@@ -15,6 +15,7 @@ from app.agent_loop_lib.sandbox.governor import (
 )
 from app.agent_loop_lib.sandbox.host_reading import HostSample, LiveMode
 from app.agent_loop_lib.sandbox.live_limit import LiveLimit
+from app.agent_loop_lib.sandbox.live_record import LiveRecord
 from app.agent_loop_lib.sandbox.live_settings import LiveSettings
 from app.services.resource_governor.shared_slots import LocalTaggedSlots
 
@@ -43,7 +44,7 @@ class TestAdmit:
         live = _live(tmp_path, clock, FakeReader(sample(4.0)))
         assert await live.admit_and_charge(held=0) is None
         rec = live._ledger.read()
-        assert rec is not None and rec.burst_bytes == M and rec.burst_until == clock.now + 5.0
+        assert rec is not None and rec.charges == ((clock.now + 5.0, M),)
         assert not rec.initialised
 
     async def test_below_the_floor_is_held_and_not_charged(self, tmp_path: Path) -> None:
@@ -59,6 +60,42 @@ class TestAdmit:
         assert await live.admit_and_charge(held=2) is HoldReason.HOST_MEMORY_FLOOR
         clock.now += 5.1
         assert await live.admit_and_charge(held=2) is None
+
+    async def test_steady_starts_are_charged_only_within_their_own_window(self, tmp_path: Path) -> None:
+        # One start a second on a flat 8 GiB reading: each charge ends 5 s
+        # after its own run, so at most five runs are charged at a time and
+        # none is held back.
+        clock = FakeClock()
+        live = _live(tmp_path, clock, FakeReader(sample(8.0)))
+        for held in range(30):
+            assert await live.admit_and_charge(held=held) is None
+            rec = live._ledger.read()
+            assert rec is not None and sum(n for _, n in rec.charges) <= 5 * M
+            clock.now += 1.0
+
+    async def test_more_starts_than_slots_still_expire(self, tmp_path: Path) -> None:
+        clock = FakeClock()
+        live = _live(tmp_path, clock, FakeReader(sample(16.0, total_gib=32)))
+        for _ in range(20):
+            assert await live.admit_and_charge(held=0) is None
+            clock.now += 0.1
+        rec = live._ledger.read()
+        assert rec is not None and sum(n for _, n in rec.charges) == 20 * M
+        assert max(until for until, _ in rec.charges) == pytest.approx(clock.now - 0.1 + 5.0)
+        clock.now += 5.0
+        assert await live.admit_and_charge(held=0) is None
+        assert live._ledger.read().charges == ((clock.now + 5.0, M),)  # type: ignore[union-attr]
+
+    async def test_a_charge_from_before_a_clock_restart_is_dropped(self, tmp_path: Path) -> None:
+        # The record outlives a host reboot in the container's /tmp, but the
+        # monotonic clock starts again near zero.
+        clock = FakeClock(now=50.0)
+        live = _live(tmp_path, clock, FakeReader(sample(2.2)))
+        with live._ledger.transaction() as txn:
+            assert txn is not None
+            txn.write(LiveRecord(charges=((90_000.0, 4 * M),)))
+        assert await live.admit_and_charge(held=0) is None
+        assert live._ledger.read().charges == ((clock.now + 5.0, M),)  # type: ignore[union-attr]
 
     async def test_two_workers_share_the_burst(self, tmp_path: Path) -> None:
         clock = FakeClock()
