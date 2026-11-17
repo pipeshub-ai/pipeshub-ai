@@ -54,7 +54,7 @@ class RunScope:
     def __init__(
         self, org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
         clock: Callable[[], float] = time.time, stage_deadline_s: float | None = None,
-        reuse_prior_attempt: bool = False,
+        reuse_prior_attempt: bool = False, refresh_token: str | None = None,
     ) -> None:
         self.org_id = org_id
         self.record_id = record_id
@@ -66,6 +66,8 @@ class RunScope:
         self.reuse_prior_attempt = reuse_prior_attempt
         self._prior_keys: set[str] | None = None
         self.run_id = secrets.token_hex(8)
+        #: Names the refresh across attempts and services (the event id): what the parsing client sends as its token.
+        self.refresh_token = refresh_token or self.run_id
         #: Set by the in-process pipeline, whose run ends when the record's indexing completes.
         self.in_process = False
         self.finished = False
@@ -231,12 +233,12 @@ _run: ContextVar[RunScope | None] = ContextVar("paid_cache_run", default=None)
 
 def begin_run(
     org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
-    stage_deadline_s: float | None = None, reuse_prior_attempt: bool = False,
+    stage_deadline_s: float | None = None, reuse_prior_attempt: bool = False, refresh_token: str | None = None,
 ) -> RunScope:
     """Opens the ambient run for this task and the tasks it starts. Left set: the next run replaces it."""
     scope = RunScope(
         org_id, record_id, content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s,
-        reuse_prior_attempt=reuse_prior_attempt,
+        reuse_prior_attempt=reuse_prior_attempt, refresh_token=refresh_token,
     )
     _run.set(scope)
     return scope

@@ -496,12 +496,50 @@ async def test_concurrent_claims_of_one_refresh_token_grant_exactly_one() -> Non
     assert grants == 20                                              # one winner per token, not 80
 
 
-async def test_a_released_claim_can_be_taken_again_by_the_redelivery() -> None:
+async def test_the_refresh_is_marked_purged_only_after_the_purge_returned() -> None:
     cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
-    token = await cache.claim_refresh(ORG, REC, "evt")
-    assert token is not None and await cache.claim_refresh(ORG, REC, "evt") is None
-    await cache.release_refresh_claim(ORG, REC, "evt", token)
-    assert await cache.claim_refresh(ORG, REC, "evt") is not None
+    async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
+        assert must_purge is True
+    async with cache.refresh_purge(ORG, REC, "evt") as redelivery:     # the purge returned: a redelivery reuses
+        assert redelivery is False
+
+
+async def test_a_purge_that_fails_leaves_no_marker_so_the_redelivery_purges() -> None:
+    cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
+    with pytest.raises(ConnectionError):
+        async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
+            assert must_purge is True
+            raise ConnectionError("storage unreachable")                # the purge failed
+    async with cache.refresh_purge(ORG, REC, "evt") as again:
+        assert again is True
+
+
+async def test_a_process_that_dies_mid_purge_leaves_a_lease_that_lapses_not_a_marker() -> None:
+    """No finally runs when a process dies: its lease stays until it expires, and no 24 h marker exists."""
+    locks = InProcessLocks()
+    cache = PaidResultCache(MemoryResultStore(), locks)
+    dying = cache.refresh_purge(ORG, REC, "evt")
+    assert await dying.__aenter__() is True                           # the purge starts, then the process is gone
+    async with cache.refresh_purge(ORG, REC, "evt") as concurrent:    # the lease is live: another delivery is purging
+        assert concurrent is False
+    locks.expire_all()                                                # the lease lapses
+    async with cache.refresh_purge(ORG, REC, "evt") as redelivery:
+        assert redelivery is True                                     # no marker: this delivery purges
+    await dying.__aexit__(None, None, None)                           # tidy: stop the dead process's heartbeat
+
+
+async def test_the_refresh_token_of_a_redelivered_event_reaches_the_parse_request() -> None:
+    """The index run's token is the event id, inherited by the run the parse starts from, so the parsing service sees
+    the same token on a redelivery and reuses the pages its earlier attempt paid for."""
+    from app.services.paid_cache.access import start_run
+
+    with record_in_flight(ORG, REC):
+        begin_run(ORG, REC, None, "index", refresh=True, refresh_token="evt-77")
+        run = start_run("rev1", "index")
+        try:
+            assert run is not None and run.refresh and run.refresh_token == "evt-77"
+        finally:
+            clear_run()
 
 
 async def test_a_retry_of_a_refresh_does_not_reuse_a_stale_object_written_after_the_purge() -> None:

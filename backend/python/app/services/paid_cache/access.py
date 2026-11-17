@@ -222,7 +222,7 @@ def start_run(
     reuse = reuse_prior_attempt or (inherited and prior.reuse_prior_attempt)
     return begin_run(
         identity[0], identity[1], content_rev, writer, refresh=refresh or inherited, stage_deadline_s=stage_deadline_s,
-        reuse_prior_attempt=reuse,
+        reuse_prior_attempt=reuse, refresh_token=prior.refresh_token if inherited and prior is not None else None,
     )
 
 
@@ -262,7 +262,7 @@ async def claim_refresh(config_service: "ConfigurationService", token: str, logg
     if not token or identity is None or config_service is None:
         return True
     cache = paid_cache_for(config_service, logger or logging.getLogger(__name__))
-    return await cache.claim_refresh(identity[0], identity[1], token) is not None
+    return await cache.claim_refresh(identity[0], identity[1], "parse:" + token) is not None
 
 
 async def abandon_run(

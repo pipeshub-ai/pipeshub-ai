@@ -183,7 +183,7 @@ class ParsingClient(BaseServiceClient):
             # A refreshPaidOutputs run bypasses the stored outputs in the parsing service too.
             form_data["refresh_paid_outputs"] = "true"
             # Names this refresh: the client's own retry of the request carries the same one.
-            form_data["refresh_token"] = run.run_id
+            form_data["refresh_token"] = run.refresh_token
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:

@@ -280,15 +280,40 @@ class PaidResultCache:
             return "unclaimed"
         return token
 
-    async def release_refresh_claim(self, org_id: str, record_id: str, event_id: str, token: str) -> None:
-        """Gives a claim back when the purge it was for failed, so the redelivery purges instead of reusing."""
-        if token == "unclaimed":
-            return
+    @contextlib.asynccontextmanager
+    async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:
+        """Yields True when this delivery of a refresh event must purge the record's results, False when it must not.
+
+        A short lease (renewed while the purge runs) keeps two deliveries from purging at once, and the 24 h marker
+        that makes a redelivery reuse is written only after the purge has returned: a process that dies mid-purge
+        leaves a lease that lapses and no marker, so the redelivery purges. Without a lock backend the delivery purges.
+        """
+        held: _Held | None = None
+        backend: LockBackend | None = None
+        name = refresh_name(org_id, record_id, event_id)
+        must_purge = True
         try:
             backend = await self._backend()
-            await backend.release(refresh_name(org_id, record_id, event_id), token)
+            if await backend.is_marked(name):
+                must_purge = False
+            else:
+                token = await backend.acquire(name + ":lease", LOCK_TTL_MS)
+                if token is None:
+                    must_purge = False                  # another delivery is purging right now
+                else:
+                    held = _Held(backend, name + ":lease", token, self.logger)  # type: ignore[arg-type]
+                    held.start_heartbeat()
         except Exception:
-            self.logger.debug("Paid-result refresh claim not released", exc_info=True)
+            self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
+            must_purge = True
+        try:
+            yield must_purge
+            if must_purge and held is not None and backend is not None:
+                await backend.mark(name, DELETED_TTL_MS)     # only after the purge returned
+        finally:
+            if held is not None:
+                await _uninterrupted(held.stop_heartbeat())
+                await _uninterrupted(held.release())
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:
         """The record is deleted: no writer may store under it again, and what is stored goes.
@@ -673,8 +698,9 @@ class NullPaidResultCache:
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
 
-    async def release_refresh_claim(self, org_id: str, record_id: str, event_id: str, token: str) -> None:
-        return None
+    @contextlib.asynccontextmanager
+    async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:
+        yield True
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:
         return True

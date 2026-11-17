@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import os
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -2337,19 +2338,16 @@ class RecordEventHandler(BaseEventService):
                 if refresh_org:
                     paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
                     event_id = payload.get(replay_set.EVENT_ID_KEY)
-                    claim = await paid_cache.claim_refresh(refresh_org, record_id, str(event_id)) if event_id else "unclaimed"
-                    if claim is not None:
-                        try:
+                    async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
+                        if must_purge:
+                            # A failure raises out of the block: no marker is written, and the redelivery purges.
                             await paid_cache.purge_record(refresh_org, record_id)
-                        except BaseException:
-                            # The purge failed: the claim goes back, so the redelivery purges instead of reusing.
-                            if event_id:
-                                await paid_cache.release_refresh_claim(refresh_org, record_id, str(event_id), claim)
-                            raise
-                    # A redelivery of the same event (claim None) still refreshes: it reuses only what its first
-                    # delivery stored, as that delivery's manifest lists it, and pays for the rest.
+                    # A redelivery of the same event (must_purge False) still refreshes: it reuses only what its first
+                    # delivery stored, as that delivery's manifest lists it, and pays for the rest. The event id names
+                    # the refresh for the parsing service too.
                     paid_cache_run.begin_run(
-                        refresh_org, record_id, None, "index", refresh=True, reuse_prior_attempt=claim is None,
+                        refresh_org, record_id, None, "index", refresh=True, reuse_prior_attempt=not must_purge,
+                        refresh_token=str(event_id) if event_id else None,
                     )
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
