@@ -36,6 +36,8 @@ export interface State {
   ports: Ports;
   services: Partial<Record<ProcessName, number>>;
   postgresPid?: number;
+  /** The one-shot step running now (its own process group), so a stop after a killed launcher can end it. */
+  step?: { name: string; pid: number };
   healthyAfterS?: number;
 }
 
@@ -73,27 +75,66 @@ export function running(dataDir: string): State | undefined {
 
 export const lockPath = (dataDir: string) => join(dataDir, "launcher.lock");
 
+const readLockPid = (path: string): number | null => {
+  try { const t = readFileSync(path, "utf8").trim(); return t ? Number(t) || null : 0; } catch { return null; }
+};
+const ageMs = (path: string): number => { try { return Date.now() - statSync(path).mtimeMs; } catch { return Infinity; } };
+
+/** The lock's pid when it is held: a live pid, or a lock still being written (empty for at most a few seconds). */
+function lockHolder(dataDir: string): number | undefined {
+  const pid = readLockPid(lockPath(dataDir));
+  if (pid === null) return undefined;
+  if (pid === 0) return ageMs(lockPath(dataDir)) < 5000 ? -1 : undefined;
+  return alive(pid) ? pid : undefined;
+}
+
+/**
+ * Removes a lock whose holder is dead. Only the process that creates `launcher.lock.break` (exclusively) may do it, and it
+ * looks again under that guard, so two starts that both saw the same dead pid cannot delete each other's new lock. A guard
+ * left by a process that died mid-takeover is cleared after 30 s. Returns false when another process is taking over now.
+ */
+function breakStaleLock(dataDir: string, hooks: LockHooks = {}): boolean {
+  const guard = `${lockPath(dataDir)}.break`;
+  try {
+    writeFileSync(guard, String(process.pid), { flag: "wx", mode: 0o600 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    if (ageMs(guard) > 30_000) rmSync(guard, { force: true });
+    return false;
+  }
+  try {
+    hooks.beforeBreak?.();
+    if (lockHolder(dataDir) === undefined) rmSync(lockPath(dataDir), { force: true });
+    return true;
+  } finally {
+    rmSync(guard, { force: true });
+  }
+}
+
+export interface LockHooks { beforeBreak?: () => void }
+
 /**
  * One launcher per data folder: the lock file is created exclusively before anything else happens, so two starts at once
- * cannot both run initdb. A lock whose pid is gone (a crashed launcher) is taken over. Returns the holder's pid when it is held.
+ * cannot both run initdb. A lock whose holder died is removed under a guard (breakStaleLock), then created again exclusively.
+ * Returns undefined when this process holds the lock, else the holder's pid (-1 when another start is taking it over).
  */
-export function takeLock(dataDir: string): number | undefined {
-  for (let attempt = 0; attempt < 2; attempt++) {
+export function takeLock(dataDir: string, hooks: LockHooks = {}): number | undefined {
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
       writeFileSync(lockPath(dataDir), String(process.pid), { flag: "wx", mode: 0o600 });
       return undefined;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const holder = Number(readFileSync(lockPath(dataDir), "utf8").trim());
-      if (holder && holder !== process.pid && alive(holder)) return holder;
-      rmSync(lockPath(dataDir), { force: true });
     }
+    const holder = lockHolder(dataDir);
+    if (holder !== undefined) return holder;
+    if (!breakStaleLock(dataDir, hooks)) return -1;
   }
-  return Number(readFileSync(lockPath(dataDir), "utf8").trim()) || -1;
+  return -1;
 }
 
 export function releaseLock(dataDir: string): void {
-  try { if (Number(readFileSync(lockPath(dataDir), "utf8").trim()) === process.pid) rmSync(lockPath(dataDir), { force: true }); } catch { /* none */ }
+  if (readLockPid(lockPath(dataDir)) === process.pid) rmSync(lockPath(dataDir), { force: true });
 }
 
 function tail(path: string, bytes = 4000): string {
@@ -105,7 +146,7 @@ function tail(path: string, bytes = 4000): string {
 }
 
 /** The one-shot step running now (initdb, pg_ctl, a schema step), so a stop can end it and its children. */
-export interface Steps { current?: ChildProcess; cancelled: boolean }
+export interface Steps { current?: ChildProcess; cancelled: boolean; onSpawn?: (name: string, pid: number | undefined) => void }
 
 /** A start that a stop interrupted: not an error to report. */
 export class Cancelled extends Error {}
@@ -117,7 +158,12 @@ function runStep(c: Ctx, steps: Steps, name: string, cmd: string, args: string[]
   return new Promise((res, rej) => {
     const p = spawn(cmd, args, { cwd, env, detached: true, stdio: ["ignore", fd, fd] });
     steps.current = p;
-    const done = (err?: Error) => { closeSync(fd); if (steps.current === p) steps.current = undefined; err ? rej(err) : res(); };
+    steps.onSpawn?.(name, p.pid);
+    const done = (err?: Error) => {
+      closeSync(fd);
+      if (steps.current === p) { steps.current = undefined; steps.onSpawn?.(name, undefined); }
+      err ? rej(err) : res();
+    };
     p.once("error", (e) => done(e));
     p.once("exit", (code, sig) => {
       if (steps.cancelled) return done(new Cancelled());
@@ -206,7 +252,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   for (const d of [dataDir, lay.logs, lay.home]) mkdirSync(d, { recursive: true, mode: 0o700 });
   const holder = takeLock(dataDir);
   if (holder !== undefined) {
-    emit({ event: "error", code: "already_running", message: `already running (pid ${holder})`, phase: readState(dataDir)?.phase ?? "starting" });
+    emit({ event: "error", code: "already_running", message: holder > 0 ? `already running (pid ${holder})` : "another start is in progress", phase: readState(dataDir)?.phase ?? "starting" });
     return 1;
   }
   await reapLeftovers(dataDir, lay);
@@ -219,7 +265,11 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   save();
 
   const procs = new Map<ProcessName, ChildProcess>();
-  const steps: Steps = { cancelled: false };
+  // The step's pid is written down before it is awaited: if this launcher is killed, stop can still end that step.
+  const steps: Steps = {
+    cancelled: false,
+    onSpawn: (name, pid) => { state.step = pid ? { name, pid } : undefined; save(); },
+  };
   let stopping = false, exitCode = 0;
   let wake!: () => void;
   const stopRequested = new Promise<void>((r) => { wake = r; });
@@ -297,6 +347,14 @@ export async function start(o: Options, emit: Emit): Promise<number> {
 export async function reapLeftovers(dataDir: string, lay: Layout): Promise<void> {
   const s = readState(dataDir);
   if (s && alive(s.pid)) return;
+  // A step (initdb, pg_ctl, a schema step) runs in its own group and outlives a killed launcher: end it before anything
+  // else touches the data folder, or a new initdb or a late pg_ctl start would run alongside it.
+  if (s?.step?.pid && alive(s.step.pid)) {
+    group(s.step.pid, "SIGTERM");
+    const until = Date.now() + 10_000;
+    while (alive(s.step.pid) && Date.now() < until) await sleep(100);
+    group(s.step.pid, "SIGKILL");
+  }
   for (const pid of Object.values(s?.services ?? {})) if (pid && alive(pid)) group(pid, "SIGKILL");
   // The server is not one of the services: pg_ctl started it, so it outlives a killed launcher.
   await stopPostgres(lay);
@@ -308,21 +366,22 @@ export async function stop(o: Options, emit: Emit): Promise<number> {
   const s = running(dataDir);
   if (!s) {
     // A start can be past its lock but not yet past writing its state: then the lock names it.
-    const holder = Number((() => { try { return readFileSync(lockPath(dataDir), "utf8"); } catch { return ""; } })().trim());
-    if (holder && alive(holder)) return stopPid(holder, lay, o, emit);
+    const holder = lockHolder(dataDir);
+    if (holder && holder > 0) return stopPid(holder, dataDir, lay, o, emit);
     await reapLeftovers(dataDir, lay);
+    if (lockHolder(dataDir) === undefined && existsSync(lockPath(dataDir))) breakStaleLock(dataDir);
     emit({ event: "stopped", was_running: false }); return 0;
   }
-  return stopPid(s.pid, lay, o, emit);
+  return stopPid(s.pid, dataDir, lay, o, emit);
 }
 
-async function stopPid(pid: number, lay: Layout, o: Options, emit: Emit): Promise<number> {
+async function stopPid(pid: number, dataDir: string, lay: Layout, o: Options, emit: Emit): Promise<number> {
   try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
   const until = Date.now() + ((o.stopWaitS ?? 30) + 40) * 1000;
   while (alive(pid) && Date.now() < until) await sleep(200);
   if (alive(pid)) { emit({ event: "error", code: "stop_failed", message: `launcher ${pid} did not stop` }); return 1; }
-  // If the launcher died rather than stopped, its server may still be up.
-  await stopPostgres(lay);
+  // If the launcher died rather than stopped, its step or server may still be up.
+  await reapLeftovers(dataDir, lay);
   emit({ event: "stopped", was_running: true });
   return 0;
 }
@@ -352,9 +411,9 @@ export async function health(o: Options, fetchFn: typeof fetch = fetch): Promise
 export async function startDetached(o: Options, emit: Emit, args: string[], selfCmd: string[]): Promise<number> {
   const { dataDir, lay } = resolve(o);
   mkdirSync(lay.logs, { recursive: true, mode: 0o700 });
-  const holder = (() => { try { return Number(readFileSync(lockPath(dataDir), "utf8").trim()); } catch { return 0; } })();
-  if (holder && alive(holder)) {
-    emit({ event: "error", code: "already_running", message: `already running (pid ${holder})`, phase: readState(dataDir)?.phase ?? "starting" });
+  const holder = lockHolder(dataDir);
+  if (holder !== undefined) {
+    emit({ event: "error", code: "already_running", message: holder > 0 ? `already running (pid ${holder})` : "another start is in progress", phase: readState(dataDir)?.phase ?? "starting" });
     return 1;
   }
   // Appended, not truncated: a second start racing this one must not wipe its log; this run's lines start at `from`.
