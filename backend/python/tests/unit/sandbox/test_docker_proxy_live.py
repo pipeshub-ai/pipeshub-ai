@@ -111,10 +111,11 @@ async def test_coding_sandbox_runs_and_installs_through_proxy(proxy_host, tmp_pa
         provider.close()
 
 
-async def test_legacy_executor_runs_through_proxy(proxy_host) -> None:
+async def test_legacy_executor_runs_through_proxy(proxy_host, tmp_path) -> None:
     from app.sandbox import docker_executor
 
-    with patch.object(docker_executor, "SANDBOX_IMAGE", DOCKER_TEST_IMAGE):
+    with patch.object(docker_executor, "SANDBOX_IMAGE", DOCKER_TEST_IMAGE), \
+            patch.object(docker_executor, "_SANDBOX_ROOT", str(tmp_path / "root")):
         result = await docker_executor.DockerExecutor(egress_network=EGRESS).execute(
             "print(6 * 7)", "python", timeout_seconds=60,
         )
