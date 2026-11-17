@@ -2013,7 +2013,7 @@ class TestFetchIssuesBatchedCoverage:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("result", [{"success": False, "deleted_records": []}, {"failed_count": 1}],
                              ids=["not_a_success", "a_failed_record"])
-    async def test_a_delete_cascade_that_failed_fails_the_batch_so_the_issues_are_read_again(self, result):
+    async def test_a_delete_cascade_that_failed_fails_the_batch_so_the_issues_are_read_again(self, result: dict) -> None:
         """Records an issue no longer holds (a removed file, a stale restricted comment) that could not be deleted are
         not left behind: the batch fails before its records are written, so the project's issues are read again."""
         connector = _make_connector()

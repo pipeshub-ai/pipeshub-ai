@@ -291,7 +291,7 @@ async def test_a_comment_record_inlines_only_the_files_no_other_restricted_comme
     seen: list[set[str]] = []
     parse = connector._parse_issue_to_blocks
 
-    async def spy(**kwargs):
+    async def spy(**kwargs: Any) -> Any:  # noqa: ANN401
         seen.append({str(a["id"]) for a in kwargs["issue_data"]["fields"]["attachment"]})
         return await parse(**kwargs)
 
