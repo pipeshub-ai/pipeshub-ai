@@ -90,7 +90,9 @@ def _rules(tmp_path: Path, network_cidrs: list[str], allowed: list[str], routes:
 
 
 def _first(rules: list[str], dest: str) -> int:
-    return next(i for i, rule in enumerate(rules) if f"-d {dest} " in rule)
+    """The first rule for ``dest`` other than a DNS (port 53) accept, which
+    test_egress_firewall_dns.py covers."""
+    return next(i for i, rule in enumerate(rules) if f"-d {dest} " in rule and "--dport 53 " not in rule)
 
 
 class TestAllowancesCannotOpenTheBridge:

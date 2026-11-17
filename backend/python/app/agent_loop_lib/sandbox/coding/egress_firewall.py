@@ -23,6 +23,7 @@ command starts — so the command can't fake the signal.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import logging
 import os
@@ -35,11 +36,13 @@ from typing import Any
 
 __all__ = [
     "BLOCKED_CIDRS",
+    "CLOUD_DNS_SERVERS",
     "CONTAINER_HARDENING",
     "FIREWALL_UNAVAILABLE_EXIT_CODE",
     "build_firewall_script",
     "create_sandbox_container",
     "deadline_command",
+    "dns_servers_from_env",
     "EgressNetworkUnsafe",
     "ensure_egress_network_sync",
     "firewall_unavailable",
@@ -197,6 +200,19 @@ def _is_storage_opt_rejected(exc: Exception) -> bool:
 # Rejected before any operator allowance: link-local carries the AWS/GCP/
 # Azure/OpenStack metadata endpoint, and Azure's wireserver is a public IP.
 _NEVER_ALLOWED_CIDRS = ("169.254.0.0/16", "168.63.129.16/32")
+
+# Resolvers the embedded DNS server (127.0.0.11) may forward to from the
+# sandbox's own network namespace, where these rules apply: Docker does so for
+# servers set with the daemon's ``dns`` option or ``--dns``. Only port 53 is
+# opened on them, ahead of the rejects; their other ports stay closed. Azure
+# DNS shares the wireserver address, AWS's resolver and GCP's metadata server
+# are link-local. The container's default gateway, and the servers Docker
+# lists in its resolv.conf as forwarded from the container, are added when the
+# rules are installed; ``SANDBOX_EGRESS_DNS_SERVERS`` (comma-separated IPv4
+# addresses) adds more. Code that can query the embedded server can already
+# reach these resolvers through it, so this opens no new service.
+_ENV_DNS_SERVERS = "SANDBOX_EGRESS_DNS_SERVERS"
+CLOUD_DNS_SERVERS = ("168.63.129.16", "169.254.169.253", "169.254.169.254")
 BLOCKED_CIDRS = (
     "0.0.0.0/8",
     "10.0.0.0/8",
@@ -239,16 +255,39 @@ _ICC_OPTION = "com.docker.network.bridge.enable_icc"
 
 _TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
 
-# Rejects every subnet the container is attached to and its default gateway,
-# read from /proc/net/route (little-endian hex), so they hold even when the
-# bridge's subnets could not be read on the host and an allowance overlaps
-# them. Fields: Iface Destination Gateway Flags RefCnt Use Metric Mask.
-_ROUTE_REJECT_LINES = [
+# Helpers for /proc/net/route (little-endian hex). Fields: Iface Destination
+# Gateway Flags RefCnt Use Metric Mask.
+_ROUTE_HELPER_LINES = [
     "ip4() { h=$1; printf '%d.%d.%d.%d' \"0x${h#??????}\" \"0x$(echo \"$h\" | cut -c5-6)\" "
     "\"0x$(echo \"$h\" | cut -c3-4)\" \"0x$(echo \"$h\" | cut -c1-2)\"; }",
     "hex8() { case $1 in [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) "
     "return 0;; esac; return 1; }",
     "[ -r /proc/net/route ] || fail 'cannot read /proc/net/route'",
+]
+
+# Opens port 53 (udp and tcp) on the default gateway and on every IPv4 server
+# Docker's resolv.conf lists as forwarded from the container (``host(...)``
+# entries are dialled from the host and skipped). A rule that cannot be added
+# leaves that port closed rather than stopping the run.
+_DNS_ACCEPT_LINES = [
+    "dns() { for p in udp tcp; do \"$IPT\" -w -A OUTPUT -d \"$1/32\" -p $p --dport 53 -j ACCEPT "
+    ">/dev/null 2>&1 || true; done; }",
+    "while read -r i d g _rest; do",
+    '  [ "$i" = Iface ] || [ "$i" = lo ] && continue',
+    '  [ "$d" = 00000000 ] && [ "$g" != 00000000 ] && hex8 "$g" && dns "$(ip4 "$g")"',
+    "done < /proc/net/route",
+    "if [ -r /etc/resolv.conf ]; then",
+    "  for a in $(sed -n 's/^# ExtServers: \\[\\(.*\\)\\]$/\\1/p' /etc/resolv.conf 2>/dev/null); do",
+    '    case "$a" in ""|*[!0-9.]*) continue;; esac',
+    '    dns "$a"',
+    "  done",
+    "fi",
+]
+
+# Rejects every subnet the container is attached to and its default gateway,
+# so they hold even when the bridge's subnets could not be read on the host
+# and an allowance overlaps them.
+_ROUTE_REJECT_LINES = [
     "while read -r i d g _f _c _u _m k _rest; do",
     '  [ "$i" = Iface ] || [ "$i" = lo ] && continue',
     '  hex8 "$d" && hex8 "$g" && hex8 "$k" || fail "unreadable route: $i $d $g $k"',
@@ -303,12 +342,38 @@ def _ipv4_cidrs(cidrs: Iterable[str]) -> list[str]:
     return normalised
 
 
+def _ipv4_addresses(addresses: Iterable[str]) -> list[str]:
+    """IPv4 host addresses; anything else raises (spliced into a root script)."""
+    return list(dict.fromkeys(str(ipaddress.IPv4Address(str(a).strip())) for a in addresses))
+
+
+@functools.lru_cache(maxsize=8)
+def _parse_dns_servers(raw: str) -> tuple[str, ...]:
+    servers: list[str] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            servers.append(str(ipaddress.IPv4Address(item)))
+        except ValueError:
+            logger.warning("ignoring invalid %s entry %r (one IPv4 address each)", _ENV_DNS_SERVERS, item)
+    return tuple(dict.fromkeys(servers))
+
+
+def dns_servers_from_env() -> tuple[str, ...]:
+    """``CLOUD_DNS_SERVERS`` plus the valid addresses in ``SANDBOX_EGRESS_DNS_SERVERS``."""
+    extra = _parse_dns_servers(os.environ.get(_ENV_DNS_SERVERS) or "")
+    return tuple(dict.fromkeys((*CLOUD_DNS_SERVERS, *extra)))
+
+
 def build_firewall_script(
     network_cidrs: Iterable[str],
     allowed_cidrs: Iterable[str] = (),
     run_as: str = "sandbox",
     *,
     token: str,
+    dns_servers: Iterable[str] | None = None,
 ) -> str:
     """``sh -c`` script: install the rules, then exec ``"$@"`` as ``run_as``.
 
@@ -316,6 +381,10 @@ def build_firewall_script(
 
     1. loopback is accepted: Docker's embedded DNS (127.0.0.11) is reached
        through it;
+    1b. DNS (udp and tcp port 53, nothing else) is accepted to ``dns_servers``
+       (default ``dns_servers_from_env()``), the default gateway and the
+       resolvers Docker forwards to from the container, so name resolution
+       works when Docker forwards from the container's namespace;
     2. link-local (cloud metadata), Azure's wireserver, the bridge's own
        subnets (``network_cidrs``) and, read from the container's routing
        table at start, every subnet it is attached to and its default
@@ -338,6 +407,7 @@ def build_firewall_script(
     bridge = list(dict.fromkeys(_ipv4_cidrs(network_cidrs)))
     blocked = [c for c in dict.fromkeys(BLOCKED_CIDRS) if c not in bridge]
     allowed = _ipv4_cidrs(allowed_cidrs)
+    resolvers = _ipv4_addresses(dns_servers_from_env() if dns_servers is None else dns_servers)
     user = shlex.quote(run_as)
     lines = [
         "set -u",
@@ -351,6 +421,12 @@ def build_firewall_script(
         "r() { \"$IPT\" -w \"$@\" || fail \"iptables $*\"; }",
         "r -A OUTPUT -o lo -j ACCEPT",
     ]
+    lines += _ROUTE_HELPER_LINES
+    lines += [
+        f"r -A OUTPUT -d {ip}/32 -p {proto} --dport 53 -j ACCEPT"
+        for ip in resolvers for proto in ("udp", "tcp")
+    ]
+    lines += _DNS_ACCEPT_LINES
     lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in _NEVER_ALLOWED_CIDRS]
     lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in bridge]
     lines += _ROUTE_REJECT_LINES

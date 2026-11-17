@@ -502,6 +502,17 @@ jobs:
           docker build --cache-from pipeshubai/pipeshub-sandbox:latest \
             -t pipeshubai/pipeshub-sandbox:local deployment/sandbox
 
+      # Where Docker's embedded DNS forwards from: host(...) entries from the
+      # host, bare addresses from the container, through the egress firewall.
+      - name: Container DNS forwarding
+        run: |
+          ps -o args= -C dockerd || true
+          sudo cat /etc/docker/daemon.json 2>/dev/null || echo "no daemon.json"
+          docker network create sandbox-dns-probe >/dev/null
+          docker run --rm --network sandbox-dns-probe pipeshubai/pipeshub-sandbox:local \
+            grep -E '^# (ExtServers|Overrides|Based on)' /etc/resolv.conf || true
+          docker network rm sandbox-dns-probe >/dev/null
+
       - name: Set up Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:

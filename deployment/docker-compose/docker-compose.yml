@@ -454,6 +454,8 @@ services:
       # except the sandbox bridge, its gateway and metadata, which stay blocked.
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Extra resolvers sandboxes may query on port 53 only (comma-separated IPv4).
+      - SANDBOX_EGRESS_DNS_SERVERS=${SANDBOX_EGRESS_DNS_SERVERS:-}
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
       # the storage driver supports it; logs a warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
