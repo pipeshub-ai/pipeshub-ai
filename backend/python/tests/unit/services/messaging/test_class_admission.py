@@ -528,3 +528,25 @@ def test_with_a_remote_parsing_service_a_light_format_record_takes_its_place_in_
     peak, fifo_free = asyncio.run(run())
     assert peak <= 2  # the configured concurrency, held once
     assert fifo_free == 2  # the FIFO pool was never entered with classes on
+
+
+def test_a_large_record_that_inspection_makes_huge_keeps_its_place_in_a_full_big_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large and huge share the big download pool: with both places held, the move must not wait for a third."""
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD_SMALL", "1")
+
+    async def run() -> tuple[bool, float]:
+        h = host()
+        ctx = wiring.class_context(msg("pdf").payload)
+        first = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=150 * MIB)  # large by size
+        second = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=150 * MIB)  # the big pool is full
+        started = asyncio.get_running_loop().time()
+        moved = await cc.reclass_download_slot(first, ctx.inspected(1000, scanned=False), 150 * MIB, 0.3)  # now huge
+        waited = asyncio.get_running_loop().time() - started
+        same = moved is first and moved.download_class is H
+        cc.release_admission(moved)
+        cc.release_admission(second)
+        return same, waited
+
+    same, waited = asyncio.run(run())
+    assert same and waited < 0.1  # kept, no timeout, no wait for a third place

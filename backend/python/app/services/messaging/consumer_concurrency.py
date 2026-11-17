@@ -1826,6 +1826,9 @@ async def reclass_download_slot(
     if old is None or new is old:
         return admission
     ahead = wiring.download_ahead(new)
+    if ahead is wiring.download_ahead(old):
+        admission.download_class = new  # type: ignore[attr-defined]  # large and huge share the big pool: the place is right
+        return admission
     if not await ahead.acquire(timeout):
         raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
     moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
