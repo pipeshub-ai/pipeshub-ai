@@ -285,7 +285,7 @@ class LiveLedger:
         try:
             if not self.shared:
                 locked = True
-            else:
+            elif self._lock_fd >= 0:  # a closed ledger has no lock to take
                 deadline = time.monotonic() + lock_budget
                 while True:
                     try:
