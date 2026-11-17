@@ -98,6 +98,8 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
+from app.services.paid_cache.access import abandon_run, complete_run, start_run
+from app.services.paid_cache.run import current_run as current_paid_run
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
@@ -575,6 +577,8 @@ class EventProcessor:
             "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
         )
         provider = ParserProvider(os.getenv("PARSER_BACKEND") or ParserProvider.DEFAULT.value)
+        # What the paid calls of this revision use is listed in its manifest, for retention by reference.
+        paid_run = start_run(content_revision(bytes(file_content)), "index")
         parse_result = await self.parsing_client.parse(
             file_content=file_content,
             record_name=record_name,
@@ -654,6 +658,9 @@ class EventProcessor:
                 "Failed to persist EMPTY status for record",
                 record_doc,
             )
+            if self.config_service is not None:
+                # The revision is complete: its paid calls (a scan's page OCR) are listed in a final manifest.
+                await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
                 data=PipelineEventData(record_id=record_id),
@@ -709,6 +716,8 @@ class EventProcessor:
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
         self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
+        if self.config_service is not None:
+            await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
         if store_only:
             self.logger.info("Record %s: content stored; not embedded (automatic indexing is off)", record_id)
             yield PipelineEvent(
@@ -1497,6 +1506,30 @@ class EventProcessor:
             )
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
+        """Process an event (``_dispatch_event``); the in-process pipeline's manifest is completed here.
+
+        The in-process pipeline indexes inside its ``process_*`` generators, so its run ends where they report
+        ``INDEXING_COMPLETE``. A run that failed never gets there and keeps its open manifest.
+        """
+        before = current_paid_run()
+        inner = self._dispatch_event(event_data)
+        try:
+            async for event in inner:
+                if event.event == IndexingEvent.INDEXING_COMPLETE:
+                    scope = current_paid_run()
+                    if scope is not None and scope is not before and scope.in_process and self.config_service is not None:
+                        await complete_run(scope, self.config_service, self.logger, sweep=not store_only_active())
+                yield event
+        except BaseException:
+            # A run that failed keeps its open manifest, brought up to date: what it paid for stays protected.
+            scope = current_paid_run()
+            if scope is not None and scope is not before and self.config_service is not None:
+                await abandon_run(scope, self.config_service, self.logger)
+            raise
+        finally:
+            await inner.aclose()
+
+    async def _dispatch_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
         Process events received from Kafka consumer, yielding phase completion events.
 
@@ -2085,6 +2118,10 @@ class EventProcessor:
                 return
 
             # ── Legacy per-format dispatch (existing behaviour) ──────────────
+            # The same manifest the service pipeline writes: retention is by reference on this path too.
+            in_process_run = start_run(content_rev, "index")
+            if in_process_run is not None:
+                in_process_run.in_process = True
             # The parsing service makes the same check on its own side.
             raise_if_password_protected_office(
                 file_content, extension=extension, mime_type=mime_type

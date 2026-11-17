@@ -29,6 +29,8 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
+from app.core.org_context import current_org_id
+from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
@@ -110,6 +112,10 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.paid_cache import access as paid_cache_access
+from app.services.paid_cache import run as paid_cache_run
+from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
+from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
@@ -1768,6 +1774,29 @@ class RecordEventHandler(BaseEventService):
                     yield event
                 return
 
+            if event_type == EventTypes.PURGE_PAID_RESULTS.value:
+                # The org is the signed envelope's (bound by the consumer), never a field of the body; an unbound
+                # message fails closed.
+                purge_org, purge_record_id = current_org_id(), payload.get("recordId")
+                if payload.get("scope") == ORG_SCOPE and not purge_record_id:
+                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_org(purge_org)
+                    await schedule_next_hop(self.producer, purge_org, payload, loop=self._producer_loop)
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_org))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_org))
+                    return
+                if not purge_record_id:
+                    raise ProcessingError(
+                        "purgePaidResults carries no recordId",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                # A storage failure raises, so the broker redelivers until the purge succeeds.
+                await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(purge_org, purge_record_id)
+                # A hop of the chain: it purged, and now publishes the next (signed when it is published).
+                await schedule_next_hop(self.producer, purge_org, payload, loop=self._producer_loop)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
+                return
+
             if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:
                 org_id = payload.get("orgId")
                 document_ids = payload.get("documentIds") or []
@@ -1823,10 +1852,16 @@ class RecordEventHandler(BaseEventService):
                 # without its org takes it from the record. The read is non-raising; with no org
                 # at all (and none bound) the delete fails closed.
                 if not org_id:
+                    # A failed read raises (the event is redelivered): only an answer that the record is gone
+                    # may fall back to the bound org, or a graph blip would fence a live record's results.
                     record_doc = await self.event_processor.graph_provider.get_document(
-                        record_id, CollectionNames.RECORDS.value
+                        record_id, CollectionNames.RECORDS.value, raise_on_error=True
                     )
                     org_id = (record_doc or {}).get("orgId")
+                if not org_id:
+                    # The verified envelope's org, when one is bound (the paid-result erasure below needs an org).
+                    bound = peek_org_context()
+                    org_id = bound.org_id if bound is not None else None
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=org_id
                 )
@@ -1846,6 +1881,20 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
+                if org_id:
+                    # Erasure: the record's stored model outputs go with it, and a parse still running for it
+                    # (the parsing service outlives the run that sent it) can store nothing more. A storage
+                    # failure raises, so the broker redelivers until it succeeds (none stored is a success).
+                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).delete_record(org_id, record_id)
+                    # Redis can lose the marker while a parse that outlived the record is still running: a
+                    # durable delayed purge removes whatever such a write left. A publish failure raises.
+                    await schedule_paid_repurge(self.producer, org_id, record_id, loop=self._producer_loop)
+                else:
+                    self.logger.warning(
+                        "deleteRecord %s carries no orgId and the record is gone; "
+                        "its stored model outputs are left for the org purge",
+                        record_id,
+                    )
                 await self._request_code_edge_build_for_deleted(payload)
                 await self._hand_over_shared_copy(payload, org_id)
                 # Yield both events since delete is complete
@@ -2138,6 +2187,22 @@ class RecordEventHandler(BaseEventService):
                 begin_run(ParseNowRun(store_only=store_only, content_rev=record.get("contentRev")))
                 # A marker left by an earlier attempt must not read as this one's outcome.
                 await self._mark_parse_now(record_id, record, ParseNowStatus.IN_PROGRESS)
+
+            # After the parse-now refusal above, which writes nothing: a refused event never purges.
+            if paid_cache_run.refresh_requested(payload):
+                # An explicit request to pay for every model output again: the record's stored set goes
+                # first, and the run bypasses lookups. A storage failure raises and the event is retried.
+                refresh_org = payload.get("orgId") or record.get("orgId")
+                if refresh_org:
+                    paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+                    event_id = payload.get(replay_set.EVENT_ID_KEY)
+                    if not event_id or await paid_cache.refresh_purge_needed(refresh_org, record_id, str(event_id)):
+                        await paid_cache.purge_record(refresh_org, record_id)
+                        if event_id:
+                            await paid_cache.mark_refresh_purged(refresh_org, record_id, str(event_id))
+                        paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
+                    # A redelivery of the same event already purged: what its first delivery paid for and stored is
+                    # reused by an ordinary run, not deleted and paid for again.
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:

@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import io
 import json
 from datetime import datetime
@@ -25,6 +26,7 @@ from app.modules.parsers.csv import table_detection
 from app.modules.parsers.csv.table_detection import DelimitedReadError, read_csv_tables
 from app.modules.parsers.excel.prompt_template import (
     CSVHeaderDetection,
+    RowDescriptions,
     TableHeaders,
     csv_header_generation_prompt,
     excel_header_detection_prompt,
@@ -33,10 +35,17 @@ from app.modules.parsers.excel.prompt_template import (
 )
 from app.modules.parsers.text_decoding import decode_text
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.paid_cache.access import cached_model_call
+from app.services.paid_cache.keys import (
+    KIND_EXCEL_HEADERS,
+    KIND_TABLE_ROWS,
+    KIND_TABLE_SUMMARY,
+)
 from app.services.parsing.interface import ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.is_truncated import is_truncated
 from app.utils.llm import get_llm_for_role
 from app.utils.logger import create_logger
 from app.utils.opik import get_llm_invoke_config
@@ -634,8 +643,16 @@ class CSVParser:
             )
 
             # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, CSVHeaderDetection
+            parsed_response = await cached_model_call(
+                KIND_EXCEL_HEADERS,
+                llm=llm,
+                template=self.excel_header_detection_prompt,
+                rendered=rows_text,
+                params={"flow": "csv_detect"},
+                call=lambda: invoke_with_structured_output_and_reflection(llm, messages, CSVHeaderDetection),
+                encode=lambda detected: detected.model_dump(),
+                decode=CSVHeaderDetection.model_validate,
+                config_service=self.config_service,
             )
 
             if parsed_response is not None:
@@ -699,8 +716,17 @@ class CSVParser:
             )
 
             # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, TableHeaders
+            parsed_response = await cached_model_call(
+                KIND_EXCEL_HEADERS,
+                llm=llm,
+                template=self.csv_header_generation_prompt,
+                rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                params={"flow": "csv_generate", "columns": column_count},
+                call=lambda: invoke_with_structured_output_and_reflection(llm, messages, TableHeaders),
+                encode=lambda generated: generated.model_dump(),
+                decode=TableHeaders.model_validate,
+                cacheable=lambda generated: len(generated.headers) == column_count,
+                config_service=self.config_service,
             )
 
             if parsed_response is not None and parsed_response.headers:
@@ -739,23 +765,40 @@ class CSVParser:
             messages = self.table_summary_prompt.format_messages(
                 sample_data=json.dumps(sample_data, indent=2),headers=headers
             )
-            response = await self._call_llm(llm, messages)
-            # Handle response - it could be a message object with .content or a string
-            # Use getattr to safely access .content attribute
-            content = getattr(response, 'content', None)  # type: ignore
-            if content is not None:
-                # Gemini and similar return content as a list of blocks, not a string.
-                summary = coerce_message_content_to_text(content)
-                if '</think>' in summary:
-                    summary = summary.split('</think>')[-1]
-                return summary
-            elif isinstance(response, str):
-                if '</think>' in response:
-                    return response.split('</think>')[-1]
-                return response
-            else:
+            truncated = False
+
+            async def paid_summary() -> str:
+                nonlocal truncated
+                response = await self._call_llm(llm, messages)
+                truncated = is_truncated(response)
+                # Handle response - it could be a message object with .content or a string
+                # Use getattr to safely access .content attribute
+                content = getattr(response, 'content', None)  # type: ignore
+                if content is not None:
+                    # Gemini and similar return content as a list of blocks, not a string.
+                    text = coerce_message_content_to_text(content)
+                    if '</think>' in text:
+                        text = text.split('</think>')[-1]
+                    return text
+                if isinstance(response, str):
+                    if '</think>' in response:
+                        return response.split('</think>')[-1]
+                    return response
                 # Fallback for dict/list responses
                 return str(response)
+
+            summary = await cached_model_call(
+                KIND_TABLE_SUMMARY,
+                llm=llm,
+                template=self.table_summary_prompt,
+                rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                call=paid_summary,
+                encode=lambda text: text,
+                decode=str,
+                cacheable=lambda text: bool(text.strip()) and not truncated,
+                config_service=self.config_service,
+            )
+            return summary or ""
         except NonRetryableError:
             raise
         except Exception as e:
@@ -790,8 +833,18 @@ class CSVParser:
             descriptions = [generate_simple_row_text(row) for row in batch]
 
             # Use centralized utility with reflection and count validation
-            parsed_response = await invoke_with_row_descriptions_and_reflection(
-                llm, messages, expected_count=len(rows_data)
+            parsed_response = await cached_model_call(
+                KIND_TABLE_ROWS,
+                llm=llm,
+                template=self.row_text_prompt,
+                rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                call=functools.partial(
+                    invoke_with_row_descriptions_and_reflection, llm, messages, expected_count=len(rows_data)
+                ),
+                encode=lambda parsed: parsed.model_dump(),
+                decode=RowDescriptions.model_validate,
+                cacheable=lambda parsed, expected=len(rows_data): len(parsed.descriptions) == expected,
+                config_service=self.config_service,
             )
 
             if parsed_response is not None and parsed_response.descriptions:
