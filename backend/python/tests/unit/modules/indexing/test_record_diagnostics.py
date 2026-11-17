@@ -264,24 +264,19 @@ class TestPageCountWrites:
     async def test_the_in_process_count_is_one_conditional_write_on_the_revision_and_the_attempt(self) -> None:
         processor = _processor()
 
-        await processor._write_page_count("r1", "rev-a", 12, ("rev-0", None))
+        await processor._write_page_count("r1", "rev-a", 12)
 
         processor.graph_provider.update_node_fields_if_match.assert_awaited_once()
         args = processor.graph_provider.update_node_fields_if_match.await_args.args
         assert args[2] == {"pageCount": 12}
         assert args[3] == {"contentRev": "rev-a", "indexingStatus": IP}
 
-    async def test_a_count_the_record_already_holds_for_this_revision_is_not_written_again(self) -> None:
+    async def test_a_count_the_record_held_before_the_attempt_is_written_again(self) -> None:
+        """The attempt's start write drops a count when the record moved to another revision after it was read, so what the record held
+        when it was read says nothing about what it holds now."""
         processor = _processor()
 
-        await processor._write_page_count("r1", "rev-a", 12, ("rev-a", 12))
-
-        processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
-
-    async def test_the_same_count_for_other_content_is_written_again(self) -> None:
-        processor = _processor()
-
-        await processor._write_page_count("r1", "rev-b", 12, ("rev-a", 12))
+        await processor._write_page_count("r1", "rev-a", 12)
 
         processor.graph_provider.update_node_fields_if_match.assert_awaited_once()
 
@@ -289,27 +284,27 @@ class TestPageCountWrites:
     async def test_no_usable_count_writes_nothing(self, pages: Any) -> None:  # noqa: ANN401
         processor = _processor()
 
-        await processor._write_page_count("r1", "rev-a", pages, None)
+        await processor._write_page_count("r1", "rev-a", pages)
 
         processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
 
     async def test_a_store_only_run_is_matched_on_the_revision_alone(self) -> None:
         processor = _processor()
         with _run(store_only=True):
-            await processor._write_page_count("r1", "rev-a", 4, None)
+            await processor._write_page_count("r1", "rev-a", 4)
 
         assert processor.graph_provider.update_node_fields_if_match.await_args.args[3] == {"contentRev": "rev-a"}
 
     async def test_a_failed_count_write_never_fails_the_record(self) -> None:
         processor = _processor(update_node_fields_if_match=AsyncMock(side_effect=RuntimeError("down")))
 
-        await processor._write_page_count("r1", "rev-a", 4, None)  # no raise
+        await processor._write_page_count("r1", "rev-a", 4)  # no raise
 
     async def test_a_late_write_of_one_revision_matches_nothing_on_another(self) -> None:
         """The write names its revision, so it cannot land on content that replaced it: the store answers False."""
         processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
 
-        await processor._write_page_count("r1", "rev-a", 4, None)
+        await processor._write_page_count("r1", "rev-a", 4)
 
         assert processor.graph_provider.update_node_fields_if_match.await_args.args[3]["contentRev"] == "rev-a"
 

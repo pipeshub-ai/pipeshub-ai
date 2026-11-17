@@ -103,3 +103,10 @@ def test_the_generated_records_hold_floats_and_integers_in_the_timestamp_fields(
     for field in ("firstQueuedAt", "queuedAtTimestamp", "failedAt", "lastIndexTimestamp", "restoredAtTimestamp"):
         kinds = {type(doc[field]) for doc in stored if field in doc and isinstance(doc[field], (int, float)) and not isinstance(doc[field], bool)}
         assert kinds == {int, float}, f"{field}: {kinds}"
+
+
+def test_a_boolean_written_where_a_count_belongs_is_not_equal_to_it() -> None:
+    from tests.integration.graph_db.record_diagnostics_conformance_support import _norm
+
+    assert _norm({"indexingAttempts": 1}) != _norm({"indexingAttempts": True})
+    assert _norm({"indexingAttempts": 1}) == _norm({"indexingAttempts": 1.0})

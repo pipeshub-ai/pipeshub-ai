@@ -91,7 +91,8 @@ def _norm(doc: dict[str, Any]) -> dict[str, Any]:
         value = doc.get(name)
         if value is None:
             continue
-        out[name] = float(value) if is_number(value) else value
+        # Python's True == 1.0: a boolean written where a count belongs must not compare equal to it
+        out[name] = ("bool", value) if isinstance(value, bool) else float(value) if is_number(value) else value
     return out
 
 

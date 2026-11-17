@@ -315,16 +315,16 @@ class EventProcessor:
         record_id: str,
         content_rev: str | None,
         pages: object,
-        stored_pages: tuple[Any, Any] | None = None,
     ) -> None:
         """Record the page count of the PDF revision being parsed, only while the record is still on that revision.
+
+        Written on every attempt, even when the record held this count before it: the attempt's own start write drops a count
+        when the record moved to another revision in between, and the snapshot read before it cannot tell.
 
         Not an attempt's business: a failure here is logged and never fails the record. A parse-now store-only run
         writes no status, so it is matched on the revision alone."""
         count = page_count_of(pages)
         if count is None or content_rev is None:
-            return
-        if stored_pages is not None and stored_pages == (content_rev, count):
             return
         match: dict[str, Any] = {"contentRev": content_rev}
         if not store_only_active():
@@ -369,7 +369,6 @@ class EventProcessor:
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
         content_rev: str | None = None,
-        stored_pages: tuple[Any, Any] | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
@@ -377,7 +376,7 @@ class EventProcessor:
         self.logger.info("🔍 Checking if PDF needs OCR processing")
         inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
         # The count of the bytes that are parsed (the pdfium rewrite when the file was repaired), written once per revision.
-        await self._write_page_count(record_id, content_rev, inspected.page_count, stored_pages)
+        await self._write_page_count(record_id, content_rev, inspected.page_count)
         # Every parser below reads the bytes that passed inspection.
         pdf_binary = inspected.content
         needs_ocr = inspected.needs_ocr
@@ -1618,8 +1617,6 @@ class EventProcessor:
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
             doc: dict[str, Any] = dict(record)
-            # What the record held before this attempt's first write, which drops a count taken from other content.
-            stored_pages = (doc.get("contentRev"), doc.get("pageCount"))
             # Read here, from the node as it was before this event wrote anything: `doc` is rewritten
             # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
             embed_marker = marker_of(record)
@@ -2291,7 +2288,6 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     content_rev=content_rev,
-                    stored_pages=stored_pages,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None

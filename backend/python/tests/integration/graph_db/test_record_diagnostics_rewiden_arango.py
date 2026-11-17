@@ -150,7 +150,8 @@ async def test_a_status_write_a_revert_a_failure_and_a_batch_upsert_each_succeed
         await cluster.narrow()
         refused = await counting_refusals(cluster, lambda k=keys[index], w=write: w(k))
         assert refused <= 1, f"{name}: {refused} refused statements"
-    assert (await cluster.store.doc(keys[2]))["indexingStatus"] == "FAILED"
+    for key, status in zip(keys[:3], ("IN_PROGRESS", "QUEUED", "FAILED"), strict=True):  # each write landed, whatever it answered
+        assert (await cluster.store.doc(key))["indexingStatus"] == status, key
 
     await cluster.narrow()
     clean = await cluster.clean(99)

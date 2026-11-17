@@ -41,8 +41,10 @@ RECORD_WRITERS = GENERIC | frozenset({
 })
 TX_WRITERS = frozenset({
     "batch_upsert_records", "batch_upsert_nodes", "batch_update_nodes", "restore_records", "update_node", "update_record_fields",
-    "create_node_if_absent", "upsert_record_under_parent", "claim_push_record", "update_node_fields_if_match",
+    "create_node_if_absent", "upsert_record_under_parent", "claim_push_record", "update_node_fields_if_match", "write_attempt_start",
 })
+# methods that write a record whatever their arguments say (no collection argument names it)
+INTRINSIC_RECORD_WRITERS = frozenset({"batch_upsert_records", "restore_records", "write_attempt_start"})
 
 
 def _qualname(stack: list[str]) -> str:
@@ -114,7 +116,7 @@ def scan(source: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], set
                 receiver = ast.unparse(func.value)
                 transactional = "tx_store" in receiver or any(k.arg == "transaction" for k in node.keywords)
                 text = ast.unparse(node)
-                if transactional and (name in ("batch_upsert_records", "restore_records") or "records" in text.lower()):
+                if transactional and (name in INTRINSIC_RECORD_WRITERS or "records" in text.lower()):
                     tx_sites.append((_qualname(stack), name))
             self.generic_visit(node)
 
@@ -248,6 +250,13 @@ def test_an_unlisted_writer_that_passes_its_status_as_a_variable_is_seen() -> No
     assert sites == [("keyword", "update_record_fields")]
     sites, _, _ = scan("async def other(graph):\n    await graph.update_node('r', 'users', {'name': 'x'})\n")
     assert sites == []
+
+
+def test_a_transactional_attempt_start_with_no_owner_is_seen() -> None:
+    _, tx, _ = scan("async def start(self, graph, tx, rid, fields):\n    await graph.write_attempt_start(rid, fields, transaction=tx)\n")
+    assert [function for function, _ in tx] == ["start"]
+    _, tx, _ = scan("async def plain(self, graph, rid, fields):\n    await graph.write_attempt_start(rid, fields)\n")
+    assert tx == []
 
 
 def test_a_transactional_records_write_with_no_owner_is_seen() -> None:
