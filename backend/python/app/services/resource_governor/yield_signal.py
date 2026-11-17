@@ -13,8 +13,8 @@ A record that is missing, torn, of another version or otherwise not
 believable reads as inactive: indexing is never slowed by garbage. All times
 are ``time.monotonic()``, which every process in one container shares. The
 file can outlive a host reboot (a container restarted in place keeps its
-``/tmp``) while the clock starts again, so a record set after now, or ending
-further out than any refresh could set, is inactive.
+``/tmp``) while the clock starts again, so a record set well after now is
+inactive.
 
 It lives here rather than beside the sandbox code so that indexing does not
 import the agent library.
@@ -81,6 +81,10 @@ DEAD_WRITER_S = 10.0
 # No refresh sets an expiry further out than the largest TTL; one that does
 # is corrupt.
 MAX_SPAN_S = 120.0
+# How far ahead of a reader's clock a refresh may be (it read the clock just
+# before another process wrote); further ahead, it was written before the
+# clock restarted.
+CLOCK_SLACK_S = 1.0
 LOCK_BUDGET = 0.020
 # "Indexing has backed off": an ack this recent, and its pools at their floor
 # or the episode on for this long.
@@ -106,7 +110,8 @@ class YieldRecord:
 
     def active(self, now: float, alive: Callable[[int], bool] = pid_alive) -> bool:
         return (
-            0 < self.set_at <= now < self.expires_at
+            0 < self.set_at <= now + CLOCK_SLACK_S
+            and now < self.expires_at
             and self.expires_at - self.set_at <= MAX_SPAN_S
             and (now - self.set_at < DEAD_WRITER_S or alive(self.writer_pid))
         )

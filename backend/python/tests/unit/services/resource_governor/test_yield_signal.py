@@ -96,6 +96,12 @@ class TestActive:
         assert refreshed is not None and refreshed.started and refreshed.since == 30.0
         assert signal.read_state(31.0).active
 
+    def test_a_refresh_just_after_the_readers_clock_read_is_active(self, signal: YieldSignal) -> None:
+        signal.refresh(reason="host_memory_floor", now=NOW + 0.01)
+        assert signal.read_state(NOW).active
+        again = signal.refresh(reason="host_memory_floor", now=NOW)
+        assert again is not None and not again.started and again.since == NOW + 0.01
+
     @pytest.mark.parametrize("data", [b"", b"\0" * RECORD_SIZE, b"garbage" * 40])
     def test_garbage_is_inactive(self, signal: YieldSignal, data: bytes) -> None:
         _write(signal, data)

@@ -97,6 +97,16 @@ class TestAdmit:
         assert await live.admit_and_charge(held=0) is None
         assert live._ledger.read().charges == ((clock.now + 5.0, M),)  # type: ignore[union-attr]
 
+    async def test_a_charge_from_a_worker_whose_clock_read_was_later_still_counts(self, tmp_path: Path) -> None:
+        # Another worker read the clock a moment after this one, then took
+        # the lock first: its charge ends just past this worker's window.
+        clock = FakeClock()
+        live = _live(tmp_path, clock, FakeReader(sample(2.2)))
+        with live._ledger.transaction() as txn:
+            assert txn is not None
+            txn.write(LiveRecord(charges=((clock.now + 5.01, M), (clock.now + 5.02, M))))
+        assert await live.admit_and_charge(held=0) is HoldReason.HOST_MEMORY_FLOOR
+
     async def test_two_workers_share_the_burst(self, tmp_path: Path) -> None:
         clock = FakeClock()
         a = _live(tmp_path, clock, FakeReader(sample(2.2)))

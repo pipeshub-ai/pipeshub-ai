@@ -85,6 +85,9 @@ STEP_LOCK_BUDGET = 0.020
 ADMIT_LOCK_BUDGET = 0.050
 HELD_BUDGET = 0.050
 STAMP_EVERY_S = 1.0
+# How far ahead of a reader's clock another worker's time may be; further
+# ahead, it was written before the clock restarted.
+CLOCK_SLACK_S = 1.0
 VIEW_TTL_S = 1.0
 UNKNOWN_LOG_EVERY_S = 300.0
 # Grow only well below the CPU brakes, so the limit does not saw-tooth.
@@ -214,9 +217,13 @@ def _previous_target_after_growth(rec: LiveRecord) -> int | None:
 
 
 def live_charges(rec: LiveRecord, now: float, window_s: float) -> tuple[tuple[float, int], ...]:
-    """The burst charges still in their window. One ending more than a
-    window from now was written before the clock restarted (a host reboot)."""
-    return tuple((until, size) for until, size in rec.charges if now < until <= now + window_s)
+    """The burst charges still in their window. One ending well over a
+    window from now was written before the clock restarted (a host reboot);
+    the slack covers a worker that read the clock just before another one
+    charged."""
+    return tuple(
+        (until, size) for until, size in rec.charges if now < until <= now + window_s + CLOCK_SLACK_S
+    )
 
 
 def _add_charge(
