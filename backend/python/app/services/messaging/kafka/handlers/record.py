@@ -113,6 +113,7 @@ from app.services.messaging.config import (
     Topic,
     messaging_env,
 )
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -2625,6 +2626,10 @@ class RecordEventHandler(BaseEventService):
                 if await self._hand_back_for_provider_wait(record_id, record, delay):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=delay) from ie
+            if isinstance(ie, RequeueWithoutAttempt):
+                # Queue time, not a verdict on the record (a sibling of its virtual record holds the lease on it): it goes back in
+                # line, QUEUED, even on its last counted delivery; the consumer hands the message back and refunds the attempt.
+                handed_back = True
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except RecordHeldForDelete:
             # Not a failure: the consumer hands the message back, and nothing is written for it.
