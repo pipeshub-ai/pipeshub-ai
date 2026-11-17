@@ -10,6 +10,7 @@ from app.services.resource_governor import policy as policy_mod
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Limits,
     Pool,
     PoolDemand,
@@ -101,6 +102,17 @@ class TestShrink:
         assert limits.get(Pool.HEAVY_PARSE) == 3
         assert state.get(Pool.INDEX_HEAVY).cooldown_until == 1000.0 + INCIDENT_COOLDOWN_SECONDS
 
+    def test_the_yield_is_the_rule_the_pools_report(self) -> None:
+        _, state = _step(_limits(), ControllerState.initial(), 1000.0, host_yield=True)
+        for pool in YIELDING:
+            assert state.get(pool).rule is LimitRule.HOST_YIELD
+            assert state.get(pool).active_cooldown_cause(1001.0) == "host_yield"
+        assert state.get(Pool.LIGHT_PARSE).rule is not LimitRule.HOST_YIELD
+
+    def test_a_tighter_memory_brake_is_the_rule_reported(self) -> None:
+        _, state = _step(_limits(), ControllerState.initial(), 1000.0, host_yield=True, pressure=0.9)
+        assert state.get(Pool.INDEX_HEAVY).rule is LimitRule.MEM_HARD
+
     def test_index_quarter_rounds_up(self) -> None:
         limits, _ = _step(_limits(index_heavy=7), ControllerState.initial(), 1000.0, host_yield=True)
         assert limits.get(Pool.INDEX_HEAVY) == max(_floor(Pool.INDEX_HEAVY), math.ceil(7 * 0.75))
@@ -129,6 +141,18 @@ class TestRecovery:
             now += INTERVAL
             for pool in YIELDING:
                 assert limits.get(pool) - before.get(pool) == 1, pool
+
+    def test_the_holdoff_is_the_rule_reported_once_the_cooldown_ends(self) -> None:
+        limits, state, now = self._yield_then_clear()
+        now = max(state.get(pool).cooldown_until for pool in YIELDING)
+        for _ in range(policy_mod.LIGHT_GROW_CONFIRM_SAMPLES):
+            limits, state = _step(limits, state, now, host_yield=False)
+            now += INTERVAL
+        held = [pool for pool in YIELDING if state.get(pool).yield_holdoff > 0]
+        assert held
+        for pool in held:
+            assert state.get(pool).rule in (LimitRule.YIELD_HOLDOFF, LimitRule.CONFIRMING)
+        assert any(state.get(pool).rule is LimitRule.YIELD_HOLDOFF for pool in held)
 
     def test_a_later_memory_shrink_re_arms_slow_start(self) -> None:
         limits, state, now = self._yield_then_clear()

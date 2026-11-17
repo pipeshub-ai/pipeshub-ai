@@ -134,10 +134,15 @@ class ContainerLink:
         # A local memory incident (the heavy pool halved, with a cooldown) outlasts the shared ramp, which does not see
         # it: while a pool's cooldown runs, this process keeps the lower of its own and the shared limit.
         # The same for an index pool this process holds back to avoid growing into downstream latency: the shared ramp
-        # has its own, smoothed view of that and may lift the pool before the local hold ends.
+        # has its own, smoothed view of that and may lift the pool before the local hold ends. The same again for a
+        # pool this process holds back for code sandbox runs waiting for memory, which the shared ramp never hears of.
         def holding(p: Pool) -> bool:
             state = own[1].get(p)
-            return state.cooldown_until > now or (p in _INDEX_POOLS and state.rule in _HOLD_RULES)
+            return (
+                state.cooldown_until > now
+                or state.yield_holdoff > 0
+                or (p in _INDEX_POOLS and state.rule in _HOLD_RULES)
+            )
 
         held = {p: min(limits.get(p), own[0].get(p)) for p in Pool if holding(p)}
         if held:

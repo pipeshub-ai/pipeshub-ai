@@ -387,6 +387,25 @@ def test_a_local_index_latency_hold_outlasts_the_shared_ramp(tmp_path: Path) -> 
     assert limits.get(Pool.INDEX_LIGHT) > 10  # a pool that is not held follows the shared limit
 
 
+def test_a_local_sandbox_yield_holdoff_outlasts_the_shared_ramp(tmp_path: Path) -> None:
+    import dataclasses
+
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    initial = ControllerState.initial()
+    state = initial.with_update(
+        Pool.HEAVY_PARSE, dataclasses.replace(initial.get(Pool.HEAVY_PARSE), yield_holdoff=3)
+    ).with_update(Pool.INDEX_LIGHT, dataclasses.replace(initial.get(Pool.INDEX_LIGHT), yield_holdoff=3))
+    own = (Limits(values={Pool.HEAVY_PARSE: 2, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 10}), state)
+    limits = _step(link, own, Ceilings(112, 544, 224, 544))
+    # The shared ramp never hears of the code sandbox yield: the local holdoff keeps both pools down after the cooldown.
+    assert limits.get(Pool.HEAVY_PARSE) <= 2
+    assert limits.get(Pool.INDEX_LIGHT) <= 10
+    assert limits.get(Pool.INDEX_HEAVY) > 10  # no holdoff: it follows the shared limit
+
+
 def test_a_pool_this_process_runs_without_stays_without_when_the_shared_plan_has_it(tmp_path: Path) -> None:
     from app.services.resource_governor.models import Ceilings
 
