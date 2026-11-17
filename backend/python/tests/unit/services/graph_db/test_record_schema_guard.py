@@ -459,6 +459,55 @@ class TestTheAbortAfterARefusal:
         assert session.deletes == 1 and client.record_guard.is_abort_confirmed("t2")
 
 
+class _ConnectableClient:
+    def __init__(self, **_: Any) -> None:  # noqa: ANN401
+        self.record_guard: RecordSchemaGuard | None = None
+
+    async def connect(self) -> bool:
+        return True
+
+    async def database_exists(self, name: str) -> bool:
+        return True
+
+    async def disconnect(self) -> bool:
+        return True
+
+
+class TestTheGuardFollowsTheConnection:
+    def _provider(self, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        monkeypatch.setattr(module, "ArangoHTTPClient", _ConnectableClient)
+        config = MagicMock()
+        config.get_config = AsyncMock(return_value={"url": "http://x", "username": "u", "password": "p", "db": "d"})
+        return module.ArangoHTTPProvider(logger=logging.getLogger("test"), config_service=config)
+
+    async def test_disconnect_stops_the_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = self._provider(monkeypatch)
+        assert await provider.connect()
+        guard = provider.http_client.record_guard
+        guard.start(60)
+        poller = guard._poller
+        assert poller is not None and not poller.done()
+
+        assert await provider.disconnect()
+        await asyncio.sleep(0)
+        assert poller.cancelled() or poller.done()
+
+    async def test_a_second_connect_stops_the_poll_of_the_guard_it_replaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = self._provider(monkeypatch)
+        assert await provider.connect()
+        first = provider.http_client.record_guard
+        first.start(60)
+        poller = first._poller
+
+        assert await provider.connect()
+        await asyncio.sleep(0)
+        assert provider.http_client.record_guard is not first
+        assert poller is not None and (poller.cancelled() or poller.done())
+        await provider.disconnect()
+
+
 class TestTheErrorClass:
     def test_it_is_transient_to_the_retry_owners_and_classified_a_conflict(self) -> None:
         from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider

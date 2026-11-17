@@ -1229,6 +1229,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
 
+            await self._stop_record_guard()  # a second connect() replaces the client; its guard's poller would otherwise run on
             # Create HTTP client
             self.http_client = ArangoHTTPClient(
                 base_url=arango_url,
@@ -1264,8 +1265,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to connect to ArangoDB via HTTP: {str(e)}")
+            await self._stop_record_guard()
             self.http_client = None
             return False
+
+    async def _stop_record_guard(self) -> None:
+        """Cancel the poll of the current client's records-schema guard (it holds the client, so it would keep polling after a disconnect)."""
+        guard = self.http_client.record_guard if self.http_client else None
+        if guard is not None:
+            await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1276,6 +1284,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB via HTTP API")
+            await self._stop_record_guard()
             if self.http_client:
                 await self.http_client.disconnect()
             self.http_client = None
