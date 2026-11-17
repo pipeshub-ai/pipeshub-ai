@@ -61,6 +61,41 @@ def detect_ocr(content: bytes, sample_pages: int) -> bool:
         return pages_need_ocr([pages[i] for i in sample_page_indices(len(pages), sample_pages)])
 
 
+@dataclass(frozen=True)
+class PdfFacts:
+    """The cheap facts a cost class is decided from: the page count and whether the text layer is missing."""
+
+    page_count: int
+    scanned: bool
+
+
+def quick_facts(content: bytes, sample_pages: int = 8) -> PdfFacts:
+    """Page count and text layer from pdfium alone: no layout analysis, and only a sample of pages is read.
+
+    A file is scanned when at least half of the sampled pages have no text layer. Raises on a file pdfium
+    cannot open (the caller falls back to the size prior and the full inspection later handles the file).
+    """
+    document = pypdfium2.PdfDocument(content)
+    try:
+        total = len(document)
+        if total == 0:
+            return PdfFacts(0, False)
+        empty = 0
+        indices = sample_page_indices(total, sample_pages)
+        for index in indices:
+            page = document[index]
+            textpage = page.get_textpage()
+            try:
+                if textpage.count_chars() == 0:
+                    empty += 1
+            finally:
+                textpage.close()
+                page.close()
+        return PdfFacts(total, empty / len(indices) >= OCR_PAGE_SHARE)
+    finally:
+        document.close()
+
+
 def text_layer_char_counts(content: bytes) -> list[int] | None:
     """pdfium's count of text-layer characters on each page; None when pdfium cannot read it."""
     try:

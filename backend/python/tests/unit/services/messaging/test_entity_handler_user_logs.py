@@ -127,7 +127,8 @@ async def test_user_updated_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 
 async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
     gp = AsyncMock()
-    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1"))
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
+    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1", user_id=None))
     svc = _service(gp)
     svc._remove_mcp_data = AsyncMock()
     svc._remove_personal_toolsets = AsyncMock()
@@ -144,7 +145,7 @@ async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCaptureFixture) -> None:
     """`userId` is optional on this event; logging it must not turn into a KeyError."""
     gp = AsyncMock()
-    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1"))
+    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1", user_id="u-1"))      # an event without one names no other user
     payload = {"orgId": "org-1", "email": PERSONAL["email"]}
 
     assert await _service(gp).process_event("userDeleted", payload) is True
@@ -156,10 +157,11 @@ async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCap
 
 async def test_user_deleted_with_no_graph_user_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
     gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
     gp.get_user_by_email = AsyncMock(return_value=None)
 
     assert await _service(gp).process_event("userDeleted", dict(PAYLOAD)) is False
 
     errors = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.ERROR]
     _assert_no_personal_data(caplog)
-    assert errors == ["No graph user has the deleted user's email (user u-1)"]
+    assert errors == ["No graph user is the deleted user (user u-1)"]

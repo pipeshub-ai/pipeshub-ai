@@ -16,7 +16,9 @@ from app.config.constants.ai_models import (
     EMBEDDING_PRIORITY_QUERY,
     EMBEDDING_SERVER_MAX_RETRIES,
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
+    PARSE_CLASS_HEADER,
 )
+from app.modules.parse_engine.pools import current_class
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.utils.embedding_gate import BulkGate, get_bulk_gate
 from app.utils.embedding_retry import await_with_retry, call_with_retry
@@ -96,6 +98,7 @@ class EmbeddingServerEmbeddings(Embeddings):
         # Search queries are marked so the server encodes them ahead of
         # indexing batches (embedding_main.EncodeGate). Documents go
         # unmarked, which the server treats as bulk.
+        self._class_inners: dict[str, OpenAIEmbeddings] = {}
         self._query_inner = OpenAIEmbeddings(
             model=self.model,
             api_key=_EMBEDDING_SERVER_API_KEY,
@@ -106,6 +109,26 @@ class EmbeddingServerEmbeddings(Embeddings):
             extra_body=extra_body,
             default_headers={EMBEDDING_PRIORITY_HEADER: EMBEDDING_PRIORITY_QUERY},
         )
+
+    def _documents_inner(self) -> OpenAIEmbeddings:
+        """The client for a document batch. Under ``PARSE_ADMISSION=classes`` a batch of a classified record
+        carries its class, so the server's gate serves small records ahead of large and huge ones."""
+        cls = current_class()
+        if cls is None:
+            return self._inner
+        inner = self._class_inners.get(cls.value)
+        if inner is None:
+            inner = self._class_inners[cls.value] = OpenAIEmbeddings(
+                model=self.model,
+                api_key=_EMBEDDING_SERVER_API_KEY,
+                base_url=_embedding_server_base_url(),
+                check_embedding_ctx_length=False,
+                max_retries=0,
+                timeout=self.timeout,
+                extra_body={"trust_remote_code": True} if self.trust_remote_code else None,
+                default_headers={PARSE_CLASS_HEADER: cls.value},
+            )
+        return inner
 
     def bulk_gate(self) -> BulkGate:
         """The process-wide gate for this server's bulk slots."""
@@ -152,7 +175,7 @@ class EmbeddingServerEmbeddings(Embeddings):
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return call_with_retry(
-            lambda: self._inner.embed_documents(texts),
+            lambda: self._documents_inner().embed_documents(texts),
             max_retries=self.max_retries,
             operation="embed_documents",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
@@ -171,7 +194,7 @@ class EmbeddingServerEmbeddings(Embeddings):
     async def aembed_documents(self, texts: list[str], *, single_attempt: bool = False) -> list[list[float]]:
         # single_attempt: the caller retries, so no backoff sleep here (it may hold a bulk permit).
         return await await_with_retry(
-            lambda: self._inner.aembed_documents(texts),
+            lambda: self._documents_inner().aembed_documents(texts),
             max_retries=1 if single_attempt else self.max_retries,
             operation="aembed_documents",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,

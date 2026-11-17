@@ -31,7 +31,11 @@ EDITED = {
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
         "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
-    "memory_budget.py": {"kind_reservation_cost"},  # new; record_memory_cost itself is unchanged
+    "memory_budget.py": {
+        "kind_reservation_cost",  # new; record_memory_cost itself is unchanged
+        "MemoryBudget._enqueue", "MemoryBudget.reserve", "MemoryBudget.__init__", "MemoryBudget:Expr",  # __init__: the set of ahead waiters (empty unless ahead is passed)
+        # PARSE_ADMISSION=classes: one keyword (ahead, default False); without it the queue order is unchanged (test_memory_ahead_off_is_unchanged)
+    },
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
@@ -57,6 +61,22 @@ EDITED = {
         "GateWaiters.unretain", "GateWaiters.retained_snapshot", "GateWaiters.view", "admission_parse_lease_pool",
         "acquire_index_slot",  # the legacy semaphore path counts its holders and waiters
         "_wait_for_heavy_parse_slots",  # counts a caller that has to wait for the shared slots
+        # PARSE_ADMISSION=classes. Every edit below is behind `wiring.classes_enabled()` or an argument only the class path
+        # passes (`ctx`, a CostClass level, `ahead`), so with the flag off each runs its old body (the recorded trace above, and
+        # tests/unit/services/messaging/test_class_admission_off.py, which compares the off path against a copy of the old bodies).
+        "effective_index_tier",  # a CostClass level (never produced with the flag off) routes to the heavy pool
+        "dispatch_tier", "_payload_size",  # the class branch is first and guarded; the old body follows unchanged
+        "GateWaiters.__init__", "GateWaiters.count", "GateWaiters.snapshot",  # a defaultdict seeded with the same two tiers; same counts
+        "DispatchBudget.allows", "DispatchBudget.tiers",  # type widening only
+        "_tier_ceiling", "_class_ceiling", "dispatch_budget",  # class levels only with the flag on; `waiters.get(tier, 0)` equals `waiters[tier]` for both tiers
+        "acquire_index_slot", "acquire_download_slot", "acquire_parsing_slot",  # keyword `ctx` (None = the old body); a CostClass tier takes the class gate first
+        "_acquire_parsing_slot_by_class", "_acquire_remote_by_class", "_backlog_tier", "class_context", "class_kwargs", "reclass_index_slot", "reclass_download_slot",  # new; reached only with a `ctx`
+        "class BigAdmissionTimeout", "BigAdmissionTimeout.__init__", "BigAdmissionTimeout.counts_toward_backstop",  # new exception, raised only by the class path
+        "BigAdmissionTimeout.pauses_consumer", "BigAdmissionTimeout:Expr",
+        # Inspection and the requeue: `first_admission_kwargs` is new and returns {} for anything but a BigAdmissionTimeout
+        # (so the consumers' requeue call is unchanged with the flag off); `spaced` on acquire_parsing_slot defaults to True and only
+        # the class path passes False (test_policy_off_pin's recorded acquire_parsing_slot calls and test_class_admission_off cover it).
+        "first_admission_kwargs",
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
