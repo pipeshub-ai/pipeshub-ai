@@ -194,22 +194,21 @@ async def test_the_age_bound_is_used_only_where_the_ordinary_rules_cannot_grant(
     await asyncio.gather(*heads, *smalls, return_exceptions=True)
 
 
-async def test_a_priority_waiter_goes_before_an_aged_unsplittable_head() -> None:
+async def test_an_aged_unsplittable_head_is_served_next_even_while_a_priority_small_waiter_waits() -> None:
+    """It is overdue: a priority-lane consumer's own stream is priority too, so a rule that waited for priority work to
+    drain would never run for that consumer."""
     from app.modules.parse_engine.admission import AdmissionNumbers
 
     gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.05), capacity=lambda: PoolCapacity(1))
     running = await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=1)
     head = asyncio.create_task(gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=3))
-    small = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=3))
-    await asyncio.sleep(0.2)  # the head has aged and small work waits
     urgent = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=1.0, priority=True), deadline_s=3))
-    await settle()
+    await asyncio.sleep(0.2)  # the head has aged; a priority small record waits
     running.release()
-    first = await asyncio.wait({urgent, head}, return_when=asyncio.FIRST_COMPLETED, timeout=2)
-    assert urgent in first[0] and head not in first[0]  # parse-now first, then the aged head
-    (await urgent).release()
-    (await asyncio.wait_for(head, 2)).release()
-    (await asyncio.wait_for(small, 2)).release()
+    done, _ = await asyncio.wait({urgent, head}, return_when=asyncio.FIRST_COMPLETED, timeout=2)
+    assert head in done and urgent not in done  # the overdue head runs next, then the priority record
+    (await head).release()
+    (await asyncio.wait_for(urgent, 2)).release()
 
 
 async def test_a_priority_unsplittable_head_is_served_at_capacity_one_and_goes_before_an_older_one() -> None:
@@ -230,3 +229,61 @@ async def test_a_priority_unsplittable_head_is_served_at_capacity_one_and_goes_b
     (await urgent).release()
     (await asyncio.wait_for(older, 2)).release()
     (await asyncio.wait_for(small, 2)).release()
+
+
+@pytest.mark.parametrize("head_priority", [False, True])
+async def test_an_unsplittable_head_is_served_at_capacity_one_under_a_priority_small_stream(head_priority: bool) -> None:
+    """A priority-lane consumer: every record is priority, the head included."""
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.4), capacity=lambda: PoolCapacity(1))
+    stop = asyncio.Event()
+
+    async def stream() -> None:
+        async def one() -> None:
+            try:
+                p = await gate.acquire(GateRequest(cls=S, priority=True, est_seconds=1.0), deadline_s=10)
+            except AdmissionTimeout:
+                return
+            await asyncio.sleep(0.02)
+            p.release()
+
+        tasks = []
+        while not stop.is_set():
+            tasks.append(asyncio.create_task(one()))
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    runner = asyncio.create_task(stream())
+    await asyncio.sleep(0.2)
+    started = time.monotonic()
+    head = await gate.acquire(GateRequest(cls=H, bounded=False, priority=head_priority, est_seconds=900.0), deadline_s=4)
+    waited = time.monotonic() - started
+    stop.set()
+    head.release()
+    await runner
+    assert waited < 3.0, waited  # aged (0.4 s), then served next; it was not served in 4 s while any priority waiter existed
+
+
+async def test_the_age_bound_waits_for_the_aging_time() -> None:
+    """Not before: a head that has waited less than ``aging_s`` is left to the ordinary rules."""
+    from app.modules.parse_engine.admission import AdmissionNumbers
+
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.8), capacity=lambda: PoolCapacity(1))
+    stop = asyncio.Event()
+
+    async def one() -> None:
+        while not stop.is_set():
+            p = await gate.acquire(GateRequest(cls=S, est_seconds=1.0), deadline_s=10)
+            await asyncio.sleep(0.01)
+            p.release()
+
+    streams = [asyncio.create_task(one()) for _ in range(3)]
+    await asyncio.sleep(0.1)
+    started = time.monotonic()
+    head = await gate.acquire(GateRequest(cls=H, bounded=False, est_seconds=900.0), deadline_s=5)
+    waited = time.monotonic() - started
+    stop.set()
+    head.release()
+    await asyncio.gather(*streams, return_exceptions=True)
+    assert 0.6 <= waited < 3.0, waited  # held back until it aged (0.8 s), then served

@@ -423,12 +423,12 @@ class ClassGate:
                 aged is not None
                 and P < 2
                 and demand[CostClass.SMALL].waiting
-                and not self._prio[CostClass.SMALL]  # a priority small record is served by the ordinary rules, first
             ):
                 # A5, for the one case the ordinary rules cannot grant: at a capacity under 2, A1 (which needs room for
                 # two while small work waits) never admits a big record that cannot be split, and a steady small stream
-                # would starve it. Once it has aged it is served next (a priority one among the aged first); a priority small
-                # waiter still goes first, and when it does not fit yet the other rules go on.
+                # would starve it. Once it has aged it is served next, whatever its lane and whatever else is waiting (a priority
+                # one among the aged heads first): it is overdue, and a priority-lane consumer's own small stream is
+                # priority too. When it does not fit yet the other rules go on.
                 used_now = sum(self._running.values())
                 if not used_now or used_now + aged.req.cpu <= P:
                     g = Grant(aged.req.cls, "A5")
