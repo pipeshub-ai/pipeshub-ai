@@ -47,7 +47,7 @@ REWIDEN_TOTAL = METRICS_BACKEND.counter(
 )
 REWIDEN_CONTENDED_TOTAL = METRICS_BACKEND.counter(
     "pipeshub_record_schema_rewiden_contended_total",
-    "Widenings issued while a stream transaction was still open after the quiet-point wait",
+    "Widenings not sent because a stream transaction was still open after the quiet-point wait; the poll tries again",
     ["trigger"],
 )
 REWIDEN_WAIT_SECONDS = METRICS_BACKEND.histogram(
@@ -86,8 +86,8 @@ class Lock(Protocol):
 
 _ACQUIRE = """
 UPSERT { _key: @key }
-INSERT { _key: @key, owner: @me, leaseUntil: DATE_NOW() + @ttl, generation: @gen }
-UPDATE ((OLD.owner == @me OR OLD.leaseUntil < DATE_NOW()) ? { owner: @me, leaseUntil: DATE_NOW() + @ttl, generation: @gen } : {})
+INSERT { _key: @key, owner: @me, leaseUntil: DATE_NOW() + @ttl }
+UPDATE ((OLD.owner == @me OR OLD.leaseUntil < DATE_NOW()) ? { owner: @me, leaseUntil: DATE_NOW() + @ttl } : {})
 IN @@c
 RETURN NEW.owner
 """
@@ -105,7 +105,7 @@ FOR d IN @@c
 
 
 class ArangoLock:
-    """A lease lock kept in one document of a small collection of the same ArangoDB (``{owner, leaseUntil, generation}``).
+    """A lease lock kept in one document of a small collection of the same ArangoDB (``{owner, leaseUntil}``).
 
     The lease is read against the server's clock (``DATE_NOW()``), so processes with different clocks agree. A concurrent
     take of the same document loses on the write conflict (or the unique key) and counts as "not acquired". An expired
@@ -113,8 +113,8 @@ class ArangoLock:
     unexpired: the widening renews right before it writes, so a process that lost its lease cannot write.
     Any error is raised (never read as "acquired")."""
 
-    def __init__(self, client: Any, *, generation: int = 0, collection: str = SCHEMA_LOCK_COLLECTION, key: str = SCHEMA_LOCK_KEY) -> None:  # noqa: ANN401
-        self._client, self._collection, self._key, self._generation = client, collection, key, generation
+    def __init__(self, client: Any, *, collection: str = SCHEMA_LOCK_COLLECTION, key: str = SCHEMA_LOCK_KEY) -> None:  # noqa: ANN401
+        self._client, self._collection, self._key = client, collection, key
         self._owner = uuid.uuid4().hex
         self._ready = False
 
@@ -126,7 +126,7 @@ class ArangoLock:
         return {"@c": self._collection, "key": self._key, "me": self._owner, **extra}
 
     async def acquire(self, ttl_ms: int) -> bool:
-        rows = await self._client.execute_aql(_ACQUIRE, await self._bind(ttl=ttl_ms, gen=self._generation))
+        rows = await self._client.execute_aql(_ACQUIRE, await self._bind(ttl=ttl_ms))
         return bool(rows) and rows[0] == self._owner
 
     async def renew(self, ttl_ms: int) -> bool:
@@ -165,7 +165,7 @@ class RecordSchemaGuard:
         self._poller: asyncio.Task[None] | None = None
 
     async def _arango_lock(self) -> Lock:
-        return ArangoLock(self._client, generation=self.generation)
+        return ArangoLock(self._client)
 
     # -- aborted transactions ---------------------------------------------------------------------------------
     def mark_aborted(self, txn_id: str) -> None:
@@ -252,6 +252,8 @@ class RecordSchemaGuard:
                 # another process is fixing it
                 await self.wait_wide(REWIDEN_TIMEOUT_S)
                 return False
+            sent = False  # whether the schema write left this process: after that the lease is never released early
+            applied = False
             try:
                 if await self.live_generation() >= self.generation:
                     self._narrowed = False
@@ -262,7 +264,11 @@ class RecordSchemaGuard:
                     self._narrowed = False
                     return False
                 if contended:
+                    # A schema change waits for every open stream transaction, so one sent now could outlast its 5 s timeout and the lease.
+                    # Not sent: the refused write stays refused (transient) and the poll tries again at the next quiet point.
                     REWIDEN_CONTENDED_TOTAL.inc(trigger)
+                    self._logger.warning("record schema widening skipped: a stream transaction is still open (trigger=%s)", trigger)
+                    return False
                 # Fencing: the lease is renewed (to a full term, longer than the 5 s write) only while it is still ours and unexpired.
                 try:
                     holding = await lock.renew(LOCK_TTL_MS)
@@ -272,7 +278,21 @@ class RecordSchemaGuard:
                 if not holding:
                     self._logger.warning("record schema widening skipped: the lock lease was lost")
                     return False
+                # The last look before the write, after the renewal, which is the longest pause before it.
+                # The lease does not fence the write itself: a collection-properties update is not transactional with the lock, so a
+                # process that is paused for longer than the lease between this read and the write (or whose write the server applies after
+                # its client timed out) can still put an older schema over a newer one. That window is bounded, not closed: every process
+                # reads the live generation every POLL_INTERVAL_S and widens again when it is lower than its own, and a write refused
+                # meanwhile raises the transient RecordSchemaNarrowError its owner runs again (see ``start`` and the arango client hook).
+                try:
+                    if await self.live_generation() >= self.generation:
+                        self._narrowed = False
+                        return False
+                except Exception as error:
+                    self._logger.warning("record schema widening skipped: could not read the live generation before the write: %s", error)
+                    return False
                 started = time.monotonic()
+                sent = True
                 try:
                     applied = await self._client.update_collection_schema(
                         self._collection, self._schema, timeout=REWIDEN_TIMEOUT_S,
@@ -284,17 +304,20 @@ class RecordSchemaGuard:
                 REWIDEN_WAIT_SECONDS.observe(trigger, value=elapsed)
                 REWIDEN_TOTAL.inc(trigger)
                 self._logger.warning(
-                    "widened the records schema to generation %d (trigger=%s, contended=%s, %.2fs, applied=%s)",
-                    self.generation, trigger, contended, elapsed, applied,
+                    "widened the records schema to generation %d (trigger=%s, %.2fs, applied=%s)",
+                    self.generation, trigger, elapsed, applied,
                 )
                 if applied:
                     self._narrowed = False
                 return bool(applied)
             finally:
-                try:
-                    await lock.release()
-                except Exception:
-                    self._logger.debug("could not release the record schema lock", exc_info=True)
+                if not sent or applied:
+                    try:
+                        await lock.release()
+                    except Exception:
+                        self._logger.debug("could not release the record schema lock", exc_info=True)
+                # else: the server answered "no", or did not answer in time and may still apply the change; deleting the lock
+                # document now would let another process start while this write may be in flight, so the lease runs out instead.
 
     async def _wait_quiet(self) -> bool:
         """True when no stream transaction is running before the 5 s are up."""

@@ -164,17 +164,27 @@ class TestADeadlineThatExpiresDuringASleep:
 
 
 class TestQuietPoint:
-    async def test_the_change_waits_for_the_running_transactions_and_counts_a_contended_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_the_change_is_not_sent_while_a_transaction_is_still_open_after_the_wait_and_the_lock_is_released(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A schema change waits for every open stream transaction: one sent now could outlast its timeout and the lease. The poll tries again."""
         server = FakeServer(live=0)
         server.running = [{"id": "1", "state": "running"}]
         monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.3)
         monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.05)
         before = _counter(guard_module.REWIDEN_CONTENDED_TOTAL)
+        released = {"n": 0}
 
-        await _guard(server).ensure_wide("test")
+        class Counting(FreeLock):
+            async def release(self) -> None:
+                released["n"] += 1
 
-        assert server.puts, "the change is issued anyway after the wait"
+        async def factory() -> Counting:
+            return Counting()
+
+        assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
+
+        assert server.puts == [], "nothing was sent"
         assert _counter(guard_module.REWIDEN_CONTENDED_TOTAL) == before + 1
+        assert released["n"] == 1, "nothing is in flight, so the lock is free again"
 
     async def test_with_no_open_transaction_it_is_issued_at_once_and_not_contended(self) -> None:
         server = FakeServer(live=0)
@@ -320,6 +330,36 @@ class TestSingleFlight:
         assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
         assert server.puts == []
 
+    async def test_a_newer_schema_that_lands_during_the_renewal_is_not_overwritten(self) -> None:
+        """The last look before the write is after the renewal: a newer schema installed meanwhile is left alone."""
+        server = FakeServer(live=0)
+
+        class Slow(FreeLock):
+            async def renew(self, ttl_ms: int) -> bool:
+                server.live = RECORD_SCHEMA_GENERATION + 1  # the newer process writes during the renewal
+                return True
+
+        async def factory() -> Slow:
+            return Slow()
+
+        assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
+        assert server.puts == [] and server.live == RECORD_SCHEMA_GENERATION + 1
+
+    async def test_a_live_generation_that_cannot_be_read_before_the_write_means_no_write(self) -> None:
+        server = FakeServer(live=0)
+        reads = {"n": 0}
+        real = server.get_collection_schema
+
+        async def get(name: str) -> dict | None:
+            reads["n"] += 1
+            if reads["n"] == 4:  # the read right before the write (initial, under the lock, after the wait, then this one)
+                raise ConnectionError("down")
+            return await real(name)
+
+        server.get_collection_schema = get  # type: ignore[method-assign]
+        assert await _guard(server).ensure_wide("test") is False
+        assert server.puts == []
+
     async def test_a_lock_that_cannot_be_renewed_for_an_error_is_fenced_too(self) -> None:
         server = FakeServer(live=0)
 
@@ -333,7 +373,7 @@ class TestSingleFlight:
         assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
         assert server.puts == []
 
-    async def test_the_lock_is_released_after_a_widening_and_after_a_fenced_one(self) -> None:
+    async def test_the_lock_is_released_when_the_write_was_applied_or_never_sent(self) -> None:
         released = {"n": 0}
 
         class Counting(FreeLock):
@@ -343,7 +383,7 @@ class TestSingleFlight:
         async def factory() -> Counting:
             return Counting()
 
-        await _guard(FakeServer(live=0), lock_factory=factory).ensure_wide("test")
+        await _guard(FakeServer(live=0), lock_factory=factory).ensure_wide("test")  # applied
 
         class Expired(Counting):
             async def renew(self, ttl_ms: int) -> bool:
@@ -352,8 +392,30 @@ class TestSingleFlight:
         async def expired() -> Expired:
             return Expired()
 
-        await _guard(FakeServer(live=0), lock_factory=expired).ensure_wide("test")
+        await _guard(FakeServer(live=0), lock_factory=expired).ensure_wide("test")  # fenced before the write: never sent
         assert released["n"] == 2
+
+    @pytest.mark.parametrize("failure", ["not_applied", "raises"])
+    async def test_the_lock_is_left_to_expire_when_the_write_may_still_be_in_flight(self, failure: str) -> None:
+        """The client gave up (a timeout is a false answer) but the server may still apply the change: releasing now would let another
+        process start while it is in flight."""
+        released = {"n": 0}
+        server = FakeServer(live=0, applies=False)
+        if failure == "raises":
+            async def boom(name: str, schema: dict, timeout: float | None = None) -> bool:
+                raise TimeoutError("no answer")
+
+            server.update_collection_schema = boom  # type: ignore[method-assign]
+
+        class Counting(FreeLock):
+            async def release(self) -> None:
+                released["n"] += 1
+
+        async def factory() -> Counting:
+            return Counting()
+
+        assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
+        assert released["n"] == 0
 
 
 def _factory(lock: Any):  # noqa: ANN202, ANN401

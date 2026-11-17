@@ -171,3 +171,161 @@ async def test_a_refused_write_raises_the_transient_error_when_the_lock_cannot_b
     with pytest.raises(RecordSchemaNarrowError):
         await provider.update_node(key, RECORDS, {"indexingStatus": "QUEUED"})
     assert await _generation(client) == 0
+
+
+# ---- the window a lease cannot close ------------------------------------------------------------------------------------------
+#
+# A collection-properties update is not transactional with the lock: a process paused longer than the lease between its last
+# look and its write (or one whose write the server applies after the client gave up) can put an older schema over a newer one.
+# What bounds that window is the poll: every process reads the live generation every POLL_INTERVAL_S and widens again when it is
+# lower than its own, and a write refused meanwhile is transient and lands on retry. These tests make the stale write happen.
+
+DIAGNOSTICS = {"firstQueuedAt": 1_700_000_000_000, "indexingAttempts": 2, "pageCount": 12, "failedAt": 1_700_000_100_000}
+
+
+def _older_schema() -> dict[str, Any]:
+    """What an older process writes: no diagnostics fields, and the generation it knows."""
+    older = narrow_schema()
+    older["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
+    return older
+
+
+async def _after_a_stale_write(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, keys: int = 0) -> tuple[Any, Any, list[str]]:
+    """The older process (``first``) renews its lease, is overtaken by the newer process's schema, and writes its older one."""
+    older, newer = env
+    org = new_org()
+    seeded = [f"{org}-k{i}" for i in range(keys)]
+    if seeded:
+        assert await newer.batch_upsert_nodes([{**base_record(k, org), **DIAGNOSTICS} for k in seeded], RECORDS)
+    assert await older.http_client.update_collection_schema(RECORDS, narrow_schema())
+    older.http_client.record_guard = RecordSchemaGuard(
+        older.http_client, logger, schema=_older_schema(), generation=RECORD_SCHEMA_GENERATION
+    )
+    newer.http_client.record_guard = RecordSchemaGuard(newer.http_client, logger, schema=_newer_schema(), generation=NEWER)
+    real_put = older.http_client.update_collection_schema
+
+    async def stale_put(name: str, schema: dict | None = None, timeout: float | None = None) -> bool:
+        if timeout is not None:  # the widening's own write
+            assert await newer.http_client.update_collection_schema(RECORDS, _newer_schema())  # the newer process got in after the last look
+        return await real_put(name, schema, timeout)
+
+    monkeypatch.setattr(older.http_client, "update_collection_schema", stale_put)
+    assert await older.http_client.record_guard.ensure_wide("test") is True
+    assert await _generation(older.http_client) == RECORD_SCHEMA_GENERATION, "the older schema is over the newer one"
+    return older, newer, seeded
+
+
+async def test_the_poll_of_a_newer_process_restores_its_generation_within_one_interval(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    assert guard_module.POLL_INTERVAL_S == 10.0  # the interval the bound below is stated for
+    _, newer, _ = await _after_a_stale_write(env, monkeypatch)
+    interval = 0.3
+    newer.http_client.record_guard.start(interval)
+    started = asyncio.get_running_loop().time()
+    try:
+        while await _generation(newer.http_client) != NEWER:
+            assert asyncio.get_running_loop().time() - started <= interval + 3.0, "not restored within one poll interval"
+            await asyncio.sleep(0.05)
+    finally:
+        await newer.http_client.record_guard.stop()
+    assert asyncio.get_running_loop().time() - started <= interval + 3.0
+
+
+async def test_writes_made_in_the_window_are_refused_transiently_and_none_is_lost(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    _, newer, keys = await _after_a_stale_write(env, monkeypatch, keys=12)
+
+    # outside a transaction the client widens the schema and sends the write again
+    for key in keys[:6]:
+        assert await newer.update_node(key, RECORDS, {"indexingStatus": "QUEUED"})
+
+    # inside a transaction the refusal aborts it and is raised as the transient error; its owner runs the unit again
+    assert await newer.http_client.update_collection_schema(RECORDS, _older_schema())  # the window opens again
+    attempts = 0
+    pending = keys[6:]
+    while pending:
+        attempts += 1
+        assert attempts <= 4, "the transaction never landed"
+        txn = await newer.begin_transaction(read=[RECORDS], write=[RECORDS])
+        try:
+            for key in pending:
+                await newer.update_node(key, RECORDS, {"indexingStatus": "QUEUED"}, transaction=txn)
+            await newer.commit_transaction(txn)
+            pending = []
+        except RecordSchemaNarrowError:
+            assert attempts == 1, "refused again after the schema was widened"
+            assert await newer.http_client.record_guard.wait_wide(5.0)
+
+    assert await _generation(newer.http_client) == NEWER
+    for key in keys:
+        landed = await newer.get_document(key, RECORDS)
+        assert landed["indexingStatus"] == "QUEUED" and landed["pageCount"] == 12, (key, landed)  # the write landed, no field was lost
+
+
+async def test_a_newer_schema_that_lands_while_the_lease_is_renewed_is_not_overwritten(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """The last look before the write is after the renewal, so the pause that matters most cannot hide a newer schema."""
+    older, newer = env
+    assert await older.http_client.update_collection_schema(RECORDS, narrow_schema())
+    puts = _puts(older.http_client, monkeypatch)
+    guard: RecordSchemaGuard = older.http_client.record_guard
+
+    class RenewalIsSlow(ArangoLock):
+        async def renew(self, ttl_ms: int) -> bool:
+            assert await newer.http_client.update_collection_schema(RECORDS, _newer_schema())  # lands during the renewal
+            return await super().renew(ttl_ms)
+
+    async def factory() -> ArangoLock:
+        return RenewalIsSlow(older.http_client)
+
+    monkeypatch.setattr(guard, "_lock_factory", factory)
+
+    assert await guard.ensure_wide("test") is False
+    assert puts["n"] == 0 and await _generation(older.http_client) == NEWER
+
+
+# ---- when the write may be in flight, and when no quiet point was found ------------------------------------------------------
+
+
+async def test_a_write_that_got_no_answer_leaves_the_lock_to_expire(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client gave up on the schema write, which the server may still apply: the lock document stays, and a second process cannot
+    take the lock until the lease runs out."""
+    first, second = env
+    client = first.http_client
+    assert await client.update_collection_schema(RECORDS, narrow_schema())
+    monkeypatch.setattr(guard_module, "LOCK_TTL_MS", 600)
+    guard: RecordSchemaGuard = client.record_guard
+    real_put = client.update_collection_schema
+
+    async def gives_up(name: str, schema: dict | None = None, timeout: float | None = None) -> bool:
+        if timeout is not None:
+            return False  # a client timeout is a false answer
+        return await real_put(name, schema, timeout)
+
+    monkeypatch.setattr(client, "update_collection_schema", gives_up)
+    assert await guard.ensure_wide("test") is False
+
+    rival = ArangoLock(second.http_client)
+    assert await rival.acquire(15_000) is False, "the lock was kept while the write may be in flight"
+    await asyncio.sleep(0.9)  # the lease runs out
+    assert await rival.acquire(15_000) is True
+    await rival.release()
+
+
+async def test_no_quiet_point_means_no_schema_write_and_a_free_lock(env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """A schema change waits for every open stream transaction, so one sent while a transaction is open could outlast its timeout and
+    the lease. It is not sent; the lock is free for the next try."""
+    first, second = env
+    client = first.http_client
+    org = new_org()
+    key = f"{org}-held"
+    assert await first.batch_upsert_nodes([base_record(key, org)], RECORDS)
+    assert await client.update_collection_schema(RECORDS, narrow_schema())
+    puts = _puts(client, monkeypatch)
+    monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.05)
+    held = await second.begin_transaction(read=[RECORDS], write=[RECORDS])
+    try:
+        assert await second.update_node(key, RECORDS, {"indexingStatus": "QUEUED"}, transaction=held)  # the transaction is open and has written
+        assert await client.record_guard.ensure_wide("test") is False
+        assert puts["n"] == 0 and await _generation(client) == 0
+        assert await ArangoLock(second.http_client).acquire(15_000) is True, "the lock was released"
+    finally:
+        await second.rollback_transaction(held)
