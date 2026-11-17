@@ -39,7 +39,6 @@ import {
   setCollectionConsent,
 } from '../../../libs/services/telemetry/flag';
 import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
-import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
 import {
@@ -2654,9 +2653,10 @@ export const toggleMetricsCollection =
       }
 
       if (enabled) {
-        // Consent first: the gauge is dropped while consent is still off.
+        // Consent first: the gauge is dropped while consent is still off. The same single series as the one the
+        // service writes at start-up, so a restart followed by an opt-in leaves one series, not two.
         setCollectionConsent(true);
-        setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), true);
+        setMetricCollectionEnabled('', true);
       }
 
       res

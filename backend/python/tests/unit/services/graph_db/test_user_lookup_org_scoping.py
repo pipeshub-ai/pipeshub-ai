@@ -219,6 +219,8 @@ class TestEmptyOrgMatchesNoUser:
 
 _APP = Path(__file__).resolve().parents[4] / "app"
 _ORG_NAMES = {"org_id", "orgId", "organization_id"}
+# An ``Actor`` carries the org as ``actor.org_id``, so a function that takes one has the org in scope.
+_ORG_CARRIERS = {"actor"}
 # These derive the organisation from the requester's own user, and their routers hand them no organisation to bind to.
 # This one reads the identity first and refuses a wrong-org identity itself, with its own error.
 _ORG_CHECKED_AFTER_THE_LOOKUP = {
@@ -232,12 +234,77 @@ _ORG_DERIVED_FROM_THE_LOOKUP = {("connectors/sources/localKB/handlers/kb_service
 
 _LOOKUPS = {"get_user_by_user_id", "get_caller_user"}
 
+# Every lookup below passes the org today. The set may grow, never shrink: a caller that stops scoping its lookup
+# fails here even when the org is no longer named anywhere else in the function.
+_SCOPED_LOOKUP_CALLERS = frozenset({
+    ('agents/actions/knowledge_graph/ops/scope.py', '_catalog_fallback'),
+    ('agents/chat_modes/bridge.py', '_fetch_available_connectors'),
+    ('api/routes/agent.py', '_resolve_service_account_binding'),
+    ('api/routes/agent.py', 'get_assistant_agent'),
+    ('api/routes/ai_models_registry.py', 'preview_identity_forwarding'),
+    ('api/routes/chatbot.py', '_attachment_caller'),
+    ('api/routes/chatbot.py', '_org_user_keys'),
+    ('connectors/core/base/data_processor/data_source_entities_processor.py', 'get_user_by_user_id'),
+    ('connectors/core/base/data_store/graph_data_store.py', 'get_user_by_user_id'),
+    ('connectors/sources/atlassian/confluence_datacenter_personal/connector.py', 'run_sync'),
+    ('connectors/sources/localKB/handlers/kb_service.py', '_resolve_user_ids_to_graph_keys'),
+    ('connectors/sources/localKB/handlers/kb_service.py', '_teams_not_in_requester_org'),
+    ('connectors/sources/localKB/handlers/kb_service.py', 'create_knowledge_base'),
+    ('connectors/sources/localKB/handlers/kb_service.py', 'list_user_knowledge_bases'),
+    ('connectors/sources/localKB/handlers/knowledge_hub_service.py', '_resolve_user'),
+    ('connectors/sources/local_folder/connector.py', '_owner_and_group'),
+    ('connectors/sources/local_fs/connector.py', '_ensure_owner_and_record_group'),
+    ('modules/agents/knowledge_scope.py', 'admit_caller_project_collections'),
+    ('services/artifact_registry/access.py', 'resolve_user_key'),
+    ('services/artifact_registry/gallery.py', '_resolve_user_key'),
+    ('services/artifact_registry/sharing.py', '_notify'),
+    ('services/artifact_registry/sharing.py', '_resolve_targets'),
+    ('services/artifact_registry/sharing.py', 'unshare'),
+    ('services/graph_db/arango/arango_http_provider.py', '_get_user_app_ids'),
+    ('services/graph_db/arango/arango_http_provider.py', '_validate_upload_context'),
+    ('services/graph_db/arango/arango_http_provider.py', 'apply_verified_user_email'),
+    ('services/graph_db/arango/arango_http_provider.py', 'check_record_access_with_details'),
+    ('services/graph_db/arango/arango_http_provider.py', 'get_accessible_connector_types'),
+    ('services/graph_db/arango/arango_http_provider.py', 'get_accessible_containers'),
+    ('services/graph_db/arango/arango_http_provider.py', 'reindex_record_group_records'),
+    ('services/graph_db/arango/arango_http_provider.py', 'reindex_single_record'),
+    ('services/graph_db/interface/graph_db_provider.py', 'filter_accessible_record_ids'),
+    ('services/graph_db/interface/graph_db_provider.py', 'filter_accessible_virtual_record_ids'),
+    ('services/graph_db/interface/graph_db_provider.py', 'get_ref_access'),
+    ('services/graph_db/neo4j/neo4j_provider.py', '_validate_upload_context'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'apply_verified_user_email'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'delete_record'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'get_accessible_connector_types'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'get_accessible_containers'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'get_accessible_virtual_record_ids'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'reindex_record_group_records'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'reindex_single_record'),
+    ('services/graph_db/neo4j/neo4j_provider.py', 'update_agent_permission'),
+    ('services/graph_db/postgres/delete.py', 'delete_record'),
+    ('services/graph_db/postgres/entity_access.py', 'get_entity_access_context'),
+    ('services/graph_db/postgres/permissions.py', 'check_record_access_with_details'),
+    ('services/graph_db/postgres/permissions.py', 'get_accessible_connector_types'),
+    ('services/graph_db/postgres/permissions.py', 'get_accessible_containers'),
+    ('services/graph_db/postgres/permissions.py', 'get_accessible_virtual_record_ids'),
+    ('services/graph_db/postgres/trash.py', 'reindex_record_group_records'),
+    ('services/graph_db/postgres/trash.py', 'reindex_single_record'),
+    ('services/messaging/kafka/handlers/entity.py', '_handle_user_added'),
+    ('services/messaging/kafka/handlers/entity.py', '_handle_user_deleted'),
+    ('services/messaging/kafka/handlers/entity.py', '_handle_user_updated'),
+    ('utils/cache_helpers.py', 'get_cached_user_info'),
+    ('utils/chat_helpers.py', 'accessible_node_ids'),
+    ('utils/pattern_match.py', 'merge_pattern_match_results'),
+    ('utils/user_lookup.py', 'get_caller_user'),
+})
+
 
 def _names_an_org(node: ast.AST) -> bool:
     """A local, an argument, an attribute (``self.org_id``, ``actor.org_id``) or a payload key (``payload["orgId"]``,
     ``user.get("orgId")``) that carries an organisation."""
     if isinstance(node, ast.arg | ast.Attribute | ast.Name):
-        return (getattr(node, "arg", None) or getattr(node, "attr", None) or getattr(node, "id", None)) in _ORG_NAMES
+        return (getattr(node, "arg", None) or getattr(node, "attr", None) or getattr(node, "id", None)) in (
+            _ORG_NAMES | _ORG_CARRIERS
+        )
     if isinstance(node, ast.Subscript):
         return isinstance(node.slice, ast.Constant) and node.slice.value in _ORG_NAMES
     if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "get" and node.args:
@@ -271,6 +338,23 @@ def _scopes_the_lookup(fn: ast.AST, call: ast.Call) -> bool:
     return False
 
 
+def _scoped_lookup_callers() -> set[tuple[str, str]]:
+    found = set()
+    for path in sorted(_APP.rglob("*.py")):
+        rel = path.relative_to(_APP).as_posix()
+        for fn in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for call in ast.walk(fn):
+                if (
+                    isinstance(call, ast.Call)
+                    and (getattr(call.func, "attr", None) or getattr(call.func, "id", "")) in _LOOKUPS
+                    and _scopes_the_lookup(fn, call)
+                ):
+                    found.add((rel, fn.name))
+    return found
+
+
 def _unscoped_lookups_with_the_org_in_scope() -> list[str]:
     found = []
     for path in sorted(_APP.rglob("*.py")):
@@ -295,6 +379,25 @@ class TestEveryCallerWithTheOrgPassesIt:
     def test_no_lookup_with_the_org_in_scope_is_left_unscoped(self) -> None:
         assert _unscoped_lookups_with_the_org_in_scope() == []
 
+    def test_no_caller_that_scopes_its_lookup_today_stops_doing_so(self) -> None:
+        """Dropping the org argument can also remove the function's only mention of the org, which hides it from the
+        scan above. This pins the callers that pass it."""
+        assert sorted(_SCOPED_LOOKUP_CALLERS - _scoped_lookup_callers()) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "async def f(p, actor):\n    return await get_caller_user(p, actor.user_id, org_id=actor.org_id)\n",
+            "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id, org_id=org_id)\n",
+        ],
+    )
+    def test_the_pin_sees_a_scoped_caller_and_notices_when_it_stops(self, tmp_path, monkeypatch, source) -> None:
+        (tmp_path / "m.py").write_text(source)
+        monkeypatch.setattr(f"{__name__}._APP", tmp_path)
+        assert _scoped_lookup_callers() == {("m.py", "f")}
+        (tmp_path / "m.py").write_text(source.replace(", org_id=actor.org_id", "").replace(", org_id=org_id", ""))
+        assert _scoped_lookup_callers() == set()
+
     @pytest.mark.parametrize(
         "source",
         [
@@ -306,6 +409,8 @@ class TestEveryCallerWithTheOrgPassesIt:
             "async def f(self, user_id):\n    return await get_caller_user(self.p, user_id) if self.org_id else None\n",
             "async def f(p, payload):\n    x = payload['orgId']\n    return await p.get_user_by_user_id(payload['userId'])\n",
             "async def f(p, user, uid):\n    o = user.get('orgId')\n    return await p.get_user_by_user_id(uid)\n",
+            # the org is carried by an actor, and the lookup's own argument is the only place it is named
+            "async def f(p, actor):\n    return await get_caller_user(p, actor.user_id)\n",
             # an org that is None, or a spread that is always empty, scopes nothing
             "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id, org_id=None)\n",
             "async def f(p, user_id, org_id):\n    return await p.get_user_by_user_id(user_id, **{})\n",

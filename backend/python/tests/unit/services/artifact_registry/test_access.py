@@ -3,6 +3,8 @@ place every registry operation checks authorization."""
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app.services.artifact_registry.access import (
@@ -34,6 +36,14 @@ class TestResolveUserKey:
         policy = AccessPolicy(graph)
         with pytest.raises(ArtifactNotFoundError):
             await policy.resolve_user_key(Actor(org_id=ORG, user_id="ghost"))
+
+
+    async def test_looks_the_user_up_in_the_actors_org(self) -> None:
+        graph = FakeGraphProvider()
+        graph.add_user(USER, key="ukey-1")
+        graph.get_user_by_user_id = AsyncMock(wraps=graph.get_user_by_user_id)
+        await AccessPolicy(graph).resolve_user_key(Actor(org_id=ORG, user_id=USER))
+        graph.get_user_by_user_id.assert_awaited_once_with(USER, org_id=ORG)
 
 
 class TestAuthorizeReadWrite:
