@@ -11,7 +11,10 @@ their floor.
 
 A record that is missing, torn, of another version or otherwise not
 believable reads as inactive: indexing is never slowed by garbage. All times
-are ``time.monotonic()``, which every process in one container shares.
+are ``time.monotonic()``, which every process in one container shares. The
+file can outlive a host reboot (a container restarted in place keeps its
+``/tmp``) while the clock starts again, so a record set after now, or ending
+further out than any refresh could set, is inactive.
 
 It lives here rather than beside the sandbox code so that indexing does not
 import the agent library.
@@ -103,8 +106,7 @@ class YieldRecord:
 
     def active(self, now: float, alive: Callable[[int], bool] = pid_alive) -> bool:
         return (
-            self.set_at > 0
-            and now < self.expires_at
+            0 < self.set_at <= now < self.expires_at
             and self.expires_at - self.set_at <= MAX_SPAN_S
             and (now - self.set_at < DEAD_WRITER_S or alive(self.writer_pid))
         )

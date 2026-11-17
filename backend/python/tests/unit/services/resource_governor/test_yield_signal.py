@@ -87,6 +87,15 @@ class TestActive:
         _write(signal, YieldRecord(set_at=NOW, expires_at=NOW + 121, since=NOW, writer_pid=os.getpid()))
         assert not signal.read_state(NOW + 1).active
 
+    def test_a_record_from_before_a_clock_restart_is_inactive(self, signal: YieldSignal) -> None:
+        # The file outlives a host reboot in the container's /tmp; the
+        # monotonic clock starts again, and the writer's pid may be reused.
+        _write(signal, YieldRecord(set_at=NOW, expires_at=NOW + 20, since=NOW, writer_pid=os.getpid()))
+        assert not signal.read_state(30.0).active
+        refreshed = signal.refresh(reason="host_memory_floor", now=30.0)
+        assert refreshed is not None and refreshed.started and refreshed.since == 30.0
+        assert signal.read_state(31.0).active
+
     @pytest.mark.parametrize("data", [b"", b"\0" * RECORD_SIZE, b"garbage" * 40])
     def test_garbage_is_inactive(self, signal: YieldSignal, data: bytes) -> None:
         _write(signal, data)
