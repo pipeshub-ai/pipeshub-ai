@@ -365,8 +365,16 @@ def ensure_private_directory(directory: Path) -> None:
     created the directory first, or planted a symlink at its name. A real
     directory, owned by this uid, with no group or other bits, is the only kind
     that can be trusted with files we write to. Raises ``PermissionError``.
+
+    A missing parent is created private too: ``mkdir(parents=True)`` applies
+    *mode* to the last directory only, so ``<state>/slots`` created first would
+    leave ``<state>`` at ``0o777 & ~umask``, which every other user of
+    ``<state>`` then refuses.
     """
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = directory.parent
+    if parent != directory and not parent.exists():
+        ensure_private_directory(parent)
+    directory.mkdir(mode=0o700, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)

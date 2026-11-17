@@ -22,7 +22,10 @@ from app.services.resource_governor.lanes import (
     open_lane_budget,
     plan_lanes,
 )
-from app.services.resource_governor.shared_slots import SharedSlots
+from app.services.resource_governor.shared_slots import (
+    SharedSlots,
+    ensure_private_directory,
+)
 from tests.unit.lane_gauge import Mem
 
 if TYPE_CHECKING:
@@ -127,6 +130,29 @@ class TestForeignDirectory:
             assert info.st_mode & 0o177 == 0
         finally:
             budget.close()
+
+
+class TestPrivateDirectoryParents:
+    def test_a_missing_parent_is_created_private_too(self, tmp_path: Path) -> None:
+        """Opening ``<state>/slots`` first must not leave ``<state>`` group or
+        world readable, or every later user of ``<state>`` refuses it."""
+        state = tmp_path / "state"
+        old = os.umask(0o022)
+        try:
+            ensure_private_directory(state / "slots")
+        finally:
+            os.umask(old)
+        assert os.stat(state).st_mode & 0o777 == 0o700
+        assert os.stat(state / "slots").st_mode & 0o777 == 0o700
+        ensure_private_directory(state)
+
+    def test_an_existing_parent_is_left_alone(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        shared.mkdir(mode=0o755)
+        shared.chmod(0o755)
+        ensure_private_directory(shared / "state")
+        assert os.stat(shared).st_mode & 0o777 == 0o755
+        assert os.stat(shared / "state").st_mode & 0o777 == 0o700
 
 
 def _sentinel(path: Path) -> int:
