@@ -882,9 +882,13 @@ class LLMGateway:
             # One request decides a half-open breaker: waiting and sending another is not the trial's to do (a throttled
             # trial would otherwise sleep before the breaker refuses its retry).
             return None
+        if trial or caller_expired or _is_timeout(exc):
+            # A half-open trial is one request; a call that ran out of time (headers may have said 429, the body never came)
+            # is not sent again.
+            return None
         if _is_throttle(exc, policy, seen):
             return RetryKind.THROTTLE
-        if judged != wire.FAIL or trial or caller_expired or _is_timeout(exc):
+        if judged != wire.FAIL:
             return None
         if seen.requests > 1:
             # An SDK client already repeated the request inside this attempt: a second layer would multiply the sends.

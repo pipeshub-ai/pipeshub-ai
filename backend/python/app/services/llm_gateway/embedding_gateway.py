@@ -91,7 +91,9 @@ def _is_connection_failure(exc: BaseException) -> bool:
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, (ConnectionError, httpx.ConnectError, httpx.RemoteProtocolError)):
+        # Any httpx transport failure (a connect or read timeout, a read error, a closed connection) is the network's, not
+        # the request's.
+        if isinstance(current, (ConnectionError, httpx.TransportError)):
             return True
         # ``requests`` (Voyage's HTTP client) raises its own hierarchy, which is not the builtin one.
         if isinstance(current, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):

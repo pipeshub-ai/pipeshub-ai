@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import warnings
@@ -80,7 +81,18 @@ def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> 
 
     @retry_decorator
     def _embed_with_retry(**kwargs: dict[str, Any]) -> dict[str, Any]:
-        response = requests.post(**kwargs)
+        # Imported here: the gateway's wire module is a layer above this one. A ``requests`` call has no hooks of its own, so
+        # it is admitted against the stage job's send allowance and counted in the wire scope of the attempt by hand.
+        from app.services.llm_gateway import wire
+
+        wire.admit_request()
+        wire.note_request_sent()
+        try:
+            response = requests.post(**kwargs)
+        except requests.exceptions.RequestException as exc:
+            wire.note_error(type(exc).__name__)
+            raise
+        wire.note_response(response.status_code, wire.parse_retry_after(response.headers))
         try:
             payload = response.json()
         except ValueError:  # an outage page is not JSON: the status still says what it was
@@ -258,6 +270,14 @@ class VoyageEmbeddings(BaseModel, Embeddings):
         return self._get_embeddings(
             texts, batch_size=self.batch_size, input_type="document"
         )
+
+    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+        """``embed_documents`` in a thread that keeps the caller's context (LangChain's default uses an executor that does
+        not), so the request is admitted and counted by the wire scope of the gateway attempt that made it."""
+        return await asyncio.to_thread(self.embed_documents, texts)
+
+    async def aembed_query(self, text: str) -> List[float]:
+        return await asyncio.to_thread(self.embed_query, text)
 
     def embed_query(self, text: str) -> List[float]:
         """Call out to Voyage Embedding endpoint for embedding query text.

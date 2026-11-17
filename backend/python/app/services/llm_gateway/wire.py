@@ -152,6 +152,19 @@ def wire_scope() -> Iterator[WireOutcome]:
         _current.reset(token)
 
 
+def refused_by_allowance(exc: BaseException) -> bool:
+    """Whether ``exc`` (or a cause) is the stage job's send allowance refusing a request before it was sent. That is the job's
+    refusal, not one image's or one batch's: callers that turn a failure into a per-item result must let it through."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, SendAllowanceSpent):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def open_scope() -> tuple[WireOutcome, Any]:
     """``wire_scope`` for a caller that cannot indent its code under a ``with``: pair with ``close_scope``."""
     outcome = WireOutcome()

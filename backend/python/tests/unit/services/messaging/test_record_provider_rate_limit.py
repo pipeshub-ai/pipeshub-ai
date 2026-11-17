@@ -6,6 +6,7 @@ would call it again too early and dead-letter the record after three such tries.
 
 from __future__ import annotations
 
+import math
 import time
 from unittest.mock import AsyncMock
 
@@ -200,10 +201,10 @@ async def test_a_short_retry_after_repeated_is_backed_off_and_fails_the_record_a
             break
         except ProviderRateLimitRequeue as requeue:
             delays.append(requeue.delay_s)
-            clock["now"] += int(requeue.delay_s * 1000)
+            clock["now"] += math.ceil(requeue.delay_s * 1000) + 1
     assert isinstance(outcome, ProviderRateLimitedTooLongError), "the record was handed back for ever"
     calls = len(delays) + 1
-    assert 8 <= calls <= 14, f"{calls} provider calls over six hours of Retry-After: 1"
+    assert 8 <= calls <= 14, f"{calls} provider calls over six hours of Retry-After: 1: {[round(x) for x in delays]}"
     assert delays[0] >= 30.0 and all(b >= a for a, b in zip(delays, delays[1:])), "the waits do not shrink"
     assert max(delays) <= 3600.0
 
@@ -315,3 +316,41 @@ async def test_with_the_setting_off_no_write_touches_either_field_even_when_a_re
     await harness.handler._end_provider_rate_limit_total("rec-1", {"rateLimitedSinceMs": 5})
     for write in harness.writes():
         assert not {"deferredUntilMs", "rateLimitedSinceMs"} & set(write), write
+
+
+async def test_the_first_handback_is_held_to_the_whole_allowance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a 10 s allowance a hand-back of at least 30 s cannot be made, even the first (no start time yet)."""
+    from app.services.messaging.config import messaging_env
+
+    monkeypatch.setattr(type(messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 10.0))
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=1.0)
+    with pytest.raises(ProviderRateLimitedTooLongError):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+
+
+async def test_a_duplicate_delivery_during_the_wait_keeps_the_wait_and_calls_nothing() -> None:
+    """A second ``newRecord`` for a record handed back for a provider's wait is returned for what is left of the wait: the wait
+    is kept (not cleared), no attempt is spent, and the model is not called."""
+    until = int(time.time() * 1000) + 300_000
+    harness = Harness(_record(indexingStatus="QUEUED", deferredUntilMs=until))
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert 290.0 <= raised.value.delay_s <= 300.0
+    assert harness.runs == [], "the pipeline ran during the provider's wait"
+    assert all("deferredUntilMs" not in w for w in harness.writes()), "the wait was cleared"
+
+
+async def test_the_limit_check_and_the_stored_deadline_use_one_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    draws = iter([120.0, 132.0, 140.0, 150.0])
+    monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: next(draws))
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    before = int(time.time() * 1000)
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
+    assert raised.value.delay_s == 120.0
+    assert before + 120_000 <= stored <= before + 121_000, "the stored deadline is not the delay that was checked"

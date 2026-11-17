@@ -200,3 +200,128 @@ async def test_voyage_repeats_a_transport_failure_through_the_real_adapter(monke
     provider = MultimodalEmbeddingFactory.create(_config("voyage", dense_embeddings=embeddings))
     results = await provider.embed_images([IMAGE])  # type: ignore[union-attr]
     assert len(posts) == 3 and results[0].error is not None
+
+
+# ---- the job's send allowance, cancellation of threads, transport failures, Voyage's own HTTP ------------------------------
+
+
+async def test_a_spent_send_allowance_is_not_one_images_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The allowance refuses a request before it is sent: the job's refusal must leave the provider, not become a skipped image
+    (the record would finish without its vector)."""
+    from app.services.llm_gateway.wire import SendAllowanceSpent
+
+    class Refused(Exception):
+        pass
+
+    def refuse(**_: Any) -> Any:  # noqa: ANN401
+        raise Refused("APIConnectionError") from SendAllowanceSpent("the stage job has used its sends")
+
+    cohere_client = MagicMock()
+    cohere_client.embed.side_effect = refuse
+    monkeypatch.setitem(sys.modules, "cohere", types.SimpleNamespace(ClientV2=lambda api_key: cohere_client))
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    for name in ("cohere", "bedrock"):
+        monkeypatch.setattr(f"app.services.embeddings.multimodal.{name}_provider.get_embedding_gateway", lambda: gateway)
+    provider = MultimodalEmbeddingFactory.create(_config("cohere"))
+    with pytest.raises(Refused):
+        await provider.embed_images([IMAGE])  # type: ignore[union-attr]
+    bedrock_client = MagicMock()
+    bedrock_client.invoke_model.side_effect = refuse
+    monkeypatch.setattr("boto3.client", lambda **_: bedrock_client)
+    provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
+    with pytest.raises(Refused):
+        await provider.embed_images([IMAGE])  # type: ignore[union-attr]
+
+
+async def test_a_cancelled_thread_call_finishes_before_the_cancellation_goes_on() -> None:
+    """A synchronous SDK call already running cannot be stopped by cancelling its coroutine; it is awaited, so its request is
+    counted and nothing leaves after the hand-back."""
+    import asyncio
+    import threading
+
+    from app.services.embeddings.multimodal._concurrent import (
+        gather_or_cancel,
+        to_thread_settled,
+    )
+
+    release = threading.Event()
+    finished = threading.Event()
+
+    def slow_sdk_call() -> str:
+        release.wait(5)
+        finished.set()
+        return "sent"
+
+    async def limited() -> None:
+        await asyncio.sleep(0.05)
+        raise EmbeddingRateLimited("slow", retry_after=600.0)
+
+    async def run_it() -> None:
+        await gather_or_cancel([limited(), to_thread_settled(slow_sdk_call)])
+
+    task = asyncio.create_task(run_it())
+    await asyncio.sleep(0.2)
+    assert not task.done(), "the deferral was raised while a request was still running"
+    release.set()
+    with pytest.raises(EmbeddingRateLimited):
+        await task
+    assert finished.is_set()
+
+
+async def test_gemini_retries_an_httpx_transport_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+    from google import genai
+
+    from app.services.llm_gateway import embedding_gateway as gateway_module
+
+    calls: list[int] = []
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:  # noqa: ANN401
+            self.aio = MagicMock()
+
+            async def embed(**_: Any) -> Any:  # noqa: ANN401
+                calls.append(1)
+                raise httpx.ReadError("connection reset")
+
+            self.aio.models.embed_content = embed
+
+    async def instant(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", instant)
+    gateway = EmbeddingGateway(retry_budget=RetryBudget())
+    monkeypatch.setattr("app.services.embeddings.multimodal.gemini_provider.get_embedding_gateway", lambda: gateway)
+    provider = MultimodalEmbeddingFactory.create(_config("gemini"))
+    results = await provider.embed_images(["AAAA"])  # type: ignore[union-attr]
+    assert len(calls) == 3 and results[0].error is not None
+    for error in (httpx.ConnectTimeout("slow"), httpx.ReadTimeout("slow"), httpx.ReadError("reset"),
+                  httpx.WriteError("reset")):
+        from app.services.spend_guard.retry_policy import RetryKind
+
+        assert EmbeddingGateway.retry_kind(error) is RetryKind.TRANSIENT
+
+
+async def test_voyage_requests_are_counted_and_admitted_by_the_wire_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Voyage posts with ``requests``, which has no hooks: a failed request counts toward the job's sends, and an exhausted
+    allowance refuses the request before it is made."""
+    import requests
+
+    from app.services.llm_gateway import wire
+    from app.utils.custom_embeddings import VoyageEmbeddings
+
+    posted: list[int] = []
+
+    def post(**_: Any) -> Any:  # noqa: ANN401
+        posted.append(1)
+        raise requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr("app.utils.custom_embeddings.requests.post", post)
+    embeddings = VoyageEmbeddings(model="voyage-multimodal-3", voyage_api_key="k", max_retries=1)
+    with wire.wire_scope() as seen, pytest.raises(requests.exceptions.ConnectionError):
+        await embeddings.aembed_documents(["x"])
+    assert seen.requests == 1 and posted == [1], "the thread must keep the wire scope of the attempt"
+    with wire.metered(wire.SendMeter(allowance=0)), wire.wire_scope(), pytest.raises(Exception) as refused:  # noqa: B017
+        await embeddings.aembed_documents(["x"])
+    assert wire.refused_by_allowance(refused.value) and posted == [1], "no request was made past the allowance"

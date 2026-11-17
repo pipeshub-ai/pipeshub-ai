@@ -860,10 +860,9 @@ class RecordEventHandler(BaseEventService):
         """The error that ends the record when one more hand-back for ``wait_s`` would carry it past ``RATE_LIMIT_MAX_WAIT_S`` of
         wall time since its first hand-back; None while it is within the limit (or has never been handed back)."""
         since = self._rate_limited_since_ms(record)
-        if since is None:
-            return None
         limit_s = messaging_env.rate_limit_max_wait_seconds
-        elapsed_s = (get_epoch_timestamp_in_ms() - since) / 1000.0 + wait_s
+        # The first hand-back has no start time yet: its own wait is compared with the whole allowance.
+        elapsed_s = ((get_epoch_timestamp_in_ms() - since) / 1000.0 if since is not None else 0.0) + wait_s
         if elapsed_s <= limit_s:
             return None
         hours = limit_s / 3600.0
@@ -916,6 +915,18 @@ class RecordEventHandler(BaseEventService):
             )
         except Exception as exc:
             self.logger.warning(f"Could not clear the rate-limit total of record {record_id}: {exc}")
+
+    @staticmethod
+    def _handback_remaining_s(record: dict | None) -> float | None:
+        """Seconds left of the wait a record was handed back for (``deferredUntilMs``), or None when there is none or it is
+        over. Only read while ``RECORD_DEFERRAL_FIELDS_WRITE`` is on."""
+        if not messaging_env.record_deferral_fields_write or not record:
+            return None
+        until = record.get(DEFERRED_UNTIL_FIELD)
+        if not isinstance(until, (int, float)) or isinstance(until, bool):
+            return None
+        remaining_ms = until - get_epoch_timestamp_in_ms()
+        return remaining_ms / 1000.0 if remaining_ms > 0 else None
 
     async def _clear_handed_back_wait(self, record_id: str, record: dict | None) -> None:
         """The record is being processed again: the wait it was handed back for is over (best effort). Not written while
@@ -2010,6 +2021,11 @@ class RecordEventHandler(BaseEventService):
             # Known before the read below, as is whether this is a stage re-run: the finally block
             # keys on both if that read fails.
             resuming_enrichment = record_resuming_enrichment(record)
+            if (remaining := self._handback_remaining_s(record)) is not None:
+                # A duplicate delivery during a provider's wait: the wait is kept and the delivery is handed back for the rest
+                # of it, without an attempt. Clearing it here would let this event call the provider early.
+                handed_back = True
+                raise ProviderRateLimitRequeue(f"{record_id}: handed back for a provider's rate limit", delay_s=remaining)
             await self._clear_handed_back_wait(record_id, record)
             stages = payload.get("stages")
             stage_ingress = self.event_processor.stage_ingress
@@ -2094,6 +2110,9 @@ class RecordEventHandler(BaseEventService):
             # Decided before anything is taken out of the vector store: an event that is
             # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
+            if (remaining := self._handback_remaining_s(doc)) is not None:
+                handed_back = True
+                raise ProviderRateLimitRequeue(f"{record_id}: handed back for a provider's rate limit", delay_s=remaining)
             await self._clear_handed_back_wait(record_id, doc)
             idle = already_indexed(event_type, payload, doc)
             if replayed or (idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc))):
@@ -2518,16 +2537,14 @@ class RecordEventHandler(BaseEventService):
             error_msg = str(ie)
             last_exception = ie
             if (wait := provider_rate_limit_wait(ie)) is not None:
-                too_long = self._rate_limited_too_long(
-                    record_id, record,
-                    handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms()),
-                )
+                # One draw of the jitter, used for the limit check and the stored deadline alike.
+                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms())
+                too_long = self._rate_limited_too_long(record_id, record, delay)
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from ie
                 # The hand-back is bounded by the time of its first hand-back, stored here (the broker's own budget is not used),
                 # so it is only made when that was stored: otherwise this stays an ordinary failure, counted by its attempts.
-                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms())
                 if await self._hand_back_for_provider_wait(record_id, record, delay):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {ie}", delay_s=delay) from ie
@@ -2543,16 +2560,14 @@ class RecordEventHandler(BaseEventService):
             if (wait := provider_rate_limit_wait(e)) is not None:
                 # The provider said when it can serve again: come back then, with no attempt spent on the wait, until the
                 # time the record has spent rate-limited passes the limit.
-                too_long = self._rate_limited_too_long(
-                    record_id, record,
-                    handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms()),
-                )
+                # One draw of the jitter, used for the limit check and the stored deadline alike.
+                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms())
+                too_long = self._rate_limited_too_long(record_id, record, delay)
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from e
                 # The hand-back is bounded by the time of its first hand-back, stored here (the broker's own budget is not used),
                 # so it is only made when that was stored: otherwise this stays an ordinary failure, counted by its attempts.
-                delay = handback_delay_s(wait, self._rate_limited_since_ms(record), get_epoch_timestamp_in_ms())
                 if await self._hand_back_for_provider_wait(record_id, record, delay):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=delay) from e

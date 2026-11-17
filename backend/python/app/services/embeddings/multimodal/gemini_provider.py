@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from app.services.llm_gateway.wire import refused_by_allowance
 from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
@@ -117,6 +118,8 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
                 except EmbeddingRateLimited:
                     raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
+                    if refused_by_allowance(e):
+                        raise  # the job's send allowance is spent: not one image's failure
                     if self.logger:
                         self.logger.warning(f"Gemini image embed failed for index {i}: {e}")
                     return ImageEmbeddingResult(index=i, error=str(e))

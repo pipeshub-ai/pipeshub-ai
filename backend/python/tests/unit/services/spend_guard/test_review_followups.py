@@ -165,3 +165,20 @@ async def test_the_failed_requests_of_an_embeddings_call_are_charged_to_the_jobs
     with wire.metered(meter), pytest.raises(_Down):
         await EmbeddingGateway(retry_budget=RetryBudget()).call(call)
     assert meter.failed == 3, "each of the three attempts sent one request that failed"
+
+
+async def test_a_call_that_times_out_after_a_429_header_is_not_sent_again(fast: None) -> None:
+    """Headers said 429 and the body never came: the caller's time ran out. That is not a throttle to repeat."""
+
+    class Slow:
+        requests = 0
+
+        async def ainvoke(self, value: object, /, **kwargs: object) -> str:
+            wire._request_hook(httpx.Request("POST", "http://host/v1/chat"))
+            Slow.requests += 1
+            wire.note_response(429, None)
+            raise TimeoutError("read timed out")
+
+    with pytest.raises(Exception):  # noqa: B017 - TimeoutError, or the gateway's wrapper of it
+        await LLMGateway(2, retry_budget=RetryBudget()).invoke(Slow(), "x", provider="P:m@h", timeout=0.01)
+    assert Slow.requests == 1

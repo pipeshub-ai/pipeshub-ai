@@ -18,7 +18,8 @@ older model rather than silently sending a request the docs do not cover.
 import asyncio
 import logging
 
-from app.services.embeddings.multimodal._concurrent import gather_or_cancel
+from app.services.llm_gateway.wire import refused_by_allowance
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel, to_thread_settled
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -98,7 +99,7 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
                     # thread that keeps the context, so the request is counted by the wire scope of the attempt.
                     options = {"max_retries": self.sdk_retries} if self.sdk_retries is not None else None
                     response = await get_embedding_gateway().call(
-                        lambda: asyncio.to_thread(
+                        lambda: to_thread_settled(
                             lambda: co.embed(
                                 model=self.model_name,
                                 input_type=self.input_type,
@@ -114,6 +115,8 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
                 except EmbeddingRateLimited:
                     raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
+                    if refused_by_allowance(e):
+                        raise  # the job's send allowance is spent: not one image's failure
                     if self.logger:
                         # An oversized image is an expected per-image skip;
                         # anything else (auth, rate limit, network) is not and

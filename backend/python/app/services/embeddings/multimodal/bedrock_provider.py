@@ -12,7 +12,8 @@ from collections.abc import Callable
 from typing import Any
 
 from app.exceptions.indexing_exceptions import EmbeddingError
-from app.services.embeddings.multimodal._concurrent import gather_or_cancel
+from app.services.llm_gateway.wire import refused_by_allowance
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel, to_thread_settled
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -110,7 +111,7 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
             async with semaphore:
                 try:
                     response = await get_embedding_gateway().call(
-                        lambda: asyncio.to_thread(
+                        lambda: to_thread_settled(
                             lambda: bedrock.invoke_model(
                                 modelId=self.model_name,
                                 body=json.dumps({
@@ -154,6 +155,8 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
             except EmbeddingRateLimited:
                 raise
             except Exception as exc:
+                if refused_by_allowance(exc):
+                    raise  # the job's send allowance is spent: not one image's failure
                 if self.logger:
                     self.logger.warning(f"Bedrock embed failed for index {i}: {exc}")
                 return ImageEmbeddingResult(index=i, error=str(exc))
