@@ -17,6 +17,11 @@
 # Optional env:
 #   SMOKE_VARIANT   neo4j-kafka (default) | arangodb-redis | eks
 #                   eks uses values-eks.yaml on a 3-worker cluster, scaled down
+#                   arangodb-redis and eks run the code sandbox on the DinD
+#                   sidecar and check it (a run, the proxy policy, the
+#                   sidecar's usage route)
+#   SMOKE_REQUIRE_USAGE=1  fail when docker-proxy does not serve
+#                   /_pipeshub/usage (an image older than the route skips it)
 
 #   APP_IMAGE       image to install (default pipeshubai/pipeshub-ai:slim)
 #   KIND_CLUSTER    cluster name (default pipeshub-helm-smoke-<pid>)
@@ -53,11 +58,20 @@ case "$VARIANT" in
     VARIANT_ARGS=()
     ;;
   arangodb-redis)
+    # Also the code sandbox on a small DinD sidecar (requests = limits).
     VARIANT_ARGS=(
       --set neo4j.enabled=false
       --set arango.enabled=true
       --set "arango.auth.rootPassword=$(openssl rand -hex 12)"
       --set messageBroker.type=redis
+      --set config.sandboxMode=docker
+      --set config.sandboxAllowLocal=false
+      --set sandbox.dind.enabled=true
+      --set sandbox.dind.resources.requests.cpu=1
+      --set sandbox.dind.resources.requests.memory=1Gi
+      --set sandbox.dind.resources.limits.cpu=1
+      --set sandbox.dind.resources.limits.memory=1Gi
+      --set sandbox.dind.storage.sizeLimit=8Gi
     )
     ;;
   eks)
@@ -235,6 +249,9 @@ if params.get("replication_factor") != 2:
     || die "redis replica is not connected"
   kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli CONFIG GET maxmemory-policy | grep -q noeviction \
     || die "redis maxmemory-policy is not noeviction"
+fi
+
+if [[ "$VARIANT" == "eks" || "$VARIANT" == "arangodb-redis" ]]; then
   kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -- python - <<'PY' || die "sandbox run_code via DinD and docker-proxy failed"
 import os
 os.environ.setdefault("DOCKER_HOST", "tcp://127.0.0.1:2375")
@@ -262,6 +279,38 @@ if os.path.exists("/var/run/dind/docker.sock"):
 # The code sandbox cap is sized from the dind sidecar's limits.
 if not os.environ.get("SANDBOX_HOST_MEMORY_BYTES", "").isdigit():
     raise SystemExit("SANDBOX_HOST_MEMORY_BYTES is not the dind memory limit")
+PY
+  # The live limit reads the sidecar's own cgroup through docker-proxy.
+  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -- env SMOKE_REQUIRE_USAGE="${SMOKE_REQUIRE_USAGE:-0}" python - <<'PY' \
+    || die "docker-proxy /_pipeshub/usage did not report the dind sidecar"
+import json, os, time, urllib.error, urllib.request
+host = os.environ.get("DOCKER_HOST", "tcp://127.0.0.1:2375").replace("tcp://", "http://")
+def get(path):
+    try:
+        with urllib.request.urlopen(host + path, timeout=10) as resp:
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+if os.environ.get("SANDBOX_DOCKER_TOPOLOGY") != "dind-sidecar":
+    raise SystemExit("SANDBOX_DOCKER_TOPOLOGY is not dind-sidecar")
+status, body = get("/_pipeshub/usage")
+if status == 403 and os.environ["SMOKE_REQUIRE_USAGE"] != "1":
+    print("docker-proxy predates /_pipeshub/usage; usage check skipped")
+    raise SystemExit(0)
+sidecar = (body or {}).get("sidecar")
+if status != 200 or not sidecar:
+    raise SystemExit(f"/_pipeshub/usage: HTTP {status} {body}")
+if sidecar["memLimitBytes"] != int(os.environ["SANDBOX_HOST_MEMORY_BYTES"]):
+    raise SystemExit(f"memLimitBytes {sidecar['memLimitBytes']} is not the dind limit")
+if sidecar["ageS"] >= 15:
+    raise SystemExit(f"the sidecar stats are {sidecar['ageS']} s old")
+time.sleep(6)
+status, body = get("/_pipeshub/usage")
+if (body or {}).get("sidecar", {}).get("cpuUtil") is None:
+    raise SystemExit(f"no CPU rate on the second read: {body}")
+if get("/containers/x/stats")[0] != 403:
+    raise SystemExit("docker-proxy forwarded a per-container stats call")
+print("sidecar", json.dumps(body["sidecar"]))
 PY
 fi
 

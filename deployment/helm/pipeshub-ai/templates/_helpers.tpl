@@ -358,6 +358,16 @@ the raw daemon API with no policy in between, i.e. root on the node.
   {{- if not (and $limits.memory $limits.cpu) }}
     {{- fail "sandbox.dind.resources.limits.memory and limits.cpu are required: the code sandbox cap is sized from the dind limits, and a container without a limit would be sized from the whole node." }}
   {{- end }}
+  {{- $live := .Values.sandbox.dind.liveLimit | default dict }}
+  {{- if $live.enabled }}
+    {{- $interval := int ($live.exportIntervalSeconds | default 5) }}
+    {{- if or (lt $interval 2) (gt $interval 60) }}
+      {{- fail "sandbox.dind.liveLimit.exportIntervalSeconds must be 2..60." }}
+    {{- end }}
+    {{- if and $live.memHigh $live.memHard (ge (float64 $live.memHigh) (float64 $live.memHard)) }}
+      {{- fail "sandbox.dind.liveLimit.memHigh must be below memHard: runs are held back above memHigh and the limit halves above memHard." }}
+    {{- end }}
+  {{- end }}
 {{- end }}
 {{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
   {{- if not (or .Values.sandbox.dind.enabled .Values.config.dockerHost) }}
@@ -487,6 +497,45 @@ pod. Empty otherwise.
 {{- $pods -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+The dind container's command when sandbox.dind.liveLimit is on: a loop that
+writes the container's own cgroup counters to the socket volume every few
+seconds (atomically, through a temp file), where docker-proxy serves them as
+GET /_pipeshub/usage, then the image's entrypoint with the container args
+unchanged. POSIX sh and busybox only, as in docker:*-dind. The PIPESHUB_*
+variables let the chart test run it against fixture files.
+*/}}
+{{- define "pipeshub-ai.dindExporterScript" -}}
+cg="${PIPESHUB_CGROUP_DIR:-/sys/fs/cgroup}"
+out="${PIPESHUB_SIDECAR_STATS:-/var/run/dind/pipeshub-sidecar-stats}"
+iv="${PIPESHUB_EXPORT_INTERVAL:-5}"
+(
+  n=0
+  while :; do
+    n=$((n+1))
+    {
+      echo "v 1"; echo "seq $n"
+      for f in memory.max memory.current cpu.max; do
+        [ -r "$cg/$f" ] && echo "$f $(cat "$cg/$f")"
+      done
+      awk '$1=="file"||$1=="shmem"||$1=="anon"{print "memory.stat."$1, $2}' "$cg/memory.stat" 2>/dev/null
+      awk '{print "memory.events.local."$1, $2}' "$cg/memory.events.local" 2>/dev/null
+      awk '{print "cpu.stat."$1, $2}' "$cg/cpu.stat" 2>/dev/null
+      awk '$1=="full"{split($2,a,"=");print "memory.pressure.full.avg10", a[2]}' "$cg/memory.pressure" 2>/dev/null
+      awk '$1=="some"{split($2,a,"=");print "cpu.pressure.some.avg10", a[2]}' "$cg/cpu.pressure" 2>/dev/null
+      for p in dockerd containerd; do
+        pid=$(pidof "$p" 2>/dev/null | cut -d' ' -f1)
+        [ -n "$pid" ] && awk -v p="$p" '/^VmRSS:/{print p".rss_kb", $2}' "/proc/$pid/status" 2>/dev/null
+      done
+    } > "$out.tmp" && mv -f "$out.tmp" "$out"
+    [ "${PIPESHUB_EXPORT_ONCE:-0}" = 1 ] && exit 0
+    sleep "$iv"
+  done
+) &
+if command -v dockerd-entrypoint.sh >/dev/null 2>&1; then exec dockerd-entrypoint.sh "$@"; fi
+exec "$@"
 {{- end -}}
 
 {{- define "pipeshub-ai.sandboxPath" -}}

@@ -63,6 +63,8 @@ VARIANTS=(
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "dind-run-cap|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set config.sandboxMaxRunTimeoutS=900"
+  "dind-live-off|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.enabled=false"
+  "dind-live-tuned|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.85 --set sandbox.dind.liveLimit.cpuThrottle=0.3 --set sandbox.capacity.memoryOvercommit=2"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "external-daemon-2-pods|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false"
   "external-daemon-max-total|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
@@ -208,6 +210,7 @@ PY
 }
 check_docker_proxy defaults-dind
 check_docker_proxy dind-run-cap 900
+check_docker_proxy dind-live-off
 check_docker_proxy eks
 check_docker_proxy eks-single-az
 
@@ -254,6 +257,108 @@ expect_env external-daemon-max-total SANDBOX_MAX_TOTAL '"10"'
 expect_env external-daemon-1-pod SANDBOX_CAPACITY_DIVISOR missing
 expect_env external-daemon-autoscaled SANDBOX_CAPACITY_DIVISOR '"3"'
 
+# Live limit: on the dind sidecar the app reads the sidecar's own cgroup,
+# exported by a loop in the dind container and served by docker-proxy; never
+# the node. Turned off, the dind container is exactly as without it.
+for v in defaults-dind eks; do
+  expect_env "$v" SANDBOX_DOCKER_TOPOLOGY '"dind-sidecar"'
+  expect_env "$v" SANDBOX_LIVE_LIMIT missing
+  expect_env "$v" SANDBOX_SIDECAR_MEM_HIGH missing
+done
+for v in cloud external-daemon-1-pod; do
+  expect_env "$v" SANDBOX_DOCKER_TOPOLOGY missing
+done
+expect_env dind-live-off SANDBOX_DOCKER_TOPOLOGY '"dind-sidecar"'
+expect_env dind-live-off SANDBOX_LIVE_LIMIT '"off"'
+expect_env dind-live-tuned SANDBOX_SIDECAR_MEM_HIGH '"0.85"'
+expect_env dind-live-tuned SANDBOX_SIDECAR_CPU_THROTTLE '"0.3"'
+expect_env dind-live-tuned SANDBOX_SIDECAR_MEM_HARD missing
+expect_env dind-live-tuned SANDBOX_MEMORY_OVERCOMMIT '"2"'
+check_live_limit() { # variant, "on" | "off"
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 - "$doc" "$2" <<'PY'; then echo "ok $1: live limit $2 in dind and docker-proxy"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+containers = {c["name"]: c for c in pod["containers"]}
+dind, proxy = containers["dind"], containers["docker-proxy"]
+dind_env = [e["name"] for e in dind.get("env") or []]
+proxy_env = {e["name"]: e.get("value") for e in proxy.get("env") or []}
+errors = []
+if (dind.get("args") or [None])[0] != "dockerd":
+    errors.append(f"dind args must start with dockerd: {dind.get('args')}")
+if sys.argv[2] == "on":
+    command = dind.get("command") or []
+    if command[:2] != ["/bin/sh", "-c"] or command[3:] != ["pipeshub-dind"] or "dockerd-entrypoint.sh" not in command[2]:
+        errors.append(f"dind command is not the exporter wrapper: {command[:2]} ... {command[3:]}")
+    if "PIPESHUB_EXPORT_INTERVAL" not in dind_env:
+        errors.append("dind has no PIPESHUB_EXPORT_INTERVAL")
+    if proxy_env.get("DOCKER_PROXY_SIDECAR_STATS_FILE") != "/var/run/dind/pipeshub-sidecar-stats":
+        errors.append("docker-proxy has no DOCKER_PROXY_SIDECAR_STATS_FILE")
+else:
+    if "command" in dind:
+        errors.append("dind has a command with the live limit off")
+    if dind_env != ["DOCKER_TLS_CERTDIR", "DOCKER_HOST"]:
+        errors.append(f"dind env is {dind_env} with the live limit off")
+    if "DOCKER_PROXY_SIDECAR_STATS_FILE" in proxy_env:
+        errors.append("docker-proxy reads the sidecar stats with the live limit off")
+for e in errors:
+    print(f"!! {sys.argv[1]}: {e}")
+sys.exit(1 if errors else 0)
+PY
+}
+check_live_limit defaults-dind on
+check_live_limit eks on
+check_live_limit dind-live-off off
+
+# The exporter itself, run under sh against fixture cgroup v2 files.
+if [[ -f "$OUT/defaults-dind.yaml" ]] && python3 - "$OUT/defaults-dind.yaml" "$OUT" <<'PY'; then echo "ok defaults-dind: exporter script writes the sidecar stats"; else failed=1; fi
+import os, subprocess, sys, time, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+command = next(c for c in pod["containers"] if c["name"] == "dind")["command"]
+work = os.path.join(sys.argv[2], "exporter")
+cg, bin_dir = os.path.join(work, "cg"), os.path.join(work, "bin")
+os.makedirs(cg, exist_ok=True)
+os.makedirs(bin_dir, exist_ok=True)
+files = {
+    "memory.max": "4294967296\n", "memory.current": "812000000\n", "cpu.max": "200000 100000\n",
+    "memory.stat": "anon 500000000\nfile 300000000\nshmem 20000000\nkernel 1\n",
+    "memory.events.local": "low 0\nhigh 0\nmax 2\noom 1\noom_kill 1\n",
+    "cpu.stat": "usage_usec 123456\nuser_usec 1\nsystem_usec 2\nnr_periods 150\nnr_throttled 50\nthrottled_usec 9\n",
+    "memory.pressure": "some avg10=1.00 avg60=0 avg300=0 total=1\nfull avg10=0.50 avg60=0 avg300=0 total=1\n",
+    "cpu.pressure": "some avg10=12.00 avg60=0 avg300=0 total=1\nfull avg10=0.00 avg60=0 avg300=0 total=0\n",
+}
+for name, text in files.items():
+    with open(os.path.join(cg, name), "w") as f:
+        f.write(text)
+stub = os.path.join(bin_dir, "dockerd-entrypoint.sh")
+with open(stub, "w") as f:
+    f.write("#!/bin/sh\nexit 0\n")
+os.chmod(stub, 0o755)
+out = os.path.join(work, "stats")
+env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "PIPESHUB_CGROUP_DIR": cg,
+       "PIPESHUB_SIDECAR_STATS": out, "PIPESHUB_EXPORT_ONCE": "1"}
+proc = subprocess.run([*command, "dockerd", "--host=unix:///x"], env=env, timeout=20)
+deadline = time.time() + 10
+while not os.path.exists(out) and time.time() < deadline:
+    time.sleep(0.05)
+errors = [] if proc.returncode == 0 else [f"the wrapper exited {proc.returncode}"]
+lines = set(open(out).read().splitlines()) if os.path.exists(out) else set()
+for want in ("v 1", "seq 1", "memory.max 4294967296", "memory.current 812000000", "cpu.max 200000 100000",
+             "memory.stat.file 300000000", "memory.stat.shmem 20000000", "memory.events.local.oom 1",
+             "cpu.stat.usage_usec 123456", "cpu.stat.nr_throttled 50", "memory.pressure.full.avg10 0.50",
+             "cpu.pressure.some.avg10 12.00"):
+    if want not in lines:
+        errors.append(f"missing {want!r} in {sorted(lines)}")
+if os.path.exists(out + ".tmp"):
+    errors.append("the temp file was left behind")
+for e in errors:
+    print(f"!! exporter: {e}")
+sys.exit(1 if errors else 0)
+PY
+
 # A rotated key must restart both sides together. Secrets the chart does not
 # create carry no checksum: the chart cannot see their value.
 if [[ -f "$OUT/local-neo4j-kafka.yaml" && -f "$OUT/local-existing-secrets.yaml" && -f "$OUT/local-external-secrets.yaml" ]]; then
@@ -288,6 +393,8 @@ REFUSED=(
   "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
   "dind without a memory limit|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits.memory=null"
   "dind without limits|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits=null"
+  "live limit memHigh above memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.95 --set sandbox.dind.liveLimit.memHard=0.9"
+  "live limit export interval out of range|exportIntervalSeconds must be 2..60|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=1"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
   "docker socket mounted into the app|mounts a Docker socket into the application container|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/var/run/docker.sock"
   "docker socket mounted under another path|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/tmp/d"

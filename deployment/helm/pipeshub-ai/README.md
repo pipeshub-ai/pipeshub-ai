@@ -388,9 +388,48 @@ keep lower requests. The release notes warn when requests and limits differ.
 | `sandbox.capacity.cpuFactor` | 0.75 | Share of the CPUs. |
 | `sandbox.capacity.slotWaitSeconds` | 120 | How long a run waits for a free sandbox. |
 | `sandbox.capacity.pidLimit` | unset | The pod's pids limit (kubelet `podPidsLimit`), which the app cannot read. |
+| `sandbox.capacity.memoryOvercommit` | 1 (off) | Count each run at 1/N of its memory limit. With the dind sidecar only while the live limit reads its cgroup, at most 2. |
 
 Sandbox containers are created with `oom_score_adj=1000`, so inside the
 sidecar's memory limit the kernel kills a sandbox before `dockerd`.
+
+### Live limit
+
+With the dind sidecar, each pod also holds new runs back while the sidecar
+itself is nearly full. A small loop in the `dind` container writes the
+sidecar's own cgroup counters (memory, CPU usage and throttling, pressure, OOM
+events) to the socket volume every `exportIntervalSeconds`; `docker-proxy`
+serves them to the app as `GET /_pipeshub/usage`, so `dockerd`, its shims and
+short runs are all counted. The app never reads the node.
+
+- Memory: the limit shrinks once the sidecar's working set passes `memHigh`
+  (0.90) of its limit; above `memHard` (0.95), or on memory pressure or an OOM
+  event in the sidecar, it halves, and a new run that would leave less than
+  5 % free waits.
+- CPU: the limit drops by one per sample after 45 s above `cpuBrake` (0.95)
+  or with more than `cpuThrottle` (25 %) of periods throttled.
+- It grows back, by doubling steps, only while runs wait for it.
+
+At the default sizes the cap already keeps the sidecar below these lines, so
+the live limit stays quiet; it matters when `maxTotal` or `cpuFactor` is
+raised above the sidecar's size, or with over-commit. Running code is never
+stopped. Waiting runs see the usual "waiting in queue" note; the query
+service's sandbox log lines start with `sandbox live limit`.
+
+If the proxy cannot serve the sidecar's counters (a custom `sandbox.dind.image`
+without `/bin/sh`, or a node whose cgroup view is not the sidecar's), the app
+falls back to the summed stats of its own sandbox containers, and failing that
+to the fixed cap. `sandbox.dind.liveLimit.enabled=false` removes the loop and
+restores the plain `dind` container.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `sandbox.dind.liveLimit.enabled` | true | Export the sidecar's counters and hold runs back near its limits. |
+| `sandbox.dind.liveLimit.exportIntervalSeconds` | 5 | How often the counters are written (2..60). |
+| `sandbox.dind.liveLimit.memHigh` | 0.90 | Working-set share above which the limit shrinks. |
+| `sandbox.dind.liveLimit.memHard` | 0.95 | Share above which it halves and new runs wait (above `memHigh`). |
+| `sandbox.dind.liveLimit.cpuBrake` | 0.95 | CPU use, as a share of the sidecar's CPU limit, that brakes. |
+| `sandbox.dind.liveLimit.cpuThrottle` | 0.25 | Share of throttled CPU periods that brakes. |
 
 Mounting a container-runtime socket into the application container would give
 the app, and any code it runs, root on the node. At render time the chart refuses

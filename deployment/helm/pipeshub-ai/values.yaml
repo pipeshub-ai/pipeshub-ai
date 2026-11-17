@@ -559,6 +559,19 @@ sandbox:
     storage:
       sizeLimit: "20Gi"
       existingClaim: ""
+    # Live limit: holds new code runs back only when this sidecar is close to
+    # its own limits (memory above ~90 % / 95 %, or its CPU throttled).
+    # Running code is never stopped. A loop in the dind container writes the
+    # sidecar's cgroup counters for docker-proxy every exportIntervalSeconds;
+    # it needs /bin/sh in sandbox.dind.image (set enabled=false otherwise).
+    liveLimit:
+      enabled: true
+      exportIntervalSeconds: 5
+      # Empty values use the defaults: 0.90, 0.95, 0.95 and 0.25.
+      memHigh: ""
+      memHard: ""
+      cpuBrake: ""
+      cpuThrottle: ""
 
   # How many code sandboxes run at once in each app pod (every query worker
   # of the pod shares the count). Empty values are sized automatically: with
@@ -583,6 +596,10 @@ sandbox:
     slotWaitSeconds: ""
     # The pod's pids limit (kubelet podPidsLimit), which the app cannot read.
     pidLimit: ""
+    # Count each run at 1/N of its memory limit (default 1, off). With the
+    # dind sidecar it applies only while the live limit reads the sidecar's
+    # cgroup, and at most 2; it only raises a memory-bound cap.
+    memoryOvercommit: ""
 
   # Docker API policy proxy, deployed with the DinD sidecar. It runs
   # app.docker_proxy_main from the application image (`image` above), so that
