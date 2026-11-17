@@ -503,10 +503,23 @@ class _DiskWatch:
         return "ok", size, ""
 
     def _kill(self) -> None:
-        try:
-            self._client.api.kill(self._id)
-        except Exception as exc:
-            logger.debug("killing %.12s after the disk watch failed: %s", self._id, exc)
+        """Stop the container, retrying until it is stopped or the run ends:
+        a failed kill must not leave an over-quota run writing. A kill that
+        fails is followed by a forced removal."""
+        while True:
+            for stop_it in (
+                lambda: self._client.api.kill(self._id),
+                lambda: self._client.api.remove_container(self._id, force=True),
+            ):
+                try:
+                    stop_it()
+                    return
+                except Exception as exc:
+                    if _container_already_stopped(exc):
+                        return
+                    logger.debug("stopping %.12s for the disk watch failed: %s", self._id, exc)
+            if self._stop.wait(_DISK_WATCH_INTERVAL_S):
+                return
 
     def _run(self) -> None:
         strikes = 0
@@ -547,6 +560,12 @@ class _DiskWatch:
         self._stop.set()
         # A check in flight is abandoned, not waited for: the run is over.
         self._thread.join(timeout=1)
+
+
+def _container_already_stopped(exc: BaseException) -> bool:
+    """A kill or removal refused because the container is not running or gone."""
+    status = getattr(getattr(exc, "response", None), "status_code", None) or getattr(exc, "status_code", None)
+    return status in (404, 409)
 
 
 def _is_timeout(exc: BaseException) -> bool:
