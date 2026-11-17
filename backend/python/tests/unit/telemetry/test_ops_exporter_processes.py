@@ -273,13 +273,23 @@ def _flood_lag_problem(busy: list[float]) -> str | None:
     return None
 
 
+HARD_STALL_S = 3.0  # a single stall past this fails at once: it is not retried
+
+
 def _attempt_flood(run: Callable[[], list[float]]) -> list[str]:
-    """Run the flood measurement up to twice; the problems of the attempts that failed (fewer than two = a pass)."""
+    """Run the flood measurement up to twice; the problems of the attempts that failed (fewer than two = a pass).
+
+    The retry covers the host-hiccup allowance only: an attempt whose longest stall is past ``HARD_STALL_S`` fails the
+    test at once (it is returned twice, so it is never counted as a pass).
+    """
     problems: list[str] = []
     for _attempt in range(2):
-        problem = _flood_lag_problem(run())
+        busy = run()
+        problem = _flood_lag_problem(busy)
         if problem is None:
             break
+        if busy[-1] > HARD_STALL_S:
+            return [problem, problem]
         problems.append(problem)
     return problems
 
@@ -304,6 +314,8 @@ def test_a_host_stall_has_to_hit_both_attempts_and_a_regression_fails_both() -> 
     runs = iter([sorted([0.001] * 400 + [2.06]), quiet])  # and 2.06 s
     assert len(_attempt_flood(lambda: next(runs))) < 2
     runs = iter([sorted([0.001] * 400 + [1.47]), sorted([0.001] * 400 + [2.06])])  # a stall on both attempts
+    assert len(_attempt_flood(lambda: next(runs))) == 2
+    runs = iter([sorted([0.001] * 400 + [3.5]), quiet])  # one stall past the 3 s hard bound is not retried away
     assert len(_attempt_flood(lambda: next(runs))) == 2
     for regression in (sorted([0.001] * 400 + [0.15] * 9), sorted([0.001] * 400 + [1.0] * 6), sorted([0.001] * 400 + [3.5])):
         assert len(_attempt_flood(lambda regression=regression: regression)) == 2, "a recurring regression fails both attempts"

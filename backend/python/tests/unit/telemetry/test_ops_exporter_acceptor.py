@@ -691,6 +691,9 @@ def test_a_legitimate_scrape_is_answered_under_a_flood_of_idle_connections_that_
         time.sleep(1.2)  # every slot is full of idle clients, the queue is busy
         heads = []
         for _ in range(5):
+            # A 503 from a full admission queue is permitted overload behaviour, so each scrape waits for headroom in
+            # it; a flood that is never evicted from (the regression this guards) keeps the queue full and fails here.
+            assert _wait_until(lambda: len(server._queue) <= ox.ADMIT_QUEUE_MAX - 4, 5), "the idle flood kept the admission queue full"
             with socket.create_connection((HOST, exporter._port), timeout=10) as client:
                 client.sendall(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
                 data = b""
