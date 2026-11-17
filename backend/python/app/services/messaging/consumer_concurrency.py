@@ -1535,6 +1535,8 @@ class RequeueWithoutAttempt(Exception):
     # Whether hand-backs count toward the delivery backstop, which stops a message from
     # being handed back forever.
     counts_toward_backstop = True
+    # Names the kind of hand-back in the reason the backstop gives up with (None: the admission wording).
+    give_up_label: str | None = None
     # Whether the reason holds for the whole stage (a paused dependency), so a consumer that
     # can stop claiming does; False when only this message has to wait.
     pauses_consumer = True
@@ -1545,6 +1547,13 @@ class RequeueWithoutAttempt(Exception):
         self.delay_s = delay_s
         # The level the consumer logs the hand-back at: lower for a wake that only repeats what was already reported.
         self.log_level = log_level
+
+
+def backstop_give_up_reason(error: RequeueWithoutAttempt, cycles: int, backstop: int) -> str:
+    """The reason a message is given up on when its hand-backs reach the delivery backstop."""
+    if error.give_up_label:
+        return f"{error.give_up_label}: handed back {cycles} times (backstop {backstop})"
+    return f"handed back {cycles} times without being admitted (backstop {backstop})"
 
 
 class ProgressRequeue(RequeueWithoutAttempt):

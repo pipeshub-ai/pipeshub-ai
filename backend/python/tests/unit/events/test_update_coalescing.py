@@ -19,12 +19,19 @@ from app.config.constants.arangodb import EventTypes, MimeTypes
 from app.events.dedup import DedupDecision
 from app.events.events import EventProcessor
 from app.modules.indexing import replay_set
-from app.modules.indexing.connector_off_events import SameBytesSkipPending
+from app.modules.indexing.connector_off_events import (
+    SAME_BYTES_GIVE_UP_LABEL,
+    SameBytesSkipPending,
+)
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+)
+from app.services.messaging.consumer_concurrency import (
+    RequeueWithoutAttempt,
+    backstop_give_up_reason,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
 
@@ -328,3 +335,11 @@ async def test_a_type_change_queued_behind_an_update_of_the_same_bytes_is_skippe
 
     assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
     assert world.parses == 0
+
+
+def test_the_give_up_reason_names_a_same_bytes_hand_back_and_only_that() -> None:
+    named = backstop_give_up_reason(SameBytesSkipPending("r1: x"), 11, 10)
+    plain = backstop_give_up_reason(RequeueWithoutAttempt("wait"), 11, 10)
+
+    assert SAME_BYTES_GIVE_UP_LABEL in named and "11" in named and "10" in named
+    assert SAME_BYTES_GIVE_UP_LABEL not in plain and "without being admitted" in plain

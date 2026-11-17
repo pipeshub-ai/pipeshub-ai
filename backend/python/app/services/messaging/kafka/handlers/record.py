@@ -50,6 +50,7 @@ from app.modules.code_graph.build_state import (
 from app.modules.indexing import replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
+    SAME_BYTES_GIVE_UP_LABEL,
     ConnectorState,
     RecordHeldForDelete,
     SameBytesSkipPending,
@@ -482,7 +483,7 @@ class RecordEventHandler(BaseEventService):
             if (
                 message.eventType == EventTypes.UPDATE_RECORD.value
                 and current_status == ProgressStatus.COMPLETED.value
-                and not is_parse_now(message.eventType, payload)
+                and SAME_BYTES_GIVE_UP_LABEL in reason
             ):
                 # An update of an indexed record that was handed back until the backstop (its same-bytes skip could not
                 # finish) never reached the membership sync, and nothing else will: the points keep the old container
@@ -569,15 +570,19 @@ class RecordEventHandler(BaseEventService):
             if claim is not None and self.record_leases is not None:
                 await self.record_leases.release(record_id, claim)
 
-    async def _clear_membership_pending(self, record_id: object) -> None:
-        """The repair ran: take the pending reason off the record that shows it. Best effort; only that reason."""
+    async def _clear_membership_pending(self, record_id: object, prior_reason: object = None) -> None:
+        """The repair ran: put back the reason the record had before the pending one. Best effort; it only replaces
+        the pending reason itself, and only while the record is at the revision it was read at."""
         if not isinstance(record_id, str) or not record_id:
             return
         try:
             graph = self.event_processor.graph_provider
             record = await graph.get_document(record_id, CollectionNames.RECORDS.value)
-            if record and record.get("reason") == MEMBERSHIP_SYNC_PENDING:
-                await graph.update_node(record_id, CollectionNames.RECORDS.value, {"reason": None})
+            if record and record.get("reason") == MEMBERSHIP_SYNC_PENDING and record.get("contentRev"):
+                await graph.compare_and_set_record_fields(
+                    [record_id], str(record["contentRev"]),
+                    {"reason": prior_reason if isinstance(prior_reason, str) and prior_reason else None},
+                )
         except Exception as exc:
             self.logger.warning("Could not clear the pending membership reason of %s: %s", record_id, type(exc).__name__)
 
@@ -597,8 +602,17 @@ class RecordEventHandler(BaseEventService):
             record_id, reason,
         )
         graph = self.event_processor.graph_provider
+        prior_reason = record.get("reason")
+        if prior_reason == MEMBERSHIP_SYNC_PENDING:
+            prior_reason = None
+        content_rev = record.get("contentRev")
         try:
-            await graph.update_node(record_id, CollectionNames.RECORDS.value, {"reason": MEMBERSHIP_SYNC_PENDING})
+            # Only while the record is still at the revision this give-up read: a real update that landed since owns
+            # the record and its reason. The reason it had is carried on the queued sync, to be put back.
+            if content_rev:
+                await graph.compare_and_set_record_fields(
+                    [record_id], str(content_rev), {"reason": MEMBERSHIP_SYNC_PENDING}
+                )
         except Exception as exc:
             self.logger.error("Could not record the pending membership sync of %s: %s", record_id, type(exc).__name__)
         try:
@@ -623,6 +637,7 @@ class RecordEventHandler(BaseEventService):
                         "connectorId": record.get("connectorId"),
                         # Which record shows the pending reason, for the sync to clear once it has run.
                         "pendingReasonRecordId": record_id,
+                        "priorReason": prior_reason,
                     },
                     key=str(vrid),
                 ),
@@ -1956,7 +1971,7 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = payload.get("virtualRecordId")
                 if virtual_record_id:
                     await self.event_processor.sync_vector_membership(virtual_record_id)
-                    await self._clear_membership_pending(payload.get("pendingReasonRecordId"))
+                    await self._clear_membership_pending(payload.get("pendingReasonRecordId"), payload.get("priorReason"))
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id="sync_vector_membership"),

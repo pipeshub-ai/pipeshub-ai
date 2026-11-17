@@ -80,6 +80,10 @@ class RecordHeldForDelete(RequeueWithoutAttempt):
 SAME_BYTES_SKIP_RETRY_DELAY_S = 30.0
 
 
+# Names a give-up on a same-bytes update in the reason the consumer abandons it with.
+SAME_BYTES_GIVE_UP_LABEL = "same-bytes update could not apply its membership sync"
+
+
 class SameBytesSkipPending(RequeueWithoutAttempt):
     """An update of the bytes a record is already indexed from could not finish its cheap work (the membership
     sync, the stage re-dispatch, the stage-state read): handed back with the record left exactly as it is, still
@@ -89,6 +93,7 @@ class SameBytesSkipPending(RequeueWithoutAttempt):
 
     counts_toward_backstop = True
     pauses_consumer = False
+    give_up_label = SAME_BYTES_GIVE_UP_LABEL
     # Logged once, at WARNING, by the code that raised it; not a fault for the handler to log again.
     expected_outcome = True
 

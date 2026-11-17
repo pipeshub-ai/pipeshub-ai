@@ -3148,8 +3148,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                     if backstop_tripped:
                         await give_up(
-                            f"handed back {cycles} times without being admitted "
-                            f"(backstop {messaging_env.redis_max_deliveries})",
+                            concurrency.backstop_give_up_reason(e, cycles, messaging_env.redis_max_deliveries),
                             cycles,
                         )
                         return False
