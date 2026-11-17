@@ -393,7 +393,7 @@ Component calls: navigateToNode(kbId, folderId)
        ↓
 Store action:
   1. Update selectedKb and selectedFolder
-  2. Update query params: ?nodeType=app&nodeId=xxx
+  2. Update query params: ?nodeType=folder&nodeId=<folderId> (a collection itself is ?nodeType=app&nodeId=<collectionId>)
   3. Fetch folder contents from API
   4. Update tableData with response
        ↓
@@ -611,30 +611,10 @@ The page uses query params to track navigation state:
 ```
 
 **Reading Query Params:**
-```typescript
-// In page.tsx
-'use client';
 
-import { useSearchParams } from 'next/navigation';
+`page.tsx` reads `nodeType` and `nodeId` from the URL (`searchParams.get('nodeType')`, `page.tsx:391` and `:1156`) and passes them unchanged to `KnowledgeHubApi.loadFolderData(nodeType, nodeId, filters)` (`api.ts:145`), which calls `GET /api/v1/knowledgeBase/knowledge-hub/nodes/{nodeType}/{nodeId}`. `nodeType` is the Knowledge Hub parent type: `app` (a collection), `recordGroup`, `folder` or `record`. Any other value, including `kb`, is refused with 400 (`knowledge_hub_router.py`). A `recordGroup` or `record` selection keeps its own type in the URL; it is not rewritten to `app`.
 
-export default function KnowledgeBasePage() {
-  const searchParams = useSearchParams();
-  const nodeType = searchParams.get('nodeType');  // 'app' | 'recordGroup' | 'folder' | 'record'
-  const nodeId = searchParams.get('nodeId');      // ID
-
-  useEffect(() => {
-    if (nodeType && nodeId) {
-      // Load node contents
-      const kbId = nodeType === 'app' ? nodeId : findKbForFolder(nodeId);
-      const folderId = nodeType === 'folder' ? nodeId : undefined;
-
-      navigateToNode(kbId, folderId);
-    }
-  }, [nodeType, nodeId]);
-
-  // ... rest of page
-}
-```
+URLs are built with `buildNavUrl` and pushed with `pushKbUrl` / `replaceKbUrl` from `utils/nav.ts`, which keep the current filters and search.
 
 ---
 

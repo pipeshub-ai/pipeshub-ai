@@ -70,7 +70,7 @@ All parameters from API 1 are available for filtering, sorting, and pagination.
 
 **Usage:**
 - **Data area on folder click:** `/nodes/folder/{folderId}?page=1&limit=50&include=counts,permissions,breadcrumbs,availableFilters`
-- **Filter within KB:** `/nodes/kb/{kbId}?recordTypes=FILE&sortBy=updatedAt&sortOrder=desc`
+- **Filter within a collection:** `/nodes/app/{collectionId}?recordTypes=FILE&sortBy=updatedAt&sortOrder=desc`
 - **Sidebar expansion:** `/nodes/app/{appId}?onlyContainers=true&page=1&limit=50`
 
 ---
