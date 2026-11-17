@@ -1,6 +1,6 @@
 """The access check on PostgreSQL: the rules of ``Neo4jProvider._kh_v3_accessible_rows`` over ``graph.nodes`` / ``graph.edges``.
 
-A target is admitted by the first arm that holds (app itself, KB record, declared scope, walk up to the app, seed, below a seed). Each
+A target is admitted by the first arm that holds (app itself, KB record, declared scope, walk up to the app, seed or own grant, below a seed). Each
 walk goes up from the targets a level at a time with single-table lookups (edges by the key, nodes by primary key), so its cost follows
 depth, not fan-out, and no plan depends on table statistics. Every statement binds the org first, so row-level security and the primary
 keys see it.
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 PAG = "PARENT_AND_GRANT"
+SOG = "STRICT_OR_GRANT"   # hops from the App as STRICT; its own grant admits it alone (never a seed)
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
@@ -88,8 +89,8 @@ async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list
 def _walk_app(*, opens: bool, granted: set[str]) -> Callable[[str, bool, dict[str, Any]], bool]:
     def ok(cid: str, inh: bool, info: dict[str, Any]) -> bool:
         rule = info["rule"]
-        return not info["deleted"] and (opens or (inh and rule in ("STRICT", "OPEN"))
-                                        or (cid in granted and ((inh and rule in ("RESTRICTED", PAG)) or rule in ("STRICT", "OPEN"))))
+        return not info["deleted"] and (opens or (inh and rule in ("STRICT", "OPEN", SOG))
+                                        or (cid in granted and ((inh and rule in ("RESTRICTED", PAG)) or rule in ("STRICT", "OPEN", SOG))))
     return ok
 
 
@@ -254,9 +255,9 @@ async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list
                       AND i.to_coll = e.from_coll AND i.to_id = e.from_id
                     WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($6::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
                       AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
-                      AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN'))
+                      AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN', 'STRICT_OR_GRANT'))
                                     OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT'))
-                                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
+                                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN', 'STRICT_OR_GRANT')))
                                   WHEN 'seed' THEN (coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[])))
                                     OR (n.doc->>'accessRule' = 'PARENT_AND_GRANT' AND i.from_id IS NOT NULL AND n.id = ANY($5::text[]))
                                   ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier}))
@@ -291,9 +292,11 @@ async def reachable_records(tx: Tx, org: str, access: dict[str, Any], app_ids: l
             AND coll IN ('records', 'recordGroups') AND id = ANY($2::text[])""", org, gids)] if gids else []
         info = await _info(tx, org, seeds)
         open_seeds = [n for n in seeds if (v := info.get(n)) and v["cid"] == app_id and not v["deleted"] and v["rule"] == "OPEN"]
+        # A granted STRICT_OR_GRANT node is a candidate itself, never a start below which anything opens.
+        own = [n for n in seeds if (v := info.get(n)) and v["cid"] == app_id and not v["deleted"] and v["rule"] == SOG]
         declared = await _declared_groups(tx, org, app_id)
         sure[app_id] = await records_below_app(tx, org, app_id, granted, opens=False)
-        reached = {*open_seeds, *(("records", i) for i in sure[app_id]), *await _down(tx, org, open_seeds, "seed", sorted(granted))}
+        reached = {*open_seeds, *own, *(("records", i) for i in sure[app_id]), *await _down(tx, org, open_seeds, "seed", sorted(granted))}
         if declared:     # a declared group that is granted, or that the app reaches, opens the groups below it and what belongs to them
             ok = {g for g in declared if g in granted}
             rest = [g for g in declared if g not in ok]
@@ -308,10 +311,11 @@ async def reachable_records(tx: Tx, org: str, access: dict[str, Any], app_ids: l
     return out, sure
 
 
-def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str) -> bool:
+def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str, *, rules: tuple[str, ...] = ("OPEN",)) -> bool:
+    """A granted live node of the app with one of ``rules`` (a seed by default; also STRICT_OR_GRANT where its own grant admits it alone)."""
     rule = doc.get("accessRule")      # a stored null is a missing rule (OPEN), as the SQL coalesce reads it; an empty string is not OPEN
     return (coll in ("records", "recordGroups") and doc.get("connectorId") == app_id and not doc.get("isDeleted")
-            and (rule is None or rule == "OPEN") and node_id in granted)
+            and ("OPEN" if rule is None else rule) in rules and node_id in granted)
 
 
 async def probe_grants(tx: Tx, org: str, probe: dict[str, Any], cross: list[str] | dict[str, Any] | None) -> dict[str, list[str]]:
@@ -370,7 +374,7 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     pending = []  # gated targets no direct arm admitted
     for coll, nid, doc, app_id in targets:
         if app_id in gated and app_id in apps:
-            if coll == "apps" or _is_seed(doc, coll, app_id, granted, nid):
+            if coll == "apps" or _is_seed(doc, coll, app_id, granted, nid, rules=("OPEN", SOG)):
                 ok.add(nid)
             else:
                 pending.append((coll, nid, doc, app_id))
