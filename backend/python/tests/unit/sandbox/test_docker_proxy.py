@@ -58,23 +58,26 @@ def _sdk_create_body(**kwargs: object) -> dict[str, Any]:
     return json.loads(json.dumps(captured["body"]))
 
 
-# The kwargs each sandbox code path passes to containers.create today.
+# The kwargs each sandbox code path passes to containers.create today
+# (every path also sends CONTAINER_HARDENING's pids_limit).
 _LEGACY_RUN: dict[str, Any] = {
     "image": IMAGE, "command": ["python3", "/src/main.py"], "environment": {"OUTPUT_DIR": "/output"},
-    "working_dir": "/src", "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000,
+    "working_dir": "/src", "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000, "pids_limit": 256,
     "network_mode": "none", "network_disabled": True, "read_only": False,
     "tmpfs": {"/tmp": "size=100M"}, "detach": True,
 }
 _INSTALL: dict[str, Any] = {
     "image": IMAGE, "command": ["sh", "-c", "pip install x"], "environment": {},
-    "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000,
+    "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000, "pids_limit": 256,
     "network": EGRESS, "network_disabled": False, "detach": True,
 }
 _CODING_RUN_NETWORK: dict[str, Any] = {
     "image": IMAGE, "command": ["python3", "main.py"], "environment": {"OUTPUT_DIR": "/output"},
-    "working_dir": "/src", "mem_limit": 1, "nano_cpus": 1, "tmpfs": {"/tmp": "size=100M"},
+    "working_dir": "/src", "mem_limit": 1, "nano_cpus": 1, "pids_limit": 256, "tmpfs": {"/tmp": "size=100M"},
     "detach": True, "network": EGRESS, "network_disabled": False,
 }
+# The resource fields a raw create body needs to be admitted.
+_LIMITS: dict[str, int] = {"Memory": 512 * 1024 * 1024, "NanoCpus": 500_000_000, "PidsLimit": 256}
 # Built with the egress firewall's own helpers, so a change there that the
 # proxy would refuse fails here rather than in production.
 _FIREWALLED_INSTALL: dict[str, Any] = {
@@ -297,7 +300,7 @@ class TestContainerCreate:
     def test_log_driver_is_local_or_pinned(
         self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, driver: str,
     ) -> None:
-        host: dict[str, Any] = {"NetworkMode": "none"}
+        host: dict[str, Any] = {"NetworkMode": "none", **_LIMITS}
         if log_config is not None:
             host["LogConfig"] = log_config
         out = policy.check_container_create({"Image": IMAGE, "HostConfig": host})
@@ -309,7 +312,7 @@ class TestContainerCreate:
         assert out["HostConfig"]["LogConfig"] == {"Type": "local", "Config": {}}
 
     def test_label_keys_are_a_map_and_keep_their_case(self, policy: DockerApiPolicy) -> None:
-        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": {"a": "1", "A": "2"}}
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}, "Labels": {"a": "1", "A": "2"}}
         assert policy.check_container_create(body)["Labels"]["A"] == "2"
 
 
@@ -490,7 +493,7 @@ class TestProxyServer:
 
     async def test_create_is_rewritten_with_label(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
         resp = await _request(port, b"POST /v1.43/containers/create HTTP/1.1\r\nHost: x\r\n"
                               b"Content-Type: application/json\r\nContent-Length: "
                               + str(len(body)).encode() + b"\r\n\r\n" + body)
@@ -507,7 +510,7 @@ class TestProxyServer:
 
     async def test_chunked_create_body_is_read(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
         chunked = f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"
         resp = await _request(port, b"POST /containers/create HTTP/1.1\r\nHost: x\r\n"
                               b"Transfer-Encoding: chunked\r\n\r\n" + chunked)
@@ -580,7 +583,7 @@ class TestProxyServer:
 
     async def test_expect_continue_on_create_does_not_stall(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"POST /containers/create HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
                      b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n")
@@ -625,3 +628,89 @@ class TestProxyServer:
         assert resp.startswith(b"HTTP/1.1 403")
         assert daemon.requests == []
 
+
+
+class TestResourceLimits:
+    @pytest.mark.parametrize("kwargs", [_LEGACY_RUN, _INSTALL, _CODING_RUN_NETWORK, _FIREWALLED_INSTALL, _HARDENED_RUN],
+                             ids=["legacy-run", "install", "coding-run-network", "firewalled-install", "hardened-run"])
+    def test_real_creates_get_no_swap(self, policy: DockerApiPolicy, kwargs: dict[str, Any]) -> None:
+        out = policy.check_container_create(_sdk_create_body(**kwargs))
+        assert out["HostConfig"]["MemorySwap"] == out["HostConfig"]["Memory"]
+
+    @pytest.mark.parametrize(("drop", "message"), [
+        ("mem_limit", "HostConfig.Memory is required"),
+        ("nano_cpus", "HostConfig.NanoCpus is required"),
+        ("pids_limit", "HostConfig.PidsLimit is required"),
+    ])
+    def test_each_limit_is_required(self, policy: DockerApiPolicy, drop: str, message: str) -> None:
+        kwargs = {k: v for k, v in _LEGACY_RUN.items() if k != drop}
+        with pytest.raises(PolicyDenied, match=message):
+            policy.check_container_create(_sdk_create_body(**kwargs))
+
+    @pytest.mark.parametrize(("override", "message"), [
+        ({"mem_limit": 1024 * 1024 * 1024 + 1}, "exceeds the maximum of 1024 MB"),
+        ({"nano_cpus": 1_500_000_000}, "exceeds the maximum of 1 CPUs"),
+        ({"pids_limit": 0}, "PidsLimit is required"),
+        ({"pids_limit": -1}, "PidsLimit is required"),
+        ({"pids_limit": 257}, "PidsLimit 257 exceeds the maximum of 256"),
+        ({"memswap_limit": -1}, "MemorySwap must equal Memory"),
+        ({"memswap_limit": 2 * 512 * 1024 * 1024}, "MemorySwap must equal Memory"),
+        ({"oom_score_adj": -1}, "OomScoreAdj may not be negative"),
+        ({"oom_score_adj": -1000}, "OomScoreAdj may not be negative"),
+        ({"oom_score_adj": 1001}, "OomScoreAdj may not be above 1000"),
+    ])
+    def test_limits_are_enforced(self, policy: DockerApiPolicy, override: dict[str, Any], message: str) -> None:
+        with pytest.raises(PolicyDenied, match=message):
+            policy.check_container_create(_sdk_create_body(**{**_LEGACY_RUN, **override}))
+
+    @pytest.mark.parametrize("value", [True, 5.12e8])
+    def test_memory_must_be_a_json_integer(self, policy: DockerApiPolicy, value: object) -> None:
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, "Memory": value}}
+        with pytest.raises(PolicyDenied, match="HostConfig.Memory is required"):
+            policy.check_container_create(body)
+
+    def test_swap_equal_to_memory_is_kept(self, policy: DockerApiPolicy) -> None:
+        out = policy.check_container_create(_sdk_create_body(**_LEGACY_RUN, memswap_limit=512 * 1024 * 1024))
+        assert out["HostConfig"]["MemorySwap"] == 512 * 1024 * 1024
+
+    @pytest.mark.parametrize("value", [0, 1000])
+    def test_oom_score_adj_in_range_is_admitted(self, policy: DockerApiPolicy, value: int) -> None:
+        # Raw body: docker-py drops a falsy oom_score_adj, so 0 never reaches the proxy through it.
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, "OomScoreAdj": value}}
+        assert policy.check_container_create(body)["HostConfig"]["OomScoreAdj"] == value
+
+    def test_the_proxy_never_adds_oom_score_adj(self, policy: DockerApiPolicy) -> None:
+        out = policy.check_container_create(_sdk_create_body(**_LEGACY_RUN))
+        assert "OomScoreAdj" not in out["HostConfig"]
+
+    def test_case_variant_memory_swap_is_refused(self, policy: DockerApiPolicy) -> None:
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, "memoryswap": -1}}
+        with pytest.raises(PolicyDenied, match="must be spelled 'MemorySwap'"):
+            policy.check_container_create(body)
+
+    def test_from_env_defaults_and_overrides(self) -> None:
+        default = DockerApiPolicy.from_env({})
+        assert (default.max_memory_bytes, default.max_nano_cpus, default.max_pids) == (1024 * 1024 * 1024, 10**9, 256)
+        custom = DockerApiPolicy.from_env({
+            "DOCKER_PROXY_MAX_MEMORY_MB": "256", "DOCKER_PROXY_MAX_CPUS": "0.5", "DOCKER_PROXY_MAX_PIDS": "64",
+        })
+        assert (custom.max_memory_bytes, custom.max_nano_cpus, custom.max_pids) == (256 * 1024 * 1024, 5 * 10**8, 64)
+        assert custom.limits_text() == "memory<= 256 MB (no swap), cpus<= 0.5, pids<= 64, oom_score_adj 0..1000"
+
+    @pytest.mark.parametrize("raw", ["abc", "0", "-5"])
+    def test_invalid_env_warns_and_uses_the_default(self, raw: str, caplog) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            policy = DockerApiPolicy.from_env({"DOCKER_PROXY_MAX_MEMORY_MB": raw})
+        assert policy.max_memory_bytes == 1024 * 1024 * 1024
+        assert "DOCKER_PROXY_MAX_MEMORY_MB" in caplog.text
+
+    async def test_forwarded_body_has_swap_equal_to_memory(self, proxied) -> None:
+        daemon, port = proxied
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
+        resp = await _request(port, b"POST /containers/create HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                              + str(len(body)).encode() + b"\r\n\r\n" + body)
+        assert resp.startswith(b"HTTP/1.1 200")
+        sent = json.loads(daemon.requests[-1][2])
+        assert sent["HostConfig"]["MemorySwap"] == _LIMITS["Memory"]

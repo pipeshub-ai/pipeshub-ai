@@ -226,3 +226,41 @@ async def test_stop_removes_the_container_through_the_proxy(proxy_host, tmp_path
     finally:
         await sb.destroy()
         provider.close()
+
+
+def test_oversized_create_is_refused_and_swap_is_off(proxy_host) -> None:
+    import docker
+    from docker.errors import APIError
+
+    client = docker.DockerClient(base_url=proxy_host)
+    limits = {"nano_cpus": 500_000_000, "pids_limit": 256, "network_mode": "none"}
+    try:
+        with pytest.raises(APIError) as exc:
+            client.containers.create(DOCKER_TEST_IMAGE, ["true"], mem_limit="2g", **limits)
+        assert exc.value.status_code == 403
+        assert "exceeds the maximum of 1024 MB" in str(exc.value)
+        container = client.containers.create(DOCKER_TEST_IMAGE, ["true"], mem_limit=512 * 1024 * 1024, **limits)
+        try:
+            host = client.api.inspect_container(container.id)["HostConfig"]
+            assert host["MemorySwap"] == host["Memory"] == 512 * 1024 * 1024
+        finally:
+            container.remove(force=True)
+    finally:
+        client.close()
+
+
+async def test_out_of_memory_is_detected_through_the_proxy(proxy_host, tmp_path) -> None:
+    from app.agent_loop_lib.sandbox.coding.base import CodeRequest, ErrorCategory
+    from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
+    from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
+
+    provider = DockerClientProvider(max_workers=2)
+    sb = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), image=DOCKER_TEST_IMAGE, provider=provider)
+    await sb.provision()
+    try:
+        result = await sb.execute(CodeRequest(code="x = 'a' * (1024**3)\nprint(len(x))", language="python"))
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+    finally:
+        await sb.destroy()
+        provider.close()

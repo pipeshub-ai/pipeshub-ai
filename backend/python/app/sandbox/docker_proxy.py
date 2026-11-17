@@ -10,7 +10,9 @@ unchanged, but only the calls the sandbox makes get through:
 - ping / version;
 - create a container from an allowed sandbox image with no host access
   (no privileged mode, binds, devices, host namespaces, port publishing,
-  unconfined security profiles, or capabilities beyond the egress firewall's);
+  unconfined security profiles, or capabilities beyond the egress firewall's)
+  and with bounded resources (memory, CPU and process limits are required and
+  capped, swap is off, and the OOM score can only be raised);
 - start / wait / kill / stop / logs / archive / inspect / remove, only on
   containers this proxy created (it stamps labels at create time, one of
   them naming this stack, so stacks sharing a daemon cannot reach each
@@ -99,7 +101,7 @@ _HOST_CONFIG_FIELDS = frozenset({
     "CapAdd", "SecurityOpt", "PidMode", "UTSMode", "UsernsMode", "IpcMode",
     "CgroupnsMode", "Runtime", "RestartPolicy", "NetworkMode", "LogConfig",
     "CapDrop", "Memory", "NanoCpus", "PidsLimit", "ReadonlyRootfs", "Tmpfs",
-    "StorageOpt",
+    "StorageOpt", "MemorySwap", "OomScoreAdj",
 })
 _LOG_CONFIG_FIELDS = frozenset({"Type", "Config"})
 _RESTART_POLICY_FIELDS = frozenset({"Name"})
@@ -198,10 +200,40 @@ def normalize_image(ref: str) -> str:
     return name + suffix
 
 
+_DEFAULT_MAX_MEMORY_MB = 1024
+_DEFAULT_MAX_CPUS = 1.0
+# Equal to the sandbox's own `pids_limit`: the process budget per container
+# that capacity planning assumes is only true if the proxy enforces it.
+_DEFAULT_MAX_PIDS = 256
+_MAX_OOM_SCORE_ADJ = 1000
+
+
+def _positive_env(env: Mapping[str, str], key: str, default: float, cast: Callable[[str], float]) -> float:
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except ValueError:
+        value = 0
+    if value <= 0 or value != value:  # NaN
+        logger.warning("%s=%r is not a positive number; using %g", key, raw, default)
+        return default
+    return value
+
+
+def _json_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 @dataclass
 class DockerApiPolicy:
     allowed_images: frozenset[str]
     allowed_networks: frozenset[str]
+    # Per-container ceilings. A create must set all three, within them.
+    max_memory_bytes: int = _DEFAULT_MAX_MEMORY_MB * 1024 * 1024
+    max_nano_cpus: int = int(_DEFAULT_MAX_CPUS * 1e9)
+    max_pids: int = _DEFAULT_MAX_PIDS
     _allowed_normalized: frozenset[str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -216,7 +248,21 @@ class DockerApiPolicy:
         networks = _split_csv(env.get("DOCKER_PROXY_ALLOWED_NETWORKS")) or [
             env.get("SANDBOX_EGRESS_NETWORK") or _DEFAULT_EGRESS_NETWORK
         ]
-        return cls(allowed_images=frozenset(images), allowed_networks=frozenset(networks))
+        max_mb = _positive_env(env, "DOCKER_PROXY_MAX_MEMORY_MB", _DEFAULT_MAX_MEMORY_MB, int)
+        max_cpus = _positive_env(env, "DOCKER_PROXY_MAX_CPUS", _DEFAULT_MAX_CPUS, float)
+        max_pids = _positive_env(env, "DOCKER_PROXY_MAX_PIDS", _DEFAULT_MAX_PIDS, int)
+        return cls(
+            allowed_images=frozenset(images), allowed_networks=frozenset(networks),
+            max_memory_bytes=int(max_mb) * 1024 * 1024, max_nano_cpus=int(max_cpus * 1e9),
+            max_pids=int(max_pids),
+        )
+
+    def limits_text(self) -> str:
+        return (
+            f"memory<= {self.max_memory_bytes // (1024 * 1024)} MB (no swap), "
+            f"cpus<= {self.max_nano_cpus / 1e9:g}, pids<= {self.max_pids}, "
+            f"oom_score_adj 0..{_MAX_OOM_SCORE_ADJ}"
+        )
 
     def image_allowed(self, ref: str) -> bool:
         return bool(ref) and normalize_image(ref) in self._allowed_normalized
@@ -320,6 +366,7 @@ class DockerApiPolicy:
         if storage_opt is not None and (not isinstance(storage_opt, dict) or set(storage_opt) - {"size"}):
             raise PolicyDenied("HostConfig.StorageOpt may only set 'size'")
 
+
         cap_add = {str(c).upper().removeprefix("CAP_") for c in host.get("CapAdd") or []}
         extra = cap_add - _ALLOWED_CAPS
         if extra:
@@ -369,6 +416,8 @@ class DockerApiPolicy:
             if name not in self.allowed_networks:
                 raise PolicyDenied(f"network {name!r} is not permitted")
 
+        swap = self._check_resources(host)
+
         raw_labels = body.get("Labels")
         if raw_labels is None:
             raw_labels = {}
@@ -379,9 +428,56 @@ class DockerApiPolicy:
         labels[INSTANCE_LABEL] = instance
         return {
             **body,
-            "HostConfig": {**host, "LogConfig": {"Type": log_driver, "Config": {}}},
+            "HostConfig": {**host, "MemorySwap": swap, "LogConfig": {"Type": log_driver, "Config": {}}},
             "Labels": labels,
         }
+
+    def _check_resources(self, host: dict[str, Any]) -> int:
+        """Refuse a create without bounded memory, CPU and process limits,
+        and return the ``MemorySwap`` to forward. Docker reads an unset or
+        zero ``MemorySwap`` as "the same again in swap", so it is set equal
+        to ``Memory`` (no swap) rather than required, which keeps older
+        clients working. ``OomScoreAdj`` may only make a container more
+        likely to be killed, never protect it."""
+        max_mb = self.max_memory_bytes // (1024 * 1024)
+        memory = host.get("Memory")
+        if not _json_int(memory) or memory <= 0:
+            raise PolicyDenied(f"HostConfig.Memory is required (bytes, at most {max_mb} MB)")
+        if memory > self.max_memory_bytes:
+            raise PolicyDenied(
+                f"HostConfig.Memory {memory} exceeds the maximum of {max_mb} MB "
+                "(DOCKER_PROXY_MAX_MEMORY_MB)"
+            )
+        max_cpus = f"{self.max_nano_cpus / 1e9:g}"
+        nano_cpus = host.get("NanoCpus")
+        if not _json_int(nano_cpus) or nano_cpus <= 0:
+            raise PolicyDenied(f"HostConfig.NanoCpus is required (at most {max_cpus} CPUs)")
+        if nano_cpus > self.max_nano_cpus:
+            raise PolicyDenied(
+                f"HostConfig.NanoCpus {nano_cpus} exceeds the maximum of {max_cpus} CPUs "
+                "(DOCKER_PROXY_MAX_CPUS)"
+            )
+        # 0 and -1 mean "unlimited" to Docker.
+        pids = host.get("PidsLimit")
+        if not _json_int(pids) or pids <= 0:
+            raise PolicyDenied(f"HostConfig.PidsLimit is required (1..{self.max_pids})")
+        if pids > self.max_pids:
+            raise PolicyDenied(
+                f"HostConfig.PidsLimit {pids} exceeds the maximum of {self.max_pids} (DOCKER_PROXY_MAX_PIDS)"
+            )
+        swap = host.get("MemorySwap")
+        if swap is not None and swap != 0 and (not _json_int(swap) or swap != memory):
+            raise PolicyDenied("HostConfig.MemorySwap must equal Memory: sandboxes may not use swap")
+        oom = host.get("OomScoreAdj")
+        if oom is not None:
+            if not _json_int(oom) or oom < 0:
+                raise PolicyDenied(
+                    "HostConfig.OomScoreAdj may not be negative: a sandbox must never be "
+                    "protected from the OOM killer"
+                )
+            if oom > _MAX_OOM_SCORE_ADJ:
+                raise PolicyDenied(f"HostConfig.OomScoreAdj may not be above {_MAX_OOM_SCORE_ADJ}")
+        return memory
 
     def check_network_create(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):
@@ -952,6 +1048,7 @@ async def serve(
         "docker proxy listening on %s:%d -> %s (instance=%s images=%s networks=%s)",
         host, port, upstream, instance, sorted(policy.allowed_images), sorted(policy.allowed_networks),
     )
+    logger.info("docker proxy limits: %s", policy.limits_text())
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
