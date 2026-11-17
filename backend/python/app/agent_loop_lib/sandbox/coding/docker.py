@@ -1643,14 +1643,21 @@ class DockerCodingSandbox(CodingSandboxBackend):
             # Dependency archive (pip --target / npm node_modules): keep in-tree
             # symlinks such as node_modules/.bin so installed CLIs survive the
             # round trip; filter="data" still blocks links that escape the dir.
+            # It is extracted next to the installed packages and merged in only
+            # once it is complete, so a refused install leaves them as they were.
             budget = ExtractBudget.for_dependencies()
-            _extract_container_dir(
-                container, extract_path, host_target, allow_symlinks=True, budget=budget,
-            )
-            note = budget.note()
-            if note:
-                logger.warning("_install_packages_sync: %s", note.strip())
-                return 1, stdout, note + stderr
+            staging = tempfile.mkdtemp(prefix=".install-", dir=os.path.dirname(host_target))
+            try:
+                _extract_container_dir(
+                    container, extract_path, staging, allow_symlinks=True, budget=budget,
+                )
+                note = budget.note()
+                if note:
+                    logger.warning("_install_packages_sync: %s", note.strip())
+                    return 1, stdout, note + stderr
+                _merge_tree(staging, host_target)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
             return exit_code, stdout, stderr
         finally:
             try:
@@ -1663,6 +1670,28 @@ class DockerCodingSandbox(CodingSandboxBackend):
 # Tar helpers for put_archive / get_archive — ported from
 # app/sandbox/docker_executor.py (generic, no PipesHub-specific naming).
 # ------------------------------------------------------------------
+
+def _merge_tree(src: str, dst: str) -> None:
+    """Move everything under ``src`` into ``dst``, replacing files and links
+    of the same name; directories are merged."""
+    for dirpath, dirnames, filenames in os.walk(src):
+        rel = os.path.relpath(dirpath, src)
+        target_dir = dst if rel == "." else os.path.join(dst, rel)
+        if os.path.islink(target_dir) or (os.path.lexists(target_dir) and not os.path.isdir(target_dir)):
+            os.unlink(target_dir)
+        os.makedirs(target_dir, exist_ok=True)
+        for name in list(dirnames):
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                # A link to a directory is moved as a link, not walked.
+                dirnames.remove(name)
+                filenames.append(name)
+        for name in filenames:
+            target = os.path.join(target_dir, name)
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            os.replace(os.path.join(dirpath, name), target)
+
 
 def _shell_words(specs: list[str]) -> str:
     """Package specs as literal ``sh`` words: a version range like
