@@ -464,11 +464,12 @@ async def _parse_file(
                 stage_limit = lock_limits.stage_deadline_for(record_budget_s)
                 _warn_if_budget_differs(record_budget_s, extension, mime_type)
                 # A refresh is claimed once: the client's own retry of the request reuses what the first paid for.
-                refresh = refresh_paid_outputs and await claim_refresh(
+                first_request = not refresh_paid_outputs or await claim_refresh(
                     _config_service(request), (refresh_token or "")[:128], logger,
                 )
                 paid_run = start_run(
-                    content_revision(content), "parse", refresh=refresh, stage_deadline_s=stage_limit,
+                    content_revision(content), "parse", refresh=refresh_paid_outputs, stage_deadline_s=stage_limit,
+                    reuse_prior_attempt=refresh_paid_outputs and not first_request,
                 )
                 # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
                 # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget

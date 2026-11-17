@@ -206,6 +206,7 @@ def template_text_of(template: object) -> str:
 
 def start_run(
     content_rev: str | None, writer: str, *, refresh: bool = False, stage_deadline_s: float | None = None,
+    reuse_prior_attempt: bool = False,
 ) -> RunScope | None:
     """Opens the retention manifest of this writer's work on the record in flight.
 
@@ -217,8 +218,12 @@ def start_run(
     if identity is None or not enabled():
         return None
     prior = current_run()
-    refresh = refresh or (prior is not None and prior.matches(*identity) and prior.refresh)
-    return begin_run(identity[0], identity[1], content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s)
+    inherited = prior is not None and prior.matches(*identity) and prior.refresh
+    reuse = reuse_prior_attempt or (inherited and prior.reuse_prior_attempt)
+    return begin_run(
+        identity[0], identity[1], content_rev, writer, refresh=refresh or inherited, stage_deadline_s=stage_deadline_s,
+        reuse_prior_attempt=reuse,
+    )
 
 
 async def complete_run(
@@ -249,17 +254,15 @@ async def complete_run(
 async def claim_refresh(config_service: "ConfigurationService", token: str, logger: logging.Logger | None = None) -> bool:
     """True when this request is the first to ask for the refresh named by ``token``; False for a retry of it.
 
-    The parsing client retries a failed request with the same form: the retry must reuse the pages the first attempt
-    paid for and stored, not purge-and-pay again. Without a token or an identity the request is a refresh.
+    The claim is atomic: of any number of concurrent requests with one token exactly one wins. A retry is still a
+    refresh, but reuses what the first attempt stored (``reuse_prior_attempt``). Without a token or an identity the
+    request is the first.
     """
     identity = ambient_identity()
     if not token or identity is None or config_service is None:
         return True
     cache = paid_cache_for(config_service, logger or logging.getLogger(__name__))
-    if not await cache.refresh_purge_needed(identity[0], identity[1], token):
-        return False
-    await cache.mark_refresh_purged(identity[0], identity[1], token)
-    return True
+    return await cache.claim_refresh(identity[0], identity[1], token) is not None
 
 
 async def abandon_run(

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -483,3 +484,121 @@ async def test_a_writer_that_never_gets_the_manifest_lock_does_not_write_beside_
 
     assert calls == []                                             # neither replace nor delete ran
     assert await shared_locks.owns(manifest_lock_name(ORG, REC, path), holder)           # the holder's lock is untouched
+
+
+async def test_concurrent_claims_of_one_refresh_token_grant_exactly_one() -> None:
+    shared = InProcessLocks()
+    replicas = [PaidResultCache(MemoryResultStore(), shared) for _ in range(2)]
+    grants = 0
+    for n in range(20):
+        results = await asyncio.gather(*(replicas[i % 2].claim_refresh(ORG, REC, f"tok-{n}") for i in range(4)))
+        grants += sum(r is not None for r in results)
+    assert grants == 20                                              # one winner per token, not 80
+
+
+async def test_a_released_claim_can_be_taken_again_by_the_redelivery() -> None:
+    cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
+    token = await cache.claim_refresh(ORG, REC, "evt")
+    assert token is not None and await cache.claim_refresh(ORG, REC, "evt") is None
+    await cache.release_refresh_claim(ORG, REC, "evt", token)
+    assert await cache.claim_refresh(ORG, REC, "evt") is not None
+
+
+async def test_a_retry_of_a_refresh_does_not_reuse_a_stale_object_written_after_the_purge() -> None:
+    """The first attempt failed before any page; an object of the same key landed after the purge (an orphan of an
+    older run). The retry is still a refresh: that object is not in its attempt's manifest, so it is bypassed."""
+    store = MemoryResultStore()
+    cache = PaidResultCache(store, InProcessLocks())
+    with record_in_flight(ORG, REC):
+        begin_run(ORG, REC, "rev1", "index", refresh=True)
+        clear_run()
+        stale_writer = PaidResultCache(store, InProcessLocks())
+        await stale_writer.get_or_compute(KEY, AsyncMock(return_value="STALE"))          # lands after the purge
+        begin_run(ORG, REC, "rev1", "index", refresh=True, reuse_prior_attempt=True)
+        paid = AsyncMock(return_value="fresh")
+        assert await cache.get_or_compute(KEY, paid) == "fresh"
+        clear_run()
+    assert paid.await_count == 1                                     # the refresh was not silently dropped
+
+
+async def test_a_second_completed_run_does_not_keep_the_first_runs_objects_of_another_model() -> None:
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    first = RunScope(ORG, REC, "r1", "parse", clock=lambda: 1_000.0)
+    await first.note(store, "ocr_page/" + "a" * 64 + ".json", opens=True)
+    await first.finish(store)
+    second = RunScope(ORG, REC, "r1", "parse", clock=lambda: 2_000.0)                  # started after the first completed
+    await second.note(store, "ocr_page/" + "b" * 64 + ".json", opens=True)
+    await second.finish(store)
+    final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
+    assert final == ["ocr_page/" + "b" * 64 + ".json"]               # the replaced model's object is no longer listed
+
+
+async def test_concurrent_flushes_of_one_manifest_in_one_process_keep_every_key_only_because_of_the_path_lock() -> None:
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    real_replace = store.replace
+
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
+        await asyncio.sleep(0.05)
+        await real_replace(*args)
+
+    store.replace = slow_replace  # type: ignore[method-assign]
+    runs = [RunScope(ORG, REC, "r1", "parse") for _ in range(4)]
+    keys = [f"ocr_page/{n * 64}.json" for n in "abcd"]
+    for run, key in zip(runs, keys):
+        run._keys, run._seen, run._unflushed = [key], {key}, 1
+    await asyncio.gather(*(run._write_open(store) for run in runs))
+    assert set(json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]) == set(keys)
+
+
+async def test_concurrent_finishes_of_one_manifest_in_one_process_keep_every_key() -> None:
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    real_replace = store.replace
+
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
+        await asyncio.sleep(0.05)
+        await real_replace(*args)
+
+    store.replace = slow_replace  # type: ignore[method-assign]
+    runs = [RunScope(ORG, REC, "r1", "parse") for _ in range(3)]
+    keys = [f"ocr_page/{n * 64}.json" for n in "abc"]
+    for run, key in zip(runs, keys):
+        run._keys, run._seen = [key], {key}
+    await asyncio.gather(*(run.finish(store) for run in runs))
+    assert set(json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]) == set(keys)
+
+
+async def test_the_cache_and_the_run_helpers_wire_the_manifest_guard_into_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from app.services.paid_cache import access
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    cache = PaidResultCache(store, InProcessLocks())
+    monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: cache)
+
+    with record_in_flight(ORG, REC):
+        noted = begin_run(ORG, REC, "r1", "parse")
+        await cache.get_or_compute(KEY, AsyncMock(return_value="x"))
+        assert noted.manifest_guard == cache.manifest_lock           # the cache's own note wires it
+        clear_run()
+    completed, abandoned = RunScope(ORG, REC, "r2", "parse"), RunScope(ORG, REC, "r3", "parse")
+    for run in (completed, abandoned):
+        run._keys, run._seen, run._unflushed = ["ocr_page/" + "e" * 64 + ".json"], {"ocr_page/" + "e" * 64 + ".json"}, 1
+        assert run.manifest_guard is None
+    await access.complete_run(completed, MagicMock())
+    abandoned._opened = True
+    await access.abandon_run(abandoned, MagicMock())
+    assert completed.manifest_guard == cache.manifest_lock and abandoned.manifest_guard == cache.manifest_lock

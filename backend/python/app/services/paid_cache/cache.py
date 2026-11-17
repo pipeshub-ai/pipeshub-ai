@@ -265,22 +265,30 @@ class PaidResultCache:
             return  # no result was ever stored under such an id (see ``valid_record_id``)
         await self._store.purge_record(org_id, record_id)
 
-    async def refresh_purge_needed(self, org_id: str, record_id: str, event_id: str) -> bool:
-        """False when this refresh event already purged the record's results: a redelivery reuses what its first
-        delivery stored instead of deleting it and paying again. True when it has not (or cannot be told)."""
-        try:
-            backend = await self._backend()
-            return not await backend.is_marked(refresh_name(org_id, record_id, event_id))
-        except Exception:
-            return True
+    async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
+        """Claims the refresh named ``event_id`` for its first request, atomically (``SET NX`` with a TTL on Redis).
 
-    async def mark_refresh_purged(self, org_id: str, record_id: str, event_id: str) -> None:
-        """Remembers (24 h) that this refresh event purged. Best effort: a miss only repeats the purge."""
+        The claim token for the one request that wins; None for every other (a redelivery of the event, or the parsing
+        client's own retry), which reuses what the winner paid for. Without a lock backend that can be asked, the
+        request is treated as the first: a refresh is never dropped for want of a marker.
+        """
         try:
             backend = await self._backend()
-            await backend.mark(refresh_name(org_id, record_id, event_id), DELETED_TTL_MS)
+            token = await backend.acquire(refresh_name(org_id, record_id, event_id), DELETED_TTL_MS)
         except Exception:
-            self.logger.debug("Paid-result refresh marker not written", exc_info=True)
+            self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
+            return "unclaimed"
+        return token
+
+    async def release_refresh_claim(self, org_id: str, record_id: str, event_id: str, token: str) -> None:
+        """Gives a claim back when the purge it was for failed, so the redelivery purges instead of reusing."""
+        if token == "unclaimed":
+            return
+        try:
+            backend = await self._backend()
+            await backend.release(refresh_name(org_id, record_id, event_id), token)
+        except Exception:
+            self.logger.debug("Paid-result refresh claim not released", exc_info=True)
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:
         """The record is deleted: no writer may store under it again, and what is stored goes.
@@ -334,6 +342,10 @@ class PaidResultCache:
         validate: Callable[[Any], object] | None,
     ) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         refresh = scope is not None and scope.refresh
+        if refresh and scope is not None and scope.reuse_prior_attempt and path in await scope.prior_attempt_keys(self._store):
+            # The retry of a refresh: a result this refresh's own earlier attempt stored (it is listed in that attempt's
+            # manifest) is reused; anything else at the key is older than the refresh and is bypassed.
+            refresh = False
         #: Bytes sit at the key that cannot be used: the next store replaces them.
         unusable = False
         if not refresh:
@@ -658,10 +670,10 @@ class NullPaidResultCache:
     async def purge_record(self, org_id: str, record_id: str) -> None:
         return None
 
-    async def refresh_purge_needed(self, org_id: str, record_id: str, event_id: str) -> bool:
-        return True
+    async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
+        return "unclaimed"
 
-    async def mark_refresh_purged(self, org_id: str, record_id: str, event_id: str) -> None:
+    async def release_refresh_claim(self, org_id: str, record_id: str, event_id: str, token: str) -> None:
         return None
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:

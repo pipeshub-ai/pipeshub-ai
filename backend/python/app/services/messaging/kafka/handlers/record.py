@@ -2337,13 +2337,20 @@ class RecordEventHandler(BaseEventService):
                 if refresh_org:
                     paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
                     event_id = payload.get(replay_set.EVENT_ID_KEY)
-                    if not event_id or await paid_cache.refresh_purge_needed(refresh_org, record_id, str(event_id)):
-                        await paid_cache.purge_record(refresh_org, record_id)
-                        if event_id:
-                            await paid_cache.mark_refresh_purged(refresh_org, record_id, str(event_id))
-                        paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
-                    # A redelivery of the same event already purged: what its first delivery paid for and stored is
-                    # reused by an ordinary run, not deleted and paid for again.
+                    claim = await paid_cache.claim_refresh(refresh_org, record_id, str(event_id)) if event_id else "unclaimed"
+                    if claim is not None:
+                        try:
+                            await paid_cache.purge_record(refresh_org, record_id)
+                        except BaseException:
+                            # The purge failed: the claim goes back, so the redelivery purges instead of reusing.
+                            if event_id:
+                                await paid_cache.release_refresh_claim(refresh_org, record_id, str(event_id), claim)
+                            raise
+                    # A redelivery of the same event (claim None) still refreshes: it reuses only what its first
+                    # delivery stored, as that delivery's manifest lists it, and pays for the rest.
+                    paid_cache_run.begin_run(
+                        refresh_org, record_id, None, "index", refresh=True, reuse_prior_attempt=claim is None,
+                    )
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:

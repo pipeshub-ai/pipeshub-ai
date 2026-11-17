@@ -54,6 +54,7 @@ class RunScope:
     def __init__(
         self, org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
         clock: Callable[[], float] = time.time, stage_deadline_s: float | None = None,
+        reuse_prior_attempt: bool = False,
     ) -> None:
         self.org_id = org_id
         self.record_id = record_id
@@ -61,6 +62,9 @@ class RunScope:
         self.writer = writer
         #: ``refreshPaidOutputs``: lookups are bypassed, so every call is paid again and stored.
         self.refresh = refresh
+        #: A retry of a refresh: results the refresh's own earlier attempt stored are reused, not paid for again.
+        self.reuse_prior_attempt = reuse_prior_attempt
+        self._prior_keys: set[str] | None = None
         self.run_id = secrets.token_hex(8)
         #: Set by the in-process pipeline, whose run ends when the record's indexing completes.
         self.in_process = False
@@ -134,12 +138,28 @@ class RunScope:
             self._unflushed = max(self._unflushed - noted, 0)
             self._last_flush = self._clock()
 
+    async def prior_attempt_keys(self, store: _ManifestStore) -> set[str]:
+        """The keys this revision's earlier attempt (open or final manifest of the same writer) listed; read once."""
+        if self._prior_keys is None:
+            keys: set[str] = set()
+            reader = getattr(store, "get", None)
+            if reader is not None:
+                for path in (open_manifest_path(self.content_rev, self.writer), final_manifest_path(self.content_rev, self.writer)):
+                    try:
+                        raw = await reader(self.org_id, self.record_id, path)
+                        listed = json.loads(raw).get("keys", []) if raw else []
+                    except Exception:
+                        continue
+                    keys.update(k for k in listed if isinstance(k, str))
+            self._prior_keys = keys
+        return self._prior_keys
+
     def _guard(self, path: str) -> contextlib.AbstractAsyncContextManager[None]:
         if self.manifest_guard is None:
             return contextlib.nullcontext()
         return self.manifest_guard(self.org_id, self.record_id, path)
 
-    async def _adopt(self, store: _ManifestStore, path: str) -> None:
+    async def _adopt(self, store: _ManifestStore, path: str, *, completed_since_ms: int | None = None) -> None:
         """Keeps the keys an earlier attempt (or a parse that outlived its client, still running beside its retry)
         listed in the manifest at ``path``, which both write: one revision and writer, one path.
 
@@ -152,7 +172,14 @@ class RunScope:
             return
         async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
             raw = await reader(self.org_id, self.record_id, path)
-        previous = json.loads(raw).get("keys", []) if raw else []
+        body = json.loads(raw) if raw else {}
+        if completed_since_ms is not None and isinstance(body, dict):
+            completed = body.get("completedMs")
+            # A final manifest of an earlier, unrelated completion (another model, another settings) is not a sibling
+            # of this run: its objects are no longer this revision's.
+            if not isinstance(completed, int) or isinstance(completed, bool) or completed < completed_since_ms:
+                return
+        previous = body.get("keys", []) if isinstance(body, dict) else []
         for key in previous if isinstance(previous, list) else []:
             if isinstance(key, str) and key not in self._seen:
                 self._seen.add(key)
@@ -176,7 +203,7 @@ class RunScope:
                 _path_lock(self.org_id, self.record_id, open_path), _path_lock(self.org_id, self.record_id, final_path),
                 self._guard(open_path), self._guard(final_path),
             ):
-                await self._adopt(store, final_path)
+                await self._adopt(store, final_path, completed_since_ms=self.started_ms)
                 await self._adopt(store, open_path)
                 async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
                     await store.replace(self.org_id, self.record_id, final_path, self._body(final=True))
@@ -204,10 +231,13 @@ _run: ContextVar[RunScope | None] = ContextVar("paid_cache_run", default=None)
 
 def begin_run(
     org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
-    stage_deadline_s: float | None = None,
+    stage_deadline_s: float | None = None, reuse_prior_attempt: bool = False,
 ) -> RunScope:
     """Opens the ambient run for this task and the tasks it starts. Left set: the next run replaces it."""
-    scope = RunScope(org_id, record_id, content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s)
+    scope = RunScope(
+        org_id, record_id, content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s,
+        reuse_prior_attempt=reuse_prior_attempt,
+    )
     _run.set(scope)
     return scope
 

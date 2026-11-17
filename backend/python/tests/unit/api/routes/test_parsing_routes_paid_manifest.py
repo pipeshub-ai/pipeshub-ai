@@ -188,21 +188,21 @@ def test_a_parse_that_fails_after_noting_keys_keeps_every_key_listed(store: Memo
     assert len(listed) == 3
 
 
-def test_a_retry_of_a_refresh_request_reuses_the_pages_the_first_attempt_paid(store: MemoryResultStore) -> None:
+def test_a_retry_of_a_refresh_request_is_still_a_refresh_that_reuses_only_its_own_earlier_pages(store: MemoryResultStore) -> None:
     from app.services.paid_cache.run import current_run
 
-    seen: list[bool] = []
+    seen: list[tuple[bool, bool]] = []
 
     async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
         run = current_run()
-        seen.append(run is not None and run.refresh)
+        seen.append((run is not None and run.refresh, run is not None and run.reuse_prior_attempt))
         return _ok_result()
 
     first = _post(parse, refresh_paid_outputs="true", refresh_token="run-abc")
     retry = _post(parse, refresh_paid_outputs="true", refresh_token="run-abc")     # the client's own retry
     other = _post(parse, refresh_paid_outputs="true", refresh_token="run-xyz")     # a new refresh
     assert (first.status_code, retry.status_code, other.status_code) == (200, 200, 200)
-    assert seen == [True, False, True]
+    assert seen == [(True, False), (True, True), (True, False)]
 
 
 @pytest.mark.parametrize("sent", ["inf", "-inf", "nan", "0", "-5", "1e400"])

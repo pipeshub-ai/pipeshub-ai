@@ -288,7 +288,7 @@ async def test_a_redelivered_refresh_event_reuses_what_its_first_delivery_stored
 
     assert store.paths(ORG, REC) == [PAGE]                              # not purged again
     run = current_run()
-    assert run is None or not run.refresh                               # reused by an ordinary run
+    assert run is not None and run.refresh and run.reuse_prior_attempt  # still a refresh: reuses only its own earlier pages
 
     clear_run()
     await _reindex(handler, {**payload, "_event_id": "evt-2"})          # a new request purges and bypasses again
@@ -317,6 +317,7 @@ async def test_a_retried_refresh_request_pays_no_page_again_that_the_first_attem
         await _reindex(handler, dict(payload))                       # the first attempt: purge, then pay every page
         await pay_pages()
         assert len(paid) == 3
+        await access.abandon_run(current_run(), MagicMock())         # it fails: its manifest is brought up to date
         clear_run()
         await _reindex(handler, dict(payload))                       # its retry (the same event, redelivered)
         await pay_pages()
