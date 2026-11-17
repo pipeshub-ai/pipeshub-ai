@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from app.services.resource_governor.container_link import auto_inputs as _auto_inputs
 from app.services.resource_governor.download_ahead import (
     HEAVY_DOWNLOAD_AHEAD,
     DownloadAhead,
@@ -39,6 +40,7 @@ from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
     LimitRule,
+    Limits,
     Pool,
     PoolDemand,
     ResourceSnapshot,
@@ -166,16 +168,25 @@ class ResourceGovernor:
                 "ResourceGovernor: initial probe snapshot failed; retrying once before resolving ceilings"
             )
             initial_snapshot = self._probe.snapshot()
+        # ``PIPESHUB_CAPACITY_PROFILE=auto`` only: sizes from the capacity plan and joins the container
+        # controller. Without it the calls below are exactly what they have always been.
+        auto = _auto_inputs(self._worker_count, sample_interval)
         self._fleet_ceilings: Ceilings = resolve_ceilings(
             initial_snapshot,
             env_parse,
             env_index,
             reserve_embedding_cpus=reserve_embedding_cpus,
+            **(auto.resolve_kwargs if auto is not None else {}),
         )
         if remote_parse_slots:
             from app.services.parsing.remote_concurrency import lift_ceilings
             # Parsing runs in another pod: the ceilings hold that many parses, not this CPU's share.
             self._fleet_ceilings = lift_ceilings(self._fleet_ceilings, remote_parse_slots, env_index)
+        container_fleet = self._fleet_ceilings  # the whole container's: what the shared ramp is sized against
+        if auto is not None and not remote_parse_slots:
+            # A service that parses elsewhere holds no local parse share of the member budget (and does not join the
+            # container's shared ramp below): its heavy ceiling is the remote pool's width, not this CPU's.
+            self._fleet_ceilings = auto.partition(self._fleet_ceilings)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
         # Only shared when there are workers to share with: one process's
         # heavy gate already holds it to free memory.
@@ -211,6 +222,9 @@ class ResourceGovernor:
         self._state_lock = threading.Lock()
         self._registry = LimitRegistry(warm_start_limits(self._ceilings))
         self._state = ControllerState.initial()
+        self._container = (
+            auto.link(container_fleet, self._ceilings, self._logger) if auto is not None and not remote_parse_slots else None
+        )
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}
@@ -530,6 +544,7 @@ class ResourceGovernor:
         # that read the registry before the incident but writes after it.
         changed: list[tuple[Pool, int, int]] = []
         with self._state_lock:
+            state_at_start = self._state
             current = self._registry.snapshot()
             new_limits, new_state = next_limits(
                 current=current,
@@ -543,13 +558,39 @@ class ResourceGovernor:
                 worker_count=self._worker_count,
                 heavy_working_set_gb=self._policy_working_set(),
             )
-            self._state = new_state
+            if self._container is None:
+                self._state = new_state
 
-            for pool in Pool:
-                new_value = new_limits.get(pool)
-                old_value = current.get(pool)
-                if self._registry.set(pool, new_value):
-                    changed.append((pool, old_value, new_value))
+                for pool in Pool:
+                    new_value = new_limits.get(pool)
+                    old_value = current.get(pool)
+                    if self._registry.set(pool, new_value):
+                        changed.append((pool, old_value, new_value))
+            ws_gb = self._policy_working_set()
+        if self._container is not None:
+            # PIPESHUB_CAPACITY_PROFILE=auto only. The shared ledger is read and written under file locks: off the
+            # event loop and outside the state lock, so a slow holder stalls neither the handlers nor an incident report.
+            stepped = await asyncio.to_thread(
+                self._container.step,
+                own=(new_limits, new_state), snap=snapshot, ceilings=self._ceilings, demand=demand, now=now,
+                interval=self._sample_interval, feedback=feedback, heavy_working_set_gb=ws_gb,
+            )
+            with self._state_lock:
+                new_limits, new_state = stepped
+                current = self._registry.snapshot()
+                if self._state is not state_at_start:
+                    # report_memory_incident() ran meanwhile: its state and its halved heavy limit stand.
+                    new_state = self._state
+                    new_limits = Limits(values={
+                        p: (min(new_limits.get(p), current.get(p)) if p is Pool.HEAVY_PARSE else new_limits.get(p))
+                        for p in Pool
+                    })
+                self._state = new_state
+                for pool in Pool:
+                    new_value = new_limits.get(pool)
+                    old_value = current.get(pool)
+                    if self._registry.set(pool, new_value):
+                        changed.append((pool, old_value, new_value))
 
         with self._stats_lock:
             self._last_snapshot = snapshot
@@ -839,4 +880,5 @@ class ResourceGovernor:
                 }
                 for pool in Pool
             },
+            **({"capacity": self._container.stats()} if self._container is not None else {}),
         }
