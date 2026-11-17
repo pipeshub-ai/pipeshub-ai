@@ -80,7 +80,7 @@ function anyFreePort(): Promise<number> {
  * redirect registered against it, stays the same); otherwise the next free port at or above `base` when given, else one the
  * operating system picks.
  */
-export async function pickPorts(saved: Partial<Ports> = {}, base?: number, isFreeFn = isFree): Promise<Ports> {
+export async function pickPorts(saved: Partial<Ports> = {}, base?: number, isFreeFn = isFree, freePortFn = anyFreePort): Promise<Ports> {
   const used = new Set<number>();
   const ports = {} as Ports;
   for (const name of SERVICES) {
@@ -88,7 +88,12 @@ export async function pickPorts(saved: Partial<Ports> = {}, base?: number, isFre
     if (!port || used.has(port) || !(await isFreeFn(port))) {
       port = undefined;
       if (base) for (let p = base; p < 65535 && !port; p++) if (!used.has(p) && (await isFreeFn(p))) port = p;
-      port ??= await anyFreePort();
+      // The OS may hand back a port it gave earlier in this run: those listeners were closed again.
+      for (let tries = 0; port === undefined && tries < 100; tries++) {
+        const p = await freePortFn();
+        if (!used.has(p)) port = p;
+      }
+      if (port === undefined) throw new Error("no free loopback port");
     }
     used.add(port);
     ports[name] = port;
@@ -119,10 +124,26 @@ export function readJson<T>(path: string): T | undefined {
   }
 }
 
-/** Generated once and kept 0600 in the data folder; a missing key (an older file) is filled in, an existing one never changes. */
+/**
+ * Generated once and kept 0600 in the data folder; a missing key (an older file) is filled in, an existing one never changes.
+ * A file that exists but cannot be read or parsed is left untouched and the start stops: the database already uses those
+ * passwords, and new ones would lock every service out of it.
+ */
 export function loadSecrets(dataDir: string): Secrets {
   const path = join(dataDir, "secrets.json");
-  const have = (existsSync(path) ? readJson<Partial<Secrets>>(path) : undefined) ?? {};
+  let have: Partial<Secrets> = {};
+  if (existsSync(path)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch (e) {
+      throw new Error(`${path} cannot be read (${(e as Error).message.split("\n")[0]}). It holds the database passwords; restore it from a backup. Nothing was changed.`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((v) => typeof v !== "string")) {
+      throw new Error(`${path} is not a secrets file (an object of strings). It holds the database passwords; restore it from a backup. Nothing was changed.`);
+    }
+    have = parsed as Partial<Secrets>;
+  }
   const names = [...PG_LOGINS.map((r) => `pg_${r}`), ...APP_SECRETS] as (keyof Secrets)[];
   let changed = false;
   for (const n of names) if (!have[n]) { have[n] = randomBytes(n.startsWith("pg_") ? 24 : 32).toString("hex"); changed = true; }

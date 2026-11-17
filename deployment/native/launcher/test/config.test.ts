@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,26 @@ describe("ports", () => {
   });
 });
 
+describe("ports, ephemeral", () => {
+  test("an OS-picked port already handed out in this run is not handed out again", async () => {
+    const picks = [41000, 41000, 41000, 41001, 41002, 41003, 41004, 41005, 41006, 41007];
+    const p = await pickPorts({}, undefined, async () => false, async () => picks.shift()!);
+    assert.equal(new Set(Object.values(p)).size, SERVICES.length);
+  });
+});
+
+describe("secrets, damaged", () => {
+  test("an unreadable or malformed secrets file is left as it is and the error says so", () => {
+    const d = tmp();
+    writeFileSync(join(d, "secrets.json"), "[]", { mode: 0o600 });
+    assert.throws(() => loadSecrets(d), /secrets\.json/);
+    assert.equal(readFileSync(join(d, "secrets.json"), "utf8"), "[]");
+    writeFileSync(join(d, "secrets.json"), "{oops", { mode: 0o600 });
+    assert.throws(() => loadSecrets(d), /secrets\.json/);
+    assert.equal(readFileSync(join(d, "secrets.json"), "utf8"), "{oops");
+  });
+});
+
 describe("secrets", () => {
   test("generated once, 0600, distinct and stable; a missing key is filled in, the others never change", () => {
     const d = tmp();
@@ -56,6 +76,14 @@ describe("secrets", () => {
     const b = loadSecrets(d);
     assert.equal(b.pg_node, a.pg_node);
     assert.ok(b.pg_kv);
+    assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o600);
+  });
+  test("a complete secrets file that became readable by others is set back to 0600, unchanged", () => {
+    const d = tmp();
+    const a = loadSecrets(d);
+    chmodSync(join(d, "secrets.json"), 0o644);
+    assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o644);
+    assert.deepEqual(loadSecrets(d), a);
     assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o600);
   });
   test("redact masks every secret value", () => {

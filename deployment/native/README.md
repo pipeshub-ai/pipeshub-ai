@@ -20,6 +20,9 @@ Data defaults to `~/Library/Application Support/PipesHub` (macOS) or `${XDG_DATA
 
 ## What `start` does
 
+0. Takes the data folder's lock: an `flock` on `launcher.lock`, held by a small helper process (the bundle's Python) for the
+   launcher's lifetime, so the kernel releases it when the launcher dies. A second start on the same folder reports
+   `already_running`. Anything a crashed launcher left (its current step, services, PostgreSQL) is ended first.
 1. First run: `initdb` (SCRAM authentication, the administrator password from `secrets.json`).
 2. Writes `<pgdata>/launcher.conf` (loopback, the picked port, a 0700 socket folder where the path fits, the Compose image's
    `shared_preload_libraries`) and starts PostgreSQL.
@@ -30,7 +33,8 @@ Data defaults to `~/Library/Application Support/PipesHub` (macOS) or `${XDG_DATA
 5. Waits for `/api/v1/health`.
 
 `secrets.json` (0600) holds the generated passwords and signing secrets. They are passed to the processes in their environment, never
-on a command line, and masked in any error message the launcher prints.
+on a command line, and masked in any error message the launcher prints. A `secrets.json` that cannot be read or parsed is never
+replaced: the start stops and says so, because the database already uses those passwords.
 
 ## Launcher contract (what the desktop app uses)
 
@@ -43,9 +47,10 @@ on a command line, and masked in any error message the launcher prints.
 
 `--json` prints one object per line, each with an `event` field: `progress` (`stage`: initdb, postgres, schema, services, health;
 `message`: the same for people), `ready` (`url`, `ports`, `healthy_after_s`, `pid`, `data_dir`), `service_exited` (`service`, `code`,
-`signal`), `stopping`, `stopped`, `error` (`code`: already_running, start_failed, not_healthy, stop_failed, not_ready; `message`).
-Other options: `--bundle D` (default: the folder above `launcher/`), `--port-base N` (scan upward from N). A port used by the previous
-run is kept while it is free, so the web address stays the same.
+`signal`), `stopping`, `stopped`, `error` (`code`: already_running, port_in_use, start_failed, not_healthy, stop_failed, not_ready;
+`message`). Other options: `--bundle D` (default: the folder above `launcher/`), `--port-base N` (scan upward from N). The
+services' ports are kept from run to run while free. The web port never moves once the database exists (the API's address is
+stored in its settings), so if another program has taken it the start fails with `port_in_use`.
 
 ## Building the bundle
 
