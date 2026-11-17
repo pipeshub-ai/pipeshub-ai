@@ -392,6 +392,12 @@ record_schema = {
             # app/modules/indexing/rate_limit_deferral.py).
             "retryNotBefore": {"type": ["number", "null"]},
             "rateLimitedSince": {"type": ["number", "null"]},
+            # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
+            # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).
+            "deferredUntilMs": {"type": ["number", "null"]},
+            # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
+            # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
+            "rateLimitedSinceMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",

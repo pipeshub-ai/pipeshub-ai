@@ -67,7 +67,10 @@ from app.modules.indexing.named_entity_persist_retry import (
     retry_pending_named_entity_persists,
 )
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
-from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.rate_limit_deferral import (
+    deferral_due,
+    is_deferred_until_later,
+)
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import (
     is_parked_duplicate,
@@ -141,6 +144,7 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
+from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
@@ -184,6 +188,17 @@ check_runtime_settings()
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
+
+
+def attach_parse_admission_config(config_service: Any) -> bool:  # noqa: ANN401
+    """Under ``PARSE_ADMISSION=classes`` read the admission numbers from the configuration store
+    (``/services/indexing/parseAdmission``, live); otherwise nothing changes."""
+    from app.modules.parse_engine import wiring as parse_wiring
+
+    if not parse_wiring.classes_enabled():
+        return False
+    parse_wiring.attach_config_service(config_service)
+    return True
 
 
 async def get_initialized_container() -> IndexingAppContainer:
@@ -372,6 +387,9 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
+                    if latest_record is not None and is_deferred_until_later(latest_record, get_epoch_timestamp_in_ms()):
+                        # Handed back for a provider's wait since the scan read it: not stuck, and not finished either.
+                        return None
                     if latest_record is None:
                         still_stuck = False
                     elif resume_enrichment:
@@ -619,6 +637,10 @@ async def recover_in_progress_records(
         page_size = max(1, messaging_env.stale_recovery_page_size)
 
         def is_stale(record: dict[str, Any]) -> bool:
+            if is_deferred_until_later(record, get_epoch_timestamp_in_ms()):
+                # Handed back to the broker for a wait (a model provider's rate limit): its delayed message is the
+                # wake-up, and a recovery event now would call the provider again before it said it can serve.
+                return False
             started_at = record.get("processingStartedAt")
             if started_at is None:
                 # Rows written before processingStartedAt was introduced are
@@ -951,6 +973,12 @@ ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 # Between pages, while the indexing loop is busy (see LoopShare).
 ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor: dict[str, int] = {}
+# A VRID whose mapping was kept because another org still holds points on it is
+# rechecked after this long, not every tick: until that org lets go, each pass
+# would repeat the same no-op delete. Keyed by (org, VRID): on PostgreSQL each org
+# has its own mapping row for a shared VRID. Per process, like the cursor.
+ORPHAN_KEPT_RECHECK_SECONDS = 3600.0
+_orphan_kept_until: dict[tuple[str, str], float] = {}
 
 
 
@@ -1198,6 +1226,9 @@ async def _sweep_orphaned_virtual_record_mappings(
     swept = 0
     offset = _orphan_sweep_cursor.get(org_id, 0)
     pages_scanned = 0
+    now = time.monotonic()
+    for key in [k for k, until in _orphan_kept_until.items() if until <= now]:
+        del _orphan_kept_until[key]
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
@@ -1254,6 +1285,8 @@ async def _sweep_orphaned_virtual_record_mappings(
                 continue
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
+            if (org_of[vrid], vrid) in _orphan_kept_until:
+                continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
                     outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -1267,6 +1300,8 @@ async def _sweep_orphaned_virtual_record_mappings(
             if outcome == "deleted":
                 swept += 1
                 swept_this_page += 1
+            elif outcome == "kept":
+                _orphan_kept_until[(org_of[vrid], vrid)] = time.monotonic() + ORPHAN_KEPT_RECHECK_SECONDS
         await pacer.pause()
 
         if len(page) < page_size:
@@ -1711,6 +1746,20 @@ async def _republish_stranded_records(
                     # Someone is working on it after all.
                     return False
 
+            # The scan's snapshot may be old: while it waited on other lookups the record can have been processed, handed
+            # back for a provider's wait and released. Read it again under the lease, before claiming or publishing.
+            try:
+                fresh = await graph_provider.get_document(
+                    record_key, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+            except Exception as exc:
+                # A read that failed is not "no wait": the delayed message may still be in the broker, and sending another
+                # now would call the provider before it said it can serve. Left for the next pass.
+                logger.warning("Could not re-read stranded record %s under its lease; skipping it this pass: %s", record_key, exc)
+                return False
+            if fresh is not None and is_deferred_until_later(fresh, get_epoch_timestamp_in_ms()):
+                return False
+
             # The marker is a durable claim written BEFORE the send, not
             # a receipt written after it. Written after, a Neo4j failure
             # following a successful Redis send left the record eligible
@@ -1877,6 +1926,8 @@ async def _republish_stranded_records(
                 # parked while its connector was off since then keeps the
                 # parked rules below (its turn-on clock), even if the wait's
                 # fields are still on it.
+                if is_deferred_until_later(record, pass_started_ms):
+                    continue
                 due = None if parked_while_off else deferral_due(record, pass_started_ms)
                 if due is not None:
                     if not due:
@@ -2214,6 +2265,17 @@ async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logge
         if redis is not None:
             with contextlib.suppress(Exception):
                 await redis.aclose()
+
+
+def warn_if_deferral_fields_write(logger: logging.Logger) -> None:
+    """Say at start-up that records are being given the deferral fields, and what that commits the deployment to."""
+    if messaging_env.record_deferral_fields_write:
+        logger.warning(
+            "RECORD_DEFERRAL_FIELDS_WRITE is on: records handed back for a model provider's rate limit are given "
+            "deferredUntilMs and rateLimitedSinceMs. Every process must run a release whose record schema lists them, and "
+            "the deployment must not be rolled back past this release (a record carrying them cannot be written on an "
+            "older schema)."
+        )
 
 
 async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
@@ -2812,6 +2874,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Indexing writes stage states and record fields declared by the connector service's schema
     # bootstrap, which may not have run yet (a first start, or an older connector image).
     await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
+    warn_if_deferral_fields_write(logger)
     await _check_redis_eviction_policy(app_container, logger)
 
     # One governor per process: derives parse/index ceilings from cgroup/CPU
@@ -2834,7 +2897,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     app.state.governor = governor
     app_container.resource_governor = governor
+    attach_parse_admission_config(app_container.config_service())
     governor_task = asyncio.create_task(governor.run())
+    ops_exporter = exporter_from_env(governor, "indexing")
+    if ops_exporter is not None:
+        ops_exporter.start()
     # With several worker processes, each claims a cell index and publishes its stats, so that
     # whichever worker answers /health serves every cell's.
     await _start_cell(app, governor)
@@ -3182,6 +3249,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
+    if ops_exporter is not None:
+        ops_exporter.stop()
 
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
@@ -3249,6 +3318,11 @@ async def health_check(request: Request) -> JSONResponse:
                 # the service itself is still healthy.
                 container.logger().warning("Resource governor stats failed: %s", stats_error)
                 content["resource_governor"] = {"error": "unavailable"}
+        from app.modules.parse_engine import wiring as parse_wiring
+
+        if parse_wiring.classes_enabled():
+            # Per cost class: how many wait, how many run, how long the oldest waiter has waited.
+            content["parseEngine"] = parse_wiring.parse_engine_stats()
         # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
