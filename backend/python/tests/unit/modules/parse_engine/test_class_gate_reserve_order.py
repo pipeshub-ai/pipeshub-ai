@@ -121,3 +121,13 @@ async def test_a_waiter_over_its_class_ceiling_does_not_block_the_ones_behind_it
     small_permit.release()
     large_permit.release()
     (await asyncio.wait_for(heavy, 2.0)).release()  # once its class has room it runs
+
+
+async def test_the_huge_cap_holds_only_while_large_work_waits() -> None:
+    """Capacity 10 and only huge work: the borrow limit applies (8), not the huge cap (5)."""
+    H = CostClass.HUGE
+    gate = ClassGate("heavy_parse", numbers=lambda: N, capacity=lambda: PoolCapacity(10))
+    permits = [await asyncio.wait_for(gate.acquire(GateRequest(cls=H, est_seconds=400.0), deadline_s=1), 1) for _ in range(6)]
+    assert gate.running(H) == 6  # past the huge cap of 5: nothing large is waiting
+    for p in permits:
+        p.release()

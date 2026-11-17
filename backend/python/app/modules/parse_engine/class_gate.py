@@ -416,10 +416,13 @@ class ClassGate:
                 else:
                     recent = self._running[CostClass.SMALL] > 0 or since < numbers.small_recent_s
                     w.ceiling = min(slots(numbers.large_cap if recent else numbers.borrow_cap, P), above)
+                before_huge_cap = w.ceiling
                 if g.cls is CostClass.HUGE:
                     # One ceiling per class: huge work can never take large's share.
                     w.ceiling = min(w.ceiling, slots(numbers.huge_cap, P))
-                if self._budget is None and self._running[g.cls] and self._running[g.cls] + w.req.cpu > w.ceiling:
+                # The huge cap protects large work: it holds only while large work waits (as ``next_grant`` applies it).
+                limit = w.ceiling if g.cls is not CostClass.HUGE or self.waiting(CostClass.LARGE) else before_huge_cap
+                if self._budget is None and self._running[g.cls] and self._running[g.cls] + w.req.cpu > limit:
                     # An ordering gate has no ledger to enforce the class ceiling: apply it to the whole weight of the
                     # request. A class with nothing running still takes a unit heavier than its ceiling, alone. The
                     # waiter is skipped for this pump: the next one of its class that fits, or the next rule, goes on.
