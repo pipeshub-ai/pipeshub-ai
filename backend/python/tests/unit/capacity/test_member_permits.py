@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +15,7 @@ from app.capacity.admission import docling_demand, llm_slot, parse_class
 from app.capacity.budget_policy import Demand, Family
 from app.capacity.member_budget import AdmissionTimeout
 from app.modules.parsers import parse_pool
+from tests.support import ledger_procs as lp
 from tests.support.member_budget_env import GIB, install_budget
 
 if TYPE_CHECKING:
@@ -330,7 +332,9 @@ async def test_a_workbook_load_reserves_its_memory_in_the_member_budget(
 ) -> None:
     from app.services.resource_governor.kinds import ParseKind, excel_load_max_bytes
 
-    b = install_budget(monkeypatch, tmp_path / "l", c=4, mem=3 * GIB)
+    # CPU tokens enough for two big units (the floors keep 14 of 32), memory strictly below two 1.5 GiB charges: only the
+    # memory reservation can make the second load wait.
+    b = install_budget(monkeypatch, tmp_path / "l", c=32, mem=int(2.5 * GIB))
     seen: list[int] = []
 
     def work() -> int:
@@ -357,20 +361,37 @@ async def test_a_pool_job_keeps_its_tokens_until_its_lane_has_finished_with_it(
     monkeypatch.delenv("PARSE_LANES", raising=False)
     parse_pool.shutdown_parse_pool()
     parse_pool.set_resource_governor(make_test_governor(logger_name="test.pool"))
+    stop_may_finish = threading.Event()
     try:
         assert parse_pool._pool() is not None  # a real worker pool, not the thread fallback
-        task = asyncio.create_task(parse_pool.submit(time.sleep, 1.5, label="t", size=1))
-        await asyncio.sleep(0.8)  # the worker is up and running the job
+        real_stop = parse_pool._Worker.stop
+
+        def held_stop(self: object) -> None:
+            stop_may_finish.wait(10)  # the lane's cleanup (stop the worker, then complete the job) is held by the test
+            real_stop(self)
+
+        monkeypatch.setattr(parse_pool._Worker, "stop", held_stop)
+        ready, release = tmp_path / "ready", tmp_path / "release"
+        task = asyncio.create_task(parse_pool.submit(lp.signal_ready_then_wait, str(ready), str(release), label="t", size=1))
+        for _ in range(300):  # the worker says it is running the job (bounded wait)
+            if ready.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert ready.exists(), "the worker never started the job"
         assert b.snapshot()["used"] == 1
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert b.snapshot()["used"] == 1  # the lane has not stopped the worker yet: its tokens still cover the parse
-        for _ in range(60):
+        await asyncio.sleep(0.6)  # long enough for the lane to notice the cancel and begin stopping the worker
+        assert b.snapshot()["used"] == 1  # but not finished: the tokens still cover the parse
+        stop_may_finish.set()
+        for _ in range(100):
             if b.snapshot()["used"] == 0:
                 break
             await asyncio.sleep(0.1)
         assert b.snapshot()["used"] == 0  # released when the lane finished with the job
     finally:
+        stop_may_finish.set()  # before shutdown, so it does not wait on a held stop
+        (tmp_path / "release").write_text("go")
         parse_pool.shutdown_parse_pool()
         parse_pool.set_resource_governor(None)
