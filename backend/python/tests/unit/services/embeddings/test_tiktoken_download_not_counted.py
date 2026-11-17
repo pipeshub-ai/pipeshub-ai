@@ -31,6 +31,11 @@ def _model(provider: str) -> Any:  # noqa: ANN401
 @pytest.fixture
 def downloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> list[str]:  # noqa: ANN401
     """An empty tiktoken cache, and the download host blocked (it fails at once and is recorded)."""
+    import tiktoken.registry
+
+    # tiktoken keeps built encodings for the life of the process: an earlier test that built cl100k_base would otherwise
+    # answer without looking at the (empty) cache directory, and no download would be attempted.
+    monkeypatch.setattr(tiktoken.registry, "ENCODINGS", {})
     monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
     monkeypatch.delenv("DATA_GYM_CACHE_DIR", raising=False)
     seen: list[str] = []
