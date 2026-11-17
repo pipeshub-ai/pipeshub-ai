@@ -101,3 +101,23 @@ async def test_a_class_with_nothing_running_takes_a_unit_heavier_than_its_ceilin
     permit = await asyncio.wait_for(gate.acquire(GateRequest(cls=L, cpu=3, est_seconds=120.0), deadline_s=1), 1)
     assert gate.running(L) == 3
     permit.release()
+
+
+async def test_a_waiter_over_its_class_ceiling_does_not_block_the_ones_behind_it() -> None:
+    """One large permit runs; the head of the large queue weighs 2 and would exceed the class ceiling. A weight-1 large
+    behind it that fits, and a small record, are granted: the pump skips the head, it does not stop."""
+    gate = ClassGate("heavy_parse", numbers=lambda: N, capacity=lambda: PoolCapacity(10))
+    running = await gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1)
+    heavy = asyncio.create_task(gate.acquire(GateRequest(cls=L, cpu=2, est_seconds=120.0), deadline_s=1.5))
+    await settle()
+    light_large = asyncio.create_task(gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1.5))
+    small = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=10.0), deadline_s=1.5))
+    started = time.monotonic()
+    small_permit = await asyncio.wait_for(small, 1.0)  # not stuck behind a request this gate will not admit
+    assert time.monotonic() - started < 0.5
+    large_permit = await asyncio.wait_for(light_large, 1.0)  # the weight-1 behind the weight-2 head fits and is granted
+    assert not heavy.done()
+    running.release()
+    small_permit.release()
+    large_permit.release()
+    (await asyncio.wait_for(heavy, 2.0)).release()  # once its class has room it runs

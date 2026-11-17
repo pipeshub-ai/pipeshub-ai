@@ -322,8 +322,12 @@ class ClassGate:
         firsts = [lst[0].first_seen for lst in self._q[cls].values()] + [p.first_seen for p in self._prio[cls][:1]]
         return max(0.0, now - min(firsts)) if firsts else 0.0
 
-    def _pick(self, cls: CostClass, *, bounded_only: bool, big_limit: int) -> _Waiter | None:
+    def _pick(
+        self, cls: CostClass, *, bounded_only: bool, big_limit: int, exclude: frozenset[_Waiter] | set[_Waiter] = frozenset()
+    ) -> _Waiter | None:
         for w in self._prio[cls]:
+            if w in exclude:
+                continue
             if w.req.bounded or not bounded_only:
                 return w
         orgs = sorted(self._q[cls])
@@ -333,7 +337,7 @@ class ClassGate:
         start = bisect.bisect_right(orgs, last) if last is not None else 0
         for org in orgs[start:] + orgs[:start]:
             for w in self._q[cls][org]:
-                if bounded_only and not w.req.bounded:
+                if w in exclude or (bounded_only and not w.req.bounded):
                     continue
                 if cls in _BIG and self._shares.over_share("big", org, w.req.cpu, big_limit):
                     break
@@ -377,11 +381,15 @@ class ClassGate:
 
     def _pump_grants(self) -> None:
         numbers = self._numbers()
+        skipped: set[_Waiter] = set()  # waiters this gate will not admit now (over their class ceiling): not retried this pump
+        masked: set[CostClass] = set()  # classes whose every waiter is skipped: the next rule is tried
         while True:
             cap = self._capacity_now()
             P, H = cap.capacity, cap.held_floors
             now = self._clock()
             demand = self._demand(now, max(1, P))
+            for c in masked:
+                demand[c] = dataclasses.replace(demand[c], waiting=0)
             small = demand[CostClass.SMALL]
             since = 0.0 if (small.waiting or small.running) else now - self._last_small
             g = next_grant(
@@ -390,8 +398,11 @@ class ClassGate:
             if g is None:
                 return
             bounded_only = g.rule in ("A2", "A4")
-            w = self._pick(g.cls, bounded_only=bounded_only, big_limit=max(1, P))
+            w = self._pick(g.cls, bounded_only=bounded_only, big_limit=max(1, P), exclude=skipped)
             if w is None:
+                if masked or skipped:
+                    masked.add(g.cls)
+                    continue
                 return
             used = sum(self._running.values())
             if used and used + w.req.cpu > P:
@@ -410,8 +421,12 @@ class ClassGate:
                     w.ceiling = min(w.ceiling, slots(numbers.huge_cap, P))
                 if self._budget is None and self._running[g.cls] and self._running[g.cls] + w.req.cpu > w.ceiling:
                     # An ordering gate has no ledger to enforce the class ceiling: apply it to the whole weight of the
-                    # request. A class with nothing running still takes a unit heavier than its ceiling, alone.
-                    return
+                    # request. A class with nothing running still takes a unit heavier than its ceiling, alone. The
+                    # waiter is skipped for this pump: the next one of its class that fits, or the next rule, goes on.
+                    skipped.add(w)
+                    continue
+            skipped.clear()
+            masked.clear()
             self.grants.append(GrantRecord(g.cls, g.rule, {c: self.waiting(c) for c in CostClass}))
             self._dequeue(w)
             w.claimed = True
