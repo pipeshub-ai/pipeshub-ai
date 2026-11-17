@@ -248,6 +248,15 @@ DOWNSTREAM_TIMEOUT_SHRINK_THRESHOLD = 2
 DOWNSTREAM_TIMEOUT_SHRINK_FACTOR = 0.75
 DOWNSTREAM_GROW_CONFIRM_SAMPLES = 2
 DOWNSTREAM_LATENCY_HOLD_FACTOR = 2.0
+# While code sandbox runs wait for memory this container shares, heavy parse
+# loses one slot and the index pools a quarter per sample, down to their
+# pressure floor. Growth then waits YIELD_GROW_CONFIRM_SAMPLES samples without
+# the signal and resumes linearly, so indexing creeps back instead of doubling
+# into the memory the runs are waiting for.
+YIELD_INDEX_SHRINK_FACTOR = DOWNSTREAM_TIMEOUT_SHRINK_FACTOR
+YIELD_GROW_CONFIRM_SAMPLES = 4
+# Light parse is cheap; braking it would only queue cheap records.
+YIELD_POOLS = frozenset({Pool.HEAVY_PARSE, Pool.INDEX_HEAVY, Pool.INDEX_LIGHT})
 HOLD_EWMA_ALPHA = 0.3
 HOLD_BASELINE_DRIFT = 0.05
 
@@ -976,6 +985,14 @@ def _downstream_shrink_target(
     return None, False
 
 
+def _yield_shrink_target(pool: Pool, current: int, floor: int) -> int:
+    step_to = current - COUNT_POOL_STEP
+    if _is_index_pool(pool):
+        # At least one off, or a pool of 3 would stay at ceil(3 x 0.75) = 3.
+        step_to = min(step_to, math.ceil(current * YIELD_INDEX_SHRINK_FACTOR))
+    return min(current, max(floor, step_to))
+
+
 def _next_pool_limit(
     pool: Pool,
     current: int,
@@ -988,6 +1005,8 @@ def _next_pool_limit(
     feedback: FeedbackWindow | None = None,
     worker_count: int = 1,
     heavy_working_set_gb: float | None = None,
+    *,
+    host_yield: bool = False,
 ) -> tuple[int, PoolState]:
     ceiling = ceiling_for(pool, ceilings)
     floor = pressure_floor(pool, ceiling, worker_count)
@@ -1022,6 +1041,11 @@ def _next_pool_limit(
         state = _track_hold_time(state, demand)
         if downstream is None or downstream.is_empty:
             state = replace(state, downstream_holdoff=max(0, downstream_holdoff - 1))
+    # Judged on its value entering the sample, like the downstream holdoff.
+    yield_holdoff = state.yield_holdoff
+    yielding = host_yield and pool in YIELD_POOLS
+    if not host_yield and yield_holdoff:
+        state = replace(state, yield_holdoff=yield_holdoff - 1)
 
     # Collect every shrink rule that applies this sample and take the
     # tightest. Each rule ends in ``min(current, ...)``: the floor is a lower
@@ -1060,6 +1084,10 @@ def _next_pool_limit(
         walked = max(target, current - _target_shrink_step(pool, current, target))
         shrink_to = walked if shrink_to is None else min(shrink_to, walked)
 
+    if yielding:
+        wanted = _yield_shrink_target(pool, current, floor)
+        shrink_to = wanted if shrink_to is None else min(shrink_to, wanted)
+
     if shrink_to is not None:
         # An incident cooldown is assigned outright rather than max()'d: it is
         # the longer of the two windows, and it starts from this sample.
@@ -1071,6 +1099,10 @@ def _next_pool_limit(
         next_state = _reset_for_shrink(state, cooldown_until=cooldown_until)
         if downstream_shrink:
             next_state = replace(next_state, downstream_holdoff=DOWNSTREAM_GROW_CONFIRM_SAMPLES)
+        if yielding:
+            next_state = replace(
+                next_state, yield_holdoff=YIELD_GROW_CONFIRM_SAMPLES, in_slow_start=False,
+            )
         return shrink_to, next_state
 
     if pressure is None:
@@ -1088,12 +1120,14 @@ def _next_pool_limit(
     demand_threshold = (
         DEMAND_UTILISATION_THRESHOLD if cpu_bound else LIGHT_DEMAND_UTILISATION_THRESHOLD
     )
-    downstream_hold = _is_index_pool(pool) and (downstream_holdoff > 0 or _latency_hold(state))
+    grow_hold = (
+        _is_index_pool(pool) and (downstream_holdoff > 0 or _latency_hold(state))
+    ) or yield_holdoff > 0
     if pressure < grow_threshold and not cooling_down:
         healthy_streak = state.healthy_streak + 1
         if (
             healthy_streak >= confirm_samples
-            and not downstream_hold
+            and not grow_hold
             and demand.has_demand(current, interval, threshold=demand_threshold)
         ):
             next_state = replace(state, healthy_streak=healthy_streak)
@@ -1120,12 +1154,17 @@ def next_limits(
     feedback: FeedbackWindow | None = None,
     worker_count: int = 1,
     heavy_working_set_gb: float | None = None,
+    *,
+    host_yield: bool = False,
 ) -> tuple[Limits, ControllerState]:
     """Advance every pool's limit by at most one step toward its target.
 
     ``feedback`` is what downstream services reported since the last sample
     (``DownstreamFeedback.drain``); it only ever shrinks or holds the index
-    pools. ``worker_count`` is how many processes share the cgroup's free
+    pools. ``host_yield`` says code sandbox runs are waiting for memory this
+    container shares: heavy parse and the index pools shrink toward their
+    pressure floor and hold growth for a while after it clears.
+    ``worker_count`` is how many processes share the cgroup's free
     memory, and ``ceilings`` must be one process's share of the budget. Pure
     and deterministic given its inputs — the caller supplies ``now`` and the
     sampled ``demand`` so this can be exercised in tests without a clock or
@@ -1138,6 +1177,7 @@ def next_limits(
         new_limit, new_state = _next_pool_limit(
             pool, current.get(pool), snap, ceilings, state.get(pool), pool_demand, now, interval,
             feedback=feedback, worker_count=worker_count, heavy_working_set_gb=heavy_working_set_gb,
+            host_yield=host_yield,
         )
         new_values[pool] = new_limit
         new_states[pool] = new_state

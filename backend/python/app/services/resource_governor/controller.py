@@ -37,6 +37,7 @@ from app.services.resource_governor.memory_budget import MemoryBudget
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    Limits,
     Pool,
     PoolDemand,
     ResourceSnapshot,
@@ -55,6 +56,8 @@ from app.services.resource_governor.policy import (
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    YIELD_GROW_CONFIRM_SAMPLES,
+    YIELD_POOLS,
     HeavyWorkingSet,
     ceiling_cpus,
     ceiling_for,
@@ -62,6 +65,7 @@ from app.services.resource_governor.policy import (
     floor_for,
     free_memory_share_bytes,
     next_limits,
+    pressure_floor,
     resolve_ceilings,
     resolve_heavy_working_set,
     split_ceilings,
@@ -79,11 +83,14 @@ from app.services.resource_governor.shared_slots import (
     SlotHold,
     open_shared_slots,
 )
+from app.services.resource_governor.yield_signal import YieldState
 
 if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
     from pathlib import Path
+
+    from app.services.resource_governor.yield_signal import YieldSignal
 
 
 _T = TypeVar("_T")
@@ -130,8 +137,14 @@ class ResourceGovernor:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: Callable[[], float] = random.random,
         heavy_working_set_gb: float | None = None,
+        yield_signal: YieldSignal | None = None,
     ) -> None:
         self._logger = logger
+        # Code sandbox runs waiting for memory this container shares ask
+        # indexing to slow down through it; only the indexing governor reads it.
+        self._yield = yield_signal
+        self._yield_state = YieldState()
+        self._yield_read_failed = False
         # The Docling service's own working set; the other services leave it unset.
         self._docling_working_set_gb = heavy_working_set_gb
         self._heavy_ws = resolve_heavy_working_set()
@@ -471,6 +484,9 @@ class ResourceGovernor:
             lanes, self._lanes, self._lanes_built = self._lanes, None, True
         if lanes is not None:
             lanes.close()
+        signal, self._yield = self._yield, None
+        if signal is not None:
+            signal.close()
 
     async def _sample_once(self) -> None:
         now = self._clock()
@@ -486,6 +502,7 @@ class ResourceGovernor:
         self._heavy_ws = self._resolve_heavy_working_set()
         demand = self._drain_all_demand()
         feedback = self._feedback.drain()
+        yield_state = await asyncio.to_thread(self._read_yield) if self._yield is not None else YieldState()
 
         # Held across the registry snapshot, the limit calculation, and the
         # resulting writes so report_memory_incident() (called from another
@@ -505,6 +522,7 @@ class ResourceGovernor:
                 feedback=feedback,
                 worker_count=self._worker_count,
                 heavy_working_set_gb=self._policy_working_set(),
+                host_yield=yield_state.active,
             )
             self._state = new_state
 
@@ -519,6 +537,9 @@ class ResourceGovernor:
             self._last_demand = demand
             self._last_feedback = feedback
 
+        if self._yield is not None:
+            await self._after_yield_read(yield_state, new_limits)
+
         if not feedback.is_empty:
             self._logger.info(
                 "ResourceGovernor downstream feedback this interval: %s", feedback.describe(),
@@ -526,11 +547,12 @@ class ResourceGovernor:
         if changed:
             self._logger.info(
                 "ResourceGovernor limits changed: %s (mem_pressure=%s cpu_util=%s "
-                "downstream=%s source=%s)",
+                "downstream=%s yield=%s source=%s)",
                 ", ".join(f"{pool.value}:{old}->{new}" for pool, old, new in changed),
                 _fmt_ratio(snapshot.mem_pressure),
                 _fmt_ratio(snapshot.cpu_utilisation),
                 feedback.describe(),
+                "on" if yield_state.active else "off",
                 snapshot.source,
             )
             shrank = any(new_value < old_value for _, old_value, new_value in changed)
@@ -579,12 +601,65 @@ class ResourceGovernor:
                 ),
             )
 
+    def _read_yield(self) -> YieldState:
+        """The code sandbox's yield signal; unreadable reads as off. Blocking."""
+        assert self._yield is not None
+        try:
+            return self._yield.read_state()
+        except Exception:
+            if not self._yield_read_failed:
+                self._yield_read_failed = True
+                self._logger.warning(
+                    "ResourceGovernor: the code sandbox yield signal cannot be read; ignoring it",
+                    exc_info=True,
+                )
+            return YieldState()
+
+    async def _after_yield_read(self, state: YieldState, limits: Limits) -> None:
+        """Log a change of the signal and, while it is up, ack it with
+        whether this worker's yielding pools are at their floor."""
+        assert self._yield is not None
+        was = self._yield_state.active
+        self._yield_state = state
+        if state.active and not was:
+            self._logger.info(
+                "ResourceGovernor: sandbox runs are waiting for memory; slowing indexing "
+                "(index x0.75, heavy -1 per sample)",
+            )
+        elif was and not state.active:
+            self._logger.info(
+                "ResourceGovernor: sandbox yield released; growth resumes after %.0f s",
+                YIELD_GROW_CONFIRM_SAMPLES * self._sample_interval,
+            )
+        if not state.active:
+            return
+        at_floor = all(
+            limits.get(pool) <= pressure_floor(pool, ceiling_for(pool, self._ceilings), self._worker_count)
+            for pool in YIELD_POOLS
+        )
+        try:
+            await asyncio.to_thread(self._yield.ack, os.getpid(), at_floor=at_floor)
+        except Exception:
+            self._logger.debug("ResourceGovernor: could not ack the sandbox yield signal", exc_info=True)
+
     def _drain_all_demand(self) -> dict[Pool, PoolDemand]:
         with self._gates_lock:
             gates = dict(self._gates)
         return {
             pool: gates[pool].drain_demand() if pool in gates else PoolDemand.empty()
             for pool in Pool
+        }
+
+    def _yield_stats(self) -> dict[str, Any]:
+        state = self._yield_state
+        with self._state_lock:
+            holdoff = max(self._state.get(pool).yield_holdoff for pool in YIELD_POOLS)
+        return {
+            "active": state.active,
+            "since_s": None if state.since is None else round(max(0.0, self._clock() - state.since), 1),
+            "ackers": state.ackers,
+            "index_at_floor": state.index_at_floor,
+            "holdoff_samples": holdoff,
         }
 
     # -- fast-reacting incident path ---------------------------------------
@@ -665,6 +740,7 @@ class ResourceGovernor:
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),
+            **({"yield_to_sandboxes": self._yield_stats()} if self._yield is not None else {}),
             "record_memory": self.memory_budget.stats(),
             "download_ahead": self.download_ahead.stats(),
             "demand": {

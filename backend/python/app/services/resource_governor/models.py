@@ -261,6 +261,9 @@ class PoolState:
     hold_ewma: float | None = None
     hold_baseline: float | None = None
     downstream_holdoff: int = 0
+    # Heavy parse and the index pools: how many samples without the code
+    # sandbox's yield signal growth still has to wait for after it shrank them.
+    yield_holdoff: int = 0
 
 
 @dataclass(frozen=True)

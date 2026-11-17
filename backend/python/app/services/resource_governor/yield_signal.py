@@ -177,14 +177,6 @@ class YieldState:
     index_at_floor: bool = False
     ackers: int = 0
 
-    def as_dict(self, now: float) -> dict[str, object]:
-        return {
-            "active": self.active,
-            "sinceSec": None if self.since is None else round(max(0.0, now - self.since), 1),
-            "ackers": self.ackers,
-            "indexAtFloor": self.index_at_floor,
-        }
-
 
 INACTIVE = YieldState()
 

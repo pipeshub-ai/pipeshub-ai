@@ -27,6 +27,9 @@ EDITED = {
         "docling_working_set_gb", "resolve_heavy_working_set", "class HeavyWorkingSet", "HeavyWorkingSet.gb",  # new
         "HeavyWorkingSet.source", "HeavyWorkingSet.as_dict",
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
+        # The code sandbox yield: only acts with host_yield=True, which the grid never passes.
+        "assign:YIELD_INDEX_SHRINK_FACTOR", "assign:YIELD_GROW_CONFIRM_SAMPLES", "assign:YIELD_POOLS",
+        "_yield_shrink_target",
     },
     "memory_budget.py": {"kind_reservation_cost"},  # new; record_memory_cost itself is unchanged
     "consumer_concurrency.py": {
@@ -42,6 +45,9 @@ EDITED = {
         "ResourceGovernor.try_acquire_heavy_parse_slots", "ResourceGovernor.heavy_working_set",
         "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
         "ResourceGovernor._resolve_heavy_working_set",
+        # The code sandbox yield signal: without one (every governor but indexing's) none of it runs.
+        "ResourceGovernor._read_yield", "ResourceGovernor._after_yield_read", "ResourceGovernor._yield_stats",
+        "ResourceGovernor.close", "if:TYPE_CHECKING",
     },
 }
 
