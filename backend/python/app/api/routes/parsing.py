@@ -16,6 +16,7 @@ GET  /health
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -37,15 +38,23 @@ from app.exceptions.indexing_exceptions import (
     PasswordProtectedError,
 )
 from app.modules.parsers.encryption import raise_if_password_protected_office
+from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.services.paid_cache import locks as lock_limits
+from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
     ParserProvider,
 )
-from app.services.parsing.load import parse_load, parsing_max_concurrent
+from app.services.parsing.load import (
+    parse_load,
+    parsing_max_concurrent,
+    stuck_conversions,
+)
 from app.services.parsing.registry import ParserRegistry
+from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
     classify,
@@ -112,6 +121,90 @@ _rejected: dict[str, dict[str, int]] = {
 }
 
 
+class _StageDeadlineExceeded(Exception):
+    """The parse ran longer than the stage deadline (not any other timeout raised inside the parser)."""
+
+    def __init__(self, limit_s: float) -> None:
+        super().__init__(limit_s)
+        self.limit_s = limit_s
+
+
+#: A conversion still running this long after its parse ended is logged (with its age) at every tick.
+THREAD_OVERRUN_WARN_SECONDS = 30.0
+#: How often a held admission is re-reported and the stuck-conversion gauges refreshed.
+STUCK_TICK_SECONDS = 30.0
+
+#: Held admissions are counted on the parsing service's ``/metrics`` (``pipeshub_parse_stuck_*``).
+
+
+def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, record_name: str) -> None:  # noqa: ANN401
+    """Keep the gate permit and the memory reservation until the conversion's threads return, then free them once.
+
+    The 504 has been answered, but the cancelled parse may still be running in a thread on the memory those stand
+    for; releasing them now would admit the next parse beside it. The release runs on the event loop. While it is
+    held, every tick logs the age and the stuck-conversion gauges say how many and how old.
+    """
+    loop = asyncio.get_running_loop()
+    done = threading.Event()
+    token = id(done)
+    logger.warning(
+        "Parse ended with %d conversion(s) still running in threads; the permit is held until they return",
+        work.running(),
+    )
+    stuck_conversions().add(token, deadline_at)
+
+    def tick() -> None:
+        if done.is_set():
+            return
+        age = time.monotonic() - deadline_at
+        if age > THREAD_OVERRUN_WARN_SECONDS:
+            logger.warning("A conversion for '%s' still runs %.0f s after its parse; its permit is held", record_name, age)
+        loop.call_later(STUCK_TICK_SECONDS, tick)
+
+    loop.call_later(STUCK_TICK_SECONDS, tick)
+
+    def free() -> None:
+        if done.is_set():
+            return
+        done.set()
+        stuck_conversions().remove(token)
+        over = time.monotonic() - deadline_at
+        if over > THREAD_OVERRUN_WARN_SECONDS:
+            logger.warning("A conversion for '%s' ended %.0f s after its parse", record_name, over)
+        release()
+
+    def hop_to_loop() -> None:
+        # Runs on the thread that finished last. A loop that is already closed means the process is stopping: the
+        # release has nothing left to free and is dropped quietly.
+        if loop.is_closed():
+            stuck_conversions().remove(token)
+            return
+        try:
+            loop.call_soon_threadsafe(free)
+        except RuntimeError:
+            stuck_conversions().remove(token)
+
+    work.when_idle(hop_to_loop)
+
+
+_budget_mismatch_logged: set[tuple[float, float]] = set()
+
+
+def _warn_if_budget_differs(sent: float | None, extension: str, mime_type: str | None) -> None:
+    """One warning per pair when the caller's record budget is not this service's own (the settings drifted)."""
+    from app.services.messaging.config import messaging_env
+
+    if sent is None:
+        return
+    own = messaging_env.record_processing_timeout_for(extension, mime_type)
+    if abs(own - sent) > 1.0 and (round(sent), round(own)) not in _budget_mismatch_logged:
+        _budget_mismatch_logged.add((round(sent), round(own)))
+        logger.warning(
+            "The caller's record budget (%.0f s) differs from this service's (%.0f s); the caller's is used. "
+            "Set RECORD_PROCESSING_TIMEOUT and PDF_RECORD_PROCESSING_TIMEOUT alike on both.", sent, own,
+        )
+
+
 def _count_rejection(tier: ParseTier, reason: str) -> None:
     with _rejected_lock:
         _rejected[tier.value][reason] += 1
@@ -166,6 +259,8 @@ async def parse_file(
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+    refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
+    record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -175,7 +270,7 @@ async def parse_file(
     try:
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
-            provider, skip_table_enrichment, file_path,
+            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s,
         )
     finally:
         load.leave()
@@ -196,6 +291,8 @@ async def _parse_file(
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+    refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
+    record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -314,6 +411,7 @@ async def _parse_file(
 
     parse_start = time.monotonic()
     excess_held = 0
+    thread_work = ThreadWork()
     covers = set_permit_covers() if tier is ParseTier.HEAVY else None
     try:
         # The permit's base covers the parent's fixed part for the PdfPlumber parse only; a kind
@@ -352,7 +450,30 @@ async def _parse_file(
                 raise_if_password_protected_office(
                     content, extension=extension, mime_type=mime_type
                 )
-                result = await parser.parse(content, record_name, config)
+                # The paid calls this parse makes (page OCR, table summaries) go into the revision's manifest.
+                # The deadline is the caller's own record budget (the figure it waits for); an older caller sends none
+                # and the service's own settings apply. A budget that differs from this service's is logged.
+                stage_limit = lock_limits.stage_deadline_for(record_budget_s)
+                _warn_if_budget_differs(record_budget_s, extension, mime_type)
+                paid_run = start_run(
+                    content_revision(content), "parse", refresh=refresh_paid_outputs, stage_deadline_s=stage_limit,
+                )
+                # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
+                # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
+                # configured (never shorter than the client's own read timeout for the record), and only this
+                # timeout is the stage deadline: a TimeoutError raised inside the parser is the parser's.
+                stage_timer = asyncio.timeout(stage_limit)
+                try:
+                    with track(thread_work):
+                        async with stage_timer:
+                            result = await parser.parse(content, record_name, config)
+                except BaseException as exc:
+                    # A parse that failed keeps its open manifest, brought up to date: what it paid for stays protected.
+                    await abandon_run(paid_run, _config_service(request), logger)
+                    if isinstance(exc, TimeoutError) and stage_timer.expired():
+                        raise _StageDeadlineExceeded(stage_limit) from exc
+                    raise
+                await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
             logger.warning(
                 "Parse refused: record='%s' provider=%s code=%s",
@@ -419,6 +540,22 @@ async def _parse_file(
                     },
                 },
             )
+        except _StageDeadlineExceeded as exc:
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s ran longer than %s s",
+                record_name, provider_enum.value, exc.limit_s,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing took longer than the service allows",
+                        "details": {"requestId": message_id},
+                    },
+                },
+            )
         except Exception:  # noqa: BLE001
             parse_ms = (time.monotonic() - parse_start) * 1000
             logger.exception(
@@ -440,13 +577,22 @@ async def _parse_file(
             )
     finally:
         reset_permit_covers(covers)
-        if excess_held:
-            governor.memory_budget.release(excess_held)
-        gate.release(cost)
-        _ORG_SHARE.leave(pool, org_key, cost)
-        SemaphoreLogger.log_semaphore_release(
-            f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
-        )
+
+        def release_admission() -> None:
+            if excess_held:
+                governor.memory_budget.release(excess_held)
+            gate.release(cost)
+            _ORG_SHARE.leave(pool, org_key, cost)
+            SemaphoreLogger.log_semaphore_release(
+                f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
+            )
+
+        # Whatever way the parse ended (deadline, a timeout raised inside it, a cancel, any other error), a conversion
+        # still running in a thread keeps its memory: the permit and the reservation are held until it returns.
+        if thread_work.running():
+            _release_when_work_ends(release_admission, thread_work, time.monotonic(), record_name)
+        else:
+            release_admission()
 
     parse_ms = (time.monotonic() - parse_start) * 1000
     if parse_ms >= SLOW_PARSE_WARN_SECONDS * 1000:
