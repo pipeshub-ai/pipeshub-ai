@@ -22,7 +22,7 @@ import base64
 import hmac
 import json
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -259,13 +259,15 @@ async def _connect(
     *,
     method: str,
     refresh_token: str | None = None,
+    holds_lock: bool = False,
 ) -> UserConnection:
     """Check who ``token`` belongs to and store it as the caller's connection. 400 for a credential
     that must be refused, 409 for a Notion account another user connected, 503 when Notion is down."""
     user_id, email = str(user.get("userId")), str(user["email"])
     config_service = _config_service(request)
     # Under the refresh lock: a disconnect that lands while the token is checked waits, then removes this.
-    async with refresh_lock(connector_id, user_id):
+    # A sign-in already holds it (from before its code exchange).
+    async with nullcontext() if holds_lock else refresh_lock(connector_id, user_id):
         try:
             identity = await verify_token(
                 token, pipeshub_email=email, connector_id=connector_id, config_service=config_service, logger=logger,
@@ -412,35 +414,38 @@ async def _complete_user_sign_in(
         raise _SignInFailed("This connector does not let users connect their own Notion account.") from None
     config_service = _config_service(request)
     session = sign_in_path(connector_id, str(user.get("userId")))
-    stored = await config_service.get_config(session, use_cache=False, keep_in_cache=False, raise_on_error=True)
-    stored_state = str(((stored or {}).get("oauth") or {}).get("state") or "") if isinstance(stored, dict) else ""
-    if not stored_state or not hmac.compare_digest(stored_state, state):
-        # Not this user's sign-in in progress: leave it (and theirs) alone.
-        raise _SignInFailed("This sign-in has expired or was already used. Start again.")
-    try:
+    # Under the refresh lock from the state check to the save: a disconnect during the code exchange
+    # waits, then removes what this saved (the exchange itself rewrites the session it deleted).
+    async with refresh_lock(connector_id, str(user.get("userId"))):
+        stored = await config_service.get_config(session, use_cache=False, keep_in_cache=False, raise_on_error=True)
+        stored_state = str(((stored or {}).get("oauth") or {}).get("state") or "") if isinstance(stored, dict) else ""
+        if not stored_state or not hmac.compare_digest(stored_state, state):
+            # Not this user's sign-in in progress: leave it (and theirs) alone.
+            raise _SignInFailed("This sign-in has expired or was already used. Start again.")
         try:
-            oauth_config = await user_oauth_config(
-                connector_id, config_service=config_service, org_id=str(current_org_id()), logger=logger,
-                container=request.app.container,
-            )
-        except NotionAccessError as e:
-            raise _SignInFailed(str(e)) from None
-        provider = OAuthProvider(oauth_config, config_service, session)
-        try:
-            # Checks the state against the one stored for this caller only.
-            token = await provider.handle_callback(code, state)
+            try:
+                oauth_config = await user_oauth_config(
+                    connector_id, config_service=config_service, org_id=str(current_org_id()), logger=logger,
+                    container=request.app.container,
+                )
+            except NotionAccessError as e:
+                raise _SignInFailed(str(e)) from None
+            provider = OAuthProvider(oauth_config, config_service, session)
+            try:
+                # Checks the state against the one stored for this caller only.
+                token = await provider.handle_callback(code, state)
+            finally:
+                await provider.close()
+            try:
+                await _connect(
+                    request, app, connector_id, user, token.access_token,
+                    method=METHOD_OAUTH, refresh_token=token.refresh_token, holds_lock=True,
+                )
+            except HTTPException as e:
+                raise _SignInFailed(str(e.detail), shareable=True) from None
         finally:
-            await provider.close()
-        try:
-            await _connect(
-                request, app, connector_id, user, token.access_token,
-                method=METHOD_OAUTH, refresh_token=token.refresh_token,
-            )
-        except HTTPException as e:
-            raise _SignInFailed(str(e.detail), shareable=True) from None
-    finally:
-        # The session also holds the token the exchange wrote; the connection is its only home.
-        await delete_config_confirmed(config_service, session)
+            # The session also holds the token the exchange wrote; the connection is its only home.
+            await delete_config_confirmed(config_service, session)
     return app
 
 

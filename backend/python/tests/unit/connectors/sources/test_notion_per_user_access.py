@@ -42,7 +42,8 @@ _MOD = "app.connectors.sources.notion.connector"
 @pytest.fixture(autouse=True)
 def _no_connect_requests() -> Iterator[None]:
     # Revokes ask the user to reconnect (tested in test_notion_connect_invites); no mail or notice here.
-    with patch(f"{_MOD}.send_connect_request", new=AsyncMock(return_value=(True, True))):
+    with patch(f"{_MOD}.send_connect_request", new=AsyncMock(return_value=(True, True))),             patch.dict("app.connectors.sources.notion.per_user._REFRESH_LOCKS", clear=True):
+        # Each test runs on its own event loop; a lock another test used belongs to that loop.
         yield
 
 
@@ -1124,6 +1125,30 @@ class TestSignInRoutes:
         saved: UserConnection = save.await_args.args[2]
         assert (saved.token, saved.refresh_token, saved.method) == ("at", "rt", "oauth")
         drop_session.assert_awaited_once_with(ANY, "/services/connectors/c1/sign-in/u1")
+
+    async def test_a_disconnect_during_the_code_exchange_waits_and_wins(self) -> None:
+        import asyncio
+
+        from app.connectors.sources.notion.per_user import refresh_lock
+
+        exchanging, release = asyncio.Event(), asyncio.Event()
+
+        async def exchange(*_a: object) -> SimpleNamespace:
+            exchanging.set()
+            await release.wait()
+            return SimpleNamespace(access_token="at", refresh_token="rt")
+
+        sign_in = asyncio.create_task(self._complete(exchange=exchange))
+        await exchanging.wait()
+        # What _remove does first: it must wait for the sign-in, so the removal comes after the save.
+        removal = asyncio.create_task(refresh_lock("c1", "u1").acquire())
+        await asyncio.sleep(0.01)
+        assert not removal.done()
+        release.set()
+        result, _, save, _ = await sign_in
+        await removal
+        refresh_lock("c1", "u1").release()
+        assert result["success"] is True and save.await_count == 1
 
     async def test_a_wrong_account_is_reported_and_nothing_is_saved(self) -> None:
         result, _, save, drop_session = await self._complete(
