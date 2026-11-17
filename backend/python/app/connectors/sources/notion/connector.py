@@ -988,11 +988,13 @@ class NotionConnector(BaseConnector):
             record_group.inherit_permissions = False
             await self.data_entities_processor.on_new_record_groups([(record_group, [])])
             for record_type in GRANTED_TYPES:
-                for record in await self.data_entities_processor.get_records_by_record_type(
-                    self.connector_id, record_type
-                ):
+                records = await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
+                for record in records:
                     if record.id:
                         await self.data_entities_processor.stop_inheriting_permissions(record.id, self.connector_id)
+                # What workspace mode indexed holds content a member may not open: a database's rows, the text
+                # of a synced block. Out of search before anyone is granted the record, indexed again as per-user.
+                await self.data_entities_processor.drop_indexed_copies(records, self.connector_id)
         record_group.permission_model = PermissionModel.RECORD_LEVEL
         record_group.inherit_permissions = False
         await self.data_entities_processor.on_new_record_groups([(record_group, [])])

@@ -103,7 +103,7 @@ from app.services.cache.invalidation_hooks import (
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
-from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.record_visibility import HAS_INDEXED_COPY, RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -7480,6 +7480,21 @@ class DataSourceEntitiesProcessor:
                     await tx_store.delete_inherit_permissions_relation_record(record_id, parent_id)
         if edges:
             await self._access_changed([connector_id])
+
+    async def drop_indexed_copies(self, records: list[Record], connector_id: str) -> None:
+        """Take records out of search until they are indexed again, then queue that: their stored copy holds
+        content that must no longer be served (search serves a record while it has an indexed copy)."""
+        live = [r for r in records if r.id]
+        for start in range(0, len(live), 500):
+            chunk = live[start:start + 500]
+            async with self.data_store_provider.transaction() as tx_store:
+                await tx_store.batch_update_nodes(
+                    [{"id": r.id, "indexingStatus": ProgressStatus.QUEUED.value, HAS_INDEXED_COPY: False} for r in chunk],
+                    CollectionNames.RECORDS.value,
+                )
+        if live:
+            await self._access_changed([connector_id])
+            await self.reindex_existing_records(live)
 
     async def resume_inheriting_permissions(
         self, record_id: str, connector_id: str, *, parent_record_id: str | None = None,

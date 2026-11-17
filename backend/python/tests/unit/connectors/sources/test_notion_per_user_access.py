@@ -517,6 +517,7 @@ class TestWorkspaceGroup:
         dep.get_record_group_by_external_id = AsyncMock(return_value=existing)
         dep.on_new_record_groups = AsyncMock()
         dep.stop_inheriting_permissions = AsyncMock()
+        dep.drop_indexed_copies = AsyncMock()
         dep.get_records_by_record_type.side_effect = lambda _c, rt: [_record("p1")] if rt == RecordType.WEBPAGE else []
         return connector, dep
 
@@ -540,14 +541,20 @@ class TestWorkspaceGroup:
         dep.on_new_record_groups.side_effect = lambda rows: order.append(("group", rows[0][0].permission_model,
                                                                            rows[0][0].inherit_permissions))
         dep.stop_inheriting_permissions.side_effect = lambda rid, cid: order.append(("strip", rid))
+        dep.drop_indexed_copies.side_effect = lambda records, cid: order.append(("unindex", [r.id for r in records]))
         await connector._prepare_per_user_workspace()
-        assert order == [("group", PermissionModel.RECORD_GROUP_LEVEL, False), ("strip", "r-p1"),
-                         ("group", PermissionModel.RECORD_LEVEL, False)]
+        # A database's rows and synced-block text indexed for everyone leave search before anyone is granted.
+        assert ("unindex", ["r-p1"]) in order
+        assert [o for o in order if o[0] != "unindex"] == [
+            ("group", PermissionModel.RECORD_GROUP_LEVEL, False), ("strip", "r-p1"),
+            ("group", PermissionModel.RECORD_LEVEL, False)]
+        assert order.index(("unindex", ["r-p1"])) < len(order) - 1
 
     async def test_a_prepared_workspace_is_not_stripped_again(self) -> None:
         connector, dep = self._connector(self._group(PermissionModel.RECORD_LEVEL))
         await connector._prepare_per_user_workspace()
         dep.stop_inheriting_permissions.assert_not_awaited()
+        dep.drop_indexed_copies.assert_not_awaited()
 
     async def test_a_strip_cut_short_is_done_again_next_run(self) -> None:
         connector, dep = self._connector(self._group(PermissionModel.RECORD_GROUP_LEVEL))
@@ -773,6 +780,30 @@ class TestRemoveUserGrants:
         processor.data_store_provider = MagicMock()
         await processor.remove_user_grants("c1", "n1", [])
         processor.data_store_provider.transaction.assert_not_called()
+
+
+class TestDropIndexedCopies:
+    async def test_records_leave_search_until_indexed_again(self) -> None:
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
+        from app.services.graph_db.common.record_visibility import is_searchable_record
+
+        processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
+        tx = MagicMock()
+        tx.batch_update_nodes = AsyncMock()
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        processor.data_store_provider = MagicMock()
+        processor.data_store_provider.transaction.return_value = tx
+        processor._access_changed = AsyncMock()
+        processor.reindex_existing_records = AsyncMock()
+        records = [_record("d1", record_type=RecordType.DATASOURCE), _record("p1")]
+        await processor.drop_indexed_copies(records, "c1")
+        updates, collection = tx.batch_update_nodes.await_args.args
+        assert collection == "records" and [u["id"] for u in updates] == ["r-d1", "r-p1"]
+        assert not any(is_searchable_record(u) for u in updates)
+        processor.reindex_existing_records.assert_awaited_once_with(records)
 
 
 class TestListRoute:
