@@ -322,3 +322,40 @@ async def test_a_point_sharing_a_row_with_a_point_that_cannot_move_does_not_move
     assert to_index == {new_ids[o] for o in old}, "R2 is embedded again with R0 and R1; nothing of it is left to a moved point"
     assert to_delete == set(old)
     assert {p.payload["metadata"]["blockId"] for p in db.collections[COLL].values()} == {old[0], old[1]}, "nothing was written or deleted yet"
+
+
+async def test_a_row_split_across_points_is_embedded_when_the_read_of_its_own_point_failed(db, monkeypatch) -> None:
+    """Row R1 is listed by a point anchored at R0 (read fine) and has a point of its own, anchored at R1, in a batch whose read fails.
+    Moving the first point would leave R1's own text to be deleted unembedded: the first point cannot move either."""
+    from app.modules.transformers import vectorstore
+
+    monkeypatch.setattr(vectorstore, "_REKEY_BLOCKS_PER_READ", 1)
+    new = _table_container([f"row {i} " + " ".join(WORDS[(i + j) % len(WORDS)] for j in range(6)) for i in range(3)])
+    BlockIdentity.assign(new, ORG, VRID)
+    old = [f"old-r{i}" for i in range(3)]
+    new_ids = {o: b.id for o, b in zip(old, new.blocks, strict=True)}
+
+    def stored(point_id: str, block: str, rows: list[str], text: str) -> VectorPoint:
+        return VectorPoint(id=point_id, dense_vector=[1.0, 2.0], payload={"page_content": text, "metadata": {
+            "orgId": ORG, "virtualRecordId": VRID, "blockId": block, "isBlock": True, "rowBlockIds": rows}})
+
+    await db.upsert_points(COLL, [
+        stored("a" * 8 + "-0000-4000-8000-" + "0" * 12, old[0], [old[0], old[1]], "row 0 and the start of row 1"),
+        stored("b" * 8 + "-0000-4000-8000-" + "0" * 12, old[1], [old[1]], "the rest of row 1"),
+        stored("c" * 8 + "-0000-4000-8000-" + "0" * 12, old[2], [old[2]], "row 2"),
+    ])
+    real = db.scroll_with_vectors
+    calls = {"n": 0}
+
+    async def second_read_fails(*args: object, **kwargs: object) -> ScrollResult:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PartialResult("short read")
+        return await real(*args, **kwargs)
+
+    db.scroll_with_vectors = second_read_fails
+    store = make_store(db)
+    to_index, to_delete = await store._move_points_to_new_ids(record_of(new), new_ids, set(), set())
+    assert {new_ids[old[0]], new_ids[old[1]]} <= to_index, "both rows of the point that lists the split row are embedded again"
+    assert new_ids[old[2]] not in to_index, "the point of the third row moved"
+    assert {old[0], old[1]} <= to_delete

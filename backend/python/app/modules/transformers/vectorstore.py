@@ -1370,7 +1370,7 @@ class VectorStore(Transformer):
         def movable(point: VectorPoint) -> bool:
             return point.dense_vector is not None and all(r in new_by_old for r in rows_of(point))
 
-        embed_rows: set[str] = set()
+        embed_rows: set[str] = set(failed)  # the blocks of a read that failed are embedded: a moving point must hold none of their rows
         for point in read:
             if not movable(point):
                 embed_rows.update(r for r in rows_of(point) if r in new_by_old)
@@ -1383,7 +1383,8 @@ class VectorStore(Transformer):
                     unmoving.add(id(point))
                     embed_rows.update(r for r in rows_of(point) if r in new_by_old)
                     changed = True
-        failed.update(dict.fromkeys(embed_rows, "unmovable"))
+        for row in embed_rows - failed.keys():
+            failed[row] = "unmovable"
 
         writes: list[VectorPoint] = []
         covered: set[str] = set()  # old ids a point that moves speaks for: as its blockId or in rowBlockIds
@@ -1409,12 +1410,9 @@ class VectorStore(Transformer):
         for start in range(0, len(writes), _REKEY_PAGE):
             await self.vector_db_service.upsert_points(collection_name, writes[start:start + _REKEY_PAGE])
 
-        # The rule: a row counts as moved only if a point that moves holds it. A row whose read batch failed stays moved when such a point
-        # holds it (embedding it too would put it in two points); a block or group with embeddable content that no moving point holds
-        # lost its point (an interrupted index) and is embedded, while one that never had a point (no text, an image with no uri) is left.
-        for old in covered:
-            if failed.get(old) in ("error", "unsupported"):
-                del failed[old]
+        # The rule: a row counts as moved only if a point that moves holds it, and a moving point holds no row that is embedded again (above).
+        # A block or group with embeddable content that no moving point holds lost its point (an interrupted index) and is embedded, while
+        # one that never had a point (no text, an image with no uri) is left.
         candidates = set(old_ids) - failed.keys()
         for old in candidates - covered:
             if _embeds_a_point(blocks_by_id.get(new_by_old[old])):
