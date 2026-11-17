@@ -226,6 +226,25 @@ export interface SignObjectUrlOptions {
   method: 'GET' | 'PUT';
   contentType?: string;
   expiresInSeconds: number;
+  /**
+   * A PUT that must not replace an object already there (`If-None-Match: *`):
+   * the uploader sends the header returned with the URL, and a lost race
+   * answers 412 or 409 and keeps the first writer's object.
+   */
+  ifAbsent?: boolean;
+}
+
+/** One object in a prefix listing. `key` is the full storage key. */
+export interface ListedObject {
+  key: string;
+  size: number;
+  lastModifiedMs: number;
+}
+
+/** One page of a prefix listing; `next` is an opaque cursor, absent on the last page. */
+export interface ObjectPage {
+  objects: ListedObject[];
+  next?: string;
 }
 
 /**

@@ -31,6 +31,7 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegionType,
 )
 from app.services.messaging.config import messaging_env
+from app.services.paid_cache.access import remember_cache
 from app.services.resource_governor.kinds import ParseKind
 from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.indexing_metrics import track_indexing_enrichment
@@ -271,6 +272,8 @@ class PDFPlumberOpenCVProcessor:
                     self.logger.warning("No indexing LLM for table enrichment, keeping plain rows: %s", e)
                     skip_llm_enrichment = True
                 else:
+                    # The table calls reach the paid-result cache through the ambient cache, as on the Docling path.
+                    remember_cache(self.config, self.logger)
                     results = await enrich_tables(
                         llm,
                         [region.table_grid for region in table_regions],
@@ -404,6 +407,7 @@ class PDFPlumberOpenCVProcessor:
                 # correctness never depends on the two walks staying in sync.
                 self.logger.warning("Table missed pre-enrichment; enriching inline")
                 llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                remember_cache(self.config, self.logger)
                 # Outside the pre-pass's row budget: summary and headers only.
                 enrichment = await enrich_table_grid(
                     llm, grid, logger=self.logger, describe_rows=False
