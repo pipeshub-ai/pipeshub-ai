@@ -414,7 +414,9 @@ At the default sizes the cap already keeps the sidecar below these lines, so
 the live limit stays quiet; it matters when `maxTotal` or `cpuFactor` is
 raised above the sidecar's size, or with over-commit. Running code is never
 stopped. Waiting runs see the usual "waiting in queue" note; the query
-service's sandbox log lines start with `sandbox live limit`.
+service's sandbox log lines start with `sandbox live limit`. The sidecar's
+memory is its own, so runs waiting for it never slow indexing down (in Docker
+Compose they do, since sandboxes and indexing share the host).
 
 If the proxy cannot serve the sidecar's counters (a custom `sandbox.dind.image`
 without `/bin/sh`, or a node whose cgroup view is not the sidecar's), the app

@@ -491,6 +491,32 @@ The memory share comes on top of the app container's own limit ([App container m
 
 **Disk.** The 10 GB per-sandbox disk cap (`SANDBOX_DISK_QUOTA`) is enforced only on overlay2 with xfs and the `pquota` mount option (or btrfs/zfs); elsewhere sandboxes share the host disk with the databases, and the app logs a warning once.
 
+### Live limit
+
+Below that cap, the app also holds new runs back while the Docker host is short of memory or CPU. Every 15 s (`SANDBOX_LIVE_INTERVAL_S`) one query worker reads the host's memory and CPU through the app container's `/proc`, once the Docker daemon has been shown to run on the same machine, and moves a **live limit** between `SANDBOX_MIN_TOTAL` and the cap. Every query worker shares it. In local mode it reads the app container's own cgroup instead. Running code is never stopped; a run held back waits as above.
+
+- **Soft line.** The limit shrinks toward the runs that fit in free memory above a soft line (`SANDBOX_HOST_MEM_SOFT_MB`; default 15 % of memory, 2–24 GB), each counted at its full 512 MB.
+- **Hard floor.** When free memory falls below a floor (`SANDBOX_HOST_MEM_FLOOR_MB`; default 5 %, 1–8 GB) plus one run, or on memory pressure, it halves. Each run also checks free memory itself before it starts: one that would leave less than the floor gives its slot back and waits. That check is the only thing that holds back the minimum's runs.
+- **CPU.** It drops by one per sample after two samples above 90 % CPU (`SANDBOX_HOST_CPU_BRAKE`) or CPU pressure above 0.75 (`SANDBOX_HOST_CPU_PSI_BRAKE`). Indexing brakes on CPU earlier (85 % / 0.60), so it yields CPU first.
+- **Growth.** It grows back, by doubling steps up to what memory holds, only while runs wait for it.
+- **Indexing slows down first for memory.** When a run has waited 3 s for memory, query asks indexing to slow down: indexing takes a quarter off its in-flight records and one heavy parse per sample, down to its floor, and once runs stop waiting (`SANDBOX_YIELD_TTL_S`, 20 s) waits 60 s before it grows back one step per sample. Records already in flight are never cancelled. A CPU-only hold does not slow indexing. `SANDBOX_YIELD_INDEXING=off` turns this off.
+
+The query log shows each change as `sandbox live limit` and `asking indexing to slow down` / `indexing back-off released`; the indexing log shows `limits changed: … yield=on`. `SANDBOX_LIVE_LIMIT=off` turns the live limit off and keeps the fixed cap. A daemon on another machine (`DOCKER_HOST` remote) gets no live limit.
+
+**Over-commit** is off by default. `SANDBOX_MEMORY_OVERCOMMIT=N` (up to 4) counts each run at 1/N of its 512 MB, which raises a memory-bound cap; it applies only while the live limit reads the Docker host, since that reading is what catches a burst of heavy runs.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_LIVE_LIMIT` | auto | `off` keeps the fixed cap. |
+| `SANDBOX_LIVE_INTERVAL_S` | 15 | Seconds between samples (5–60). |
+| `SANDBOX_HOST_MEM_FLOOR_MB` | 5 % (1–8 GB) | Free memory a new run must leave. |
+| `SANDBOX_HOST_MEM_SOFT_MB` | 15 % (2–24 GB) | Free memory the limit keeps above. |
+| `SANDBOX_HOST_CPU_BRAKE` | 0.90 | Host CPU use that brakes. |
+| `SANDBOX_HOST_CPU_PSI_BRAKE` | 0.75 | Host CPU pressure (PSI some avg10) that brakes. |
+| `SANDBOX_MEMORY_OVERCOMMIT` | 1.0 (off) | Count each run at 1/N of its memory (1.0–4.0). |
+| `SANDBOX_YIELD_INDEXING` | on | Runs waiting for memory slow indexing down. |
+| `SANDBOX_YIELD_TTL_S` | 20 | How long one request lasts once runs stop waiting (10–120). |
+
 ---
 
 ## Container outbound connectivity
