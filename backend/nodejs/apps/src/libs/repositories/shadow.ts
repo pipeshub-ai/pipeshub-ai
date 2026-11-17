@@ -155,11 +155,21 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'stats',
 ]);
 /**
- * What of an answer is compared, per method, applied to BOTH answers before the diff. The write counters and tokens of a document
- * are store-local by design (and the copy lags), so only the row of `getWithFingerprintState` is compared.
+ * What of an answer is compared, per `repo.method` or per method, applied to BOTH answers before the diff. The write counters and
+ * tokens of a document are store-local by design (and the copy lags), so only the row of `getWithFingerprintState` is compared.
+ * PostgreSQL keys a credential by its account and keeps no Mongoose version (credential/types.ts), so those two are not compared.
  */
 export const COMPARE_VIEW: Record<string, (v: unknown) => unknown> = {
   getWithFingerprintState: (v) => (v as { row?: unknown } | null)?.row ?? null,
+  'identity.find': (v) => {
+    if (v === null || typeof v !== 'object') return v;
+    const {
+      _id: _ignoredId,
+      __v: _ignoredVersion,
+      ...rest
+    } = v as Record<string, unknown>;
+    return rest;
+  },
 };
 export const isReadMethod = (name: string): boolean => READ_METHODS.has(name);
 
@@ -273,7 +283,10 @@ async function shadowRead(
       count('timeout');
       return;
     }
-    const view = COMPARE_VIEW[method] ?? ((v: unknown): unknown => v);
+    const view =
+      COMPARE_VIEW[`${repo}.${method}`] ??
+      COMPARE_VIEW[method] ??
+      ((v: unknown): unknown => v);
     let diffs = jsonDiff(view(left), view(right));
     if (diffs.length > 0 && !args.some(isTx)) {
       // the copy may be a moment behind: look again, on both sides, before calling it a difference
