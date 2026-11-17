@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import time
-import traceback
 from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -126,6 +125,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
+from app.utils.error_class import log_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
@@ -801,7 +801,7 @@ class RetrievalService:
             # None overrides it -- and HybridSearchRequest is a plain dataclass,
             # so the None survived all the way to `req.limit * 2` in
             # qdrant/utils.py and took the whole search down with a TypeError
-            # that the except below logged as "Filtered search failed",
+            # that the except below logged as `search.failed`,
             # returning an empty result set. The turn then answered with no
             # retrieved context and no visible error.
             if limit is None:
@@ -1612,7 +1612,8 @@ class RetrievalService:
             self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except Exception as e:
-            self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
+            # A refused query embedding lands here too, its text the provider's body.
+            log_failure(self.logger, "search.failed", e, include_error_text=False)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _diversity_candidates(

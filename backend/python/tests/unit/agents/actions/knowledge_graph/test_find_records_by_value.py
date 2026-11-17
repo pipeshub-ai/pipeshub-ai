@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -18,6 +19,7 @@ from app.modules.named_entities.linking.service import Linking, LinkResult, Link
 from app.modules.retrieval.entity_permissions import EntityAccessContext
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.provider_errors import assert_text_free, openai_error, with_cause
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -967,3 +969,23 @@ async def test_a_blank_currency_is_no_currency(env: AsyncMock) -> None:
     graph = _graph(_rows(1))
     ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=50_000, currency="   ")
     assert ok and values.UNCONVERTED_NOTE in body and 'currency="' not in body
+
+
+async def test_a_failed_name_link_is_logged_by_type_without_the_provider_text(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.modules.retrieval.entity_permissions import EntityAccessError
+
+    caplog.set_level(logging.DEBUG)
+    linker = AsyncMock()
+    linker.link = AsyncMock(side_effect=with_cause(EntityAccessError("Entity vector search failed"), openai_error(429)))
+    monkeypatch.setattr(values, "build_linker", lambda *_, **__: linker)
+
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Pinecrest")
+
+    assert (ok, body) == (False, LOOKUP_FAILED_MSG)
+    (line,) = [r for r in caplog.records if r.getMessage() == "find_records_by_value failed"]
+    assert (line.levelno, line.error_type, line.cause_type, line.exc_info) == (
+        logging.WARNING, "EntityAccessError", "RateLimitError", None,
+    )
+    assert_text_free(caplog.records)

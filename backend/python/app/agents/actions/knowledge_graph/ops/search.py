@@ -95,6 +95,7 @@ from app.utils.chat_helpers import (
     keep_record_text_inside_connection,
     merge_into_records_map,
 )
+from app.utils.error_class import log_failure
 from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
     PatternMatchCoverage,
@@ -455,8 +456,9 @@ async def _unindexed_title_matches(
             find_unindexed_matches(state["entity_vector_store"], state["graph_provider"], context, query),
             timeout=_TITLE_LOOKUP_TIMEOUT_SECONDS,
         )
-    except Exception:
-        log.warning("knowledgegraph__search: the lookup of records by name failed", exc_info=True)
+    except Exception as exc:
+        # The content answer stands without it. Text-free: the title check's embedding error is the provider's body.
+        log_failure(log, "title_lookup.failed", exc, include_error_text=False)
         return None
 
 

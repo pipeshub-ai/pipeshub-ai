@@ -140,8 +140,9 @@ def call_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                str(exc) or type(exc).__name__,
+                type(exc).__name__,
                 delay,
+                extra={"error_type": type(exc).__name__},
             )
             time.sleep(delay)
     if last_exc is not None:
@@ -176,8 +177,9 @@ async def await_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                str(exc) or type(exc).__name__,
+                type(exc).__name__,
                 delay,
+                extra={"error_type": type(exc).__name__},
             )
             await asyncio.sleep(delay)
     if last_exc is not None:
