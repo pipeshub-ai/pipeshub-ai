@@ -417,6 +417,14 @@ keep lower requests. The release notes warn when requests and limits differ.
 Sandbox containers are created with `oom_score_adj=1000`, so inside the
 sidecar's memory limit the kernel kills a sandbox before `dockerd`.
 
+The app's workers share these counts through files in
+`/tmp/pipeshub-sandbox-1000` (the chart does not mount `/tmp`, so it is the
+image's, mode 1777). If you mount an `emptyDir` at `/tmp` through
+`extraVolumeMounts`, it is writable by every user without the sticky bit, so
+the app moves the state to `/root/.cache/pipeshub-sandbox-1000` (the image
+account's home; `HOME=/home/user` is an `emptyDir` too) and logs one warning.
+Set `SANDBOX_STATE_DIR` through `extraEnv` to choose the place.
+
 ### Live limit
 
 With the dind sidecar, each pod also holds new runs back while the sidecar

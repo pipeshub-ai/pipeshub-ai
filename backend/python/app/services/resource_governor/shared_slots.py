@@ -368,6 +368,7 @@ class LocalTaggedSlots:
 
 _PRIVATE_FIX = (
     "remove it (it is recreated private), or point this stack elsewhere: set "
+    "SANDBOX_STATE_DIR to a directory only this user can change, "
     "SANDBOX_STATE_ID for the code sandbox's state, or TMPDIR"
 )
 _reported: set[tuple[str, int, int]] = set()
@@ -397,18 +398,24 @@ def _private(info: os.stat_result) -> bool:
     return info.st_uid == os.getuid() and not info.st_mode & 0o077
 
 
+def _parent_unsafe(info: os.stat_result) -> bool:
+    """Whether another user could rename a directory out of this one: it is
+    owned by someone else (root aside), or writable by everyone without the
+    sticky bit that ``/tmp`` has."""
+    world_write = bool(info.st_mode & 0o002) and not info.st_mode & stat.S_ISVTX
+    return info.st_uid not in (0, os.getuid()) or world_write
+
+
 def _check_parent(parent: Path) -> None:
-    """Refuse a parent that another user could rename our directory out of:
-    one owned by someone else (root aside), or writable by everyone without
-    the sticky bit that ``/tmp`` has."""
+    """Refuse a parent that another user could rename our directory out of
+    (see `_parent_unsafe`)."""
     try:
         info = os.stat(parent)
     except OSError:
         return  # the mkdir below reports it
     if not stat.S_ISDIR(info.st_mode):
         return
-    world_write = bool(info.st_mode & 0o002) and not info.st_mode & stat.S_ISVTX
-    if info.st_uid not in (0, os.getuid()) or world_write:
+    if _parent_unsafe(info):
         raise _refuse(parent, info, "a parent directory that another user can change")
 
 
@@ -508,6 +515,57 @@ def file_replaced(fd: int, path: Path) -> bool:
     return held.st_nlink == 0 or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
 
 
+_STATE_DIR_ENV = "SANDBOX_STATE_DIR"
+_warned_locations: set[tuple[str, ...]] = set()
+
+
+def _unsafe_ancestor(directory: Path, *, home: bool = False) -> tuple[Path, os.stat_result | None] | None:
+    """The first existing ancestor of *directory* (its parent, or further up
+    when the parents are still to be created private) when another user
+    could change it, else ``None``. With *home*, that ancestor must also be
+    owned by this uid and not writable by everyone, sticky or not: it is a
+    home directory, not a ``/tmp``."""
+    for parent in directory.parents:
+        try:
+            info = os.stat(parent)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return parent, None
+        if not stat.S_ISDIR(info.st_mode) or _parent_unsafe(info):
+            return parent, info
+        if home and (info.st_uid != os.getuid() or info.st_mode & 0o002):
+            return parent, info
+        return None
+    return None
+
+
+def _home_directories() -> list[Path]:
+    """``$HOME``, then the account's home from the password database when it
+    differs (a container may point ``HOME`` at a shared scratch volume).
+    Only absolute paths: a relative one would differ between processes."""
+    homes: list[Path] = []
+    raw = os.environ.get("HOME") or ""
+    if os.path.isabs(raw):
+        homes.append(Path(raw))
+    try:
+        import pwd
+
+        account = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        account = ""
+    if os.path.isabs(account) and Path(account) not in homes:
+        homes.append(Path(account))
+    return homes
+
+
+def _once(key: tuple[str, ...]) -> bool:
+    if key in _warned_locations:
+        return False
+    _warned_locations.add(key)
+    return True
+
+
 def shared_slots_directory(name: str) -> Path | None:
     """Where this container's workers share the slots called *name*.
 
@@ -515,10 +573,70 @@ def shared_slots_directory(name: str) -> Path | None:
     has its own /tmp. Per uid so a directory left by another user on a shared
     host cannot block startup. ``None`` without POSIX file locks, as on
     Windows, which has no uids to name the directory by either.
+
+    The place is chosen from the environment and the file system alone, so
+    every process of one user with the same environment (the query and the
+    indexing service) picks the same one:
+
+    1. ``$SANDBOX_STATE_DIR/<name>-<uid>`` when ``SANDBOX_STATE_DIR`` is set
+       to an absolute path. No fallback: the operator chose it.
+    2. ``$TMPDIR/<name>-<uid>`` (``/tmp``), when another user cannot change
+       ``TMPDIR``: it is owned by this uid or root, and not writable by
+       everyone unless sticky.
+    3. Otherwise (a ``/tmp`` of mode 0777 without the sticky bit, such as a
+       Kubernetes ``emptyDir``), ``~/.cache/<name>-<uid>`` under ``$HOME``,
+       then under the account's home, if that home is owned by this uid and
+       not writable by everyone. One WARNING names both paths.
+    4. When none is safe, the ``TMPDIR`` path, which every user refuses with
+       one ERROR, so each worker keeps its own state.
     """
     if fcntl is None:
         return None
-    return Path(tempfile.gettempdir()) / f"{name}-{os.getuid()}"
+    leaf = f"{name}-{os.getuid()}"
+    override = (os.environ.get(_STATE_DIR_ENV) or "").strip()
+    if override:
+        if os.path.isabs(override):
+            return Path(override) / leaf
+        if _once(("relative", override)):
+            logger.warning(
+                "Ignoring %s=%r: it must be an absolute path, the same for every process",
+                _STATE_DIR_ENV, override,
+            )
+    primary = Path(tempfile.gettempdir()) / leaf
+    unsafe = _unsafe_ancestor(primary)
+    if unsafe is None:
+        return primary
+    parent, info = unsafe
+    owner = -1 if info is None else info.st_uid
+    mode = 0 if info is None else stat.S_IMODE(info.st_mode)
+    tried: list[str] = []
+    for home in _home_directories():
+        candidate = home / ".cache" / leaf
+        if _unsafe_ancestor(candidate, home=True) is None:
+            if _once(("fallback", str(primary), str(candidate))):
+                logger.warning(
+                    "%s cannot hold shared state safely: its parent %s can be changed by "
+                    "another user (owner uid %d, mode %04o; a temp directory needs the "
+                    "sticky bit). Using %s instead. Set %s to choose the place",
+                    primary, parent, owner, mode, candidate, _STATE_DIR_ENV,
+                )
+            return candidate
+        tried.append(str(candidate))
+    # Nothing safe: the TMPDIR path, whose parent every user refuses. One
+    # ERROR here, naming every place tried, stands for theirs.
+    if info is not None:
+        _reported.add((str(parent), info.st_uid, mode))
+    if _once(("none", str(primary), *tried)):
+        logger.error(
+            "No safe place for shared state: the parent %s of %s can be changed by "
+            "another user (owner uid %d, mode %04o), and no home directory owned by "
+            "uid %d and closed to other users was found (tried: %s). Each worker keeps "
+            "its own state, so the caps count per worker; set %s to a directory only "
+            "this user can change",
+            parent, primary, owner, mode, os.getuid(), ", ".join(tried) or "no HOME",
+            _STATE_DIR_ENV,
+        )
+    return primary
 
 
 _STATE_ID_ENV = "SANDBOX_STATE_ID"
@@ -530,7 +648,8 @@ def sandbox_state_directory(env: Mapping[str, str] | None = None) -> Path | None
     """The private directory the code sandbox keeps its cross-worker state in.
 
     ``/tmp/pipeshub-sandbox-<uid>``, or ``/tmp/pipeshub-sandbox-<id>-<uid>``
-    when ``SANDBOX_STATE_ID`` is set. In a container every stack has its own
+    when ``SANDBOX_STATE_ID`` is set; under ``SANDBOX_STATE_DIR`` or the home
+    directory instead of ``/tmp`` as `shared_slots_directory` explains. In a container every stack has its own
     ``/tmp``. Stacks whose services run directly on one host as one user share
     it, so each sets its own id (the same one for its query and indexing
     processes), or they share one set of slots. An id that is not 1-63 of
