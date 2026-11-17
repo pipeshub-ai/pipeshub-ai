@@ -1810,16 +1810,22 @@ class TestRankingIsBounded:
 
     @pytest.mark.timeout(5)
     def test_timed_out_match_scores_zero_but_reports_bytes_read(self, tmp_path):
-        import regex
-
         from app.agents.actions.storage_search.storage_search import _score_record_file
 
         path = tmp_path / "record_x.json"
         path.write_text("y" + "x" * 5000)
-        rx = RecordingPattern(regex.compile(r"(x+x+)+y", regex.IGNORECASE))
+
+        class TimesOut:
+            """A pattern whose match runs out of time, every time. The file is not JSON, so the real pattern would
+            only see empty text and never reach the timeout path."""
+
+            def finditer(self, text: str, **kwargs: object) -> object:
+                raise TimeoutError("regex match timed out")
+
+        rx = RecordingPattern(TimesOut())
 
         assert _score_record_file(str(path), [rx], timeout=0.2) == (0, 0, "", 5001)
-        assert rx.timeouts == [0.2]  # the match ran with the caller's timeout, which it then ran out of
+        assert rx.timeouts == [0.2]  # the match ran with the caller's timeout, and its timeout scored zero
 
     def test_alternatives_and_pattern_length_are_capped(self):
         from app.agents.actions.storage_search.storage_search import _grep_search_regexes

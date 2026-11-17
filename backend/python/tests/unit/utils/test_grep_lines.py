@@ -68,14 +68,26 @@ def test_a_catastrophic_pattern_is_given_up_on_within_the_deadline() -> None:
     line = ",".join(f"v{i}_{j}" for i, j in zip(range(60), range(60)))
     blocks = [{"data": "\n".join([line] * 400)}]
     pattern = RecordingPattern(regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE))
-    _, _, _, complete = find_matches(blocks, pattern, context_lines=0, max_matches=5, deadline=time.monotonic() + 1.0)
+    deadline = time.monotonic() + 1.0
+    _, _, _, complete = find_matches(blocks, pattern, context_lines=0, max_matches=5, deadline=deadline)
     assert not complete
     # The budgets the search was given, not its wall time (which a busy runner stretches): every try within the
-    # per-line limit, and the record left after at most MAX_LINE_TIMEOUTS slow lines rather than read to the deadline
-    # (fewer only if a stalled runner reached the deadline first).
+    # per-line limit, and the record left after at most MAX_LINE_TIMEOUTS slow lines rather than read to the deadline.
+    # A runner that stalled past the deadline before the first slow line leaves none, which is right too.
     full = [t for t in pattern.timeouts if t is not None and t > grep_lines._QUICK_SECS]
     assert all(t is not None and t <= LINE_MATCH_TIMEOUT_SECS for t in pattern.timeouts), pattern.timeouts
-    assert 1 <= len(full) <= MAX_LINE_TIMEOUTS, pattern.timeouts
+    assert len(full) <= MAX_LINE_TIMEOUTS, pattern.timeouts
+    assert full or time.monotonic() >= deadline, pattern.timeouts
+
+
+def test_a_deadline_already_passed_reads_nothing() -> None:
+    import time
+
+    pattern = RecordingPattern(regex.compile(r"v0_0"))
+    _, total, _, complete = find_matches(
+        [{"data": "v0_0\nv0_0"}], pattern, context_lines=0, max_matches=5, deadline=time.monotonic() - 1.0,
+    )
+    assert (total, complete, pattern.timeouts) == (0, False, [])
 
 
 def test_a_passed_deadline_reads_nothing_and_says_so() -> None:

@@ -45,6 +45,15 @@ def record_deadlines(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return applied
 
 
+def assert_deadline_applied(applied: list[float], deadline: float, error: BaseException) -> None:
+    """Every wait of the request used *deadline*; or, if the runner stalled past the deadline before the request
+    started, it was refused before taking a renderer and made no wait at all."""
+    if not applied:
+        assert "before it started" in str(error), error
+    else:
+        assert set(applied) == {deadline}, (applied, deadline)
+
+
 def _slow_but_countable(n: int) -> str:
     # n uses of one symbol: well inside every static count, but cairosvg is slow on it.
     return (
@@ -61,10 +70,11 @@ def test_an_ordinary_svg_renders_in_the_child_process() -> None:
 def test_a_child_that_runs_past_its_deadline_is_killed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 1.0)
     applied = record_deadlines(monkeypatch)
+    svg = _b64(_slow_but_countable(15000))  # built before the deadline is set, so building it uses none of it
     deadline = time.monotonic() + 1.0
-    with pytest.raises(DocumentProcessingError, match="timed out"):
-        svg_worker.run_bounded(_b64(_slow_but_countable(15000)), deadline=deadline)
-    assert applied and set(applied) == {deadline}
+    with pytest.raises(DocumentProcessingError, match="timed out") as err:
+        svg_worker.run_bounded(svg, deadline=deadline)
+    assert_deadline_applied(applied, deadline, err.value)
 
 
 def test_the_memory_cap_stops_an_allocation_and_is_lifted_afterwards() -> None:
@@ -185,19 +195,19 @@ def test_a_renderer_is_not_returned_to_the_pool_after_a_protocol_error(
 def test_a_kill_leaves_a_warm_spare_and_the_deadline_holds_when_cold(monkeypatch: pytest.MonkeyPatch) -> None:
     pool = svg_worker._Renderers()
     monkeypatch.setattr(svg_worker, "_renderers", pool)
-    hostile = _slow_but_countable(15000)
+    hostile = _b64(_slow_but_countable(15000))
     applied = record_deadlines(monkeypatch)
     try:
         deadline = time.monotonic() + 2.0
-        with pytest.raises(DocumentProcessingError, match="timed out"):
-            svg_worker.run_bounded(_b64(hostile), deadline=deadline)  # cold renderer
-        assert applied and set(applied) == {deadline}  # its start-up got no time of its own
+        with pytest.raises(DocumentProcessingError, match="timed out") as err:
+            svg_worker.run_bounded(hostile, deadline=deadline)  # cold renderer
+        assert_deadline_applied(applied, deadline, err.value)  # its start-up got no time of its own
         assert len(pool._idle) == 1 and pool._idle[0].alive()  # the spare
         applied.clear()
         deadline = time.monotonic() + 2.0
-        with pytest.raises(DocumentProcessingError, match="timed out"):
-            svg_worker.run_bounded(_b64(hostile), deadline=deadline)
-        assert applied and set(applied) == {deadline}
+        with pytest.raises(DocumentProcessingError, match="timed out") as err:
+            svg_worker.run_bounded(hostile, deadline=deadline)
+        assert_deadline_applied(applied, deadline, err.value)
     finally:
         pool.close_all()
 

@@ -577,7 +577,7 @@ def test_a_submit_does_not_wait_for_the_idle_shutdown_to_join_its_children() -> 
         def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
             if wait:
                 SlowToExit.joining.set()
-                SlowToExit.release.wait(10)
+                SlowToExit.release.wait()  # held until the test releases it, however long that is
             super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
     clock = FakeClock()
@@ -589,10 +589,17 @@ def test_a_submit_does_not_wait_for_the_idle_shutdown_to_join_its_children() -> 
     reaper.start()
     try:
         assert SlowToExit.joining.wait(5)
-        ex.submit(int).result(timeout=5)
-        # Shown by order, not by the wall time submit took: the reaper is still inside the join, which only ends once
-        # the test releases it. A submit that waited for the join would return only after release.wait(10) gave up,
-        # with the reaper done.
+        # Shown by order, not by the wall time submit took: the join holds until the test releases it, so a submit that
+        # waited for it could not return at all. Run on its own thread, its return is waited for with a bound that only
+        # turns such a hang into a failure.
+        submitted = threading.Event()
+
+        def submit() -> None:
+            ex.submit(int).result(timeout=5)
+            submitted.set()
+
+        threading.Thread(target=submit, daemon=True).start()
+        assert submitted.wait(30), "submit waited for the reaper's join"
         assert reaper.is_alive() and not SlowToExit.release.is_set()
     finally:
         SlowToExit.release.set()
