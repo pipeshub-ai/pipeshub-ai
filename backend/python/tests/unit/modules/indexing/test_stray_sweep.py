@@ -198,3 +198,26 @@ async def test_the_store_resumes_a_bounded_sweep_on_its_next_pass(db, monkeypatc
     for _ in range(4):
         await store._sweep_stray_points(record, record.block_containers)
     assert {p.payload["metadata"]["blockId"] for p in db.collections[COLL].values()} == {"b0"}
+
+
+async def test_a_run_whose_record_is_on_another_revision_does_not_sweep(db) -> None:
+    """A run that lost its lease and resumes must not delete the points of the revision that took over."""
+    await db.upsert_points(COLL, [_point("newer", "b-of-the-newer-revision")])
+    store = _store(db)
+    record = _record(["b0"])
+    record.id, record.md5_hash = "rec-1", "md5-of-this-run"
+    store.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1", "virtualRecordId": VRID, "md5Checksum": "md5-of-the-newer-run"})
+    await store._sweep_stray_points(record, record.block_containers)
+    assert _ids(db) == {"newer"}
+    store.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1", "virtualRecordId": VRID, "md5Checksum": "md5-of-this-run"})
+    await store._sweep_stray_points(record, record.block_containers)
+    assert _ids(db) == set(), "the same revision is swept"
+
+
+async def test_a_record_that_cannot_be_read_is_not_swept(db) -> None:
+    await db.upsert_points(COLL, [_point("p", "b-old")])
+    store = _store(db)
+    store.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+    record = _record(["b0"])
+    await store._sweep_stray_points(record, record.block_containers)
+    assert _ids(db) == {"p"}

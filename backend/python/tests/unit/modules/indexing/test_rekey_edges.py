@@ -299,3 +299,26 @@ async def test_a_table_summary_whose_point_was_lost_is_embedded_not_counted_as_m
     embedded = [t for call in store._embed_documents_with_retry.await_args_list for t in call.args[0]]
     assert any("Summary of the table" in t for t in embedded), "the lost summary is embedded again"
     assert any(p.payload["metadata"].get("isBlockGroup") for p in db.collections[COLL].values())
+
+
+async def test_a_point_sharing_a_row_with_a_point_that_cannot_move_does_not_move_either(db) -> None:
+    """Consecutive windows of one oversized table can both list a straddling row. [R0, R1, X] cannot move (X is not in the new
+    revision); [R1, R2] shares R1, so it must not move either: R1 is embedded again, which replaces the point stored under R1's id."""
+    new = _table_container([f"row {i} " + " ".join(WORDS[(i + j) % len(WORDS)] for j in range(6)) for i in range(3)])
+    BlockIdentity.assign(new, ORG, VRID)
+    old = [f"old-r{i}" for i in range(3)]
+    new_ids = {o: b.id for o, b in zip(old, new.blocks, strict=True)}
+
+    def stored(point_id: str, block: str, rows: list[str], text: str) -> VectorPoint:
+        return VectorPoint(id=point_id, dense_vector=[1.0, 2.0], payload={"page_content": text, "metadata": {
+            "orgId": ORG, "virtualRecordId": VRID, "blockId": block, "isBlock": True, "rowBlockIds": rows}})
+
+    await db.upsert_points(COLL, [
+        stored("a" * 8 + "-0000-4000-8000-" + "0" * 12, old[0], [old[0], old[1], "old-gone"], "rows 0 and 1 and a row that is gone"),
+        stored("b" * 8 + "-0000-4000-8000-" + "0" * 12, old[1], [old[1], old[2]], "rows 1 and 2"),
+    ])
+    store = make_store(db)
+    to_index, to_delete = await store._move_points_to_new_ids(record_of(new), new_ids, set(), set())
+    assert to_index == {new_ids[o] for o in old}, "R2 is embedded again with R0 and R1; nothing of it is left to a moved point"
+    assert to_delete == set(old)
+    assert {p.payload["metadata"]["blockId"] for p in db.collections[COLL].values()} == {old[0], old[1]}, "nothing was written or deleted yet"

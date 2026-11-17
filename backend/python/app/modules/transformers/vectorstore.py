@@ -1348,68 +1348,82 @@ class VectorStore(Transformer):
         blocks_by_id: dict[str, Block | BlockGroup] = {b.id: b for b in record.block_containers.blocks}
         blocks_by_id.update({g.id: g for g in record.block_containers.block_groups})
         old_ids = sorted(new_by_old)
-        covered: set[str] = set()  # old ids a point that moved speaks for: as its blockId or in rowBlockIds
-        moved: set[str] = set()
-        failed: dict[str, str] = {}  # old id -> reason
+        read: list[VectorPoint] = []                      # every stored point of the blocks, from the batches that read fine
+        failed: dict[str, str] = {}                       # old id -> reason it is embedded again
         for start in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ):
             batch = old_ids[start:start + _REKEY_BLOCKS_PER_READ]
             try:
-                points = await self._read_points_whole(collection_name, org_id, vrid, batch)
+                read.extend(await self._read_points_whole(collection_name, org_id, vrid, batch))
             except VectorsNotFetchable:
                 failed.update(dict.fromkeys(batch, "unsupported"))
-                continue
             except Exception as e:  # a partial read, a store that pages only so far, any failure: embedding is always correct
                 self.logger.warning(f"Re-key read of {vrid} failed, embedding those blocks instead: {e}")
                 failed.update(dict.fromkeys(batch, "error"))
+
+        def rows_of(point: VectorPoint) -> list[str]:
+            meta = point.payload.get("metadata") or {}
+            return [meta.get("blockId"), *(meta.get("rowBlockIds") or ())]
+
+        # A grouped point holds the text of every row it lists, under its first row's id; consecutive windows of one oversized table can
+        # share a row. A point is moved whole or not at all, and a row that is embedded again must not stay in a point that moves: so the
+        # rows of every point that cannot move are embedded, and any other point that shares one of them cannot move either.
+        def movable(point: VectorPoint) -> bool:
+            return point.dense_vector is not None and all(r in new_by_old for r in rows_of(point))
+
+        embed_rows: set[str] = set()
+        for point in read:
+            if not movable(point):
+                embed_rows.update(r for r in rows_of(point) if r in new_by_old)
+        unmoving = {id(p) for p in read if not movable(p)}
+        changed = True
+        while changed:
+            changed = False
+            for point in read:
+                if id(point) not in unmoving and embed_rows.intersection(rows_of(point)):
+                    unmoving.add(id(point))
+                    embed_rows.update(r for r in rows_of(point) if r in new_by_old)
+                    changed = True
+        failed.update(dict.fromkeys(embed_rows, "unmovable"))
+
+        writes: list[VectorPoint] = []
+        covered: set[str] = set()  # old ids a point that moves speaks for: as its blockId or in rowBlockIds
+        for point in read:
+            if id(point) in unmoving:
                 continue
-            writes: list[VectorPoint] = []
-            unmovable: set[str] = set()
-            for point in points:
-                payload = point.payload
-                meta = dict(payload.get("metadata") or {})
-                old_block = meta.get("blockId")
-                row_ids = meta.get("rowBlockIds")
-                if old_block not in new_by_old or point.dense_vector is None or (
-                        row_ids and any(r not in new_by_old for r in row_ids)):
-                    unmovable.add(old_block)
-                    # A grouped point holds the text of every row it lists under the first row's id: each of them is embedded again.
-                    failed.update({r: "unmovable" for r in row_ids or () if r in new_by_old})
-                    continue
-                meta["blockId"] = new_by_old[old_block]
-                new_block = new_by_old[old_block]
-                if new_block in group_index_of:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
-                    meta["blockGroupIndex"] = group_index_of[new_block]
-                elif new_block in index_of:
-                    meta["blockIndex"] = index_of[new_block]
-                if row_ids:
-                    meta["rowBlockIds"] = [new_by_old[r] for r in row_ids]
-                new_payload = {**payload, "metadata": meta}
-                covered.update([old_block, *(row_ids or ())])
-                writes.append(VectorPoint(
-                    id=deterministic_point_id(meta, payload.get("page_content", "")),
-                    dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload=new_payload,
-                ))
-            for old in batch:
-                if old in unmovable:
-                    failed[old] = "unmovable"
-            if writes:
-                await self.vector_db_service.upsert_points(collection_name, writes)
-            moved.update(old for old in batch if old not in failed)
-        # A block with embeddable text that no stored point speaks for lost its point (an interrupted index): moving nothing would leave
-        # it out of search for good, so it is embedded. A block that never had a point (no text, an image with no uri) is left as it is.
-        # The rule both ways: a row counts as moved only if the point that holds it moved. A row a moved point holds stays moved even when
-        # its own read batch failed (embedding it as well would put it in two points); a row no moved point holds is embedded.
+            payload = point.payload
+            meta = dict(payload.get("metadata") or {})
+            old_block, row_ids = meta.get("blockId"), meta.get("rowBlockIds")
+            new_block = new_by_old[old_block]
+            meta["blockId"] = new_block
+            if new_block in group_index_of:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
+                meta["blockGroupIndex"] = group_index_of[new_block]
+            elif new_block in index_of:
+                meta["blockIndex"] = index_of[new_block]
+            if row_ids:
+                meta["rowBlockIds"] = [new_by_old[r] for r in row_ids]
+            covered.update(rows_of(point))
+            writes.append(VectorPoint(
+                id=deterministic_point_id(meta, payload.get("page_content", "")),
+                dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload={**payload, "metadata": meta},
+            ))
+        for start in range(0, len(writes), _REKEY_PAGE):
+            await self.vector_db_service.upsert_points(collection_name, writes[start:start + _REKEY_PAGE])
+
+        # The rule: a row counts as moved only if a point that moves holds it. A row whose read batch failed stays moved when such a point
+        # holds it (embedding it too would put it in two points); a block or group with embeddable content that no moving point holds
+        # lost its point (an interrupted index) and is embedded, while one that never had a point (no text, an image with no uri) is left.
         for old in covered:
-            if failed.get(old) in ("error", "unsupported"):  # its read failed, but a point that did move holds it
+            if failed.get(old) in ("error", "unsupported"):
                 del failed[old]
-        for old in moved - failed.keys() - covered:
+        candidates = set(old_ids) - failed.keys()
+        for old in candidates - covered:
             if _embeds_a_point(blocks_by_id.get(new_by_old[old])):
                 failed[old] = "missing"
         for old, reason in failed.items():
             rekey_metrics.REKEY_FALLBACK.inc(reason)
             blocks_to_index_ids.add(new_by_old[old])
             block_ids_to_delete.add(old)
-        gone = {old for old in moved if old not in failed}
+        gone = candidates - failed.keys()
         if gone:
             await self.delete_blocks_by_ids(gone, vrid, collection_name, org_id=org_id)
             rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(gone)))
@@ -1439,12 +1453,34 @@ class VectorStore(Transformer):
             raise PartialResult(f"{collection_name}: the scroll saw {len(points)} points and the store counts {counted}")
         return points
 
+    async def _run_superseded(self, record: "Record") -> bool:
+        """Whether the stored record is no longer the revision this run indexed (a newer run took the record meanwhile, for instance after
+        this one lost its lease): its virtual record or its content checksum differs. The sweep deletes by what this run's revision
+        holds, so it must not run against another one."""
+        doc = await self.graph_provider.get_document(record.id, CollectionNames.RECORDS.value)
+        if doc is None:
+            return True  # deleted: the orphan cleanup releases its points, not the sweep
+        if not isinstance(doc, dict):
+            return False
+        current_vrid, current_md5 = doc.get("virtualRecordId"), doc.get("md5Checksum")
+        if current_vrid and current_vrid != record.virtual_record_id:
+            return True
+        run_md5 = record.md5_hash if isinstance(record.md5_hash, str) else None
+        return bool(current_md5 and run_md5 and current_md5 != run_md5)
+
     async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> None:
         """Drop the record's points that *revision* (its whole current container) does not reference.
         Best effort: the record is already searchable, so a failure here is logged and not raised."""
         if not sweep_enabled() or revision is None or not record.org_id or not record.virtual_record_id:
             return
         vrid = record.virtual_record_id
+        try:
+            if await self._run_superseded(record):
+                self.logger.info(f"Stray point sweep of {vrid} skipped: the record is on another revision now")
+                return
+        except Exception as e:  # cannot tell: a backstop that cannot tell does not delete
+            self.logger.warning(f"Stray point sweep of {vrid} skipped, the record could not be read: {e}")
+            return
         keep = {b.id for b in revision.blocks} | {g.id for g in revision.block_groups}
         keep |= {self.record_summary_block_id(vrid), code_residue_block_id(vrid)}
         try:
