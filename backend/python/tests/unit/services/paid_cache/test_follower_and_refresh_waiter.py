@@ -6,6 +6,7 @@ import asyncio
 import pytest
 
 from app.services.paid_cache import cache as cache_module
+from app.services.paid_cache import locks as locks_module
 from app.services.paid_cache.cache import PaidResultCache
 from app.services.paid_cache.keys import CacheKey
 from app.services.paid_cache.locks import InProcessLocks
@@ -303,3 +304,54 @@ async def test_an_orphans_later_flush_keeps_the_keys_its_retry_listed() -> None:
     await orphan.flush(store)
     listed = json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]
     assert {k[10] for k in listed} == {"a", "b", "c"}
+
+
+async def test_a_key_only_the_open_manifest_lists_survives_the_other_runs_finish() -> None:
+    """The orphan flushes a key after the retry's last note; the orphan is then past its deadline and cannot write it back."""
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    orphan, retry = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+    a, b, c = (f"ocr_page/{n * 64}.json" for n in "abc")
+    await retry.note(store, b, opens=True)
+    await orphan.note(store, a, opens=True)
+    orphan._keys.append(c)                                          # paid after the retry's last note
+    orphan._unflushed += 1
+    await orphan.flush(store)
+    orphan.started_ms -= int((locks_module.stage_deadline_s() + 10) * 1000)     # past its deadline: no more writes
+
+    await retry.finish(store)
+
+    final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
+    assert set(final) == {a, b, c}
+    assert (ORG, REC, "manifests/r1/parse.open.json") not in store.files
+
+
+async def test_a_flush_that_lands_between_another_runs_read_and_write_is_not_dropped() -> None:
+    import json
+
+    from app.services.paid_cache.run import RunScope
+
+    store = MemoryResultStore()
+    real_replace = store.replace
+
+    async def slow_replace(*args: Any) -> None:  # noqa: ANN401
+        await asyncio.sleep(0.05)                                   # the window between a run's read and its write
+        await real_replace(*args)
+
+    store.replace = slow_replace  # type: ignore[method-assign]
+    orphan, retry = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
+    a, b = (f"ocr_page/{n * 64}.json" for n in "ab")
+    await orphan.note(store, a, opens=True)
+    retry._keys.append(b)
+    retry._seen.add(b)
+    retry._unflushed = 1
+    retry._opened = True
+
+    await asyncio.gather(retry.flush(store), orphan.flush(store))   # two writers of one open manifest at once
+    await retry.finish(store)
+
+    final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
+    assert set(final) == {a, b}

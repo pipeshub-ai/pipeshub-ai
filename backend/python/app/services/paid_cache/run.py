@@ -19,6 +19,7 @@ import itertools
 import json
 import secrets
 import time
+import weakref
 from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any, Protocol
@@ -120,12 +121,12 @@ class RunScope:
             # write that waited behind another one finds nothing left to write.
             if self.finished or self.past_deadline() or (self._opened and self._unflushed == 0):
                 return
-            await self._adopt(store, open_manifest_path(self.content_rev, self.writer))
-            body, noted = self._body(), self._unflushed
-            async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
-                await store.replace(
-                    self.org_id, self.record_id, open_manifest_path(self.content_rev, self.writer), body,
-                )
+            open_path = open_manifest_path(self.content_rev, self.writer)
+            async with _path_lock(self.org_id, self.record_id, open_path):
+                await self._adopt(store, open_path)
+                body, noted = self._body(), self._unflushed
+                async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                    await store.replace(self.org_id, self.record_id, open_path, body)
             self._opened = True
             self._unflushed = max(self._unflushed - noted, 0)
             self._last_flush = self._clock()
@@ -159,19 +160,32 @@ class RunScope:
         async with self._write_lock:
             if self.finished or self.past_deadline() or (not self._keys and not self._opened):
                 return
-            await self._adopt(store, final_manifest_path(self.content_rev, self.writer))
-            async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
-                await store.replace(
-                    self.org_id, self.record_id, final_manifest_path(self.content_rev, self.writer),
-                    self._body(final=True),
-                )
-            self.finished = True
-            if self._opened:
+            final_path = final_manifest_path(self.content_rev, self.writer)
+            open_path = open_manifest_path(self.content_rev, self.writer)
+            # The open manifest is merged too, under the locks of both paths: a sibling run of this revision may have
+            # flushed keys into it that this run never noted, and it is deleted below.
+            async with _path_lock(self.org_id, self.record_id, open_path), _path_lock(self.org_id, self.record_id, final_path):
+                await self._adopt(store, final_path)
+                await self._adopt(store, open_path)
                 async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
-                    await store.delete_files(
-                        self.org_id, self.record_id, [open_manifest_path(self.content_rev, self.writer)],
-                    )
+                    await store.replace(self.org_id, self.record_id, final_path, self._body(final=True))
+                self.finished = True
+                async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
+                    await store.delete_files(self.org_id, self.record_id, [open_path])
                 self._opened = False
+
+
+#: One lock per manifest path in this process: two runs of one revision (an orphaned parse and its retry) read, merge
+#: and replace the same manifest, and a flush that lands between another's read and write must not be dropped.
+_PATH_LOCKS: "weakref.WeakValueDictionary[tuple[str, str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _path_lock(org_id: str, record_id: str, path: str) -> asyncio.Lock:
+    key = (org_id, record_id, path)
+    lock = _PATH_LOCKS.get(key)
+    if lock is None:
+        lock = _PATH_LOCKS[key] = asyncio.Lock()
+    return lock
 
 
 _run: ContextVar[RunScope | None] = ContextVar("paid_cache_run", default=None)
