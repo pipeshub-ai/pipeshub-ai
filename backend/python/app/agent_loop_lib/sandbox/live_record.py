@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import logging
+import math
 import os
 import struct
 import threading
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from app.services.resource_governor.shared_slots import (
     ensure_private_directory,
+    file_replaced,
     open_private_file,
 )
 
@@ -147,10 +149,16 @@ class LiveRecord:
          sample_at, last_valid, total, available, cpu_busy, cpu_total) = _BODY.unpack_from(data, _HEADER.size)
         if rule >= len(RULES) or cause >= len(_CAUSES):
             return None
+        # No writer stores an infinite or NaN time: such a record is damaged
+        # (or forged), and an infinite cooldown would pin the limit for good.
+        if not all(map(math.isfinite, (stamp, last_step, cooldown, wait_limit, wait_mem, sample_at, last_valid))):
+            return None
         charges = []
         for slot in range(BURST_SLOTS):
             until, size = _CHARGE.unpack_from(data, _HEADER.size + _BODY.size + slot * _CHARGE.size)
             if size:
+                if not math.isfinite(until):
+                    return None
                 charges.append((until, size))
         return cls(
             limit=limit, ceiling=ceiling, min=minimum,
@@ -216,18 +224,59 @@ class LiveLedger:
         self._last_corrupt = False
         self._memory: bytes = b""
         self._record_fd = self._lock_fd = -1
+        self._directory = directory
+        self._replaced_logged = False
         self.shared = directory is not None
         if directory is None:
             return
         if fcntl is None:
             raise OSError("the live record needs POSIX file locks")
         ensure_private_directory(directory)
-        self._record_fd = open_private_file(directory / "live")
+        self._record_fd, self._lock_fd = self._open_files(directory)
+
+    @staticmethod
+    def _open_files(directory: Path) -> tuple[int, int]:
+        record_fd = open_private_file(directory / "live")
         try:
-            self._lock_fd = open_private_file(directory / "live.lock")
+            return record_fd, open_private_file(directory / "live.lock")
         except BaseException:
-            os.close(self._record_fd)
+            os.close(record_fd)
             raise
+
+    def reopen_if_replaced(self) -> bool:
+        """Open ``live`` and ``live.lock`` again when either was deleted or
+        replaced since they were opened: workers still on the old files
+        would otherwise keep a second limit, and burst charges the others
+        never see. Blocking (a few syscalls); call it off the event loop,
+        e.g. once per sample. Returns whether it reopened them."""
+        directory = self._directory
+        if directory is None:
+            return False
+        with self._thread_lock:
+            if self._record_fd < 0:
+                return False
+            if not (
+                file_replaced(self._record_fd, directory / "live")
+                or file_replaced(self._lock_fd, directory / "live.lock")
+            ):
+                return False
+            try:
+                record_fd, lock_fd = self._open_files(directory)
+            except OSError as exc:
+                logger.warning("sandbox live limit: reopening the replaced shared record failed: %s", exc)
+                return False
+            old = (self._record_fd, self._lock_fd)
+            self._record_fd, self._lock_fd = record_fd, lock_fd
+            for fd in old:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        if not self._replaced_logged:
+            self._replaced_logged = True
+            logger.warning(
+                "sandbox live limit: the shared record in %s was deleted or replaced; reopened it",
+                directory,
+            )
+        return True
 
     def _read_raw(self, *, remember: bool = False) -> LiveRecord | None:
         if not self.shared:

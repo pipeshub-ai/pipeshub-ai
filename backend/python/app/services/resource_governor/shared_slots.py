@@ -26,6 +26,8 @@ not see slots held on the old ones until they are released.
 """
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import os
 import re
@@ -125,12 +127,17 @@ class SharedSlots:
         ensure_private_directory(directory)
         opened: list[int] = []
         try:
-            self._directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            # The directory is opened once, without following a link, and
+            # checked again through that descriptor; every file is then opened
+            # relative to it. Swapping the name for a link after the check
+            # changes nothing for this worker.
+            self._directory_fd = _open_private_directory(directory)
             opened.append(self._directory_fd)
             fcntl.flock(self._directory_fd, fcntl.LOCK_SH)
-            self._mutex_fd = self._open(directory, _MUTEX_FILE, opened)
+            self._mutex_fd = self._open(directory, self._directory_fd, _MUTEX_FILE, opened)
             self._slot_fds = [
-                self._open(directory, str(index), opened) for index in range(self._capacity)
+                self._open(directory, self._directory_fd, str(index), opened)
+                for index in range(self._capacity)
             ]
         except BaseException:
             for fd in opened:
@@ -138,8 +145,8 @@ class SharedSlots:
             raise
 
     @staticmethod
-    def _open(directory: Path, name: str, opened: list[int]) -> int:
-        fd = os.open(directory / name, os.O_RDWR | os.O_CREAT, 0o600)
+    def _open(directory: Path, directory_fd: int, name: str, opened: list[int]) -> int:
+        fd = open_private_file(directory / name, dir_fd=directory_fd)
         opened.append(fd)
         return fd
 
@@ -359,13 +366,87 @@ class LocalTaggedSlots:
                 self._tags.pop(index, None)
 
 
+_PRIVATE_FIX = (
+    "remove it (it is recreated private), or point this stack elsewhere: set "
+    "SANDBOX_STATE_ID for the code sandbox's state, or TMPDIR"
+)
+_reported: set[tuple[str, int, int]] = set()
+
+
+def _refuse(path: Path, info: os.stat_result | None, what: str, *, log: bool = True) -> PermissionError:
+    """A ``PermissionError`` for *path*, with one ERROR per path, owner and
+    mode: a refused directory turns cross-worker counting, the live limit,
+    the indexing back-off and the load alerts off, which must not go unseen.
+    A refused file inside a private directory is left to its caller to log:
+    only this uid can have put it there."""
+    uid = -1 if info is None else info.st_uid
+    mode = 0 if info is None else stat.S_IMODE(info.st_mode)
+    key = (str(path), uid, mode)
+    if log and key not in _reported:
+        _reported.add(key)
+        logger.error(
+            "%s is %s (owner uid %d, mode %04o; this process runs as uid %d and needs a "
+            "directory it owns with mode 0700). Shared state there is not used, so each "
+            "worker keeps its own; %s",
+            path, what, uid, mode, os.getuid(), _PRIVATE_FIX,
+        )
+    return PermissionError(f"{path} is {what} (owner uid {uid}, mode {mode:04o})")
+
+
+def _private(info: os.stat_result) -> bool:
+    return info.st_uid == os.getuid() and not info.st_mode & 0o077
+
+
+def _check_parent(parent: Path) -> None:
+    """Refuse a parent that another user could rename our directory out of:
+    one owned by someone else (root aside), or writable by everyone without
+    the sticky bit that ``/tmp`` has."""
+    try:
+        info = os.stat(parent)
+    except OSError:
+        return  # the mkdir below reports it
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    world_write = bool(info.st_mode & 0o002) and not info.st_mode & stat.S_ISVTX
+    if info.st_uid not in (0, os.getuid()) or world_write:
+        raise _refuse(parent, info, "a parent directory that another user can change")
+
+
+def _open_private_directory(directory: Path) -> int:
+    """*directory* opened without following a link, checked through the
+    descriptor. Raises ``PermissionError`` (logged once) when it is not ours alone."""
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        try:
+            info = os.lstat(directory)
+        except OSError:
+            raise exc from None
+        if stat.S_ISLNK(info.st_mode):
+            raise _refuse(directory, info, "a symlink, not a directory") from exc
+        if not stat.S_ISDIR(info.st_mode):
+            raise _refuse(directory, info, "not a directory") from exc
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or not _private(info):
+            raise _refuse(directory, info, "not a private directory owned by this user")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def ensure_private_directory(directory: Path) -> None:
     """Create *directory* if needed and refuse one that is not ours alone.
 
     The names under ``/tmp`` are predictable, so another local user could have
     created the directory first, or planted a symlink at its name. A real
     directory, owned by this uid, with no group or other bits, is the only kind
-    that can be trusted with files we write to. Raises ``PermissionError``.
+    that can be trusted with files we write to. Its parent must not let another
+    user rename it: owned by this uid or root, and not writable by everyone
+    unless sticky (as ``/tmp`` is). Raises ``PermissionError``, after one
+    ERROR naming the path, its owner and mode, and the fix.
 
     A missing parent is created private too: ``mkdir(parents=True)`` applies
     *mode* to the last directory only, so ``<state>/slots`` created first would
@@ -373,30 +454,58 @@ def ensure_private_directory(directory: Path) -> None:
     ``<state>`` then refuses.
     """
     parent = directory.parent
-    if parent != directory and not parent.exists():
-        ensure_private_directory(parent)
-    directory.mkdir(mode=0o700, exist_ok=True)
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        info = os.fstat(fd)
-    finally:
-        os.close(fd)
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise PermissionError(f"{directory} is not a private directory owned by this user")
+    if parent != directory:
+        if not os.path.lexists(parent):
+            ensure_private_directory(parent)
+        else:
+            _check_parent(parent)
+    with contextlib.suppress(FileExistsError):
+        directory.mkdir(mode=0o700)
+    os.close(_open_private_directory(directory))
 
 
-def open_private_file(path: Path) -> int:
+def open_private_file(path: Path, *, dir_fd: int | None = None) -> int:
     """Open (creating) a file we write to, refusing links and files that are not
-    ours alone. Raises ``OSError`` or ``PermissionError``."""
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    ours alone. With *dir_fd*, *path*'s last part is opened relative to that
+    directory. Raises ``OSError`` or ``PermissionError``."""
+    name: str | Path = path.name if dir_fd is not None else path
+    try:
+        fd = os.open(
+            name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd,
+        )
+    except OSError as exc:
+        if exc.errno != errno.ELOOP:
+            raise
+        try:
+            info = os.lstat(name, dir_fd=dir_fd)
+        except OSError:
+            raise exc from None
+        raise _refuse(path, info, "a symlink, not a regular file", log=False) from exc
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o177:
-            raise PermissionError(f"{path} is not a private regular file owned by this user")
+            raise _refuse(path, info, "not a private regular file owned by this user", log=False)
     except BaseException:
         os.close(fd)
         raise
     return fd
+
+
+def file_replaced(fd: int, path: Path) -> bool:
+    """Whether the file open as *fd* is no longer the one at *path*: it was
+    deleted, or something else now has its name. Workers that opened it
+    before would then keep using a file that workers started later never see."""
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        held = os.fstat(fd)
+    except OSError:
+        return True
+    return held.st_nlink == 0 or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
 
 
 def shared_slots_directory(name: str) -> Path | None:

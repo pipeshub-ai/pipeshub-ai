@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import logging
+import math
 import os
 import stat
 import struct
@@ -36,6 +37,7 @@ from typing import TYPE_CHECKING
 from app.services.resource_governor.lane_ledger import pid_alive
 from app.services.resource_governor.shared_slots import (
     ensure_private_directory,
+    file_replaced,
     open_private_file,
     sandbox_state_directory,
 )
@@ -86,6 +88,9 @@ MAX_SPAN_S = 120.0
 # clock restarted.
 CLOCK_SLACK_S = 1.0
 LOCK_BUDGET = 0.020
+# How often a writer checks that its open files are still the ones at their
+# names (see ``YieldSignal._reopen_if_replaced``).
+REOPEN_CHECK_S = 1.0
 # "Indexing has backed off": an ack this recent, and its pools at their floor
 # or the episode on for this long.
 BACKED_OFF_ACK_S = 30.0
@@ -113,6 +118,8 @@ class YieldRecord:
             0 < self.set_at <= now + CLOCK_SLACK_S
             and now < self.expires_at
             and self.expires_at - self.set_at <= MAX_SPAN_S
+            # An episode starts at or before its latest refresh.
+            and self.since <= self.set_at
             and (now - self.set_at < DEAD_WRITER_S or alive(self.writer_pid))
         )
 
@@ -153,14 +160,14 @@ class YieldRecord:
             return None
         offset = _HEADER.size
         set_at, expires_at, since, writer_pid, reason = _BODY.unpack_from(data, offset)
-        if reason >= len(REASONS):
+        if reason >= len(REASONS) or not all(map(math.isfinite, (set_at, expires_at, since))):
             return None
         offset += _BODY.size
         acks = []
         for _ in range(MAX_ACKS):
             pid, ack_at, at_floor = _ACK.unpack_from(data, offset)
             offset += _ACK.size
-            if pid:
+            if pid and math.isfinite(ack_at):
                 acks.append(YieldAck(pid=pid, ack_at=ack_at, at_floor=bool(at_floor)))
         return cls(
             set_at=set_at, expires_at=expires_at, since=since, writer_pid=writer_pid,
@@ -223,13 +230,51 @@ class YieldSignal:
         self.directory = directory
         self._clock = clock
         self._thread_lock = threading.Lock()
+        self._checked_at = time.monotonic()
+        self._replaced_logged = False
         ensure_private_directory(directory)
-        self._record_fd = open_private_file(directory / "yield")
+        self._record_fd, self._lock_fd = self._open_files(directory)
+
+    @staticmethod
+    def _open_files(directory: Path) -> tuple[int, int]:
+        record_fd = open_private_file(directory / "yield")
         try:
-            self._lock_fd = open_private_file(directory / "yield.lock")
+            return record_fd, open_private_file(directory / "yield.lock")
         except BaseException:
-            os.close(self._record_fd)
+            os.close(record_fd)
             raise
+
+    def _reopen_if_replaced(self) -> None:
+        """At most every ``REOPEN_CHECK_S``: open ``yield`` and ``yield.lock``
+        again when either was deleted or replaced since, or this process would
+        keep signalling into a file indexing no longer reads. Called with the
+        thread lock held; a few syscalls."""
+        now = time.monotonic()
+        if self._record_fd < 0 or now - self._checked_at < REOPEN_CHECK_S:
+            return
+        self._checked_at = now
+        directory = self.directory
+        if not (
+            file_replaced(self._record_fd, directory / "yield")
+            or file_replaced(self._lock_fd, directory / "yield.lock")
+        ):
+            return
+        try:
+            fds = self._open_files(directory)
+        except OSError as exc:
+            logger.debug("indexing back-off signal: reopening failed: %s", exc)
+            return
+        old = (self._record_fd, self._lock_fd)
+        self._record_fd, self._lock_fd = fds
+        for fd in old:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if not self._replaced_logged:
+            self._replaced_logged = True
+            logger.warning(
+                "indexing back-off signal: the record in %s was deleted or replaced; reopened it",
+                directory,
+            )
 
     @classmethod
     def open_default(cls, *, role: str) -> YieldSignal | None:
@@ -278,6 +323,7 @@ class YieldSignal:
             return
         locked = False
         try:
+            self._reopen_if_replaced()
             deadline = time.monotonic() + budget
             while True:
                 try:
@@ -362,7 +408,9 @@ def read_yield_state(directory: Path | None = None, *, now: float | None = None)
     if directory is None:
         return INACTIVE
     try:
-        fd = os.open(directory / "yield", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        # O_NONBLOCK: opening a FIFO planted at the name for reading would
+        # otherwise wait for a writer, and this runs on the event loop.
+        fd = os.open(directory / "yield", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
         return INACTIVE
     try:

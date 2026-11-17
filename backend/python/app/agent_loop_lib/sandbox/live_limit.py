@@ -44,7 +44,12 @@ from app.agent_loop_lib.sandbox.host_reading import (
     SidecarReader,
     resolve_live_mode,
 )
-from app.agent_loop_lib.sandbox.live_record import BURST_SLOTS, LiveLedger, LiveRecord, LiveTxn
+from app.agent_loop_lib.sandbox.live_record import (
+    BURST_SLOTS,
+    LiveLedger,
+    LiveRecord,
+    LiveTxn,
+)
 from app.agent_loop_lib.sandbox.live_settings import MAX_MEMORY_OVERCOMMIT, LiveSettings
 from app.core.org_context import spawn_detached
 from app.services.resource_governor.lane_ledger import pid_alive
@@ -221,13 +226,18 @@ def _previous_target_after_growth(rec: LiveRecord) -> int | None:
     return rec.target
 
 
-def live_charges(rec: LiveRecord, now: float, window_s: float) -> tuple[tuple[float, int], ...]:
+def live_charges(
+    rec: LiveRecord, now: float, window_s: float, max_bytes: int | None = None,
+) -> tuple[tuple[float, int], ...]:
     """The burst charges still in their window. One ending well over a
     window from now was written before the clock restarted (a host reboot);
     the slack covers a worker that read the clock just before another one
-    charged."""
+    charged. With *max_bytes* (one run's memory times the slots), no charge
+    counts for more: a burst cannot admit more runs than there are slots, so
+    a larger one is damaged and must not refuse every run."""
     return tuple(
-        (until, size) for until, size in rec.charges if now < until <= now + window_s + CLOCK_SLACK_S
+        (until, size if max_bytes is None else min(size, max_bytes))
+        for until, size in rec.charges if now < until <= now + window_s + CLOCK_SLACK_S
     )
 
 
@@ -299,10 +309,15 @@ def step(
     """One sample's step from *rec*. Pure."""
     limit = _clamp(rec.limit, floor, ceiling)
     # A run waited at the limit since the previous step: only then can
-    # growth help anyone.
-    waiting = rec.last_wait_limit_at > 0 and rec.last_wait_limit_at >= rec.last_step_at
+    # growth help anyone. A stamp from the future is not a wait.
+    waiting = 0 < rec.last_wait_limit_at <= now + CLOCK_SLACK_S and rec.last_wait_limit_at >= rec.last_step_at
     settled_floor = _previous_target_after_growth(rec)
-    rec = replace(rec, last_step_at=now, stamp=now, ceiling=ceiling, min=floor)
+    rec = replace(
+        rec, last_step_at=now, stamp=now, ceiling=ceiling, min=floor,
+        # No step sets a cooldown longer than HARD_COOLDOWN_S: one ending
+        # later (a damaged or forged record) must not hold the limit down.
+        cooldown_until=min(rec.cooldown_until, now + HARD_COOLDOWN_S),
+    )
     if not _usable(sample):
         return replace(rec, limit=limit, rule="unknown", cpu_high_streak=0)
     assert sample is not None and sample.mem_total is not None and sample.mem_available is not None
@@ -610,9 +625,11 @@ class LiveLimit:
         return age > DEAD_OWNER_S and not pid_alive(rec.owner_pid)
 
     def _fresh_step(self, rec: LiveRecord | None, now: float) -> bool:
+        # A step dated in the future is not fresh: it would stop every
+        # sampler from stepping until the record went stale.
         return (
             rec is not None and rec.initialised and not self._stale(rec, now)
-            and now - rec.last_step_at < STEP_SPACING * self._settings.interval_s
+            and -CLOCK_SLACK_S <= now - rec.last_step_at < STEP_SPACING * self._settings.interval_s
         )
 
     def _held(self) -> int:
@@ -630,6 +647,7 @@ class LiveLimit:
         mode, profile = self._mode, self._profile
         if not mode.on or mode.reader is None or profile is None:
             return None
+        self._ledger.reopen_if_replaced()
         now = self._clock()
         if self._fresh_step(self._ledger.read(), now):
             return None
@@ -801,8 +819,11 @@ class LiveLimit:
             rec = txn.read()
             if rec is None:
                 rec = self._replacement(txn, now)
-            charges = live_charges(rec, now, profile.burst_window_s)
-            if available - sum(size for _, size in charges) - m < hard_floor:
+            # A burst cannot admit more runs than there are slots: charges
+            # summing past that are damaged and must not refuse every run.
+            most = int(m) * max(1, self._ceiling(self._k(rec, now)))
+            charges = live_charges(rec, now, profile.burst_window_s, max_bytes=most)
+            if available - min(most, sum(size for _, size in charges)) - m < hard_floor:
                 return HoldReason.HOST_MEMORY_FLOOR
             txn.write(replace(rec, charges=_add_charge(charges, now + profile.burst_window_s, int(m))))
         return None

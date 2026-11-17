@@ -7,7 +7,8 @@ backend holds its slot from provisioning to destroy; any other backend
 holds one only while a call runs (``SandboxManager.slot()``).
 
 The instance has to be shared to mean anything. Per-request limits
-(``SandboxLimits.max_concurrent``) bound one chat; only a shared governor
+(``SandboxLimits.max_concurrent`` sandboxes, ``SANDBOX_MAX_PER_REQUEST``
+slots held at once, both in ``SandboxManager``) bound one chat; only a shared governor
 bounds the host when N chats run at once, so both
 ``build_coding_sandbox_manager()`` and ``ControlPlane.start()`` take theirs
 from ``get_default_governor()`` rather than constructing one.
@@ -57,6 +58,7 @@ from app.services.resource_governor.shared_slots import (
     LocalTaggedSlots,
     SharedSlots,
     SlotHold,
+    ensure_private_directory,
 )
 
 if TYPE_CHECKING:
@@ -575,7 +577,9 @@ class SandboxResourceGovernor:
         call it with one on the event loop."""
         try:
             return sum(self._slots.held_by_tag(budget).values())
-        except TimeoutError:
+        except (TimeoutError, OSError):
+            # A slot file that cannot be read says nothing about the count;
+            # the next acquire meets the same error and is refused for it.
             return None
 
     def snapshot(self) -> dict[str, Any]:
@@ -585,7 +589,9 @@ class SandboxResourceGovernor:
         stale = False
         try:
             self._last_counts = self._slots.held_by_tag(0.0)
-        except TimeoutError:
+        except (TimeoutError, OSError):
+            # For logs and health: never raises, or a waiting run's log line
+            # would fail it with an error other than ``SandboxLimitExceeded``.
             stale = True
         counts = self._last_counts
         view = self.limit_provider.view()
@@ -610,6 +616,9 @@ def _open_slots(directory: Path | None, capacity: int) -> SharedSlots | LocalTag
     reason = "no POSIX file locks"
     if directory is not None:
         try:
+            # The state directory itself first: one another user created
+            # before this stack started must not hold the slot files.
+            ensure_private_directory(directory)
             return SharedSlots(directory / "slots", capacity)
         except OSError as exc:
             reason = str(exc)

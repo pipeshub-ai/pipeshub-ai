@@ -89,7 +89,10 @@ class TestRecordBytes:
         struct.pack_into("<8sII", raw, 0, b"PXSBXYD\0", 1, 0)
         struct.pack_into("<8sII", raw, 0, b"PXSBXYD\0", 1, zlib.crc32(bytes(raw)))
         record = YieldRecord.decode(bytes(raw))
-        assert record is not None
+        if record is None:
+            # Only a non-finite time makes a checksummed record unreadable.
+            assert not all(map(math.isfinite, (set_at, expires_at, since)))
+            return
         state = state_of(record, now, _alive)
         if state.active:
             assert 0 < set_at <= now + CLOCK_SLACK_S and now < expires_at

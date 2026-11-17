@@ -229,7 +229,7 @@ class TestProperties:
             assert now < until <= now + 6.0
 
     def test_a_nan_charge_never_counts(self) -> None:
+        # No writer stores a non-finite time: the record reads as damaged.
         rec = LiveRecord(charges=((float("nan"), 2**30), (float("inf"), 2**30)))
-        back = LiveRecord.decode(rec.encode())
-        assert back is not None
-        assert live_charges(back, 1000.0, 5.0) == ()
+        assert LiveRecord.decode(rec.encode()) is None
+        assert live_charges(rec, 1000.0, 5.0) == ()
