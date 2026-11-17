@@ -51,6 +51,7 @@ from app.connectors.core.base.user_access import (
     is_per_user,
     list_connections,
     list_invites,
+    mark_removed,
     resolve_link,
     save_connection,
     save_invite,
@@ -260,10 +261,13 @@ async def _connect(
     method: str,
     refresh_token: str | None = None,
     holds_lock: bool = False,
+    started_at: int | None = None,
 ) -> UserConnection:
     """Check who ``token`` belongs to and store it as the caller's connection. 400 for a credential
     that must be refused, 409 for a Notion account another user connected, 503 when Notion is down."""
     user_id, email = str(user.get("userId")), str(user["email"])
+    # The connection dates from when connecting began, so a removal while it was under way wins.
+    started_at = started_at or get_epoch_timestamp_in_ms()
     config_service = _config_service(request)
     # Under the refresh lock: a disconnect that lands while the token is checked waits, then removes this.
     # A sign-in already holds it (from before its code exchange).
@@ -290,9 +294,13 @@ async def _connect(
         connection = UserConnection(
             user_id=user_id, email=email, token=token, source_user_id=identity.user_id,
             source_email=identity.email or "", workspace_id=identity.workspace_id,
-            refresh_token=refresh_token, method=method,
+            refresh_token=refresh_token, method=method, connected_at=started_at,
         )
-        await save_connection(config_service, connector_id, connection)
+        if not await save_connection(config_service, connector_id, connection):
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail="This account was disconnected while it was connecting. Connect again.",
+            )
     await _drop_links(config_service, connector_id, user_id)
     try:
         await delete_invite(config_service, connector_id, user_id)
@@ -412,6 +420,7 @@ async def _complete_user_sign_in(
         app = await _per_user_connector(request, connector_id, graph_provider)
     except HTTPException:
         raise _SignInFailed("This connector does not let users connect their own Notion account.") from None
+    started_at = get_epoch_timestamp_in_ms()
     config_service = _config_service(request)
     session = sign_in_path(connector_id, str(user.get("userId")))
     # Under the refresh lock from the state check to the save: a disconnect during the code exchange
@@ -439,7 +448,7 @@ async def _complete_user_sign_in(
             try:
                 await _connect(
                     request, app, connector_id, user, token.access_token,
-                    method=METHOD_OAUTH, refresh_token=token.refresh_token, holds_lock=True,
+                    method=METHOD_OAUTH, refresh_token=token.refresh_token, holds_lock=True, started_at=started_at,
                 )
             except HTTPException as e:
                 raise _SignInFailed(str(e.detail), shareable=True) from None
@@ -499,6 +508,8 @@ async def _remove(
     still waiting for its callback goes too, so it cannot connect the user after they left."""
     config_service = _config_service(request)
     async with refresh_lock(connector_id, user_id):
+        # Marked first: a connection another process writes after this undoes itself (save_connection).
+        await mark_removed(config_service, connector_id, user_id, get_epoch_timestamp_in_ms())
         removed = await delete_connection(config_service, connector_id, user_id)
     if not removed or not await delete_config_confirmed(config_service, sign_in_path(connector_id, user_id)):
         raise HTTPException(

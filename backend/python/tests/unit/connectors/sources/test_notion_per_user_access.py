@@ -380,7 +380,7 @@ class TestUserPass:
 class TestUpdateConnection:
     async def test_a_reconnect_is_not_overwritten(self) -> None:
         connector = _connector()
-        with patch(f"{_MOD}.save_connection", new=AsyncMock()) as save, \
+        with patch(f"{_MOD}.save_connection", new=AsyncMock(return_value=True)) as save, \
                 patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=_connection(token="new", connected_at=2))):
             assert await connector._update_connection(_connection(token="old")) is False
         save.assert_not_awaited()
@@ -388,7 +388,7 @@ class TestUpdateConnection:
     async def test_a_token_refreshed_meanwhile_is_kept(self) -> None:
         connector = _connector()
         mine = _connection(token="old", last_complete_listing_at=9)
-        with patch(f"{_MOD}.save_connection", new=AsyncMock()) as save, \
+        with patch(f"{_MOD}.save_connection", new=AsyncMock(return_value=True)) as save, \
                 patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=_connection(token="refreshed"))):
             assert await connector._update_connection(mine) is True
         saved = save.await_args.args[2]
@@ -396,7 +396,7 @@ class TestUpdateConnection:
 
     async def test_the_same_connection_is_updated(self) -> None:
         connector = _connector()
-        with patch(f"{_MOD}.save_connection", new=AsyncMock()) as save, \
+        with patch(f"{_MOD}.save_connection", new=AsyncMock(return_value=True)) as save, \
                 patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=_connection())):
             assert await connector._update_connection(_connection()) is True
         save.assert_awaited_once()

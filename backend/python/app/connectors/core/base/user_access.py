@@ -63,6 +63,15 @@ def links_prefix(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/links/"
 
 
+def removals_prefix(connector_id: str) -> str:
+    return f"/services/connectors/{connector_id}/removed/"
+
+
+def removal_path(connector_id: str, user_id: str) -> str:
+    """When the user's connection was last removed: a write of a connection made before then undoes itself."""
+    return f"{removals_prefix(connector_id)}{user_id}"
+
+
 def members_path(connector_id: str) -> str:
     """The source's member list as the last sync read it, for the admin's roster."""
     return f"/services/connectors/{connector_id}/members"
@@ -167,11 +176,30 @@ async def get_connection(
 
 async def save_connection(
     config_service: ConfigurationService, connector_id: str, connection: UserConnection
-) -> None:
+) -> bool:
+    """Store the connection. False when it was removed after it was made (``mark_removed``): then the write is
+    undone. The removal is marked before it deletes, and checked here after the write, so whichever process
+    writes a stale connection, one of the two deletes it; the store has no conditional write to do it in one."""
     if not await config_service.set_config(
         connection_path(connector_id, connection.user_id), connection.to_dict(), keep_in_cache=False
     ):
         raise RuntimeError(f"Could not save the connection of user {connection.user_id} to {connector_id}")
+    marker = await config_service.get_config(
+        removal_path(connector_id, connection.user_id), use_cache=False, keep_in_cache=False, raise_on_error=True
+    )
+    removed_at = int(marker.get("removedAt") or 0) if isinstance(marker, dict) else 0
+    if removed_at and removed_at >= connection.connected_at:
+        await delete_connection(config_service, connector_id, connection.user_id)
+        return False
+    return True
+
+
+async def mark_removed(config_service: ConfigurationService, connector_id: str, user_id: str, now_ms: int) -> None:
+    """Record a removal before deleting the connection (see ``save_connection``)."""
+    if not await config_service.set_config(
+        removal_path(connector_id, user_id), {"removedAt": now_ms}, keep_in_cache=False
+    ):
+        raise RuntimeError(f"Could not record the removal of user {user_id} from {connector_id}")
 
 
 async def delete_connection(config_service: ConfigurationService, connector_id: str, user_id: str) -> bool:
@@ -196,7 +224,7 @@ async def delete_all_connections(config_service: ConfigurationService, connector
     gone = True
     for prefix in (
         connections_prefix(connector_id), sign_in_prefix(connector_id),
-        invites_prefix(connector_id), links_prefix(connector_id),
+        invites_prefix(connector_id), links_prefix(connector_id), removals_prefix(connector_id),
     ):
         for key in await config_service.list_keys_in_directory(prefix):
             gone = await delete_config_confirmed(config_service, key) and gone

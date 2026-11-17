@@ -1085,8 +1085,7 @@ class NotionConnector(BaseConnector):
             current.status = connection.status
             current.last_error = connection.last_error
             current.last_complete_listing_at = connection.last_complete_listing_at
-            await save_connection(self.config_service, self.connector_id, current)
-            return True
+            return await save_connection(self.config_service, self.connector_id, current)
 
     async def _refresh_user_token(self, connection: UserConnection) -> bool | None:
         """After Notion refused a user's token: see refresh_connection (True, False or None)."""

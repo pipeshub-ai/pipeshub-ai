@@ -293,7 +293,8 @@ async def refresh_connection(
             return False
         latest.token = token.access_token
         latest.refresh_token = token.refresh_token or stored.refresh_token
-        await save_connection(config_service, connector_id, latest)
+        if not await save_connection(config_service, connector_id, latest):
+            return False  # removed while refreshing, from another process
         _adopt(connection, latest)
         return True
 

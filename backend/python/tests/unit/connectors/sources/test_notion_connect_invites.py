@@ -116,6 +116,28 @@ class TestReminderSchedule:
         assert not invite.reminder_due(365 * _DAY)
 
 
+class TestRemovalAcrossProcesses:
+    async def test_a_connection_written_back_after_a_removal_undoes_itself(self) -> None:
+        store = _Store()
+        stale = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",
+                                           source_email="a@acme.com", workspace_id="ws", connected_at=100)
+        assert await user_access.save_connection(store, "c1", stale) is True
+        # Another process removes the user (marker first, then the delete) ...
+        await user_access.mark_removed(store, "c1", "u1", now_ms=200)
+        await user_access.delete_connection(store, "c1", "u1")
+        # ... and a sync that read the connection before that writes it back.
+        assert await user_access.save_connection(store, "c1", stale) is False
+        assert await user_access.get_connection(store, "c1", "u1") is None
+
+    async def test_connecting_again_after_a_removal_is_kept(self) -> None:
+        store = _Store()
+        await user_access.mark_removed(store, "c1", "u1", now_ms=200)
+        fresh = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",
+                                           source_email="a@acme.com", workspace_id="ws", connected_at=300)
+        assert await user_access.save_connection(store, "c1", fresh) is True
+        assert await user_access.get_connection(store, "c1", "u1") is not None
+
+
 class TestConnectLinks:
     async def test_a_link_names_its_user_until_it_expires_and_only_its_hash_is_stored(self) -> None:
         store = _Store()
