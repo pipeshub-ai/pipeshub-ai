@@ -58,7 +58,7 @@ READS = {
         "state:*": ("app/services/pg_state.py:24", "state:lock:"),
         "/services/scopeFields/*": ("app/services/permissions/generation.py:40", "/services/scopeFields/"),
         "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py:34", "/services/vectordb/"),
-        "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py:35", "/services/platform/artifactRollout/membership/"),
+        "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py:37", "/services/platform/artifactRollout/membership/"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py:21", "/services/entityCleanup/"),  # entity_index_rebuild.py:40
         "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py:53", "/migrations/class_units_backfill/"),
         "/services/secretKeys": ("app/core/envelope.py:330", "SECRET_KEYS"),
