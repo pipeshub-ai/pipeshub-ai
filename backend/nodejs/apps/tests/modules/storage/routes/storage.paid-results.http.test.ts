@@ -9,6 +9,7 @@ import { AddressInfo } from 'net'
 import express from 'express'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
+import { StorageServiceAdapter } from '../../../../src/modules/storage/adapter/base-storage.adapter'
 import { StorageController } from '../../../../src/modules/storage/controllers/storage.controller'
 import { endpoint as ENDPOINTS_KEY, storageEtcdPaths } from '../../../../src/modules/storage/constants/constants'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
@@ -234,6 +235,45 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(filesOnDisk()).to.deep.equal(
         [onDisk(ORG_A, REC, page('c')), onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
       )
+    })
+
+    it('purge-cutoff refuses a missing or wrong token, and a token acts only inside its own org', async () => {
+      const url = `${baseUrl}/internal/paid-results/${REC}/purge-cutoff`
+      expect((await fetch(url, { method: 'POST' })).status).to.equal(401)
+      expect((await fetch(url, { method: 'POST', headers: { authorization: 'Bearer not-a-token' } })).status).to.equal(401)
+      // Org B's token reaches only org B's folder: org A's objects are neither touched nor listed.
+      const b = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`, undefined, ORG_B)
+      expect(b.status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('a')), onDisk(ORG_A, REC, page('b')), onDisk(ORG_A, REC, 'manifests/rev1/parse.json'),
+          onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+      )
+    })
+
+    it('purge-cutoff leaves no sentinel behind, on success or when the store fails, and a listing never shows one', async () => {
+      const ok = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      expect(ok.status).to.equal(200)
+      expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
+      const listed = await call('GET', `/internal/paid-results/${REC}`)
+      expect(JSON.stringify(listed.body)).to.not.include('purge-cutoff')
+
+      // A sentinel written but not yet removed (a concurrent call, or a crash) is not a result either.
+      const leftOver = path.join(home, PLATFORM_DIR, MOUNT, onDisk(ORG_A, REC, 'purge-cutoff/left-over.json'))
+      fs.mkdirSync(path.dirname(leftOver), { recursive: true })
+      fs.writeFileSync(leftOver, '{}')
+      expect(JSON.stringify((await call('GET', `/internal/paid-results/${REC}`)).body)).to.not.include('purge-cutoff')
+
+      // The listing that reads the stamp fails: the sentinel is still removed.
+      for (const f of filesOnDisk().filter((x) => x.includes('purge-cutoff'))) fs.rmSync(path.join(home, PLATFORM_DIR, MOUNT, f))
+      const real = StorageServiceAdapter.prototype.listObjects
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'listObjects').callsFake(async function (this: any, prefix: string, opts: any) {
+        if (prefix.includes('/purge-cutoff/')) throw new Error('store down')
+        return real.call(this, prefix, opts)
+      })
+      const failed = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      stub.restore()
+      expect(failed.status).to.be.at.least(500)
+      expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
     })
 
     it('refuses a `before` in the future and removes nothing', async () => {

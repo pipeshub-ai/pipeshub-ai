@@ -38449,6 +38449,8 @@ paths:
         Returns the object store's own clock (the last-modified stamp of a sentinel object written to
         and removed from the record's folder), so that no caller's clock decides what a purge removes.
         Take it once per purge and send it as `before` on every DELETE of that purge.
+        S3 and Azure Blob stamp whole seconds, so the cutoff is a whole second there and an object
+        written in that same second is not removed by the purge.
       operationId: internalPaidResultsPurgeCutoff
       security:
         - scopedToken: []

@@ -222,6 +222,8 @@ let storageConfig:
 
 /** How far past this service's clock a purge cutoff may lie before it is refused (the object store's clock may differ a little). */
 const PURGE_CUTOFF_FUTURE_SLACK_MS = 60_000;
+/** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
+const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
 
 @injectable()
 export class StorageController {
@@ -1388,7 +1390,12 @@ export class StorageController {
       });
       res.status(HTTP_STATUS.OK).json({
         objects: page.objects
-          .filter((o) => o.key.startsWith(`${root}/`))
+          // A purge-cutoff sentinel is the store's clock reading, never a result.
+          .filter(
+            (o) =>
+              o.key.startsWith(`${root}/`) &&
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`),
+          )
           .map((o) => ({
             path: o.key.slice(root.length + 1),
             size: o.size,
@@ -1449,7 +1456,10 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
       // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
-      if (beforeQuery !== undefined && Number(beforeQuery) > Date.now() + PURGE_CUTOFF_FUTURE_SLACK_MS) {
+      if (
+        beforeQuery !== undefined &&
+        Number(beforeQuery) > Date.now() + PURGE_CUTOFF_FUTURE_SLACK_MS
+      ) {
         throw new BadRequestError('before is in the future');
       }
       if (beforeQuery === undefined) {
@@ -1517,7 +1527,7 @@ export class StorageController {
       }
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
-      const folder = `${root}/purge-cutoff/`;
+      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/`;
       const key = `${folder}${randomUUID()}.json`;
       await adapter.uploadDocumentToStorageService({
         buffer: Buffer.from('{}'),
@@ -1527,10 +1537,14 @@ export class StorageController {
       });
       let cutoff: number;
       try {
-        const page = await adapter.listObjects(folder, { limit: PAID_RESULT_LIST_PAGE });
+        const page = await adapter.listObjects(folder, {
+          limit: PAID_RESULT_LIST_PAGE,
+        });
         const written = page.objects.find((o) => o.key === key);
         if (written === undefined) {
-          throw new ServiceUnavailableError('The store did not stamp the cutoff');
+          throw new ServiceUnavailableError(
+            'The store did not stamp the cutoff',
+          );
         }
         cutoff = written.lastModifiedMs;
       } finally {
