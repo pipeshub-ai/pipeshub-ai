@@ -8,6 +8,9 @@ fields:
       - OPEN
       - STRICT
       - RESTRICTED
+  adds_permissions:
+    required: false
+    type: boolean
   authored_by:
     required: false
     type: object
