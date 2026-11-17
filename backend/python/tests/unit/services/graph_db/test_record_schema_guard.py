@@ -115,6 +115,36 @@ class TestANewerSchemaWrittenDuringTheQuietWait:
         assert server.puts == [] and server.live == RECORD_SCHEMA_GENERATION + 1
 
 
+class TestADeadlineThatExpiresDuringASleep:
+    async def test_wait_wide_makes_no_read_after_its_deadline(self) -> None:
+        """The schema turns wide after the deadline and before the next poll would have run: it is not reported as wide in time."""
+        server = FakeServer(live=0)
+
+        async def turns_wide_later() -> None:
+            await asyncio.sleep(0.07)
+            server.live = RECORD_SCHEMA_GENERATION
+
+        task = asyncio.get_running_loop().create_task(turns_wide_later())
+        assert await _guard(server).wait_wide(0.05) is False
+        await task
+
+    async def test_the_quiet_wait_does_not_sleep_past_its_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = FakeServer(live=0)
+        server.running = [{"id": "1", "state": "running"}]
+        monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(guard_module, "QUIET_POLL_S", 30.0)
+        calls = {"n": 0}
+        real = server.list_running_transactions
+
+        async def counting() -> list[dict[str, Any]]:
+            calls["n"] += 1
+            return await real()
+
+        server.list_running_transactions = counting  # type: ignore[method-assign]
+        assert await asyncio.wait_for(_guard(server)._wait_quiet(), timeout=3) is False
+        assert calls["n"] == 1, "no request after the deadline"
+
+
 class TestQuietPoint:
     async def test_the_change_waits_for_the_running_transactions_and_counts_a_contended_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
         server = FakeServer(live=0)
@@ -203,13 +233,80 @@ class TestSingleFlight:
 
         assert len(server.puts) == 1
 
-    async def test_an_unreachable_lock_does_not_stop_the_widening(self) -> None:
+    async def test_an_unreachable_lock_means_no_schema_write(self) -> None:
+        """Fails closed: another process can install a newer schema after the last generation check, and an unlocked write would narrow it."""
         server = FakeServer(live=0)
 
         async def broken() -> Any:  # noqa: ANN401
             raise ConnectionError("no redis")
 
-        assert await _guard(server, lock_factory=broken).ensure_wide("test") is True
+        assert await _guard(server, lock_factory=broken).ensure_wide("test") is False
+        assert server.puts == []
+
+    async def test_a_factory_that_gives_no_lock_means_no_schema_write(self) -> None:
+        server = FakeServer(live=0)
+
+        async def none() -> None:
+            return None
+
+        assert await _guard(server, lock_factory=none).ensure_wide("test") is False
+        assert server.puts == []
+
+    @staticmethod
+    def _server_where_a_newer_schema_lands_after_the_first_check() -> FakeServer:
+        """The race: the older process reads the narrow schema, and a newer process installs its schema before the older would write."""
+        server = FakeServer(live=0)
+        real = server.get_collection_schema
+        reads = {"n": 0}
+
+        async def get(name: str) -> dict | None:
+            reads["n"] += 1
+            answer = await real(name)
+            if reads["n"] == 3:  # after the last generation check an unlocked widening makes
+                server.live = RECORD_SCHEMA_GENERATION + 1
+            return answer
+
+        server.get_collection_schema = get  # type: ignore[method-assign]
+        return server
+
+    async def test_a_newer_schema_installed_while_the_lock_is_unavailable_is_never_narrowed(self) -> None:
+        server = self._server_where_a_newer_schema_lands_after_the_first_check()
+
+        async def broken() -> Any:  # noqa: ANN401
+            raise ConnectionError("no redis")
+
+        await _guard(server, lock_factory=broken).ensure_wide("test")
+        await server.get_collection_schema("records")  # the newer process installs its schema now, whatever this one did
+        await server.get_collection_schema("records")
+
+        assert server.puts == [], "no lock, no schema write"
+        assert server.live == RECORD_SCHEMA_GENERATION + 1
+
+    async def test_the_unlocked_widening_is_the_race_it_closes(self) -> None:
+        """The control: with the lock opted out, the same sequence writes this process's schema over the newer one."""
+        server = self._server_where_a_newer_schema_lands_after_the_first_check()
+
+        async def broken() -> Any:  # noqa: ANN401
+            raise ConnectionError("no redis")
+
+        real_put = server.update_collection_schema
+
+        async def put_after_the_newer_one_landed(name: str, schema: dict, timeout: float | None = None) -> bool:
+            server.live = RECORD_SCHEMA_GENERATION + 1  # the newer process installed its schema just before this write
+            return await real_put(name, schema, timeout)
+
+        server.update_collection_schema = put_after_the_newer_one_landed  # type: ignore[method-assign]
+        await _guard(server, lock_factory=broken, require_lock=False).ensure_wide("test")
+
+        assert server.puts and server.live == RECORD_SCHEMA_GENERATION  # the newer schema was overwritten by the older one
+
+    async def test_a_deployment_that_opts_out_of_the_lock_still_widens_without_it(self) -> None:
+        server = FakeServer(live=0)
+
+        async def broken() -> Any:  # noqa: ANN401
+            raise ConnectionError("no redis")
+
+        assert await _guard(server, lock_factory=broken, require_lock=False).ensure_wide("test") is True
 
 
 def _factory(lock: Any):  # noqa: ANN202, ANN401
@@ -270,6 +367,18 @@ class TestTheClientHook:
 
         assert await _hooked(client)(client, "Q") == [1]
         assert len(client.sent) == 2 and server.live == RECORD_SCHEMA_GENERATION
+
+    async def test_a_refusal_with_no_lock_to_widen_under_raises_the_transient_narrow_error_and_writes_no_schema(self) -> None:
+        server = FakeServer(live=0)
+        client = _Client(server, [Exception(REFUSAL), Exception(REFUSAL)])
+
+        async def broken() -> Any:  # noqa: ANN401
+            raise ConnectionError("no redis")
+
+        client.record_guard = _guard(server, lock_factory=broken)
+        with pytest.raises(RecordSchemaNarrowError):
+            await _hooked(client)(client, "Q")
+        assert server.puts == []
 
     async def test_a_refusal_that_outlives_a_widening_that_did_not_apply_raises_the_narrow_error(self) -> None:
         client = _Client(FakeServer(live=0, applies=False), [Exception(REFUSAL), Exception(REFUSAL)])

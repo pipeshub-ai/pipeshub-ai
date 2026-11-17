@@ -13,6 +13,7 @@ import bisect
 import contextlib
 import functools
 import json
+import os
 import random
 import re
 import time
@@ -1245,6 +1246,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.http_client.record_guard = RecordSchemaGuard(
                 self.http_client, self.logger, schema=record_schema, generation=RECORD_SCHEMA_GENERATION,
                 lock_factory=self._record_schema_lock,
+                require_lock=os.environ.get("RECORD_SCHEMA_REQUIRE_LOCK", "true").strip().lower() != "false",
             )
 
             # Ensure database exists

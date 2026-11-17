@@ -110,6 +110,7 @@ class RecordSchemaGuard:
         generation: int,
         collection: str = "records",
         lock_factory: LockFactory | None = None,
+        require_lock: bool = True,
     ) -> None:
         self._client = client
         self._logger = logger
@@ -117,6 +118,7 @@ class RecordSchemaGuard:
         self.generation = generation
         self._collection = collection
         self._lock_factory = lock_factory
+        self._require_lock = require_lock
         self._narrowed = False
         self._aborted: OrderedDict[str, float] = OrderedDict()
         self._abort_confirmed: OrderedDict[str, float] = OrderedDict()
@@ -168,16 +170,20 @@ class RecordSchemaGuard:
         """Wait until the live schema is at least this process's generation (or ``timeout``); True when it is."""
         deadline = time.monotonic() + timeout
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
             try:
                 # each read is bounded by what is left, so a read that never answers cannot outlast the deadline
-                if await asyncio.wait_for(self.live_generation(), max(deadline - time.monotonic(), 0.001)) >= self.generation:
+                if await asyncio.wait_for(self.live_generation(), remaining) >= self.generation:
                     self._narrowed = False
                     return True
             except Exception as error:  # includes the timeout of the read
                 self._logger.warning("could not read the records schema generation: %r", error)
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return False
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(min(0.1, remaining))  # never past the deadline, so no read is made after it
 
     # -- widening ---------------------------------------------------------------------------------------------
     async def ensure_wide(self, trigger: str, *, transaction: str | None = None) -> bool:
@@ -198,8 +204,14 @@ class RecordSchemaGuard:
                         await self.wait_wide(REWIDEN_TIMEOUT_S)
                         return False
                 except Exception as error:
-                    self._logger.warning("record schema widening runs without its lock: %s", error)
+                    self._logger.warning("record schema widening could not take its lock: %s", error)
                     lock = None
+                if lock is None and self._require_lock:
+                    # Fails closed: without the lock another process can install a newer schema after the last generation check and
+                    # this write would narrow it. The write that was refused is refused again (a transient error, run again by its owner)
+                    # and the poll tries again.
+                    self._logger.warning("record schema widening skipped: no cross-process lock (Redis unreachable)")
+                    return False
             try:
                 if await self.live_generation() >= self.generation:
                     self._narrowed = False
@@ -240,14 +252,18 @@ class RecordSchemaGuard:
         """True when no stream transaction is running before the 5 s are up."""
         deadline = time.monotonic() + REWIDEN_TIMEOUT_S
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
             try:
-                if not await asyncio.wait_for(self._client.list_running_transactions(), max(deadline - time.monotonic(), 0.001)):
+                if not await asyncio.wait_for(self._client.list_running_transactions(), remaining):
                     return True
             except Exception:  # includes the timeout of the request
                 return False
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return False
-            await asyncio.sleep(QUIET_POLL_S)
+            await asyncio.sleep(min(QUIET_POLL_S, remaining))  # never past the deadline, so no request is made after it
 
     # -- polling ----------------------------------------------------------------------------------------------
     def start(self, interval: float = POLL_INTERVAL_S) -> None:
