@@ -22,6 +22,11 @@ export const SWEEP_QUEUE_NAME = 'connector-schedule-sweep';
 const SWEEP_JOB_NAME = 'sweep';
 const SWEEP_STARTUP_JOB_ID = 'sweep-startup';
 const DEFAULT_SWEEP_INTERVAL_MINUTES = 15;
+// The startup sweep runs while the connector service may still be starting (one container starts both),
+// so its listing is retried for about three minutes, like the scheduled-jobs backfill.
+const STARTUP_LISTING_ATTEMPTS = 10;
+const STARTUP_LISTING_FIRST_DELAY_MS = 2_000;
+const STARTUP_LISTING_MAX_DELAY_MS = 30_000;
 
 export interface SweepSummary {
   checked: number;
@@ -70,10 +75,8 @@ export class ConnectorScheduleSweepService {
     }
 
     try {
-      const run = async (): Promise<void> => {
-        await runWithRequestContext({ rootId: newSystemRoot() }, () =>
-          this.sweep(),
-        );
+      const run = async (job: { id?: string }): Promise<void> => {
+        await this.runJob(job);
       };
       if (usesPgScheduler()) {
         // no Redis: the same one-sweeper-per-tick contract on PostgreSQL (claimed with SKIP LOCKED)
@@ -164,7 +167,42 @@ export class ConnectorScheduleSweepService {
     }
   }
 
-  async sweep(): Promise<SweepSummary> {
+  private runJob(job: { id?: string }): Promise<SweepSummary> {
+    return runWithRequestContext({ rootId: newSystemRoot() }, () =>
+      this.sweep({ waitForConnectorService: job.id === SWEEP_STARTUP_JOB_ID }),
+    );
+  }
+
+  private async listScheduledConnectors(
+    waitForConnectorService: boolean,
+  ): Promise<scheduledConnectorsClient.ScheduledConnectorListing> {
+    let delay = STARTUP_LISTING_FIRST_DELAY_MS;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await scheduledConnectorsClient.fetchAllScheduledConnectors(
+          this.appConfig,
+        );
+      } catch (error) {
+        if (!waitForConnectorService || attempt >= STARTUP_LISTING_ATTEMPTS) {
+          throw error;
+        }
+        this.logger.info(
+          'Connector service not reachable yet; the startup schedule sweep retries',
+          {
+            attempt,
+            retryInMs: delay,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, STARTUP_LISTING_MAX_DELAY_MS);
+      }
+    }
+  }
+
+  async sweep({
+    waitForConnectorService = false,
+  }: { waitForConnectorService?: boolean } = {}): Promise<SweepSummary> {
     const started = Date.now();
     const summary: SweepSummary = {
       checked: 0,
@@ -190,10 +228,9 @@ export class ConnectorScheduleSweepService {
       // Snapshot before fetching: a schedule a user creates mid-sweep is not in
       // it, so it can never be mistaken for an orphan.
       snapshot = await this.scheduler.listRepeatableSchedules();
-      const listing =
-        await scheduledConnectorsClient.fetchAllScheduledConnectors(
-          this.appConfig,
-        );
+      const listing = await this.listScheduledConnectors(
+        waitForConnectorService,
+      );
       desired = listing.items;
       listingPartial = listing.partial;
     } catch (error) {
