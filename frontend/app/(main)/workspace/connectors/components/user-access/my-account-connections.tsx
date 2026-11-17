@@ -75,8 +75,11 @@ function ConnectAccountDialog({
   // With sign-in available, the token form is a fallback behind a disclosure.
   const [showToken, setShowToken] = useState(false);
   const popupRef = useRef<Window | null>(null);
+  // Bumped by each sign-in and by closing the popup, so a late answer for an earlier one is ignored.
+  const signInAttempt = useRef(0);
 
   const closePopup = useCallback(() => {
+    signInAttempt.current += 1;
     const popup = popupRef.current;
     popupRef.current = null;
     if (popup && !popup.closed) popup.close();
@@ -131,9 +134,14 @@ function ConnectAccountDialog({
     }
     popupRef.current = popup;
     setSigningIn(true);
+    const attempt = ++signInAttempt.current;
     try {
-      popup.location.href = await ConnectorsApi.startUserAccessSignIn(connector.connectorId);
+      const url = await ConnectorsApi.startUserAccessSignIn(connector.connectorId);
+      // Cancelled (or another sign-in started) while the URL was on its way: that one owns the popup now.
+      if (attempt !== signInAttempt.current) return;
+      popup.location.href = url;
     } catch (err) {
+      if (attempt !== signInAttempt.current) return;
       closePopup();
       setSigningIn(false);
       setError(getUserFacingErrorMessage(err, t('workspace.connectors.userAccess.connectDialog.signInFailed')));

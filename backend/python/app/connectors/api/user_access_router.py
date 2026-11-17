@@ -264,31 +264,33 @@ async def _connect(
     that must be refused, 409 for a Notion account another user connected, 503 when Notion is down."""
     user_id, email = str(user.get("userId")), str(user["email"])
     config_service = _config_service(request)
-    try:
-        identity = await verify_token(
-            token, pipeshub_email=email, connector_id=connector_id, config_service=config_service, logger=logger,
-        )
-    except NotionAccessError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from None
-    except Exception as e:
-        logger.warning("Could not verify a Notion token for connector %s: %s", connector_id, e)
-        raise HTTPException(
-            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Notion could not be reached. Try again."
-        ) from None
-
-    for other in await list_connections(config_service, connector_id):
-        if other.user_id != user_id and other.source_user_id == identity.user_id:
-            raise HTTPException(
-                status_code=HttpStatusCode.CONFLICT.value,
-                detail="Another PipesHub user has already connected this Notion account.",
+    # Under the refresh lock: a disconnect that lands while the token is checked waits, then removes this.
+    async with refresh_lock(connector_id, user_id):
+        try:
+            identity = await verify_token(
+                token, pipeshub_email=email, connector_id=connector_id, config_service=config_service, logger=logger,
             )
+        except NotionAccessError as e:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from None
+        except Exception as e:
+            logger.warning("Could not verify a Notion token for connector %s: %s", connector_id, e)
+            raise HTTPException(
+                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Notion could not be reached. Try again."
+            ) from None
 
-    connection = UserConnection(
-        user_id=user_id, email=email, token=token, source_user_id=identity.user_id,
-        source_email=identity.email or "", workspace_id=identity.workspace_id,
-        refresh_token=refresh_token, method=method,
-    )
-    await save_connection(config_service, connector_id, connection)
+        for other in await list_connections(config_service, connector_id):
+            if other.user_id != user_id and other.source_user_id == identity.user_id:
+                raise HTTPException(
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail="Another PipesHub user has already connected this Notion account.",
+                )
+
+        connection = UserConnection(
+            user_id=user_id, email=email, token=token, source_user_id=identity.user_id,
+            source_email=identity.email or "", workspace_id=identity.workspace_id,
+            refresh_token=refresh_token, method=method,
+        )
+        await save_connection(config_service, connector_id, connection)
     await _drop_links(config_service, connector_id, user_id)
     try:
         await delete_invite(config_service, connector_id, user_id)
@@ -698,6 +700,10 @@ async def _send_all(send: _Sender, targets: list[dict[str, Any]], org_id: str) -
     with bind(OrgContext(org_id, None, "service", "connect_invites", "-")):
         for user in targets:
             try:
+                # The list was read before the first send: someone may have opted out since.
+                invite = await get_invite(send.config_service, send.base.connector_id, str(user["userId"]))
+                if invite is not None and invite.opted_out:
+                    continue
                 await send(user)
             except Exception as e:
                 logger.warning("Could not send a connect request for connector %s: %s", send.base.connector_id, e)

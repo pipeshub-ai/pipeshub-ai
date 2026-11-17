@@ -325,6 +325,23 @@ class TestInvitesRoute:
                 await coro
         return result, send, saved
 
+    async def test_someone_who_opts_out_while_invite_all_runs_is_skipped(self) -> None:
+        routes = _routes()
+        store = _Store()
+        sent = []
+
+        class _FakeSender:
+            config_service = store
+            base = SimpleNamespace(connector_id="c1")
+
+            async def __call__(self, user: dict) -> None:
+                sent.append(user["userId"])
+                if user["userId"] == "a":  # b opts out while a's email goes out
+                    await user_access.save_invite(store, "c1", Invite("b", 1, 1, 1, opted_out=True))
+
+        await routes._send_all(_FakeSender(), [{"userId": "a"}, {"userId": "b"}, {"userId": "c"}], "org-1")
+        assert sent == ["a", "c"]
+
     async def test_invite_all_reaches_who_is_not_connected_and_did_not_opt_out(self) -> None:
         people = [{"userId": u, "status": s} for u, s in (
             ("a", "not_invited"), ("b", "invited"), ("c", "needs_reconnect"), ("d", "opted_out"),

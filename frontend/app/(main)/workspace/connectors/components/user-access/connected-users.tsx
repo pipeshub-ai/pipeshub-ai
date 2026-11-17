@@ -35,8 +35,8 @@ const STATUS_COLOR: Record<UserAccessRosterStatus, React.ComponentProps<typeof B
   no_account: 'gray',
 };
 
-// A background send ({all: true}) is still going when it answers; read the roster again after this.
-const QUEUED_RELOAD_MS = 5000;
+// A background send ({all: true}) is still going when it answers; read the roster again at these times.
+const QUEUED_RELOADS_MS = [5_000, 15_000, 30_000, 60_000];
 
 // `{all: true}` skips anyone sent something within this long (server: MIN_SEND_GAP_MS).
 const RECENT_SEND_MS = 24 * 60 * 60 * 1000;
@@ -70,12 +70,10 @@ export function ConnectedUsers({
   const [inviting, setInviting] = useState<string | null>(null);
   const [removing, setRemoving] = useState<UserAccessRosterPerson | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
-  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reloadTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => setRoster(null), [connectorId]);
-  useEffect(() => () => {
-    if (reloadTimer.current) clearTimeout(reloadTimer.current);
-  }, []);
+  useEffect(() => () => reloadTimers.current.forEach(clearTimeout), []);
 
   const toastFor = useCallback(
     (result: UserAccessInviteResult) => {
@@ -126,8 +124,8 @@ export function ConnectedUsers({
         toastFor(result);
         setReloadKey((k) => k + 1);
         if (result.queued) {
-          if (reloadTimer.current) clearTimeout(reloadTimer.current);
-          reloadTimer.current = setTimeout(() => setReloadKey((k) => k + 1), QUEUED_RELOAD_MS);
+          reloadTimers.current.forEach(clearTimeout);
+          reloadTimers.current = QUEUED_RELOADS_MS.map((ms) => setTimeout(() => setReloadKey((k) => k + 1), ms));
         }
       } catch {
         // The interceptor shows the server's reason.

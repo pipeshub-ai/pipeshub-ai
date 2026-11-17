@@ -3368,6 +3368,7 @@ class DataSourceEntitiesProcessor:
         replace = replace_permissions or (
             permissions_fetched
             and existing_record is not None
+            and not record.adds_permissions
             and self._first_full_sync_visit(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
         )
         await self._handle_record_permissions(record, permissions, tx_store, replace=replace)

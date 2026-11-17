@@ -53,6 +53,7 @@ function OpenAppButton({ href }: { href: string }) {
  * mail scanners open links, so loading the page must not turn reminders off.
  */
 const LINK_TOKEN_KEY = 'pipeshub:connectLinkToken';
+const LINK_ENTRY_KEY = 'pipeshubConnectLink';
 
 export function ConnectAccountClient() {
   const { t } = useTranslation();
@@ -67,17 +68,24 @@ export function ConnectAccountClient() {
     const params = new URLSearchParams(window.location.search);
     // The token works without a login: keep it out of the address bar and history, and in this
     // tab only, so a reload or Back from the source still finds it.
+    // Each history entry keeps its own link (two links opened in one tab must not swap on reload).
+    const state = (window.history.state ?? {}) as Record<string, unknown>;
+    const entry = typeof state[LINK_ENTRY_KEY] === 'string' ? (state[LINK_ENTRY_KEY] as string) : String(Date.now());
     let linkToken = params.get('token')?.trim() ?? '';
     try {
-      if (linkToken) sessionStorage.setItem(LINK_TOKEN_KEY, linkToken);
-      else linkToken = sessionStorage.getItem(LINK_TOKEN_KEY) ?? '';
+      if (linkToken) sessionStorage.setItem(`${LINK_TOKEN_KEY}:${entry}`, linkToken);
+      else linkToken = sessionStorage.getItem(`${LINK_TOKEN_KEY}:${entry}`) ?? '';
     } catch {
       // Storage blocked: the token only lives in this page.
     }
     if (params.has('token')) {
       params.delete('token');
       const rest = params.toString();
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${rest ? `?${rest}` : ''}`);
+      window.history.replaceState(
+        { ...state, [LINK_ENTRY_KEY]: entry },
+        '',
+        `${window.location.pathname}${rest ? `?${rest}` : ''}`
+      );
     }
     setToken(linkToken);
     if (!linkToken) {

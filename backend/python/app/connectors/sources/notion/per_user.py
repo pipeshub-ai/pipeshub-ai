@@ -81,6 +81,8 @@ def with_user_grant(
     """
     if record.record_type in GRANTED_TYPES and not record.is_placeholder:
         record.inherit_permissions = False
+        # Other users' grants come from their own passes; the grants a user lost are dropped by their pass.
+        record.adds_permissions = True
         return record, [user_grant(connection)]
     return record, permissions
 

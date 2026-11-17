@@ -561,11 +561,14 @@ describe('connect-account landing page', () => {
     Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
     assign.mockReset();
     sessionStorage.clear();
-    vi.mocked(window.history.replaceState).mockRestore?.();
+    vi.restoreAllMocks();
   });
 
   it('takes the token out of the address bar but keeps it for a reload in this tab', async () => {
-    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined);
+    let entryState: unknown = null;
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation((data) => {
+      entryState = data;
+    });
     at('?token=c-1.abc&optOut=1');
     api.getUserAccessLinkInfo.mockResolvedValue(info);
     const first = renderInTheme(<ConnectAccountClient />);
@@ -573,6 +576,8 @@ describe('connect-account landing page', () => {
     expect(replaceState.mock.calls.map((c) => c[2])).toEqual(['/connect-account/?optOut=1']);
     first.unmount();
 
+    // A reload of that history entry: same state, no token in the URL.
+    vi.spyOn(window.history, 'state', 'get').mockReturnValue(entryState);
     at('');
     renderInTheme(<ConnectAccountClient />);
     expect(await screen.findByText('Connect your Notion account')).toBeTruthy();

@@ -128,6 +128,8 @@ class TestWithUserGrant:
         page = _record("p1")
         record, permissions = with_user_grant(page, [MagicMock()], _connection())
         assert record.inherit_permissions is False
+        # One user's view: added to other users' grants, never replacing them (not even on a full sync).
+        assert record.adds_permissions is True
         assert [(p.email, p.entity_type, p.type) for p in permissions] == [
             ("ann@acme.com", EntityType.USER, PermissionType.READ)]
 

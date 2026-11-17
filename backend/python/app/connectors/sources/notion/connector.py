@@ -142,6 +142,7 @@ from app.connectors.sources.notion.per_user import (
     acting_as,
     active_connection,
     refresh_connection,
+    refresh_lock,
     user_grant,
     with_user_grant,
 )
@@ -1075,15 +1076,17 @@ class NotionConnector(BaseConnector):
     async def _update_connection(self, connection: UserConnection) -> bool:
         """Store a sync's update to a connection, unless the user disconnected or connected again
         meanwhile: writing it back would undo that. False when the stored connection is not this one."""
-        current = await get_connection(self.config_service, self.connector_id, connection.user_id)
-        if current is None or current.connected_at != connection.connected_at:
-            return False
-        # The stored credential wins: a stream may have refreshed it while the pass ran.
-        current.status = connection.status
-        current.last_error = connection.last_error
-        current.last_complete_listing_at = connection.last_complete_listing_at
-        await save_connection(self.config_service, self.connector_id, current)
-        return True
+        # Under the refresh lock: a refresh or a disconnect between the read and the write would be undone.
+        async with refresh_lock(self.connector_id, connection.user_id):
+            current = await get_connection(self.config_service, self.connector_id, connection.user_id)
+            if current is None or current.connected_at != connection.connected_at:
+                return False
+            # The stored credential wins: a stream may have refreshed it while the pass ran.
+            current.status = connection.status
+            current.last_error = connection.last_error
+            current.last_complete_listing_at = connection.last_complete_listing_at
+            await save_connection(self.config_service, self.connector_id, current)
+            return True
 
     async def _refresh_user_token(self, connection: UserConnection) -> bool | None:
         """After Notion refused a user's token: see refresh_connection (True, False or None)."""

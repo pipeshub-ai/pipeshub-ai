@@ -56574,8 +56574,9 @@ paths:
         - Connector Instances
       summary: List everyone who could connect to a per-user connector
       description: |
-        Org admins only; anyone else gets `404`. Each person in the source's member list or with
-        a PipesHub account, with their connection and invitation state. Sorted by status
+        Org admins only; anyone else gets `404`. Each person in the source's member list (read at
+        the last sync), plus anyone who connected or was invited, with their connection and
+        invitation state. A PipesHub account that is in none of those is not listed. Sorted by status
         (`needs_reconnect`, `not_invited`, `invited`, `opted_out`, `connected`, `no_account`),
         then by name or email. Credentials are never returned.
       operationId: getConnectorUserRoster
@@ -56625,8 +56626,9 @@ paths:
       summary: Ask people to connect their account to a per-user connector
       description: |
         Org admins only; anyone else gets `404`. Sends each person an in-app notification and an
-        email (best effort). `all` reaches every person with a PipesHub account who is not
-        connected and has not opted out; listed `userIds` also reach people who opted out.
+        email (best effort). `all` reaches every person on the roster with a PipesHub account who
+        is not connected, has not opted out and was not sent anything in the last day; listed
+        `userIds` also reach people who opted out.
       operationId: inviteConnectorUsers
       security:
         - bearerAuth: []

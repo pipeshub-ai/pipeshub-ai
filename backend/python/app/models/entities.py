@@ -333,6 +333,9 @@ class Record(BaseModel):
     access_group_external_id: str | None = Field(default=None)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)
+    # Write-time only. When set, this save's permissions are some of the record's (one user's view of it):
+    # they are added, and never replace the stored ones, not even on a full sync's first write.
+    adds_permissions: bool = Field(default=False)
     # Read by the permission traversal on every visited node, so unlike
     # inherit_permissions — which is expressed as an edge — this is stored.
     # OPEN by default: a connector that says nothing gets the permissive
