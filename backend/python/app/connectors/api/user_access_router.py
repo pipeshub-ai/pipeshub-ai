@@ -343,18 +343,18 @@ async def _authorization_url(request: Request, connector_id: str, user_id: str, 
         )
     except NotionAccessError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from None
+    # Taken before the session exists: a removal while this runs is newer, so it undoes what the sign-in saves.
+    started_at = get_epoch_timestamp_in_ms()
     provider = OAuthProvider(oauth_config, config_service, sign_in_path(connector_id, user_id))
     try:
         # owner=user: the token acts for this person, on the pages they pick (a Notion public connection).
         url = await provider.start_authorization(owner="user")
     finally:
         await provider.close()
-    # When this sign-in began: a connection it makes dates from here, so a removal after it began wins.
     session = sign_in_path(connector_id, user_id)
     stored = await config_service.get_config(session, use_cache=False, keep_in_cache=False, raise_on_error=True)
     if isinstance(stored, dict):
-        await config_service.set_config(session, {**stored, "startedAt": get_epoch_timestamp_in_ms()},
-                                        keep_in_cache=False)
+        await config_service.set_config(session, {**stored, "startedAt": started_at}, keep_in_cache=False)
     parts = urlparse(url)
     query = parse_qs(parts.query)
     query["state"] = [_encode_sign_in_state(query["state"][0], connector_id, user_id if link_user else None)]

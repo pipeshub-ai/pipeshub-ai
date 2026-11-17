@@ -227,21 +227,21 @@ async def delete_connection(config_service: ConfigurationService, connector_id: 
 async def list_connections(config_service: ConfigurationService, connector_id: str) -> list[UserConnection]:
     """Every user's connection to the connector. A failed read raises: an empty list is read as
     "nobody is connected", which takes everyone's access away."""
-    removed_users = {
-        key.removeprefix(removals_prefix(connector_id))
-        for key in await config_service.list_keys_in_directory(removals_prefix(connector_id))
-    }
     connections: list[UserConnection] = []
     for key in await config_service.list_keys_in_directory(connections_prefix(connector_id)):
         data = await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True)
         if isinstance(data, dict) and data.get("token"):
-            connection = UserConnection.from_dict(data)
-            if connection.user_id in removed_users and _removed(
-                connection, await _removed_at(config_service, connector_id, connection.user_id)
-            ):
-                continue
-            connections.append(connection)
-    return connections
+            connections.append(UserConnection.from_dict(data))
+    # Removals listed after the connections were read: a stale write needs its removal marked before it,
+    # so every marker that can make a connection read above stale is in this list.
+    removed_users = {
+        key.removeprefix(removals_prefix(connector_id))
+        for key in await config_service.list_keys_in_directory(removals_prefix(connector_id))
+    }
+    return [
+        c for c in connections
+        if c.user_id not in removed_users or not _removed(c, await _removed_at(config_service, connector_id, c.user_id))
+    ]
 
 
 async def delete_all_connections(config_service: ConfigurationService, connector_id: str) -> bool:

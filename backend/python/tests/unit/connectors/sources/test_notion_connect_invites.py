@@ -160,6 +160,42 @@ class TestRemovalAcrossProcesses:
         kept = await user_access.get_connection(store, "c1", "u1")
         assert kept is not None and kept.token == "new"
 
+    async def test_a_removal_between_reading_connections_and_markers_is_seen(self) -> None:
+        store = _Store()
+        stale = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",
+                                           source_email="a@acme.com", workspace_id="ws", connected_at=100)
+        store.data[user_access.connection_path("c1", "u1")] = stale.to_dict()
+        real_list = store.list_keys_in_directory
+
+        async def list_keys(prefix: str) -> list[str]:
+            if prefix == user_access.connections_prefix("c1"):
+                keys = await real_list(prefix)
+                await user_access.mark_removed(store, "c1", "u1", now_ms=200)  # another process, right then
+                return keys
+            return await real_list(prefix)
+
+        store.list_keys_in_directory = list_keys
+        assert await user_access.list_connections(store, "c1") == []
+
+    async def test_a_sign_in_whose_start_raced_a_removal_dates_from_before_it(self) -> None:
+        routes = _routes()
+        store = _Store()
+        provider = SimpleNamespace(close=AsyncMock())
+
+        async def start_authorization(**_kw: object) -> str:
+            store.data["/services/connectors/c1/sign-in/u1"] = {"oauth": {"state": "s1"}}
+            # Another process removes the user while this sign-in is being set up.
+            await user_access.mark_removed(store, "c1", "u1", now_ms=10**15)
+            return "https://api.notion.com/v1/oauth/authorize?state=s1"
+
+        provider.start_authorization = start_authorization
+        with patch.object(routes, "_config_service", return_value=store), \
+                patch.object(routes, "OAuthProvider", return_value=provider), \
+                patch.object(routes, "user_oauth_config", new=AsyncMock()), \
+                patch.object(routes, "current_org_id", return_value="org-1"):
+            await routes._authorization_url(MagicMock(), "c1", "u1")
+        assert store.data["/services/connectors/c1/sign-in/u1"]["startedAt"] < 10**15
+
     async def test_a_stale_connection_a_crash_left_behind_is_not_read(self) -> None:
         store = _Store()
         stale = user_access.UserConnection(user_id="u1", email="a@acme.com", token="t", source_user_id="n1",
