@@ -742,13 +742,12 @@ async def test_grep_never_returns_a_line_from_a_record_the_caller_cannot_read() 
     "a{101}", "a{1,101}", "a{101,}", "(?:ab){999}", "x{0,100000}",
 ])
 def test_grep_refuses_costly_repeats_before_compiling_and_fast(pattern) -> None:
-    import time
-
-    started = time.monotonic()
-    with pytest.raises(HTTPException) as err:
+    # Refused before the compiler sees it, which is what keeps it fast: proved by the compiler never being called, not by
+    # a 0.5 s wall-clock bound a busy runner can stretch.
+    with patch.object(ks.regex, "compile", side_effect=AssertionError("the pattern reached the compiler")), \
+            pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern=pattern, regex=True))
     assert err.value.status_code == 400
-    assert time.monotonic() - started < 0.5
 
 
 @pytest.mark.parametrize("pattern", [
@@ -800,10 +799,8 @@ async def test_a_record_whose_stored_size_is_over_the_limit_is_not_loaded_at_all
 
 
 def test_the_scan_is_linear_in_the_length_of_the_pattern() -> None:
-    import time
-
-    started = time.monotonic()
-    with pytest.raises(HTTPException) as err:  # 500 opening parentheses: refused by the scan, never reaching the compiler
+    # 500 opening parentheses: refused by the scan, never reaching the compiler
+    with patch.object(ks.regex, "compile", side_effect=AssertionError("the pattern reached the compiler")), \
+            pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern="(" * 500, regex=True))
     assert err.value.status_code == 400 and "deeper" in err.value.detail
-    assert time.monotonic() - started < 0.5
