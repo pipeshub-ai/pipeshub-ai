@@ -32,6 +32,21 @@ from app.agent_loop_lib.sandbox.capacity import (
 )
 from app.services.resource_governor.shared_slots import sandbox_state_directory
 
+@pytest.fixture(autouse=True, scope="module")
+def _forget_warnings():
+    """The warn-once sets are process-wide: leave them as they were, so other
+    tests that look for a first warning still see it."""
+    from app.agent_loop_lib.sandbox import capacity
+    from app.services.resource_governor import shared_slots
+
+    saved = set(capacity._warned), set(shared_slots._warned_state_ids)
+    yield
+    capacity._warned.clear()
+    capacity._warned.update(saved[0])
+    shared_slots._warned_state_ids.clear()
+    shared_slots._warned_state_ids.update(saved[1])
+
+
 _KEYS = [
     ENV_MAX_TOTAL, ENV_MAX_PER_ORG, ENV_MIN_TOTAL, ENV_MEMORY_SHARE, ENV_CPU_FACTOR,
     ENV_HOST_MEMORY_BYTES, ENV_HOST_CPU_MILLIS, ENV_HOST_PID_LIMIT, ENV_CAPACITY_DIVISOR,
