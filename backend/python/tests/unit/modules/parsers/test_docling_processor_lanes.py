@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import threading
 import time
+import types
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
@@ -674,7 +676,12 @@ async def test_lease_released_when_the_document_stream_cannot_be_built(
     def boom(**kwargs: object) -> None:
         raise ValueError("bad stream")
 
-    monkeypatch.setattr("docling.datamodel.base_models.DocumentStream", boom)
+    # The module the conversion imports DocumentStream from, replaced in sys.modules rather than patched by its
+    # dotted name: where docling cannot be imported in full, tests/conftest.py stands mocks in for it, and the
+    # attribute set on the mock was not the one the conversion's import then found.
+    base_models = types.ModuleType("docling.datamodel.base_models")
+    base_models.DocumentStream = boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
     with pytest.raises(ValueError):
         await processor.parse_document("a.pdf", PDF)
     assert budget.held_count()[0] == 0
