@@ -102,9 +102,10 @@ class TestExplicitAndBounds:
         assert (plan.ceiling, plan.binding) == (2, "unknown")
         assert cap.mem_term() is None and cap.other_term() == 2
 
-    def test_a_minimum_above_the_terms(self) -> None:
+    def test_a_minimum_above_the_terms_is_held_to_them(self) -> None:
+        # The CPU term is 6: a minimum of 8 would run more than the machine holds.
         plan = _plan(MachineSize(16 * GiB, 4, PID_MAX, "docker_info"), min_total=8)
-        assert (plan.ceiling, plan.floor) == (8, 8)
+        assert (plan.ceiling, plan.floor) == (6, 6)
 
     def test_the_floor_never_exceeds_an_explicit_ceiling(self) -> None:
         plan = _plan(MachineSize(16 * GiB, 4, PID_MAX, "docker_info"), max_total=1)

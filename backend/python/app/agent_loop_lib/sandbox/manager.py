@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import math
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -97,6 +100,100 @@ class SandboxCallStopped(SandboxManagerError):
     """The run was stopped by its user while this sandbox call was in flight."""
 
 
+class _RequestSlots:
+    """The governor slots one request's calls hold, and its calls waiting
+    for a turn, oldest first. A turn given back passes straight to the
+    oldest waiter, so a newer call cannot overtake it."""
+
+    def __init__(self) -> None:
+        self.held = 0
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    async def take(
+        self, limit: int, wait_s: float, on_wait: Callable[[], Awaitable[None]],
+    ) -> None:
+        """One turn, waiting up to *wait_s* (NaN or negative: not at all);
+        `SandboxLimitExceeded` past it."""
+        if self.held < limit and not self._waiters:
+            self.held += 1
+            return
+        if not wait_s > 0:
+            raise self._refusal(limit)
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiters.append(future)
+        deadline = time.monotonic() + wait_s
+        try:
+            try:
+                await on_wait()
+            except Exception:
+                logger.debug("sandbox manager: on_wait callback failed", exc_info=True)
+            # A turn handed over by an earlier `give_back`, or one freed since
+            # the limit was read (it can only have risen).
+            while not future.done():
+                if self.held < limit and self._waiters and self._waiters[0] is future:
+                    self._waiters.popleft()
+                    self.held += 1
+                    future.set_result(None)
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.wait({future}, timeout=None if math.isinf(remaining) else remaining)
+        except BaseException:
+            self._leave(future)
+            raise
+        if not future.done():
+            self._leave(future)
+            raise self._refusal(limit)
+
+    def _leave(self, future: asyncio.Future[None]) -> None:
+        """*future* gives up its place; a turn it was already handed passes on."""
+        if future.done() and not future.cancelled():
+            self.give_back()
+            return
+        future.cancel()
+        with contextlib.suppress(ValueError):
+            self._waiters.remove(future)
+
+    def give_back(self) -> None:
+        while self._waiters:
+            future = self._waiters.popleft()
+            if not future.done():
+                future.set_result(None)  # the turn moves on; `held` is unchanged
+                return
+        self.held = max(0, self.held - 1)
+
+    @staticmethod
+    def _refusal(limit: int) -> SandboxLimitExceeded:
+        if limit == 1:
+            text = "this chat already has a code run going, the most one request may run at once; retry once it ends"
+        else:
+            text = (
+                f"this chat already has {limit} code runs going at once, the most one request "
+                f"may run; retry once one of them ends"
+            )
+        return SandboxLimitExceeded(text)
+
+
+class _RequestLease:
+    """A governor lease that also gives back its request's turn, once."""
+
+    def __init__(self, lease: Any, slots: _RequestSlots) -> None:
+        self._lease = lease
+        self._slots: _RequestSlots | None = slots
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._lease, name)
+
+    async def release(self) -> None:
+        slots, self._slots = self._slots, None
+        try:
+            await self._lease.release()
+        finally:
+            if slots is not None:
+                slots.give_back()
+
+
 @runtime_checkable
 class SandboxLifecycle(Protocol):
     """Minimal protocol for anything the manager tracks. Everything the
@@ -170,6 +267,7 @@ class SandboxManager:
         slot_wait_s: float = 0.0,
         on_slot_wait: Callable[..., Awaitable[None]] | None = None,
         stop_token: "CancellationToken | None" = None,
+        max_slots_per_request: int | None = None,
     ) -> None:
         self._factories: dict[SandboxType, _FactoryEntry] = {}
         self._instances: dict[tuple[SandboxType, str], _InstanceRecord] = {}
@@ -189,6 +287,11 @@ class SandboxManager:
         # provisioning is exactly where the awaits are, so N callers would
         # otherwise all see an empty map and all proceed.
         self._in_flight: dict[SandboxType, int] = {}
+        # The most governor slots this request's calls hold at once (`slot()`),
+        # so one chat's parallel calls cannot take every slot of the
+        # container. `None`: SANDBOX_MAX_PER_REQUEST, read on first use.
+        self._max_slots_per_request = max_slots_per_request
+        self._request_slots = _RequestSlots()
 
     def register_backend_factory(
         self,
@@ -362,7 +465,9 @@ class SandboxManager:
         """Hold a governor slot while one call (of tool *tool*) runs on the sandbox.
 
         Waits for a free slot (see `slot_wait_s`), then raises
-        `SandboxLimitExceeded`. A no-op for a sandbox that keeps its slot for
+        `SandboxLimitExceeded`. This request's calls hold at most
+        `request_slot_limit()` slots at once; its other calls wait for one of
+        those first, within the same `slot_wait_s`. A no-op for a sandbox that keeps its slot for
         life (metered backends), an unknown id, or a manager with no governor.
 
         The slot is released when the body returns or raises. So a backend
@@ -374,7 +479,7 @@ class SandboxManager:
         if record is None or self._governor is None or record.governor_lease is not None:
             yield
             return
-        lease = await self._acquire_slot(record.org_id, tool)
+        lease = await self._acquire_slot(record.org_id, tool, per_request=True)
         try:
             yield
         finally:
@@ -382,22 +487,56 @@ class SandboxManager:
             # governor's lock must not leave the slot counted.
             await asyncio.shield(self._release_lease(lease))
 
-    async def _acquire_slot(self, org_id: str | None, tool: str) -> Any:
+    def request_slot_limit(self) -> int:
+        """The most slots this request's calls hold at once: the setting,
+        never above the governor's ceiling."""
+        limit = self._max_slots_per_request
+        if limit is None or limit <= 0:
+            from app.agent_loop_lib.sandbox.capacity import max_per_request
+
+            limit = max_per_request()
+        capacity = getattr(self._governor, "capacity", None)
+        ceiling = capacity.ceiling() if capacity is not None else None
+        return max(1, min(limit, ceiling) if isinstance(ceiling, int) else limit)
+
+    async def _acquire_slot(self, org_id: str | None, tool: str, *, per_request: bool = False) -> Any:
         """A governor slot, waiting up to `slot_wait_s`; the wait note is
-        shown when the wait starts and cleared once the slot is granted."""
+        shown when the wait starts and cleared once the slot is granted.
+
+        With *per_request*, the call first takes one of this request's
+        `request_slot_limit()` turns, waiting for it in arrival order. That
+        wait holds no governor slot, so it costs other chats nothing, and it
+        counts against the same `slot_wait_s`; past it the call is refused
+        like a full governor."""
         notify = self._on_slot_wait
         shown = False
 
         async def on_wait() -> None:
             nonlocal shown
+            if shown:
+                return
             shown = True
             if notify is not None:
                 await notify(tool, waiting=True)
 
         lease = None
+        turn = False
         try:
-            lease = await self._governor.acquire(org_id=org_id, wait_s=self._slot_wait_s, on_wait=on_wait)
+            wait_s = self._slot_wait_s
+            if per_request:
+                started = time.monotonic()
+                await self._request_slots.take(self.request_slot_limit(), wait_s, on_wait)
+                turn = True
+                if wait_s >= 0:
+                    wait_s = max(0.0, wait_s - (time.monotonic() - started))
+            lease = await self._governor.acquire(org_id=org_id, wait_s=wait_s, on_wait=on_wait)
+            if turn:
+                lease = _RequestLease(lease, self._request_slots)
             return lease
+        except BaseException:
+            if turn:
+                self._request_slots.give_back()
+            raise
         finally:
             # Granted, timed out or cancelled: the note is taken down either way.
             if shown and notify is not None:

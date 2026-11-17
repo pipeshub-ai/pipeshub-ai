@@ -37,6 +37,8 @@ def _expected(mem_gib: int, cpus: int, pids: int | None, divisor: int, files: in
     ]
     if pids is not None:
         terms.append(math.floor(Fraction(pids) * Fraction(1, 4) / 512) // divisor)
+    # A minimum above the machine's terms is held to them, never below 2.
+    min_total = min(min_total, max(2, min(terms)))
     return min(max(min_total, min(min(terms), files)), files)
 
 
@@ -50,7 +52,7 @@ def test_the_ceiling_table(files: int, divisor: int, min_total: int) -> None:
         plan = compute_plan("compose", machine, _RUN, settings, files)
         want = _expected(mem_gib, cpus, pids, divisor, files, min_total)
         assert plan.ceiling == want, (mem_gib, cpus, pids, divisor, files, plan.terms)
-        assert plan.floor == min(min_total, want)
+        assert plan.floor == min(min_total, want, max(2, min(plan.terms[k] for k in plan.terms if plan.terms[k] is not None)))
         known = {k: v for k, v in plan.terms.items() if v is not None}
         assert known[plan.binding] == min(known.values())
 

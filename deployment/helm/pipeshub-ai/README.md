@@ -406,6 +406,7 @@ keep lower requests. The release notes warn when requests and limits differ.
 | --- | --- | --- |
 | `sandbox.capacity.maxTotal` | sized | The most sandboxes at once per pod (up to 1024). Empty or 0: sized automatically, and split between pods that share `config.dockerHost`. |
 | `sandbox.capacity.maxPerOrg` | none | The most one org may hold at once per pod. |
+| `sandbox.capacity.maxPerRequest` | 2 | The most one chat request runs at once; its other calls wait. |
 | `sandbox.capacity.minTotal` | 2 | The floor, and the cap until the size is known. |
 | `sandbox.capacity.memoryShare` | 0.9 | Share of the sidecar's memory limit (dind only). |
 | `sandbox.capacity.cpuFactor` | 0.75 | Share of the CPUs. |

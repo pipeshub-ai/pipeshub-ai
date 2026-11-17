@@ -50,6 +50,7 @@ _LIVE = LiveSettings.from_env({})
 CODE_DEFAULTS: dict[str, object] = {
     "SANDBOX_MAX_TOTAL": _CAP.max_total,
     "SANDBOX_MAX_PER_ORG": _CAP.max_per_org,
+    "SANDBOX_MAX_PER_REQUEST": capacity_mod.max_per_request({}),
     "SANDBOX_MIN_TOTAL": _CAP.min_total,
     "SANDBOX_MEMORY_SHARE": _CAP.memory_share,
     "SANDBOX_CPU_FACTOR": _CAP.cpu_factor,
@@ -189,6 +190,7 @@ HELM_KEYS = {
     "sandbox.capacity.slotWaitSeconds": "SANDBOX_SLOT_WAIT_S",
     "sandbox.capacity.maxTotal": "SANDBOX_MAX_TOTAL",
     "sandbox.capacity.maxPerOrg": "SANDBOX_MAX_PER_ORG",
+    "sandbox.capacity.maxPerRequest": "SANDBOX_MAX_PER_REQUEST",
     "sandbox.capacity.pidLimit": "SANDBOX_HOST_PID_LIMIT",
     "sandbox.capacity.memoryOvercommit": "SANDBOX_MEMORY_OVERCOMMIT",
     "sandbox.dind.liveLimit.memHigh": "SANDBOX_SIDECAR_MEM_HIGH",

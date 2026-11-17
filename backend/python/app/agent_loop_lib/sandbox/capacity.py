@@ -62,6 +62,7 @@ __all__ = [
     "fingerprint_same_machine",
     "get_sandbox_capacity",
     "hold_reason",
+    "max_per_request",
     "org_tag",
     "read_machine_size",
     "reset_sandbox_capacity",
@@ -81,10 +82,14 @@ ENV_HOST_MEMORY_BYTES = "SANDBOX_HOST_MEMORY_BYTES"
 ENV_HOST_CPU_MILLIS = "SANDBOX_HOST_CPU_MILLIS"
 ENV_HOST_PID_LIMIT = "SANDBOX_HOST_PID_LIMIT"
 ENV_CAPACITY_DIVISOR = "SANDBOX_CAPACITY_DIVISOR"
+ENV_MAX_PER_REQUEST = "SANDBOX_MAX_PER_REQUEST"
 
 # The fewest slots a per-org share leaves one org.
 MIN_ORG_SHARE = 2
 DEFAULT_MIN_TOTAL = 2
+# The most slots the calls of one request (a chat turn and its sub-agents)
+# hold at once.
+DEFAULT_MAX_PER_REQUEST = 2
 DEFAULT_MEMORY_SHARE = 0.25
 DEFAULT_CPU_FACTOR = 0.75
 # Share of the kernel's process limit the sandboxes may use together.
@@ -172,6 +177,23 @@ def slot_file_count(env: Mapping[str, str] | None = None) -> int:
     if explicit is not None and explicit <= 0:
         return MAX_SLOT_FILES
     return min(MAX_SLOT_FILES, max(MIN_SLOT_FILES, explicit or 0))
+
+
+def max_per_request(env: Mapping[str, str] | None = None) -> int:
+    """The most slots the calls of one request may hold at once:
+    ``SANDBOX_MAX_PER_REQUEST``, 2 when unset, 0 or invalid (warned), and
+    never above the slot files. The ceiling still applies on top of it."""
+    env = os.environ if env is None else env
+    value = _int_or_none(env, ENV_MAX_PER_REQUEST)
+    if value is None or value == 0:
+        return DEFAULT_MAX_PER_REQUEST
+    if value < 0:
+        _warn_once(
+            ENV_MAX_PER_REQUEST, str(value), "Ignoring %s=%s: it must be above 0; using %d",
+            ENV_MAX_PER_REQUEST, value, DEFAULT_MAX_PER_REQUEST,
+        )
+        return DEFAULT_MAX_PER_REQUEST
+    return min(value, MAX_SLOT_FILES)
 
 
 @dataclass(frozen=True)
@@ -343,16 +365,21 @@ def compute_plan(
         "pids": _term(machine.pid_limit, PID_SHARE, run and run.pids, divisor),
     }
     known = {name: value for name, value in terms.items() if value is not None}
+    min_total = settings.min_total
     if explicit is not None:
         ceiling, binding = min(explicit, slot_files), "explicit"
     elif not known:
-        ceiling, binding = min(settings.min_total, slot_files), "unknown"
+        ceiling, binding = min(min_total, slot_files), "unknown"
     else:
         binding = min(known, key=lambda name: known[name])
-        ceiling = max(settings.min_total, min(known[binding], slot_files))
+        # A minimum above what the machine holds would raise the ceiling past
+        # it and pin the floor there, so the live limit could never shrink: it
+        # is held to the machine's terms (never below the default minimum).
+        min_total = min(min_total, max(DEFAULT_MIN_TOTAL, known[binding]))
+        ceiling = max(min_total, min(known[binding], slot_files))
         ceiling = min(ceiling, slot_files)
     return CapacityPlan(
-        ceiling=ceiling, floor=min(settings.min_total, ceiling), slot_files=slot_files,
+        ceiling=ceiling, floor=min(min_total, ceiling), slot_files=slot_files,
         explicit=explicit is not None, terms=terms, binding=binding, machine=machine, run=run,
         divisor=divisor,
     )
@@ -711,11 +738,21 @@ class SandboxCapacity:
                 plan.ceiling,
             )
         elif not plan.explicit and known and min(known.values()) < self._settings.min_total:
-            logger.warning(
-                "sandbox capacity: this machine supports %d code sandboxes by %s, fewer than "
-                "the minimum of %d; using %d", min(known.values()), plan.binding,
-                self._settings.min_total, plan.ceiling,
-            )
+            minimum = self._settings.min_total
+            if plan.floor < minimum:
+                # One warning per value, not one per resize.
+                _warn_once(
+                    ENV_MIN_TOTAL, str(minimum),
+                    "%s=%d is above the %d code sandboxes this machine supports by %s; "
+                    "using %d: a larger minimum would run more than the machine holds",
+                    ENV_MIN_TOTAL, minimum, min(known.values()), plan.binding, plan.floor,
+                )
+            else:
+                logger.warning(
+                    "sandbox capacity: this machine supports %d code sandboxes by %s, fewer than "
+                    "the minimum of %d; using %d", min(known.values()), plan.binding,
+                    minimum, plan.ceiling,
+                )
 
 
 ENV_DOCKER_TOPOLOGY = "SANDBOX_DOCKER_TOPOLOGY"

@@ -479,7 +479,8 @@ Sandboxes are marked first to be killed if the host runs out of memory, ahead of
 | --- | --- | --- |
 | `SANDBOX_MAX_TOTAL` | sized | Replaces the computed cap (up to 1024; 0 or less means 1024). |
 | `SANDBOX_MAX_PER_ORG` | none | The most sandboxes one org may hold at once. |
-| `SANDBOX_MIN_TOTAL` | 2 | The floor, and the cap until the host has been read. |
+| `SANDBOX_MAX_PER_REQUEST` | 2 | The most sandboxes one request (a chat turn and its sub-agents) runs at once; its other calls wait for one of them, as above, without holding a sandbox. Never above the cap; 0 or unset means 2. |
+| `SANDBOX_MIN_TOTAL` | 2 | The floor, and the cap until the host has been read. Once it has, a value above what the host supports is lowered to that (with a warning). |
 | `SANDBOX_MEMORY_SHARE` | 0.25 | Share of host memory sandboxes may claim (0.05–0.95). |
 | `SANDBOX_CPU_FACTOR` | 0.75 | Share of host CPUs sandboxes may claim (0.1–2.0). |
 | `SANDBOX_SLOT_WAIT_S` | 120 | How long a run waits for a free sandbox. |

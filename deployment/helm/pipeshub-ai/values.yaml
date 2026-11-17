@@ -591,6 +591,9 @@ sandbox:
     maxTotal: ""
     # The most sandboxes one org may hold at once in a pod (empty: no cap).
     maxPerOrg: ""
+    # The most sandboxes one chat request runs at once (empty: 2); its other
+    # calls wait without holding one.
+    maxPerRequest: ""
     minTotal: ""
     # Share of the dind sidecar's memory limit sandboxes may claim. Only used
     # with the dind sidecar, which runs nothing else.
