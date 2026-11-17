@@ -514,6 +514,10 @@ class SandboxCapacity:
     def slot_files(self) -> int:
         return self._slot_files
 
+    @property
+    def settings(self) -> CapacitySettings:
+        return self._settings
+
     def ceiling(self) -> int:
         return self.plan.ceiling
 
@@ -680,6 +684,20 @@ class SandboxCapacity:
             )
 
 
+ENV_DOCKER_TOPOLOGY = "SANDBOX_DOCKER_TOPOLOGY"
+
+
+def _docker_mode(env: Mapping[str, str]) -> Mode:
+    """``helm_dind`` when the deployment says the daemon is a Docker-in-Docker
+    sidecar of this pod, which then holds only its sandboxes."""
+    raw = (env.get(ENV_DOCKER_TOPOLOGY) or "").strip().lower()
+    if raw == "dind-sidecar":
+        return "helm_dind"
+    if raw:
+        _warn_once(ENV_DOCKER_TOPOLOGY, raw, "Ignoring %s=%r: use dind-sidecar or leave it unset", ENV_DOCKER_TOPOLOGY, raw)
+    return "compose"
+
+
 def _resolve_mode() -> Mode:
     try:
         from app.agent_loop_lib.sandbox.coding.settings import resolve_sandbox_mode
@@ -691,7 +709,7 @@ def _resolve_mode() -> Mode:
         return "e2b"
     if backend == "local":
         return "local"
-    return "compose"
+    return _docker_mode(os.environ)
 
 
 _capacity: SandboxCapacity | None = None

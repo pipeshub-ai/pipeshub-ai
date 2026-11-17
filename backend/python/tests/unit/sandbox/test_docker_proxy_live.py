@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
+import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -259,6 +260,47 @@ def test_reaper_removes_only_its_own_stacks_old_containers() -> None:
         for client, cid in ((client_a, a.id), (client_b, b.id)):
             with contextlib.suppress(APIError):
                 client.api.remove_container(cid, force=True)
+            client.close()
+        for loop, thread in ((loop_a, thread_a), (loop_b, thread_b)):
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+
+
+def test_containers_usage_counts_only_this_stacks_containers() -> None:
+    import uuid
+
+    import docker
+    from docker.errors import APIError
+
+    available, reason = docker_available()
+    if not available:
+        pytest.skip(reason)
+    suffix = uuid.uuid4().hex[:8]
+    host_a, proxy_a, loop_a, thread_a = _start_proxy(f"it-a-{suffix}")
+    host_b, _proxy_b, loop_b, thread_b = _start_proxy(f"it-b-{suffix}")
+    client_a, client_b = docker.DockerClient(base_url=host_a), docker.DockerClient(base_url=host_b)
+    direct = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+    limits = {"mem_limit": 64 * 1024 * 1024, "nano_cpus": 100_000_000, "pids_limit": 16, "network_mode": "none"}
+    hold = ["python3", "-c", "b = b'x' * (20 * 2**20); import time; time.sleep(60)"]
+    ours = [client_a.containers.create(DOCKER_TEST_IMAGE, hold, **limits) for _ in range(2)]
+    others = [
+        client_b.containers.create(DOCKER_TEST_IMAGE, hold, **limits),
+        direct.containers.create(DOCKER_TEST_IMAGE, hold, **limits),
+    ]
+    try:
+        for container in (*ours, *others):
+            container.start()
+        time.sleep(3)
+        block, error = asyncio.run_coroutine_threadsafe(proxy_a.containers_usage(), loop_a).result(30)
+        assert error is None and block is not None
+        assert block["running"] == 2 and block["memWorkingSetBytes"] >= 2 * 20 * 2**20
+        response = client_a.api.get(client_a.api._url("/_pipeshub/usage"), timeout=5)
+        assert response.json() == {"v": 1, "sidecar": None, "sidecarError": "not_configured"}
+    finally:
+        for container in (*ours, *others):
+            with contextlib.suppress(APIError):
+                direct.api.remove_container(container.id, force=True)
+        for client in (client_a, client_b, direct):
             client.close()
         for loop, thread in ((loop_a, thread_a), (loop_b, thread_b)):
             loop.call_soon_threadsafe(loop.stop)

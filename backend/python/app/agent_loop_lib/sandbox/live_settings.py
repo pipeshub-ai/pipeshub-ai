@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from app.agent_loop_lib.sandbox.capacity import _float_in, _int_or_none, _warn_once
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["DEFAULT_MEMORY_OVERCOMMIT", "LiveSettings"]
+__all__ = ["DEFAULT_MEMORY_OVERCOMMIT", "LiveSettings", "SidecarSource"]
 
 ENV_LIVE_LIMIT = "SANDBOX_LIVE_LIMIT"
 ENV_LIVE_INTERVAL_S = "SANDBOX_LIVE_INTERVAL_S"
@@ -24,6 +24,11 @@ ENV_HOST_MEM_SOFT_MB = "SANDBOX_HOST_MEM_SOFT_MB"
 ENV_HOST_CPU_BRAKE = "SANDBOX_HOST_CPU_BRAKE"
 ENV_HOST_CPU_PSI_BRAKE = "SANDBOX_HOST_CPU_PSI_BRAKE"
 ENV_MEMORY_OVERCOMMIT = "SANDBOX_MEMORY_OVERCOMMIT"
+ENV_SIDECAR_SOURCE = "SANDBOX_SIDECAR_SOURCE"
+ENV_SIDECAR_MEM_HIGH = "SANDBOX_SIDECAR_MEM_HIGH"
+ENV_SIDECAR_MEM_HARD = "SANDBOX_SIDECAR_MEM_HARD"
+ENV_SIDECAR_CPU_BRAKE = "SANDBOX_SIDECAR_CPU_BRAKE"
+ENV_SIDECAR_CPU_THROTTLE = "SANDBOX_SIDECAR_CPU_THROTTLE"
 
 DEFAULT_LIVE_INTERVAL_S = 15.0
 DEFAULT_HOST_CPU_BRAKE = 0.90
@@ -32,7 +37,15 @@ DEFAULT_HOST_CPU_PSI_BRAKE = 0.75
 # live reading is what catches a burst of heavy runs when it is.
 DEFAULT_MEMORY_OVERCOMMIT = 1.0
 MAX_MEMORY_OVERCOMMIT = 4.0
+# The Docker-in-Docker sidecar only holds the sandboxes, so its thresholds sit
+# at the edge of its reserve: they hold runs back only when it is nearly full.
+DEFAULT_SIDECAR_MEM_HIGH = 0.90
+DEFAULT_SIDECAR_MEM_HARD = 0.95
+DEFAULT_SIDECAR_CPU_BRAKE = 0.95
+DEFAULT_SIDECAR_CPU_THROTTLE = 0.25
 _MIN_MEM_MB = 256
+
+SidecarSource = Literal["auto", "cgroup", "containers"]
 _MAX_MEM_MB = 262144
 
 
@@ -65,10 +78,33 @@ class LiveSettings:
     host_cpu_brake: float = DEFAULT_HOST_CPU_BRAKE
     host_cpu_psi_brake: float = DEFAULT_HOST_CPU_PSI_BRAKE
     memory_overcommit: float = DEFAULT_MEMORY_OVERCOMMIT
+    sidecar_source: SidecarSource = "auto"
+    sidecar_mem_high: float = DEFAULT_SIDECAR_MEM_HIGH
+    sidecar_mem_hard: float = DEFAULT_SIDECAR_MEM_HARD
+    sidecar_cpu_brake: float = DEFAULT_SIDECAR_CPU_BRAKE
+    sidecar_cpu_throttle: float = DEFAULT_SIDECAR_CPU_THROTTLE
+
+    @property
+    def host_tuned(self) -> bool:
+        """Whether any of the Docker host's thresholds was set."""
+        return (
+            self.host_mem_floor_mb is not None or self.host_mem_soft_mb is not None
+            or self.host_cpu_brake != DEFAULT_HOST_CPU_BRAKE
+            or self.host_cpu_psi_brake != DEFAULT_HOST_CPU_PSI_BRAKE
+        )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> LiveSettings:
         env = os.environ if env is None else env
+        high = _float_in(env, ENV_SIDECAR_MEM_HIGH, DEFAULT_SIDECAR_MEM_HIGH, 0.50, 0.97)
+        hard = _float_in(env, ENV_SIDECAR_MEM_HARD, DEFAULT_SIDECAR_MEM_HARD, 0.51, 0.99)
+        if hard < high + 0.01:
+            _warn_once(
+                ENV_SIDECAR_MEM_HARD, f"{high}/{hard}",
+                "%s=%g must be at least %s + 0.01 (%g); using %g and %g", ENV_SIDECAR_MEM_HARD, hard,
+                ENV_SIDECAR_MEM_HIGH, high, DEFAULT_SIDECAR_MEM_HIGH, DEFAULT_SIDECAR_MEM_HARD,
+            )
+            high, hard = DEFAULT_SIDECAR_MEM_HIGH, DEFAULT_SIDECAR_MEM_HARD
         return cls(
             enabled=_choice(env, ENV_LIVE_LIMIT, ("auto", "off")) == "auto",
             interval_s=_float_in(env, ENV_LIVE_INTERVAL_S, DEFAULT_LIVE_INTERVAL_S, 5.0, 60.0),
@@ -78,6 +114,13 @@ class LiveSettings:
             host_cpu_psi_brake=_float_in(env, ENV_HOST_CPU_PSI_BRAKE, DEFAULT_HOST_CPU_PSI_BRAKE, 0.05, 1.0),
             memory_overcommit=_float_in(
                 env, ENV_MEMORY_OVERCOMMIT, DEFAULT_MEMORY_OVERCOMMIT, 1.0, MAX_MEMORY_OVERCOMMIT,
+            ),
+            sidecar_source=_choice(env, ENV_SIDECAR_SOURCE, ("auto", "cgroup", "containers")),  # type: ignore[arg-type]
+            sidecar_mem_high=high,
+            sidecar_mem_hard=hard,
+            sidecar_cpu_brake=_float_in(env, ENV_SIDECAR_CPU_BRAKE, DEFAULT_SIDECAR_CPU_BRAKE, 0.50, 1.0),
+            sidecar_cpu_throttle=_float_in(
+                env, ENV_SIDECAR_CPU_THROTTLE, DEFAULT_SIDECAR_CPU_THROTTLE, 0.01, 1.0,
             ),
         )
 

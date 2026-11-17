@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import random
 import signal
 import time
 from pathlib import Path
@@ -53,7 +54,11 @@ class _FileReader:
 
 
 def _live(directory: str, reader_file: str) -> Any:  # noqa: ANN401
-    from app.agent_loop_lib.sandbox.capacity import CapacitySettings, MachineSize, SandboxCapacity
+    from app.agent_loop_lib.sandbox.capacity import (
+        CapacitySettings,
+        MachineSize,
+        SandboxCapacity,
+    )
     from app.agent_loop_lib.sandbox.host_reading import LiveMode
     from app.agent_loop_lib.sandbox.live_limit import LiveLimit
     from app.agent_loop_lib.sandbox.live_settings import LiveSettings
@@ -144,7 +149,7 @@ def test_workers_step_once_per_interval_and_agree(tmp_path: Path) -> None:
     assert gaps and min(gaps) >= 0.85 * INTERVAL_S - 0.05
     assert len({e[1] for e in steps}) >= 1
     assert any(e[2] > killed_at + 0.5 for e in steps), "no step after the stepper was killed"
-    assert [e[3] for e in steps][0] == 6
+    assert steps[0][3] == 6
     assert steps[-1][3] == 3
     finals = {e[3] for e in events if e[0] == "done"}
     assert finals == {3}
@@ -179,3 +184,105 @@ def test_simultaneous_admissions_take_only_what_fits(tmp_path: Path) -> None:
     for round_no, ok in results:
         admitted[round_no] = admitted.get(round_no, 0) + ok
     assert admitted == dict.fromkeys(range(rounds), 2)
+
+
+def _http_get(port: int) -> Any:  # noqa: ANN401
+    import urllib.request
+
+    def get(path: str, timeout: float) -> tuple[int, Any]:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read())
+
+    return get
+
+
+def _sidecar_sampler(directory: str, port: int, stop: Event, out: Queue) -> None:
+    from app.agent_loop_lib.sandbox.capacity import (
+        CapacitySettings,
+        MachineSize,
+        SandboxCapacity,
+    )
+    from app.agent_loop_lib.sandbox.host_reading import resolve_live_mode
+    from app.agent_loop_lib.sandbox.live_limit import LiveLimit
+    from app.agent_loop_lib.sandbox.live_settings import LiveSettings
+
+    settings = CapacitySettings(host_memory_bytes=16 * GiB, host_cpu_millis=16000, memory_share=0.9)
+    capacity = SandboxCapacity("helm_dind", settings, slot_files=256)
+    capacity._apply(MachineSize(16 * GiB, 16.0, None, "helm_env"), None)
+    live_settings = LiveSettings(interval_s=INTERVAL_S)
+    mode = resolve_live_mode(capacity, live_settings, http_get=_http_get(port))
+    live = LiveLimit(capacity, None, settings=live_settings, resolver=lambda: mode, directory=Path(directory))
+    live.apply_mode(mode)
+    out.put(("mode", os.getpid(), time.monotonic(), mode.mode))
+    rng = random.Random(os.getpid())
+    while not stop.is_set():
+        record = live.sample_once()
+        if record is not None:
+            out.put(("step", os.getpid(), time.monotonic(), record.limit))
+        # Like the real sampler: an interval plus jitter between tries.
+        stop.wait(INTERVAL_S * 0.5 + rng.random())
+    out.put(("done", os.getpid(), time.monotonic(), live.view(fresh=True).limit))
+
+
+def test_sidecar_workers_read_the_proxy_once_per_step(tmp_path: Path) -> None:
+    import http.server
+    import threading
+
+    state = {"used": 2 * GiB, "hits": 0}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            state["hits"] += 1
+            body = json.dumps({"v": 1, "sidecarError": None, "sidecar": {
+                "memLimitBytes": 16 * GiB, "memWorkingSetBytes": state["used"], "memPsiFullAvg10": 0.0,
+                "oomEventsDelta": 0, "cpuUtil": 0.1, "cpuThrottledRatio": 0.0,
+            }}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    ctx = multiprocessing.get_context("spawn")
+    stop, out = ctx.Event(), ctx.Queue()
+    procs = [
+        ctx.Process(target=_sidecar_sampler, args=(str(tmp_path / "state"), server.server_port, stop, out))
+        for _ in range(4)
+    ]
+    for proc in procs:
+        proc.start()
+    events: list[tuple[str, int, float, Any]] = []
+    try:
+        while sum(e[0] == "mode" for e in events) < 4:
+            events.append(out.get(timeout=30))
+        resolve_hits = state["hits"]
+        time.sleep(4.0)
+        # 96 % used: the hard rule halves the limit.
+        state["used"] = int(16 * GiB * 0.96)
+        time.sleep(4.0)
+        stop.set()
+        while sum(e[0] == "done" for e in events) < 4:
+            events.append(out.get(timeout=30))
+    finally:
+        stop.set()
+        for proc in procs:
+            proc.join(10)
+            if proc.is_alive():
+                proc.kill()
+        server.shutdown()
+
+    assert {e[3] for e in events if e[0] == "mode"} == {"on:sidecar"}
+    steps = sorted((e for e in events if e[0] == "step"), key=lambda e: e[2])
+    gaps = [b[2] - a[2] for a, b in zip(steps, steps[1:])]
+    assert gaps and min(gaps) >= 0.85 * INTERVAL_S - 0.05
+    # Only the worker that steps reads the proxy (two workers can rarely both
+    # pass the unlocked look and read before one takes the step).
+    # The first workers may have stepped before the last one had resolved.
+    assert state["hits"] - resolve_hits <= len(steps) + 2
+    limits = [e[3] for e in steps]
+    assert limits[0] == 24 and limits[-1] < 24
+    assert 12 in limits

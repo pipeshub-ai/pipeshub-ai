@@ -13,6 +13,11 @@ unchanged, but only the calls the sandbox makes get through:
 - ``GET /_pipeshub/host``, answered by the proxy itself: a hash of the
   kernel's boot id, so the app can tell whether the daemon shares its
   machine (the proxy mounts the daemon's socket, so it runs on that machine);
+- ``GET /_pipeshub/usage``, also answered here: how full the daemon's own
+  container is, from the cgroup counters a loop inside a Docker-in-Docker
+  sidecar writes to the socket volume (``DOCKER_PROXY_SIDECAR_STATS_FILE``),
+  or with ``?scope=containers`` the summed stats of this proxy's running
+  containers. Only totals leave the proxy, never ids or names;
 - create a container from an allowed sandbox image with no host access
   (no privileged mode, binds, devices, host namespaces, port publishing,
   unconfined security profiles, or capabilities beyond the egress firewall's)
@@ -47,7 +52,9 @@ import os
 import re
 import signal
 import socket
+import stat
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -183,6 +190,7 @@ class Route:
     kind: str
     container: str | None = None
     network: str | None = None
+    scope: str | None = None
 
 
 def normalize_image(ref: str) -> str:
@@ -516,6 +524,12 @@ def _local_route(method: str, path: str, query: Mapping[str, list[str]]) -> Rout
         raise PolicyDenied(f"{method} {path} is not permitted")
     if path == "/_pipeshub/host" and not query:
         return Route("local_host_id")
+    if path == "/_pipeshub/usage" and set(query) <= {"scope"}:
+        scope = query.get("scope")
+        if scope is None:
+            return Route("local_usage")
+        if scope == ["containers"]:
+            return Route("local_usage", scope="containers")
     raise PolicyDenied(f"{method} {path} is not permitted")
 
 
@@ -528,6 +542,156 @@ def boot_id_hash(path: str | None = None) -> str | None:
     except OSError:
         return None
     return hashlib.sha256(boot_id.encode()).hexdigest()[:32] if boot_id else None
+
+
+# --- Sidecar usage (/_pipeshub/usage) ----------------------------------------
+
+_SIDECAR_STATS_MAX_BYTES = 16 * 1024
+# Four of the exporter's 5 s intervals.
+_SIDECAR_STALE_S = 20.0
+_RATE_WINDOW_S = 10.0
+_SIDECAR_KEYS = frozenset({
+    "v", "seq", "memory.max", "memory.current", "cpu.max", "memory.stat.file",
+    "memory.stat.shmem", "memory.stat.anon", "memory.pressure.full.avg10",
+    "cpu.pressure.some.avg10", "dockerd.rss_kb", "containerd.rss_kb",
+})
+_SIDECAR_PREFIXES = ("memory.events.local.", "cpu.stat.")
+_CONTAINERS_CACHE_S = 5.0
+_CONTAINERS_MAX = 256
+_STATS_CONCURRENCY = 8
+_STATS_CALL_TIMEOUT_S = 2.0
+_STATS_BUDGET_S = 4.0
+_LIST_TIMEOUT_S = 2.0
+
+
+def _number(raw: str) -> float:
+    try:
+        return int(raw)
+    except ValueError:
+        value = float(raw)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(raw)
+    return value
+
+
+def parse_sidecar_stats(text: str) -> dict[str, float | None]:
+    """The exporter's ``key value`` lines. Lines with other keys are ignored;
+    a known key with a value that is not a number raises ``ValueError``.
+    ``memory.max`` / the ``cpu.max`` quota are ``None`` when unlimited."""
+    values: dict[str, float | None] = {}
+    for line in text.splitlines():
+        key, _, rest = line.strip().partition(" ")
+        rest = rest.strip()
+        if key not in _SIDECAR_KEYS and not key.startswith(_SIDECAR_PREFIXES):
+            continue
+        if key == "cpu.max":
+            parts = rest.split()
+            if len(parts) != 2:
+                raise ValueError(line)
+            values["cpu.max.quota"] = None if parts[0] == "max" else _number(parts[0])
+            values["cpu.max.period"] = _number(parts[1])
+        elif key == "memory.max" and rest == "max":
+            values[key] = None
+        else:
+            values[key] = _number(rest)
+    return values
+
+
+def _delta(new: Mapping[str, float | None], old: Mapping[str, float | None], key: str) -> float | None:
+    a, b = new.get(key), old.get(key)
+    return None if a is None or b is None else a - b
+
+
+class SidecarStats:
+    """The sidecar block of ``/_pipeshub/usage``, read from the exporter's
+    file. Keeps the last few snapshots to turn its cumulative counters into
+    rates; there is no background task, the ring fills on requests."""
+
+    def __init__(self, path: str | None, *, clock: Callable[[], float] = time.time) -> None:
+        self._path = path
+        self._clock = clock
+        self._ring: deque[tuple[float, dict[str, float | None]]] = deque(maxlen=4)
+
+    def read(self) -> tuple[dict[str, Any] | None, str | None]:
+        """``(block, None)`` or ``(None, error)``."""
+        if not self._path:
+            return None, "not_configured"
+        try:
+            fd = os.open(self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return None, "missing"
+        except OSError:
+            return None, "unparsable"
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _SIDECAR_STATS_MAX_BYTES:
+                return None, "unparsable"
+            data = os.read(fd, _SIDECAR_STATS_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+        age = self._clock() - info.st_mtime
+        if age > _SIDECAR_STALE_S:
+            return None, "stale"
+        try:
+            if len(data) > _SIDECAR_STATS_MAX_BYTES:
+                raise ValueError("too large")
+            values = parse_sidecar_stats(data.decode("ascii"))
+        except (ValueError, UnicodeDecodeError):
+            return None, "unparsable"
+        return self._block(info.st_mtime, max(0.0, age), values), None
+
+    def _remember(self, taken_at: float, values: dict[str, float | None]) -> None:
+        if self._ring:
+            last_at, last = self._ring[-1]
+            if values.get("seq") is not None and values.get("seq") == last.get("seq"):
+                return
+            went_back = any(
+                (d := _delta(values, last, key)) is not None and d < 0
+                for key in ("seq", "cpu.stat.usage_usec", "cpu.stat.nr_periods")
+            )
+            if went_back or taken_at < last_at:
+                # The exporter or the sidecar restarted: counters start over.
+                self._ring.clear()
+        self._ring.append((taken_at, values))
+
+    def _block(self, taken_at: float, age: float, values: dict[str, float | None]) -> dict[str, Any]:
+        self._remember(taken_at, values)
+        ring = list(self._ring)
+        new_at, new = ring[-1]
+        older = next((snap for snap in reversed(ring[:-1]) if new_at - snap[0] >= _RATE_WINDOW_S), None)
+        if older is None and len(ring) > 1:
+            older = ring[0]
+        quota, period = new.get("cpu.max.quota"), new.get("cpu.max.period")
+        cpus = quota / period if quota and period else None
+        window = cpu_util = throttled = oom = None
+        if older is not None and new_at > older[0]:
+            window = new_at - older[0]
+            used = _delta(new, older[1], "cpu.stat.usage_usec")
+            if used is not None and cpus:
+                cpu_util = max(0.0, used / (window * 1e6 * cpus))
+            periods = _delta(new, older[1], "cpu.stat.nr_periods")
+            hits = _delta(new, older[1], "cpu.stat.nr_throttled")
+            if periods is not None and hits is not None:
+                throttled = max(0.0, hits / periods) if periods > 0 else 0.0
+            oom_delta = _delta(new, older[1], "memory.events.local.oom")
+            oom = None if oom_delta is None else max(0, int(oom_delta))
+        current = new.get("memory.current")
+        cache = (new.get("memory.stat.file") or 0) - (new.get("memory.stat.shmem") or 0)
+        mem_psi, cpu_psi = new.get("memory.pressure.full.avg10"), new.get("cpu.pressure.some.avg10")
+        dockerd, containerd = new.get("dockerd.rss_kb"), new.get("containerd.rss_kb")
+        return {
+            "ageS": round(age, 1), "seq": new.get("seq"), "windowS": window,
+            "memLimitBytes": new.get("memory.max"),
+            # Page cache is reclaimable; tmpfs (shmem, counted in file) is not.
+            "memWorkingSetBytes": None if current is None else max(0, int(current - max(0.0, cache))),
+            "memPsiFullAvg10": None if mem_psi is None else mem_psi / 100.0,
+            "oomEventsDelta": oom,
+            "cpuLimitMillis": None if cpus is None else round(cpus * 1000),
+            "cpuUtil": cpu_util, "cpuThrottledRatio": throttled,
+            "cpuPsiSomeAvg10": None if cpu_psi is None else cpu_psi / 100.0,
+            "dockerdRssBytes": None if dockerd is None else int(dockerd * 1024),
+            "containerdRssBytes": None if containerd is None else int(containerd * 1024),
+        }
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -698,10 +862,16 @@ def _json_response(payload: Mapping[str, Any]) -> bytes:
 class DockerSocketProxy:
     def __init__(
         self, policy: DockerApiPolicy, upstream_socket: str, *, instance: str = DEFAULT_INSTANCE,
+        sidecar_stats_file: str | None = None,
     ) -> None:
         self._policy = policy
         self._upstream = upstream_socket
         self.instance = instance
+        self._sidecar = SidecarStats(sidecar_stats_file)
+        self._containers_lock = asyncio.Lock()
+        self._containers_cache: tuple[float, dict[str, Any] | None, str | None] | None = None
+        # Last cumulative CPU time (ns) and when it was read, per container.
+        self._containers_cpu: dict[str, tuple[float, float]] = {}
         # The stream server holds a handler task only through its transport,
         # which the loop lets go of while reading is paused (a large body
         # arriving during the ownership lookup); a GC pass then collects the
@@ -738,6 +908,82 @@ class DockerSocketProxy:
             return status, json.loads(body or b"null")
         except ValueError:
             return status, None
+
+    async def containers_usage(self) -> tuple[dict[str, Any] | None, str | None]:
+        """The summed stats of this proxy's running containers, cached briefly
+        so a slow daemon is not asked again at once."""
+        async with self._containers_lock:
+            now = time.monotonic()
+            cached = self._containers_cache
+            if cached is not None and now - cached[0] < _CONTAINERS_CACHE_S:
+                return cached[1], cached[2]
+            block, error = await self._containers_usage(now)
+            self._containers_cache = (time.monotonic(), block, error)
+            return block, error
+
+    async def _containers_usage(self, now: float) -> tuple[dict[str, Any] | None, str | None]:
+        filters = json.dumps(
+            {"label": [f"{MANAGED_LABEL}=true", f"{INSTANCE_LABEL}={self.instance}"], "status": ["running"]},
+            separators=(",", ":"),
+        )
+        try:
+            status, items = await self._upstream_call(
+                "GET", f"/containers/json?filters={quote(filters, safe='')}", _LIST_TIMEOUT_S,
+            )
+        except (OSError, asyncio.TimeoutError, ValueError):
+            return None, "list_failed"
+        if status != 200 or not isinstance(items, list):
+            return None, "list_failed"
+        ids = [item["Id"] for item in items if isinstance(item, dict) and isinstance(item.get("Id"), str)]
+        truncated = len(ids) > _CONTAINERS_MAX
+        ids = ids[:_CONTAINERS_MAX]
+        gate = asyncio.Semaphore(_STATS_CONCURRENCY)
+
+        async def one(ident: str) -> tuple[int, Any]:
+            async with gate:
+                return await self._upstream_call(
+                    "GET", f"/containers/{quote(ident, safe='')}/stats?stream=false&one-shot=true",
+                    _STATS_CALL_TIMEOUT_S,
+                )
+
+        tasks = {asyncio.ensure_future(one(ident)): ident for ident in ids}
+        done, pending = await asyncio.wait(tasks, timeout=_STATS_BUDGET_S) if tasks else (set(), set())
+        for task in pending:
+            task.cancel()
+        partial = bool(pending)
+        memory = 0
+        cores, seen_twice = 0.0, False
+        cpu_now: dict[str, tuple[float, float]] = {}
+        for task in done:
+            ident = tasks[task]
+            try:
+                status, data = task.result()
+            except Exception:
+                partial = True
+                continue
+            if status != 200 or not isinstance(data, dict):
+                partial = True
+                continue
+            mem = data.get("memory_stats") or {}
+            mem_stats = mem.get("stats") or {}
+            memory += max(0, int(mem.get("usage") or 0) - int(mem_stats.get("file") or 0) + int(mem_stats.get("shmem") or 0))
+            usage = ((data.get("cpu_stats") or {}).get("cpu_usage") or {}).get("total_usage")
+            if not isinstance(usage, (int, float)):
+                continue
+            cpu_now[ident] = (float(usage), now)
+            previous = self._containers_cpu.get(ident)
+            if previous is not None and now > previous[1] and usage >= previous[0]:
+                cores += (usage - previous[0]) / 1e9 / (now - previous[1])
+                seen_twice = True
+        # Containers that are gone drop out; ones not read this time keep their last value.
+        self._containers_cpu = {
+            ident: cpu_now.get(ident) or self._containers_cpu[ident]
+            for ident in ids if ident in cpu_now or ident in self._containers_cpu
+        }
+        return {
+            "running": len(ids), "memWorkingSetBytes": memory,
+            "cpuCores": cores if seen_twice else None, "partial": partial, "truncated": truncated,
+        }, None
 
     async def _owned_container_id(self, ident: str) -> str:
         status, info = await self._upstream_json(f"/containers/{quote(ident, safe='')}/json")
@@ -788,6 +1034,16 @@ class DockerSocketProxy:
                 await _safe_write(client_w, _error_response(502, "Bad Gateway", "docker-proxy: boot id unavailable"))
                 return
             await _safe_write(client_w, _json_response({"v": 1, "bootIdHash": digest}))
+            return
+
+        if route.kind == "local_usage":
+            if route.scope == "containers":
+                block, error = await self.containers_usage()
+                payload = {"v": 1, "containers": block, "containersError": error}
+            else:
+                block, error = self._sidecar.read()
+                payload = {"v": 1, "sidecar": block, "sidecarError": error}
+            await _safe_write(client_w, _json_response(payload))
             return
 
         if route.kind == "info":
@@ -1109,7 +1365,10 @@ async def serve(
 ) -> None:
     if instance is None:
         instance = await resolve_instance(os.environ, upstream)
-    proxy = DockerSocketProxy(policy, upstream, instance=instance)
+    proxy = DockerSocketProxy(
+        policy, upstream, instance=instance,
+        sidecar_stats_file=os.environ.get("DOCKER_PROXY_SIDECAR_STATS_FILE") or None,
+    )
     server = await asyncio.start_server(proxy.handle, host, port, limit=_MAX_HEAD_BYTES)
     logger.info(
         "docker proxy listening on %s:%d -> %s (instance=%s images=%s networks=%s)",

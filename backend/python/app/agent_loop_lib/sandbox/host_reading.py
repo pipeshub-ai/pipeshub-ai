@@ -11,6 +11,11 @@ which is the Docker host when the daemon runs on the same machine.
   or failing that the ``/info`` fingerprint);
 - local mode: ``CgroupReader`` on this container's own cgroup, which the
   sandbox subprocesses share;
+- a Docker-in-Docker sidecar (``SANDBOX_DOCKER_TOPOLOGY=dind-sidecar``):
+  ``SidecarReader``, the sidecar's own cgroup counters served by the Docker
+  proxy, or failing that the summed stats of the proxy's containers. The
+  node's ``/proc`` would pass the boot id check there but describe the whole
+  node, so this mode never reads it;
 - E2B runs elsewhere: no reading.
 
 Every reader returns a ``HostSample`` and never raises; a field it cannot
@@ -41,9 +46,11 @@ __all__ = [
     "HostSample",
     "LiveMode",
     "Reader",
+    "SidecarReader",
     "boot_id_hash",
     "docker_http_get",
     "resolve_live_mode",
+    "resolve_sidecar_mode",
 ]
 
 logger = logging.getLogger(__name__)
@@ -52,6 +59,14 @@ _PROC = Path("/proc")
 # lxcfs bind-mounted over /proc/meminfo reports the container's own limit.
 _LXCFS_TOLERANCE_BYTES = 2**20
 _HOST_ROUTE_TIMEOUT_S = 2.0
+_SIDECAR_ROUTE_TIMEOUT_S = 2.0
+_CONTAINERS_ROUTE_TIMEOUT_S = 5.0
+# The sidecar's memory.max must match the limit the chart passes in, or the
+# cgroup the exporter sees is not the sidecar's (cgroup v1, a host namespace).
+_SIDECAR_LIMIT_TOLERANCE = 0.01
+# dockerd, containerd, shims and page cache cannot be seen from container
+# stats; their share of the sidecar is left unmeasured.
+_CONTAINERS_SHARE = 0.9
 
 Source = Literal["host", "cgroup", "sidecar", "sidecar-containers"]
 
@@ -211,6 +226,75 @@ class CgroupReader:
         )
 
 
+def _num(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+class SidecarReader:
+    """The Docker-in-Docker sidecar, read through the proxy's
+    ``/_pipeshub/usage``: its own cgroup (``source="sidecar"``), or the stats of
+    the proxy's containers (``"sidecar-containers"``)."""
+
+    def __init__(
+        self, http_get: Callable[[str, float], tuple[int, Any]],
+        source: Literal["sidecar", "sidecar-containers"], *, memory_bytes: int,
+        cpu_millis: int | None,
+    ) -> None:
+        self.source: Source = source
+        self._http_get = http_get
+        self._memory_bytes = memory_bytes
+        self._cpus = cpu_millis / 1000 if cpu_millis else None
+        # The last block read, for the governor's snapshot.
+        self.last_block: dict[str, Any] | None = None
+
+    def _fetch(self) -> dict[str, Any] | None:
+        containers = self.source == "sidecar-containers"
+        path = "/_pipeshub/usage?scope=containers" if containers else "/_pipeshub/usage"
+        try:
+            status, body = self._http_get(
+                path, _CONTAINERS_ROUTE_TIMEOUT_S if containers else _SIDECAR_ROUTE_TIMEOUT_S,
+            )
+        except Exception:
+            return None
+        if status != 200 or not isinstance(body, dict):
+            return None
+        block = body.get("containers" if containers else "sidecar")
+        if not isinstance(block, dict) or (containers and block.get("partial")):
+            return None
+        return block
+
+    def read(self) -> HostSample:
+        block = self._fetch()
+        self.last_block = block
+        if block is None:
+            return HostSample(source=self.source)
+        used = _num(block.get("memWorkingSetBytes"))
+        if self.source == "sidecar":
+            limit = _num(block.get("memLimitBytes"))
+            oom = _num(block.get("oomEventsDelta"))
+            return HostSample(
+                mem_total=None if limit is None else int(limit),
+                mem_available=None if limit is None or used is None else max(0, int(limit - used)),
+                mem_psi_full_avg10=_num(block.get("memPsiFullAvg10")),
+                mem_oom_events=None if oom is None else int(oom),
+                cpu_util=_num(block.get("cpuUtil")),
+                cpu_throttled_ratio=_num(block.get("cpuThrottledRatio")),
+                source="sidecar",
+            )
+        total = int(self._memory_bytes * _CONTAINERS_SHARE)
+        cores = _num(block.get("cpuCores"))
+        return HostSample(
+            mem_total=total,
+            mem_available=None if used is None else max(0, int(total - used)),
+            cpu_util=None if cores is None or not self._cpus else cores / self._cpus,
+            source="sidecar-containers",
+        )
+
+    def memory(self) -> tuple[int | None, int | None]:
+        sample = self.read()
+        return sample.mem_available, sample.mem_total
+
+
 @dataclass(frozen=True)
 class LiveMode:
     """What the live limit reads, or why it is off.
@@ -283,6 +367,8 @@ def resolve_live_mode(
         return LiveMode.off("remote", "remote backend")
     if capacity.mode == "local":
         return LiveMode(mode="on:cgroup", reader=cgroup_reader(), profile="cgroup", note="own cgroup")
+    if capacity.mode == "helm_dind":
+        return resolve_sidecar_mode(capacity, settings, http_get=http_get)
     if not platform.startswith("linux"):
         return LiveMode.off("not-linux", "app not on Linux: cannot read the Docker host")
     reader = host_reader or HostReader(proc)
@@ -309,3 +395,60 @@ def resolve_live_mode(
         return LiveMode(mode="on:host", reader=reader, profile="host", note="fingerprint")
     # The daemon's /info may simply not have been read yet: try again later.
     return LiveMode.off("unverified", "cannot prove the Docker daemon shares this machine", retry=True)
+
+
+def resolve_sidecar_mode(
+    capacity: SandboxCapacity,
+    settings: LiveSettings,
+    *,
+    http_get: Callable[[str, float], tuple[int, Any]] = docker_http_get,
+) -> LiveMode:
+    """The reading for a Docker-in-Docker sidecar: its own cgroup when the
+    proxy serves it and its limit matches the sidecar's, else container
+    stats, else none. Blocking. Never raises."""
+    if not settings.enabled:
+        return LiveMode.off("disabled", "disabled by SANDBOX_LIVE_LIMIT")
+    size = capacity.settings.host_memory_bytes
+    if size is None:
+        return LiveMode.off("no-sidecar-size", "SANDBOX_HOST_MEMORY_BYTES is not set")
+    cpu_millis = capacity.settings.host_cpu_millis
+    try:
+        status, body = http_get("/_pipeshub/usage", _SIDECAR_ROUTE_TIMEOUT_S)
+    except Exception as exc:
+        status, body = 0, None
+        logger.debug("sandbox live limit: /_pipeshub/usage failed: %s", exc)
+    if status == 403:
+        return LiveMode.off(
+            "proxy-too-old", "the docker proxy does not serve /_pipeshub/usage; upgrade its image",
+            retry=True,
+        )
+    sidecar = body.get("sidecar") if status == 200 and isinstance(body, dict) else None
+    if isinstance(sidecar, dict):
+        limit = _num(sidecar.get("memLimitBytes"))
+        if limit is not None and abs(limit - size) <= _SIDECAR_LIMIT_TOLERANCE * size:
+            if settings.sidecar_source != "containers":
+                return LiveMode(
+                    mode="on:sidecar", profile="sidecar", note="sidecar cgroup",
+                    reader=SidecarReader(http_get, "sidecar", memory_bytes=size, cpu_millis=cpu_millis),
+                )
+            why = "SANDBOX_SIDECAR_SOURCE=containers"
+        else:
+            why = f"its memory.max {limit} is not the sidecar limit {size}"
+    elif isinstance(body, dict) and body.get("sidecarError"):
+        why = str(body["sidecarError"])
+    else:
+        why = f"HTTP {status}" if status else "the proxy did not answer"
+    if settings.sidecar_source == "cgroup":
+        return LiveMode.off("no-sidecar-reading", f"sidecar cgroup reading unavailable ({why})", retry=True)
+    try:
+        status, body = http_get("/_pipeshub/usage?scope=containers", _CONTAINERS_ROUTE_TIMEOUT_S)
+    except Exception:
+        status, body = 0, None
+    if status == 200 and isinstance(body, dict) and isinstance(body.get("containers"), dict):
+        return LiveMode(
+            mode="on:sidecar-containers", profile="sidecar", note="container stats", retry=True,
+            reason=f"sidecar cgroup reading unavailable ({why}); using container stats "
+                   "(dockerd and page cache not counted)",
+            reader=SidecarReader(http_get, "sidecar-containers", memory_bytes=size, cpu_millis=cpu_millis),
+        )
+    return LiveMode.off("no-sidecar-reading", f"no sidecar reading ({why})", retry=True)

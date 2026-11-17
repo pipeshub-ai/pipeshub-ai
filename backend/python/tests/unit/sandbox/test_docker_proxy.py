@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import urllib.parse
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +21,7 @@ from app.sandbox.docker_proxy import (
     DockerApiPolicy,
     DockerSocketProxy,
     PolicyDenied,
+    Route,
     _parse_request_head,
     normalize_image,
 )
@@ -778,3 +780,246 @@ class TestLocalRoutes:
             assert resp.startswith(b"HTTP/1.1 403")
         finally:
             server.close()
+
+
+SIDECAR_EXPORT = """v 1
+seq {seq}
+memory.max {mem_max}
+memory.current 1000000000
+cpu.max 200000 100000
+memory.stat.anon 600000000
+memory.stat.file 300000000
+memory.stat.shmem 100000000
+memory.events.local.oom {oom}
+memory.events.local.max 3
+cpu.stat.usage_usec {usage}
+cpu.stat.nr_periods {periods}
+cpu.stat.nr_throttled {throttled}
+memory.pressure.full.avg10 1.50
+cpu.pressure.some.avg10 20.00
+dockerd.rss_kb 96000
+containerd.rss_kb 40000
+"""
+
+
+def _export(path, *, seq: int = 1, usage: int = 0, periods: int = 0, throttled: int = 0,
+            oom: int = 0, mem_max: str = "4294967296", mtime: float | None = None) -> None:
+    import os
+
+    path.write_text(SIDECAR_EXPORT.format(
+        seq=seq, usage=usage, periods=periods, throttled=throttled, oom=oom, mem_max=mem_max,
+    ))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+class TestSidecarStats:
+    def test_realistic_export(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        path = tmp_path / "stats"
+        _export(path)
+        block, error = SidecarStats(str(path)).read()
+        assert error is None and block is not None
+        assert block["memLimitBytes"] == 4294967296
+        # current - (file - shmem): tmpfs stays in the working set.
+        assert block["memWorkingSetBytes"] == 1000000000 - 200000000
+        assert block["memPsiFullAvg10"] == pytest.approx(0.015)
+        assert block["cpuPsiSomeAvg10"] == pytest.approx(0.2)
+        assert block["cpuLimitMillis"] == 2000
+        assert (block["dockerdRssBytes"], block["containerdRssBytes"]) == (96000 * 1024, 40000 * 1024)
+        assert block["cpuUtil"] is None and block["cpuThrottledRatio"] is None and block["oomEventsDelta"] is None
+        assert block["ageS"] < 5 and time.time() > 0
+
+    def test_rates_between_snapshots(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        path, now = tmp_path / "stats", time.time()
+        stats = SidecarStats(str(path), clock=lambda: now)
+        _export(path, seq=1, usage=0, periods=0, throttled=0, oom=0, mtime=now - 15)
+        stats.read()
+        _export(path, seq=4, usage=15_000_000, periods=150, throttled=50, oom=1, mtime=now)
+        block, _ = stats.read()
+        assert block is not None
+        assert block["windowS"] == pytest.approx(15.0)
+        assert block["cpuUtil"] == pytest.approx(0.5)
+        assert block["cpuThrottledRatio"] == pytest.approx(50 / 150)
+        assert block["oomEventsDelta"] == 1
+
+    def test_a_counter_going_back_resets_the_rates(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        path, now = tmp_path / "stats", time.time()
+        stats = SidecarStats(str(path), clock=lambda: now)
+        _export(path, seq=9, usage=50_000_000, mtime=now - 15)
+        stats.read()
+        _export(path, seq=1, usage=1_000, mtime=now)
+        block, _ = stats.read()
+        assert block is not None and block["cpuUtil"] is None and block["windowS"] is None
+
+    def test_unlimited_memory_is_null(self, tmp_path) -> None:
+        from app.sandbox.docker_proxy import SidecarStats
+
+        _export(tmp_path / "stats", mem_max="max")
+        block, _ = SidecarStats(str(tmp_path / "stats")).read()
+        assert block is not None and block["memLimitBytes"] is None
+
+    def test_errors(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        assert SidecarStats(None).read() == (None, "not_configured")
+        assert SidecarStats(str(tmp_path / "nope")).read() == (None, "missing")
+        old = tmp_path / "old"
+        _export(old, mtime=time.time() - 21)
+        assert SidecarStats(str(old)).read() == (None, "stale")
+        big = tmp_path / "big"
+        big.write_text("x" * (16 * 1024 + 1))
+        assert SidecarStats(str(big)).read() == (None, "unparsable")
+        link = tmp_path / "link"
+        _export(tmp_path / "target")
+        link.symlink_to(tmp_path / "target")
+        assert SidecarStats(str(link)).read() == (None, "unparsable")
+        bad = tmp_path / "bad"
+        bad.write_text("memory.current lots\n")
+        assert SidecarStats(str(bad)).read() == (None, "unparsable")
+        junk = tmp_path / "junk"
+        junk.write_text("hello world\n\n# comment\nmemory.current 5\n")
+        block, error = SidecarStats(str(junk)).read()
+        assert error is None and block is not None and block["memWorkingSetBytes"] == 5
+
+
+class _UsageDaemon:
+    """A daemon that lists containers and answers one-shot stats."""
+
+    def __init__(self, ids: list[str], *, slow: set[str] | None = None) -> None:
+        self.ids = ids
+        self.slow = slow or set()
+        self.usage: dict[str, int] = dict.fromkeys(ids, 0)
+        self.requests: list[str] = []
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = (await reader.readuntil(b"\r\n\r\n")).decode()
+        target = head.split("\r\n")[0].split(" ")[1]
+        self.requests.append(target)
+        path = target.split("?", 1)[0]
+        if path == "/containers/json":
+            payload = json.dumps([{"Id": i, "Names": ["/x"], "Labels": {"a": "b"}} for i in self.ids]).encode()
+        else:
+            ident = path.split("/")[2]
+            if ident in self.slow:
+                await asyncio.sleep(3)
+            payload = json.dumps({
+                "memory_stats": {"usage": 150, "stats": {"file": 60, "shmem": 10}},
+                "cpu_stats": {"cpu_usage": {"total_usage": self.usage[ident]}},
+            }).encode()
+        writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode() + payload)
+        await writer.drain()
+        writer.close()
+
+
+@pytest.fixture
+async def usage_proxy(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_UsageDaemon, DockerSocketProxy, int]]:
+    daemon = _UsageDaemon(["a" * 64, "b" * 64])
+    sock = str(tmp_path / "u.sock")
+    upstream = await asyncio.start_unix_server(daemon.handle, sock)
+    proxy = DockerSocketProxy(policy, sock, instance="stack-a")
+    server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+    yield daemon, proxy, server.sockets[0].getsockname()[1]
+    server.close()
+    upstream.close()
+
+
+async def _usage(port: int, query: str = "") -> tuple[bytes, dict[str, Any] | None]:
+    resp = await _request(port, f"GET /v1.43/_pipeshub/usage{query} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    return resp, json.loads(body) if resp.startswith(b"HTTP/1.1 200") else None
+
+
+class TestUsageRoute:
+    @pytest.mark.parametrize(("method", "target"), [
+        ("POST", "/_pipeshub/usage"), ("GET", "/_pipeshub/usage?foo=1"),
+        ("GET", "/_pipeshub/usage?scope=all"), ("GET", "/_pipeshub/usage?scope=containers&scope=containers"),
+        ("GET", "/containers/abc/stats"),
+    ])
+    def test_refused(self, policy: DockerApiPolicy, method: str, target: str) -> None:
+        with pytest.raises(PolicyDenied):
+            policy.route(method, target)
+
+    def test_scopes(self, policy: DockerApiPolicy) -> None:
+        assert policy.route("GET", "/v1.43/_pipeshub/usage") == Route("local_usage")
+        assert policy.route("GET", "/_pipeshub/usage?scope=containers") == Route("local_usage", scope="containers")
+
+    async def test_sidecar_scope_never_opens_the_upstream(self, tmp_path, policy: DockerApiPolicy) -> None:
+        _export(tmp_path / "stats")
+        proxy = DockerSocketProxy(policy, str(tmp_path / "missing.sock"), sidecar_stats_file=str(tmp_path / "stats"))
+        server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+        try:
+            _, body = await _usage(server.sockets[0].getsockname()[1])
+        finally:
+            server.close()
+        assert body is not None and body["v"] == 1 and body["sidecarError"] is None
+        assert body["sidecar"]["memLimitBytes"] == 4294967296
+
+    async def test_without_a_file_it_is_not_configured(self, usage_proxy) -> None:
+        _, _, port = usage_proxy
+        _, body = await _usage(port)
+        assert body == {"v": 1, "sidecar": None, "sidecarError": "not_configured"}
+
+    async def test_containers_are_listed_by_both_labels_and_summed(self, usage_proxy) -> None:
+        daemon, _, port = usage_proxy
+        _, body = await _usage(port, "?scope=containers")
+        assert body is not None and body["containersError"] is None
+        block = body["containers"]
+        assert block == {"running": 2, "memWorkingSetBytes": 200, "cpuCores": None, "partial": False, "truncated": False}
+        listed = urllib.parse.unquote(daemon.requests[0])
+        assert '"ai.pipeshub.docker-proxy.managed=true"' in listed
+        assert '"ai.pipeshub.docker-proxy.instance=stack-a"' in listed and '"running"' in listed
+        assert all("one-shot=true" in r and "stream=false" in r for r in daemon.requests[1:])
+
+    async def test_cpu_counts_only_containers_seen_twice_and_is_cached(self, usage_proxy) -> None:
+        daemon, proxy, port = usage_proxy
+        await _usage(port, "?scope=containers")
+        calls = len(daemon.requests)
+        await _usage(port, "?scope=containers")
+        assert len(daemon.requests) == calls
+        proxy._containers_cache = None
+        for ident in daemon.ids:
+            proxy._containers_cpu[ident] = (0.0, proxy._containers_cpu[ident][1] - 2.0)
+        daemon.usage = dict.fromkeys(daemon.ids, 2_000_000_000)
+        _, body = await _usage(port, "?scope=containers")
+        assert body is not None and body["containers"]["cpuCores"] == pytest.approx(2.0, rel=0.05)
+
+    async def test_slow_stats_give_partial_within_the_budget(self, tmp_path, policy: DockerApiPolicy) -> None:
+        import time
+
+        daemon = _UsageDaemon(["a" * 64, "b" * 64], slow={"b" * 64})
+        sock = str(tmp_path / "s.sock")
+        upstream = await asyncio.start_unix_server(daemon.handle, sock)
+        proxy = DockerSocketProxy(policy, sock)
+        try:
+            started = time.monotonic()
+            block, _ = await proxy.containers_usage()
+            assert time.monotonic() - started < 3.5
+        finally:
+            upstream.close()
+        assert block is not None and block["partial"] is True and block["memWorkingSetBytes"] == 100
+
+    async def test_many_containers_are_capped(self, tmp_path, policy: DockerApiPolicy) -> None:
+        daemon = _UsageDaemon([f"{i:064x}" for i in range(300)])
+        sock = str(tmp_path / "m.sock")
+        upstream = await asyncio.start_unix_server(daemon.handle, sock)
+        proxy = DockerSocketProxy(policy, sock)
+        try:
+            block, _ = await proxy.containers_usage()
+        finally:
+            upstream.close()
+        assert block is not None and block["running"] == 256 and block["truncated"] is True
+        assert set(block) == {"running", "memWorkingSetBytes", "cpuCores", "partial", "truncated"}

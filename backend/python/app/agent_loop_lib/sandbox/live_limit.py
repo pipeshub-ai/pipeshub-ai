@@ -41,6 +41,7 @@ from app.agent_loop_lib.sandbox.capacity import (
 from app.agent_loop_lib.sandbox.host_reading import (
     HostSample,
     LiveMode,
+    SidecarReader,
     resolve_live_mode,
 )
 from app.agent_loop_lib.sandbox.live_record import LiveLedger, LiveRecord
@@ -60,6 +61,7 @@ __all__ = [
     "get_live_limit",
     "host_profile",
     "initial_record",
+    "sidecar_profile",
     "step",
 ]
 
@@ -155,6 +157,32 @@ def host_profile(settings: LiveSettings, name: Literal["host", "cgroup"] = "host
 
 def cgroup_profile(settings: LiveSettings) -> LiveProfile:
     return host_profile(settings, "cgroup")
+
+
+def sidecar_profile(settings: LiveSettings) -> LiveProfile:
+    """A Docker-in-Docker sidecar holds only the sandboxes and is sized for
+    the ceiling, so its lines sit near its limit; a lost reading falls back
+    to the fixed ceiling, which is safe there on its own."""
+    return LiveProfile(
+        name="sidecar",
+        hard_adds_run=False,
+        mem_psi_hard=0.10,
+        credit_running=True,
+        cpu_brake=settings.sidecar_cpu_brake,
+        # The sidecar's cpu.pressure mixes in each sandbox's own CPU quota.
+        cpu_psi_brake=None,
+        cpu_throttle_brake=settings.sidecar_cpu_throttle,
+        # Its CPU quota throttles in short bursts: one busy sample must not move it.
+        cpu_sustain=3,
+        # The exporter writes every 5 s and the reading is cached for 2 s.
+        burst_window_s=10.0,
+        on_reading_lost="static_ceiling",
+        # Indexing cannot free the sidecar's memory.
+        yields_to_indexing=False,
+        admit_cache_s=2.0,
+        floor_share=1.0 - settings.sidecar_mem_hard,
+        soft_share=1.0 - settings.sidecar_mem_high,
+    )
 
 
 def _usable(sample: HostSample | None) -> bool:
@@ -357,6 +385,13 @@ class LiveLimit:
             return host_profile(self._settings)
         if mode.profile == "cgroup":
             return cgroup_profile(self._settings)
+        if mode.profile == "sidecar":
+            if self._settings.host_tuned:
+                logger.warning(
+                    "sandbox live limit: SANDBOX_HOST_MEM_* / SANDBOX_HOST_CPU_* are ignored for the "
+                    "Docker-in-Docker sidecar; use SANDBOX_SIDECAR_*",
+                )
+            return sidecar_profile(self._settings)
         return None
 
     def apply_mode(self, mode: LiveMode) -> None:
@@ -371,7 +406,9 @@ class LiveLimit:
             self._admit_reading = None
         if mode.mode == previous.mode:
             return
-        if mode.on:
+        if mode.on and mode.reason:
+            logger.warning("sandbox live limit: %s", mode.reason)
+        elif mode.on:
             available, total = mode.reader.memory() if mode.reader is not None else (None, None)
             logger.info(
                 "sandbox live limit: on (source=%s, same machine: %s) mem_total=%s mem_available=%s "
@@ -391,6 +428,13 @@ class LiveLimit:
             return 1.0
         if mode.mode == "on:host" and self._capacity.mode == "compose":
             k = min(wanted, MAX_MEMORY_OVERCOMMIT)
+        elif mode.mode == "on:sidecar" and self._capacity.mode == "helm_dind":
+            k = min(wanted, HELM_MAX_OVERCOMMIT)
+            if k < wanted:
+                logger.warning(
+                    "sandbox memory over-commit %.1fx is capped at %.1fx for the Docker-in-Docker sidecar",
+                    wanted, k,
+                )
         else:
             logger.warning(
                 "sandbox memory over-commit %.1fx forced to 1.0 (%s): it needs a live reading "
@@ -462,7 +506,8 @@ class LiveLimit:
                     logger.warning("sandbox live limit: sample failed", exc_info=True)
             self.view(fresh=True)
             await asyncio.sleep(self._settings.interval_s + self._rng.uniform(0.0, JITTER_S))
-            if self._mode.retry and self._resolved_at is not None and self._clock() - self._resolved_at >= RERESOLVE_S:
+            again = self._mode.retry or self._lost(self._ledger.read(), self._clock())
+            if again and self._resolved_at is not None and self._clock() - self._resolved_at >= RERESOLVE_S:
                 await self.resolve()
 
     def _stale(self, rec: LiveRecord, now: float) -> bool:
@@ -686,8 +731,20 @@ class LiveLimit:
         return None
 
     def live_block(self, view: LiveView) -> dict[str, Any]:
-        """The governor snapshot's ``live`` entry."""
-        return asdict(view)
+        """The governor snapshot's ``live`` entry: the view, plus the
+        sidecar's last reading in this worker on a Docker-in-Docker sidecar."""
+        block: dict[str, Any] = asdict(view)
+        reader = self._mode.reader
+        if isinstance(reader, SidecarReader):
+            last = reader.last_block or {}
+            limit, used = last.get("memLimitBytes"), last.get("memWorkingSetBytes")
+            block["sidecar"] = {
+                "memUsedPct": round(100 * used / limit, 1) if limit and used is not None else None,
+                "memLimitBytes": limit, "cpuUtil": last.get("cpuUtil"),
+                "cpuThrottledRatio": last.get("cpuThrottledRatio"),
+                "dockerdRssBytes": last.get("dockerdRssBytes"), "ageS": last.get("ageS"),
+            }
+        return block
 
 
 _live: LiveLimit | None = None
