@@ -190,6 +190,16 @@ class NodePaidResultStore:
         except ArtifactRoutesUnavailable:
             return
 
+    async def purge_cutoff(self, org_id: str, record_id: str) -> int:
+        """The object store's own current time (ms), as the cutoff of a purge: no caller's clock decides what goes."""
+        try:
+            body = await self._call(
+                org_id, "POST", Routes.STORAGE_PAID_RESULTS_PURGE_CUTOFF.value.format(recordId=record_id),
+            )
+        except ArtifactRoutesUnavailable:
+            return 0
+        return int(body["cutoff"])
+
     async def purge_org(self, org_id: str) -> None:
         try:
             await self._call(org_id, "DELETE", Routes.STORAGE_PAID_RESULTS_ORG.value)

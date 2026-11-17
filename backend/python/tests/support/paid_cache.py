@@ -83,6 +83,10 @@ class MemoryResultStore:
                 continue                                       # written at or after the purge's start: not its to remove
             del self.files[k]
 
+    async def purge_cutoff(self, org_id: str, record_id: str) -> int:
+        self._call("purge", org_id, record_id)
+        return self.now_ms                                     # the store's own clock
+
     async def purge_org(self, org_id: str) -> None:
         self._call("purge", org_id)
         for k in [k for k in self.files if k[0] == org_id]:

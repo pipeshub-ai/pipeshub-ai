@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -218,6 +219,9 @@ function virtualRecordIdOf(
 // TODO: Remove these globals
 let storageConfig:
   AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
+
+/** How far past this service's clock a purge cutoff may lie before it is refused (the object store's clock may differ a little). */
+const PURGE_CUTOFF_FUTURE_SLACK_MS = 60_000;
 
 @injectable()
 export class StorageController {
@@ -1444,6 +1448,10 @@ export class StorageController {
       }
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
+      // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
+      if (beforeQuery !== undefined && Number(beforeQuery) > Date.now() + PURGE_CUTOFF_FUTURE_SLACK_MS) {
+        throw new BadRequestError('before is in the future');
+      }
       if (beforeQuery === undefined) {
         await adapter.deleteTree(root);
       } else {
@@ -1488,6 +1496,49 @@ export class StorageController {
       }
       if (page.next === undefined) return;
       after = page.next;
+    }
+  }
+
+  /**
+   * The store's current time, as a cutoff for a purge that follows: a sentinel object is written to the record's folder
+   * and its last-modified stamp (the object store's own clock, the one every stored result carries) is read back, so no
+   * clock of the caller or of this service decides which objects a purge may remove. The sentinel is deleted again.
+   */
+  async paidResultsPurgeCutoff(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const folder = `${root}/purge-cutoff/`;
+      const key = `${folder}${randomUUID()}.json`;
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('{}'),
+        documentPath: key,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      let cutoff: number;
+      try {
+        const page = await adapter.listObjects(folder, { limit: PAID_RESULT_LIST_PAGE });
+        const written = page.objects.find((o) => o.key === key);
+        if (written === undefined) {
+          throw new ServiceUnavailableError('The store did not stamp the cutoff');
+        }
+        cutoff = written.lastModifiedMs;
+      } finally {
+        await adapter.deleteObjects([key]).catch(() => undefined);
+      }
+      res.status(HTTP_STATUS.OK).json({ cutoff });
+    } catch (error) {
+      next(error);
     }
   }
 

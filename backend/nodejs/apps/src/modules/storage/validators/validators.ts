@@ -480,12 +480,17 @@ export const DeletePaidResultsSchema = z.object({
   }),
 });
 
+export const PurgeCutoffPaidResultsSchema = z.object({
+  headers: Headers,
+  params: z.object({ recordId: paidResultRecordIdSchema }),
+});
+
 export const PurgePaidResultsSchema = z.object({
   headers: Headers,
   params: z.object({ recordId: paidResultRecordIdSchema }),
   query: z
     .object({
-      // Only objects last written before this instant (ms since the epoch) are removed.
+      // Only objects last written before this instant (the store's clock, as `purge-cutoff` returned it) are removed.
       before: z.coerce.number().int().positive().optional(),
     })
     .strict(),

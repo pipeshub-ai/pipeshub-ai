@@ -94,20 +94,41 @@ async def test_the_listing_pages_through_more_files_than_one_page(store: NodePai
     assert await store.list_files(org, "rec-p", "classify/") == []
 
 
-async def test_a_purge_with_a_cutoff_leaves_what_was_stored_after_it_on_the_real_store(store: NodePaidResultStore) -> None:
-    """A late DELETE (its caller lost its lease) removes only what existed before its purge started."""
+@pytest.mark.parametrize("skew_s", [30, -30, 120, -120])
+async def test_a_purge_cutoff_is_the_stores_clock_whatever_the_callers_clock_says(store: NodePaidResultStore, skew_s: int) -> None:
+    """The cutoff comes from the store: a caller whose clock is fast or slow still purges the stale and spares the new."""
     import asyncio
     import time
+    from unittest import mock
 
     org, rec = new_org(), str(uuid.uuid4())
     old, new = f"ocr_page/{'a' * 64}.json", f"ocr_page/{'b' * 64}.json"
+    real_time = time.time
     try:
         assert await store.put(org, rec, old, b"{}") is True
-        await asyncio.sleep(3.5)                                       # past the whole-second stamps of S3 and Azure
-        cutoff = int(time.time() * 1000) - 2000                        # the purge's start, less its clock margin
-        await asyncio.sleep(3.5)
-        assert await store.put(org, rec, new, b"{}") is True           # stored by the delivery that took over
-        await store.purge_record(org, rec, before_ms=cutoff)           # the late DELETE lands
-        assert [f.path for f in await store.list_files(org, rec)] == [new]
+        await asyncio.sleep(2.5)                                       # past the whole-second stamps of S3 and Azure
+        with mock.patch("time.time", lambda: real_time() + skew_s):    # the caller's clock is wrong; nothing reads it
+            cutoff = await store.purge_cutoff(org, rec)
+            await asyncio.sleep(2.5)
+            assert await store.put(org, rec, new, b"{}") is True       # stored by the delivery that took over
+            await store.purge_record(org, rec, before_ms=cutoff)       # the late DELETE lands
+            assert [f.path for f in await store.list_files(org, rec)] == [new]
+            await store.purge_record(org, rec, before_ms=cutoff)       # and again: the same cutoff, the same outcome
+            assert [f.path for f in await store.list_files(org, rec)] == [new]
+    finally:
+        await store.purge_org(org)
+
+
+async def test_a_purge_cutoff_in_the_future_is_refused_and_removes_nothing(store: NodePaidResultStore) -> None:
+    import time
+
+    org, rec = new_org(), str(uuid.uuid4())
+    path = f"ocr_page/{'a' * 64}.json"
+    try:
+        assert await store.put(org, rec, path, b"{}") is True
+        for ahead_s in (120, 600):
+            with pytest.raises(Exception, match="400|before"):
+                await store.purge_record(org, rec, before_ms=int((time.time() + ahead_s) * 1000))
+        assert [f.path for f in await store.list_files(org, rec)] == [path]
     finally:
         await store.purge_org(org)
