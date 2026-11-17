@@ -595,6 +595,8 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     walk_seeded = (f'(NOT ({declared_p} OR {_aql_access_rule(p)} == "STRICT_OR_GRANT"'
                    f' OR (IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", {p}) AND HAS(@kh_scope, {p}._key))) OR {seed})')
     below_member_seeded = f"(NOT {member_p} OR {seed})"
+    # A STRICT_OR_GRANT child is read by its own grant wherever it hangs, below a seed too (as on Neo4j).
+    own_grant = f'({c}.isDeleted != true AND {_aql_access_rule(c)} == "STRICT_OR_GRANT" AND HAS(@granted, {c}._key))'
     # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (a record only, as the check: a group is read by
     # its hops). The loop over an empty list reads nothing otherwise; the App is matched by its handle, as a key is unique only in its collection.
     record_c = f'IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {c})'
@@ -608,7 +610,7 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     hop = f"({_aql_granted_hop(c, p, tag + 'h', navigation=True)} AND {walk} AND {below_member})"
     return (f"({_aql_read_by_app(c)} AND (({from_app} OR {member_of_open_app}) ? ({hop} ? ({from_app} ? true : {visible})"
             f" : ({_aql_in_scope(c, p)} ? {visible} : false)) : ({p}.hideChildren != true AND ((({_aql_open_hop(c, p, tag + 'o')}"
-            f" AND {walk_seeded} AND {below_member_seeded}) ? true : ({_aql_in_scope(c, p)})) ? {visible} : false))))")
+            f" AND {walk_seeded} AND {below_member_seeded}) OR {own_grant} ? true : ({_aql_in_scope(c, p)})) ? {visible} : false))))")
 
 
 def _aql_hidden_elsewhere(c: str, p: str, tag: str) -> str:
