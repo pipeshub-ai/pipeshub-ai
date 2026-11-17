@@ -10,7 +10,12 @@
  * then been applied: the final catch-up of the freeze); and counts the application's events after the freeze (the flip needs zero).
  */
 import { ChangeStream, ChangeStreamDocument, Timestamp } from 'mongodb';
-import { deleteDocs, liveHolders, replaceDocs } from './apply';
+import {
+  deleteDocs,
+  deleteUnclaimedRows,
+  liveEvents,
+  replaceDocs,
+} from './apply';
 import { Log } from './bulk';
 import type { DocDiff } from './compare';
 import { MAPPINGS } from './mapping';
@@ -314,8 +319,11 @@ export async function follow(
           const c = pending.get(m) as Apply;
           if (c.deletes.size) {
             const ids = [...c.deletes];
-            const keep = await liveHolders(rt, m, ids);
-            await rt.jobs((_tx, k) => deleteDocs(k, m, ids, { keep }));
+            if (m.tableId) {
+              // the event carries only the id: the rows under it that are none of the documents still copied there are the deleted ones
+              const live = await liveEvents(rt, m, ids);
+              await rt.jobs((_tx, k) => deleteUnclaimedRows(k, m, ids, live));
+            } else await rt.jobs((_tx, k) => deleteDocs(k, m, ids));
           }
         }
         for (const m of todo) {

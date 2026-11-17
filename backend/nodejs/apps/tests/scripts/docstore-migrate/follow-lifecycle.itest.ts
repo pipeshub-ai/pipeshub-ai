@@ -148,6 +148,23 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await foldRows(), 'the pending event keeps its row: the published one never had it').to.deep.equal([String(ORG_A)]);
       });
 
+      it('a deleted event\'s row goes although a live event of the same organisation shares its folded key, and the live one is then copied', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const { a, b } = foldedPair();
+        await events.insertOne({ ...outboxEvent(a, ORG_A, 'pending'), key: 'deleted-one' } as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        await events.deleteOne({ _id: a } as never);
+        await events.insertOne({ ...outboxEvent(b, ORG_A, 'pending'), key: 'live-one' } as never);
+        const r = await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(r.applied).to.equal(2);
+        const keys = (await sql("SELECT msg_key FROM platform.outbox WHERE topic = 'fold-probe'")).map((x) => x.msg_key);
+        expect(keys, 'only the live event\'s row').to.deep.equal(['live-one']);
+        expect((await follow(w.rt, js, { untilIdleMs: 1500, log })).applied, 'the position was saved').to.equal(0);
+      });
+
       it('a delete event does not remove another organisation\'s row under the same folded key while that event is still in MongoDB', async () => {
         const js = await JobState.attach(w.rt);
         await followStart(w.rt, js);
@@ -167,7 +184,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await foldRows(), 'the delete of B\'s own event removes its row').to.deep.equal([]);
       });
 
-      it('does not guess which organisation an outbox delete meant when two hold the same folded id: both rows stay and the clash is named', async () => {
+      it('an outbox delete of one of two organisations\' events under the same folded id removes that event\'s row only, and the follower moves on', async () => {
         const js = await JobState.attach(w.rt);
         await followStart(w.rt, js);
         await bulk(w.rt, js, { log });
@@ -181,10 +198,11 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const rows = async (): Promise<number> => Number((await sql("SELECT count(*)::int AS n FROM platform.outbox WHERE topic = 'clash-probe'"))[0].n);
         expect(await rows()).to.equal(2);
         await events.deleteOne({ _id: new ObjectId(hexA) } as never);
-        let err: Error | undefined;
-        await follow(w.rt, js, { untilIdleMs: 1500, log }).catch((e: Error) => (err = e));
-        expect(err?.message).to.contain('more than one organisation').and.to.contain(String(ORG_A)).and.to.contain(String(ORG_B)).and.to.contain(hexA);
-        expect(await rows(), 'neither row was deleted').to.equal(2);
+        const r = await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(r.applied).to.equal(1);
+        const left = await sql("SELECT org_id FROM platform.outbox WHERE topic = 'clash-probe'");
+        expect(left.map((x) => x.org_id), 'the deleted event\'s row went, the other organisation\'s stayed').to.deep.equal([String(ORG_B)]);
+        expect((await follow(w.rt, js, { untilIdleMs: 1500, log })).applied, 'the position was saved').to.equal(0);
       });
 
       it('when two organisations hold the same folded id and one event is published, only that organisation\'s row goes, without a refusal, and the follower moves on', async () => {

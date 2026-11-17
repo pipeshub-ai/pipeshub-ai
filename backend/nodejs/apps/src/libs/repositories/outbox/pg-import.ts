@@ -38,15 +38,28 @@ export class OutboxIdCollision extends Error {}
 const timeOf = (v: unknown): number =>
   v instanceof Date ? v.getTime() : Date.parse(String(v));
 
+const IDENTITY = ['org_id', 'topic', 'msg_key', 'ordering_key', 'value'];
+
 /**
- * What makes an event the same event on a retry: fields the dispatcher never changes (status and attempts move on). The table
- * keys an event by organisation and id, so the same id in two organisations is two events. Every compared column is text except
- * the time, which is compared as a number so that milliseconds survive the round trip.
+ * Whether a stored row is this event: the fields the dispatcher never changes (status and attempts move on) are equal. The table
+ * id is folded from the ObjectId and can be shared, so this, not the id, says which event a row holds. Every compared column is
+ * text except the time, which is compared as a number so that milliseconds survive the round trip. `undefined` when the row lacks
+ * one of them: which event it holds cannot be told, and a caller keeps it rather than guess.
  */
-const sameEvent = (a: Row, b: Row): boolean =>
-  ['org_id', 'topic', 'msg_key', 'ordering_key', 'value'].every(
-    (c) => a[c] === b[c],
-  ) && timeOf(a.created_at) === timeOf(b.created_at);
+export function rowIsEvent(row: Row, event: Row): boolean | undefined {
+  if (
+    [...IDENTITY, 'created_at'].some(
+      (c) => row[c] === null || row[c] === undefined,
+    )
+  )
+    return undefined;
+  return (
+    IDENTITY.every((c) => row[c] === event[c]) &&
+    timeOf(row.created_at) === timeOf(event.created_at)
+  );
+}
+
+const sameEvent = (a: Row, b: Row): boolean => rowIsEvent(a, b) === true;
 
 const keyOf = (r: Row): string => `${String(r.org_id)}/${String(r.id)}`;
 
@@ -129,6 +142,22 @@ export async function importOutboxDocs(
 }
 
 /** An id already in the table must hold this very event (a resumed batch), not another one that folds to the same id. */
+/** The identity of the row a document is (or would be) stored as, whatever its status; null when it cannot have one (no organisation, or a field the row needs is missing). */
+export function outboxEventOf(d: NeutralDoc): Row | null {
+  const hex = idText(d._id);
+  const org = orgOf(d);
+  if (
+    hex === null ||
+    org === null ||
+    typeof d.topic !== 'string' ||
+    typeof d.key !== 'string' ||
+    typeof d.value !== 'string' ||
+    typeof d.createdAt !== 'string'
+  )
+    return null;
+  return outboxRow(d, org, outboxIdOf(hex), d.status);
+}
+
 async function refuseHeldIds(
   k: KernelTx,
   rows: Row[],
