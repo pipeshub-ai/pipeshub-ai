@@ -529,3 +529,18 @@ async def test_jina_failure_status_is_kept_for_the_retry_decision() -> None:
     with pytest.raises(JinaAPIError) as raised:
         embeddings.embed_documents(["x"])
     assert raised.value.status_code == 429 and raised.value.response.headers["Retry-After"] == "30"
+
+
+def test_importing_custom_embeddings_does_not_import_the_community_jina_module() -> None:
+    """The Jina class is built on first use, so its deprecation warning and import cost stay out of every importer."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, app.utils.custom_embeddings as m\n"
+        "assert 'langchain_community.embeddings.jina' not in sys.modules\n"
+        "cls = m.JinaEmbeddings\n"
+        "assert 'langchain_community.embeddings.jina' in sys.modules and m.JinaEmbeddings is cls\n"
+    )
+    result = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr[-2000:]
