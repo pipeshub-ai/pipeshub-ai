@@ -12,12 +12,12 @@ import pytest
 import yaml
 
 from tests.permissions.runner import OracleLayer
-from tests.permissions.scenario import world_from_data
+from tests.permissions.scenario import World, world_from_data
 
 WANTED = {"pr": True, "pa": False, "sa": True}  # project reader, parent's own assignee, sub-task's own assignee
 
 
-def _world(rule: str, granted: bool):
+def _world(rule: str, granted: bool) -> World:
     return world_from_data(yaml.safe_load(f"""
 principals: [{{id: pr}}, {{id: pa}}, {{id: sa}}]
 nodes:
