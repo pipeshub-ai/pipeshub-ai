@@ -171,7 +171,10 @@ _CREATE_TIME_FIELDS = frozenset({
 _BACKFILL_WAIT_ENV = "REDIS_VECTOR_BACKFILL_WAIT_SECONDS"
 _DEFAULT_BACKFILL_WAIT_SECONDS = 600.0
 _BACKFILL_POLL_SECONDS = 1.0
-_PENDING_ALTER_GRACE_SECONDS = 5.0
+# An entry written for an ALTER that never reported back (its process died between the two) is dropped once idle this long; the
+# clearing of a finished scan never depends on a clock.
+_PENDING_ALTER_LOST_SECONDS = 600.0
+_ALTER_STARTED = "started"
 _SETTLE_ATTEMPTS = 5
 _SETTLE_DELAY_SECONDS = 0.05
 
@@ -210,6 +213,14 @@ def _is_unknown_index_error(exc: Exception) -> bool:
         # Redis 8.8 and later, which the floating redis:8 tag now serves.
         or "search_index_not_found" in message
     )
+
+
+def _pending_is_lost(state: str) -> bool:
+    """``pending:<time>`` older than ``_PENDING_ALTER_LOST_SECONDS``: its process died before the ALTER reported back."""
+    try:
+        return time.time() - float(state.split(":", 1)[1]) > _PENDING_ALTER_LOST_SECONDS
+    except (IndexError, ValueError):
+        return False
 
 
 def _backfill_wait_seconds() -> float:
@@ -609,6 +620,9 @@ class RedisVectorService(IVectorDBService):
                     "SCHEMA", "ADD",
                     redis_alias, field_type, *case,
                 )
+                if recorded:
+                    # The scan has started: from here a check that finds the index idle may clear the entry.
+                    await self.client.execute_command("HSET", self._pending_key(idx), redis_alias, _ALTER_STARTED)  # type: ignore
             finally:
                 self._schema_fields.pop(idx, None)
         except Exception as e:
@@ -623,7 +637,12 @@ class RedisVectorService(IVectorDBService):
                     read = await self._read_index(idx)
                     if read is not None and not read[2]:
                         await self.client.execute_command("HDEL", self._pending_key(idx), redis_alias)  # type: ignore
+                    else:
+                        await self.client.execute_command("HSET", self._pending_key(idx), redis_alias, _ALTER_STARTED)  # type: ignore
                 return
+            if recorded is True:  # nothing was added
+                with contextlib.suppress(Exception):
+                    await self.client.execute_command("HDEL", self._pending_key(idx), redis_alias)  # type: ignore
             raise
 
     # ------------------------------------------------------------------
@@ -1609,25 +1628,25 @@ class RedisVectorService(IVectorDBService):
 
     async def _record_pending_alter(self, idx: str, alias: str) -> bool:
         """Note the field before the ALTER, without overwriting another process's entry. True when this call wrote it."""
-        return bool(await self.client.execute_command("HSETNX", self._pending_key(idx), alias, repr(time.time())))  # type: ignore
+        return bool(await self.client.execute_command("HSETNX", self._pending_key(idx), alias, f"pending:{time.time()!r}"))  # type: ignore
 
-    async def _pending_alters(self, idx: str) -> dict[str, float]:
-        """Fields any process added with FT.ALTER whose scan was not yet seen to finish. Absent key: none (an index from before this key existed)."""
+    async def _pending_alters(self, idx: str) -> dict[str, str]:
+        """Fields any process added with FT.ALTER whose scan was not yet seen to finish (field -> ``started`` or ``pending:<time>``).
+
+        Absent key: none (an index from before this key existed)."""
         raw = await self.client.execute_command("HGETALL", self._pending_key(idx))  # type: ignore
         pairs = list(raw.items()) if isinstance(raw, dict) else list(zip(raw[::2], raw[1::2], strict=False)) if raw else []
-        out: dict[str, float] = {}
-        for k, v in pairs:
-            try:
-                out[k.decode() if isinstance(k, bytes) else str(k)] = float(v)
-            except (TypeError, ValueError):
-                out[k.decode() if isinstance(k, bytes) else str(k)] = 0.0  # unreadable time: kept until a scan is seen to finish
-        return out
+        return {
+            (k.decode() if isinstance(k, bytes) else str(k)): (v.decode() if isinstance(v, bytes) else str(v))
+            for k, v in pairs
+        }
 
-    async def _clear_pending_alters(self, idx: str, seen_before: float) -> None:
-        """The scan finished: forget the fields recorded before the check began, less a grace for an ALTER that is just starting."""
-        stale = [f for f, t in (await self._pending_alters(idx)).items() if t < seen_before - _PENDING_ALTER_GRACE_SECONDS]
-        if stale:
-            await self.client.execute_command("HDEL", self._pending_key(idx), *stale)  # type: ignore
+    async def _clear_pending_alters(self, idx: str, seen: dict[str, str]) -> None:
+        """The index was idle after ``seen`` was read: every entry in it whose ALTER had returned has had its scan finish. An entry whose ALTER
+        had not returned yet stays, and so does one written after the read; no clock decides either."""
+        done = [f for f, state in seen.items() if state == _ALTER_STARTED or _pending_is_lost(state)]
+        if done:
+            await self.client.execute_command("HDEL", self._pending_key(idx), *done)  # type: ignore
 
     async def _require_settled(self, idx: str, query: str) -> None:
         """Hold a delete or payload write until the fields its filter names are fully indexed (:class:`IndexBackfilling` after the bound).
@@ -1643,14 +1662,15 @@ class RedisVectorService(IVectorDBService):
         named = query_fields(query)
         deadline = time.monotonic() + _backfill_wait_seconds()
         while True:
-            checked_at = time.time()
+            # Read before FT.INFO: an entry in this snapshot was there before the index was looked at.
+            pending = await self._pending_alters(idx)
             read = await self._read_index(idx)
             if read is None:
                 return
             if not read[2]:
-                await self._clear_pending_alters(idx, checked_at)
+                await self._clear_pending_alters(idx, pending)
                 return
-            if not ((named - _CREATE_TIME_FIELDS) | (named & frozenset(await self._pending_alters(idx)))):
+            if not ((named - _CREATE_TIME_FIELDS) | (named & frozenset(pending))):
                 return
             if time.monotonic() >= deadline:
                 raise IndexBackfilling(idx, read[1])

@@ -112,14 +112,14 @@ class TestSchemaLookup:
             await svc._indexed_fields("col_idx")
 
     async def test_create_index_drops_the_kept_schema(self) -> None:
-        svc, execute = _service(_info("metadata_orgId"), 1, b"OK", _info("metadata_orgId", "metadata_blockId"))
+        svc, execute = _service(_info("metadata_orgId"), 1, b"OK", 1, _info("metadata_orgId", "metadata_blockId"))
         await svc._indexed_fields("col_idx")
         await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
         assert "col_idx" not in svc._schema_fields
         assert await svc._indexed_fields("col_idx") == {"metadata_orgId", "metadata_blockId"}
 
     async def test_a_failed_alter_drops_it_too(self) -> None:
-        svc, _ = _service(_info("metadata_orgId"), 1, ResponseError("boom"))
+        svc, _ = _service(_info("metadata_orgId"), 1, ResponseError("boom"), 1)
         await svc._indexed_fields("col_idx")
         with pytest.raises(ResponseError):
             await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
@@ -204,7 +204,7 @@ class TestNothingRunsOnARefusedFilter:
 class TestDialectIsPinned:
     async def test_every_search_and_aggregate_carries_dialect_2(self) -> None:
         schema = _info("metadata_orgId", "metadata_virtualRecordId")
-        svc, execute = _service(schema, [1], [1], schema, [], [1, b"k"], [0])
+        svc, execute = _service(schema, [1], [1], [], schema, [1, b"k"], [0])
         flt = FilterExpression(must=[
             FieldCondition(key="metadata.orgId", value=ORG),
             FieldCondition(key="metadata.virtualRecordId", value="v"),
@@ -241,6 +241,9 @@ class _Server:
             self.fields.append(str(args[4]))
             self.scan_polls = 10**6
             return b"OK"
+        if cmd == "HSET":
+            self.hashes.setdefault(str(args[1]), {})[str(args[2])] = str(args[3])
+            return 1
         if cmd == "HSETNX":
             h = self.hashes.setdefault(str(args[1]), {})
             if str(args[2]) in h:
@@ -294,7 +297,6 @@ class TestBackfill:
     def _fast_wait(self, monkeypatch) -> None:
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0.05")
         monkeypatch.setattr("app.services.vector_db.redis.redis_vector._BACKFILL_POLL_SECONDS", 0.01)
-        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._PENDING_ALTER_GRACE_SECONDS", 0.0)
 
     async def test_a_delete_by_the_field_being_filled_raises_after_the_bound(self) -> None:
         server = _Server(*self.FIELDS)
@@ -345,14 +347,33 @@ class TestBackfill:
         assert server.hashes["col_idx:pending_alter"] == {}
         await b.delete_points("col", self._record_filter())
 
-    async def test_a_second_scan_is_not_hidden_by_the_clearing_of_the_first(self) -> None:
-        server = _Server("metadata_orgId", "metadata_virtualRecordId")
-        a = server.store()
-        await a.create_index("col", "metadata.blockId", {"type": "keyword"})
-        server.hashes["col_idx:pending_alter"]["metadata_blockId"] = repr(10**12)  # recorded after the check below began
-        server.finish_scan()
-        await a.delete_points("col", self._record_filter())
+    async def test_an_entry_whose_alter_has_not_returned_is_not_cleared_by_an_idle_check(self) -> None:
+        """Written before the ALTER, so a check in between finds the index idle: it must not take the entry away (no clock involved)."""
+        server = _Server(*self.FIELDS)
+        server.hashes["col_idx:pending_alter"] = {"metadata_blockId": "pending:" + repr(__import__("time").time())}
+        await server.store().delete_points("col", self._record_filter())
         assert "metadata_blockId" in server.hashes["col_idx:pending_alter"]
+
+    async def test_an_entry_whose_alter_died_is_dropped_when_it_is_old_and_the_index_is_idle(self) -> None:
+        server = _Server(*self.FIELDS)
+        server.hashes["col_idx:pending_alter"] = {"metadata_blockId": "pending:1.0"}
+        await server.store().delete_points("col", self._record_filter())
+        assert server.hashes["col_idx:pending_alter"] == {}
+
+    async def test_a_failed_alter_leaves_no_record(self) -> None:
+        server = _Server("metadata_orgId")
+        svc = server.store()
+        real = svc.client.execute_command.side_effect
+
+        async def boom(*args: object) -> object:
+            if args[0] == "FT.ALTER":
+                raise ResponseError("boom")
+            return await real(*args)
+
+        svc.client.execute_command.side_effect = boom
+        with pytest.raises(ResponseError):
+            await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
+        assert server.hashes["col_idx:pending_alter"] == {}
 
     async def test_an_alter_that_adds_nothing_leaves_no_pending_record(self) -> None:
         server = _Server("metadata_orgId")
