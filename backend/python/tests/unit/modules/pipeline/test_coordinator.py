@@ -793,3 +793,21 @@ async def test_a_stage_that_finishes_after_the_snapshot_is_not_requeued(fleet) -
     assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == []
     assert h.status("classify") is ProgressStatus.COMPLETED
     assert h.producer.sent == [] and h.headlines.writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_publish_the_broker_refused_during_the_recovery_is_retried_by_the_next_one(fleet) -> None:
+    """The recovery creates the missing classify state; the broker refuses the publish and the claim is released to
+    NOT_STARTED. That row is still owed: the next same-bytes update claims it and publishes."""
+    h = _Harness(_classify_after_embed(), reject_next=1)
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+
+    with pytest.raises(StagePublishError):
+        await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"})
+    assert h.status("classify") is ProgressStatus.NOT_STARTED
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [
+        f"{stage_state_key(VRID, REV, 'classify')}@1"
+    ]
+    assert h.status("classify") is ProgressStatus.QUEUED

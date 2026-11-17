@@ -49,7 +49,7 @@ _CLAIMABLE = frozenset(
 )
 
 
-_UNFINISHED = frozenset({ProgressStatus.FAILED, ProgressStatus.PAUSED})
+_UNFINISHED = frozenset({ProgressStatus.FAILED, ProgressStatus.PAUSED, ProgressStatus.NOT_STARTED})
 
 
 class EventPublisher(Protocol):
@@ -194,7 +194,7 @@ class Coordinator:
         """Re-dispatch ``stages`` for a revision the runtime has seen, from what its external
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
         instead, which dispatches every stage. With ``only_unfinished``, only a stage whose state
-        is FAILED or PAUSED is dispatched: a finished stage is left alone (a claim writes its
+        is FAILED, PAUSED or NOT_STARTED (a claim released after a refused publish) is dispatched: a finished stage is left alone (a claim writes its
         headline status and its finish clears the record's ``reason``), and a stage with no state
         (classification deferred to first use) stays deferred. With ``recover_missing``, a stage with
         no state whose prerequisites are done is an unfinished hand-off (the process stopped between
