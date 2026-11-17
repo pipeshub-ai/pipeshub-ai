@@ -308,9 +308,9 @@ def test_a_trickling_client_is_cut_at_the_request_deadline_not_at_the_read_timeo
 def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_deadline_is_far(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Eviction, not the reaper: with the deadline far away, only cutting the oldest incomplete request
-    frees a slot inside the admit wait."""
-    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)
+    """Eviction, not the reaper: the idle clients are cut once they are half a deadline old (1.5 s), well before
+    the deadline (3 s) and inside the admit wait, and the scrape is answered then."""
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 3.0)
     exporter = _exporter(tmp_path)
     port = exporter._port
     server = exporter._server
@@ -320,7 +320,8 @@ def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_de
         assert _wait_until(lambda: len(server._live) == ox.MAX_CONNECTIONS, 5)
         started = time.monotonic()
         assert _get(port) == 200
-        assert time.monotonic() - started < ox.ADMIT_WAIT_S + 2
+        waited = time.monotonic() - started
+        assert 1.2 < waited < ox.REQUEST_DEADLINE_S, f"answered after {waited:.2f} s: not by eviction at half the deadline"
     finally:
         for s in idle:
             s.close()
@@ -659,4 +660,59 @@ def test_a_silent_client_is_told_503_exactly_once_by_the_reaper(tmp_path: Path, 
         assert data.count(b"HTTP/1.1 503") == 1 and data.count(b"HTTP/1.") == 1, data
         assert len(sent) == 1, f"the refusal was attempted {len(sent)} times"
     finally:
+        _close(exporter)
+
+
+# -- a silent client is not refused on the strength of a newer arrival ---------
+
+
+def test_a_silent_client_younger_than_half_the_deadline_is_not_evicted_and_one_older_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 2.0)
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    server._max = 2
+    socks = []
+    try:
+        young = socket.create_connection((HOST, exporter._port), timeout=10)
+        socks.append(young)
+        socks.append(socket.create_connection((HOST, exporter._port)))
+        assert _wait_until(lambda: len(server._live) == 2, 5)
+        socks.append(socket.create_connection((HOST, exporter._port)))  # queues at once: both slots hold silent clients under 1 s old
+        young.settimeout(0.4)
+        with pytest.raises(TimeoutError):
+            young.recv(100)  # nothing in the first 0.4 s: no 503 for a client that has had no time to send
+        young.settimeout(10)
+        assert young.recv(100).startswith(b"HTTP/1.1 503")  # once it is half a deadline old it is evictable
+    finally:
+        for s in socks:
+            s.close()
+        _close(exporter)
+
+
+def test_a_flood_of_new_silent_connections_is_refused_new_not_old(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every slot holds a young silent client and the queue is full: the next arrival is the one refused at once."""
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 60.0)  # nothing is old enough to evict during the test
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    server._max = 2
+    socks = []
+    try:
+        for _ in range(2):
+            socks.append(socket.create_connection((HOST, exporter._port)))
+        assert _wait_until(lambda: len(server._live) == 2, 5)
+        for _ in range(ox.ADMIT_QUEUE_MAX):
+            socks.append(socket.create_connection((HOST, exporter._port)))
+        assert _wait_until(lambda: len(server._queue) == ox.ADMIT_QUEUE_MAX, 5)
+        newest = socket.create_connection((HOST, exporter._port), timeout=5)
+        socks.append(newest)
+        assert newest.recv(100).startswith(b"HTTP/1.1 503"), "the newest arrival was not refused"
+        for held in socks[:2]:
+            held.settimeout(0.3)
+            with pytest.raises(TimeoutError):
+                held.recv(100)  # the holders were not touched
+    finally:
+        for s in socks:
+            s.close()
         _close(exporter)
