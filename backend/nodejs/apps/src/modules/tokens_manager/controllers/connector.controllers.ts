@@ -1781,6 +1781,12 @@ export const setPermissionFilter =
  * Per-user access: a user's own source account on a team connector. Proxied as is; the
  * connector service decides who may do what and never returns a credential.
  */
+type UserAccessHandler = (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => Promise<void>;
+
 const proxyUserAccess =
   (
     appConfig: AppConfig,
@@ -1789,7 +1795,7 @@ const proxyUserAccess =
     suffix: (req: AuthenticatedUserRequest) => string = () => '',
     // The route's validated body; only POST routes send one.
     body: (req: AuthenticatedUserRequest) => unknown = () => undefined,
-  ) =>
+  ): UserAccessHandler =>
   async (
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1824,35 +1830,62 @@ export const listMyPerUserConnectors =
         HttpMethod.GET,
         buildProxyHeaders(req),
       );
-      handleConnectorResponse(response, res, 'list your connectable accounts', 'No data');
+      handleConnectorResponse(
+        response,
+        res,
+        'list your connectable accounts',
+        'No data',
+      );
     } catch (error) {
       next(handleBackendError(error, 'list your connectable accounts'));
     }
   };
 
-export const getMyConnectorConnection = (appConfig: AppConfig) =>
+export const getMyConnectorConnection = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
   proxyUserAccess(appConfig, HttpMethod.GET, 'get your connection');
 
-export const connectMyConnectorAccount = (appConfig: AppConfig) =>
+export const connectMyConnectorAccount = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
   proxyUserAccess(
     appConfig,
     HttpMethod.POST,
     'connect your account',
     undefined,
-    (req) => ({ token: req.body.token }),
+    (req) => ({ token: (req.body as { token: string }).token }),
   );
 
 /** The URL that signs the caller in with the source through the connector's OAuth app. */
-export const startMyConnectorSignIn = (appConfig: AppConfig) =>
-  proxyUserAccess(appConfig, HttpMethod.GET, 'start your sign-in', () => '/oauth/authorize');
+export const startMyConnectorSignIn = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.GET,
+    'start your sign-in',
+    () => '/oauth/authorize',
+  );
 
-export const disconnectMyConnectorAccount = (appConfig: AppConfig) =>
+export const disconnectMyConnectorAccount = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
   proxyUserAccess(appConfig, HttpMethod.DELETE, 'disconnect your account');
 
-export const listConnectorUserConnections = (appConfig: AppConfig) =>
-  proxyUserAccess(appConfig, HttpMethod.GET, 'list connected users', () => '/users');
+export const listConnectorUserConnections = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.GET,
+    'list connected users',
+    () => '/users',
+  );
 
-export const removeConnectorUserConnection = (appConfig: AppConfig) =>
+export const removeConnectorUserConnection = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
   proxyUserAccess(
     appConfig,
     HttpMethod.DELETE,
@@ -1861,7 +1894,9 @@ export const removeConnectorUserConnection = (appConfig: AppConfig) =>
   );
 
 /** Admin only: everyone who could connect, with their connection and invite state. */
-export const getConnectorUserRoster = (appConfig: AppConfig) =>
+export const getConnectorUserRoster = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
   proxyUserAccess(
     appConfig,
     HttpMethod.GET,
@@ -1870,7 +1905,7 @@ export const getConnectorUserRoster = (appConfig: AppConfig) =>
   );
 
 /** Admin only: notify people (by id, or everyone not yet connected) to connect their account. */
-export const inviteConnectorUsers = (appConfig: AppConfig) =>
+export const inviteConnectorUsers = (appConfig: AppConfig): UserAccessHandler =>
   proxyUserAccess(
     appConfig,
     HttpMethod.POST,
@@ -1880,13 +1915,15 @@ export const inviteConnectorUsers = (appConfig: AppConfig) =>
   );
 
 /** The caller turns reminders to connect this connector off or on. */
-export const setMyConnectorReminders = (appConfig: AppConfig) =>
+export const setMyConnectorReminders = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
   proxyUserAccess(
     appConfig,
     HttpMethod.POST,
     'update your reminders',
     () => '/reminders',
-    (req) => ({ optedOut: req.body.optedOut }),
+    (req) => ({ optedOut: (req.body as { optedOut: boolean }).optedOut }),
   );
 
 /**

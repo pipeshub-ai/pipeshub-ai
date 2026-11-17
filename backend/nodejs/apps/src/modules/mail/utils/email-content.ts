@@ -62,7 +62,7 @@ export function getEmailContent(
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
 
-    case EmailTemplateType.ConnectorAccountConnect:
+    case EmailTemplateType.ConnectorAccountConnect as string:
       return connectorAccountConnect(templateData);
 
     default:

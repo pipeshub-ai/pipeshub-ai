@@ -8,7 +8,13 @@
  * @module connectors/routes
  */
 
-import { Router, Request, RequestHandler, Response, NextFunction } from 'express';
+import {
+  Router,
+  Request,
+  RequestHandler,
+  Response,
+  NextFunction,
+} from 'express';
 import { createHash } from 'node:crypto';
 import { Container } from 'inversify';
 import { z } from 'zod';
@@ -192,7 +198,10 @@ const connectorUserParamSchema = z.object({
   params: connectorIdParamSchema.shape.params.extend({
     userId: z
       .string()
-      .regex(/^[A-Za-z0-9_-]{1,64}$/, 'User ID must be 1-64 chars of letters, digits, underscore, or hyphen'),
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'User ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      ),
   }),
 });
 
