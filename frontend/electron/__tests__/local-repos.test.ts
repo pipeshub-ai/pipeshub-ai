@@ -141,6 +141,78 @@ test('a folder over the file limit is refused before anything is uploaded', asyn
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('a file that cannot be read stops the sync: nothing is sent and the stored copy stays', async () => {
+  const srv = await fakeServer();
+  const root = tmp();
+  fs.writeFileSync(path.join(root, 'keep.txt'), 'v1');
+  fs.writeFileSync(path.join(root, 'other.txt'), 'x');
+  const client = new LocalRepoClient(srv.base, () => 'tok');
+  const key = 'r'.repeat(16);
+  await indexRepository(client, root, key, 'locked');
+  fs.chmodSync(path.join(root, 'keep.txt'), 0o000);
+  const before = srv.calls.length;
+  await assert.rejects(() => indexRepository(client, root, key, 'locked'), /keep\.txt/);
+  assert.equal(srv.calls.slice(before).filter((c) => c.includes('/manifest') || c.includes('/commit')).length, 0);
+  assert.ok(srv.repos.get(key)!.files.has('keep.txt'));
+  fs.chmodSync(path.join(root, 'keep.txt'), 0o644);
+  srv.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a git repository whose git command fails is refused, and nothing is uploaded', async () => {
+  const srv = await fakeServer();
+  const root = tmp();
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  fs.writeFileSync(path.join(root, '.gitignore'), '.env\n');
+  fs.writeFileSync(path.join(root, '.env'), 'SECRET=1');
+  fs.writeFileSync(path.join(root, 'a.ts'), 'a');
+  const bin = tmp();
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\necho "fatal: detected dubious ownership in repository" >&2\nexit 128\n', { mode: 0o755 });
+  const client = new LocalRepoClient(srv.base, () => 'tok');
+  await assert.rejects(() => indexRepository(client, root, 'g'.repeat(16), 'g', { git: path.join(bin, 'git') }), /git/);
+  await assert.rejects(() => indexRepository(client, root, 'h'.repeat(16), 'h', { git: null }), /git/);
+  assert.equal(srv.calls.filter((c) => c.includes('/manifest') || c.includes('/files')).length, 0);
+  srv.close();
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(bin, { recursive: true, force: true });
+});
+
+test('a plain folder follows its .gitignore files and never sends likely secrets', async () => {
+  const srv = await fakeServer();
+  const root = tmp();
+  fs.mkdirSync(path.join(root, 'src/gen'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.gitignore'), '# build output\n*.log\n/out.txt\n');
+  fs.writeFileSync(path.join(root, 'src/.gitignore'), 'gen/\n');
+  for (const [f, c] of [['a.ts', 'a'], ['run.log', 'l'], ['out.txt', 'o'], ['src/b.ts', 'b'], ['src/out.txt', 'kept'], ['src/gen/c.ts', 'c'],
+    ['.env', 'S=1'], ['.env.local', 'S=2'], ['server.pem', 'k'], ['id_rsa', 'k'], ['credentials.json', '{}']]) {
+    fs.writeFileSync(path.join(root, f), c);
+  }
+  const client = new LocalRepoClient(srv.base, () => 'tok');
+  const key = 'p'.repeat(16);
+  await indexRepository(client, root, key, 'plain', { git: null });
+  assert.deepEqual([...srv.repos.get(key)!.files.keys()].sort(), ['.gitignore', 'a.ts', 'src/.gitignore', 'src/b.ts', 'src/out.txt']);
+  srv.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the total size limit refuses a folder before anything is read past it, and missing limits are not unlimited', async () => {
+  const srv = await fakeServer({ maxFiles: 100, maxFileBytes: 1000, maxBatchFiles: 10, maxBatchBytes: 10000, maxManifestEntries: 100, maxTotalBytes: 5 } as never);
+  const root = tmp();
+  fs.writeFileSync(path.join(root, 'a.txt'), 'aaaa');
+  fs.writeFileSync(path.join(root, 'b.txt'), 'bbbb');
+  const client = new LocalRepoClient(srv.base, () => 'tok');
+  await assert.rejects(() => indexRepository(client, root, 't'.repeat(16), 'total', { git: null }), (e: LocalRepoApiError) => e.status === 413);
+  assert.equal(srv.calls.filter((c) => c.includes('/manifest')).length, 0);
+  srv.close();
+  const bare = await fakeServer({} as never);
+  fs.writeFileSync(path.join(root, 'big.txt'), 'x'.repeat(2 * 1024 * 1024));
+  const key = 'u'.repeat(16);
+  await indexRepository(new LocalRepoClient(bare.base, () => 'tok'), root, key, 'bare', { git: null });
+  assert.ok(!bare.repos.get(key)!.files.has('big.txt'), 'a file over the default 1 MiB limit is skipped');
+  bare.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('store: a folder keeps its key across restarts, nothing is written into the folder', () => {
   const dir = tmp();
   const root = tmp();
