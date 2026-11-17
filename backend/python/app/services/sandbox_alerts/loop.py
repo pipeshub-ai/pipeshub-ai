@@ -216,11 +216,11 @@ class SandboxAlertRunner:
             if isinstance(exc, TimeoutError):
                 await self._release(claims, level, alert_id)
             return
-        email = claims[0].email
+        send_mail = claims[0].email
         try:
             event = build_alert_event(
                 decision, self._snapshot(), self._settings,
-                alert_id=alert_id, host=self._host, fired_at=now, email=email,
+                alert_id=alert_id, host=self._host, fired_at=now, email=send_mail,
             )
         except Exception:
             self._logger.warning("sandbox load alert %s: building the alert failed", level, exc_info=True)
@@ -230,10 +230,10 @@ class SandboxAlertRunner:
             totals = decision.totals
             self._logger.warning(
                 "sandbox load alert fired level=%s alert_id=%s host=%s runs=%d waited=%d "
-                "refused=%d busy_pct=%d reason=%s indexing_slowed=%s email=%s",
+                "refused=%d busy_pct=%d reason=%s indexing_slowed=%s send_mail=%s",
                 level, alert_id, self._host, totals.runs, totals.waited, totals.refused,
                 round(decision.busy_percent), event["payload"]["reason"],
-                event["payload"]["indexingSlowed"], email,
+                event["payload"]["indexingSlowed"], bool(send_mail),
             )
             return
         await self._release(claims, level, alert_id)

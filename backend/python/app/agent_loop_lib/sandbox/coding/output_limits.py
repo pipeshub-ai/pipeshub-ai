@@ -501,7 +501,7 @@ def extract_tar_stream(
                 if not member.isfile() and not (allow_symlinks and is_link):
                     logger.warning(
                         "Skipping non-regular tar member %r (type %r) from %s",
-                        member.name, member.type, container_path,
+                        member.name, member.type, container_path,  # log-pii: ok tar member path, not a person
                     )
                     continue
                 if member.name.startswith(prefix):
@@ -512,7 +512,7 @@ def extract_tar_stream(
                 if not target.startswith(resolved_root + os.sep) and target != resolved_root:
                     logger.warning(
                         "Skipping tar member with path traversal: %s -> %s",
-                        member.name, target,
+                        member.name, target,  # log-pii: ok tar member path, not a person
                     )
                     continue
                 size = member.size if member.isfile() else 0
@@ -530,7 +530,7 @@ def extract_tar_stream(
                         except Exception as exc:
                             logger.warning(
                                 "Skipping tar member %r from %s: comparing it failed: %s",
-                                member.name, container_path, exc,
+                                member.name, container_path, exc,  # log-pii: ok tar member path, not a person
                             )
                             continue
                         if spooled is None:
@@ -590,7 +590,7 @@ def extract_tar_stream(
                 except Exception as exc:
                     logger.warning(
                         "Skipping unsafe tar member %r from %s: %s",
-                        member.name, container_path, exc,
+                        member.name, container_path, exc,  # log-pii: ok tar member path, not a person
                     )
                     continue
                 current_target = None
