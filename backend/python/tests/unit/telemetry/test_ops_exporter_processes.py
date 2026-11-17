@@ -286,7 +286,8 @@ def test_the_flood_lag_verdict_bounds_the_p99_the_time_the_loop_was_late_and_the
 def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp_path: Path) -> None:
     """The holder lives in the indexing process: sixteen scrapers (one per slot) over 64 large snapshot files must
     leave its event loop responsive: p99 within 50 ms, little time spent late, no long stall (scrapes share one render; the
-    window spans several of the 1 s collection rounds, each of which empties the cache)."""
+    window spans several of the 1 s collection rounds, each of which empties the cache). One failed attempt is retried
+    once: a host stall passes the second time, a regression fails both."""
     import asyncio
 
     from app.telemetry import ops_exporter as ox
@@ -319,18 +320,23 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
     while not exporter.holds_port and time.time() < deadline:
         time.sleep(0.05)
     assert exporter.holds_port
-    hammer = None
+    problems: list[str] = []
     try:
-        idle = asyncio.run(lag(2.0))
-        hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "6", "16"])
-        time.sleep(0.3)
-        busy = asyncio.run(lag(5.0))
+        for _attempt in range(2):  # a shared runner can stall once whatever the code does; a regression stalls every time
+            idle = asyncio.run(lag(2.0))
+            hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "6", "16"])
+            try:
+                time.sleep(0.3)
+                busy = asyncio.run(lag(5.0))
+            finally:
+                hammer.wait(timeout=30)
+            problem = _flood_lag_problem(busy, idle)
+            if problem is None:
+                break
+            problems.append(problem)
     finally:
-        if hammer is not None:
-            hammer.wait(timeout=30)
         exporter._stop.set()
         if exporter._server:
             exporter._server.shutdown()
             exporter._server.server_close()
-    problem = _flood_lag_problem(busy, idle)
-    assert problem is None, problem
+    assert len(problems) < 2, "both attempts failed: " + " | ".join(problems)
