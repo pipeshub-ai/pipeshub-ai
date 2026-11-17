@@ -188,7 +188,7 @@ async def test_a_short_retry_after_repeated_is_backed_off_and_fails_the_record_a
         harness.fail_with = RateLimited("model busy", provider="p", retry_after=1.0)
         real = harness.graph.update_node.side_effect
 
-        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:  # noqa: ANN001
+        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:
             _stored.update(fields)
             return await _real(doc_id, collection, fields) if _real else True
 
