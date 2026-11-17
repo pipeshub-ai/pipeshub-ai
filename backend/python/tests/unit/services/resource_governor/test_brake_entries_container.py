@@ -144,3 +144,19 @@ def test_an_incident_during_the_container_step_is_one_entry() -> None:
         assert _entries(g) == {"heavy_parse": {"memory_hard": 1}}, _entries(g)
     finally:
         g.close()
+
+
+def test_every_real_transition_through_the_container_is_one_entry_and_a_repeat_is_none() -> None:
+    """brake, hold, release, brake again: two entries, however many samples, with the container in the path."""
+    c = _Container()
+    g, _probe = _governor(c)
+    try:
+        _sample(g)
+        seen = []
+        for mode in ("cause", "cause", "reverse", "pass", "cause", "cause"):
+            c.mode = mode
+            _sample(g)
+            seen.append(_entries(g).get("heavy_parse", {}).get("memory_soft", 0))
+        assert seen == [1, 1, 1, 1, 2, 2], seen
+    finally:
+        g.close()

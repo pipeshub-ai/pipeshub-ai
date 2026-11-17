@@ -259,6 +259,10 @@ def _flood_lag_problem(busy: list[float], idle: list[float]) -> str | None:
     over the window, at 2 s plus three times what the idle phase of the same run was late (a host that stalls
     while idle stalls under the flood too, and one hiccup of the 1.5 s seen on a shared runner stays under 2 s);
     and the longest single stall (3 s, above that hiccup, below a frozen loop).
+
+    Deliberate trade-off: one stall under about 3 s (a single 1.9 s freeze, say) is not told apart from a host
+    hiccup, because shared runners produce them (CI has seen 1.47 s and 2.06 s). What this still catches is what a
+    regression does: a stall on every refresh, repeated freezes, a slow loop, and any single stall past 3 s.
     """
     p99, idle_p99 = _p99_ms(busy), _p99_ms(idle)
     late, idle_late = _late_s(busy), _late_s(idle)
@@ -273,6 +277,7 @@ def test_the_flood_lag_verdict_bounds_the_p99_the_time_the_loop_was_late_and_the
     assert _flood_lag_problem(quiet, quiet) is None
     assert _flood_lag_problem(sorted([0.001] * 400 + [1.5]), quiet) is None  # one host hiccup, as seen on a shared runner
     assert _flood_lag_problem(sorted([0.001] * 400 + [1.9]), quiet) is None  # a single 1.9 s stall is still one hiccup
+    assert _flood_lag_problem(sorted([0.001] * 400 + [3.5]), quiet) is not None  # a single freeze past the 3 s longest-stall bound (both attempts see it)
     assert _flood_lag_problem(sorted([0.001] * 400 + [1.9, 1.9]), quiet) is not None  # repeated: a collector that freezes the loop
     assert _flood_lag_problem(sorted([0.001] * 400 + [1.0] * 3), quiet) is not None  # repeated 1 s freezes
     assert _flood_lag_problem(sorted([0.001] * 200 + [4.5]), quiet) is not None  # a frozen loop: one late sample, 4.5 s
