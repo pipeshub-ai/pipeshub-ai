@@ -7694,19 +7694,17 @@ class JiraConnector(BaseConnector):
 
             self.logger.info(f"Issue {issue_id} has changed at source (timestamp: {record.source_updated_at if hasattr(record, 'source_updated_at') else 'N/A'} -> {current_updated_at})")
 
-            # The timestamp written here makes the next sync skip the issue, and a reindex does not
-            # rebuild comment records (it has not read the roles, groups and product access a sync
-            # reads). An issue that has or had a restricted comment is left for the next sync to write.
+            # A reindex does not rebuild comment records (it has not read the roles, groups and product
+            # access a sync reads): an issue that has or had a restricted comment leaves them to the next
+            # sync. Its own access (a level set or cleared, its holders) is applied now, so no one the source
+            # just removed keeps reading it; it keeps its stored timestamp so that sync still reads it as
+            # changed and writes the comment records. Those inherit from the issue, so they close with it.
+            comments_wait = False
             if self._enforces_issue_security:
                 comment_field = (await self._with_every_comment(issue_id, fields)).get("comment")
                 comments = comment_field.get("comments") or [] if isinstance(comment_field, dict) else []
-                if any(is_restricted_comment(c) for c in comments if isinstance(c, dict)) or \
-                        await self._stored_comment_records(issue_id):
-                    self.logger.info(
-                        f"Issue {issue_id}: its restricted comments are written by a sync; "
-                        "leaving the stored record for the next sync"
-                    )
-                    return None
+                comments_wait = any(is_restricted_comment(c) for c in comments if isinstance(c, dict)) or \
+                    bool(await self._stored_comment_records(issue_id))
 
             # Resolve creator/reporter/assignee emails from the synced user directory first
             # (Jira's issue GET usually omits emailAddress); an inline emailAddress, when present,
@@ -7828,6 +7826,11 @@ class JiraConnector(BaseConnector):
                 )
                 return None
 
+            if comments_wait:
+                self.logger.info(
+                    f"Issue {issue_id}: its access is written now and its restricted comments by the next sync"
+                )
+                issue_record.source_updated_at = getattr(record, "source_updated_at", None) or 0
             return (issue_record, permissions)
 
         except Exception as e:

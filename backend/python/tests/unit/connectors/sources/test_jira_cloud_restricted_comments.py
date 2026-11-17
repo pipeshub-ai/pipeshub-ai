@@ -384,15 +384,40 @@ def _stored_issue() -> TicketRecord:
     # No restricted comment, none stored: the reindex writes the issue as before.
     ([PUBLIC_COMMENT], [], False),
 ])
-async def test_a_reindex_leaves_an_issue_with_restricted_comments_to_the_sync(
+async def test_a_reindex_writes_the_issue_and_leaves_its_restricted_comments_to_the_sync(
     comments: list[dict[str, Any]], stored: list[CommentRecord], left_to_the_sync: bool,
 ) -> None:
-    """Writing the moved timestamp would make the next sync skip the issue and keep the old comment records."""
+    """The issue is written now; with restricted comments it keeps its stored timestamp, so the next sync still reads
+    it as changed and rebuilds the comment records (the moved timestamp would make that sync skip it)."""
     connector = _connector()
     _stored_below(connector, {("100", "COMMENT"): stored})
     _reindexable(connector, _issue(comments))
     result = await connector._check_and_fetch_updated_issue(_stored_issue(), {})
-    assert (result is None) is left_to_the_sync
+    assert result is not None
+    assert result[0].source_updated_at == (1 if left_to_the_sync else 1705708800000)
+    assert all(not isinstance(r, CommentRecord) for r in result[:1])  # the issue alone: no comment record is written
+
+
+async def test_a_level_set_on_an_issue_with_a_restricted_comment_closes_the_issue_at_once_on_a_reindex() -> None:
+    """A level is set at the source on an issue that has a restricted comment, and the issue is reindexed before the
+    next sync: its record is closed to everyone outside the level now (no one the source just removed keeps reading
+    it); its comment records are left to that sync and inherit the issue, so they close with it."""
+    connector = _connector()
+    _stored_below(connector, {("100", "COMMENT"): [_stored_comment("12", "rec-12", 1)]})
+    leveled = _issue([GROUP_COMMENT])
+    leveled["fields"]["security"] = {"id": "10102", "name": "Leadership"}
+    _reindexable(connector, leveled)
+    connector._attach_browse_holders = AsyncMock(return_value=IssueSecurityContext(
+        knowledge=SchemeKnowledge.PRESENT, scheme_id="1", members_readable=True,
+        members_by_level={"10102": [{"type": "group", "value": "g-lead", "group": {"groupId": "g-lead"}}]}))
+    connector.data_entities_processor.on_new_records = AsyncMock()
+    result = await connector._check_and_fetch_updated_issue(_stored_issue(), {})
+    assert result is not None
+    record, grants = result
+    assert record.access_rule == AccessRule.RESTRICTED and record.rewrite_permissions is True
+    assert {(g.entity_type, g.external_id) for g in grants} == {(EntityType.GROUP, "g-lead")}
+    assert record.source_updated_at == 1  # still changed for the next sync, which rebuilds the comment records
+    connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
 def _stored_ticket(source_updated_at: int = 1) -> MagicMock:
