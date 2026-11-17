@@ -429,6 +429,10 @@ config:
   # package mirror. Link-local and metadata addresses, the sandbox bridge and
   # its gateway (this pod, under DinD) stay blocked however broad this is.
   sandboxEgressAllowCidrs: ""
+  # Comma-separated IPv4 resolvers a networked sandbox may query on port 53
+  # only, when Docker forwards DNS from the container (cloud resolvers, the
+  # gateway and Docker's configured upstreams are already allowed).
+  sandboxEgressDnsServers: ""
   sandboxEgressNetwork: "pipeshub_sandbox_egress"
   # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
   # 0/off disables), so one run cannot fill the daemon's storage. This is a

@@ -798,6 +798,8 @@ adds what is specific to its role after it.
               value: {{ .Values.config.sandboxEgressNetwork | quote }}
             - name: SANDBOX_EGRESS_ALLOW_CIDRS
               value: {{ .Values.config.sandboxEgressAllowCidrs | default "" | quote }}
+            - name: SANDBOX_EGRESS_DNS_SERVERS
+              value: {{ .Values.config.sandboxEgressDnsServers | default "" | quote }}
             - name: SANDBOX_DISK_QUOTA
               value: {{ .Values.config.sandboxDiskQuota | quote }}
             - name: SANDBOX_MAX_RUN_TIMEOUT_S
