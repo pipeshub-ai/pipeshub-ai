@@ -1247,6 +1247,10 @@ _REAP_MARGIN_S = 120.0
 _DEFAULT_REAP_INTERVAL_S = 60.0
 _MIN_REAP_INTERVAL_S = 10.0
 _REAP_PASS_TIMEOUT_S = 30.0
+# How often the count of unlabelled sandbox containers left alone is logged.
+_UNLABELED_LOG_EVERY_S = 3600.0
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"", "0", "false", "no", "off"})
 
 
 def _max_run_timeout_s(env: Mapping[str, str]) -> float:
@@ -1268,12 +1272,16 @@ def _max_run_timeout_s(env: Mapping[str, str]) -> float:
 class ReaperSettings:
     reap_after_s: float | None  # None: the reaper is off
     interval_s: float
+    # Also remove managed containers that carry no instance label at all.
+    reap_unlabeled: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ReaperSettings:
         """``DOCKER_PROXY_REAP_AFTER_S`` (``0`` turns the reaper off) or, by
-        default, the longest a run or an install may take plus a margin;
-        ``DOCKER_PROXY_REAP_INTERVAL_S``, default 60, at least 10."""
+        default, the longest a run or an install may take plus a margin; an
+        age below that default is raised to it, so the reaper never removes
+        a run still in time. ``DOCKER_PROXY_REAP_INTERVAL_S``, default 60, at
+        least 10. ``DOCKER_PROXY_REAP_UNLABELED``, default off."""
         env = os.environ if env is None else env
         default_after = max(_max_run_timeout_s(env), _INSTALL_DEADLINE_S) + _REAP_MARGIN_S
         reap_after: float | None = default_after
@@ -1282,11 +1290,17 @@ class ReaperSettings:
             try:
                 value = float(raw)
             except ValueError:
-                value = -1.0
+                value = math.nan
             if value == 0:
                 reap_after = None
-            elif value > 0:
+            elif math.isfinite(value) and value >= default_after:
                 reap_after = value
+            elif math.isfinite(value) and value > 0:
+                logger.warning(
+                    "DOCKER_PROXY_REAP_AFTER_S=%r is below the longest a run or an install may take "
+                    "plus %gs (SANDBOX_MAX_RUN_TIMEOUT_S); using %gs",
+                    raw, _REAP_MARGIN_S, default_after,
+                )
             else:
                 logger.warning("DOCKER_PROXY_REAP_AFTER_S=%r is not valid; using %gs", raw, default_after)
         interval = _DEFAULT_REAP_INTERVAL_S
@@ -1302,7 +1316,11 @@ class ReaperSettings:
                 logger.warning(
                     "DOCKER_PROXY_REAP_INTERVAL_S=%r is not valid; using %gs", raw, _DEFAULT_REAP_INTERVAL_S,
                 )
-        return cls(reap_after_s=reap_after, interval_s=interval)
+        raw = (env.get("DOCKER_PROXY_REAP_UNLABELED") or "").strip().lower()
+        reap_unlabeled = raw in _TRUE
+        if not reap_unlabeled and raw not in _FALSE:
+            logger.warning("DOCKER_PROXY_REAP_UNLABELED=%r is not true or false; leaving it off", raw)
+        return cls(reap_after_s=reap_after, interval_s=interval, reap_unlabeled=reap_unlabeled)
 
 
 class Reaper:
@@ -1315,10 +1333,14 @@ class Reaper:
     in an image without ``timeout``. It runs here because the proxy is the
     one process that holds the socket and outlives the query workers.
     Only containers carrying this proxy's ``INSTANCE_LABEL`` are listed, so
-    other stacks on the same daemon are never touched. A managed container
-    with no instance label at all was started by a proxy from before the
-    label (one in flight during an upgrade); no proxy serves it any more, so
-    it is removed too once past the same age.
+    other stacks on the same daemon are never touched.
+
+    A managed container with no instance label at all was started by a proxy
+    from before the label: one left over from before an upgrade, or one of
+    another stack on the same daemon that still runs such a proxy, whose
+    runs may be longer than this stack allows. Those are only removed (past
+    the same age) with ``reap_unlabeled``; otherwise their count is logged,
+    at most once an hour.
     """
 
     def __init__(
@@ -1328,6 +1350,7 @@ class Reaper:
         self._proxy = proxy
         self._settings = settings
         self._clock = clock
+        self._unlabeled_logged_at: float | None = None
 
     async def run(self, stop: asyncio.Event) -> None:
         reap_after = self._settings.reap_after_s
@@ -1369,8 +1392,12 @@ class Reaper:
         # Docker-compatible API) that ignored them would otherwise hand every
         # container on it, databases included, to the reaper.
         candidates = [item for item in listed if _owned_by(item, self._proxy.instance)]
-        candidates += [item for item in managed if _legacy(item)]
+        unlabeled = [item for item in managed if _legacy(item)]
         now = self._clock()
+        if self._settings.reap_unlabeled:
+            candidates += unlabeled
+        else:
+            self._log_unlabeled(len(unlabeled), now)
         removed = 0
         for item in candidates:
             created = item.get("Created")
@@ -1393,9 +1420,23 @@ class Reaper:
             logger.info("reaper: removed %d container(s)", removed)
         return removed
 
+    def _log_unlabeled(self, count: int, now: float) -> None:
+        if not count:
+            return
+        last = self._unlabeled_logged_at
+        if last is not None and 0 <= now - last < _UNLABELED_LOG_EVERY_S:
+            return
+        self._unlabeled_logged_at = now
+        logger.warning(
+            "%d sandbox container(s) carry no instance label (created by an older docker proxy, "
+            "possibly another stack's on this daemon) and are not removed. Remove leftovers by hand, "
+            "or set DOCKER_PROXY_REAP_UNLABELED=true once every stack on this daemon is upgraded",
+            count,
+        )
+
     async def _report_legacy(self) -> None:
         """Say how many containers from a proxy that predates the instance
-        label there are; they are reaped once past the reap age."""
+        label there are, and whether they will be reaped."""
         try:
             status, listed = await self._proxy._upstream_call(
                 "GET", _containers_query(f"{MANAGED_LABEL}=true"),
@@ -1406,11 +1447,16 @@ class Reaper:
         if status != 200 or not isinstance(listed, list):
             return
         legacy = sum(1 for item in listed if _legacy(item))
-        if legacy:
+        if not legacy:
+            return
+        if self._settings.reap_unlabeled:
             logger.info(
-                "%d sandbox container(s) from an older proxy; removed once older than %gs",
+                "%d sandbox container(s) from an older proxy; removed once older than %gs "
+                "(DOCKER_PROXY_REAP_UNLABELED)",
                 legacy, self._settings.reap_after_s,
             )
+        else:
+            self._log_unlabeled(legacy, self._clock())
 
 
 def _owned_by(item: object, instance: str) -> bool:

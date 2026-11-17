@@ -83,9 +83,12 @@ def _container(ident: str, age_s: float, *, instance: str | None = "stack-a", st
     return {"Id": ident, "Created": int(NOW - age_s), "State": state, "Labels": labels}
 
 
-def _reaper(sock: str, *, reap_after: float | None = 420, interval: float = 60) -> Reaper:
+def _reaper(
+    sock: str, *, reap_after: float | None = 420, interval: float = 60, reap_unlabeled: bool = False,
+) -> Reaper:
     proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, instance="stack-a")
-    return Reaper(proxy, ReaperSettings(reap_after_s=reap_after, interval_s=interval), clock=lambda: NOW)
+    settings = ReaperSettings(reap_after_s=reap_after, interval_s=interval, reap_unlabeled=reap_unlabeled)
+    return Reaper(proxy, settings, clock=lambda: NOW)
 
 
 class TestReapOnce:
@@ -132,7 +135,7 @@ class TestReapOnce:
         assert fake.requests == []
         assert "reaper is off" in caplog.text
 
-    async def test_older_proxy_containers_are_removed_once_past_the_reap_age(self, daemon) -> None:
+    async def test_older_proxy_containers_are_removed_once_past_the_reap_age_when_enabled(self, daemon) -> None:
         # A container started before the upgrade carries no instance label:
         # this proxy will not serve it, so only the reaper can remove it.
         fake, sock = daemon
@@ -143,9 +146,39 @@ class TestReapOnce:
             {"Id": "unmanaged", "Created": int(NOW - 9000), "State": "running", "Labels": {}},
         ]
 
-        assert await _reaper(sock).reap_once() == 1
+        assert await _reaper(sock, reap_unlabeled=True).reap_once() == 1
 
         assert sorted(c["Id"] for c in fake.containers) == ["legacy-young", "theirs", "unmanaged"]
+
+    async def test_older_proxy_containers_are_left_alone_by_default(self, daemon, caplog) -> None:
+        # Another stack on the daemon may still run a proxy from before the
+        # label, with runs longer than this stack's reap age.
+        fake, sock = daemon
+        fake.containers = [_container("legacy-old", 50_000, instance=None), _container("mine", 500)]
+
+        with caplog.at_level(logging.WARNING):
+            assert await _reaper(sock).reap_once() == 1
+
+        assert [c["Id"] for c in fake.containers] == ["legacy-old"]
+        assert "1 sandbox container(s) carry no instance label" in caplog.text
+        assert "DOCKER_PROXY_REAP_UNLABELED=true" in caplog.text
+
+    async def test_the_unlabelled_count_is_logged_at_most_once_an_hour(self, daemon, caplog) -> None:
+        fake, sock = daemon
+        fake.containers = [_container("legacy", 50_000, instance=None)]
+        now = [NOW]
+        proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, instance="stack-a")
+        reaper = Reaper(proxy, ReaperSettings(reap_after_s=420, interval_s=60), clock=lambda: now[0])
+
+        with caplog.at_level(logging.WARNING):
+            for step in (0, 60, 1800, 3599):
+                now[0] = NOW + step
+                await reaper.reap_once()
+            assert caplog.text.count("carry no instance label") == 1
+            now[0] = NOW + 3601
+            await reaper.reap_once()
+        assert caplog.text.count("carry no instance label") == 2
+        assert [c["Id"] for c in fake.containers] == ["legacy"]
 
     async def test_older_proxy_containers_are_reported_at_start(self, daemon, caplog) -> None:
         fake, sock = daemon
@@ -156,7 +189,7 @@ class TestReapOnce:
             await asyncio.sleep(0.05)
             stop.set()
             await asyncio.wait_for(task, 2)
-        assert "1 sandbox container(s) from an older proxy" in caplog.text
+        assert "1 sandbox container(s) carry no instance label" in caplog.text
         assert [c["Id"] for c in fake.containers] == ["legacy"]
 
     async def test_cancel_stops_the_loop_cleanly(self, daemon) -> None:
@@ -177,8 +210,27 @@ class TestReaperSettings:
         assert ReaperSettings.from_env({"SANDBOX_MAX_RUN_TIMEOUT_S": "abc"}).reap_after_s == 420
 
     def test_explicit_age_and_zero_disables(self) -> None:
-        assert ReaperSettings.from_env({"DOCKER_PROXY_REAP_AFTER_S": "30"}).reap_after_s == 30
+        assert ReaperSettings.from_env({"DOCKER_PROXY_REAP_AFTER_S": "900"}).reap_after_s == 900
         assert ReaperSettings.from_env({"DOCKER_PROXY_REAP_AFTER_S": "0"}).reap_after_s is None
+
+    @pytest.mark.parametrize("raw,run_cap,expected", [
+        ("30", "", 420), ("419", "", 420), ("420", "", 420), ("600", "900", 1020), ("1020", "900", 1020),
+    ])
+    def test_an_age_below_the_longest_run_is_raised_with_a_warning(
+        self, raw: str, run_cap: str, expected: float, caplog,
+    ) -> None:
+        env = {"DOCKER_PROXY_REAP_AFTER_S": raw, "SANDBOX_MAX_RUN_TIMEOUT_S": run_cap}
+        with caplog.at_level(logging.WARNING):
+            assert ReaperSettings.from_env(env).reap_after_s == expected
+        assert ("is below the longest" in caplog.text) == (float(raw) < expected)
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("", False), ("false", False), ("0", False), ("off", False), ("maybe", False),
+        ("true", True), ("TRUE", True), ("1", True), ("yes", True), (" on ", True),
+    ])
+    def test_reaping_unlabelled_containers_is_opt_in(self, raw: str, expected: bool) -> None:
+        assert ReaperSettings.from_env({"DOCKER_PROXY_REAP_UNLABELED": raw}).reap_unlabeled is expected
+        assert ReaperSettings.from_env({}).reap_unlabeled is False
 
     def test_invalid_age_warns_and_uses_the_default(self, caplog) -> None:
         with caplog.at_level(logging.WARNING):

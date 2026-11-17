@@ -366,6 +366,9 @@ services:
       - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
       # Names this stack on the containers it creates. Blank: the Compose project.
       - DOCKER_PROXY_INSTANCE=${DOCKER_PROXY_INSTANCE:-}
+      # Also remove leftover sandbox containers that carry no stack name (from a
+      # proxy before this one). Off: another stack on the daemon may still run one.
+      - DOCKER_PROXY_REAP_UNLABELED=${DOCKER_PROXY_REAP_UNLABELED:-false}
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

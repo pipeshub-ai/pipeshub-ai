@@ -521,7 +521,12 @@ class _UnfilteredDaemon:
 
 
 class TestReaperChecksLabelsItself:
-    async def test_only_own_and_unlabelled_sandbox_containers_are_removed(self, tmp_path) -> None:
+    @pytest.mark.parametrize("reap_unlabeled,expected", [
+        (False, ["mine"]), (True, ["mine", "older-proxy"]),
+    ])
+    async def test_only_own_and_unlabelled_sandbox_containers_are_removed(
+        self, tmp_path, reap_unlabeled: bool, expected: list[str],
+    ) -> None:
         now = 1_800_000_000.0
 
         def c(ident: str, labels: dict[str, str] | None) -> dict[str, Any]:
@@ -540,8 +545,9 @@ class TestReaperChecksLabelsItself:
         server = await asyncio.start_unix_server(fake.handle, sock)
         try:
             proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, instance="stack-a")
-            reaper = docker_proxy.Reaper(proxy, ReaperSettings(reap_after_s=420, interval_s=60), clock=lambda: now)
+            settings = ReaperSettings(reap_after_s=420, interval_s=60, reap_unlabeled=reap_unlabeled)
+            reaper = docker_proxy.Reaper(proxy, settings, clock=lambda: now)
             await reaper.reap_once()
         finally:
             server.close()
-        assert sorted(set(fake.deleted)) == ["mine", "older-proxy"]
+        assert sorted(set(fake.deleted)) == expected
