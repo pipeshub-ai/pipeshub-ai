@@ -5,6 +5,7 @@ import io
 import logging
 import math
 import os
+import shlex
 import shutil
 import tarfile
 import tempfile
@@ -1002,7 +1003,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             cmd = [
                 "sh", "-c",
                 "pip install --quiet --no-cache-dir --target /deps "
-                f"--index-url {self._pip_index_url} " + " ".join(to_install),
+                f"--index-url {self._pip_index_url} " + _shell_words(to_install),
             ]
             extract_path = "/deps"
             host_target = self._deps_python_dir
@@ -1011,7 +1012,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 "sh", "-c",
                 "mkdir -p /install && npm install --prefix /install --no-save "
                 f"--loglevel=error --registry={self._npm_registry} "
-                + " ".join(to_install),
+                + _shell_words(to_install),
             ]
             extract_path = "/install/node_modules"
             host_target = self._deps_node_dir
@@ -1123,6 +1124,13 @@ class DockerCodingSandbox(CodingSandboxBackend):
 # Tar helpers for put_archive / get_archive — ported from
 # app/sandbox/docker_executor.py (generic, no PipesHub-specific naming).
 # ------------------------------------------------------------------
+
+def _shell_words(specs: list[str]) -> str:
+    """Package specs as literal ``sh`` words: a version range like
+    ``numpy>=1.26`` would otherwise be read as a redirection, and an npm
+    ``lodash@4.*`` as a glob."""
+    return " ".join(shlex.quote(spec) for spec in specs)
+
 
 def _read_file_nofollow(path: str) -> bytes | None:
     """Read a file, refusing to follow a final-component symlink (SB-5).
