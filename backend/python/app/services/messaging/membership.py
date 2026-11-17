@@ -10,10 +10,12 @@ publishes the result, so that:
 * the retirement sweep and the stray pass pause.
 
 The result is published to ``/services/platform/artifactRollout/membership/<holder>``: one entry
-per writer, ``{checkedAt, untagged, groupsChecked}``, ``checkedAt`` being when the check *started*,
-each with a TTL. A reader takes the union of untagged members over the fresh entries, so a clean
-entry written by an ex-leader cannot hide the new leader's finding; with no fresh entry the result
-is stale, which fails safe. The entries are plaintext (``UNENCRYPTED_PREFIXES``) so Node can read
+per writer, ``{checkedAt, untagged, groupsChecked, groupsExpected}``, ``checkedAt`` being when the
+check *started*, each with a TTL. ``groupsExpected`` is every indexing consumer group the writer is
+configured to run, whether its consumer has started or not (``expect_groups``). A reader takes the
+union of untagged members over the fresh entries, so a clean entry written by an ex-leader cannot
+hide the new leader's finding; a clean result needs a fresh entry that checked every group it
+expected. Without one the result is stale, which fails safe. The entries are plaintext (``UNENCRYPTED_PREFIXES``) so Node can read
 them without the Python encryption.
 """
 
@@ -44,7 +46,11 @@ REDIS_IDLE_LIVE_MS = 10 * 60 * 1000
 #: How long an evaluated result is reused by a reader.
 READER_CACHE_SECONDS = 30.0
 
+#: Kafka's answer for a group that does not exist (no consumer has ever joined it).
+GROUP_ID_NOT_FOUND = 69
+
 _registered: dict[str, set[str]] = {}
+_expected: dict[str, set[str]] = {}
 
 
 def register_group(group_id: str, topics: list[str]) -> None:
@@ -56,8 +62,31 @@ def registered_groups() -> dict[str, list[str]]:
     return {group: sorted(topics) for group, topics in _registered.items()}
 
 
+def expect_groups(groups: dict[str, list[str]]) -> None:
+    """Declare every indexing consumer group this process is configured to run, from its configuration rather than from the
+    consumers started so far (a stage consumer whose topics are missing starts later). Nothing is published before this."""
+    for group, topics in groups.items():
+        _expected.setdefault(group, set()).update(topics)
+
+
+def expected_groups() -> dict[str, list[str]]:
+    return {group: sorted(topics) for group, topics in _expected.items()}
+
+
+def groups_to_check() -> dict[str, list[str]]:
+    """The expected groups and any other registered one; none until the expected groups are declared."""
+    if not _expected:
+        return {}
+    merged: dict[str, set[str]] = {}
+    for source in (_expected, _registered):
+        for group, topics in source.items():
+            merged.setdefault(group, set()).update(topics)
+    return {group: sorted(topics) for group, topics in merged.items()}
+
+
 def reset_registered_groups() -> None:
     _registered.clear()
+    _expected.clear()
 
 
 @dataclass(frozen=True)
@@ -65,9 +94,13 @@ class MembershipResult:
     checked_at: int
     untagged: list[str] = field(default_factory=list)
     groups_checked: list[str] = field(default_factory=list)
+    groups_expected: list[str] = field(default_factory=list)
 
     def entry(self) -> dict[str, Any]:
-        return {"checkedAt": self.checked_at, "untagged": self.untagged, "groupsChecked": self.groups_checked}
+        return {
+            "checkedAt": self.checked_at, "untagged": self.untagged,
+            "groupsChecked": self.groups_checked, "groupsExpected": self.groups_expected,
+        }
 
 
 @dataclass(frozen=True)
@@ -77,23 +110,32 @@ class MembershipVerdict:
     reason: str | None = None  # "stale" or "untagged"
 
 
+def _proves_every_expected_group(entry: dict[str, Any]) -> bool:
+    """An entry that does not name what it expected (an older writer), or checked fewer groups than that, proves nothing
+    about the groups it left out."""
+    expected, checked = entry.get("groupsExpected"), entry.get("groupsChecked")
+    if not isinstance(expected, list) or not expected or not isinstance(checked, list):
+        return False
+    return {str(g) for g in expected} <= {str(g) for g in checked}
+
+
 def evaluate(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) -> MembershipVerdict:
-    """The union over the fresh entries; stale when none is fresh."""
+    """The union of the untagged members over the fresh entries; stale when no fresh entry checked every group it expected."""
     untagged: set[str] = set()
-    fresh = 0
+    proven = 0
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("checkedAt"), (int, float)):
             continue
         if now_ms - entry["checkedAt"] > stale_ms:
             continue
-        fresh += 1
+        proven += _proves_every_expected_group(entry)
         names = entry.get("untagged")
         if isinstance(names, list):
             untagged.update(str(n) for n in names)
-    if fresh == 0:
-        return MembershipVerdict(False, (), "stale")
     if untagged:
         return MembershipVerdict(False, tuple(sorted(untagged)), "untagged")
+    if proven == 0:
+        return MembershipVerdict(False, (), "stale")
     return MembershipVerdict(True)
 
 
@@ -115,6 +157,8 @@ async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) ->
     names: list[str] = []
     for response in described:
         for group in response.to_object()["groups"]:
+            if group["error_code"] == GROUP_ID_NOT_FOUND:
+                continue  # a stage group no consumer has joined yet has no members
             if group["error_code"] != 0:
                 raise RuntimeError(
                     f"describing consumer group {group['group']!r} failed with error code {group['error_code']}"
@@ -151,30 +195,6 @@ async def redis_untagged(redis: Any, group_streams: dict[str, list[str]]) -> lis
     return sorted(names)
 
 
-class PgClaimCheck:
-    """Untagged members of the PostgreSQL queue's groups. The queue keeps no member list, only the name each claim was taken
-    under (``queue_deliveries.consumer``), so a claimer is a member. An older pod between two short records holds no claim at
-    the moment of a check: an untagged name counts until it has gone unseen for ``REDIS_IDLE_LIVE_MS``, as an idle Redis
-    consumer does. The sightings live in the checking process; a new leader starts with none."""
-
-    def __init__(
-        self,
-        claimers: Callable[[dict[str, list[str]]], Awaitable[list[str]]],
-        *,
-        monotonic: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._claimers = claimers
-        self._monotonic = monotonic
-        self._seen: dict[str, float] = {}
-
-    async def __call__(self, groups: dict[str, list[str]]) -> list[str]:
-        names = await self._claimers(groups)
-        now = self._monotonic()
-        self._seen.update((name, now) for name in names if not is_tagged(name))
-        self._seen = {name: at for name, at in self._seen.items() if now - at < REDIS_IDLE_LIVE_MS / 1000}
-        return sorted(self._seen)
-
-
 class MembershipPublisher:
     """Runs the check on its own timer and publishes the holder's entry.
 
@@ -192,7 +212,8 @@ class MembershipPublisher:
         holder: str | None = None,
         is_leader: Callable[[], Awaitable[bool]] | None = None,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
-        groups: Callable[[], dict[str, list[str]]] = registered_groups,
+        groups: Callable[[], dict[str, list[str]]] = groups_to_check,
+        expected: Callable[[], dict[str, list[str]]] = expected_groups,
     ) -> None:
         self.logger = logger
         self._check = check
@@ -201,6 +222,7 @@ class MembershipPublisher:
         self._is_leader = is_leader
         self._now_ms = now_ms
         self._groups = groups
+        self._expected = expected
 
     async def publish_once(self) -> MembershipResult | None:
         """One check and one write. None when this process is not the leader, has no registered group or the check failed
@@ -208,18 +230,18 @@ class MembershipPublisher:
         if self._is_leader is not None and not await self._is_leader():
             return None
         started = self._now_ms()
-        groups = self._groups()
-        if not groups:
-            # Nothing is registered (the consumers are not constructed yet): a check of no group would
-            # publish "all clear" about members it never looked at.
-            self.logger.warning("Indexing membership not published: this process has no registered consumer group")
+        groups, expected = self._groups(), sorted(self._expected())
+        if not groups or not expected or not set(expected) <= set(groups):
+            # The configured groups are not declared yet: a check of fewer groups would publish "all clear" about members
+            # of the others it never looked at.
+            self.logger.warning("Indexing membership not published: this process has not declared its consumer groups yet")
             return None
         try:
             untagged = await self._check(groups)
         except Exception as exc:
             self.logger.warning("Indexing membership check failed: %s: %s", type(exc).__name__, exc)
             return None
-        result = MembershipResult(started, sorted(set(untagged)), sorted(groups))
+        result = MembershipResult(started, sorted(set(untagged)), sorted(groups), expected)
         await self._put(f"{MEMBERSHIP_DIRECTORY}{self.holder}", result.entry(), ENTRY_TTL_SECONDS)
         if result.untagged:
             self.logger.warning(

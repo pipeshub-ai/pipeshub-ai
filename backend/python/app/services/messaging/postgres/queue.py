@@ -119,12 +119,6 @@ WITH gone AS (DELETE FROM platform.queue_groups WHERE ephemeral AND seen_at < no
 DELETE FROM platform.queue_deliveries d USING gone WHERE d.group_id = gone.group_id AND d.topic = gone.topic"""
 _BACKLOG = """/* pipeshub:queue.backlog */
 SELECT status, count(*) AS n FROM platform.queue_deliveries WHERE group_id = $1 AND topic = ANY($2::text[]) GROUP BY status"""
-# shortcut: walks the groups' open deliveries (no index serves status = 'claimed' alone); one read per 30 s on one process.
-# Add a partial index on the claimed rows if open backlogs reach millions.
-_CLAIMERS = """/* pipeshub:queue.claimers */
-SELECT DISTINCT d.consumer FROM platform.queue_deliveries d
-JOIN unnest($1::text[], $2::text[]) AS g(group_id, topic) ON d.group_id = g.group_id AND d.topic = g.topic
-WHERE d.status = 'claimed' AND d.consumer IS NOT NULL ORDER BY 1"""
 _TOPICS = """/* pipeshub:queue.topics */
 SELECT DISTINCT topic FROM platform.queue_groups UNION SELECT DISTINCT topic FROM platform.queue_messages ORDER BY 1"""
 
@@ -328,14 +322,6 @@ class PgQueue:
     async def ping(self) -> None:
         async with (await self.rt.db()).runtime_uow() as tx:
             await tx.fetchval("/* pipeshub:queue.ping */ SELECT 1")
-
-    async def claimers(self, groups: dict[str, list[str]]) -> list[str]:
-        """The names the open claims of these groups' topics were taken under, an expired claim included (its consumer may
-        still be working on it)."""
-        pairs = [(group, topic) for group, topics in groups.items() for topic in topics]
-        async with (await self.rt.db()).runtime_uow() as tx:
-            rows = await tx.fetch(_CLAIMERS, [g for g, _ in pairs], [t for _, t in pairs])
-        return [r["consumer"] for r in rows]
 
     async def topics(self) -> list[str]:
         async with (await self.rt.db()).runtime_uow() as tx:
