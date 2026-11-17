@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import warnings
@@ -536,9 +537,7 @@ class JinaAPIError(VoyageAPIError):
     """A Jina reply without embeddings; carries the status and the response for the retry decision."""
 
 
-_jina_embeddings_class: type | None = None
-
-
+@functools.cache
 def _build_jina_embeddings() -> type:
     """Build the class on first use: importing langchain_community's Jina module costs time and warns of its deprecation."""
     from langchain_community.embeddings.jina import JINA_API_URL
@@ -589,9 +588,6 @@ def _build_jina_embeddings() -> type:
 
 
 def __getattr__(name: str) -> Any:  # noqa: ANN401
-    global _jina_embeddings_class
     if name == "JinaEmbeddings":
-        if _jina_embeddings_class is None:
-            _jina_embeddings_class = _build_jina_embeddings()
-        return _jina_embeddings_class
+        return _build_jina_embeddings()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

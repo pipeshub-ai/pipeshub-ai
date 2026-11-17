@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import time
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -374,6 +375,32 @@ async def test_the_limit_check_counts_the_stored_jittered_delay_not_the_provider
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
     with pytest.raises(ProviderRateLimitRequeue):
         await harness.run(_payload(parseNow=False, is_final_failure=False))
+
+
+async def test_the_limit_check_takes_no_draw_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One draw per hand-back: with draws 290 s then 310 s and a 300 s limit, the first draw is the one checked and stored, so the
+    record is handed back for 290 s (a second draw for the check, or for the store, would see 310 s)."""
+    from app.services.messaging import config as config_module
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 300.0))
+    draws = iter([290.0, 310.0])
+    calls: list[int] = []
+
+    def draw(*_: Any, **__: Any) -> float:  # noqa: ANN401
+        calls.append(1)
+        return next(draws)
+
+    monkeypatch.setattr(record_module, "handback_delay_s", draw)
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    before = int(time.time() * 1000)
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert calls == [1], "the limit check took a second draw"
+    assert raised.value.delay_s == 290.0
+    stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
+    assert before + 290_000 <= stored <= before + 291_000
 
 
 async def test_a_consumer_whose_clock_runs_behind_does_not_shorten_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
