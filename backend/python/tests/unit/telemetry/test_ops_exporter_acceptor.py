@@ -5,6 +5,7 @@ Needs no service; every port is asked of the kernel (`tests/support/free_port.py
 """
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import logging
@@ -680,10 +681,8 @@ def test_a_legitimate_scrape_is_answered_under_a_flood_of_idle_connections_that_
 
     def flood() -> None:
         while not stop.is_set():
-            try:
+            with contextlib.suppress(OSError):
                 held.append(socket.create_connection((HOST, exporter._port), timeout=2))
-            except OSError:
-                pass
             stop.wait(0.02)
 
     thread = threading.Thread(target=flood, daemon=True)
