@@ -295,26 +295,27 @@ class TestContainerCreate:
         with pytest.raises(PolicyDenied):
             policy.check_container_create(json.loads(json.dumps(body)))
 
-    @pytest.mark.parametrize("log_config,driver", [
-        ({"Type": "json-file", "Config": {}}, "json-file"),
-        ({"Type": "local"}, "local"),
-        ({"Type": "", "Config": None}, "local"),
-        ({}, "local"),
-        (None, "local"),
+    @pytest.mark.parametrize("log_config,expected", [
+        ({"Type": "json-file", "Config": {}}, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
+        ({"Type": "local"}, {"Type": "local", "Config": {}}),
+        ({"Type": "", "Config": None}, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
+        ({}, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
+        (None, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
     ])
-    def test_log_driver_is_local_or_pinned(
-        self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, driver: str,
+    def test_log_driver_is_pinned_and_json_file_rotates(
+        self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, expected: dict[str, Any],
     ) -> None:
         host: dict[str, Any] = {"NetworkMode": "none", **_LIMITS}
         if log_config is not None:
             host["LogConfig"] = log_config
         out = policy.check_container_create({"Image": IMAGE, "HostConfig": host})
-        # An unset driver would fall back to the daemon default, which may ship logs off-host.
-        assert out["HostConfig"]["LogConfig"] == {"Type": driver, "Config": {}}
+        # An unset driver would fall back to the daemon default, which may ship logs off-host;
+        # json-file (what docker-py's containers.run reads output from) never rotates unless capped.
+        assert out["HostConfig"]["LogConfig"] == expected
 
-    def test_sdk_create_is_pinned_to_local_logs(self, policy: DockerApiPolicy) -> None:
+    def test_sdk_create_is_pinned_to_rotated_json_file_logs(self, policy: DockerApiPolicy) -> None:
         out = policy.check_container_create(_sdk_create_body(**_FIREWALLED_INSTALL))
-        assert out["HostConfig"]["LogConfig"] == {"Type": "local", "Config": {}}
+        assert out["HostConfig"]["LogConfig"] == {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}
 
     def test_label_keys_are_a_map_and_keep_their_case(self, policy: DockerApiPolicy) -> None:
         body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}, "Labels": {"a": "1", "A": "2"}}

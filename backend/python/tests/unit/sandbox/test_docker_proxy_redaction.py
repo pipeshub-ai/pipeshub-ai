@@ -229,7 +229,12 @@ class TestLogOptions:
     @pytest.mark.parametrize("driver", ["local", "json-file"])
     def test_bounded_rotation_is_forwarded(self, policy, driver: str, config: dict[str, str]) -> None:
         out = policy.check_container_create(_create_body({"LogConfig": {"Type": driver, "Config": config}}))
-        assert out["HostConfig"]["LogConfig"] == {"Type": driver, "Config": config}
+        expected = dict(config)
+        if driver == "json-file":
+            # json-file never rotates on its own, so a missing cap is filled in.
+            expected.setdefault("max-size", "10m")
+            expected.setdefault("max-file", "3")
+        assert out["HostConfig"]["LogConfig"] == {"Type": driver, "Config": expected}
 
     @pytest.mark.parametrize("config", [
         {"max-size": "101m"}, {"max-size": "1g"}, {"max-size": "0"}, {"max-size": "-1"},

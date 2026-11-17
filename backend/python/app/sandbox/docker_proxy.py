@@ -107,6 +107,8 @@ _ALLOWED_NETWORK_OPTIONS = frozenset({"com.docker.network.bridge.enable_icc"})
 _ALLOWED_RUNTIMES = frozenset({"", "runc", "runsc"})
 
 _ALLOWED_LOG_DRIVERS = frozenset({"json-file", "local"})
+_DEFAULT_JSON_LOG_SIZE = "10m"
+_DEFAULT_JSON_LOG_FILES = "3"
 # LogConfig.Config may only bound the log files' size: both drivers rotate on
 # these two keys, and the bounds keep one container's logs at 500 MiB at most.
 _LOG_MAX_SIZE_BYTES = 100 * 1024 * 1024
@@ -516,15 +518,19 @@ class DockerApiPolicy:
         # Network log drivers (syslog, gelf, fluentd, ...) connect from the
         # daemon's network, whatever the container's NetworkMode is. An unset
         # Type takes the daemon's default driver, which may be one of them, so
-        # pin it; "local" also rotates by default, bounding a chatty sandbox's
-        # disk use.
+        # pin it. json-file is the default because docker-py's non-detached
+        # ``containers.run`` only returns output for it; json-file never rotates
+        # on its own, so it always gets a size and file cap.
         log_config = _struct_object(
             host.get("LogConfig"), _LOG_CONFIG_FIELDS, "HostConfig.LogConfig", closed=True,
         )
-        log_driver = log_config.get("Type") or "local"
+        log_driver = log_config.get("Type") or "json-file"
         if log_driver not in _ALLOWED_LOG_DRIVERS:
             raise PolicyDenied(f"log driver {log_driver!r} is not permitted")
         log_options = _log_options(log_config.get("Config"))
+        if log_driver == "json-file":
+            log_options.setdefault("max-size", _DEFAULT_JSON_LOG_SIZE)
+            log_options.setdefault("max-file", _DEFAULT_JSON_LOG_FILES)
 
         network_mode = host.get("NetworkMode") or ""
         if network_mode != "none" and network_mode not in self.allowed_networks:
