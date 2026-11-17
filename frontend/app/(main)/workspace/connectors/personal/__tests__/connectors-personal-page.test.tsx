@@ -21,6 +21,7 @@ const nav = vi.hoisted(() => ({
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: nav.push, replace: nav.replace }),
   useSearchParams: () => nav.params,
+  usePathname: () => '/workspace/connectors/personal/',
 }));
 
 vi.mock('@/app/components/ui/service-gate', () => ({

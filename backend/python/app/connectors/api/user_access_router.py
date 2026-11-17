@@ -364,6 +364,9 @@ class _SignInFailed(Exception):
 
     def __init__(self, message: str, *, shareable: bool = False) -> None:
         super().__init__(message)
+        # Always one of this module's own messages (or a NotionAccessError's, written for the user), never
+        # an internal error's text.
+        self.user_message = message
         self.shareable = shareable
 
 
@@ -388,7 +391,7 @@ async def complete_user_sign_in(
     except Exception as e:
         if not isinstance(e, _SignInFailed):
             logger.warning("Notion sign-in for connector %s failed: %s", connector_id, e)
-        message = str(e) if isinstance(e, _SignInFailed) else "Notion sign-in did not complete. Try again."
+        message = e.user_message if isinstance(e, _SignInFailed) else "Notion sign-in did not complete. Try again."
         return {
             "success": False, "error": "user_sign_in_failed", "error_message": message,
             "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=user_sign_in_failed",
@@ -837,7 +840,7 @@ async def connect_link_complete(
             logger.warning("Notion sign-in from a connect link for connector %s failed: %s", connector_id, e)
         # The account checks (another person's or workspace's Notion account) are worth showing; anything
         # about whether a user, organisation or connector exists is not.
-        message = str(e) if isinstance(e, _SignInFailed) and getattr(e, "shareable", False) else (
+        message = e.user_message if isinstance(e, _SignInFailed) and e.shareable else (
             "Notion sign-in did not complete. Use the link in your email to try again.")
         return {"success": False, "error_message": message}
     return {"success": True, "connectorName": app.get("name")}
