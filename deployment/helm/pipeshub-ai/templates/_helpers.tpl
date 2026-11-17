@@ -364,8 +364,13 @@ the raw daemon API with no policy in between, i.e. root on the node.
     {{- if or (lt $interval 2) (gt $interval 15) }}
       {{- fail "sandbox.dind.liveLimit.exportIntervalSeconds must be 2..15: docker-proxy treats counters older than 20 s as missing." }}
     {{- end }}
-    {{- if and $live.memHigh $live.memHard (ge (float64 $live.memHigh) (float64 $live.memHard)) }}
-      {{- fail "sandbox.dind.liveLimit.memHigh must be below memHard: runs are held back above memHigh and the limit halves above memHard." }}
+    {{- /* The app needs memHard >= memHigh + 0.01 and otherwise drops both to their defaults; an empty one is its default. */}}
+    {{- if or $live.memHigh $live.memHard }}
+      {{- $high := float64 ($live.memHigh | default "0.90") }}
+      {{- $hard := float64 ($live.memHard | default "0.95") }}
+      {{- if lt (subf $hard $high) 0.0099 }}
+        {{- fail "sandbox.dind.liveLimit.memHigh must be below memHard by at least 0.01 (empty values are 0.90 and 0.95): runs are held back above memHigh and the limit halves above memHard." }}
+      {{- end }}
     {{- end }}
   {{- end }}
 {{- end }}

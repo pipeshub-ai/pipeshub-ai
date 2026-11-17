@@ -484,6 +484,8 @@ Sandboxes are marked first to be killed if the host runs out of memory, ahead of
 | `SANDBOX_CPU_FACTOR` | 0.75 | Share of host CPUs sandboxes may claim (0.1–2.0). |
 | `SANDBOX_SLOT_WAIT_S` | 120 | How long a run waits for a free sandbox. |
 | `SANDBOX_HOST_MEMORY_BYTES`, `SANDBOX_HOST_CPU_MILLIS` | unset | The host's size, when it cannot be read (set both). |
+| `SANDBOX_MAX_RUN_TIMEOUT_S` | 300 | The most seconds one run may take (10–3600). The Docker proxy gets the same value: it removes this stack's sandbox containers older than it (at least 300 s) plus 120 s. |
+| `DOCKER_PROXY_INSTANCE` | the Compose project | Names this stack on its sandbox containers; the proxy acts only on its own. |
 
 The memory share comes on top of the app container's own limit ([App container memory](#app-container-memory)): on a small host lower `SANDBOX_MEMORY_SHARE` or set `SANDBOX_MAX_TOTAL`.
 

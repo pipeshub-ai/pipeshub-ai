@@ -144,6 +144,8 @@ run_code executes on the Docker daemon at {{ .Values.config.dockerHost }}.
 That daemon runs untrusted, model-generated code: it should be dedicated to
 this purpose, reachable only by this deployment, and fronted by the policy
 proxy (python -m app.docker_proxy_main) rather than exposed raw.
+Give that proxy SANDBOX_MAX_RUN_TIMEOUT_S={{ .Values.config.sandboxMaxRunTimeoutS }} too: its reaper removes
+sandbox containers older than that cap (at least 300 s) plus 120 s.
 {{- with (include "pipeshub-ai.sandboxCapacityDivisor" .) }}
 
 Pods share one Docker daemon: each pod uses 1/{{ . }} of its capacity (up to {{ . }}

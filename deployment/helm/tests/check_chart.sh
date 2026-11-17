@@ -399,6 +399,9 @@ REFUSED=(
   "dind without a memory limit|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits.memory=null"
   "dind without limits|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits=null"
   "live limit memHigh above memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.95 --set sandbox.dind.liveLimit.memHard=0.9"
+  "live limit memHigh above the default memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.96"
+  "live limit memHard below the default memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHard=0.9"
+  "live limit memHard closer than 0.01 to memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.9 --set sandbox.dind.liveLimit.memHard=0.905"
   "live limit export interval out of range|exportIntervalSeconds must be 2..15|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=1"
   "live limit export interval past the proxy's staleness|exportIntervalSeconds must be 2..15|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=16"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
@@ -439,6 +442,10 @@ done
 # The socket checks must not refuse ordinary host paths that only look similar.
 ACCEPTED=(
   "live limit export interval at its maximum|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=15"
+  "live limit export interval at its minimum|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=2"
+  "live limit memHigh alone, 0.01 below the default memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.94"
+  "live limit memHard alone, above the default memHigh|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHard=0.98"
+  "live limit off ignores its tuning|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.enabled=false --set sandbox.dind.liveLimit.exportIntervalSeconds=1 --set sandbox.dind.liveLimit.memHigh=0.99"
   "host log directory|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/log/pipeshub --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/logs"
   "host path sharing the /var/run prefix|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/runner-cache --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/cache"
 )

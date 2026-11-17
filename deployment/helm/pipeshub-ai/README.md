@@ -350,11 +350,17 @@ reaper would keep its 420 s age and kill longer runs mid-way. The proxy removes
 this release's sandbox containers that are older than the cap (at least 300 s,
 the install deadline) plus 120 s, for example after a crashed worker left one
 behind. Its containers carry the label
-`ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`, so releases that
-share a daemon through `config.dockerHost` never reach each other's containers.
-A sandbox container started by a proxy from before that label (one in flight
-during an upgrade) has no instance label; no proxy serves it, and the reaper
-removes it once past the same age.
+`ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`. A sandbox
+container started by a proxy from before that label (one in flight during an
+upgrade) has no instance label; no proxy serves it, and the reaper removes it
+once past the same age.
+
+With `config.dockerHost` the chart runs no `docker-proxy`: the proxy in front
+of your daemon is yours, and its reaper reads its own environment. Give it the
+same `SANDBOX_MAX_RUN_TIMEOUT_S` as `config.sandboxMaxRunTimeoutS`, or it
+removes runs longer than 300 s mid-way. Releases that share one daemon should
+each have their own proxy with its own `DOCKER_PROXY_INSTANCE`; releases behind
+one proxy share its label and can reach each other's sandbox containers.
 
 ### How many sandboxes run at once
 
