@@ -78,6 +78,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
           ENGINE_SCRIPTS: ${{ runner.temp }}/engine/scripts
+          # The only line `git apply --summary` may print: a new or deleted ordinary file. A rename, copy,
+          # mode change, executable or symlink prints another line, and the patch is left out.
+          PLAIN_FILE: '^ (create|delete) mode 100644 '
         run: |
           # Failures are handled below, so the PR always gets its comment.
           set +e -uo pipefail
@@ -112,7 +115,7 @@ jobs:
           commit_tests() {
             if [[ -z "$patch" || ! -s "$patch" ]]; then echo "the agent kept no test changes"; return; fi
             # The patch is untrusted: its paths are checked before anything is written.
-            if git apply --summary "$patch" 2>/dev/null | grep -qE 'rename|copy|mode|120000'; then
+            if git apply --summary "$patch" 2>/dev/null | grep -vE "$PLAIN_FILE" | grep -q .; then
               echo "the agent's changes rename files, change modes or add symlinks"; return
             fi
             local names files

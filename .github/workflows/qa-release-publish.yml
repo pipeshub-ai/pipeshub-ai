@@ -80,6 +80,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
           ENGINE_SCRIPTS: ${{ runner.temp }}/engine/scripts
+          # The only line `git apply --summary` may print: a new or deleted ordinary file. A rename, copy,
+          # mode change, executable or symlink prints another line, and the patch is left out.
+          PLAIN_FILE: '^ (create|delete) mode 100644 '
         run: |
           set +e -uo pipefail
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$FULL_RUN" =~ ^[0-9]{1,20}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::head_sha, full_run or run id is malformed"; exit 1; }
@@ -112,7 +115,7 @@ jobs:
           mapfile -t patches < <(find "$RUNNER_TEMP/agents" -name 'agent-tests-*.patch' -size +0 2>/dev/null | sort)
           for patch in "${patches[@]}"; do
             name=$(basename "$patch" .patch)
-            if git apply --summary "$patch" 2>/dev/null | grep -qE 'rename|copy|mode|120000'; then skipped+=("$name: renames, modes or symlinks"); continue; fi
+            if git apply --summary "$patch" 2>/dev/null | grep -vE "$PLAIN_FILE" | grep -q .; then skipped+=("$name: renames, modes or symlinks"); continue; fi
             mapfile -t names < <(git apply --numstat --exclude='integration-tests/catalog/*' "$patch" 2>/dev/null | cut -f3-)
             if [[ ${#names[@]} -eq 0 ]]; then continue; fi
             if printf '%s\n' "${names[@]}" | grep -qF ' => ' || ! allowed "${names[@]}"; then skipped+=("$name: changes files that are not tests or the feature map"); continue; fi

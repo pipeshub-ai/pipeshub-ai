@@ -1852,6 +1852,25 @@ class TestQaAgentWorkflows(unittest.TestCase):
         self.assertLess(check, apply)
         self.assertIn("--exclude='qa-engine/*'", script[apply:apply + 80])
 
+    def test_the_publish_workflows_take_new_test_files_and_refuse_renames_modes_and_symlinks(self) -> None:
+        summaries = {
+            " create mode 100644 backend/tests/test_new.py\n": True,
+            " create mode 100644 a.py\n delete mode 100644 b.py\n": True,
+            "": True,
+            " create mode 120000 tests/link.py\n": False,
+            " create mode 100755 tests/run.py\n": False,
+            " mode change 100644 => 100755 tests/a.py\n": False,
+            " rename tests/{a.py => b.py} (100%)\n": False,
+            " copy tests/{a.py => b.py} (100%)\n": False,
+        }
+        for name in ("qa-agent-publish.yml", "qa-release-publish.yml"):
+            step = next(s for s in self.load(name)["jobs"]["publish"]["steps"] if s.get("name") == "Check and push")
+            self.assertIn('grep -vE "$PLAIN_FILE" | grep -q .', step["run"], name)
+            for text, ok in summaries.items():
+                refused = subprocess.run(["bash", "-c", 'printf "%s" "$1" | grep -vE "$PLAIN_FILE" | grep -q .', "_", text],
+                                         env={"PLAIN_FILE": step["env"]["PLAIN_FILE"], "PATH": os.environ["PATH"]}).returncode == 0
+                self.assertEqual(not refused, ok, (name, text))
+
     def test_the_release_publish_workflow_reads_no_secret_and_pushes_only_a_new_branch(self) -> None:
         text = (REPO / ".github" / "workflows" / "qa-release-publish.yml").read_text()
         self.assertIsNone(re.search(r"\$\{\{[^}]*secrets\.", text))
