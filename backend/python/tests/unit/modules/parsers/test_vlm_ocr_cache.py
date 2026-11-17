@@ -147,7 +147,7 @@ async def test_a_truncated_page_is_never_stored_for_any_provider(
                 await _strategy_one_page(model)._preprocess_document()
 
     assert store.results(ORG, REC) == []
-    assert model.total == 2 * 3          # each document paid for its page's three attempts: nothing was reused
+    assert model.total == 2 * 2          # each document paid for its page twice (a cut-off page gets one more send): nothing was reused
 
 
 def _strategy_one_page(model: CountingModel) -> VLMOCRStrategy:
