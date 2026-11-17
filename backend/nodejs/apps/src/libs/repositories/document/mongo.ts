@@ -111,13 +111,19 @@ async function touchArtifactSet(
       { 'artifactSet.retiringAt': { $lt: now - staleMs } },
     ],
   };
-  const touched = await DocumentModel.findOneAndUpdate(
-    writable as never,
-    { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
-    { new: true, timestamps: false },
-  );
-  if (touched) return row(touched);
+  const touch = (): Promise<unknown> =>
+    DocumentModel.findOneAndUpdate(
+      writable as never,
+      { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
+      { new: true, timestamps: false },
+    );
+  const touched = await touch();
+  if (touched) return row(touched as never);
   if (await DocumentModel.findOne(filter as never)) {
+    // The revision may have been created by a concurrent presign between the two reads above: touch it once more. Only a
+    // revision that is still refused (claimed by a delete that has not gone stale) is a conflict.
+    const again = await touch();
+    if (again) return row(again as never);
     throw new ConflictError(
       'This revision is being deleted; write it again once the delete has finished',
     );

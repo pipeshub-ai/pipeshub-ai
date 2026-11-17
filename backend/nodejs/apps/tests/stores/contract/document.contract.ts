@@ -385,6 +385,20 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       expect((await repo.listArtifactSets(org, 'v1')).map((r) => r._id)).to.deep.equal([a._id]);
     });
 
+    it('createArtifactSetOnce of one revision from many presigns at once gives every caller the one row, never a delete conflict', async () => {
+      const org = fx.newId()
+      for (let round = 0; round < 8; round++) {
+        const vrid = `v-${fx.newId()}`
+        const set = (): NewDocument =>
+          mk(org, {
+            documentName: 'revision_r9',
+            artifactSet: { virtualRecordId: vrid, rev: 'r9', root: `${org}/PipesHub/record-revisions/${vrid}/r9` },
+          })
+        const rows = await Promise.all(Array.from({ length: 12 }, () => repo.createArtifactSetOnce(set(), fence(Date.now()))))
+        expect(new Set(rows.map((r) => r._id)).size).to.equal(1)
+      }
+    })
+
     it('createArtifactSetOnce gives each stored write of a revision a row of its own, beside the revision\'s shared row', async () => {
       const org = fx.newId();
       const W1 = 'a'.repeat(32);
