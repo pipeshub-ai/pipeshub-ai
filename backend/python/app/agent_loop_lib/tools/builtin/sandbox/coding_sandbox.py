@@ -640,9 +640,12 @@ class CodingSandboxTool(Tool):
             and analysis is not None and analysis.category == ErrorCategory.TIMEOUT
         ):
             # A wall-clock timeout at the cap (exit -1). The local backend's
-            # CPU-time kill is also TIMEOUT but has its own suggestion.
+            # CPU-time kill is also TIMEOUT but has its own suggestion. A
+            # larger timeout is refused, so the same call cannot succeed.
             result = result.model_copy(update={
-                "error_analysis": analysis.model_copy(update={"suggestion": _at_cap_suggestion(cap)}),
+                "error_analysis": analysis.model_copy(
+                    update={"suggestion": _at_cap_suggestion(cap), "is_retryable": False},
+                ),
             })
         _logger.info(
             "CodingSandboxTool.execute: result artifacts=%s stderr_len=%d",

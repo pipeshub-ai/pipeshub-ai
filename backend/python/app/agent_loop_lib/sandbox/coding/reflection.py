@@ -171,7 +171,8 @@ class ReflectionEngine:
             message=message,
             suggestion=_OUT_OF_MEMORY_SUGGESTION,
             stack_trace=text or None,
-            is_retryable=True,
+            # The same code runs out of memory again; only changed code helps.
+            is_retryable=False,
         )
 
     def cpu_time_exceeded(self, text: str) -> ErrorAnalysis:
