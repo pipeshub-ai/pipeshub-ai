@@ -545,9 +545,10 @@ class TestBrowseHoldersNamingPeoplePerIssue:
 
     @staticmethod
     def _apply(browse: list[dict] | None, fields: dict | None = None, record: Record | None = None,
-               level_returned: bool = True, is_subtask: bool = False, **kw: object) -> tuple[Record, set, bool]:
+               level_returned: bool = True, is_subtask: bool = False, sub_task_holders: bool = True,
+               **kw: object) -> tuple[Record, set, bool]:
         record = record or _record()
-        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=browse)
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=browse, sub_task_holders=sub_task_holders)
         grants, _skipped, settled = apply_issue_access_settled(
             record, {**({"security": None} if level_returned else {}), **(fields or {})}, is_subtask=is_subtask, project_key="PROJ", context=context,
             **{"reporter_email": "rep@ex.com", "assignee_email": "asg@ex.com", **kw},
@@ -586,12 +587,24 @@ class TestBrowseHoldersNamingPeoplePerIssue:
 
     @pytest.mark.parametrize("holder", [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_10"}],
                              ids=["assignee", "user_field"])
-    def test_an_unleveled_sub_task_gives_its_own_assignee_or_user_field_holder_no_grant(self, holder: dict) -> None:
-        """Jira shows it to them (JSWCLOUD-25762), but an OPEN sub-task would also be read by its parent's own holders
-        (tests/permissions/test_subtask_own_holders.py): it stays STRICT, read with its parent."""
-        record, grants, _ = self._apply([holder], {"customfield_10": [{"accountId": "acc-7"}]},
+    def test_an_unleveled_sub_task_is_read_by_its_own_assignee_or_user_field_holder(self, holder: dict) -> None:
+        """Jira shows it to them without its parent (JSWCLOUD-25762). STRICT_OR_GRANT: the project's readers read it as before,
+        its own holders by their grant, and the parent's own holders do not (tests/permissions/test_subtask_own_holders.py)."""
+        record, grants, _ = self._apply([holder], {"customfield_10": [{"accountId": "acc-7"}], "assignee": {"accountId": "acc-7"}},
                                         record=_record(parent_external_record_id="99"), is_subtask=True,
                                         user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
+        assert grants == {(EntityType.USER, "seven@ex.com")}
+        assert record.access_rule == AccessRule.STRICT_OR_GRANT and record.rewrite_permissions is True
+
+    def test_without_the_cloud_s_sub_task_holders_its_own_assignee_gets_no_grant(self) -> None:
+        """Data Center documents no sub-task holders of its own: the sub-task follows its parent alone."""
+        record, grants, _ = self._apply([{"type": "assignee"}], record=_record(parent_external_record_id="99"), is_subtask=True,
+                                        sub_task_holders=False)
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    def test_an_unleveled_sub_task_with_no_own_holder_on_it_stays_strict(self) -> None:
+        record, grants, _ = self._apply([{"type": "assignee"}], record=_record(parent_external_record_id="99"), is_subtask=True,
+                                        assignee_email=None)
         assert grants == set() and record.access_rule == AccessRule.STRICT
 
     @pytest.mark.parametrize("holder", [{"type": "reporter"}, {"type": "groupCustomField", "parameter": "customfield_11"}],
@@ -599,7 +612,7 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     def test_a_sub_task_s_own_reporter_or_group_field_holder_still_reads_it_only_with_its_parent(self, holder: dict) -> None:
         """Not named by the tracker: closed until a live check settles it."""
         record, grants, _ = self._apply([holder], {"customfield_11": {"groupId": "g-9"}},
-                                        record=_record(parent_external_record_id="99"), is_subtask=True)
+                                        record=_record(parent_external_record_id="99"), is_subtask=True, reporter_email="rep@ex.com")
         assert grants == set() and record.access_rule == AccessRule.STRICT
 
     def test_a_leveled_sub_task_gives_its_own_assignee_holder_nothing_beyond_the_level(self) -> None:

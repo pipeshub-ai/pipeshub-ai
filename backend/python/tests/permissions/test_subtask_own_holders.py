@@ -2,9 +2,9 @@
 
 Jira shows a sub-task to the project's readers and to the people the project's Browse Projects names on the sub-task
 itself (JSWCLOUD-25762), not to the people it names on the parent (the parent's own assignee). The sub-task inherits its
-parent. No access rule of a single node gives that set: OPEN makes the sub-task a child the parent's own holders read
-below the parent (a seed for them), and the other rules do not let the sub-task's own holders in without the project.
-The sub-task therefore stays STRICT with no grant of its own until the read rule can say "project, plus its own holders"."""
+parent. Of the earlier rules none gives that set: OPEN makes the sub-task a child the parent's own holders read below the
+parent (a seed for them), and the others do not let the sub-task's own holders in without the project. STRICT_OR_GRANT
+does: read from the App as STRICT, or by its own grant alone, and never below a seed."""
 
 from __future__ import annotations
 
@@ -43,14 +43,19 @@ async def test_an_open_sub_task_is_read_by_its_parents_own_assignee() -> None:
 
 
 async def test_the_strict_sub_task_is_read_by_the_project_alone() -> None:
-    """What the connector writes: STRICT, no grant of its own. The parent's own assignee does not read it; neither does
-    the sub-task's own assignee (an under-share the rule cannot avoid without the over-share above)."""
+    """What the connector writes with no own holder on the sub-task: STRICT, no grant of its own. The parent's own assignee does not read it; neither does
+    the sub-task's own assignee: there is none."""
     assert await _reads("STRICT", granted=False) == {"pr": True, "pa": False, "sa": False}
 
 
 @pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT"])
-async def test_no_rule_of_the_sub_task_gives_the_project_and_its_own_holders_alone(rule: str) -> None:
+async def test_no_earlier_rule_of_the_sub_task_gives_the_project_and_its_own_holders_alone(rule: str) -> None:
     assert await _reads(rule, granted=True) != WANTED
+
+
+async def test_strict_or_grant_gives_the_project_and_its_own_holders_alone() -> None:
+    """What the connector writes for an unleveled sub-task with own holders, listed under its parent as before."""
+    assert await _reads("STRICT_OR_GRANT", granted=True) == WANTED
 
 
 async def test_a_sub_task_under_its_parent_that_inherits_the_project_is_not_read_by_the_project() -> None:
