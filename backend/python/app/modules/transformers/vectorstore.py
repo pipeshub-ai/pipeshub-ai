@@ -126,7 +126,7 @@ from app.services.vector_db.membership import (
     vector_point_payload,
 )
 from app.services.vector_db.models import SparseVector, VectorChunkPayload, VectorPoint
-from app.services.vector_db.precision_guard import PrecisionGuard
+from app.services.vector_db.precision_guard import UNCONFIRMED_WRITE, PrecisionGuard
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
@@ -3224,7 +3224,7 @@ class VectorStore(Transformer):
         org = _bound_org()
         try:
             await guard.confirm_after_write(collection_name, org, precision, fence)
-        except PrecisionFlip:
+        except UNCONFIRMED_WRITE:
             record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
             try:
                 if record_ids:

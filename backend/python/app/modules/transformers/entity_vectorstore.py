@@ -89,7 +89,7 @@ from app.services.vector_db.models import (
     SearchResult,
     VectorPoint,
 )
-from app.services.vector_db.precision_guard import PrecisionGuard
+from app.services.vector_db.precision_guard import UNCONFIRMED_WRITE, PrecisionGuard
 from app.services.vector_db.rebuild_state import (
     RebuildJobLock,
     redis_from_config_service,
@@ -1322,12 +1322,12 @@ class EntityVectorStore:
         """The pin is read again after the write: a cleanup that released it, or a writer of the other precision that
         claimed it, between the check and the write would otherwise leave these points beside the other precision.
 
-        A pin of another precision than the batch's removes the points just written and hands the batch back.
+        A pin of another precision than the batch's, or a pin that cannot be read, removes the points just written and hands the batch back.
         """
         for precision in {w[0] for w in witnessed.values() if w is not None}:
             try:
                 await self._guard().confirm_after_write(collection, org, precision, fence)
-            except PrecisionFlip:
+            except UNCONFIRMED_WRITE:
                 await self._remove_written(org, precision, witnessed, written, fence)
                 raise
 

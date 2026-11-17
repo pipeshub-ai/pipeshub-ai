@@ -56,6 +56,12 @@ class PrecisionDerivationTimeout(PrecisionUnreadable):
     """The counts that derive an index's precision did not finish in time: nothing is known, which is not "legacy"."""
 
 
+# A write that was refused, or whose precision could not be confirmed (the pin or the epoch could not be read), is
+# not known to be right: the writer removes its own points and hands the record back. ``FenceMoved`` is a
+# ``PrecisionFlip``; its points carry the retired epoch, which the removal matches.
+UNCONFIRMED_WRITE = (PrecisionFlip, PrecisionUnreadable)
+
+
 def _bound_org_or_none() -> str | None:
     try:
         return org_for_filter()
@@ -375,7 +381,7 @@ class PrecisionGuard:
         return True
 
     async def confirm_after_write(self, collection: str, org: str | None, precision: str, fence: Fence) -> None:
-        """Raise ``PrecisionFlip`` unless, once a batch is written, the epoch is the batch's and the pin is the batch's precision.
+        """Raise ``PrecisionFlip`` (or ``PrecisionUnreadable`` if the pin or epoch cannot be read) unless, once a batch is written, the epoch is the batch's and the pin is the batch's precision.
 
         The check in front of the write cannot see a reset, or a pin released and claimed again, between it and
         the write. This never claims or restores a pin from the points the batch wrote. The caller removes what it wrote.
