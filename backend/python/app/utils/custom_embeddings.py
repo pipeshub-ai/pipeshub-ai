@@ -37,7 +37,7 @@ from tenacity import (
 from typing_extensions import Self
 
 from app.utils.logger import create_logger
-from app.utils.threaded import to_thread_settled  # noqa: E402
+from app.utils.threaded import to_thread_settled
 
 logger = create_logger("custom_embeddings")
 

@@ -356,8 +356,7 @@ async def test_a_cancelled_voyage_call_waits_for_its_request_to_return(monkeypat
 
     holder: list = []
     task = asyncio.create_task(attempt(holder))
-    while not inside.is_set():
-        await asyncio.sleep(0.01)
+    await asyncio.to_thread(inside.wait, 5)
     task.cancel()
     await asyncio.sleep(0.2)
     assert not task.done(), "the cancellation reached the caller while the request was still running"
