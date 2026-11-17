@@ -44,7 +44,7 @@ async def test_a_provider_rate_limit_hands_the_record_back_for_its_wait(error: E
     harness.fail_with = error
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=final))
-    assert isinstance(raised.value, RequeueWithoutAttempt) and raised.value.delay_s == 300.0
+    assert isinstance(raised.value, RequeueWithoutAttempt) and 300.0 <= raised.value.delay_s <= 330.0
     assert raised.value.pauses_consumer is False
     # A wait is not a verdict: the record is not marked FAILED, even on its last attempt.
     assert all(write.get("indexingStatus") != "FAILED" for write in harness.writes())
@@ -77,7 +77,7 @@ async def test_a_parse_now_run_is_handed_back_for_the_wait() -> None:
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=300.0)
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=True, is_final_failure=True))
-    assert raised.value.delay_s == 300.0
+    assert 300.0 <= raised.value.delay_s <= 330.0
     assert all(write.get("parseNowStatus") != "FAILED" for write in harness.writes())
 
 
@@ -91,9 +91,9 @@ async def test_an_enrichment_resume_is_handed_back_and_its_wait_is_recorded_not_
     before = int(time.time() * 1000)
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=True))
-    assert raised.value.delay_s == 300.0
+    assert 300.0 <= raised.value.delay_s <= 330.0
     deferred = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")]
-    assert deferred and deferred[-1] >= before + 300_000
+    assert deferred and deferred[-1] >= before + 300_000, "the deferral lasts at least the provider's wait"
     assert all(w.get("processingStartedAt") is None or w["processingStartedAt"] <= int(time.time() * 1000)
                for w in harness.writes()), "processingStartedAt must never be in the future"
     assert all(w.get("indexingStatus") != "FAILED" and w.get("extractionStatus") != "FAILED" for w in harness.writes())
@@ -120,7 +120,7 @@ async def test_a_failed_cleanup_does_not_replace_the_hand_back() -> None:
     harness.graph.update_node = AsyncMock(side_effect=update)
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
-    assert raised.value.delay_s == 300.0
+    assert 300.0 <= raised.value.delay_s <= 330.0
 
 
 HOUR_MS = 3_600_000
@@ -162,47 +162,62 @@ async def test_a_record_rate_limited_past_the_limit_fails_with_an_explicit_reaso
 
 
 async def test_a_record_within_the_limit_is_still_handed_back() -> None:
-    harness = Harness(_record(indexingStatus="QUEUED", rateLimitedSinceMs=int(time.time() * 1000) - 5 * HOUR_MS))
+    harness = Harness(_record(indexingStatus="QUEUED", rateLimitedSinceMs=int(time.time() * 1000) - 4 * HOUR_MS))
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=600.0)
     with pytest.raises(ProviderRateLimitRequeue):
         await harness.run(_payload(parseNow=False, is_final_failure=False))
 
 
-async def test_a_short_retry_after_repeated_fails_the_record_after_the_wall_time_with_bounded_calls(
+async def test_a_short_retry_after_repeated_is_backed_off_and_fails_the_record_after_the_wall_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``Retry-After: 1`` on every call: the summed waits would take 6 h of 1 s hand-backs (about 21,600 provider calls); wall time
-    since the first hand-back ends it. The clock is injected: each delivery happens a second after the last."""
+    """``Retry-After: 1`` on every call: each hand-back waits at least 30 s x 2^(n-1) (capped at an hour), so over the six-hour
+    wall-time limit the provider is called about fourteen times, not about 21,600. The clock is injected: each delivery
+    happens when the previous hand-back's delay is over."""
     from app.services.messaging import config as config_module
     from app.services.messaging.kafka.handlers import record as record_module
 
-    limit_s = 60.0
-    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: limit_s))
+    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 6 * 3600.0))
     clock = {"now": 1_800_000_000_000}
     monkeypatch.setattr(record_module, "get_epoch_timestamp_in_ms", lambda: clock["now"])
     stored: dict = _record(indexingStatus="QUEUED")
-    calls = 0
+    delays: list[float] = []
     outcome: BaseException | None = None
-    for _ in range(500):
+    for _ in range(200):
         harness = Harness(dict(stored))
         harness.fail_with = RateLimited("model busy", provider="p", retry_after=1.0)
         real = harness.graph.update_node.side_effect
 
-        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:
+        async def update(doc_id: str, collection: str, fields: dict, *, _real=real, _stored=stored) -> bool:  # noqa: ANN001
             _stored.update(fields)
             return await _real(doc_id, collection, fields) if _real else True
 
         harness.graph.update_node = AsyncMock(side_effect=update)
-        calls += 1
         try:
             await harness.run(_payload(parseNow=False, is_final_failure=False))
         except ProviderRateLimitedTooLongError as exc:
             outcome = exc
             break
-        except ProviderRateLimitRequeue:
-            clock["now"] += 1_000
+        except ProviderRateLimitRequeue as requeue:
+            delays.append(requeue.delay_s)
+            clock["now"] += int(requeue.delay_s * 1000)
     assert isinstance(outcome, ProviderRateLimitedTooLongError), "the record was handed back for ever"
-    assert limit_s - 5 <= calls <= limit_s + 5, f"{calls} provider calls for {limit_s:.0f} s of wall time"
+    calls = len(delays) + 1
+    assert 8 <= calls <= 14, f"{calls} provider calls over six hours of Retry-After: 1"
+    assert delays[0] >= 30.0 and all(b >= a for a, b in zip(delays, delays[1:])), "the waits do not shrink"
+    assert max(delays) <= 3600.0
+
+
+def test_the_handback_delay_is_at_least_the_exponential_backoff_the_provider_wait_and_thirty_seconds() -> None:
+    import random
+
+    from app.modules.indexing.rate_limit_deferral import handback_delay_s
+
+    rng = random.Random(1)
+    now = 10_000_000_000
+    for elapsed_s, wait_s, floor in [(0, 1, 30), (0, 600, 600), (30, 1, 60), (90, 1, 120), (5_000, 1, 3600), (0, 90_000, 3600)]:
+        delay = handback_delay_s(wait_s, now - elapsed_s * 1000 if elapsed_s else None, now, rng=rng)
+        assert floor <= delay <= min(3600.0, floor * 1.1 + 1e-6), (elapsed_s, wait_s, delay)
 
 
 async def test_the_deferral_fields_are_not_written_while_the_setting_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -286,3 +301,17 @@ async def test_a_store_that_answers_false_does_not_count_as_a_stored_wait() -> N
     with pytest.raises(Exception) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     assert not isinstance(raised.value, RequeueWithoutAttempt)
+
+
+async def test_with_the_setting_off_no_write_touches_either_field_even_when_a_resume_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The old record schema refuses both fields: with ``RECORD_DEFERRAL_FIELDS_WRITE`` off nothing writes them, clears and
+    the failed-resume path included."""
+    from app.services.messaging.config import messaging_env
+
+    monkeypatch.setattr(type(messaging_env), "record_deferral_fields_write", property(lambda self: False))
+    harness = Harness(_record(indexingStatus="COMPLETED", extractionStatus="IN_PROGRESS", origin="UPLOAD", processingStartedAt=1_000))
+    await harness.handler._fail_resumed_enrichment("rec-1")
+    await harness.handler._clear_handed_back_wait("rec-1", {"deferredUntilMs": 5})
+    await harness.handler._end_provider_rate_limit_total("rec-1", {"rateLimitedSinceMs": 5})
+    for write in harness.writes():
+        assert not {"deferredUntilMs", "rateLimitedSinceMs"} & set(write), write
