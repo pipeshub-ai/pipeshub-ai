@@ -190,6 +190,30 @@ async def test_a_refresh_whose_purge_fails_fails_the_event_so_it_is_retried(stor
     assert store.paths(ORG, REC) != []                       # a run never starts over a half-purged set
 
 
+async def test_a_refresh_on_a_storage_without_the_cutoff_route_purges_without_a_cutoff_not_before_zero(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No purge-cutoff route (an earlier storage release): the purge goes without ``before``, never ``before=0``."""
+    async def no_route(org: str, rec: str) -> None:
+        return None
+
+    monkeypatch.setattr(store, "purge_cutoff", no_route)
+    sent: list[int | None] = []
+    real_purge = store.purge_record
+
+    async def purge(org: str, rec: str, *, before_ms: int | None = None) -> None:
+        sent.append(before_ms)
+        await real_purge(org, rec, before_ms=before_ms)
+
+    monkeypatch.setattr(store, "purge_record", purge)
+    _seed(store)
+
+    await _reindex(_handler(), {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True})
+
+    assert sent == [None]
+    assert store.paths(ORG, REC) == []
+
+
 @pytest.mark.parametrize("payload", [{"forceReindex": True}, {"refreshPaidOutputs": "true"}, {"refreshPaidOutputs": False}, {}])
 async def test_anything_but_an_explicit_refresh_keeps_the_stored_set(store: MemoryResultStore, payload: dict) -> None:
     _seed(store)

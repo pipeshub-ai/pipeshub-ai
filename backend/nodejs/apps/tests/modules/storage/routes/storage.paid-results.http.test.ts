@@ -250,6 +250,13 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       )
     })
 
+    it('purge-cutoff refuses a record id that is not a valid one', async () => {
+      for (const bad of ['a%2Fb', '.hidden', 'x'.repeat(300)]) {
+        expect((await call('POST', `/internal/paid-results/${bad}/purge-cutoff`)).status, bad).to.equal(400)
+      }
+      expect(filesOnDisk()).to.have.length(5)
+    })
+
     it('purge-cutoff leaves no sentinel behind, on success or when the store fails, and a listing never shows one', async () => {
       const ok = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
       expect(ok.status).to.equal(200)
