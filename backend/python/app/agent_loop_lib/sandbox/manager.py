@@ -510,23 +510,17 @@ class SandboxManager:
         record = self._instances.pop(key, None)
         if record is None:
             return
-        await self._safe_destroy(record.backend)
-        await self._release_lease(record.governor_lease)
         for other_key in [k for k, v in self._instances.items() if v is record]:
             del self._instances[other_key]
+        await self._teardown([record])
 
     async def destroy_all(self) -> None:
         """Tear down every tracked sandbox — called from `ControlPlane.stop()`.
         Never raises; failures are logged and swallowed so one broken
         backend can't block the rest of shutdown."""
-        seen: set[int] = set()
-        for record in list(self._instances.values()):
-            if id(record) in seen:
-                continue
-            seen.add(id(record))
-            await self._safe_destroy(record.backend)
-            await self._release_lease(record.governor_lease)
+        records = list({id(r): r for r in self._instances.values()}.values())
         self._instances.clear()
+        await self._teardown(records)
 
     def active_count(self, type: SandboxType) -> int:
         """Number of distinct live backend instances for `type` (dedups
@@ -575,16 +569,24 @@ class SandboxManager:
             k for k, v in self._instances.items()
             if k[0] == type and (now - v.created_at) > limits.max_lifetime_s
         ]
-        seen: set[int] = set()
-        for key in stale_keys:
-            record = self._instances.get(key)
-            if record is None or id(record) in seen:
-                continue
-            seen.add(id(record))
-            await self._safe_destroy(record.backend)
-            await self._release_lease(record.governor_lease)
-            for other_key in [k for k, v in self._instances.items() if v is record]:
-                del self._instances[other_key]
+        stale = {id(self._instances[k]): self._instances[k] for k in stale_keys}
+        for other_key in [k for k, v in self._instances.items() if id(v) in stale]:
+            del self._instances[other_key]
+        await self._teardown(list(stale.values()))
+
+    async def _teardown(self, records: list[_InstanceRecord]) -> None:
+        """Destroy each record's backend, then give back its slot. One
+        shielded task: a cancel (a client disconnect cancels the request's
+        cleanup) returns at once but the teardown still finishes, so a
+        sandbox that keeps its slot for life never leaves it counted."""
+        if not records:
+            return
+
+        async def run() -> None:
+            for record in records:
+                await self._destroy_then_release(record.backend, record.governor_lease)
+
+        await asyncio.shield(run())
 
     async def _destroy_then_release(self, backend: SandboxLifecycle, lease: Any | None) -> None:
         try:
