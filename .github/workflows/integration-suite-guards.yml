@@ -100,6 +100,7 @@ jobs:
             integration-tests/unit/test_admin_route_conditional_world.py
             integration-tests/unit/test_guard_scope.py
             integration-tests/unit/test_suite_extensions.py
+            integration-tests/unit/test_citation_viewer_stats.py
             integration-tests/unit/test_perf_costclass.py
             integration-tests/unit/test_perf_costclass_driver.py
         run: |
