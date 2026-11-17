@@ -134,6 +134,10 @@ memory or its CPU is throttled; running code is never stopped. See sandbox.dind.
 Live limit: off (sandbox.dind.liveLimit.enabled=false); runs are capped by the sidecar size only.
 {{- end }}
 
+Load alerts are per pod (SANDBOX_ALERT_SCOPE is the pod name): each replica
+alerts on its own sandboxes, and a rollout during an overload may send the
+alert again.
+
 {{- else if eq $path "external" }}
 
 run_code executes on the Docker daemon at {{ .Values.config.dockerHost }}.

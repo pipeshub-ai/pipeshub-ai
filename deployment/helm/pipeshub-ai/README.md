@@ -439,8 +439,9 @@ Admins get a notification, and an email when mail is set up, when code runs in
 chat keep waiting for a sandbox (warning) or are refused (critical). Each pod
 has its own sandboxes and evaluates its own runs, so each pod has its own
 cooldown: the chart sets `SANDBOX_ALERT_SCOPE` to the pod name, and every pod
-can send each level once a day. A rollout renames the pods, so a problem that
-lasts across it can be reported again. The thresholds and `SANDBOX_ALERTS=false`
+can send each level once a day. With several replicas, each pod alerts
+separately, so one overload can bring one alert per pod. A rollout renames the
+pods, so a rollout during an overload can send the alert again. The thresholds and `SANDBOX_ALERTS=false`
 are set through `extraEnv`; the variables are listed in the Docker Compose
 `ADVANCED_DEPLOYMENT.md` ("Load alerts"). On the dind sidecar, memory waits
 count at once, since indexing does not share the sidecar's memory.
