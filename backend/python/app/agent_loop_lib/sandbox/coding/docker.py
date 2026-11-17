@@ -1036,7 +1036,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         if container_id:
             # The removal (and its wait for a control thread) counts against
             # the same bound as the worker thread.
-            removal = asyncio.ensure_future(self._provider.run_control(
+            removal = spawn_in_request(self._provider.run_control(
                 self._provider.client.api.remove_container, container_id, force=True,
             ))
 
