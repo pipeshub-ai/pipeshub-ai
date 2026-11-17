@@ -28,6 +28,9 @@ services:
       - PARSING_SERVICE_PORT=8092
       # Requests in the route beyond this get 429 at once; empty = not limited by count.
       - PARSING_MAX_CONCURRENT=${PARSING_MAX_CONCURRENT:-}
+      # The record budgets the app applies (each parse request also carries its own): the same values as the app.
+      - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
+      - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
       # Model credentials and endpoints the parser may need when a saved model configuration omits them
       # (OCR and table summaries run here): the same values as the app.
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}

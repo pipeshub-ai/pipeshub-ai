@@ -14,16 +14,18 @@ fleet Redis the per-process breaker below is used.
 """
 
 import asyncio
+import contextlib
 import functools
 import logging
 import random
 import threading
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
+from app.capacity.admission import llm_slot as member_llm_slot
 from app.core.org_context import spawn_in_request
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.base_client import (
@@ -541,7 +543,9 @@ class LLMGateway:
             admission = None
             lease = None
             try:
-                async with self._limiter.slot():
+                async with self._limiter.slot(), self._member_slot(
+                    provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
+                ):
                     # Admitted with the slot held, right before the request: a call that waited for a slot while others
                     # opened the breaker must see the breaker as it is now.
                     if fleet is not None:
@@ -642,6 +646,26 @@ class LLMGateway:
                 delay = max(delay, min(policy.retry_after, MAX_GATEWAY_RETRY_AFTER_SECONDS))
             await asyncio.sleep(delay)
         raise AssertionError("unreachable: the last attempt returns or raises")
+
+    @contextlib.asynccontextmanager
+    async def _member_slot(
+        self, provider: str, pk: str, cls: str, *, sent_any: bool, requests: int, charged: int
+    ) -> AsyncIterator[None]:
+        """The container's member LLM slot for one call. When the wait for it runs out, the caller sees the outage it
+        already handles (nothing was sent), not a raw ledger timeout."""
+        from app.capacity.member_budget import AdmissionTimeout
+
+        stack = contextlib.AsyncExitStack()
+        try:
+            await stack.enter_async_context(member_llm_slot())
+        except AdmissionTimeout as exc:
+            raise ProviderUnavailableError(
+                f"{provider}: no LLM slot came free in this container; not calling the model",
+                provider=provider, sent=sent_any, chargeable=charged > 0, pk=pk, size_class=cls,
+                requests=requests, charged=charged,  # what the job's earlier attempts already sent and were charged
+            ) from exc
+        async with stack:
+            yield
 
     # ---- the job's sends -----------------------------------------------------------------------
 

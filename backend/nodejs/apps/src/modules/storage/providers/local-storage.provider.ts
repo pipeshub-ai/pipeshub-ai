@@ -10,6 +10,7 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  ObjectPage,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -564,6 +565,114 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Writes only when no file is stored at the key. The bytes are written
+   * beside the target and hard-linked into place, so the key is never seen
+   * half written and a second writer's link fails instead of replacing the
+   * first one's file.
+   */
+  async writeObjectIfAbsent(
+    storageKey: string,
+    data: Buffer,
+  ): Promise<boolean> {
+    try {
+      const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      const located = await this.locateInsideRealMount(fullPath);
+      if (located === null) {
+        throw new StorageNotFoundError('Local folder not found');
+      }
+      const tempPath = path.join(
+        path.dirname(located.target),
+        `.${randomUUID()}.tmp`,
+      );
+      try {
+        await fs.writeFile(tempPath, data, { mode: 0o600 });
+        await fs.link(tempPath, located.target);
+        return true;
+      } catch (error) {
+        if ((error as { code?: string }).code === 'EEXIST') {
+          return false;
+        }
+        throw error;
+      } finally {
+        await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to write object to local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * One page of the files under a key prefix, in key order; the cursor is the
+   * last key of the previous page. Files still being written (dot-prefixed
+   * temporaries) are not listed.
+   */
+  async listObjects(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage> {
+    const folder = this.objectPathInMount(prefix);
+    const root = path.resolve(this.mountPath);
+    let entries: string[];
+    try {
+      entries = await fs.readdir(folder, { recursive: true });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        return { objects: [] };
+      }
+      throw error;
+    }
+    // Keys first, sorted, so only the requested page (and one more, to know whether there is a next) is statted.
+    const candidates: { key: string; full: string }[] = [];
+    for (const entry of entries) {
+      if (path.basename(entry).startsWith('.')) continue;
+      const full = path.join(folder, entry);
+      const key = path.relative(root, full).split(path.sep).join('/');
+      if (options.after !== undefined && key <= options.after) continue;
+      candidates.push({ key, full });
+    }
+    candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const listed: { key: string; size: number; lastModifiedMs: number }[] = [];
+    for (const { key, full } of candidates) {
+      if (listed.length > options.limit) break;
+      let stat;
+      try {
+        stat = await fs.lstat(full);
+      } catch (error) {
+        // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
+        // works from a reference set with a manifest silently missing.
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (!stat.isFile()) continue;
+      listed.push({
+        key,
+        size: stat.size,
+        lastModifiedMs: Math.floor(stat.mtimeMs),
+      });
+    }
+    const objects = listed.slice(0, options.limit);
+    const last = objects[objects.length - 1];
+    return last !== undefined && listed.length > options.limit
+      ? { objects, next: last.key }
+      : { objects };
+  }
+
+  async deleteObjects(storageKeys: string[]): Promise<void> {
+    for (const key of storageKeys) {
+      const relative = this.sanitizePath(key);
+      await fs.rm(this.assertInsideMount(path.join(this.mountPath, relative)), {
+        force: true,
+      });
+      await this.pruneEmptyAncestors(relative);
+    }
+  }
+
+  /**
    * Opens a storage key for reading, or null when it does not exist. The file
    * is served from this handle, never reopened by path: a final symlink is not
    * followed (O_NOFOLLOW), and the open file must be the one at the key's real
@@ -623,12 +732,31 @@ class LocalStorageAdapter implements StorageServiceInterface {
     );
   }
 
+  /**
+   * A write that lands in a folder while it is being removed leaves it non-empty
+   * (ENOTEMPTY): removing it again takes what arrived. A purge is idempotent, so
+   * a few more passes are the same operation, not a failure.
+   */
+  private async removeTree(fullPath: string): Promise<void> {
+    for (let pass = 1; ; pass++) {
+      try {
+        await fs.rm(fullPath, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code !== 'ENOTEMPTY' && code !== 'EBUSY') || pass >= 5) {
+          throw error;
+        }
+      }
+    }
+  }
+
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
     try {
       const relativePath = this.sanitizePath(storagePath);
       const fullPath = path.join(this.mountPath, relativePath);
       this.assertInsideMount(fullPath);
-      await fs.rm(fullPath, { recursive: true, force: true });
+      await this.removeTree(fullPath);
       await this.pruneEmptyAncestors(relativePath);
       this.logger.info('Local storage delete successful', { path: relativePath });
       return { statusCode: 200, data: undefined };

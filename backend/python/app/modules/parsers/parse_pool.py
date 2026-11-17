@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import logging
 import os
 import pickle
@@ -38,6 +39,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from app.capacity.admission import reserve_or_adopt, reserve_or_adopt_blocking
+from app.capacity.budget_policy import Demand, Family
+from app.capacity.member_budget import AdmissionTimeout, Cancelled
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parsers import parse_worker
 from app.services.messaging.config import messaging_env
@@ -54,6 +58,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from app.capacity.member_budget import Permit
     from app.modules.parsers.parse_pool_lanes import LanePool
     from app.services.resource_governor import ResourceGovernor
 
@@ -420,6 +425,36 @@ def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
         return _State.pool
 
 
+_LANE_WAIT_S = 3600.0  # a wait for the member budget is always bounded
+
+
+def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
+    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work), and the memory
+    its worker is charged for this kind of job (an Excel load grows to ``EXCEL_LOAD_MAX_MB``; it is held nowhere else
+    in the container's budget). A job of no known kind reserves no memory, as before."""
+    from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
+
+    memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
+    return Demand(Family.PARSE, 1, memory)
+
+
+class _EventToken:
+    """A ``threading.Event`` seen as the ledger's cancel token."""
+
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+
+def _capacity_timeout(waited: float) -> Exception:
+    """The wait for the member budget ran out: the record queued, nothing failed, so it goes back uncounted."""
+    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout
+
+    return ParseAdmissionTimeout("parsing", waited)
+
+
 def _covered(kind: object | None) -> bool:
     """Whether a heavy parse permit held by the caller covers this job's memory (read at submit time)."""
     if kind is None or parse_lanes_mode() != "on":
@@ -437,6 +472,7 @@ async def submit(
     timeout: float | None = None,
     interactive: bool = False,
     kind: object | None = None,
+    permit: Permit | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -453,13 +489,36 @@ async def submit(
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
     """
-    pool = _pool(interactive=interactive)
-    if pool is not None:
-        try:
-            return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
-        except _PoolClosed:
-            pass
-    return await asyncio.to_thread(fn, *args)
+    # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
+    wait_s = timeout or _LANE_WAIT_S
+    try:
+        held = await reserve_or_adopt(permit, _lane_demand(kind, size), deadline_s=wait_s)
+    except AdmissionTimeout as exc:
+        raise _capacity_timeout(wait_s) from exc
+    release_here = held is not None
+    try:
+        pool = _pool(interactive=interactive)
+        if pool is not None:
+            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            if held is not None:
+                # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
+                # while still queued. The tokens go back then, not when the awaiting caller goes away.
+                job.future.add_done_callback(lambda _f, p=held: p.release())
+                release_here = False
+            try:
+                return await pool.submit(job)
+            except _PoolClosed:
+                release_here = held is not None  # never enqueued: nothing else will release it
+        # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
+        # ends, so the permit is released when the thread does, not when the caller goes away.
+        future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
+        if held is not None:
+            future.add_done_callback(lambda _f, p=held: p.release())
+            release_here = False
+        return await asyncio.shield(future)
+    finally:
+        if release_here and held is not None:
+            held.release()
 
 
 class _OneShotPool:
@@ -480,6 +539,7 @@ def run_blocking(
     timeout: float | None = None,
     cancelled: threading.Event | None = None,
     kind: object | None = None,
+    permit: Permit | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
 
@@ -496,6 +556,31 @@ def run_blocking(
     """
     if os.name != "posix":
         return fn(*args)
+    wait_s = timeout or _LANE_WAIT_S
+    try:
+        held = reserve_or_adopt_blocking(
+            permit, _lane_demand(kind, size), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
+        )
+    except AdmissionTimeout as exc:
+        raise _capacity_timeout(wait_s) from exc
+    except Cancelled as exc:
+        raise ParseAbandonedError("parse abandoned while it waited for capacity") from exc
+    try:
+        return _run_blocking(fn, args, label, size, timeout, cancelled, kind)
+    finally:
+        if held is not None:
+            held.release()
+
+
+def _run_blocking(
+    fn: Callable[..., T],
+    args: tuple[object, ...],
+    label: str,
+    size: int,
+    timeout: float | None,
+    cancelled: threading.Event | None,
+    kind: object | None,
+) -> T:
     job = _Job(fn, args, label, size, timeout, require_worker=True, kind=kind, covered=_covered(kind))
     if cancelled is not None:
         job.cancelled = cancelled
