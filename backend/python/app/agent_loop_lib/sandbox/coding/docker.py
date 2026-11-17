@@ -54,6 +54,7 @@ from app.agent_loop_lib.sandbox.coding.validation import (
     package_name,
     validate_package_spec,
 )
+from app.core.org_context import spawn_in_request
 
 """`DockerCodingSandbox`: a `CodingSandboxBackend` implementation that runs
 code inside ephemeral Docker containers instead of as a host subprocess
@@ -431,7 +432,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 network_enabled, egress_network = False, None
                 network_note = _NETWORK_UNAVAILABLE_NOTE
         handle = _RunHandle()
-        fut = asyncio.ensure_future(self._provider.run_blocking(
+        fut = spawn_in_request(self._provider.run_blocking(
             self._run_container_sync,
             run_cmd, src_dir, request.timeout, network_enabled,
             staged_inputs, self._provider.client, egress_network,
@@ -539,7 +540,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         try:
             egress_cidrs = await self._provider.egress_network_cidrs(network_name)
             handle = _RunHandle()
-            fut = asyncio.ensure_future(self._provider.run_blocking(
+            fut = spawn_in_request(self._provider.run_blocking(
                 self._install_packages_sync, to_install, language,
                 self._provider.client, network_name, egress_cidrs, handle,
             ))

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.core.tasks import wait_owned
+from app.core.org_context import spawn_in_request
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import CancellationToken
@@ -430,8 +431,11 @@ class SandboxManager:
             return await fn()
         if token.is_cancelled:
             raise SandboxCallStopped(tool)
-        call = asyncio.ensure_future(fn())
-        stop = asyncio.ensure_future(token.wait())
+        async def call_fn() -> T:
+            return await fn()
+
+        call = spawn_in_request(call_fn())
+        stop = spawn_in_request(token.wait())
         try:
             await wait_owned({call, stop}, return_when=asyncio.FIRST_COMPLETED)
         finally:

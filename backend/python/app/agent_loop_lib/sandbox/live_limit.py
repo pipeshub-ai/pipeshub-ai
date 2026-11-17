@@ -46,6 +46,7 @@ from app.agent_loop_lib.sandbox.host_reading import (
 )
 from app.agent_loop_lib.sandbox.live_record import BURST_SLOTS, LiveLedger, LiveRecord
 from app.agent_loop_lib.sandbox.live_settings import MAX_MEMORY_OVERCOMMIT, LiveSettings
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.lane_ledger import pid_alive
 
 if TYPE_CHECKING:
@@ -543,7 +544,7 @@ class LiveLimit:
         """Start the sampler on the running loop. Safe to call more than once."""
         if self._task is not None and not self._task.done():
             return
-        self._task = asyncio.get_running_loop().create_task(self._run(), name="sandbox-live-limit")
+        self._task = spawn_detached(self._run(), name="sandbox-live-limit")
 
     async def stop(self) -> None:
         task, self._task = self._task, None

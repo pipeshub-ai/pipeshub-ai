@@ -38,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.shared_slots import sandbox_state_directory
 
 if TYPE_CHECKING:
@@ -597,7 +598,7 @@ class SandboxCapacity:
         if self._task is not None and self._task.get_loop() is loop:
             return
         self._first_attempt = asyncio.Event()
-        self._task = loop.create_task(self._size_until_known())
+        self._task = spawn_detached(self._size_until_known(), name="sandbox-capacity-sizing")
 
     async def ensure_sized(self, timeout: float | None = None) -> CapacityPlan:
         """Start sizing if needed and wait up to *timeout* for its first

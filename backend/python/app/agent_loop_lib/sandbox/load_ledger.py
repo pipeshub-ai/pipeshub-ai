@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from app.agent_loop_lib.sandbox.capacity import HoldReason, get_sandbox_capacity
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.shared_slots import (
     ensure_private_directory,
     sandbox_state_directory,
@@ -256,7 +257,7 @@ class LoadLedger:
     def _start_flush(self, loop: asyncio.AbstractEventLoop) -> None:
         with self._lock:
             self._pending = False
-        task = loop.create_task(asyncio.to_thread(self.flush))
+        task = spawn_detached(asyncio.to_thread(self.flush), name="sandbox-load-ledger-flush")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
