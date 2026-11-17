@@ -496,7 +496,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if live_limit is not None:
             await live_limit.stop()
     except Exception as e:
-        logger.error(f"❌ Error stopping the sandbox live limit: {e}")
+        logger.error(f"Error stopping the sandbox live limit: {e}")
 
     try:
         from app.agent_loop_lib.sandbox.load_ledger import peek_default_load_ledger
@@ -505,7 +505,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if load_ledger is not None:
             await asyncio.to_thread(load_ledger.close)
     except Exception as e:
-        logger.error(f"❌ Error flushing the sandbox load ledger: {e}")
+        logger.error(f"Error flushing the sandbox load ledger: {e}")
 
     # Stop all message consumers
     try:
