@@ -28,6 +28,7 @@ def _ingress(document: dict[str, object] | None) -> tuple[StageIngress, AsyncMoc
     coordinator, graph = AsyncMock(), AsyncMock()
     coordinator.on_external_done = AsyncMock(return_value=["job"])
     graph.get_document = AsyncMock(return_value=document)
+    graph.update_node_fields_if_match = AsyncMock(return_value=False)  # the record holds no such revision: the count goes
     return StageIngress(coordinator, graph, MagicMock()), coordinator, graph
 
 

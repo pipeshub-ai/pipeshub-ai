@@ -12,7 +12,8 @@ An older image applies its own, narrower record schema; records that hold the ne
 (d) three processes that see the narrowing issue at most one change (the Redis lock);
 (e) a narrowed ``indexingStatus`` enum and a record holding the newer value: the record updates after the widening,
     and not when the widening keeps the narrowed definition (the union control);
-(f) an image without the guard fails for at most one poll interval (10 s);
+(f) an image without the guard fails until a newer process's next poll (10 s) repairs the schema, about one poll interval when it finds the
+    lock free and a quiet point, and eventually otherwise;
 (g) the generation rule: a process applies its schema only when the live generation is lower.
 
 One forced 1620 per rerun owner (``retry_on_deadlock``, ``GraphDataStore.execute_in_transaction``, a plain

@@ -304,8 +304,9 @@ async def test_a_store_only_write_that_sets_a_new_revision_drops_the_page_count_
 
 
 async def test_a_write_of_the_revision_the_record_holds_keeps_the_page_count_and_a_new_revision_drops_it(store: Store) -> None:
-    """The finished-twin reuse writes the revision again without parsing: the count of that content stays (the store checks the revision in
-    its statement). A different revision drops it, and so does a record that moved to another revision after it was read."""
+    """The finished-twin reuse writes the revision again without parsing: the count of that content stays. The decision is the store's, made in
+    its statement from the stored revision, not from the record as it was read: a snapshot that is out of date either way changes nothing.
+    A different revision drops the count, and so does a record that moved to another revision after it was read."""
     flow = Flow(store)
     await flow.run("save_new", "cas_queued", "attempt")  # the attempt sets the revision
     held = (await store.doc(flow.key))["contentRev"]
@@ -315,10 +316,10 @@ async def test_a_write_of_the_revision_the_record_holds_keeps_the_page_count_and
     assert await processor.update_record_fields({"_key": flow.key, "contentRev": held}, {"contentRev": held, "reason": None})
     assert (await store.doc(flow.key))["pageCount"] == 9, "the same revision keeps its count"
 
-    # read as another revision: not known to be the same, so the count goes (the safe side; the parse writes it again)
+    # The race: the snapshot says another revision, a concurrent writer has since set the held one (and its count). The store matches the
+    # held revision, so the valid count stays; the snapshot is not consulted.
     assert await processor.update_record_fields({"_key": flow.key, "contentRev": "rev-stale"}, {"contentRev": held, "reason": None})
-    assert not (await store.doc(flow.key)).get("pageCount")
-    assert await store.p.update_node(flow.key, RECORDS, {"pageCount": 9})
+    assert (await store.doc(flow.key))["pageCount"] == 9, "a stale snapshot must not clear a valid count"
 
     # read as the held revision, but the record moved on since: the statement matches nothing and the count goes
     assert await store.p.update_node(flow.key, RECORDS, {"contentRev": "rev-moved"})

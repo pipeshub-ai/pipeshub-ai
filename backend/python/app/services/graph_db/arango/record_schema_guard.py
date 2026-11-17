@@ -3,8 +3,9 @@
 A process that is older than this one applies its own, narrower record schema when it starts. A record that
 holds a newer field then fails every write with errorNum 1620. This guard:
 
-* reads the schema's generation (a ``$comment`` on the rule) and applies this process's schema only while the
-  live generation is lower, never when it is higher (no union: a narrowed enum is replaced, not merged);
+* reads the schema's generation (a ``$comment`` on the rule) and applies this process's schema only when it reads a
+  lower live generation (no union: a narrowed enum is replaced, not merged); a read can be out of date by the time the
+  write lands, see the limit below;
 * widens the schema **outside** any transaction: a schema change waits for every open stream transaction that wrote
   the collection and every later write queues behind it, so inside a transaction it would wait on itself;
 * runs one widening at a time across processes under a lease lock kept in ArangoDB itself (``ArangoLock``), at a moment no
@@ -14,7 +15,8 @@ holds a newer field then fails every write with errorNum 1620. This guard:
 
 What this does not do: a lease cannot fence a schema change, which is not transactional with the lock. A process paused
 for longer than the lease between its last look at the live generation and its write, or whose write the server applies
-after its client timed out, can still put an older schema over a newer one. The lease, the generation read under it and the
+after its client timed out, can still put an older schema over a newer one. The repair below needs the later checks and
+writes to succeed: a newer process that cannot read the generation, take the lock or reach the server repairs nothing. The lease, the generation read under it and the
 last read right before the write narrow that window; they do not close it. The overwrite is repaired by the poll of a
 newer process (every ``POLL_INTERVAL_S``), so the guarantee is eventual: the newer generation is back within one poll
 interval of that process finding the lock free and a quiet point, and later than that when the lock is held (up to
@@ -124,7 +126,8 @@ class ArangoLock:
     The lease is read against the server's clock (``DATE_NOW()``), so processes with different clocks agree. A concurrent
     take of the same document loses on the write conflict (or the unique key) and counts as "not acquired". An expired
     lease is taken over by the next ``acquire``. ``renew`` succeeds only while the lease is still this owner's and
-    unexpired: the widening renews right before it writes, so a process that lost its lease cannot write.
+    unexpired: the widening renews right before it writes, so a process that finds it lost its lease by then does not write. That is
+    not a fence: a write already sent, or one that stalls after the renewal for longer than the lease, is not stopped by it.
     Any error is raised (never read as "acquired")."""
 
     def __init__(self, client: Any, *, collection: str = SCHEMA_LOCK_COLLECTION, key: str = SCHEMA_LOCK_KEY) -> None:  # noqa: ANN401

@@ -19,10 +19,7 @@ import pytest
 
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
-from app.services.graph_db.arango.record_schema_guard import (
-    FORCE_AFTER_SKIPS,
-    generation_of_schema,
-)
+from app.services.graph_db.arango.record_schema_guard import generation_of_schema
 from app.telemetry.backend import METRICS_BACKEND
 from tests.integration.graph_db.record_diagnostics_stall_bound import STALL_BOUND_S
 from tests.integration.graph_db.record_diagnostics_support import (
@@ -34,6 +31,8 @@ from tests.integration.graph_db.record_diagnostics_support import (
     new_org,
 )
 from tests.integration.real_graph import backend_unavailable, connect_arango
+
+RECOVERY_S = 60.0  # skips (up to three polls), a forced widening that waits for the open transactions, a held lease (15 s) and the retries
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 logger = logging.getLogger("record-diagnostics-steady-load")
@@ -106,17 +105,19 @@ async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> N
     narrowed_at = time.monotonic()
     assert await p.http_client.update_collection_schema(RECORDS, narrow_schema(), timeout=30)  # the older image starts
     trigger_started = time.monotonic()
+    # What this is about is recovery, not how many tries it takes: skipped widenings, a forced one that timed out with its lease still held
+    # (the next tries are refused without a new widening until the lease or the pending change ends) and the retries between them all
+    # count against one deadline, after which the schema must be wide and the write landed.
+    recovery_s = RECOVERY_S + hold_max
     attempts = 0
-    while True:  # the write's owner runs it again when it is refused transiently (no quiet point yet)
+    while True:  # the write's owner runs it again when it is refused transiently
         attempts += 1
         try:
             await p.update_node(tainted, RECORDS, {"indexingStatus": "QUEUED"})
             break
         except RecordSchemaNarrowError:
-            # skips (up to FORCE_AFTER_SKIPS in a row) cost one attempt each, the forced widening is the next one, and one that was sent but did not answer in time (a forced
-            # one waits for the open transactions) costs one more; the guard's own metric counts the widenings sent
-            sent = _counter("pipeshub_record_schema_rewiden_total") - before_total
-            assert attempts <= FORCE_AFTER_SKIPS + sent, f"{attempts} attempts, {sent:g} widenings sent"
+            assert time.monotonic() - trigger_started < recovery_s, f"not recovered within {recovery_s:.0f}s ({attempts} attempts)"
+            await asyncio.sleep(0.5)
     widened_after = time.monotonic() - trigger_started
     await asyncio.sleep(10)
     stop.set()
@@ -137,7 +138,7 @@ async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> N
         assert window[-1] <= STALL_BOUND_S, f"a records write waited {window[-1]:.2f}s"
     else:
         # a transaction is nearly always open, so the first quiet-point wait finds no moment: that widening is skipped (the write is refused
-        # transiently) and the next try either finds a gap or, after FORCE_AFTER_SKIPS skips in a row, is sent anyway (the next try); a write waits for the
+        # transiently) and a later try finds a gap or is forced; a write waits for the
         # longest open transaction, no longer
-        assert contended >= 1 and total >= 1 and attempts <= FORCE_AFTER_SKIPS + total
+        assert contended >= 1 and total >= 1
         assert window[-1] <= hold_max + 0.5, f"a records write waited {window[-1]:.2f}s"

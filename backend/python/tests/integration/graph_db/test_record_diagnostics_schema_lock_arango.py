@@ -1,8 +1,9 @@
 """The records-schema widening lock, kept in ArangoDB itself, on a real server (3.12.4) with no Redis.
 
-A lease lock in one document: one holder at a time, an expired lease taken over, a holder that lost its lease fenced out of the
-schema write, and a lock store that cannot be written means no schema write at all (the refused write stays refused and the poll
-tries again). Expected: an older process never overwrites a newer schema.
+A lease lock in one document: one holder at a time, an expired lease taken over, a holder that finds it lost its lease before its
+write does not write, and a lock store that cannot be written means no schema write at all (the refused write stays refused and the poll
+tries again). Expected: an older process that reads the newer schema before it writes leaves it alone. The write itself is not fenced (see the last
+tests): a stale overwrite is repaired eventually by a newer process's poll, provided its later checks and writes succeed.
 """
 
 from __future__ import annotations
@@ -366,3 +367,38 @@ async def test_a_transaction_that_is_always_open_cannot_keep_the_schema_narrow(e
     assert guard_module.FORCE_AFTER_SKIPS == 3
     assert results == [False, False, False, True]
     assert await _generation(client) == RECORD_SCHEMA_GENERATION
+
+
+async def test_a_widening_that_timed_out_with_its_lease_held_is_not_repeated_and_lands_when_the_server_applies_it(
+    env: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forced widening waits for an open transaction and the client gives up: the lease stays (the server may still apply the change), so the
+    next tries are refused without a second widening, and the schema becomes wide when the transaction ends and the server applies the first."""
+    first, second = env
+    client = first.http_client
+    org = new_org()
+    key, open_key = f"{org}-pending", f"{org}-open"
+    assert await first.batch_upsert_nodes([{**base_record(key, org), **DIAGNOSTICS}, base_record(open_key, org)], RECORDS)
+    assert await client.update_collection_schema(RECORDS, narrow_schema())
+    puts = _puts(client, monkeypatch)
+    monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.05)
+    guard: RecordSchemaGuard = client.record_guard
+    guard._skips = guard_module.FORCE_AFTER_SKIPS  # the next widening is the forced one
+    held = await second.begin_transaction(read=[RECORDS], write=[RECORDS])
+    try:
+        assert await second.update_node(open_key, RECORDS, {"indexingStatus": "QUEUED"}, transaction=held)  # a clean record: the narrow schema accepts it
+        assert await guard.ensure_wide("test") is False  # sent, waits for the transaction, the client gives up
+        assert puts["n"] == 1
+        for _ in range(3):  # the owner tries again: refused, and no second widening while the lease is held
+            assert await guard.ensure_wide("test") is False
+            assert puts["n"] == 1
+    finally:
+        await second.rollback_transaction(held)  # the server can now apply the first change
+
+    deadline = asyncio.get_running_loop().time() + 15
+    while await _generation(client) != RECORD_SCHEMA_GENERATION:
+        assert asyncio.get_running_loop().time() < deadline, "the pending change was never applied"
+        await asyncio.sleep(0.1)
+    assert await first.update_node(key, RECORDS, {"indexingStatus": "QUEUED"})
+    assert puts["n"] == 1

@@ -173,15 +173,19 @@ def stamped(fields: dict[str, Any], stored: Mapping[str, Any] | None, kind: Writ
     return {**fields, **reference(stored, kind, now, **kw)}
 
 
-def drop_count_on_new_revision(fields: dict[str, Any], held_rev: object) -> dict[str, Any]:
-    """``fields`` for a write that sets ``contentRev``, with the page count dropped unless the record already holds that revision.
+async def write_with_revision_rule(graph: Any, record_id: str, collection: str, fields: dict[str, Any]) -> bool:  # noqa: ANN401
+    """``update_node`` for ``fields`` that may set ``contentRev``: the page count is dropped unless the store still holds that revision.
 
-    The rule of ``write_attempt_start`` (a count belongs to the content it was taken from) for every other writer of the revision;
-    a record with no revision, or an empty or non-string one, holds none, so its count goes too."""
-    rev = fields.get("contentRev")
-    if rev is None or (isinstance(held_rev, str) and held_rev and rev == held_rev):
-        return fields
-    return {**fields, PAGE_COUNT: None}
+    The rule of ``write_attempt_start`` (a count belongs to the content it was taken from) for every other writer of the revision. The
+    decision is made in the store's own statement, never from a record read earlier: the write is first made conditional on the stored
+    revision being the one written (the count is then kept), and only a record that holds another revision, or none, is written with the
+    count dropped. A record that changed in between can only lose a count (the next parse writes it again), never keep a stale one."""
+    revision = fields.get("contentRev")
+    if revision is None:
+        return bool(await graph.update_node(record_id, collection, fields))
+    if await graph.update_node_fields_if_match(record_id, collection, fields, {"contentRev": revision}):
+        return True
+    return bool(await graph.update_node(record_id, collection, {**fields, PAGE_COUNT: None}))
 
 
 def page_count_of(value: Any) -> int | None:  # noqa: ANN401

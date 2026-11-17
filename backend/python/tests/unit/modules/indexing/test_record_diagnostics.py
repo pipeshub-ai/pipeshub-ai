@@ -361,7 +361,7 @@ class TestPageCountWrites:
     @pytest.mark.parametrize("attempt_start", [True, False])
     async def test_a_store_only_write_that_sets_the_revision_drops_the_count_it_may_hold(self, attempt_start: bool) -> None:
         """A store-only run drops the status fields, so its attempt start is a plain write: it still must not leave the old revision's count."""
-        processor = _processor()
+        processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
         begin_run(ParseNowRun(store_only=True))
         try:
             await processor.update_record_fields({"_key": "r1"}, {"indexingStatus": IP, "contentRev": "rev-b"}, attempt_start=attempt_start)
@@ -396,12 +396,23 @@ class TestPageCountWrites:
 
         assert processor.graph_provider.update_node.await_args.args[2]["pageCount"] is None
 
-    async def test_a_new_revision_drops_the_count_in_one_plain_write(self) -> None:
-        processor = _processor()
+    async def test_the_decision_is_the_stores_not_the_snapshots(self) -> None:
+        """The snapshot holds revision A, a concurrent writer set B and its count, and this write is of B: the store matches B and keeps the
+        count. The other way round (the snapshot says B, the store holds A) matches nothing and drops it."""
+        kept = _processor()
+        await kept.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-b"})
+        assert kept.graph_provider.update_node_fields_if_match.await_args.args[3] == {"contentRev": "rev-b"}
+        kept.graph_provider.update_node.assert_not_awaited()
+
+        dropped = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
+        await dropped.update_record_fields({"_key": "r1", "contentRev": "rev-b"}, {"contentRev": "rev-b"})
+        assert dropped.graph_provider.update_node.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
+
+    async def test_a_new_revision_drops_the_count_after_the_store_found_a_different_one(self) -> None:
+        processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
 
         await processor.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-b"})
 
-        processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
         assert processor.graph_provider.update_node.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
 
     async def test_a_write_that_does_not_set_the_revision_leaves_the_count_alone(self) -> None:
@@ -498,34 +509,92 @@ def test_reference_reads_a_fixed_number_of_fields_whatever_the_record_holds() ->
 
 
 class TestTheCountRuleOfEveryRevisionWriter:
-    @pytest.mark.parametrize(("held", "dropped"), [("a", False), ("b", True), (None, True), ("", True), (5, True)])
-    def test_a_count_is_dropped_unless_the_record_already_holds_the_revision(self, held: object, dropped: bool) -> None:
-        from app.modules.indexing.record_diagnostics import drop_count_on_new_revision
+    async def test_the_shared_write_keeps_the_count_only_when_the_store_holds_the_revision(self) -> None:
+        from app.modules.indexing.record_diagnostics import write_with_revision_rule
 
-        written = drop_count_on_new_revision({"contentRev": "a", "reason": None}, held)
+        graph = MagicMock()
+        graph.update_node = AsyncMock(return_value=True)
+        graph.update_node_fields_if_match = AsyncMock(return_value=True)
+        assert await write_with_revision_rule(graph, "r1", "records", {"contentRev": "a", "reason": None})
+        graph.update_node.assert_not_awaited()
+        assert graph.update_node_fields_if_match.await_args.args[3] == {"contentRev": "a"}
 
-        assert ("pageCount" in written and written["pageCount"] is None) is dropped
+        graph.update_node_fields_if_match = AsyncMock(return_value=False)
+        assert await write_with_revision_rule(graph, "r1", "records", {"contentRev": "a"})
+        assert graph.update_node.await_args.args[2] == {"contentRev": "a", "pageCount": None}
 
-    def test_fields_without_a_revision_are_left_alone(self) -> None:
-        from app.modules.indexing.record_diagnostics import drop_count_on_new_revision
+    async def test_fields_without_a_revision_are_one_plain_write(self) -> None:
+        from app.modules.indexing.record_diagnostics import write_with_revision_rule
 
-        assert drop_count_on_new_revision({"reason": "x"}, "a") == {"reason": "x"}
+        graph = MagicMock()
+        graph.update_node = AsyncMock(return_value=True)
+        graph.update_node_fields_if_match = AsyncMock()
+        assert await write_with_revision_rule(graph, "r1", "records", {"reason": "x"})
+        graph.update_node_fields_if_match.assert_not_awaited()
+        assert graph.update_node.await_args.args[2] == {"reason": "x"}
 
-    def test_every_graph_write_of_the_revision_outside_the_attempt_start_goes_through_the_rule(self) -> None:
-        """A writer of ``contentRev`` (an update call whose arguments name it) must use ``drop_count_on_new_revision``, so none can skip it."""
+    def test_every_place_in_app_that_names_the_revision_is_classified_and_the_writers_use_the_rule(self) -> None:
+        """Structural: an AST walk finds every function (or module) in ``app`` that uses the key ``contentRev`` as a dict key, an item
+        assignment, a keyword, a constant or a match condition, whether the fields reach a write directly or through a variable. Each is either a
+        known writer, which must call ``write_with_revision_rule``, or classified as not writing the record's revision. A new one fails here."""
         import ast
         from pathlib import Path
 
         app = Path(__file__).resolve().parents[4] / "app"
-        updates_at = {"update_node": 2, "update_node_if_unchanged": 2, "update_node_fields_if_match": 2, "update_record_fields": 1, "batch_update_nodes": 0}
-        unruled = []
-        for path in app.rglob("*.py"):
+        writers = {
+            ("events/events.py", "EventProcessor.update_record_fields"),
+            ("modules/pipeline/ingress.py", "StageIngress.on_indexed"),
+        }
+        not_writers = {
+            ("connectors/sources/localKB/push/service.py", "PushResult.to_json"): "the push response",
+            ("connectors/sources/localKB/push/service.py", "KbPushService._store"): "storage tags",
+            ("events/events.py", "EventProcessor._write_page_count"): "a match condition",
+            ("events/events.py", "EventProcessor._persist_parsing_completed"): "a match condition",
+            ("events/events.py", "EventProcessor.mark_record_status"): "builds fields that update_record_fields writes",
+            ("events/events.py", "EventProcessor._dispatch_event"): "the attempt start fields (write_attempt_start decides the count)",
+            ("events/events.py", "EventProcessor._attach_to_finished_twin"): "a match condition",
+            ("models/record_metadata.py", "<module>"): "a field list",
+            ("modules/artifacts/retention.py", "_held_revs"): "a read",
+            ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile"): "a match condition",
+            ("modules/indexing/embed_resume.py", "<module>"): "a point field name",
+            ("modules/indexing/parse_now_marker.py", "shape_status_write"): "derives the marker from the fields",
+            ("modules/indexing/record_diagnostics.py", "<module>"): "a field list",
+            ("modules/indexing/record_diagnostics.py", "write_with_revision_rule"): "the rule itself",
+            ("modules/pipeline/parse_now.py", "parse_now_event"): "an event payload",
+            ("modules/record_metadata/projection.py", "project_properties"): "a read",
+            ("schema/arango/documents.py", "<module>"): "the schema",
+        }
+        found: set[tuple[str, str]] = set()
+        uses_rule: set[tuple[str, str]] = set()
+        for path in sorted(app.rglob("*.py")):
             text = path.read_text(encoding="utf-8-sig")
-            if "contentRev" not in text or "drop_count_on_new_revision" in text:
+            if "contentRev" not in text:
                 continue
-            for node in ast.walk(ast.parse(text)):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in updates_at:
-                    index = updates_at[node.func.attr]
-                    if len(node.args) > index and "contentRev" in ast.unparse(node.args[index]):  # the fields written, not a match condition
-                        unruled.append(path.relative_to(app).as_posix())
-        assert sorted(set(unruled)) == [], f"these files write contentRev without the page count rule: {sorted(set(unruled))}"
+            tree = ast.parse(text)
+            parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+            def owner(node: ast.AST, parents: dict = parents) -> str:
+                names = []
+                while node in parents:
+                    node = parents[node]
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        names.append(node.name)
+                return ".".join(reversed(names)) or "<module>"
+
+            relative = path.relative_to(app).as_posix()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and node.value == "contentRev":
+                    parent = parents.get(node)
+                    if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Attribute) and parent.func.attr == "get":
+                        continue  # a read
+                    found.add((relative, owner(node)))
+                if isinstance(node, ast.Name) and node.id == "write_with_revision_rule" or (
+                    isinstance(node, ast.Attribute) and node.attr == "write_with_revision_rule"
+                ):
+                    uses_rule.add((relative, owner(node)))
+        assert writers <= found, f"a known writer no longer names contentRev: {writers - found}"
+        unclassified = sorted(found - writers - set(not_writers))
+        assert unclassified == [], f"these name contentRev and are neither a writer using the rule nor classified as non-writers: {unclassified}"
+        assert writers <= uses_rule, f"these write contentRev without write_with_revision_rule: {sorted(writers - uses_rule)}"
+        gone = sorted(set(not_writers) - found)
+        assert gone == [], f"classified non-writers that no longer name contentRev: {gone}"
