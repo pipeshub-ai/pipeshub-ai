@@ -22,6 +22,7 @@ mkdir -p "$d"; echo 18 > "$d/PG_VERSION"; : > "$d/postgresql.conf"; [ -f "${b}/s
   sh(join(b, "pg/bin/pg_ctl"), `while [ $# -gt 0 ]; do case "$1" in -D) d=$2;; start|stop) a=$1;; esac; shift; done
 if [ "$a" = start ]; then grep -q "^listen_addresses = '127.0.0.1'" "$d/launcher.conf" || exit 9; grep -q "include 'launcher.conf'" "$d/postgresql.conf" || exit 8
   sleep 600 >/dev/null 2>&1 & echo $! > "$d/postmaster.pid"; else
+  [ -f "${b}/slow-pgstop" ] && sleep 40
   [ -f "$d/postmaster.pid" ] && kill $(head -1 "$d/postmaster.pid") 2>/dev/null; rm -f "$d/postmaster.pid"; fi`);
   // Each step and service records its arguments and environment, so the test can check who got which credential.
   sh(join(b, "py/bin/python3"), `case "$*" in *fcntl*) exec python3 "$@";; esac
@@ -421,5 +422,18 @@ describe("launcher", () => {
       assert.ok(pgPid(d) && alive(pgPid(d)!), "the new start's server was stopped");
     }
     await cli(b, d, "stop"); await w.exited;
+  });
+
+  test("stop during a start's long cleanup of a crashed launcher's leftovers stops that start", async () => {
+    const b = fakeBundle(), d = join(root, "data longreap");
+    const a = launch(b, d, "start"); await a.until("ready");
+    a.p.kill("SIGKILL"); await a.exited;          // its PostgreSQL stays up
+    writeFileSync(join(b, "slow-pgstop"), "");     // stopping it now takes 40 s, longer than stop's 30 s wait for a start
+    const w = launch(b, d, "start");
+    await sleep(1500);
+    const r = await cli(b, d, "stop");
+    assert.equal(r.code, 0, JSON.stringify(r.out));
+    assert.equal(await w.exited, 0);
+    assert.ok(!w.events.some((e) => e.event === "ready"), "the start went on to ready after stop");
   });
 });
