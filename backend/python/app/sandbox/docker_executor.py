@@ -604,7 +604,9 @@ def _capped_logs(container: object, *, stdout: bool) -> str:
     and last bytes; the rest is read past and dropped."""
     try:
         try:
-            stream = container.logs(stdout=stdout, stderr=not stdout, stream=True)
+            # `follow` defaults to `stream`: a container still running (a kill
+            # that failed) would keep this read open.
+            stream = container.logs(stdout=stdout, stderr=not stdout, stream=True, follow=False)
         except TypeError:
             # A client without streaming logs.
             stream = container.logs(stdout=stdout, stderr=not stdout)
