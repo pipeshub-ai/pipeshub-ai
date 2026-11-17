@@ -118,6 +118,9 @@ class SandboxAlertRunner:
         self._clear_since: float | None = None
         # The clear episode has been checked for an alert to resolve.
         self._resolve_checked = False
+        # The back-to-normal notice of this clear episode went out; only
+        # marking the claims resolved is left.
+        self._resolve_notified = False
 
     @property
     def is_leader(self) -> bool:
@@ -135,6 +138,7 @@ class SandboxAlertRunner:
         if decision.any:
             self._clear_since = None
             self._resolve_checked = False
+            self._resolve_notified = False
         elif self._clear_since is None:
             self._clear_since = now
         if decision.level is not None:
@@ -248,25 +252,40 @@ class SandboxAlertRunner:
         self._resolve_checked = True
         if not claimed:
             return
-        level = "critical" if "critical" in claimed else "warning"
-        fired = claimed[level]
-        claimed_at = fired.get("claimedAt")
-        fired_at = claimed_at / 1000 if isinstance(claimed_at, (int, float)) else now
-        alert_id = str(uuid.uuid4())
-        event = build_resolved_event(
-            level=level, resolved_alert_id=str(fired.get("alertId", "")),
-            alert_fired_at=fired_at, clear_since=self._clear_since or now,
-            settings=self._settings, alert_id=alert_id, host=self._host, fired_at=now,
-        )
-        if not await self._publish(event, alert_id):
-            self._resolve_checked = False
-            return
+        if not self._resolve_notified:
+            level = "critical" if "critical" in claimed else "warning"
+            fired = claimed[level]
+            claimed_at = fired.get("claimedAt")
+            fired_at = claimed_at / 1000 if isinstance(claimed_at, (int, float)) else now
+            alert_id = str(uuid.uuid4())
+            event = build_resolved_event(
+                level=level, resolved_alert_id=str(fired.get("alertId", "")),
+                alert_fired_at=fired_at, clear_since=self._clear_since or now,
+                settings=self._settings, alert_id=alert_id, host=self._host, fired_at=now,
+            )
+            if not await self._publish(event, alert_id):
+                self._resolve_checked = False
+                return
+            self._resolve_notified = True
+            self._logger.info(
+                "sandbox load alert resolved level=%s alert_id=%s host=%s", level, fired.get("alertId"), self._host,
+            )
+        # A claim left "claimed" would hold back the next alert until it
+        # expires, so a failed mark is tried again next interval (without a
+        # second notice).
+        marked = True
         for claimed_level, value in claimed.items():
             try:
-                await self._cooldown.mark_resolved(claimed_level, value)
+                ok = await self._cooldown.mark_resolved(claimed_level, value)
             except Exception:
-                self._logger.warning("sandbox load alert %s: could not mark resolved", claimed_level, exc_info=True)
-        self._logger.info("sandbox load alert resolved level=%s alert_id=%s host=%s", level, fired.get("alertId"), self._host)
+                self._logger.debug("sandbox load alert %s: mark resolved failed", claimed_level, exc_info=True)
+                ok = False
+            marked = marked and ok
+        if marked:
+            self._recovered("resolve")
+        else:
+            self._resolve_checked = False
+            self._warn_once("resolve", "sandbox load alert: could not mark resolved; retrying next interval")
 
     async def _publish(self, event: dict[str, Any], alert_id: str) -> bool:
         try:
