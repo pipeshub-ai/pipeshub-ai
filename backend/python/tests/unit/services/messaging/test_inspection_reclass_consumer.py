@@ -240,7 +240,7 @@ async def test_the_kafka_consumer_moves_the_download_place_when_inspection_makes
     consumer.governor._registry.set(Pool.HEAVY_PARSE, 1)
     release = asyncio.Event()
 
-    async def handler(message):  # noqa: ANN001
+    async def handler(message) -> AsyncGenerator[PipelineEvent, None]:
         rid = message.payload["recordId"]
         yield PipelineEvent(event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id=rid))
         yield PipelineEvent(event=IndexingEvent.START_INSPECT, data=PipelineEventData(record_id=rid, size_bytes=80 * MIB))
