@@ -27,6 +27,7 @@ from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
     PasswordProtectedError,
     ProcessingError,
+    ProviderRateLimitedTooLongError,
     RecordStatusUpdateError,
     VectorStoreError,
 )
@@ -746,6 +747,8 @@ def _reason(exc: BaseException | None) -> str:
             user_reason = (getattr(e, "details", None) or {}).get("user_reason")
             if isinstance(user_reason, str) and user_reason:
                 return user_reason
+        if isinstance(e, ProviderRateLimitedTooLongError):
+            return str(e)
         if _llm_not_configured(e):
             return str(e)
         if e.args and isinstance(e.args[0], str) and e.args[0] in _STORED_AS_WRITTEN:

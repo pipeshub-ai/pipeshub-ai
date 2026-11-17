@@ -526,8 +526,11 @@ jobs:
           SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
           # A test that needs the real Redis fails here, never skips, if the variable goes missing.
           SPEND_IT_REQUIRE_REDIS: "1"
+        # Four workers, as spend-nightly.yml runs the same suites: the full-size outage simulations are minutes of
+        # CPU, and one process ran them end to end (14-25 min against the 25 min cap). Each test has its own key
+        # namespace on the shared Redis.
         run: |
-          pytest tests/integration/spend \
+          pytest -n 4 tests/integration/spend \
             tests/unit/services/llm_gateway/test_fleet_breaker.py \
             tests/unit/modules/pipeline/test_hold_ledger.py \
             tests/unit/modules/pipeline/test_pause_budget_simulation.py \

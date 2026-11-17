@@ -4,6 +4,7 @@ gate-waiter tokens, and ceiling helpers."""
 from __future__ import annotations
 
 import asyncio
+import itertools
 import threading
 import time
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.messaging import consumer_concurrency as concurrency_module
 from app.services.messaging.consumer_concurrency import (
     Admission,
     GateWaiters,
@@ -42,9 +44,10 @@ from app.services.messaging.consumer_concurrency import (
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.lease import LeaseRenewer
 from app.services.resource_governor.models import ParseTier, Pool
+from tests.support.loop_clock import virtual_loop_time
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from app.services.messaging.config import StreamMessage
 
@@ -289,6 +292,13 @@ def _lease_env(*, budget: int = 5, max_backoff: float = 0.04) -> Iterator[MagicM
         yield env
 
 
+def _ticking(loop: asyncio.AbstractEventLoop) -> Callable[[], float]:
+    """The loop clock the test controls, moving a microsecond at every read. On the loop clock alone a sleep shorter
+    than the clock can resolve never moves it, and a deadline check left a sliver short would spin for ever."""
+    reads = itertools.count()
+    return lambda: loop.time() + next(reads) * 1e-6
+
+
 class TestAcquireDistributedSlot:
     @pytest.mark.asyncio
     async def test_no_manager_returns_true(self) -> None:
@@ -330,7 +340,7 @@ class TestAcquireDistributedSlot:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_backoff_never_outlives_the_callers_deadline(self) -> None:
+    async def test_backoff_never_outlives_the_callers_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The record lease waits 10s while the backoff grows to 5s, so an
         unclamped sleep would hold the outer index permit up to half again as
         long as the caller asked for — the convoy the deadline exists to
@@ -344,15 +354,20 @@ class TestAcquireDistributedSlot:
         deadline = 0.08
         # A backoff cap far larger than the deadline: unclamped, the first
         # sleep alone overruns it many times over.
+        # On a loop clock the test controls (the slot code's clock pointed at it), so the deadline is measured
+        # exactly: "< 4 x deadline" on the wall clock also measured the runner.
+        virtual_loop_time(monkeypatch)
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(concurrency_module, "time", SimpleNamespace(**{**vars(time), "monotonic": _ticking(loop)}))
         with _lease_env(max_backoff=2.0):
-            start = time.monotonic()
+            start = loop.time()
             result = await acquire_distributed_slot(
                 host, "record:r1", "owner", 1, deadline_seconds=deadline
             )
-            elapsed = time.monotonic() - start
+            elapsed = loop.time() - start
 
         assert result is False
-        assert elapsed < deadline * 4, (
+        assert elapsed == pytest.approx(deadline, abs=1e-3), (
             f"gave the permit back after {elapsed:.3f}s for a {deadline}s deadline"
         )
 
@@ -382,7 +397,7 @@ class TestAcquireDistributedSlot:
         # The old flat 0.01s poll would make ~50 attempts in this window.
         assert manager.try_acquire.await_count <= 12
 
-    async def test_deadline_is_honoured_while_redis_is_failing(self) -> None:
+    async def test_deadline_is_honoured_while_redis_is_failing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The error path must respect the caller's deadline too. It used to
         loop straight back to the top, so a record holding the outer index
         permit kept waiting on its 10s per-record lease for as long as the
@@ -394,16 +409,21 @@ class TestAcquireDistributedSlot:
             concurrency_manager=manager,
             main_loop=asyncio.get_running_loop(),
         )
-        started = time.monotonic()
+        # The slot code's clock and its back-off sleeps on one loop clock the test controls, so the deadline is
+        # measured exactly: on the wall clock a busy runner's stall in this 0.05 s window could cross a 1 s bound.
+        virtual_loop_time(monkeypatch)
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(concurrency_module, "time", SimpleNamespace(**{**vars(time), "monotonic": _ticking(loop)}))
+        started = loop.time()
         with _lease_env(budget=1000, max_backoff=0.02):
             result = await acquire_distributed_slot(
                 host, "record:abc", "owner", 1, deadline_seconds=0.05
             )
-        elapsed = time.monotonic() - started
+        elapsed = loop.time() - started
 
         assert result is False
-        # Bounded by the deadline, not by the (deliberately huge) budget.
-        assert elapsed < 1.0
+        # Bounded by the deadline, not by the (deliberately huge) budget: the last sleep is clamped to what is left.
+        assert elapsed == pytest.approx(0.05, abs=1e-3)
         assert manager.try_acquire.await_count < 1000
 
     async def test_capacity_lease_fails_open_once_the_budget_is_spent(self) -> None:

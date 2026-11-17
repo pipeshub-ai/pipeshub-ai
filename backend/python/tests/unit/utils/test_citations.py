@@ -2719,17 +2719,23 @@ class TestCitationScansAreBounded:
         pytest.param(lambda n: "[a](https://b" * (n // 13), id="unclosed-url-list-targets"),
     ])
     def test_normalizing_time_grows_linearly(self, make) -> None:
-        """Four times the text takes about 4x as long if linear and 16x if quadratic. A ratio, not
-        a time limit, so a slow or busy machine cannot fail it."""
-        def best_of_three(text: str) -> float:
+        """Sixteen times the text takes about 16x the CPU if linear and 256x if quadratic.
+
+        The work is in the regex engine, which reports no counts (the Python bytecode a call runs is
+        the same at both sizes), so this stays a ratio of times. It is CPU time of this thread, the
+        best of five, with the bound at 64x: four times above linear and four below quadratic. Four
+        times the text against an 8x bound left only twice the linear ratio, which a loaded runner can
+        cross.
+        """
+        def best_cpu(text: str) -> float:
             times = []
-            for _ in range(3):
-                started = time.perf_counter()
+            for _ in range(5):
+                started = time.thread_time()
                 citations_mod.normalize_citations_and_chunks(text, [])
-                times.append(time.perf_counter() - started)
+                times.append(time.thread_time() - started)
             return min(times)
 
-        assert best_of_three(make(_SCAN_LIMIT)) < 8 * best_of_three(make(_SCAN_LIMIT // 4)) + 0.05
+        assert best_cpu(make(_SCAN_LIMIT)) < 64 * max(best_cpu(make(_SCAN_LIMIT // 16)), 0.001)
 
     @pytest.mark.parametrize("seed", range(4))
     def test_label_check_accepts_what_it_always_did(self, seed: int) -> None:
