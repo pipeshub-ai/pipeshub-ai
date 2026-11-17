@@ -17,21 +17,21 @@ from tests.permissions.scenario import World, world_from_data
 WANTED = {"pr": True, "pa": False, "sa": True}  # project reader, parent's own assignee, sub-task's own assignee
 
 
-def _world(rule: str, granted: bool) -> World:
+def _world(rule: str, granted: bool, parents: str = "[P]", inherits: str = "[P]") -> World:
     return world_from_data(yaml.safe_load(f"""
 principals: [{{id: pr}}, {{id: pa}}, {{id: sa}}]
 nodes:
   - {{id: A, kind: app, app_type: JIRA}}
   - {{id: pg, kind: group, connector: A, rule: STRICT, parents: [A], belongs: [A]}}
   - {{id: P, kind: record, connector: A, rule: OPEN, parents: [pg], inherits: [pg], belongs: [pg]}}
-  - {{id: S, kind: record, connector: A, rule: {rule}, parents: [P], inherits: [P], belongs: [pg]}}
+  - {{id: S, kind: record, connector: A, rule: {rule}, parents: {parents}, inherits: {inherits}, belongs: [pg]}}
 grants: [[pr, pg], [pa, P]{", [sa, S]" if granted else ""}]
 gates: [[pr, A], [pa, A], [sa, A]]
 """))
 
 
-async def _reads(rule: str, granted: bool) -> dict[str, bool]:
-    oracle, world = OracleLayer(), _world(rule, granted)
+async def _reads(rule: str, granted: bool, parents: str = "[P]", inherits: str = "[P]") -> dict[str, bool]:
+    oracle, world = OracleLayer(), _world(rule, granted, parents, inherits)
     return {who: "S" in await oracle.admitted(world, who, ["S"]) for who in WANTED}
 
 
@@ -51,3 +51,16 @@ async def test_the_strict_sub_task_is_read_by_the_project_alone() -> None:
 @pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT"])
 async def test_no_rule_of_the_sub_task_gives_the_project_and_its_own_holders_alone(rule: str) -> None:
     assert await _reads(rule, granted=True) != WANTED
+
+
+async def test_a_sub_task_under_its_parent_that_inherits_the_project_is_not_read_by_the_project() -> None:
+    """Hierarchy parent the issue, inheritance the project (what the processor writes for a record that takes its
+    permissions from its group while it is listed under its parent): inheritance passes only along a hierarchy edge
+    (R6), so the project's readers lose the sub-task."""
+    assert await _reads("OPEN", granted=True, parents="[P]", inherits="[pg]") == {"pr": False, "pa": False, "sa": True}
+
+
+async def test_the_set_needs_the_project_as_a_hierarchy_parent_too() -> None:
+    """With the project also a hierarchy parent of the sub-task, inheriting the project alone, OPEN gives the wanted set:
+    the processor removes that second hierarchy edge (a group edge would list the record twice)."""
+    assert await _reads("OPEN", granted=True, parents="[P, pg]", inherits="[pg]") == WANTED
