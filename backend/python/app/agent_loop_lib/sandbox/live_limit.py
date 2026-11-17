@@ -272,7 +272,9 @@ def initial_record(
         ceiling=ceiling, min=floor, stamp=now, owner_pid=pid, last_step_at=now,
         # Without a reading, how long it has been missing carries over.
         last_valid_at=previous.last_valid_at if kept and not _usable(sample) else now,
-        slow_start_step=1,
+        # Growth from a fresh start doubles too, as after a shrink: at +1 a
+        # large host would take many minutes to reach a freed target.
+        in_slow_start=True, slow_start_step=1,
         charges=previous.charges if previous else (),
     )
     if not _usable(sample):
