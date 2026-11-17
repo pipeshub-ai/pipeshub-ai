@@ -151,3 +151,29 @@ def test_the_remote_place_is_the_parse_steps_only_place(remote: None) -> None:
 
     remote_running, elsewhere = asyncio.run(run())
     assert remote_running == 1 and elsewhere == 0  # one place in the remote gate, none in the FIFO pool or the local gate
+
+
+def test_a_big_remote_parse_behind_a_full_gate_is_handed_back_after_the_big_wait_bound(
+    remote: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller's own bound is far longer; PARSE_BIG_WAIT_SECONDS ends the wait, uncounted, with its first-wait time."""
+    monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "1")
+    monkeypatch.setenv("PARSE_BIG_WAIT_SECONDS", "0.3")
+
+    async def run() -> tuple[float, cc.ParseAdmissionTimeout]:
+        host = _host()
+        ctx = cc.class_context(host, _large(1))
+        held = await cc.acquire_parsing_slot(host, ParseTier.HEAVY, 150 * MIB, timeout=5, ctx=ctx)
+        started = time.monotonic()
+        try:
+            await cc.acquire_parsing_slot(host, ParseTier.HEAVY, 150 * MIB, timeout=60, ctx=ctx)
+        except cc.ParseAdmissionTimeout as err:
+            took = time.monotonic() - started
+            cc.release_admission(held)
+            return took, err
+        raise AssertionError("the second large parse was admitted")
+
+    took, err = asyncio.run(run())
+    assert isinstance(err, cc.BigAdmissionTimeout)
+    assert err.counts_toward_backstop is False and err.parse_enqueued_at_ms is not None
+    assert took < 5.0  # 0.3 s plus a poll, not the caller's 60 s

@@ -1465,6 +1465,7 @@ function ChatContent() {
     highlightBox: previewFile.highlightBox,
     citations: previewFile.citations,
     initialCitationId: previewFile.initialCitationId,
+    jumpSeq: previewFile.jumpSeq,
     hideFileDetails: previewFile.hideFileDetails,
     showDownload: previewFile.showDownload,
     latestVersion: previewFile.latestVersion,
@@ -1571,6 +1572,7 @@ function ChatContent() {
                   highlightBox={previewFile.highlightBox}
                   citations={previewFile.citations}
                   initialCitationId={previewFile.initialCitationId}
+                  jumpSeq={previewFile.jumpSeq}
                   hideFileDetails={previewFile.hideFileDetails}
                   showDownload={previewFile.showDownload}
                   latestVersion={previewFile.latestVersion}
