@@ -180,11 +180,25 @@ class TestQuietPoint:
         async def factory() -> Counting:
             return Counting()
 
-        assert await _guard(server, lock_factory=factory).ensure_wide("test") is False
+        guard = _guard(server, lock_factory=factory)
+        for _ in range(guard_module.FORCE_AFTER_SKIPS - 1):
+            assert await guard.ensure_wide("test") is False
 
         assert server.puts == [], "nothing was sent"
-        assert _counter(guard_module.REWIDEN_CONTENDED_TOTAL) == before + 1
-        assert released["n"] == 1, "nothing is in flight, so the lock is free again"
+        assert _counter(guard_module.REWIDEN_CONTENDED_TOTAL) == before + guard_module.FORCE_AFTER_SKIPS - 1
+        assert released["n"] == guard_module.FORCE_AFTER_SKIPS - 1, "nothing is in flight, so the lock is free again"
+
+    async def test_after_a_few_skips_it_is_sent_anyway_so_an_always_open_transaction_cannot_starve_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = FakeServer(live=0)
+        server.running = [{"id": "1", "state": "running"}]
+        monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.1)
+        monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.02)
+        guard = _guard(server)
+
+        results = [await guard.ensure_wide("test") for _ in range(guard_module.FORCE_AFTER_SKIPS)]
+
+        assert results == [False] * (guard_module.FORCE_AFTER_SKIPS - 1) + [True]
+        assert len(server.puts) == 1
 
     async def test_with_no_open_transaction_it_is_issued_at_once_and_not_contended(self) -> None:
         server = FakeServer(live=0)

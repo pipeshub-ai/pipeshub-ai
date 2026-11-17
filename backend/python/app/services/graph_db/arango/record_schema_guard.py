@@ -39,6 +39,9 @@ POLL_INTERVAL_S = 10.0
 SCHEMA_LOCK_COLLECTION = "schemaLocks"
 SCHEMA_LOCK_KEY = "records-schema"
 LOCK_TTL_MS = 15_000
+# After this many widenings in a row that found no quiet point (each skipped, to be tried again by the poll or by the write's owner), the
+# next one is sent anyway: with a stream transaction always open the quiet point never comes, and the schema would stay narrow for good.
+FORCE_AFTER_SKIPS = 3
 
 REWIDEN_TOTAL = METRICS_BACKEND.counter(
     "pipeshub_record_schema_rewiden_total",
@@ -159,6 +162,7 @@ class RecordSchemaGuard:
         self._collection = collection
         self._lock_factory = lock_factory or self._arango_lock
         self._narrowed = False
+        self._skips = 0
         self._aborted: OrderedDict[str, float] = OrderedDict()
         self._abort_confirmed: OrderedDict[str, float] = OrderedDict()
         self._loop_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -264,11 +268,18 @@ class RecordSchemaGuard:
                     self._narrowed = False
                     return False
                 if contended:
-                    # A schema change waits for every open stream transaction, so one sent now could outlast its 5 s timeout and the lease.
-                    # Not sent: the refused write stays refused (transient) and the poll tries again at the next quiet point.
                     REWIDEN_CONTENDED_TOTAL.inc(trigger)
-                    self._logger.warning("record schema widening skipped: a stream transaction is still open (trigger=%s)", trigger)
-                    return False
+                    self._skips += 1
+                    if self._skips < FORCE_AFTER_SKIPS:
+                        # A schema change waits for every open stream transaction, so one sent now could outlast its 5 s timeout and the
+                        # lease. Not sent: the refused write stays refused (transient) and the next try looks for a quiet point again.
+                        self._logger.warning(
+                            "record schema widening skipped: a stream transaction is still open (trigger=%s, %d of %d)",
+                            trigger, self._skips, FORCE_AFTER_SKIPS,
+                        )
+                        return False
+                    self._logger.warning("record schema widening is sent without a quiet point after %d skips (trigger=%s)", self._skips, trigger)
+                self._skips = 0
                 # Fencing: the lease is renewed (to a full term, longer than the 5 s write) only while it is still ours and unexpired.
                 try:
                     holding = await lock.renew(LOCK_TTL_MS)

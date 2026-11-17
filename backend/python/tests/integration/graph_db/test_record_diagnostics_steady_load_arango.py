@@ -17,7 +17,9 @@ import uuid
 
 import pytest
 
+from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.schema.arango.documents import record_schema
+from app.services.graph_db.arango.record_schema_guard import FORCE_AFTER_SKIPS
 from app.telemetry.backend import METRICS_BACKEND
 from tests.integration.graph_db.record_diagnostics_stall_bound import STALL_BOUND_S
 from tests.integration.graph_db.record_diagnostics_support import (
@@ -101,7 +103,14 @@ async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> N
     narrowed_at = time.monotonic()
     assert await p.http_client.update_collection_schema(RECORDS, narrow_schema(), timeout=30)  # the older image starts
     trigger_started = time.monotonic()
-    await p.update_node(tainted, RECORDS, {"indexingStatus": "QUEUED"})
+    attempts = 0
+    while True:  # the write's owner runs it again when it is refused transiently (no quiet point yet)
+        attempts += 1
+        try:
+            await p.update_node(tainted, RECORDS, {"indexingStatus": "QUEUED"})
+            break
+        except RecordSchemaNarrowError:
+            assert attempts <= FORCE_AFTER_SKIPS, "the widening was skipped more often than the escalation allows"
     widened_after = time.monotonic() - trigger_started
     await asyncio.sleep(10)
     stop.set()
@@ -120,7 +129,8 @@ async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> N
     if hold_max < 5:
         assert window[-1] <= STALL_BOUND_S, f"a records write waited {window[-1]:.2f}s"
     else:
-        # a transaction is always open, so the quiet-point wait cannot find a moment: the change is issued anyway and a write
-        # waits for the longest open transaction, no longer
-        assert contended >= 1
+        # a transaction is nearly always open, so the first quiet-point wait finds no moment: that widening is skipped (the write is refused
+        # transiently) and the next try either finds a gap or, after FORCE_AFTER_SKIPS skips in a row, is sent anyway; a write waits for the
+        # longest open transaction, no longer
+        assert contended >= 1 and attempts <= FORCE_AFTER_SKIPS and total >= 1
         assert window[-1] <= hold_max + 0.5, f"a records write waited {window[-1]:.2f}s"
