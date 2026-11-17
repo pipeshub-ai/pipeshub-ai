@@ -163,7 +163,8 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
-from app.core.org_context import current_org_id
+from app.core.org_context import current_org_id, system
+from app.core.org_jobs import for_each_org, of_org
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
@@ -3537,11 +3538,16 @@ async def _fetch_connector_sync_block(
 _MAX_LISTED_CONNECTOR_IDS = 200
 
 
+def _app_org(doc: dict[str, Any] | None, fallback_org_id: str | None) -> str | None:
+    """A connector's org: the one its store records (PostgreSQL also gives a legacy app's partition), else the first org."""
+    return (doc or {}).get("orgId") or fallback_org_id
+
+
 async def _connector_schedule_state(
     connector_id: str,
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
-    fallback_org_id: str,
+    fallback_org_id: str | None,
     logger: logging.Logger,
 ) -> dict[str, Any]:
     """What decides one connector's schedule, for a caller that must not read a gap as "sync is off".
@@ -3560,7 +3566,7 @@ async def _connector_schedule_state(
     item: dict[str, Any] = {
         "connectorId": connector_id,
         "type": doc.get("type"),
-        "orgId": doc.get("orgId") or fallback_org_id,
+        "orgId": _app_org(doc, fallback_org_id),
         "ownerUserId": doc.get("createdBy"),
         "isActive": bool(doc.get("isActive")),
     }
@@ -3574,6 +3580,65 @@ async def _connector_schedule_state(
         return {**item, "sync": None, "unreadable": True}
     sync = (config or {}).get("sync") if isinstance(config, dict) else None
     return {**item, "sync": sync if isinstance(sync, dict) else {}}
+
+
+_SCHEDULE_SWEEP_JOB = "connector_schedule_listing"
+_APPS_READ_PAGE = 1000
+
+
+async def _active_connectors_of_every_org(
+    graph_provider: IGraphDBProvider, logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every org's active connectors, each org read under its own context, in a stable order; and the orgs whose read failed.
+
+    shortcut: every page call reads every org's connectors and slices; page by an (org, key) cursor if connector counts reach the thousands.
+    """
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    no_org: dict[str, tuple[dict[str, Any], str]] = {}      # apps with no orgId, by id: (the doc, the first org that read it)
+    visited: list[str] = []
+
+    def candidate(doc: dict[str, Any], connector_id: str, org_id: str) -> dict[str, Any]:
+        return {"connectorId": connector_id, "connectorType": doc["type"], "orgId": org_id, "createdBy": doc.get("createdBy")}
+
+    async def one_org(org_id: str) -> None:
+        visited.append(org_id)
+        apps: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            # Raising: Neo4j and ArangoDB answer a failed read with no rows, which would read as an org with no schedules.
+            batch = await graph_provider.get_documents_paginated(
+                CollectionNames.APPS.value, limit=_APPS_READ_PAGE, filters={"isActive": True},
+                sort_field="_key", after_key=after, raise_on_error=True,
+            )
+            apps.extend(batch)
+            after = (batch[-1].get("_key") or batch[-1].get("id")) if batch else None
+            if len(batch) < _APPS_READ_PAGE or after is None:
+                break
+        for doc in of_org(apps, org_id):
+            connector_id, doc_org = doc.get("_key") or doc.get("id"), doc.get("orgId")
+            if not connector_id or not doc.get("type"):
+                continue
+            if doc_org:
+                found.setdefault((connector_id, doc_org), candidate(doc, connector_id, doc_org))
+            else:
+                no_org.setdefault(connector_id, (doc, org_id))
+
+    # The caller's token names no org: it may widen into an explicit cross-org scope, inside which each org is bound in turn.
+    with system(_SCHEDULE_SWEEP_JOB):
+        failed = await for_each_org(graph_provider, _SCHEDULE_SWEEP_JOB, one_org, logger, raise_on_error=True)
+        # An app with no orgId gets the org a lookup by id gives it: the one the store records (PostgreSQL: the partition it is in),
+        # else the first org (Neo4j and ArangoDB answer it for every org). If that org was not read, it waits for the next listing.
+        for connector_id, (doc, read_by) in no_org.items():
+            try:
+                stored = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+            except Exception as exc:
+                logger.warning("connector schedule listing: lookup of %s failed error=%s", connector_id, type(exc).__name__)
+                failed += [read_by] if read_by not in failed else []
+                continue
+            org_id = _app_org(stored, visited[0] if visited and visited[0] not in failed else None)
+            if org_id:
+                found.setdefault((connector_id, org_id), candidate(doc, connector_id, org_id))
+    return [found[k] for k in sorted(found)], failed
 
 
 @router.get(
@@ -3599,8 +3664,9 @@ async def get_all_scheduled_connector_instances_internal(
     Pagination: the caller steps through pages starting at page=1. Each
     page returns up to `limit` active connector candidates filtered to
     those with `selectedStrategy = SCHEDULED`, plus a `hasMore` flag so
-    the caller knows when to stop. Database-level LIMIT/OFFSET is used so
-    memory stays proportional to `limit` regardless of total connector count.
+    the caller knows when to stop. Each org's connectors are read under that
+    org's own context; an org whose read fails is named in `failedOrgs` and
+    the page is `partial`, while the other orgs are still listed.
 
     Auth: relies on the global JWT middleware. Caller must mint a scoped
     service token (FETCH_CONFIG-equivalent) since this endpoint reads
@@ -3621,7 +3687,8 @@ async def get_all_scheduled_connector_instances_internal(
                 ...
             ],
             "hasMore": bool,
-            "partial": bool  # true when a config read failed and items is incomplete
+            "partial": bool,  # true when a config or org read failed and items is incomplete
+            "failedOrgs": [<org _key>, ...]  # the orgs whose connectors could not be read
         }
     """
     container = request.app.container
@@ -3630,66 +3697,30 @@ async def get_all_scheduled_connector_instances_internal(
     config_service = container.config_service()
 
     try:
-        organisation = await graph_provider.get_all_orgs()
-        if not organisation:
-            logger.error("No organisations found")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="No organisations found",
-            )
-        # Only for app docs written before orgId was stored on them.
-        fallback_org_id = organisation[0].get("_key") or organisation[0].get("id")
-
         if isinstance(connector_ids, str):
             ids = list(dict.fromkeys(i.strip() for i in connector_ids.split(",") if i.strip()))[:_MAX_LISTED_CONNECTOR_IDS]
-            return {
-                "success": True,
-                "items": [
+            # The caller's token names no org: a lookup by id is a cross-org read (PostgreSQL serves it through its vetted system path).
+            with system(_SCHEDULE_SWEEP_JOB):
+                # Every org, as the listing goes through them: an app with no orgId gets the same org in both.
+                organisation = await graph_provider.get_all_orgs(active=False, raise_on_error=True)
+                # Only for app docs written before orgId was stored on them.
+                fallback_org_id = (organisation[0].get("_key") or organisation[0].get("id")) if organisation else None
+                items = [
                     await _connector_schedule_state(cid, graph_provider, config_service, fallback_org_id, logger)
                     for cid in ids
-                ],
-                "hasMore": False,
-            }
+                ]
+            return {"success": True, "items": items, "hasMore": False}
 
-        # Convert 1-based page to 0-based DB offset.
+        all_candidates, failed_orgs = await _active_connectors_of_every_org(graph_provider, logger)
         skip = (page - 1) * limit
-
-        # Fetch exactly one page of active connectors from the database so that
-        # memory consumption stays proportional to `limit` regardless of how
-        # many connectors exist in total.  An extra document is requested to
-        # determine whether a subsequent page exists without a separate COUNT
-        # query.
-        probe_limit = limit + 1
-        # raise_on_error: an empty page would tell the schedule sweep that every
-        # schedule is an orphan. Stable sort keeps offset paging from skipping rows.
-        page_docs = await graph_provider.get_documents_paginated(
-            CollectionNames.APPS.value,
-            skip=skip,
-            limit=probe_limit,
-            filters={"isActive": True},
-            sort_field="_key",
-            raise_on_error=True,
-        )
-        has_more = len(page_docs) == probe_limit
-        page_docs = page_docs[:limit]
-
-        candidates: list[dict[str, Any]] = []
-        for doc in page_docs:
-            connector_id = doc.get("_key") or doc.get("id")
-            connector_type = doc.get("type")
-            if not connector_id or not connector_type:
-                continue
-            candidates.append({
-                "connectorId": connector_id,
-                "connectorType": connector_type,
-                "orgId": doc.get("orgId") or fallback_org_id,
-                "createdBy": doc.get("createdBy"),
-            })
+        candidates = all_candidates[skip:skip + limit]
+        has_more = len(all_candidates) > skip + limit
 
         # Fan out config_service calls for the current page only, in bounded
         # batches to avoid opening hundreds of simultaneous KV-store requests.
         items: list[dict[str, Any]] = []
-        partial = False
+        # A failed org's connectors are missing from the listing: the caller must not take their schedules for orphans.
+        partial = bool(failed_orgs)
         config_batch_size = _INTERNAL_ALL_SCHEDULED_BATCH_SIZE
         for batch_start in range(0, len(candidates), config_batch_size):
             batch = candidates[batch_start:batch_start + config_batch_size]
@@ -3730,13 +3761,14 @@ async def get_all_scheduled_connector_instances_internal(
 
         logger.info(
             "Internal all-scheduled page: page=%d limit=%d page_candidates=%d "
-            "scheduled_in_page=%d has_more=%s partial=%s",
+            "scheduled_in_page=%d has_more=%s partial=%s failed_orgs=%d",
             page,
             limit,
             len(candidates),
             len(items),
             has_more,
             partial,
+            len(failed_orgs),
         )
         logger.debug("Items: %s", items)
         return {
@@ -3744,6 +3776,7 @@ async def get_all_scheduled_connector_instances_internal(
             "items": items,
             "hasMore": has_more,
             "partial": partial,
+            "failedOrgs": failed_orgs,
         }
     except HTTPException:
         raise

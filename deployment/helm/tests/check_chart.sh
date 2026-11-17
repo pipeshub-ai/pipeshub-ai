@@ -60,6 +60,8 @@ VARIANTS=(
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
+  "local-metrics|${LOCAL[*]} --set metrics.podMonitor.enabled=true --set metrics.podMonitor.labels.release=prom"
+  "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
@@ -115,6 +117,18 @@ expect() { # variant, grep -F pattern, "present" | "absent" [, only in the docum
     echo "ok $1: '$2' $3${4:+ in $4}"
   fi
 }
+if [[ -f "$OUT/local-metrics.yaml" ]]; then
+  expect local-metrics 'kind: PodMonitor' present
+  expect local-metrics 'port: metrics' present 'kind: PodMonitor'
+  expect local-metrics 'release: prom' present 'kind: PodMonitor'
+  expect local-metrics 'name: PIPESHUB_METRICS_ENABLED' present
+  expect local-metrics 'name: PIPESHUB_METRICS_BIND' present
+  expect local-metrics 'fieldPath: status.podIP' present
+  expect local-metrics-bind 'name: PIPESHUB_METRICS_BIND' present
+  expect local-metrics-bind 'fieldPath: status.podIP' absent
+  expect local-neo4j-kafka 'kind: PodMonitor' absent
+  expect local-neo4j-kafka 'name: PIPESHUB_METRICS_PORT' present
+fi
 if [[ -f "$OUT/cloud.yaml" ]]; then
   # shellcheck disable=SC2016 # the literal template text, not an expansion
   expect cloud 'export ZOOKEEPER_SERVERS="$servers"' present

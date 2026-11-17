@@ -337,7 +337,7 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_found_and_soft_deleted(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-1"))
+        gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-1", user_id=None))
         gp.batch_upsert_nodes = AsyncMock()
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "alice@example.com"

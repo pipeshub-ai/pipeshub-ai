@@ -247,26 +247,45 @@ class ImageDescriber:
         return written
 
     async def _describe_one(self, uri: str, vlm: "BaseChatModel") -> str:
+        """The image's description: the record's stored one for these bytes, or one paid vision call.
+
+        An empty or truncated description is returned but never stored, so a bad answer is not reused.
+        """
         from langchain_core.messages import HumanMessage
 
         from app.modules.extraction.prompt_template import prompt_for_image_description
         from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+        from app.services.paid_cache import NotCached, cache_key, paid_cache_for
+        from app.services.paid_cache.keys import KIND_IMAGE_DESCRIPTION, sha256_hex
         from app.utils.aimodels import coerce_message_content_to_text
+        from app.utils.is_truncated import is_truncated
         from app.utils.opik import get_llm_invoke_config
 
-        response = await get_llm_gateway().invoke(
-            vlm,
-            [
-                HumanMessage(content=[
-                    {"type": "text", "text": prompt_for_image_description},
-                    {"type": "image_url", "image_url": {"url": uri}},
-                ]),
-            ],
-            provider=provider_key(vlm),
-            call_site="image_description",
-            config=get_llm_invoke_config(vlm),
+        async def describe() -> "str | NotCached[str]":
+            response = await get_llm_gateway().invoke(
+                vlm,
+                [
+                    HumanMessage(content=[
+                        {"type": "text", "text": prompt_for_image_description},
+                        {"type": "image_url", "image_url": {"url": uri}},
+                    ]),
+                ],
+                provider=provider_key(vlm),
+                call_site="image_description",
+                config=get_llm_invoke_config(vlm),
+            )
+            text = coerce_message_content_to_text(response.content).strip()[:_MAX_DESCRIPTION_CHARS]
+            return NotCached(text) if is_truncated(response) or not text else text
+
+        key = cache_key(
+            KIND_IMAGE_DESCRIPTION, llm=vlm, prompt=prompt_for_image_description, input_digest=sha256_hex(uri),
         )
-        return coerce_message_content_to_text(response.content).strip()[:_MAX_DESCRIPTION_CHARS]
+        if key is None or not uri.startswith("data:"):
+            # A remote image can change behind the same URL while the provider fetches the current bytes, so only
+            # an image whose bytes are in the key (a data URI) has its description reused.
+            result = await describe()
+            return result.value if isinstance(result, NotCached) else result
+        return await paid_cache_for(self.config_service, self.logger).get_or_compute(key, describe)
 
     @staticmethod
     def _write(block: "Block", description: str) -> None:
@@ -281,11 +300,12 @@ class ImageDescriber:
         (`document_extraction.py`, `vectorstore.py`), so a deployment
         configures one model for indexing and everything follows it.
         """
+        from app.utils.aimodels import INDEXING_SDK_RETRIES
         from app.utils.llm import get_llm_for_role
 
         try:
             llm, config = await get_llm_for_role(
-                self.config_service, "indexing", reasoning_effort="low",
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
             )
         except Exception:
             self.logger.warning("Could not resolve the indexing model", exc_info=True)

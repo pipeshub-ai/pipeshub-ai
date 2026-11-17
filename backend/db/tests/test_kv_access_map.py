@@ -45,7 +45,7 @@ NODE_ONLY = ("/services/smtp", "/services/slackBot", "/services/auth/", "/servic
 _META = "re:^/services/connectors/[^/]+/metadataSchemas/"
 READS = {
     "kv": {
-        "/services/aiModels": ("app/embedding_main.py:1181", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
+        "/services/aiModels": ("app/embedding_main.py:1268", "AI_MODELS"),         # also utils/llm.py:310 (docling, parsing), extraction/client.py:196
         "/services/secretKeys": ("app/api/middlewares/auth.py:206", "SECRET_KEYS"),  # parsing and extraction routes; policy_store.py:75 (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
@@ -71,17 +71,19 @@ READS = {
         "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:160", "PGVECTOR"),
         "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py:324", "OPENSEARCH"),
         "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:303", "REDIS_VECTOR"),
-        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:459", "AI_MODELS"),
+        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:462", "AI_MODELS"),
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),
         "/services/namedEntities": ("app/modules/named_entities/domain/config.py:70", "NAMED_ENTITIES"),
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py:21", "/services/platform/settings"),  # pipeline stages
-        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:260", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
+        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:276", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
         _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
         "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py:346", "SPEND_GUARD_KEY"),  # the pause judge (pipeline/runtime.py:186)
-        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),  # indexing_main.py:2699, at start
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py:94", "INSTALL_SECRET_KEY"),  # indexing_main.py:2762, at start
+        # the class admission's live numbers: indexing_main.py:2900 attaches the store (attach_parse_admission_config)
+        "/services/indexing/parseAdmission": ("app/modules/parse_engine/admission.py:241", "ADMISSION_CONFIG_KEY"),
     },
 }
 
@@ -122,8 +124,10 @@ NOT_READ = {
            "/services/arangodb": "BaseAppContainer's ArangoDB client is resolved only by services with a graph connection; " + _ENVFB,
            "/services/kafka": _ENVFB, "/services/qdrant": _ENVFB, "/services/opensearch": _ENVFB,
            "/services/redis-vector": _ENVFB, "/services/pgvector": "the pgvector store: indexing and query",
-           "/services/file_types/config": "file-type settings: read by indexing's record event handler only (record.py:260)",
-           "/services/indexing/spendGuard": "the pause caps of stage jobs: read by the indexing pipeline's pause judge only (modules/pipeline/runtime.py:186)"},
+           "/services/file_types/config": "file-type settings: read by indexing's record event handler only (record.py:276)",
+           "/services/indexing/spendGuard": "the pause caps of stage jobs: read by the indexing pipeline's pause judge only (modules/pipeline/runtime.py:186)",
+           "/services/indexing/parseAdmission": "the class admission's numbers: only indexing_main.py:2900 attaches the store; elsewhere "
+                                                "the wiring's LiveAdmissionConfig(None) reads no key (parse_engine/wiring.py:287)"},
 }
 
 

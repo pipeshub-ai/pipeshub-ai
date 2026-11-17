@@ -76,10 +76,18 @@ class MemoryBudget:
     Waiters are served first come, first served, except that one already
     holding its content (a record that downloaded before it could reserve)
     goes ahead of those holding none: its memory is in use either way, and
-    running it first frees it soonest. When nothing is reserved the head is
-    admitted whatever it needs, so no record waits for ever: no running record
-    would free memory, and the content other waiters hold only goes when they
-    run or give up.
+    running it first frees it soonest. Under ``PARSE_ADMISSION=classes`` a small
+    record's reservation (``ahead``) also goes ahead of big ones that hold no
+    content, in arrival order among its own kind. When nothing is reserved the
+    head is admitted whatever it needs, so no record waits for ever: no running
+    record would free memory, and the content other waiters hold only goes when
+    they run or give up.
+
+    Known limit of ``ahead``: while small reservations keep arriving and
+    overlapping, the budget never returns to nothing reserved, so a big record
+    that does not fit waits (its own timeout hands it back, uncounted, with its
+    first-wait time kept). There is no aging rule here: ageing is applied at the
+    class gate before a record reaches this budget.
     """
 
     def __init__(self) -> None:
@@ -91,6 +99,8 @@ class MemoryBudget:
         # everyone else. stats() reads the total from another thread, so it
         # is kept as one int rather than summed over the dict.
         self._held_by: dict[_Waiter, int] = {}
+        # Waiters queued with ``ahead``: served after those holding content, before the rest, in arrival order.
+        self._ahead: set[_Waiter] = set()
         self._held = 0
 
     def _fits(self, nbytes: int, held: int) -> bool:
@@ -99,15 +109,23 @@ class MemoryBudget:
         # The caller's own held bytes are part of *nbytes*, not in addition to it.
         return self._reserved + self._held - held + nbytes <= self.limit
 
-    def _enqueue(self, waiter: _Waiter, held: int) -> None:
+    def _enqueue(self, waiter: _Waiter, held: int, ahead: bool = False) -> None:  # noqa: FBT001, FBT002
         position = len(self._waiters)
+        # Order: records holding their content, then small reservations under PARSE_ADMISSION=classes (*ahead*),
+        # then the rest; each group in arrival order.
         if held:
             position = next((i for i, w in enumerate(self._waiters) if not self._held_by[w]), position)
+        elif ahead:
+            position = next(
+                (i for i, w in enumerate(self._waiters) if not self._held_by[w] and w not in self._ahead), position
+            )
+        if ahead and not held:
+            self._ahead.add(waiter)
         self._waiters.insert(position, waiter)
         self._held_by[waiter] = held
         self._held += held
 
-    async def reserve(self, nbytes: int, timeout: float | None = None, *, held: int = 0) -> bool:
+    async def reserve(self, nbytes: int, timeout: float | None = None, *, held: int = 0, ahead: bool = False) -> bool:
         """Reserve *nbytes*; False if *timeout* passed first.
 
         *held* is what the caller already holds and is part of *nbytes*: a
@@ -125,7 +143,7 @@ class MemoryBudget:
             return True
         deadline = None if timeout is None else loop.time() + timeout
         waiter = _Waiter(loop)
-        self._enqueue(waiter, held)
+        self._enqueue(waiter, held, ahead)
         try:
             while True:
                 if self._waiters[0] is waiter and self._fits(nbytes, held):
@@ -137,6 +155,7 @@ class MemoryBudget:
                 await waiter.wait(_RECHECK_SECONDS if remaining is None else min(_RECHECK_SECONDS, remaining))
         finally:
             self._held -= self._held_by.pop(waiter, 0)
+            self._ahead.discard(waiter)
             with contextlib.suppress(ValueError):
                 self._waiters.remove(waiter)
             self._wake_head()
