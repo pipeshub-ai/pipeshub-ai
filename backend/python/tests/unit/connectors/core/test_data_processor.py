@@ -806,13 +806,16 @@ class TestOnRecordContentUpdate:
         ctx.__aexit__ = AsyncMock(return_value=False)
         proc.data_store_provider.transaction.return_value = ctx
 
-        record = _make_record()
+        record = _make_record(external_revision_id="r2")
         record.id = "rec-1"
         record.indexing_status = ProgressStatus.COMPLETED.value
 
         mock_db_record = MagicMock()
         mock_db_record.indexing_status = ProgressStatus.COMPLETED.value
         tx_store.get_record_by_key.return_value = mock_db_record
+        # An indexed record whose content changed (a new revision): the save re-queues it.
+        tx_store.get_record_by_external_id.return_value = _make_record(
+            id="rec-1", external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value)
 
         await proc.on_record_content_update(record)
 
@@ -2447,6 +2450,29 @@ class TestMigrateGroupPermissionsToUser:
 
         await proc.migrate_group_permissions_to_user("g1", "user@test.com", "conn-1")
         tx_store.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_grant_read_is_not_an_empty_group(self) -> None:
+        """The providers answer a failed read with [] unless asked to raise; that must not report every grant moved."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        mock_user = MagicMock()
+        mock_user.id = "u1"
+        tx_store.get_user_by_email.return_value = mock_user
+
+        async def read(*, from_node_id: str, edge_collection: str, raise_on_error: bool = False) -> list[dict]:
+            if raise_on_error:
+                raise ConnectionError("graph read failed")
+            return []
+        tx_store.get_edges_from_node = AsyncMock(side_effect=read)
+
+        with pytest.raises(ConnectionError):
+            await proc.migrate_group_permissions_to_user("g1", "user@test.com", "conn-1", tx_store)
+        tx_store.batch_create_edges.assert_not_awaited()
+        tx_store.get_user_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        tx_store.get_edges_from_node.assert_awaited_once_with(
+            from_node_id=f"{CollectionNames.GROUPS.value}/g1", edge_collection=CollectionNames.PERMISSION.value, raise_on_error=True,
+        )
 
     @pytest.mark.asyncio
     async def test_creates_new_permission_edges(self):

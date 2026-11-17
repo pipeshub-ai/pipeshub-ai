@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -31,6 +30,7 @@ from app.agents.openapi.spec_compiler import MAX_SPEC_BYTES, SpecError, compile_
 from app.agents.openapi.store import ApiToolsetStore
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import fetch_caller_role
+from app.api.middlewares.request_log import path_log_fields
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.services.featureflag.platform_settings import is_api_toolsets_enabled
@@ -38,8 +38,6 @@ from app.utils.desktop_state import strip_desktop_state
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
 # What a test call shows of the API's answer.
@@ -72,7 +70,10 @@ async def _require_enabled(request: Request) -> None:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="API Toolsets are disabled for this organization.")
 
 
-router = APIRouter(prefix="/api/v1/api-toolsets", tags=["api-toolsets"], dependencies=[Depends(_require_enabled)])
+router = APIRouter(
+    prefix="/api/v1/api-toolsets", tags=["api-toolsets"],
+    dependencies=[Depends(_require_enabled), Depends(path_log_fields(instance_id="toolset_id"))],
+)
 
 
 def _store(request: Request) -> ApiToolsetStore:
@@ -276,7 +277,6 @@ async def _assert_not_in_use(request: Request, instance: ApiToolsetInstance) -> 
     try:
         agent_names = await graph_provider.check_api_toolset_in_use(instance.id)
     except Exception as e:
-        logger.error("Could not check which agents use API toolset %s: %s", instance.id, e)
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
             detail="Couldn't check which agents use this API action, so it wasn't deleted. Try again.",

@@ -1505,3 +1505,173 @@ class TestTheShadowComparisonDoesNotChangeTheAnswer:
         mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
         await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
         shadow.submit.assert_not_called()
+
+
+class TestTheServingPlanReadsTheSearchWithTheScopeFilter:
+    """With ACL_FILTER_MODE=scopes a container search carries the viewer's deferring filter for the connectors whose app document says they are
+    served now, and none for the others; the record-id path never carries one; the answer is the post-check's either way."""
+
+    def _planner(self, mock_graph_provider, docs) -> object:
+        from app.services.permissions.currency import StampCurrency
+        from app.services.permissions.scopes import ViewerScopes
+        from app.services.permissions.serving import ServingPlanner
+
+        scopes = MagicMock()
+        scopes.scopes = AsyncMock(return_value=ViewerScopes("o1", "user-key", gated_apps=frozenset({"app"}), readable_groups=frozenset({"rg"})))
+        mock_graph_provider.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, ids, **k: [{"_key": i, **docs[i]} for i in ids if i in docs])
+        return ServingPlanner(scopes, StampCurrency(mock_graph_provider))
+
+    async def _search(self, retrieval_service, mock_graph_provider, mock_vector_db_service, planner) -> tuple[dict, list]:
+        mock_vector_db_service.supports_scope_filter = True
+        retrieval_service._planner = planner
+        mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
+        seen: list = []
+
+        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None) -> list:  # noqa: A002
+            seen.append(plan.scope_filter)
+            return [_hit("v-allowed"), _hit("v-denied")]
+
+        retrieval_service._execute_parallel_searches = search
+        mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
+        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[{
+            "_key": "r-allowed", "virtualRecordId": "v-allowed", "origin": "CONNECTOR", "recordName": "n", "mimeType": "text/plain",
+            "connectorName": "X", "webUrl": "http://x"}])
+        return await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1"), seen
+
+    @staticmethod
+    def _current(**over) -> dict:
+        from app.services.permissions.scope_fields import (
+            SCOPE_FIELDS_VERSION,
+            set_resolved_generation,
+        )
+
+        set_resolved_generation(3)
+        return {"scopeBackfillState": "done", "scopeBackfillVersion": SCOPE_FIELDS_VERSION, "scopeBackfillGeneration": 3,
+                "scopeBackfillStructureGeneration": 5, "scopeProjectionGeneration": 5, **over}
+
+    @pytest.mark.asyncio
+    async def test_a_served_connector_is_searched_with_the_filter_and_a_not_served_one_without(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        from app.services.permissions.scope_fields import set_resolved_generation
+
+        try:
+            baseline, none = await self._search(retrieval_service, mock_graph_provider, mock_vector_db_service, None)
+            assert none == [None]
+            served, seen = await self._search(retrieval_service, mock_graph_provider, mock_vector_db_service,
+                                              self._planner(mock_graph_provider, {"app": self._current()}))
+            assert seen[0] is not None and seen[0].defer and seen[0].current == {"app"} and seen[0].readable_groups == {"rg"}
+            assert served == baseline                                          # the post-check decides the answer
+            for over in ({"scopeProjectionGeneration": 6}, {"scopeProjectionPendingRoots": '{"r":5}'}, {"scopeBackfillState": "failed"}):
+                answer, seen = await self._search(retrieval_service, mock_graph_provider, mock_vector_db_service,
+                                                  self._planner(mock_graph_provider, {"app": self._current(**over)}))
+                assert seen == [None] and answer == baseline                   # the legacy request, same answer
+        finally:
+            set_resolved_generation(None)
+
+    @pytest.mark.asyncio
+    async def test_a_store_without_the_filter_and_the_default_mode_are_the_legacy_request(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        planner = self._planner(mock_graph_provider, {"app": self._current()})
+        _, seen = await self._search(retrieval_service, mock_graph_provider, mock_vector_db_service, planner)
+        assert seen[0] is not None
+        mock_vector_db_service.supports_scope_filter = False
+        retrieval_service._planner = planner
+        seen.clear()
+        mock_graph_provider.get_nodes_by_field_in.reset_mock()
+        await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+        mock_graph_provider.get_nodes_by_field_in.assert_not_awaited()           # not even the documents are read
+        assert retrieval_service._planner is not None and mod.RetrievalService._planner is None       # a service built in the default mode has no planner
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_search_is_counted_by_whether_it_carried_the_filter(self, retrieval_service) -> None:
+        from app.services.permissions.metrics import SERVING_DEGRADED
+        from app.services.vector_db.filters import ScopeFilter
+
+        async def degraded_fan_out(collections, requests, limit, *, failed=None, degraded=None) -> list:
+            degraded.append(True)
+            return [[] for _ in requests]
+
+        retrieval_service._fan_out_searches = degraded_fan_out
+        retrieval_service._resolve_search_collections = AsyncMock(return_value=["c"])
+
+        def count(plan: str) -> float:
+            return SERVING_DEGRADED._metric.labels(plan)._value.get()
+
+        before = {p: count(p) for p in ("scopes", "legacy")}
+        for flt in (ScopeFilter(current=frozenset({"app"}), version=1, generation=1, defer=True), None):
+            plan = mod._QueryPlan()
+            plan.scope_filter = flt
+            await retrieval_service._run_searches(["q"], None, 5, "o1", "u1", [[1.0]], [None], plan=plan)
+            assert plan.degraded
+        assert (count("scopes") - before["scopes"], count("legacy") - before["legacy"]) == (1, 1)
+
+
+class TestTheFirstFetchIsTheLimitOnlyWhenEveryConnectorIsServedAndExact:
+    """A search whose connectors the filter decides outright asks for exactly the limit; any connector that is not served, or served but not exact,
+    keeps today's over-fetch; the default mode's request is the one it always was."""
+
+    LIMIT = 20
+
+    def _graph_docs(self, **per_app: dict) -> dict:
+        return {app: TestTheServingPlanReadsTheSearchWithTheScopeFilter._current(**over) for app, over in per_app.items()}
+
+    async def _asked(self, retrieval_service, mock_graph_provider, mock_vector_db_service, docs: dict | None, gated=frozenset({"app"})) -> tuple:
+        from app.services.permissions.currency import StampCurrency
+        from app.services.permissions.scopes import ViewerScopes
+        from app.services.permissions.serving import ServingPlanner
+
+        mock_vector_db_service.supports_scope_filter = True
+        if docs is None:
+            retrieval_service._planner = None
+        else:
+            scopes = MagicMock()
+            scopes.scopes = AsyncMock(return_value=ViewerScopes("o1", "user-key", gated_apps=gated, readable_groups=frozenset({"rg"})))
+            mock_graph_provider.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, ids, **k: [{"_key": i, **docs[i]} for i in ids if i in docs])
+            retrieval_service._planner = ServingPlanner(scopes, StampCurrency(mock_graph_provider))
+        mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
+        seen: list = []
+
+        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None) -> list:  # noqa: A002
+            seen.append((repr(filter), limit, plan.scope_filter))
+            return [_hit("v-allowed")]
+
+        retrieval_service._execute_parallel_searches = search
+        mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
+        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[{
+            "_key": "r-allowed", "virtualRecordId": "v-allowed", "origin": "CONNECTOR", "recordName": "n", "mimeType": "text/plain",
+            "connectorName": "X", "webUrl": "http://x"}])
+        await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1", limit=self.LIMIT)
+        return seen[0]
+
+    @pytest.mark.asyncio
+    async def test_every_connector_served_and_exact_asks_for_the_limit_and_any_other_keeps_the_over_fetch(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        from app.services.permissions.scope_fields import set_resolved_generation
+
+        over_fetch = mod.RetrievalService._overfetch_limit(self.LIMIT, _containers(record_group_ids_verify=frozenset({"rg"})))
+        assert over_fetch > self.LIMIT, "the premise: a group the access check must verify is over-fetched today"
+        exact = {"scopeBackfillExact": True}
+        try:
+            for docs, gated, want in (
+                (self._graph_docs(app=exact), frozenset({"app"}), self.LIMIT),
+                (self._graph_docs(app={}), frozenset({"app"}), over_fetch),                                   # served, not exact
+                (self._graph_docs(app={"scopeBackfillExact": "true"}), frozenset({"app"}), over_fetch),       # unreadable is not exact
+                (self._graph_docs(app={"scopeBackfillExact": 1}), frozenset({"app"}), over_fetch),
+                (self._graph_docs(app={**exact, "scopeProjectionPendingRoots": '{"r":5}'}), frozenset({"app"}), over_fetch),     # exact but not served
+                (self._graph_docs(app=exact, other=exact), frozenset({"app", "other", "gone"}), over_fetch),   # a gated connector with no document
+                (self._graph_docs(app=exact, other={}), frozenset({"app", "other"}), over_fetch),            # one of two is not exact
+            ):
+                _, asked, flt = await self._asked(retrieval_service, mock_graph_provider, mock_vector_db_service, docs, gated)
+                assert asked == want and (flt is None) == ("scopeProjectionPendingRoots" in docs["app"]), (docs, asked)
+        finally:
+            set_resolved_generation(None)
+
+    @pytest.mark.asyncio
+    async def test_the_default_modes_request_is_the_one_it_always_was(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        from app.services.permissions.scope_fields import set_resolved_generation
+
+        try:
+            default = await self._asked(retrieval_service, mock_graph_provider, mock_vector_db_service, None)
+            assert default[2] is None and default[1] == mod.RetrievalService._overfetch_limit(self.LIMIT, _containers(record_group_ids_verify=frozenset({"rg"})))
+            # a planner that serves nothing leaves the request what the default mode sends, byte for byte
+            not_served = await self._asked(retrieval_service, mock_graph_provider, mock_vector_db_service, self._graph_docs(app={"scopeBackfillState": "failed"}))
+            assert not_served == default
+        finally:
+            set_resolved_generation(None)

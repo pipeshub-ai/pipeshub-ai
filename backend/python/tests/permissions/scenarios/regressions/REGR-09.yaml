@@ -1,0 +1,61 @@
+- id: REGR-09
+  title: 'PARENT_AND_GRANT: read by a reader of its parent (by any path, the parent''s own grant included) who holds its own grant; then the parent''s grant is withdrawn'
+  source: a Jira comment restricted to a group, under an issue its reporter reads only by a direct grant
+  rule: intersection
+  world:
+    principals:
+      - {id: alice}
+      - {id: bob}
+      - {id: carol}
+      - {id: dave}
+      - {id: g:admins, kind: group}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: P, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i1, kind: record, connector: A, rule: OPEN, parents: [P], inherits: [P], belongs: [P]}
+      - {id: i2, kind: record, connector: A, rule: OPEN, parents: [P], inherits: [P], belongs: [P]}
+      - {id: c1, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [i1], inherits: [i1], belongs: [P]}
+      - {id: f1, kind: record, connector: A, rule: OPEN, parents: [{id: c1, rel: ATTACHMENT}], inherits: [c1], belongs: [P]}
+      - {id: c5, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [c1], inherits: [c1], belongs: [P]}
+      - {id: c2, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [i1], inherits: [i1], belongs: [P]}
+      - {id: c3, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [i2], inherits: [i2], belongs: [P]}
+      - {id: c4, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [i1], belongs: [P]}
+      - {id: s1, kind: record, connector: A, rule: STRICT, parents: [c1], inherits: [c1], belongs: [P]}
+    grants:
+      - [alice, P]
+      - [bob, P]
+      - [dave, i1]
+      - [bob, i1]
+      - [carol, i2]
+      - [g:admins, c1]
+      - [g:admins, c3]
+      - [g:admins, c4]
+      - [bob, c2]
+      - [dave, c5]
+    memberships:
+      - [alice, g:admins]
+      - [dave, g:admins]
+    gates:
+      - [alice, A]
+      - [bob, A]
+      - [carol, A]
+      - [dave, A]
+  mutations:
+    - {kind: grant_removed, ref: dave, node: i1}
+  expect:
+    before:
+      dave: {i1: admit, c1: admit, f1: admit, c5: admit, c2: deny, c3: deny, c4: deny, s1: deny, P: deny, i2: deny}
+      alice: {i1: admit, i2: admit, c1: admit, f1: admit, c3: admit, s1: admit, c2: deny, c4: deny, c5: deny}
+      bob: {i1: admit, c2: admit, c1: deny, f1: deny, c3: deny, c4: deny, c5: deny}
+      carol: {i2: admit, c3: deny, i1: deny, c1: deny}
+    verdicts:
+      dave: {i1: deny, c1: deny, f1: deny, c5: deny}
+      alice: {c1: admit, f1: admit}
+  tags: [regression, seed, parent-and-grant]
+  comment: >-
+    P (the project) neither inherits from the App nor is granted to dave, so dave reads i1 only as a seed (his own grant). c1 holds a grant
+    for dave's group and inherits i1, so dave reads it, and f1 (OPEN, inheriting c1) and c5 (PARENT_AND_GRANT, granted to dave, under c1)
+    with it. Never without its own grant (c2 for dave, c1 for bob), never under a parent the viewer cannot read (c3 for dave: i2 is
+    carol's), never without inheriting (c4). A STRICT node (s1) still needs the walk from the App. Withdrawing dave's grant on i1 hides
+    all of it from him again; alice still reads it from the App. bob's own grant on i1 changes nothing he reads; it keeps the withdrawal a
+    grant-only change (i1 still has grants of its own).

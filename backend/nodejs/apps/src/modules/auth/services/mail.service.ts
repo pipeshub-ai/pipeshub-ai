@@ -6,6 +6,7 @@ import {
   InternalServerError,
 } from '../../../libs/errors/http.errors';
 import { HttpError } from '../../../libs/errors/http.errors';
+import { withCause } from '../../../libs/errors/base.error';
 import {
   keepDeliberateWording,
   markClientSafe,
@@ -39,7 +40,7 @@ export class MailService {
     ccEmails,
   }: SendMailParams): Promise<SendMailResponse> {
     try {
-      this.logger.info('Sending mail');
+      this.logger.debug('Sending mail');
 
       if (!usersMails?.length) throw new BadRequestError('usersMails is empty');
       if (!subject) throw new BadRequestError('subject is empty');
@@ -91,9 +92,12 @@ export class MailService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Sending the email failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('send that email')),
+      // The error middleware logs it once, with this cause.
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('send that email')),
+        ),
+        error,
       );
     }
   }

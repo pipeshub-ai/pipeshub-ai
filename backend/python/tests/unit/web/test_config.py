@@ -16,7 +16,6 @@ def _store(value: object = None, error: Exception | None = None) -> AsyncMock:
     return store
 
 
-DDG = {"provider": "duckduckgo", "configuration": {}, "providers": []}
 
 
 class TestDefaultProvider:
@@ -30,13 +29,21 @@ class TestDefaultProvider:
             {"providers": "garbage"},
         ],
     )
-    async def test_falls_back_to_duckduckgo(self, stored: object) -> None:
-        assert await resolve_web_search(_store(stored), MagicMock()) == DDG
+    async def test_nothing_stored_means_web_search_is_not_set_up(self, stored: object) -> None:
+        assert await resolve_web_search(_store(stored), MagicMock()) is None
 
-    async def test_no_default_still_lists_the_stored_providers(self) -> None:
+    async def test_providers_without_a_default_are_not_a_setup(self) -> None:
         stored = {"providers": [{"provider": "tavily", "isDefault": False, "configuration": {"apiKey": "t"}}]}
+        assert await resolve_web_search(_store(stored), MagicMock()) is None
+
+    async def test_a_default_without_a_provider_name_is_not_a_setup(self) -> None:
+        stored = {"providers": [{"provider": " ", "isDefault": True}]}
+        assert await resolve_web_search(_store(stored), MagicMock()) is None
+
+    async def test_a_stored_duckduckgo_default_is_used(self) -> None:
+        stored = {"providers": [{"provider": "duckduckgo", "isDefault": True, "configuration": {}}]}
         assert await resolve_web_search(_store(stored), MagicMock()) == {
-            "provider": "duckduckgo", "configuration": {}, "providers": [{"provider": "tavily", "configuration": {"apiKey": "t"}}],
+            "provider": "duckduckgo", "configuration": {}, "providers": [],
         }
 
     async def test_uses_the_marked_default(self) -> None:

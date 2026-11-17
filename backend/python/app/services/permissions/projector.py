@@ -63,9 +63,9 @@ def _restricted(n: StampNode) -> bool:
 
 def _hides_below(n: StampNode) -> bool:
     """A container (the top of a record's group chain) hides what is below it when it is deleted or its rule is unknown (the
-    walk through it fails closed), or it does not inherit from its parent; a RESTRICTED rule only asks for the grant the
-    container's own readers hold, which is what "the record equals its group" already says."""
-    return n.kind != "app" and (n.deleted or n.rule not in (None, "OPEN", "STRICT", "RESTRICTED") or _breaks(n))
+    walk through it fails closed), or it does not inherit from its parent; a RESTRICTED (or PARENT_AND_GRANT) rule only asks for
+    the grant the container's own readers hold, which is what "the record equals its group" already says."""
+    return n.kind != "app" and (n.deleted or n.rule not in (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT") or _breaks(n))
 
 
 def _is_scope(n: StampNode) -> bool:
@@ -138,6 +138,10 @@ class ScopeProjector:
         rule = Rule.CONTAINER if app.opens else rule_for(app.connector_type)
         equals = self._equals_group(nodes, rid, path, app, app_id)
         try:
+            if equals and not app.opens and not nodes[rid].groups:
+                # no record group to match: the connector arm returns it for any viewer past the gate, yet the container rule would hide it
+                # from one the app does not open to, so no stamp decides it (not a refusal: the connector stays exact)
+                return Projection(rid, ScopeFields.legacy())
             if equals:
                 assert_may_stamp(Rule.CONTAINER, app.connector_type, equals_record_group=True)
                 return Projection(rid, ScopeFields.container())

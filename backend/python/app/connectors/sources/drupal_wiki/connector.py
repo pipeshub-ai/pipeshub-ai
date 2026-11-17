@@ -19,11 +19,19 @@ Sync model (see the design page for the full rationale):
 * a member whose wiki account is disabled gets no grant on a private space; an
   org-wide grant on an open space cannot exclude them
 * a token the wiki rejects fails the run with an auth notification
+* a wiki that refuses the GraphQL queries (Drupal Wiki 8.44 refuses them for tokens)
+  keeps each private space synced under the access stored on an earlier run; a
+  private space with nothing stored is skipped, and the admin is told on the
+  connector card and after every run
 """
 
+import asyncio
+import hashlib
 import html
 import mimetypes
 from collections.abc import AsyncGenerator, Awaitable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from logging import Logger
 from typing import Any, TypeVar
 
@@ -32,6 +40,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -39,6 +48,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import (
+    ActionItem,
     BaseConnector,
     ConnectorInitError,
 )
@@ -96,6 +106,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.drupal_wiki.drupal_wiki import (
     DrupalWikiClient,
+    DrupalWikiRESTClientViaToken,
     check_wiki_address,
     describe_exception,
     describe_response,
@@ -106,8 +117,10 @@ from app.sources.external.drupal_wiki.drupal_wiki import DrupalWikiDataSource
 from app.sources.external.drupal_wiki.graphql import (
     DrupalWikiGraphQLDataSource,
     DrupalWikiGraphQLError,
+    DrupalWikiGraphQLRefusedError,
 )
 from app.utils.streaming import create_stream_record_response
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 T = TypeVar("T")
 
@@ -166,6 +179,11 @@ SPACE_ACCESS_ANONYMOUS = "ANONYMOUS"
 # Everyone on the wiki can read these, so they map to an org-wide permission.
 OPEN_SPACE_ACCESS_STATUSES = frozenset({SPACE_ACCESS_AUTHENTICATED, SPACE_ACCESS_ANONYMOUS})
 
+# The only grants this connector writes on a private space. A stored space whose grants
+# include anything else (an org-wide one from when the space was open) cannot stand in
+# for a member list.
+PRIVATE_SPACE_GRANT_TYPES = frozenset({EntityType.USER.value, EntityType.GROUP.value})
+
 # UserDTO.status; the spec enumerates exactly ENABLED and DISABLED.
 USER_STATUS_ENABLED = "ENABLED"
 USER_STATUS_DISABLED = "DISABLED"
@@ -203,6 +221,100 @@ class DrupalWikiAuthError(RuntimeError):
     """
 
 
+@dataclass(frozen=True)
+class SpaceProblem:
+    """A problem that hits spaces the same way, reported as one line that names them.
+
+    ``incomplete``: the run did not read the whole wiki, so a full sync unlinks nothing.
+    """
+
+    message: str
+    incomplete: bool
+
+
+TREE_UNREADABLE = SpaceProblem(
+    "Could not read the page structure of {spaces}, so their pages keep the structure "
+    "they already have and new pages are placed at the top of their space.",
+    incomplete=False,
+)
+# How long a private space may keep syncing under the access last confirmed for it while
+# the wiki refuses its member list. Past it, someone removed from the space in the wiki
+# would go on receiving its new pages, so the space is skipped instead.
+KEPT_ACCESS_MAX_AGE_DAYS = 30
+# Kept access this close to its end is announced once, before the space starts being skipped.
+KEPT_ACCESS_NOTICE_DAYS = 7
+_DAY_MS = 24 * 60 * 60 * 1000
+# The connection test's GraphQL check only adds a warning, so it gets one try and this long
+# in all, rather than the sync's retries and timeouts.
+GRAPHQL_PROBE_TIMEOUT_S = 10.0
+
+# A full sync's prep deletes every sync point, the confirmed dates with them.
+FULL_SYNC_ENDS_KEPT_ACCESS = (
+    "A full sync, including one started by changing the filters, ends this for private "
+    "spaces until Drupal Wiki lists their members again."
+)
+
+MEMBERS_REFUSED_KEPT = SpaceProblem(
+    "Drupal Wiki refused to list the members of {spaces}, so their pages were synced "
+    "with the access confirmed on the date shown. " + FULL_SYNC_ENDS_KEPT_ACCESS,
+    incomplete=True,
+)
+MEMBERS_REFUSED_KEPT_ENDING = SpaceProblem(
+    "Drupal Wiki refused to list the members of {spaces}, so their pages were synced "
+    "with the access confirmed on the date shown, which ends within "
+    f"{KEPT_ACCESS_NOTICE_DAYS} days; after that they are skipped. " + FULL_SYNC_ENDS_KEPT_ACCESS,
+    incomplete=True,
+)
+KEPT_ACCESS_PROBLEMS = (MEMBERS_REFUSED_KEPT, MEMBERS_REFUSED_KEPT_ENDING)
+MEMBERS_REFUSED_STALE = SpaceProblem(
+    "Drupal Wiki refused to list the members of {spaces}, and their access was last "
+    f"confirmed more than {KEPT_ACCESS_MAX_AGE_DAYS} days ago, so they were skipped.",
+    incomplete=True,
+)
+MEMBERS_REFUSED_UNVERIFIED = SpaceProblem(
+    "Drupal Wiki refused to list the members of {spaces}, and their stored access names "
+    "someone this sync could not confirm as an active person or group in Drupal Wiki, so "
+    "they were skipped.",
+    incomplete=True,
+)
+MEMBERS_REFUSED_SKIPPED = SpaceProblem(
+    "Drupal Wiki refused to list the members of {spaces} and no confirmed earlier access "
+    "is stored, so they were skipped.",
+    incomplete=True,
+)
+
+GRAPHQL_REFUSED_ACTION_CODE = "drupal_wiki_graphql_refused"
+GRAPHQL_REFUSED_TITLE = "Drupal Wiki refuses member and page structure queries"
+GRAPHQL_REFUSED_MESSAGE = (
+    "Private spaces sync only with the access confirmed on an earlier sync, and only for "
+    f"{KEPT_ACCESS_MAX_AGE_DAYS} days after it was confirmed. Private spaces never synced, "
+    "or confirmed longer ago, are skipped, and the page hierarchy is not available. Open "
+    "spaces are not affected. " + FULL_SYNC_ENDS_KEPT_ACCESS
+)
+GRAPHQL_REFUSED_CONFIRMED = " The oldest access in use was confirmed on {confirmed_on}."
+
+
+def _utc_date(epoch_ms: int) -> str:
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).date().isoformat()
+
+
+def graphql_refused_action_item(oldest_confirmed_ms: int | None = None) -> ActionItem:
+    """``params`` lets the UI word the item in the reader's language; ``context`` picks
+    the variant that names the date."""
+    params = {"days": str(KEPT_ACCESS_MAX_AGE_DAYS)}
+    message = GRAPHQL_REFUSED_MESSAGE
+    if oldest_confirmed_ms is not None:
+        confirmed_on = _utc_date(oldest_confirmed_ms)
+        params.update(confirmedOn=confirmed_on, context="dated")
+        message += GRAPHQL_REFUSED_CONFIRMED.format(confirmed_on=confirmed_on)
+    return ActionItem(
+        code=GRAPHQL_REFUSED_ACTION_CODE,
+        title=GRAPHQL_REFUSED_TITLE,
+        message=message,
+        params=params,
+    )
+
+
 def _plural(count: int, noun: str) -> str:
     """``2 spaces``, ``1 space`` -- notification titles read badly with "space(s)"."""
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
@@ -213,6 +325,15 @@ def _listed(names: list[str], limit: int = 10) -> str:
     shown = ", ".join(names[:limit])
     extra = len(names) - limit
     return f"{shown} and {extra} more" if extra > 0 else shown
+
+
+def _edge_source_key(edge: dict[str, Any]) -> str | None:
+    """The key of the node an edge comes from. Most providers return ``from_id``; ArangoDB
+    returns the raw edge, whose ``_from`` is ``<collection>/<key>``."""
+    if edge.get("from_id"):
+        return str(edge["from_id"])
+    source = edge.get("_from")
+    return str(source).split("/", 1)[-1] if source else None
 
 
 def _as_int(value: object) -> int | None:
@@ -333,9 +454,23 @@ class DrupalWikiConnector(BaseConnector):
         # Partial failures collected across one run: a space or group that failed is
         # reported at the end, and its checkpoint is held back, but the run continues.
         self._failures: list[str] = []
+        # Space names per kind of problem, reported one line per kind.
+        self._space_problems: dict[SpaceProblem, list[str]] = {}
+        # Whether the wiki refused a GraphQL query this run; None when none was answered
+        # either way, which leaves the admin's action item as it is.
+        self._graphql_refused: bool | None = None
         # Emails the user directory marks DISABLED, or None when it could not be
         # read this run. Private spaces are then left as they were.
         self._disabled_emails: set[str] | None = None
+        # Emails of the wiki's enabled users, and the ids of the groups whose members were
+        # read, both this run; None when that phase did not finish in full. Stored grants
+        # stand in for a refused member list only if every one names a principal in these.
+        self._enabled_emails: set[str] | None = None
+        self._groups_read: set[str] | None = None
+        # When each kept private space's access was last confirmed, for the action item.
+        self._kept_confirmed_ms: list[int] = []
+        self._principals: tuple[dict[str, str], dict[str, str]] | None = None
+        self._principals_loaded = False
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
@@ -400,11 +535,78 @@ class DrupalWikiConnector(BaseConnector):
         # A proxy or SSO page in front of the wiki answers 200 with HTML.
         try:
             _ = self._safe_json_parse(response, "testing the connection")
-            _ = self._safe_json_parse(spaces, "testing the connection")
+            space_listing = self._safe_json_parse(spaces, "testing the connection")
         except DrupalWikiSyncError as e:
             self.logger.error("Drupal Wiki connection test: %s", e)
             raise ConnectorInitError(str(e)) from e
+
+        content = space_listing.get("content") if isinstance(space_listing, dict) else None
+        space_id = _as_int(content[0].get("id")) if content and isinstance(content[0], dict) else None
+        if space_id is not None:
+            await self._probe_graphql(space_id)
         return True
+
+    def _graphql_probe(self) -> tuple[DrupalWikiGraphQLDataSource, DrupalWikiRESTClientViaToken]:
+        """A GraphQL source for the connection test only: same wiki and token, one try each,
+        a short timeout. Returned with the REST client it owns, which the caller closes."""
+        rest = self.client.get_client()
+        probe_rest = DrupalWikiRESTClientViaToken(
+            rest.get_base_url(), rest.get_token(), timeout=GRAPHQL_PROBE_TIMEOUT_S
+        )
+        return DrupalWikiGraphQLDataSource(DrupalWikiGraphQLClient.build_from_rest_client(probe_rest)), probe_rest
+
+    async def _probe_graphql(self, space_id: int) -> None:
+        """Ask both GraphQL operations about one space, so a refusal shows at setup.
+
+        A refusal does not fail the test: open spaces still sync in full. Neither does a
+        wiki too slow to answer in time; the first sync checks again.
+        """
+        self._graphql_refused = None
+        probe, probe_rest = self._graphql_probe()
+        operations = (probe.get_space_members, probe.get_space_tree)
+        answered = 0
+        try:
+            async with asyncio.timeout(GRAPHQL_PROBE_TIMEOUT_S):
+                for operation in operations:
+                    try:
+                        await self._graphql_read(operation(space_id))
+                        answered += 1
+                    except DrupalWikiGraphQLError as e:
+                        self.logger.warning("Drupal Wiki connection test: %s", e)
+        except TimeoutError:
+            self.logger.warning(
+                "Drupal Wiki connection test: could not check the member and page structure "
+                "queries within %.0f s; the first sync checks them.", GRAPHQL_PROBE_TIMEOUT_S,
+            )
+        finally:
+            await probe_rest.close()
+        # One answer is not enough to clear the card: the query that did not answer may be
+        # the refused one, so the stored items stay until both answer or one is refused.
+        if not self._graphql_refused and answered < len(operations):
+            self._graphql_refused = None
+        if self._graphql_refused:
+            self.logger.warning(
+                "Drupal Wiki connection test: %s. %s", GRAPHQL_REFUSED_TITLE, GRAPHQL_REFUSED_MESSAGE
+            )
+        self.last_action_items = self._graphql_action_items()
+
+    async def _graphql_read(self, call: Awaitable[T]) -> T:
+        """Await one GraphQL query, noting whether the wiki answers them at all."""
+        try:
+            result = await call
+        except DrupalWikiGraphQLRefusedError:
+            self._graphql_refused = True
+            raise
+        if self._graphql_refused is None:
+            self._graphql_refused = False
+        return result
+
+    def _graphql_action_items(self) -> list[ActionItem] | None:
+        if self._graphql_refused is None:
+            return None
+        if not self._graphql_refused:
+            return []
+        return [graphql_refused_action_item(min(self._kept_confirmed_ms, default=None))]
 
     async def cleanup(self) -> None:
         if self.client is not None:
@@ -444,7 +646,14 @@ class DrupalWikiConnector(BaseConnector):
                 self.config_service, "Drupal Wiki", self.connector_id, self.logger
             )
             self._failures = []
+            self._space_problems = {}
+            self._graphql_refused = None
             self._disabled_emails = None
+            self._enabled_emails = None
+            self._groups_read = None
+            self._kept_confirmed_ms = []
+            self._principals = None
+            self._principals_loaded = False
 
             users_by_id = await self._run_phase("people", self._sync_users())
             if users_by_id is None:
@@ -467,17 +676,11 @@ class DrupalWikiConnector(BaseConnector):
             else:
                 await self._run_phase("pages", self._sync_pages(spaces))
 
-            if self._failures:
-                await self.notify(
-                    type=NotificationType.CONNECTOR_SYNC_ERROR,
-                    severity=NotificationSeverity.ERROR,
-                    title=self._notification_title(
-                        f"sync finished with {_plural(len(self._failures), 'problem')}"
-                    ),
-                    message=self._failure_preview(),
-                )
+            self.last_action_items = self._graphql_action_items()
+            problems = self._problem_lines()
+            await self._notify_problems(problems)
             self.logger.info(
-                "✅ Drupal Wiki sync finished with %d problem(s)", len(self._failures)
+                "✅ Drupal Wiki sync finished with %d problem(s)", len(problems)
             )
         except DrupalWikiAuthError as e:
             await self.notify(
@@ -530,7 +733,10 @@ class DrupalWikiConnector(BaseConnector):
         """A full sync that skipped anything (a space whose members could not be read,
         a page, a group, a whole phase) did not read the whole wiki, so nothing it did
         not write may be unlinked after it."""
-        return FullSyncCoverage(complete=not self._failures)
+        return FullSyncCoverage(
+            complete=not self._failures
+            and not any(problem.incomplete for problem in self._space_problems)
+        )
 
     # ------------------------------------------------------------------
     # Users and groups
@@ -611,6 +817,9 @@ class DrupalWikiConnector(BaseConnector):
         self._disabled_emails = disabled_emails - {
             user.email.lower() for user in users_by_id.values()
         }
+        self._enabled_emails = {
+            user.email.lower() for user in users_by_id.values() if user.is_active
+        }
         self.logger.info("Synced %d Drupal Wiki user(s)", len(users_by_id))
         if skipped_without_email:
             # Nobody without an email can be granted anything, so a large count here
@@ -631,6 +840,8 @@ class DrupalWikiConnector(BaseConnector):
         rewritten, so a leftover group node grants nothing.
         """
         synced = 0
+        read: set[str] = set()
+        all_read = True
         page = 0
         while True:
             payload = self._require_ok(
@@ -658,8 +869,10 @@ class DrupalWikiConnector(BaseConnector):
                         str(e) if isinstance(e, DrupalWikiSyncError)
                         else f"Could not read the members of group {group_id}: {describe_exception(e)}"
                     )
+                    all_read = False
                     continue
 
+                read.add(str(group_id))
                 members = [
                     users_by_id[str(member.get("id"))]
                     for member in (detail.get("members") or [])
@@ -686,6 +899,7 @@ class DrupalWikiConnector(BaseConnector):
                 break
             page += 1
 
+        self._groups_read = read if all_read else None
         self.logger.info("Synced %d Drupal Wiki group(s)", synced)
 
     # ------------------------------------------------------------------
@@ -709,6 +923,7 @@ class DrupalWikiConnector(BaseConnector):
             )
             content = payload.get("content") or []
             groups_with_permissions: list[tuple[RecordGroup, list[Permission]]] = []
+            confirmed: list[int] = []
             for space in content:
                 space_id = _as_int(space.get("id"))
                 space_name = space.get("name") or f"space {space.get('id')}"
@@ -734,7 +949,19 @@ class DrupalWikiConnector(BaseConnector):
                         )
                         continue
                     try:
-                        members = await self.graphql.get_space_members(space_id)
+                        members = await self._graphql_read(self.graphql.get_space_members(space_id))
+                    except DrupalWikiGraphQLRefusedError:
+                        # Not written: the stored record group and its grants stay exactly
+                        # as they are, and the pages inherit them.
+                        verdict, confirmed_at = await self._kept_access_verdict(space_id)
+                        label = f"'{space_name}'" + (
+                            f" (access as of {_utc_date(confirmed_at)})" if confirmed_at else ""
+                        )
+                        self._report_space_problem(verdict, label)
+                        if verdict in KEPT_ACCESS_PROBLEMS and confirmed_at is not None:
+                            self._kept_confirmed_ms.append(confirmed_at)
+                            spaces[space_id] = space
+                        continue
                     except DrupalWikiGraphQLError as e:
                         # Fail closed: a space whose members cannot be read is left
                         # exactly as it was on the previous run.
@@ -743,6 +970,7 @@ class DrupalWikiConnector(BaseConnector):
                             f"'{space_name}', so it was left as it is this time: {e}"
                         )
                         continue
+                    confirmed.append(space_id)
 
                 permissions = self._build_space_permissions(space, members)
                 if not permissions:
@@ -773,6 +1001,9 @@ class DrupalWikiConnector(BaseConnector):
 
             if groups_with_permissions:
                 await self.data_entities_processor.on_new_record_groups(groups_with_permissions)
+            # Only once the grants read from the member list are written.
+            for space_id in confirmed:
+                await self._confirm_space_access(space_id)
             if payload.get("last", True) or not content:
                 break
             page += 1
@@ -792,6 +1023,110 @@ class DrupalWikiConnector(BaseConnector):
 
         self.logger.info("Synced %d Drupal Wiki space(s)", len(spaces))
         return spaces
+
+    @staticmethod
+    def _access_sync_point_key(space_id: int) -> str:
+        return generate_record_sync_point_key("space_access", "space", str(space_id))
+
+    async def _confirm_space_access(self, space_id: int) -> None:
+        """Note that this space's stored grants were just rewritten from its member list."""
+        try:
+            await self.record_sync_point.update_sync_point(
+                self._access_sync_point_key(space_id),
+                {"confirmed_at": get_epoch_timestamp_in_ms()},
+            )
+        except Exception as e:
+            # Fails closed: without the date the space is skipped while members are refused.
+            self.logger.warning(
+                "Could not record when the access of the Drupal Wiki space %s was confirmed: %s",
+                space_id, describe_exception(e),
+            )
+
+    async def _kept_access_verdict(self, space_id: int) -> tuple[SpaceProblem, int | None]:
+        """Whether a private space whose members are refused may sync under its stored grants.
+
+        Returns the problem to report and when its access was last confirmed. Only
+        ``MEMBERS_REFUSED_KEPT`` lets the space sync; every other outcome, a failed read
+        included, skips it.
+        """
+        checkpoint = await self._get_checkpoint(
+            self.record_sync_point, self._access_sync_point_key(space_id)
+        )
+        confirmed_at = _as_int(checkpoint.get("confirmed_at"))
+        age_ms = get_epoch_timestamp_in_ms() - confirmed_at if confirmed_at is not None else None
+        # A date ahead of this host's clock came from a skewed clock; counting from it would
+        # stretch the bound, so it is no confirmation at all.
+        if age_ms is None or age_ms < 0:
+            return MEMBERS_REFUSED_SKIPPED, None
+        if age_ms > KEPT_ACCESS_MAX_AGE_DAYS * _DAY_MS:
+            return MEMBERS_REFUSED_STALE, confirmed_at
+        grants = await self._stored_space_grants(space_id)
+        if not grants or any(grant.get("type") not in PRIVATE_SPACE_GRANT_TYPES for grant in grants):
+            return MEMBERS_REFUSED_SKIPPED, None
+        if not await self._grants_name_live_principals(grants):
+            return MEMBERS_REFUSED_UNVERIFIED, confirmed_at
+        if age_ms > (KEPT_ACCESS_MAX_AGE_DAYS - KEPT_ACCESS_NOTICE_DAYS) * _DAY_MS:
+            return MEMBERS_REFUSED_KEPT_ENDING, confirmed_at
+        return MEMBERS_REFUSED_KEPT, confirmed_at
+
+    async def _stored_space_grants(self, space_id: int) -> list[dict[str, Any]] | None:
+        """The PERMISSION edges on a space's live stored record group; None if there is none."""
+        try:
+            group = await self.data_entities_processor.get_record_group_by_external_id(
+                self.connector_id, str(space_id)
+            )
+            if group is None or group.is_deleted_at_source:
+                return None
+            async with self.data_store_provider.transaction() as tx_store:
+                return await tx_store.get_edges_to_node(
+                    f"{CollectionNames.RECORD_GROUPS.value}/{group.id}",
+                    CollectionNames.PERMISSION.value,
+                    raise_on_error=True,
+                )
+        except Exception as e:
+            self.logger.warning(
+                "Could not read the stored access of the Drupal Wiki space %s: %s",
+                space_id, describe_exception(e),
+            )
+            return None
+
+    async def _grants_name_live_principals(self, grants: list[dict[str, Any]]) -> bool:
+        """Whether every grant names an enabled wiki user or a group read in full this run.
+
+        A user grant points at the PipesHub user the connector matched by email, so it is
+        checked by that user's email; a group grant by the group's wiki id.
+        """
+        user_keys = {_edge_source_key(g) for g in grants if g.get("type") == EntityType.USER.value}
+        group_keys = {_edge_source_key(g) for g in grants if g.get("type") == EntityType.GROUP.value}
+        if (user_keys and self._enabled_emails is None) or (group_keys and self._groups_read is None):
+            return False
+        stored = await self._stored_principals()
+        if stored is None:
+            return False
+        emails, group_ids = stored
+        return all(emails.get(key) in (self._enabled_emails or set()) for key in user_keys) and all(
+            group_ids.get(key) in (self._groups_read or set()) for key in group_keys
+        )
+
+    async def _stored_principals(self) -> tuple[dict[str, str], dict[str, str]] | None:
+        """``({user key: email}, {group key: wiki group id})`` as stored, read once per run
+        however many spaces ask; None (cached too) when the read failed."""
+        if self._principals_loaded:
+            return self._principals
+        self._principals_loaded = True
+        org_id = self.data_entities_processor.org_id
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                users = await tx_store.get_users(org_id)
+                groups = await tx_store.get_user_groups(self.connector_id, org_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning("Could not read stored people or groups: %s", describe_exception(e))
+            return None
+        self._principals = (
+            {user.id: (user.email or "").lower() for user in users},
+            {group.id: group.source_user_group_id for group in groups},
+        )
+        return self._principals
 
     def _build_space_permissions(
         self,
@@ -1162,24 +1497,28 @@ class DrupalWikiConnector(BaseConnector):
         PARENT_CHILD edge, so an unknown tree keeps whatever is already stored.
         """
         try:
-            nodes = await self.graphql.get_space_tree(space_id)
-            # No node carrying a page id means the reply has changed shape, not that the
-            # space is flat. Returning {} would re-save every page with no parent and
-            # wipe the structure already stored.
-            if nodes and not any(node.get("pageId") is not None for node in nodes):
-                self.logger.warning(
-                    "Drupal Wiki returned a page structure for the space '%s' that this "
-                    "connector does not understand, so its pages keep the structure they "
-                    "already have in PipesHub.", space_name
-                )
-                return None
-            return self._extract_parent_page_ids(nodes)
+            nodes = await self._graphql_read(self.graphql.get_space_tree(space_id))
+        except DrupalWikiGraphQLRefusedError as e:
+            self.logger.warning("Drupal Wiki: page structure of '%s': %s", space_name, e)
+            self._report_space_problem(TREE_UNREADABLE, f"'{space_name}'")
+            return None
         except DrupalWikiGraphQLError as e:
-            self.logger.warning(
-                "Could not read the page structure of the Drupal Wiki space '%s', so its "
-                "pages keep the structure they already have in PipesHub: %s", space_name, e,
+            # Not a lasting refusal, so an error every run rather than a warning sent once.
+            self._fail(
+                f"Could not read the page structure of the Drupal Wiki space '{space_name}', "
+                f"so its pages keep the structure they already have: {e}"
             )
             return None
+        # No node carrying a page id means the reply has changed shape, not that the
+        # space is flat. Returning {} would re-save every page with no parent and wipe
+        # the structure already stored.
+        if nodes and not any(node.get("pageId") is not None for node in nodes):
+            self.logger.warning(
+                "Drupal Wiki: page structure of '%s' has no page ids", space_name
+            )
+            self._report_space_problem(TREE_UNREADABLE, f"'{space_name}'")
+            return None
+        return self._extract_parent_page_ids(nodes)
 
     @staticmethod
     def _extract_parent_page_ids(tree_nodes: list[dict[str, Any]]) -> dict[int, int]:
@@ -1459,10 +1798,53 @@ class DrupalWikiConnector(BaseConnector):
         self._failures.append(message)
         self.logger.error("Drupal Wiki: %s", message)
 
-    def _failure_preview(self, limit: int = 10) -> str:
-        """The failures as a bulleted list, because a run can collect a dozen."""
-        preview = "\n".join(f"- {failure}" for failure in self._failures[:limit])
-        extra = len(self._failures) - limit
+    def _report_space_problem(self, problem: SpaceProblem, label: str) -> None:
+        """``label`` names the space as the notification shows it, quoted."""
+        self._space_problems.setdefault(problem, []).append(label)
+        self.logger.warning("Drupal Wiki: %s", problem.message.format(spaces=label))
+
+    def _space_problem_lines(self) -> list[str]:
+        return [
+            problem.message.format(spaces=_listed(names))
+            for problem, names in self._space_problems.items()
+        ]
+
+    def _problem_lines(self) -> list[str]:
+        """One line per kind of space problem, then each failure."""
+        return self._space_problem_lines() + self._failures
+
+    async def _notify_problems(self, problems: list[str]) -> None:
+        """A failure is an error every run. Space problems last as long as the wiki refuses
+        GraphQL and the card already shows them, so they are a warning sent only when they
+        change: new spaces affected, kept access ending or ended."""
+        changed = await self._space_problems_changed(self._space_problem_lines())
+        if not self._failures and not changed:
+            return
+        await self.notify(
+            type=NotificationType.CONNECTOR_SYNC_ERROR if self._failures else NotificationType.CONNECTOR_WARNING,
+            severity=NotificationSeverity.ERROR if self._failures else NotificationSeverity.WARNING,
+            title=self._notification_title(f"sync finished with {_plural(len(problems), 'problem')}"),
+            message=self._failure_preview(problems),
+        )
+
+    async def _space_problems_changed(self, lines: list[str]) -> bool:
+        """Whether there are space problems unlike those last reported, remembering these."""
+        key = generate_record_sync_point_key("notice", "space_problems", "all")
+        digest = hashlib.sha256("\n".join(lines).encode()).hexdigest() if lines else ""
+        if (await self._get_checkpoint(self.record_sync_point, key)).get("digest", "") == digest:
+            return False
+        try:
+            await self.record_sync_point.update_sync_point(key, {"digest": digest})
+        except Exception as e:
+            # Reported again next run, which is better than not at all.
+            self.logger.warning("Could not remember the reported Drupal Wiki problems: %s", describe_exception(e))
+        return bool(lines)
+
+    @staticmethod
+    def _failure_preview(problems: list[str], limit: int = 10) -> str:
+        """The problems as a bulleted list, because a run can collect a dozen."""
+        preview = "\n".join(f"- {problem}" for problem in problems[:limit])
+        extra = len(problems) - limit
         return f"{preview}\n- ...and {extra} more" if extra > 0 else preview
 
     def _notification_title(self, event: str) -> str:

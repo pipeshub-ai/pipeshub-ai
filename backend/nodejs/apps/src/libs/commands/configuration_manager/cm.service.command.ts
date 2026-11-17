@@ -1,11 +1,6 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
 import { BaseCommand } from '../command.interface';
-import { Logger } from '../../services/logger.service';
-import { redactSensitiveQueryParams } from '../../utils/log-redaction.utils';
-
-const logger = Logger.getInstance({
-  service: 'ConfigurationManagerServiceCommand',
-});
+import { upstreamFetch } from '../../http/upstream-call';
 
 export interface ConfigurationManagerCommandOptions {
   uri: string;
@@ -45,34 +40,18 @@ export class ConfigurationManagerServiceCommand extends BaseCommand<Configuratio
     if (this.body !== undefined) {
       requestOptions.body = this.body;
     }
-    try {
-      const response = await this.fetchWithRetry(
-        async () => fetch(url, requestOptions),
-        3,
-        300,
-      );
+    const response = await this.fetchWithRetry(
+      (attempt) => upstreamFetch(url, requestOptions, attempt),
+      3,
+      300,
+    );
 
-      logger.debug('Configuration Manager service command response', {
-        statusCode: response.status,
-        statusText: response.statusText,
-        url: redactSensitiveQueryParams(url),
-      });
-
-      // Assuming the response is JSON; adjust as needed.
-      const data = await response.json();
-      return {
-        statusCode: response.status,
-        data: data,
-        msg: response.statusText,
-      };
-    } catch (error: any) {
-      logger.error('Configuration Manager service command failed', {
-        error: error.message,
-        url: redactSensitiveQueryParams(url),
-        // Headers carry the caller's bearer token and bodies carry connector secrets.
-        method: this.method,
-      });
-      throw error;
-    }
+    // Assuming the response is JSON; adjust as needed.
+    const data = await response.json();
+    return {
+      statusCode: response.status,
+      data: data,
+      msg: response.statusText,
+    };
   }
 }

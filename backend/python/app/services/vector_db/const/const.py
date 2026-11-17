@@ -11,6 +11,10 @@ from app.services.vector_db.collections import CollectionType, sanitize_collecti
 
 VIRTUAL_RECORD_ID_FIELD = "metadata.virtualRecordId"
 ORG_ID_FIELD = "metadata.orgId"
+# Which revision and embedding setup wrote a point, so a resumed embedding run can remove the points
+# of another (see app/modules/indexing/embed_resume.py).
+CONTENT_REV_FIELD = "metadata.contentRev"
+EMBED_KEY_FIELD = "metadata.embedKey"
 CONNECTOR_IDS_FIELD = "connectorIds"
 RECORD_GROUP_IDS_FIELD = "recordGroupIds"
 # Root of a record's group chain, so search can scope by root instead of every
@@ -21,6 +25,8 @@ ROOT_RECORD_GROUP_IDS_FIELD = "rootRecordGroupIds"
 PAYLOAD_KEYWORD_INDEXES = (
     (VIRTUAL_RECORD_ID_FIELD, {"type": "keyword"}),
     (ORG_ID_FIELD, {"type": "keyword"}),
+    (CONTENT_REV_FIELD, {"type": "keyword"}),
+    (EMBED_KEY_FIELD, {"type": "keyword"}),
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
     (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
     (ROOT_RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),

@@ -71,11 +71,12 @@ class Harness:
         self.schemas = MetadataSchemaRegistry(FakeConfig())
         self.user = "writer"
         self.kb = FakeKb()
+        self.ledger = None
 
     def service(self) -> KbPushService:
         svc = KbPushService(
             graph_provider=MagicMock(), kb_service=self.kb, processor_for_kb=AsyncMock(), schema_registry=self.schemas,
-            storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
+            storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=self.worker, spool=self.spool, publish_event=AsyncMock(), ledger=self.ledger,
         )
 
         async def push(**kw) -> PushResult:
@@ -652,3 +653,33 @@ async def test_a_content_length_in_non_ascii_digits_is_ignored_and_the_body_stil
     with pytest.raises(PushRefusal) as e:
         await A.read_bounded({"content-length": declared}, too_big(), 1000)
     assert (e.value.status, e.value.reason) == (413, "PAYLOAD_TOO_LARGE")
+
+
+# ---- suspension is answered before the body is read ------------------------------------------------------
+
+def test_a_suspended_caller_is_refused_before_the_body_is_read(client, h) -> None:
+    from app.connectors.sources.localKB.push import ledger as L
+
+    h.ledger = L.PushLedger()
+    for i in range(3):
+        h.ledger.strike(("org1", "writer"), f"b:{i}", L.TEXT)
+    spy = AsyncMock(wraps=h.admission.read_body)
+    h.admission.read_body = spy
+    r = client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON)
+    assert (r.status_code, error(r)["reason"]) == (429, "PUSH_SUSPENDED")
+    assert 0 < int(r.headers["retry-after"]) <= 600
+    assert spy.await_count == 0 and not h.pushed and h.worker.validate.await_count == 0
+    h.user = "owner"  # another caller, same service: served
+    assert client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON).status_code == 201
+
+
+def test_a_caller_over_the_shared_worker_budget_is_refused_before_the_body_is_read(client, h) -> None:
+    from app.connectors.sources.localKB.push import ledger as L
+
+    h.ledger = L.PushLedger()
+    h.ledger.lease(("org1", "writer"), 151.0)
+    spy = AsyncMock(wraps=h.admission.read_body)
+    h.admission.read_body = spy
+    r = client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON)
+    assert (r.status_code, error(r)["reason"]) == (503, "PUSH_TIMEOUT") and int(r.headers["retry-after"]) > 0
+    assert spy.await_count == 0 and not h.pushed

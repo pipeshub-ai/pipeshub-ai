@@ -238,7 +238,8 @@ async def _discover_listing_for_owner(
     except MCPConnectionError as exc:
         if auth_mode != MCPAuthMode.OAUTH.value or not is_http_unauthorized(exc):
             raise
-    logger.info("MCP instance %s rejected discovery with HTTP 401; refreshing the token once", config.id)
+    # DEBUG: the refresh's own `credential_refresh.end` says it happened, and how it went.
+    logger.debug("The MCP server rejected discovery with HTTP 401; refreshing the token once", extra={"mcp_server_id": config.id})
     tokens = await refresh_credential_record(
         config.id, owner_id, config_service, stale_access_token=credentials.get("accessToken"),
     )

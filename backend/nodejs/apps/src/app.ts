@@ -12,6 +12,7 @@ import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createLocalReposRouter } from './modules/local_repos/routes/local_repos.routes';
 import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -689,6 +690,12 @@ export class Application {
       createCodeGraphRouter(this.esAgentContainer),
     );
 
+    // push a local repository to be indexed into the code graph (proxy to the connectors service)
+    this.app.use(
+      '/api/v1/local-repos',
+      createLocalReposRouter(this.tokenManagerContainer),
+    );
+
     // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
     this.app.use('/api/v1/graph', createGraphViewRouter(this.esAgentContainer));
 
@@ -1210,6 +1217,13 @@ export class Application {
         slackEventsRateLimitPerMinute(),
       ),
       (req, res) => {
+        // A reset errors both proxyReq and proxyRes: log and close once.
+        const fail = (err: Error): void => {
+          if (res.destroyed) return;
+          this.logger.error('Slack events proxy error', { error: err.message });
+          if (res.headersSent) res.destroy();
+          else res.status(502).json({ error: 'Slack bot service unavailable' });
+        };
         const proxyReq = http.request(
           {
             hostname: 'localhost',
@@ -1220,18 +1234,12 @@ export class Application {
           },
           (proxyRes) => {
             res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            // pipe() leaves `res` open when the bot's answer is cut midway.
+            proxyRes.on('error', fail);
             proxyRes.pipe(res);
           },
         );
-
-        proxyReq.on('error', (err) => {
-          this.logger.error('Slack events proxy error', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          if (!res.headersSent) {
-            res.status(502).json({ error: 'Slack bot service unavailable' });
-          }
-        });
+        proxyReq.on('error', fail);
 
         req.pipe(proxyReq);
       },

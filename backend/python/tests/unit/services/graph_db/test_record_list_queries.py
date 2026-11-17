@@ -48,13 +48,15 @@ HUB_FILTERS = {
     "record_group_ids": ["g1"],
 }
 
-# start_id, start_type, flatten
+# start_id, start_type, flatten, the view's own filters
 HUB_VIEWS = {
-    "all records": (None, "app", True),
-    "app children": (None, "app", False),
-    "group children": ("g1", "recordGroup", False),
-    "folder children": ("f1", "folder", False),
-    "below a folder": ("f1", "folder", True),
+    "all records": (None, "app", True, None),
+    "app children": (None, "app", False, None),
+    "group children": ("g1", "recordGroup", False, None),
+    "folder children": ("f1", "folder", False, None),
+    "below a folder": ("f1", "folder", True, None),
+    # the sidebar of a folder whose record can have an arrow: its arrow is read apart (`sidebar_rows`)
+    "folder sidebar": ("f1", "folder", False, {"only_containers": True}),
 }
 
 
@@ -81,14 +83,21 @@ class _Hub:
             "chain_top_groups": [{"ownGroups": ["g9"], "ids": ["s1"]}],
             "chain_top_details": [{"id": "s1", "handle": "records/s1", "parents": ["p9"],
                                    "ownGroups": [{"id": "g9", "deleted": False}]}],
-            "chain_top_facts": [{"hidden": [], "underApp": []}],
+            "chain_top_hidden": [],
             "lineage": [{"ancestors": ["a1"], "declared": ["g1"]}],
             "browse_start": [{"handle": "records/f1", "fromApp": from_app, "crumbNodes": [], "crumbEdges": []}],
             "enrich": [{"i": 0, "row": row}],
-            "enrich_exact": [{"i": 0, "row": row}],
+            "enrich_exact": [{"i": 0, "row": {**row, "khStub": True, "khAsk": True}}],
+            # the frontier of a row whose rules list nothing, read apart
+            "frontier": [{"h": "records/r1", "kids": ["k1"]}],
+            "enrich_exact_stubs": [{"i": 0, "hasChildren": False}],
+            # one hop of a browse's rules and the children they leave undecided, in one statement
+            "step_app_undecided": [{"walked": ["records/r1"], "undecided": ["records/u1"]}],
+            "step_browse_undecided": [{"walked": ["records/r3"], "undecided": ["records/u1"]}],
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],
+            "sidebar_rows": [["records/r1", True, False]],
             "connector": ["app1"],
             "name_matches": ["records/r1"],
             "own_groups": ["recordGroups/g1"],
@@ -106,6 +115,8 @@ class _Hub:
         if name is None:
             name = "slim" if "kh_handles" in query else "connector"
         self.sent.add(name)
+        if name == "slim" and "kh_side" in query:
+            return [["records/r1", "record", "a", False, True]]      # a browse sidebar's record that can have an arrow
         if name in self._levels:
             frontier = bind_vars.get("kh_frontier") or bind_vars.get("kh_front") or []
             found = [h for h in self._levels[name] if h not in frontier]
@@ -129,19 +140,19 @@ def _arango_hub(*, opens: bool, from_app: bool) -> tuple[ArangoHTTPProvider, _Hu
 @pytest.mark.parametrize("filtered", [False, True])
 async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from_app, filtered) -> None:
     provider, hub = _arango_hub(opens=opens, from_app=from_app)
-    start_id, start_type, flatten = HUB_VIEWS[view]
+    start_id, start_type, flatten, own = HUB_VIEWS[view]
 
     page = await provider.get_knowledge_hub_connector_page_v3(
         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
         flatten=flatten, sort_field="updatedAt", sort_dir="DESC",
-        filters=HUB_FILTERS if filtered else None, start_id=start_id, start_type=start_type,
+        filters={**(HUB_FILTERS if filtered else {}), **(own or {})} or None, start_id=start_id, start_type=start_type,
         include_scope=True,
     )
 
     assert [row["id"] for row in page["rows"]] == ["r1"], "the listing stopped before its page"
     assert {"app", "slim", "check:targets"} <= hub.sent, hub.sent
-    # A browse reads the exact arrows, a flatten the strict ones.
-    assert hub.sent & {"enrich", "enrich_exact"} == ({"enrich"} if flatten else {"enrich_exact"}), hub.sent
+    # A browse reads the exact arrows (each row's own reach), a flatten the strict ones.
+    assert hub.sent & {"enrich", "enrich_exact", "enrich_exact_stubs"} == ({"enrich"} if flatten else {"enrich_exact", "enrich_exact_stubs"}), hub.sent
     for query, binds in hub.calls:
         assert _declared(query) == set(binds), query
 
@@ -149,10 +160,10 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
 async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
     """Or a statement with a wrong bind would pass the test above unseen."""
     reached: set[str] = set()
-    for start_id, start_type, flatten in HUB_VIEWS.values():
+    for start_id, start_type, flatten, own in HUB_VIEWS.values():
         for opens in (False, True):
             for from_app in (False, True):
-                for filters in (None, {"search_query": "report"}):
+                for filters in (own, {"search_query": "report", **(own or {})}):
                     provider, hub = _arango_hub(opens=opens, from_app=from_app)
                     await provider.get_knowledge_hub_connector_page_v3(
                         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,

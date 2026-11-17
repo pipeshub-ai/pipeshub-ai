@@ -283,6 +283,8 @@ class TestAbstractMethodInventory:
         "update_indexing_status_for_record_ids",
         "reset_indexing_status_for_connector",
         "compare_and_set_indexing_status",
+        "list_unsupported_page",
+        "transition_unsupported",
         "claim_push_record",
         "retag_push_record",
         "get_existing_record_keys",
@@ -455,6 +457,7 @@ class TestAbstractMethodInventory:
         "get_trash_purge_stats",
         "purge_trash_kept_record_groups",
         "delete_blocks_for_records",
+        "sweep_deleted_connector_writes",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",
@@ -566,6 +569,12 @@ class TestAbstractMethodInventory:
         "delete_all_edges_for_node",
         "get_template",
         "clone_agent_template",
+        "get_all_agent_templates",
+        "update_agent_template",
+        "delete_agent_template",
+        "get_all_agents",
+        "update_agent",
+        "delete_agent",
     ]
 
     def test_all_expected_methods_are_abstract(self):

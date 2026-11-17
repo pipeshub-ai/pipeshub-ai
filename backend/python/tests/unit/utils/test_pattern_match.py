@@ -43,6 +43,7 @@ from app.utils.pattern_match import (
     validate_grep_command,
     validate_pattern_match_command,
 )
+from tests.support.loop_clock import virtual_loop_time
 
 
 @pytest.fixture(autouse=True)
@@ -3592,9 +3593,11 @@ class TestRunPatternMatchWithLlmGrep:
             await caller
 
     @pytest.mark.asyncio
-    async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self) -> None:
+    async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The budget plus a bounded grace is all the caller waits; the rest of
         a slow teardown carries on in the background."""
+        # On a loop clock the test controls, so the wait is exact and a busy runner's stall cannot stretch it.
+        virtual_loop_time(monkeypatch)
         cleanup_done = asyncio.Event()
 
         async def _very_slow_cleanup() -> list[dict]:
@@ -3615,7 +3618,7 @@ class TestRunPatternMatchWithLlmGrep:
             )
         elapsed = asyncio.get_running_loop().time() - started
         assert result == [{"virtual_record_id": "vr-1"}]
-        assert elapsed < 1.0
+        assert elapsed == pytest.approx(0.25)  # the 0.05 s budget and the 0.2 s grace, not the 2.5 s teardown
         assert not cleanup_done.is_set()
         await asyncio.wait_for(cleanup_done.wait(), timeout=5)
 

@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from app.config.constants.arangodb import ProgressStatus
 from app.core.org_context import for_org
 from app.modules.pipeline.models import (
+    ForeignStatus,
     Priority,
     RecordView,
     StageJob,
@@ -25,6 +26,7 @@ from app.modules.pipeline.models import (
     StageState,
     StageStatePatch,
 )
+from app.modules.pipeline.pause_store import PauseStore
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.publisher import PublisherNotBoundError
 from app.modules.pipeline.registry import StageRegistry
@@ -83,8 +85,11 @@ class Coordinator:
         policy_for: Callable[[str], PipelinePolicy],
         logger: logging.Logger,
         clock_ms: Callable[[], int] = _now_ms,
+        pause_store: PauseStore | None = None,
     ) -> None:
         super().__init__()
+        # Where a revision's pause budget lives; only a forced claim starts it over (``pause_budget``).
+        self._pause_store = pause_store
         self._registry = registry
         self._states = states
         self._headlines = headlines
@@ -117,7 +122,8 @@ class Coordinator:
         state = StageState.from_job(job, ProgressStatus.COMPLETED, self._clock_ms())
         if not await self._states.create_if_absent(state):
             existing = await self._states.get(state.key)
-            if existing is not None and existing.status not in _DONE:
+            # A row a newer release owns is left as it is, even by the prerequisite that names it.
+            if existing is not None and not isinstance(existing.status, ForeignStatus) and existing.status not in _DONE:
                 _ = await self._states.cas(
                     state.key,
                     expected=existing.status,
@@ -137,7 +143,8 @@ class Coordinator:
         return await self._dispatch_after(job.stage, result.record_view, priority=job.priority, force=job.force)
 
     async def redrive(self, view: RecordView, stage: str, *, priority: Priority, force: bool) -> str | None:
-        """Re-dispatch one stage for one revision; None when it is already queued or running."""
+        """Re-dispatch one stage for one revision; None when it is already queued or running, or a newer
+        release owns its state."""
         target = self._registry.get(stage)
         job = self._job_for(target.name, target.version, view, priority=priority, trigger="redrive", force=force)
         claimed_from = await self._claim(job)
@@ -153,7 +160,7 @@ class Coordinator:
         indexer's hand-off reached the runtime and its successors are the runtime's
         (or the sweeper's) to dispatch."""
         states = await self._states.get_many(virtual_record_id, rev)
-        return any(self._registry.is_external(s.stage) and s.status in _DONE for s in states.values())
+        return any(self._recorded(s) for s in states.values())
 
     async def redrive_revision(
         self, virtual_record_id: str, rev: str, stages: Sequence[str], *, priority: Priority, force: bool
@@ -162,11 +169,18 @@ class Coordinator:
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
         instead, which dispatches every stage."""
         states = await self._states.get_many(virtual_record_id, rev)
-        origin = next(
-            (s for s in states.values() if self._registry.is_external(s.stage) and s.status in _DONE), None
-        )
-        if origin is None:
+        recorded = [s for s in states.values() if self._recorded(s)]
+        if not recorded:
             return None
+        origin = next((s for s in recorded if not isinstance(s.status, ForeignStatus)), None)
+        if origin is None:
+            # A newer release recorded the revision and owns its stages. None would make the caller reindex it
+            # from scratch, so this asks for nothing instead.
+            self._logger.info(
+                "Not re-running stages %s for %s:%s: a newer release recorded this revision", list(stages),
+                virtual_record_id, rev,
+            )
+            return []
         view = origin.to_job().view
         dispatched: list[str] = []
         for stage in stages:
@@ -177,6 +191,12 @@ class Coordinator:
             if job_id is not None:
                 dispatched.append(job_id)
         return dispatched
+
+    def _recorded(self, state: StageState) -> bool:
+        """An external prerequisite finished for the revision: here, or in a newer release (a foreign status)."""
+        return self._registry.is_external(state.stage) and (
+            isinstance(state.status, ForeignStatus) or state.status in _DONE
+        )
 
     async def sweep(
         self,
@@ -322,11 +342,27 @@ class Coordinator:
             )
 
     async def _claim(self, job: StageJob) -> ProgressStatus | None:
-        """Claim ``job``'s state for dispatch; returns the status it was claimed from, or None."""
+        """Claim ``job``'s state for dispatch; returns the status it was claimed from, or None.
+
+        A forced claim (a user's redrive) gives the revision a fresh pause budget; an automatic one keeps it,
+        so a revision whose budget is spent cannot start over by being dispatched again."""
+        claimed = await self._claim_state(job)
+        if claimed is None:
+            return None
+        claimed_from, claimed_attempt = claimed
+        if job.force and self._pause_store is not None:
+            try:
+                await self._pause_store.reset(job.state_key, attempt=claimed_attempt)
+            except Exception:
+                self._logger.warning("Could not reset the pause budget of %s; it expires on its own", job.state_key)
+        return claimed_from
+
+    async def _claim_state(self, job: StageJob) -> tuple[ProgressStatus, int] | None:
+        """The status the claim took the state from and its attempt (the runs up to it are over)."""
         if await self._states.create_if_absent(StageState.from_job(job, ProgressStatus.QUEUED, self._clock_ms())):
-            return ProgressStatus.NOT_STARTED
+            return ProgressStatus.NOT_STARTED, 0
         existing = await self._states.get(job.state_key)
-        if existing is None or existing.status not in _CLAIMABLE:
+        if existing is None or isinstance(existing.status, ForeignStatus) or existing.status not in _CLAIMABLE:
             return None
         if await self._states.cas(
             job.state_key,
@@ -334,7 +370,7 @@ class Coordinator:
             new=ProgressStatus.QUEUED,
             patch=StageStatePatch.dispatch(job),
         ):
-            return existing.status
+            return existing.status, existing.attempt
         return None
 
     async def _publish(self, job: StageJob, *, release_to: ProgressStatus | None) -> None:

@@ -1,10 +1,22 @@
 """Shared fixtures for localKB KnowledgeBaseService unit tests."""
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.sources.localKB.handlers import kb_service as kb_module
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+
+
+@pytest.fixture(autouse=True)
+def _restore_background_tasks() -> Iterator[None]:
+    # A test that patches the module's asyncio leaves a MagicMock "task" in this module-wide set, and its
+    # done-callback never fires; a later test elsewhere that awaits every background task fails on it.
+    before = set(kb_module._BACKGROUND_TASKS)
+    yield
+    kb_module._BACKGROUND_TASKS.clear()
+    kb_module._BACKGROUND_TASKS.update(before)
 
 
 @pytest.fixture

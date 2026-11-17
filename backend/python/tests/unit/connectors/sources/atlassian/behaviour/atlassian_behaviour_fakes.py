@@ -199,7 +199,7 @@ class FakeRecordsDb:
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
 
-    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any], *, drop_grants: bool = False) -> None:
         self.withdrawn_users.extend(users)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
@@ -289,7 +289,9 @@ class FakeRecordsDb:
             if record.id == record_id:
                 del self.records[external_id]
 
-    async def on_record_content_update(self, record: Record, permissions: list[Any] | None = None) -> None:
+    async def on_record_content_update(
+        self, record: Record, permissions: list[Any] | None = None, *, content_changed: bool = True,
+    ) -> None:
         self.content_updates.append(record)
         # The processor upserts the record before it publishes updateRecord.
         self.records[record.external_record_id] = record

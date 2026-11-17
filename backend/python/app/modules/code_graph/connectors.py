@@ -40,6 +40,8 @@ CODE_CONNECTOR_TYPES = frozenset({
     Connectors.GITLAB_PERSONAL.value,
     Connectors.GITHUB.value,
     Connectors.GITHUB_TEAMS.value,
+    # A repository pushed by a client and mirrored on the server (connectors/sources/local_repo/)
+    Connectors.LOCAL_REPO.value,
 })
 
 

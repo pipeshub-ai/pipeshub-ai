@@ -80,6 +80,8 @@ interface ResponseBody {
   details?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   providers?: StoredProvider[];
+  warning?: string;
+  configured?: boolean;
 }
 
 interface FakeRes {
@@ -472,7 +474,7 @@ describe('Configuration manager stored settings', () => {
       ]);
     });
 
-    it('leaves DuckDuckGo as the default when only a page reader is left', async () => {
+    it('leaves web search unset when only a page reader is left', async () => {
       const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
       kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader] }));
 
@@ -517,16 +519,118 @@ describe('Configuration manager stored settings', () => {
       expect(stored().providers.map((p) => p.isDefault)).to.deep.equal([false, true]);
     });
 
-    it('makes the built-in DuckDuckGo the default by clearing every stored default', async () => {
-      kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
+    describe('choosing DuckDuckGo', () => {
+      const choose = () =>
+        run(updateDefaultWebSearchProvider(store(), appConfig), { params: { providerKey: 'duckduckgo' } });
 
-      const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), {
-        params: { providerKey: 'duckduckgo' },
+      it('stores it as the default and clears every other default', async () => {
+        kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
+
+        const { res } = await choose();
+
+        expect(res.statusCode).to.equal(200);
+        expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+          ['serper', false],
+          ['tavily', false],
+          ['duckduckgo', true],
+        ]);
+        expect(healthChecks).to.deep.equal([{ provider: 'duckduckgo', configuration: {} }]);
       });
 
-      expect(res.statusCode).to.equal(200);
-      expect(stored().providers.map((p) => p.isDefault)).to.deep.equal([false, false]);
-      expect(healthChecks).to.have.length(0);
+      it('sets web search up for an org that has stored nothing', async () => {
+        const { res } = await choose();
+
+        expect(res.statusCode).to.equal(200);
+        expect(stored().providers).to.have.length(1);
+        expect(stored().providers[0]).to.deep.include({ provider: 'duckduckgo', isDefault: true, configuration: {} });
+        expect(stored().providers[0]?.providerKey).to.be.a('string').and.not.equal('duckduckgo');
+      });
+
+      it('is stored once however often it is chosen', async () => {
+        await choose();
+        await choose();
+
+        expect(stored().providers.filter((p) => p.provider === 'duckduckgo')).to.have.length(1);
+      });
+
+      for (const errorType of ['blocked', 'rate_limited']) {
+        it(`still saves it, with a warning, when the test search is refused (${errorType})`, async () => {
+          kv.values.set(configPaths.webSearch, seal({ providers: [serper] }));
+          healthAnswer = {
+            status: 400,
+            body: { error: 'DuckDuckGo blocked the test search as automated traffic.', errorType },
+          };
+
+          const { res } = await choose();
+
+          expect(res.statusCode).to.equal(200);
+          expect(res.body?.warning).to.match(/blocked the test search/).and.match(/saved anyway/);
+          expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+            ['serper', false],
+            ['duckduckgo', true],
+          ]);
+        });
+      }
+
+      it('has no warning when the test search passes', async () => {
+        const { res } = await choose();
+
+        expect(res.statusCode).to.equal(200);
+        expect(res.body).to.not.have.property('warning');
+      });
+
+      it('changes nothing when it fails for any other reason', async () => {
+        const original = seal({ providers: [serper, tavily] });
+        kv.values.set(configPaths.webSearch, original);
+        healthAnswer = { status: 500, body: { error: "Couldn't reach DuckDuckGo for web search." } };
+
+        const { res } = await choose();
+
+        expect(res.statusCode).to.equal(500);
+        expect(res.body?.message).to.match(/reach DuckDuckGo/);
+        expect(kv.values.get(configPaths.webSearch)).to.equal(original);
+      });
+
+      it('does not save when it lost a race with another write', async () => {
+        const original = seal({ providers: [serper] });
+        kv.values.set(configPaths.webSearch, original);
+        kv.casConflictsLeft = 1;
+
+        const { res } = await choose();
+
+        expect(res.statusCode).to.equal(409);
+        expect(kv.values.get(configPaths.webSearch)).to.equal(original);
+      });
+
+      it('follows the same rule when chosen again by the key it was stored under', async () => {
+        const ddg = { provider: 'duckduckgo', providerKey: 'ddg-uuid', configuration: {}, isDefault: false };
+        kv.values.set(configPaths.webSearch, seal({ providers: [{ ...serper, isDefault: true }, ddg] }));
+        healthAnswer = { status: 400, body: { error: 'DuckDuckGo blocked the test search.', errorType: 'blocked' } };
+
+        const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), {
+          params: { providerKey: 'ddg-uuid' },
+        });
+
+        expect(res.statusCode).to.equal(200);
+        expect(res.body?.warning).to.match(/saved anyway/);
+        expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+          ['serper', false],
+          ['duckduckgo', true],
+        ]);
+      });
+    });
+
+    it('does not overwrite a write that landed while another provider was being checked', async () => {
+      const original = seal({ providers: [serper, tavily] });
+      kv.values.set(configPaths.webSearch, original);
+      kv.casConflictsLeft = 1;
+
+      const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), {
+        params: { providerKey: tavily.providerKey },
+      });
+
+      expect(res.statusCode).to.equal(409);
+      expect(kv.values.get(configPaths.webSearch)).to.equal(original);
     });
 
     it('saves the image settings and keeps the providers', async () => {
@@ -552,8 +656,8 @@ describe('Configuration manager stored settings', () => {
 
       expect(res.statusCode).to.equal(200);
       expect(JSON.stringify(res.body)).to.not.include('real-key');
-      expect(res.body?.providers?.map((p) => p.provider)).to.deep.equal(['duckduckgo', 'serper', 'tavily']);
-      expect(res.body?.providers?.[0]?.isDefault).to.be.false;
+      expect(res.body?.providers?.map((p) => p.provider)).to.deep.equal(['serper', 'tavily']);
+      expect(res.body?.configured).to.be.true;
     });
 
     describe('self-hosted server addresses', () => {

@@ -19,7 +19,10 @@ from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.address_policy import public_only_for_scope
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    replace_action_item,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -39,6 +42,9 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     load_connector_filters,
 )
+from app.connectors.core.registry.folder_filter_action_item import (
+    FOLDER_FILTER_UNMATCHED_CODE,
+)
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.cifs.common.apps import CifsApp
 from app.connectors.sources.network_share.entities_processor import (
@@ -53,6 +59,7 @@ from app.connectors.sources.network_share.errors import (
 from app.connectors.sources.network_share.operations import (
     create_share_groups,
     reindex_records,
+    requeue_parked_records,
     stream_file,
     walk_shares,
 )
@@ -172,7 +179,7 @@ if TYPE_CHECKING:
             "https://docs.pipeshub.com/connectors/cifs/cifs",
             "pipeshub",
         ))
-        .add_filter_field(CommonFields.folder_paths_filter("share"))
+        .add_filter_field(CommonFields.folder_paths_filter("share", path_style="windows", wildcards=True))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files by creation date. Uses last-write time when the server omits created time."))
@@ -184,6 +191,7 @@ if TYPE_CHECKING:
     )\
     .build_decorator()
 class CifsConnector(BaseConnector):
+    REQUEUE_PARKED = True
     # ConnectorFactory builds this connector's processor from this class.
     processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
 
@@ -353,6 +361,9 @@ class CifsConnector(BaseConnector):
             prune=prune,
         )
         self._last_walk = report
+        if report.complete:
+            # Only a walk that read everything knows a pattern matched nothing.
+            replace_action_item(self, FOLDER_FILTER_UNMATCHED_CODE, report.unmatched_patterns_item())
         unreadable = report.unreadable
         if unreadable:
             await self.notify(
@@ -379,6 +390,17 @@ class CifsConnector(BaseConnector):
             await self.data_source.close()
         self.data_source = None
         await self._release_thread_lease()
+
+    async def requeue_records(self, records: list[Record]) -> None:
+        if not self.data_source:
+            raise ConnectionError("CIFS connector is not initialized.")
+        await requeue_parked_records(
+            data_source=self.data_source,
+            processor=self.data_entities_processor,
+            records=records,
+            indexing_filters=self.indexing_filters,
+            logger=self.logger,
+        )
 
     async def reindex_records(self, record_results: list[Record]) -> None:
         if not self.data_source:

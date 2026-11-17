@@ -139,19 +139,17 @@ async def test_backfill_links_member_sender_and_recipients_once(backend) -> None
         assert org_doc["entityIndexState"] is None
 
 
+@pytest.mark.parametrize("backend", ["neo4j"], indirect=True)
 async def test_neo4j_backfill_pages_walk_the_id_order_without_sorting(backend) -> None:
     """Review: each page filtered the org then sorted all of its records by
     id, so a large org paid its whole size on every page. An (orgId, id)
     index serves the order; the plan must not sort."""
-    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
     from tests.integration.graph_db.test_entity_graph_real_backends import (
         _capture_queries,
         _profile,
     )
 
     provider, org = backend
-    if not isinstance(provider, Neo4jProvider):
-        pytest.skip("Neo4j only")
     await provider.ensure_schema()
     await _seed(provider, org)
     captured = _capture_queries(provider)
@@ -164,15 +162,12 @@ async def test_neo4j_backfill_pages_walk_the_id_order_without_sorting(backend) -
         assert not [op for op in plan["operators"] if "Sort" in op or "Top" in op], plan["operators"]
 
 
+@pytest.mark.parametrize("backend", ["arango"], indirect=True)
 async def test_arango_backfill_pages_seek_the_orgs_keys_without_sorting(backend) -> None:
     """Review: no index served "this org's records in key order", so a page
     either sorted the org's records or walked every org's keys. An
     (orgId, _key) index, hinted, gives the order within the org."""
-    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-
     provider, org = backend
-    if not isinstance(provider, ArangoHTTPProvider):
-        pytest.skip("ArangoDB only")
     await provider.ensure_schema()
     await _seed(provider, org)
     sent: list[dict[str, Any]] = []
@@ -375,12 +370,9 @@ class TestPeopleWithoutAnEmail:
         assert first and again == first
 
 
+@pytest.mark.parametrize("backend", ["arango"], indirect=True)
 async def test_arango_keeps_no_index_that_counts_a_missing_email(backend) -> None:
-    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-
     provider, _ = backend
-    if not isinstance(provider, ArangoHTTPProvider):
-        pytest.skip("ArangoDB only")
     await provider.ensure_schema()
     indexes = await provider.http_client.get_indexes(CollectionNames.PEOPLE.value)
     by_fields = {tuple(i.get("fields", [])): i for i in indexes if i.get("type") == "persistent"}

@@ -52,7 +52,9 @@ from app.utils.url_fetcher import private_addresses_blocked
 from app.utils.url_redaction import redact_urls_in_text
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
-INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+# search() tries every "[", so a scan stops at the next one: the last "[" before an unfinished
+# citation decides the answer, and scanning on from each earlier one takes quadratic time.
+INCOMPLETE_CITE_RE = re.compile(r'\[[^\[\]]*(?:\]\([^)\[]*(?:\[[^)\[]*){0,8})?$')
 logger = create_logger("streaming")
 
 # Re-export for tests that patch app.utils.streaming.opik_tracer
@@ -886,7 +888,7 @@ def _initialize_answer_parser_regex() -> tuple[re.Pattern, re.Pattern, re.Patter
     answer_key_re = re.compile(r'"answer"\s*:\s*"')
     # cite_block_re = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
     cite_block_re = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
-    incomplete_cite_re = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+    incomplete_cite_re = INCOMPLETE_CITE_RE
     # incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter

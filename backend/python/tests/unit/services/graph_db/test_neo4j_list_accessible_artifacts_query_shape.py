@@ -250,4 +250,6 @@ class TestNeo4jAllRecordsExcludesArtifacts:
             "dg.id IN $kh_lists.grantedIds"
         ) + listing.count("ca.id IN $kh_lists.grantedIds") + listing.count("cc.id IN $kh_lists.grantedIds") + listing.count(
             "kh_ch.id IN $kh_lists.grantedIds"
-        ) + listing.count("node.id IN $kh_lists.grantedIds") + listing.count("kh_bg.id IN $kh_lists.grantedIds")
+        ) + listing.count("node.id IN $kh_lists.grantedIds") + listing.count("kh_bg.id IN $kh_lists.grantedIds") + listing.count(
+            "kh_oc.id IN $kh_lists.grantedIds"      # a child's own walk from the App, where a group that hides its children lies above it
+        )

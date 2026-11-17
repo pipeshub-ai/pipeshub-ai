@@ -3,24 +3,34 @@
 Built from the ``folder_paths`` sync filter. Paths are relative to the bucket,
 container or share, use ``/`` and name folders, not arbitrary key prefixes:
 ``reports`` covers ``reports/2026/q1.pdf`` but not ``reports-old/a.pdf``.
+
+A connector that reads wildcards (``from_filters(..., wildcards=True)``) also
+takes folder patterns, anchored at the top: ``*`` matches within one folder
+name, ``?`` one character, and a whole ``**`` segment any number of folders.
+``customer/*/quotes`` covers each customer's ``quotes`` folder and all under it.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, NamedTuple
 
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
+    ListOperator,
     SyncFilterKey,
     name_passes_filter,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.utils.path_glob import name_regex
 
 if TYPE_CHECKING:
     import logging
+    import re
     from collections.abc import AsyncIterator, Callable, Container
 
     from app.config.configuration_service import ConfigurationService
@@ -49,64 +59,385 @@ def path_in_container(container_name: str | None, external_record_id: str | None
     return external_record_id[len(prefix):] or None
 
 
-def folder_path_problems(sync_values: dict[str, object]) -> list[str]:
-    """A folder filter value that would climb out of the bucket, container or share."""
-    entry = sync_values.get(SyncFilterKey.FOLDER_PATHS.value)
-    if not isinstance(entry, dict):
-        return []
-    raw = entry.get("value")
-    for value in raw if isinstance(raw, list) else [raw]:
-        if value is None:
+@dataclass(frozen=True)
+class PathRules:
+    """How a store compares folder names: what a value and a path are matched as.
+
+    Matching only. Listing calls and record ids keep the spelled path
+    (``FolderScope.spelled_root`` and ``spelled_child``).
+    """
+
+    casefold: bool = False
+    nfc: bool = False
+    # Windows and Azure Files names cannot hold `*`, `?` or `\`, so there `\` separates
+    # folders; on an object store it is a character, and escapes `*` and `?`.
+    backslash_separates: bool = False
+
+    @property
+    def is_identity(self) -> bool:
+        return not (self.casefold or self.nfc or self.backslash_separates)
+
+    def normalise(self, s: str) -> str:
+        if self.backslash_separates:
+            s = s.replace("\\", "/")
+        if self.nfc:
+            s = unicodedata.normalize("NFC", s)
+        if self.casefold:
+            s = s.casefold()
+            if self.nfc:
+                # casefold can leave a string that is no longer NFC.
+                s = unicodedata.normalize("NFC", s)
+        return s
+
+
+OBJECT_STORE_PATHS = PathRules()
+FILE_SHARE_PATHS = PathRules(casefold=True, nfc=True, backslash_separates=True)
+RULES_BY_PATH_STYLE = {"posix": OBJECT_STORE_PATHS, "windows": FILE_SHARE_PATHS}
+
+
+class FolderRole(Enum):
+    """What a walk does with a folder."""
+
+    KEEP = "keep"  # the folder is synced: write its record and walk it
+    PASS_THROUGH = "pass_through"  # it may lead to a synced folder: walk it, hold its record back
+    SKIP = "skip"  # nothing under it is synced: do not list it
+
+
+def _has_wildcard(text: str, *, escapes: bool) -> bool:
+    """Whether ``text`` holds a ``*`` or ``?`` that is not escaped (read as ``name_regex`` reads it)."""
+    i = 0
+    while i < len(text):
+        if escapes and text[i] == "\\" and text[i + 1:i + 2] in ("*", "?"):
+            i += 2
             continue
-        if any(part.strip() == ".." for part in str(value).replace("\\", "/").split("/")):
-            return [f'Folder "{value}" must be a path from the top of the store, without "..".']
-    return []
+        if text[i] in "*?":
+            return True
+        i += 1
+    return False
+
+
+def _unescape(text: str) -> str:
+    """``a\\*b`` -> ``a*b``; any other backslash stays."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and text[i + 1:i + 2] in ("*", "?"):
+            out.append(text[i + 1])
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _entry(value: str, rules: PathRules) -> str:
+    """A saved value as written, mapped to ``/`` separators, without outer slashes."""
+    text = value.strip()
+    if rules.backslash_separates:
+        text = text.replace("\\", "/")
+    return text.strip("/")
+
+
+def _drop_nested(folders: set[str]) -> tuple[str, ...]:
+    return tuple(sorted(f for f in folders if not any(f != o and f.startswith(o) for o in folders)))
 
 
 @dataclass(frozen=True)
+class FolderPattern:
+    """One folder value holding ``*``, ``?`` or ``**``, anchored at the top of the store."""
+
+    raw: str
+    listing_prefix: str  # the fixed start before the first wildcard segment, plus "/"; "" for none
+    segments: tuple[re.Pattern[str] | None, ...]  # None is a whole-segment "**"
+    # State j and every state after it reached through "**" segments, worked out once.
+    _closures: tuple[frozenset[int], ...] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        closures: list[frozenset[int]] = []
+        for start in range(len(self.segments) + 1):
+            j = start
+            reach = {j}
+            while j < len(self.segments) and self.segments[j] is None:
+                j += 1
+                reach.add(j)
+            closures.append(frozenset(reach))
+        object.__setattr__(self, "_closures", tuple(closures))
+
+    @classmethod
+    def parse(cls, entry: str, rules: PathRules) -> FolderPattern | None:
+        """``entry`` is a value after ``_entry``; None when every segment is ``**`` (the whole store)."""
+        escapes = not rules.backslash_separates
+        texts = entry.split("/")
+        if all(t == "**" for t in texts):
+            return None
+        segments = tuple(
+            None if t == "**" else name_regex(rules.normalise(t), escapes=escapes) for t in texts
+        )
+        fixed: list[str] = []
+        for t in texts:
+            if t == "**" or _has_wildcard(t, escapes=escapes):
+                break
+            fixed.append(_unescape(t) if escapes else t)
+        return cls(entry, "/".join(fixed) + "/" if fixed else "", segments)
+
+    def walk(self, parts: list[str]) -> tuple[bool, bool]:
+        """(full, open) over normalised folder names: whether every segment was matched by
+        some prefix of ``parts``, and whether a match is still possible below them."""
+        m = len(self.segments)
+        closures = self._closures
+        states = closures[0]
+        full = m in states
+        for name in parts:
+            moved: set[int] = set()
+            for j in states:
+                if j == m:
+                    continue
+                segment = self.segments[j]
+                if segment is None:
+                    moved |= closures[j]
+                elif segment.fullmatch(name):
+                    moved |= closures[j + 1]
+            if not moved:
+                return full, False
+            states = moved
+            full = full or m in states
+        return full, any(j < m for j in states)
+
+    def full_at(self, parts: list[str]) -> bool:
+        return self.walk(parts)[0]
+
+    def open_at(self, parts: list[str]) -> bool:
+        return self.walk(parts)[1]
+
+
+class _SpellingNode:
+    __slots__ = ("children", "is_literal", "typed")
+
+    def __init__(self, typed: str) -> None:
+        self.typed = typed
+        self.children: dict[str, _SpellingNode] = {}
+        self.is_literal = False
+
+
+@dataclass(frozen=True, eq=False)
 class FolderScope:
-    """Folder prefixes (each ending in ``/``) and whether they are excluded."""
+    """Folder prefixes (each ending in ``/``), folder patterns, and whether they are excluded.
+
+    ``folders`` keeps the literal values as before patterns existed, so ``key``
+    and ``describe`` of a literal-only scope are unchanged. ``rules`` say how
+    names compare; with file-share rules a value and a path match after
+    ``rules.normalise``.
+    """
 
     folders: tuple[str, ...] = ()
     exclude: bool = False
+    patterns: tuple[FolderPattern, ...] = ()
+    rules: PathRules = OBJECT_STORE_PATHS
+    # The literal values as listing paths ("a/b"), in saved order.
+    spellings: tuple[str, ...] = ()
+
+    _match_folders: tuple[str, ...] = field(init=False, repr=False, compare=False)
+    _first_spelling: dict[str, str] = field(init=False, repr=False, compare=False)
+    _trie: _SpellingNode = field(init=False, repr=False, compare=False)
+    _file_memo: list[tuple[str | None, bool]] = field(init=False, repr=False, compare=False)
+    _identity: tuple[object, ...] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        literal_forms = self._literal_forms()
+        if self.rules.is_identity or self.folders in ((), ("",)):
+            match_folders = self.folders
+        else:
+            normal = (self.rules.normalise(f).strip("/") for f in literal_forms)
+            match_folders = _drop_nested({f"{n}/" if n else "" for n in normal})
+        first: dict[str, str] = {}
+        trie = _SpellingNode("")
+        for form in literal_forms:
+            if not form:
+                continue
+            first.setdefault(self.rules.normalise(form), form)
+            node = trie
+            for part in form.split("/"):
+                node = node.children.setdefault(self.rules.normalise(part), _SpellingNode(part))
+            node.is_literal = True
+        object.__setattr__(self, "_match_folders", match_folders)
+        object.__setattr__(self, "_first_spelling", first)
+        object.__setattr__(self, "_trie", trie)
+        object.__setattr__(self, "_file_memo", [(None, False)])
+        # What decides behaviour, whatever the order or repetition of the saved values:
+        # the folders, the patterns, the rules, and on a share the spelling each folder
+        # above or at a literal takes (the first saved one).
+        spelled: list[tuple[tuple[str, ...], str, bool]] = []
+        if not (self.rules.is_identity or self.exclude):
+            stack: list[tuple[tuple[str, ...], _SpellingNode]] = [((), trie)]
+            while stack:
+                path, node = stack.pop()
+                for key, child in node.children.items():
+                    spelled.append(((*path, key), child.typed, child.is_literal))
+                    stack.append(((*path, key), child))
+        object.__setattr__(self, "_identity", (
+            self.folders, self.exclude, tuple(sorted({p.raw for p in self.patterns})), self.rules,
+            tuple(sorted(spelled)),
+        ))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FolderScope):
+            return NotImplemented
+        return self._identity == other._identity
+
+    def __hash__(self) -> int:
+        return hash(self._identity)
+
+    def _literal_forms(self) -> tuple[str, ...]:
+        if self.spellings:
+            return self.spellings
+        return tuple(f[:-1] if f.endswith("/") else f for f in self.folders)
 
     @classmethod
-    def from_filters(cls, sync_filters: FilterCollection | None) -> FolderScope:
+    def from_filters(
+        cls,
+        sync_filters: FilterCollection | None,
+        *,
+        rules: PathRules = OBJECT_STORE_PATHS,
+        wildcards: bool = False,
+    ) -> FolderScope:
+        """The scope of the ``folder_paths`` filter.
+
+        Without ``wildcards`` every value is a literal folder, as it always was.
+        With them a value holding ``*``, ``?`` or a ``**`` segment is a pattern;
+        on an object store ``\\*`` and ``\\?`` are a literal ``*`` and ``?``.
+        """
         folder_filter = sync_filters.get(SyncFilterKey.FOLDER_PATHS) if sync_filters else None
         if not folder_filter or folder_filter.is_empty():
-            return cls()
+            return cls(rules=rules)
         raw = folder_filter.value
-        values = raw if isinstance(raw, list) else [raw]
-        folders = {_as_folder(str(v)) for v in values if v is not None}
+        values = [str(v) for v in (raw if isinstance(raw, list) else [raw]) if v is not None]
         exclude = folder_filter.operator_value == "not_in"
-        if "" in folders:
+        escapes = wildcards and not rules.backslash_separates
+
+        literals: list[str] = []  # values as main read them, escapes resolved
+        spellings: list[str] = []
+        pattern_entries: list[str] = []
+        for value in values:
+            entry = _entry(value, rules)
+            if wildcards and _has_wildcard(entry, escapes=escapes):
+                if all(part == "**" for part in entry.split("/")):
+                    literals.append("")
+                    spellings.append("")
+                else:
+                    pattern_entries.append(entry)
+                continue
+            literals.append(_unescape(value) if escapes else value)
+            spellings.append(_unescape(entry) if escapes else entry)
+
+        folders = {_as_folder(v) for v in literals}
+        if "" in folders or "" in spellings:
             # The root folder was named: Include covers everything, Exclude nothing.
-            return cls(("",), True) if exclude else cls()
+            return cls(("",), True, rules=rules) if exclude else cls(rules=rules)
+        match_folders = {f"{rules.normalise(s)}/" for s in spellings}
+        patterns: list[FolderPattern] = []
+        for entry in dict.fromkeys(pattern_entries):
+            pattern = FolderPattern.parse(entry, rules)
+            assert pattern is not None  # an all-"**" value was read as the root above
+            # A pattern whose fixed start lies in a literal folder adds nothing.
+            fixed = rules.normalise(pattern.listing_prefix)
+            if not any(fixed.startswith(f) for f in match_folders):
+                patterns.append(pattern)
         # A folder inside another listed folder adds nothing.
-        kept = tuple(sorted(f for f in folders if not any(f != o and f.startswith(o) for o in folders)))
-        return cls(kept, exclude)
+        return cls(_drop_nested(folders), exclude, tuple(patterns), rules, tuple(spellings))
 
     @property
     def is_everything(self) -> bool:
-        return not self.folders
+        return not self.folders and not self.patterns
 
     @property
     def list_prefixes(self) -> list[str]:
         """Prefixes to list the store with; ``[""]`` means list all of it.
 
         Excluded folders are listed and then skipped, since the store APIs can
-        only narrow a listing to a prefix, not leave one out.
+        only narrow a listing to a prefix, not leave one out. No prefix lies
+        inside another, so nothing is listed twice.
         """
         if self.is_everything or self.exclude:
             return [""]
-        return list(self.folders)
+        candidates = [f"{form}/" for form in self._literal_forms()]
+        candidates += [p.listing_prefix for p in self.patterns]
+        if "" in candidates:
+            return [""]
+        normal = [self.rules.normalise(c) for c in candidates]
+        kept: list[str] = []
+        seen: set[str] = set()
+        for candidate, n in zip(candidates, normal):
+            if n in seen or any(len(o) < len(n) and n.startswith(o) for o in normal):
+                continue
+            seen.add(n)
+            kept.append(candidate)
+        return sorted(kept)
+
+    # Folder names for pattern matching, from a normalised path. Leading slashes are
+    # trimmed, as for a literal. Every other slash separates two names, so an empty
+    # name is a folder level of its own: the key ``a//f`` is the file ``f`` in the
+    # empty-named folder inside ``a``, and ``*`` matches that name without reaching
+    # past it. A share path holds no empty name; its walk joins server names
+    # (``pathing.join_rel_path``).
+
+    @staticmethod
+    def _folder_parts(folder: str) -> list[str]:
+        """The names of a folder path; one trailing slash only marks it as a folder."""
+        folder = folder.lstrip("/")
+        if folder.endswith("/"):
+            folder = folder[:-1]
+        return folder.split("/") if folder else []
+
+    @staticmethod
+    def _file_parts(path: str) -> list[str]:
+        """The names of the folders a file is in: every name of its path but the last."""
+        return path.lstrip("/").split("/")[:-1]
 
     def includes_file(self, path: str) -> bool:
         """Whether a file (its path within the store) is synced."""
         if self.is_everything:
             return True
-        inside = any(path.lstrip("/").startswith(f) for f in self.folders)
+        path = self.rules.normalise(path)
+        inside = any(path.lstrip("/").startswith(f) for f in self._match_folders)
+        if not inside and self.patterns:
+            key = path.lstrip("/")
+            parent = key[:key.rfind("/") + 1]  # up to and with the last slash: one per folder
+            # One tuple, read once and replaced whole, so a scope shared by threads
+            # never answers for another parent.
+            memo_parent, memo_inside = self._file_memo[0]
+            if memo_parent == parent:
+                inside = memo_inside
+            else:
+                parts = self._file_parts(key)
+                inside = any(p.full_at(parts) for p in self.patterns)
+                self._file_memo[0] = (parent, inside)
         return not inside if self.exclude else inside
+
+    def folder_role(self, path: str) -> FolderRole:
+        """KEEP, PASS_THROUGH (it may lead to a synced folder) or SKIP, for a folder path."""
+        if self.is_everything:
+            return FolderRole.KEEP
+        normal = self.rules.normalise(path)
+        # Literal folders compare as they always did, trimmed; a pattern sees each name
+        # as listed, blanks included, as includes_file does.
+        folder = _as_folder(normal)
+        full = any(folder.startswith(f) for f in self._match_folders)
+        leads_on = False
+        if not full and self.patterns:
+            parts = self._folder_parts(normal)
+            for pattern in self.patterns:
+                pattern_full, pattern_open = pattern.walk(parts)
+                if pattern_full:
+                    full = True
+                    break
+                leads_on = leads_on or pattern_open
+        if self.exclude:
+            return FolderRole.SKIP if full else FolderRole.KEEP
+        if full:
+            return FolderRole.KEEP
+        if leads_on or any(f.startswith(folder) for f in self._match_folders):
+            return FolderRole.PASS_THROUGH
+        return FolderRole.SKIP
 
     def includes_folder(self, path: str) -> bool:
         """Whether a folder record is kept.
@@ -115,23 +446,245 @@ class FolderScope:
         tree still leads to it; with Exclude, an excluded folder and everything
         under it is dropped.
         """
-        if self.is_everything:
-            return True
-        folder = _as_folder(path)
-        if self.exclude:
-            return not any(folder.startswith(f) for f in self.folders)
-        return any(folder.startswith(f) or f.startswith(folder) for f in self.folders)
+        return self.folder_role(path) is not FolderRole.SKIP
+
+    def _spells(self) -> bool:
+        return not (self.rules.is_identity or self.exclude or self.is_everything)
+
+    def spelled_root(self, prefix: str) -> str:
+        """The listing path to walk ``prefix`` (from ``list_prefixes``) from.
+
+        A literal folder is walked from its own saved text. Above a literal,
+        each folder is spelled as the first saved literal through it spells
+        it, so a record id there is the one that literal's walk writes.
+        """
+        if not self._spells():
+            return prefix
+        body = prefix[:-1] if prefix.endswith("/") else prefix
+        if not body:
+            return prefix
+        spelled = self._first_spelling.get(self.rules.normalise(body))
+        if spelled is None:
+            out: list[str] = []
+            node: _SpellingNode | None = self._trie
+            for part in body.split("/"):
+                node = node.children.get(self.rules.normalise(part)) if node else None
+                out.append(node.typed if node else part)
+            spelled = "/".join(out)
+        return spelled + prefix[len(body):]
+
+    def spelled_child(self, parent: str, name: str) -> str:
+        """The path of the entry ``name`` listed in ``parent`` (itself already spelled).
+
+        Inside a literal folder the server's name is kept, as when that literal
+        is the root of a walk. Above one, the name is spelled as the first saved
+        literal through it spells it.
+        """
+        joined = f"{parent}/{name}" if parent else name
+        if not self._spells():
+            return joined
+        node = self._trie
+        for part in parent.split("/") if parent else ():
+            if node.is_literal:
+                return joined
+            child = node.children.get(self.rules.normalise(part))
+            if child is None:
+                return joined
+            node = child
+        if node.is_literal:
+            return joined
+        child = node.children.get(self.rules.normalise(name))
+        if child is None:
+            return joined
+        return f"{parent}/{child.typed}" if parent else child.typed
+
+    def tracker(self) -> MatchTracker:
+        return MatchTracker(self)
 
     def key(self) -> str:
         """A stable string for this scope, to tell whether it has changed."""
         # JSON, not a joined string: folder names may contain any separator.
-        return json.dumps({"exclude": self.exclude, "folders": sorted(self.folders)})
+        if not self.patterns:
+            return json.dumps({"exclude": self.exclude, "folders": sorted(self.folders)})
+        return json.dumps({
+            "exclude": self.exclude,
+            "folders": sorted(self.folders),
+            "patterns": sorted(p.raw for p in self.patterns),
+        })
 
     def describe(self) -> str:
         if self.is_everything:
             return "all folders"
-        names = ", ".join(f or "/" for f in self.folders)
+        names = ", ".join([f or "/" for f in self.folders] + [p.raw for p in self.patterns])
         return f"all folders except {names}" if self.exclude else f"only {names}"
+
+
+class MatchTracker:
+    """Which folder patterns of a scope matched something during one container's walk.
+
+    Under Include a pattern matches a kept folder or a kept file's folder;
+    under Exclude, an excluded one. Literal folders are not tracked.
+    """
+
+    def __init__(self, scope: FolderScope) -> None:
+        self._scope = scope
+        self._matched: set[str] = set()
+
+    def _note(self, parts: list[str]) -> None:
+        waiting = [p for p in self._scope.patterns if p.raw not in self._matched]
+        if not waiting:
+            return
+        self._matched.update(p.raw for p in waiting if p.full_at(parts))
+
+    def note_folder(self, path: str, role: FolderRole) -> None:
+        if role is (FolderRole.SKIP if self._scope.exclude else FolderRole.KEEP):
+            self._note(FolderScope._folder_parts(self._scope.rules.normalise(path)))
+
+    def note_file(self, path: str) -> None:
+        # Normalised first: on a share `\` separates folders, so it decides the folders.
+        self._note(FolderScope._file_parts(self._scope.rules.normalise(path)))
+
+    def matched(self) -> frozenset[str]:
+        return frozenset(self._matched)
+
+
+_MAX_FOLDER_VALUE_LENGTH = 1024
+_MAX_DOUBLE_STAR_SEGMENTS = 4
+_MAX_STARS_IN_A_NAME = 16
+
+# English text the server answers with; the dashboard shows its own translation by code.
+FOLDER_PATH_MESSAGES = {
+    "climbs_out": 'Folder "{v}" must be a path from the top of the store, without "..".',
+    "empty_segment": 'Folder "{v}" has an empty folder name between two slashes. Remove the extra "/".',
+    "excludes_everything": 'Excluding "{v}" leaves nothing to sync. Remove it, or switch to Include.',
+    "too_long": f'Folder "{{v}}" is longer than {_MAX_FOLDER_VALUE_LENGTH} characters.',
+    "unc_path": 'Folder "{v}" looks like a network path. Start at the top of the share, without \\\\server\\share.',
+    "double_star_in_name": (
+        'In folder "{v}", "**" must be a whole folder name, as in reports/**/2026. Use "*" for part of a name.'
+    ),
+    "too_many_double_stars": f'Folder "{{v}}" uses "**" more than {_MAX_DOUBLE_STAR_SEGMENTS} times. Use fewer.',
+    "too_many_stars": f'A folder name in "{{v}}" has more than {_MAX_STARS_IN_A_NAME} "*". Use fewer.',
+}
+
+
+def _climbs_out(value: str) -> bool:
+    return any(part.strip() == ".." for part in value.replace("\\", "/").split("/"))
+
+
+def _star_runs(name: str, *, escapes: bool) -> list[int]:
+    """The lengths of the runs of unescaped ``*`` in one folder name."""
+    runs: list[int] = []
+    run = 0
+    i = 0
+    while i < len(name):
+        if escapes and name[i] == "\\" and name[i + 1:i + 2] in ("*", "?"):
+            i += 2
+        elif name[i] == "*":
+            run += 1
+            i += 1
+            continue
+        else:
+            i += 1
+        if run:
+            runs.append(run)
+            run = 0
+    if run:
+        runs.append(run)
+    return runs
+
+
+def folder_value_problems(value: str, *, exclude: bool, path_style: str = "posix", wildcards: bool = False) -> list[str]:
+    """The codes a new folder value is refused for (``FOLDER_PATH_MESSAGES``), in that order.
+
+    ``climbs_out`` is included; it is the only code a value saved before is
+    still held to.
+    """
+    windows = path_style == "windows"
+    codes: list[str] = []
+    if _climbs_out(value):
+        codes.append("climbs_out")
+    text = value.strip()
+    mapped = text.replace("\\", "/") if windows else text
+    body = mapped.strip("/")
+    names = body.split("/")
+    if "//" in body:
+        codes.append("empty_segment")
+    # "**" names the top only where the connector reads wildcards; otherwise it is a folder.
+    if exclude and all(n == "" or (wildcards and n == "**") for n in names):
+        codes.append("excludes_everything")
+    if len(value) > _MAX_FOLDER_VALUE_LENGTH:
+        codes.append("too_long")
+    if windows and text.startswith("\\\\") and len([n for n in names if n]) >= 2:
+        codes.append("unc_path")
+    if wildcards:
+        escapes = not windows
+        if any(n != "**" and any(r > 1 for r in _star_runs(n, escapes=escapes)) for n in names):
+            codes.append("double_star_in_name")
+        if sum(n == "**" for n in names) > _MAX_DOUBLE_STAR_SEGMENTS:
+            codes.append("too_many_double_stars")
+        if any(n != "**" and sum(_star_runs(n, escapes=escapes)) > _MAX_STARS_IN_A_NAME for n in names):
+            codes.append("too_many_stars")
+    return codes
+
+
+def _folder_entry(sync_values: object) -> dict | None:
+    entry = sync_values.get(SyncFilterKey.FOLDER_PATHS.value) if isinstance(sync_values, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def _entry_values(entry: dict) -> list[str]:
+    raw = entry.get("value")
+    return [str(v) for v in (raw if isinstance(raw, list) else [raw]) if v is not None]
+
+
+def _entry_operator(entry: dict) -> str:
+    return str(entry.get("operator") or ListOperator.IN.value)
+
+
+def saved_folder_values(saved_sync_values: object, sync_values: object) -> frozenset[str]:
+    """The folder values saved before this save, when it keeps the operator they were saved under.
+
+    Such a value keeps working as it did, so only values outside this set are
+    held to the newer rules.
+    """
+    saved, new = _folder_entry(saved_sync_values), _folder_entry(sync_values)
+    if saved is None or new is None or _entry_operator(saved) != _entry_operator(new):
+        return frozenset()
+    return frozenset(v.strip() for v in _entry_values(saved))
+
+
+def folder_path_problems(
+    sync_values: dict[str, object],
+    *,
+    path_style: str = "posix",
+    wildcards: bool = False,
+    stored: Container[str] | None = None,
+    new_rules: bool = False,
+) -> list[str]:
+    """Why the folder filter in ``sync_values`` cannot be saved.
+
+    A value that would climb out of the bucket, container or share is always
+    refused. With ``new_rules`` (a save), values not in ``stored`` are also
+    checked for the rest of ``FOLDER_PATH_MESSAGES``; saved values never are,
+    so a value saved before these rules still enables and saves.
+    """
+    entry = _folder_entry(sync_values)
+    if entry is None:
+        return []
+    values = _entry_values(entry)
+    for value in values:
+        if _climbs_out(value):
+            return [FOLDER_PATH_MESSAGES["climbs_out"].format(v=value)]
+    if not new_rules:
+        return []
+    exclude = _entry_operator(entry) == ListOperator.NOT_IN.value
+    kept = stored if stored is not None else frozenset()
+    return [
+        FOLDER_PATH_MESSAGES[code].format(v=value)
+        for value in values
+        if value.strip() not in kept
+        for code in folder_value_problems(value, exclude=exclude, path_style=path_style, wildcards=wildcards)
+    ]
 
 
 class CleanupResult(NamedTuple):

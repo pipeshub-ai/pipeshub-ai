@@ -23,6 +23,7 @@ from app.agent_loop_lib.tools.builtin.coordination.handoff import HandoffTool
 from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import SpawnAgentTool
 from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.schema.node_validator import NodeSchemaValidator
 from app.utils import error_class
 from app.utils.logger import log_record_fields
 from app.utils.logging_fields import current_log_fields
@@ -118,6 +119,24 @@ class TestOutcomes:
         assert "error_message" not in fields
         assert _SENTINEL not in (record.exc_text or "")
         assert result.is_error and result.content == repr(_SENTINEL)
+
+    async def test_a_schema_rejected_write_reaches_the_model_without_the_rejected_value(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The error text is the tool result the LLM provider (and Opik) receive.
+        seeded = "+1 555 0100 Seeded"
+
+        async def write(**_kwargs: Any) -> ToolOutput:  # noqa: ANN401
+            NodeSchemaValidator().validate_node("users", {"email": "u1@example.invalid", "businessPhones": seeded})
+            return ToolOutput(success=True, data="written")
+
+        caplog.set_level(logging.DEBUG)
+        result = await _executor(_Tool(write)).call_tool(_call())
+
+        assert result.is_error
+        assert seeded not in result.content
+        assert "at 'businessPhones': value is not of type 'array'" in result.content
+        assert all(seeded not in r.getMessage() + str(log_record_fields(r)) for r in caplog.records)
 
     async def test_an_upstream_timeout_is_a_warning_without_a_stack(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.DEBUG)
@@ -424,3 +443,130 @@ class TestTheEmitter:
             "outcome": "skipped", "reason": "duplicate", "tool": "t" * 128, "tool_call_id": "c9",
         }
         assert log_record_fields(failed)["error_class"] in error_class.ERROR_CLASSES
+
+
+class TestAnEndFieldsLevel:
+    """`ToolOutput.end_fields["level"]` (the MCP adapter's hourly gate) lowers only a `misconfigured` line."""
+
+    async def test_a_misconfigured_repeat_is_debug_and_is_never_a_second_keyword(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        exc = RuntimeError("no OAuth client")
+        output = ToolOutput(success=False, error="x", cause=exc, end_fields={"error_class": "misconfigured", "level": logging.DEBUG})
+
+        result = await _executor(_Tool(_returns(output))).call_tool(_call())
+
+        record, fields = _one_end(caplog)
+        assert (record.levelno, fields["error_class"]) == (logging.DEBUG, "misconfigured")
+        assert "level" not in fields
+        assert result.is_error
+
+    async def test_without_a_level_a_misconfigured_line_is_an_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        output = ToolOutput(success=False, error="x", cause=RuntimeError("x"), end_fields={"error_class": "misconfigured", "level": None})
+
+        await _executor(_Tool(_returns(output))).call_tool(_call())
+
+        record, _ = _one_end(caplog)
+        assert record.levelno == logging.ERROR and record.exc_text
+
+    @pytest.mark.parametrize(("cls", "level", "expected"), [
+        ("internal", logging.DEBUG, logging.ERROR),  # our bug is never lowered
+        ("unavailable", logging.DEBUG, logging.WARNING),
+        ("misconfigured", logging.CRITICAL, logging.ERROR),  # only ever lower
+    ])
+    async def test_any_other_use_of_level_is_ignored(
+        self, caplog: pytest.LogCaptureFixture, cls: str, level: int, expected: int,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+
+        log_tool_call_end(outcome="failure", reason="exception", error_class=cls, cause=KeyError("k"), level=level, tool="t")
+
+        record, _ = _one_end(caplog)
+        assert record.levelno == expected
+        assert bool(record.exc_text) is (expected >= logging.ERROR)
+
+    async def test_an_already_logged_misconfigured_repeat_is_debug_too(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        exc = RuntimeError("x")
+        error_class.log_failure(_PROBE, "credential_refresh.end", exc, error_class="misconfigured")
+
+        log_tool_call_end(outcome="failure", reason="exception", error_class="misconfigured", cause=exc, level=logging.DEBUG, tool="t")
+
+        record, _ = _one_end(caplog)
+        assert (record.levelno, record.exc_text) == (logging.DEBUG, None)
+
+
+class TestDenyReasonsAndSpecialRouteCauses:
+    """P3b: why a call was denied (`deny_reason`), and a special route's handled failure keeps its class."""
+
+    async def test_a_deny_code_reaches_the_end_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        kernel = _Decide.kernel(HookEvent.PRE_TOOL_USE, lambda ctx: ctx.deny("no", code="unattended"))
+        result = await _executor(_Tool(_returns(ToolOutput(success=True))), kernel=kernel).call_tool(_call())
+
+        record, fields = _one_end(caplog)
+        assert (record.levelno, fields["reason"], fields["deny_reason"]) == (logging.INFO, "denied", "unattended")
+        assert result.content == "no"
+
+    async def test_the_first_deny_keeps_its_code(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+
+        def _twice(ctx: Any) -> None:  # noqa: ANN401
+            ctx.deny("first", code="rule")
+            ctx.deny("second", code="other")
+
+        await _executor(_Tool(_returns(ToolOutput(success=True))), kernel=_Decide.kernel(HookEvent.PRE_TOOL_USE, _twice)).call_tool(_call())
+        assert _one_end(caplog)[1]["deny_reason"] == "rule"
+
+    async def test_a_deny_without_a_code_has_no_deny_reason(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        kernel = _Decide.kernel(HookEvent.PRE_TOOL_USE, lambda ctx: ctx.deny("no"))
+        await _executor(_Tool(_returns(ToolOutput(success=True))), kernel=kernel).call_tool(_call())
+        assert "deny_reason" not in _one_end(caplog)[1]
+
+    async def test_a_special_route_failure_is_classified_from_its_cause(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+
+        async def _override() -> CoreToolResult:
+            return CoreToolResult(
+                tool_call_id="call-1", name="probe__run", content=_SENTINEL, is_error=True,
+                cause=httpx.ReadTimeout(_SENTINEL), end_fields={"reason": "exception"},
+            )
+
+        result = await _executor(_Tool(_returns(ToolOutput(success=True)))).call_tool(_call(), override_execute=_override)
+
+        record, fields = _one_end(caplog)
+        assert (fields["outcome"], fields["reason"], fields["error_class"]) == ("failure", "exception", "timeout")
+        assert record.levelno == logging.WARNING and result.content == _SENTINEL
+        assert _SENTINEL not in caplog.text
+
+    async def test_a_special_route_class_wins_over_the_cause(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+
+        async def _override() -> CoreToolResult:
+            return CoreToolResult(
+                tool_call_id="call-1", name="probe__run", content="refused", is_error=True,
+                cause=RuntimeError("refused"), end_fields={"reason": "max_spawn_depth", "error_class": "bad_request"},
+            )
+
+        await _executor(_Tool(_returns(ToolOutput(success=True)))).call_tool(_call(), override_execute=_override)
+
+        record, fields = _one_end(caplog)
+        assert (record.levelno, record.exc_text) == (logging.WARNING, None)
+        assert (fields["reason"], fields["error_class"]) == ("max_spawn_depth", "bad_request")
+
+
+class TestToolResultLogFields:
+    async def test_they_are_never_dumped(self) -> None:
+        result = CoreToolResult(tool_call_id="c", name="n", content="x", cause=ValueError(_SENTINEL), end_fields={"reason": "r"})
+        assert "cause" not in result.model_dump() and "end_fields" not in result.model_dump()
+        assert _SENTINEL not in result.model_dump_json() and _SENTINEL not in repr(result)
+
+    async def test_they_keep_the_cause_and_stay_out_of_every_schema(self) -> None:
+        from app.agent_loop_lib.core.types import AgentResult, AgentTurn
+
+        cause = ValueError("x")
+        result = CoreToolResult(tool_call_id="c", name="n", content="x", cause=cause, end_fields={"reason": "r"})
+        assert (result.cause, result.end_fields) == (cause, {"reason": "r"})
+        for model in (CoreToolResult, AgentTurn, AgentResult):
+            assert "cause" not in str(model.model_json_schema())

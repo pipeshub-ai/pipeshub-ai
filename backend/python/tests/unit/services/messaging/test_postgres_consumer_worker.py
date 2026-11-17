@@ -159,8 +159,63 @@ async def test_a_record_deleted_while_indexed_is_dead_lettered_without_a_warning
     logger.error.assert_not_called()
 
 
-async def test_an_unexpected_failure_is_still_logged_as_an_error() -> None:
-    (ok, _, _, _), logger = await _process_raising(RuntimeError("boom"))
+async def test_an_unexpected_failure_is_still_logged_as_an_error(caplog) -> None:
+    import json
+    import logging
+
+    from app.services.messaging.postgres.queue import Delivery
+    from app.utils.logger import log_record_fields
+
+    async def handler(_msg) -> bool:
+        raise RuntimeError("boom")
+
+    consumer = PgMessagingConsumer(LOG, CFG)
+    consumer.message_handler = handler
+    value = json.dumps({"eventType": "e", "payload": {}, "requestId": "req-1", "orgId": "org-1"})
+    with caplog.at_level(logging.DEBUG, logger=LOG.name):
+        ok, _, _, reason = await consumer._process(
+            Delivery(topic="t", message_id=1, attempts=1, value=value, key=None), final=False
+        )
 
     assert not ok
-    logger.error.assert_called_once()
+    [line] = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert (line.getMessage(), log_record_fields(line)["error_type"]) == ("message.handler_failed", "RuntimeError")
+    assert reason == "internal: RuntimeError"
+
+
+async def _settle_raising(exc: Exception) -> PgMessagingConsumer:
+    """A stage consumer whose handler hands the delivery back with ``exc``."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.messaging.postgres.queue import Delivery
+
+    async def handler(_msg) -> bool:
+        raise exc
+
+    consumer = PgMessagingConsumer(MagicMock(), CFG)
+    consumer.message_handler = handler
+    consumer.stage_admission = MagicMock()
+    consumer.queue = MagicMock(dead=AsyncMock(), ack=AsyncMock(), nack=AsyncMock())
+    value = json.dumps({"eventType": "stageJob", "payload": {}, "requestId": "req-1", "orgId": "org-1"})
+    await consumer._settle(Delivery(topic="t", message_id=1, attempts=1, value=value, key=None))
+    return consumer
+
+
+async def test_a_job_held_for_a_connector_delete_waits_alone() -> None:
+    """One connector being deleted must not stop the stage for every other connector's jobs."""
+    from app.modules.pipeline.worker import StageHeldForDelete
+
+    consumer = await _settle_raising(StageHeldForDelete("connector c1 is being deleted", delay_s=60.0))
+
+    assert consumer._paused_until == 0.0
+    (_group, _d, delay, _reason), kwargs = consumer.queue.nack.await_args
+    assert delay >= 60.0 and kwargs == {"refund": True}
+
+
+async def test_a_paused_stage_still_stops_claiming() -> None:
+    from app.modules.pipeline.worker import StagePaused
+
+    consumer = await _settle_raising(StagePaused("the model provider is down", delay_s=15.0))
+
+    assert consumer._paused_until > 0.0

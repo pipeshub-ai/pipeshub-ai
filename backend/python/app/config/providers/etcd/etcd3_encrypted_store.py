@@ -222,22 +222,23 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 try:
                     return self._decode_value(key, encrypted_value)
                 except Exception as e:
-                    self.logger.error(
-                        "❌ Failed to process value for key %s: %s", key, type(e).__name__
-                    )
                     # A value came back and could not be read: not the same as
                     # no value, so a caller that asked must not see None.
                     if raise_on_error:
                         raise
+                    self.logger.error(
+                        "Failed to process value for key %s: %s", key, type(e).__name__
+                    )
                     return None
             else:
                 self.logger.debug(f"⚠️ No value found in ETCD for key: {key}")
                 return None
 
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
+            # Raised for the caller that asked to handle it; logged only when answered as None.
             if raise_on_error:
                 raise
+            self.logger.error("Failed to get config %s: %s", key, type(e).__name__)
             return None
 
     def _decode_value(self, key: str, stored: object) -> T | None:
@@ -298,52 +299,45 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         Returns:
             List of decrypted keys matching the directory prefix.
         """
-        try:
-            # Get all keys from etcd (they are stored encrypted)
-            encrypted_keys = await self.store.get_all_keys()
+        # Get all keys from etcd (they are stored encrypted)
+        encrypted_keys = await self.store.get_all_keys()
 
-            if not encrypted_keys:
-                return []
+        if not encrypted_keys:
+            return []
 
-            # Kept as given: stripping the trailing slash let "/a/b/" also match "/a/b" and "/a/b-2/...".
-            directory_prefix = directory if directory != "/" else ""
+        # Kept as given: stripping the trailing slash let "/a/b/" also match "/a/b" and "/a/b-2/...".
+        directory_prefix = directory if directory != "/" else ""
 
-            decrypted_keys = []
-            for encrypted_key in encrypted_keys:
-                try:
-                    # Check if key is unencrypted (excluded from encryption)
-                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_KEYS)
+        decrypted_keys = []
+        for encrypted_key in encrypted_keys:
+            try:
+                # Check if key is unencrypted (excluded from encryption)
+                is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_KEYS)
 
-                    if is_unencrypted:
-                        decrypted_key = encrypted_key
-                    else:
-                        # Try to decrypt the key
-                        # Encrypted format: "iv:ciphertext:authTag" (3 parts)
-                        if encrypted_key.count(":") == ENCRYPTED_KEY_PARTS_COUNT:
-                            try:
-                                decrypted_key = self.encryption_service.decrypt(encrypted_key)
-                            except Exception:
-                                # Decryption failed, use as-is (might be unencrypted)
-                                decrypted_key = encrypted_key
-                        else:
-                            # Not in encrypted format, use as-is
+                if is_unencrypted:
+                    decrypted_key = encrypted_key
+                else:
+                    # Try to decrypt the key
+                    # Encrypted format: "iv:ciphertext:authTag" (3 parts)
+                    if encrypted_key.count(":") == ENCRYPTED_KEY_PARTS_COUNT:
+                        try:
+                            decrypted_key = self.encryption_service.decrypt(encrypted_key)
+                        except Exception:
+                            # Decryption failed, use as-is (might be unencrypted)
                             decrypted_key = encrypted_key
+                    else:
+                        # Not in encrypted format, use as-is
+                        decrypted_key = encrypted_key
 
-                    # Filter by directory prefix if provided
-                    if not directory_prefix or decrypted_key.startswith(directory_prefix):
-                        decrypted_keys.append(decrypted_key)
+                # Filter by directory prefix if provided
+                if not directory_prefix or decrypted_key.startswith(directory_prefix):
+                    decrypted_keys.append(decrypted_key)
 
-                except Exception as e:
-                    self.logger.debug(f"Skipping key due to error: {e}")
-                    continue
+            except Exception as e:
+                self.logger.debug(f"Skipping key due to error: {e}")
+                continue
 
-            return decrypted_keys
-
-        except Exception as e:
-            self.logger.error(
-                "Failed to list keys in directory (%s)", type(e).__name__
-            )
-            raise
+        return decrypted_keys
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         return await self.store.cancel_watch(key, watch_id)

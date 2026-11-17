@@ -13,6 +13,7 @@ domain cannot be read, every process keeps its own brake, as before.
 
 from __future__ import annotations
 
+import contextvars
 from typing import TYPE_CHECKING, Protocol
 
 from app.services.resource_governor.probe import memory_domain_id
@@ -42,3 +43,27 @@ def stamp_admitted_here() -> None:
     domain = memory_domain_id()
     if domain is not None:
         set_admitted_in(domain)
+
+
+# True while this request holds a heavy parse permit in this process. Unlike the admitted-in
+# stamp it is never sent anywhere and is not set by a light permit, so "covered by a permit"
+# means this process's heavy permit and the memory reserved for its kind.
+_permit_covers: contextvars.ContextVar[bool] = contextvars.ContextVar("heavy_permit_covers", default=False)
+
+
+def set_permit_covers() -> contextvars.Token[bool]:
+    return _permit_covers.set(True)
+
+
+def reset_permit_covers(token: contextvars.Token[bool] | None) -> None:
+    if token is None:
+        return
+    try:
+        _permit_covers.reset(token)
+    except (ValueError, LookupError):
+        _permit_covers.set(False)
+
+
+def permit_covers_here() -> bool:
+    """Whether a heavy parse permit of this process covers the work being submitted."""
+    return _permit_covers.get()

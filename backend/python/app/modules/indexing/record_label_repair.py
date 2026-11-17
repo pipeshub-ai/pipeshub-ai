@@ -422,7 +422,7 @@ class RecordLabelRepair(ConnectorSweep):
         async def write(path: str, stored_run: str | None, semantic_metadata: dict[str, Any]) -> bool:
             payload = {k: v for k, v in semantic_metadata.items() if k != NAMED_ENTITIES_SECTION}
             return await sidecars.write_at(
-                org_id, vrid, rev, path, classification_envelope(stored_run, path, payload),
+                org_id, vrid, rev, path, classification_envelope(stored_run, path, payload), stored_run=stored_run,
             )
 
         return SidecarWrite(ClassifyStage.version, write)

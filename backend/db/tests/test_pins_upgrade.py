@@ -156,7 +156,7 @@ def test_the_writers_revision_revokes_the_fallback_keeps_the_data_and_is_a_contr
 
     r = run_migrate(url, **edition_with(tmp_path, new))
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name)["kx"] == (2, 2) and epochs(cluster, name)["kernel"] == (17, 11)
+    assert epochs(cluster, name)["kx"] == (2, 2) and epochs(cluster, name)["kernel"] == (18, 11)
     with cluster.admin(name) as c:
         assert c.execute("SELECT org_id, count(*) FROM kx.scope_members GROUP BY 1 ORDER BY 1").fetchall() == [(ORG_A, 2), (ORG_B, 1)]       # the data came through
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
@@ -223,7 +223,7 @@ def test_the_kernel_downgrades_to_the_previous_release_revision_and_upgrades_aga
     cluster, name = db
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
-    assert epochs(cluster, name)["kernel"] == (17, 11)
+    assert epochs(cluster, name)["kernel"] == (18, 11)
     r = run_migrate(url, "downgrade", "kernel_0015", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout + r.stderr
     assert epochs(cluster, name)["kernel"] == (15, 11)                                  # min_code_epoch never decreases, and it was 11 already
@@ -249,7 +249,7 @@ def test_the_kernel_does_not_go_back_while_a_pin_exists(db, tmp_path):
     assert r.returncode != 0 and ("per-org vetted policy" in r.stdout + r.stderr), r.stdout + r.stderr       # kernel_0017 goes first; kernel_0016 then refuses on the pins
     r = run_migrate(url, "downgrade", "kernel_0016", PG_MIGRATE_ALLOW_DOWNGRADE="1", **env)
     assert r.returncode != 0 and "per-org vetted policy" in r.stdout + r.stderr, r.stdout + r.stderr
-    assert epochs(cluster, name)["kernel"] == (17, 11)
+    assert epochs(cluster, name)["kernel"] == (17, 11)        # kernel_0018 (and platform_0006 above it) went down first, each in its own transaction
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kx.%'").fetchone()[0] == 2
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
@@ -285,11 +285,12 @@ def test_upgrade_from_the_previous_release_with_data_in_place(db, tmp_path):
     r = run_migrate(url, PYTHONPATH=str(prev), PG_MIGRATE_SURFACE_CHECK="skip")                  # the previous build's tree migrates first
     assert r.returncode == 0 and "epoch kernel=15" in r.stdout, r.stdout + r.stderr
     r = run_migrate(url)
-    assert r.returncode == 0 and "epoch kernel=17 min_code=11" in r.stdout, r.stdout + r.stderr
+    assert r.returncode == 0 and "epoch kernel=18 min_code=11" in r.stdout, r.stdout + r.stderr
     assert epochs(cluster, name) == HEADS
     # the previous build, started against the upgraded database, finds nothing to do (it would be a helm rollback)
     r = run_migrate(url, PYTHONPATH=str(prev), PG_MIGRATE_SURFACE_CHECK="skip")
-    out = r.stdout + r.stderr          # nothing to do, or (a contract revision above its code epoch: the retrieval branch's) a refusal that says what to do
-    assert (r.returncode == 0 and "database is ahead of this build" in out) or (r.returncode == 2 and "cannot run against" in out and "retrieval" in out), out
+    out = r.stdout + r.stderr          # nothing to do, or (a contract revision above its code epoch: the retrieval branch's, kg_0013) a refusal that says what to do
+    assert (r.returncode == 0 and "database is ahead of this build" in out) or (r.returncode == 2 and "cannot run against" in out
+                                                                                and ("retrieval" in out or "kg" in out)), out
     rows = {b: (e, m) for b, e, m in connect(cluster, name).execute("SELECT branch, epoch, min_code_epoch FROM kernel.schema_epoch")}
     assert boot_assert.schema_problems(rows, {"kernel": {"requires": 15, "code": 15}}) == []         # and the previous code's boot check accepts it

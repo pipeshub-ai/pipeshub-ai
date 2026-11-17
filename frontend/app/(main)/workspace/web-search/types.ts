@@ -31,6 +31,8 @@ export interface WebSearchSettings {
 
 export interface WebSearchConfigData {
   providers: ConfiguredWebSearchProvider[];
+  /** A provider that can search is the default. Left out when the settings could not be read. */
+  configured?: boolean;
   settings: WebSearchSettings;
   inherited?: boolean;
 }
@@ -76,6 +78,8 @@ export interface WebSearchProviderMeta {
   docUrl: string;
   /** False for a provider that only reads pages: it backs up page reading and is never the default. */
   searches: boolean;
+  /** i18n key of a caution shown under the description. */
+  warningKey?: string;
   fields: WebSearchProviderField[];
 }
 
@@ -93,12 +97,13 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
   {
     type: 'duckduckgo',
     label: 'DuckDuckGo',
-    description: 'Built-in, no configuration required',
+    description: 'Free, no API key',
     icon: '/icons/web-search/duckduckgo.svg',
     iconType: 'image',
     configurable: false,
     docUrl: 'https://duckduckgo.com/about',
     searches: true,
+    warningKey: 'workspace.webSearch.duckduckgoWarning',
     fields: [],
   },
   {
@@ -225,10 +230,11 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
 
 export const ALL_WEB_SEARCH_PROVIDER_TYPES: WebSearchProviderType[] = WEB_SEARCH_PROVIDER_META.map((m) => m.type);
 
-/** The label of the provider marked default, or DuckDuckGo's when none is (the server's fallback). */
+/** The label of the provider marked default, or null when none is (web search is then off). */
 export function defaultProviderLabel(
   providers: Pick<ConfiguredWebSearchProvider, 'provider' | 'isDefault'>[],
-): string {
-  const type = providers.find((p) => p.isDefault)?.provider ?? DUCKDUCKGO_PROVIDER_ID;
+): string | null {
+  const type = providers.find((p) => p.isDefault)?.provider;
+  if (!type) return null;
   return WEB_SEARCH_PROVIDER_META.find((m) => m.type === type)?.label ?? type;
 }

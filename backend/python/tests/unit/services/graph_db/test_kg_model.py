@@ -6,6 +6,7 @@ import pytest
 from app.services.graph_db.postgres.kg.model import (
     LINK_GROUP,
     LINK_HIERARCHY,
+    LINK_PARENT_CHILD,
     PRINCIPALS,
     UAR,
     GEdge,
@@ -66,7 +67,21 @@ def test_a_second_parent_and_a_second_group_are_links() -> None:
     primary_parent = min(snap.sk[REC], snap.sk[("records", "p2")])
     primary_group = min(snap.sk[G], snap.sk[("recordGroups", "g2")])
     assert (row["parent_sk"], row["group_sk"]) == (primary_parent, primary_group)
-    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD])}
+    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD]),
+                       (snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD])}      # the PARENT_CHILD parent, primary or not; the attachment's parent and the bookmark are not
+
+
+def test_every_parent_child_parent_is_a_kind_3_link_and_an_attachment_parent_is_not() -> None:
+    """The move guards follow PARENT_CHILD relations only: each such parent of a record is a kind-3 link (the primary parent too); an ATTACHMENT parent, a parent that
+    is not there and a relation of another kind give none."""
+    p2, p3, gone = ("records", "p2"), ("records", "p3"), ("records", "gone")
+    nodes = {APP: {}, REC: {"connectorId": "a"}, p2: {"connectorId": "a"}, p3: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
+    edges = [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD"), edge("nodeRelations", *p2, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *CHILD, relationshipType="ATTACHMENT"), edge("nodeRelations", *gone, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *REC, relationshipType="LINKED")]
+    snap = world(nodes, edges)
+    d = derive({CHILD, REC}, snap)
+    assert {lk for lk in d.links if lk[1] == LINK_PARENT_CHILD} == {(snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[p2], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_grants_are_read_from_both_ends_and_the_membership_is_a_closure_row() -> None:
@@ -182,7 +197,8 @@ def test_the_primary_parent_is_a_parent_child_one_in_the_same_connector_then_the
     snap = world(nodes, edges)
     d = derive({CHILD}, snap)
     assert d.records[snap.sk[CHILD]]["parent_sk"] == snap.sk[pc]
-    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD])}
+    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD]),
+                       (snap.sk[foreign], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[pc], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_the_primary_group_is_one_of_the_records_own_connector_first() -> None:
@@ -197,7 +213,18 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    assert set(row) == set(RECORD_COLS) - {"sk"}
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort"}      # the listing columns have a writer of their own (w_listing_set)
+
+
+def test_the_listing_columns_follow_the_hub_types_the_hidden_children_and_the_organisation() -> None:
+    nodes = {APP: {"orgId": "o"}, G: {"connectorId": "a", "orgId": "o", "hideChildren": True, "mimeType": "application/vnd.folder"},
+             ("recordGroups", "g2"): {"connectorId": "a", "orgId": "o", "hideChildren": "false"},
+             REC: {"connectorId": "a", "orgId": "o", "mimeType": "application/vnd.folder"}, ("records", "t"): {"connectorId": "a", "orgId": "o", "recordType": "folder"},
+             CHILD: {"connectorId": "a", "orgId": "o", "hideChildren": True}, ("records", "x"): {"connectorId": "a", "orgId": "other"}, ("records", "n"): {"connectorId": "a"}}
+    snap = world(nodes, [])
+    got = {k[1]: tuple(r[c] for c in ("folder", "hide_children", "alien")) for k in nodes if (r := derive({k}, snap).records[snap.sk[k]])}
+    assert got == {"a": (False, False, False), "g": (False, True, False), "g2": (False, False, False), "r": (True, False, False), "t": (True, False, False),
+                   "c": (False, False, False), "x": (False, False, True), "n": (False, False, True)}
 
 
 def test_a_snapshot_without_its_organisation_is_refused() -> None:
@@ -227,3 +254,14 @@ def test_records_that_share_a_parent_or_a_group_with_another_connector_name_both
     assert derive({foreign_parent}, snap).cross_apps == set()                         # a parent that has no parent of its own across connectors names none
     inside = world({APP: {}, REC: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}, [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD")])
     assert derive({CHILD}, inside).cross_apps == set()
+
+
+def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> None:
+    """A character above U+FFFF (two code units, the first below U+E000) sorts before U+E000..U+FFFF in UTF-16, and after them by code point: the listing is merged and paged in the first order."""
+    names = ["x", "\U00010000x", "Zebra", "zèbre", "Éclair", "eclair", "�x"]
+    nodes = {APP: {"orgId": "o"}, **{("records", f"n{i}"): {"connectorId": "a", "orgId": "o", "recordName": n} for i, n in enumerate(names)}}
+    snap = world(nodes, [])
+    by_sort = sorted(names, key=lambda n: derive({("records", f"n{names.index(n)}")}, snap).records[snap.sk[("records", f"n{names.index(n)}")]]["name_sort"])
+    assert by_sort == sorted(names, key=lambda n: n.lower().encode("utf-16-be", "surrogatepass"))
+    assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
+    assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round

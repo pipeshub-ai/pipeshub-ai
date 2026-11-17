@@ -12,6 +12,7 @@ import { Logger } from '../src/libs/services/logger.service';
 import * as telemetryModule from '../src/libs/services/telemetry/telemetry.service';
 import * as metricsRefreshModule from '../src/modules/user_management/services/metrics.refresh.service';
 import { KeyValueStoreService } from '../src/libs/services/keyValueStore.service';
+import { OutboxDispatcher } from '../src/libs/services/outbox/outbox.dispatcher';
 import { MigrationService } from '../src/modules/configuration_manager/services/migration.service';
 import { NotificationService } from '../src/modules/notification/service/notification.service';
 import * as appConfigModule from '../src/modules/tokens_manager/config/config';
@@ -73,6 +74,7 @@ import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
+import * as localReposRoutes from '../src/modules/local_repos/routes/local_repos.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
@@ -204,6 +206,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
   sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
+  sandbox.stub(localReposRoutes, 'createLocalReposRouter').returns(dummyRouter);
 }
 
 /**
@@ -217,6 +220,8 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   // Telemetry — never start the real push loop / Mongo-backed gauge refresh
   sandbox.stub(telemetryModule, 'startTelemetry');
   sandbox.stub(metricsRefreshModule, 'startOrgMetricsRefresh');
+  // Most cases never stop the app, so a started dispatcher would poll a database that is not there for the rest of the run
+  sandbox.stub(OutboxDispatcher.prototype, 'start');
   sandbox.stub(KeyValueStoreService, 'getInstance').returns({} as any);
 
   const containers: Record<string, Container> = {};

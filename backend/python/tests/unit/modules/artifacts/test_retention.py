@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import types
 from dataclasses import dataclass, field
@@ -156,6 +157,18 @@ class FakeStore:
         self.deleted.append(document_id)
         return 1
 
+    def add_set(self, vrid: str, rev: str, write: str | None, created_at: int = OLD) -> str:
+        """One stored write's set of *rev* (``write`` None: a set from before writes had their own)."""
+        document_id = f"{vrid}@{rev}" + (f"#{write}" if write else "")
+        entry: dict[str, Any] = {"documentId": document_id, "rev": rev, "deleteFence": True, "createdAt": created_at}
+        if write:
+            entry["writeId"] = write
+        self.revisions.setdefault(vrid, []).append(entry)
+        return document_id
+
+    def left_sets(self, vrid: str) -> set[str]:
+        return {r["documentId"] for r in self.revisions.get(vrid, []) if r["documentId"] not in self.deleted}
+
     def left(self, vrid: str) -> set[str]:
         return {r["rev"] for r in self.revisions.get(vrid, []) if r["documentId"] not in self.deleted}
 
@@ -199,6 +212,45 @@ def _sweep(graph: FakeGraph, store: FakeStore, **kwargs: object) -> RevisionRete
 def _revs(store: FakeStore, vrid: str, *revs: str, created_at: int | None = OLD) -> None:
     for rev in revs:
         store.add(vrid, rev, created_at)
+
+
+async def test_keeps_the_named_set_and_the_newest_set_of_each_kept_revision_and_retires_the_rest() -> None:
+    """Every stored write of a revision has a set of its own: a superseded or failed write's set of the current
+    revision goes like any other, an older set of the revision's from before writes had their own too."""
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    graph.records.append(("v", "r3", False))
+    legacy = store.add_set("v", "r3", None, OLD - 3 * HOUR)
+    superseded = store.add_set("v", "r3", "a", OLD - 2 * HOUR)
+    named = store.add_set("v", "r3", "b", OLD - HOUR)
+    failed_newest = store.add_set("v", "r3", "c", OLD)
+    previous_old = store.add_set("v", "r2", "x", OLD - HOUR)
+    previous_newest = store.add_set("v", "r2", "y", OLD)
+    unheld = store.add_set("v", "r1", "z", OLD)
+    graph.mappings["v"]["manifestDocId"] = named
+
+    _, report = await _sweep(graph, store).run_page(None)
+
+    assert store.left_sets("v") == {named, failed_newest, previous_newest}
+    assert set(store.deleted) == {legacy, superseded, previous_old, unheld}
+    assert (report.revisions_deleted, report.revisions_kept) == (4, 3)
+
+
+async def test_the_named_set_is_read_again_under_the_leases() -> None:
+    """The pointer moved to an older set of the revision after the listing: that set is kept."""
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3")
+    graph.records.append(("v", "r3", False))
+    older = store.add_set("v", "r3", "a", OLD - HOUR)
+    newest = store.add_set("v", "r3", "b", OLD)
+
+    def moved() -> None:
+        graph.mappings["v"]["manifestDocId"] = older
+
+    graph.after_page_read = moved
+    await _sweep(graph, store).run_page(None)
+
+    assert store.left_sets("v") == {older, newest} and store.deleted == []
 
 
 async def test_never_deletes_the_current_or_previous_revision() -> None:
@@ -641,6 +693,35 @@ async def test_failures_in_a_row_end_the_page_and_the_walk_resumes_after_them() 
 
     assert report.cut_short and report.failed == 3 and key == "d"
     assert store.deleted == ["a@r1"] and store.list_calls == 4
+
+
+async def test_a_slot_freed_by_a_failure_starts_nothing_until_the_vrids_in_flight_answer() -> None:
+    """Hung storage fails the listings in flight one answer at a time. A vrid started on the slot the first failure
+    freed would wait out a whole listing timeout too; the page must end on the failures it already has."""
+    graph, store = FakeGraph(), FakeStore()
+    for vrid in "abcdef":
+        graph.map(vrid, "r3", "r2")
+        _revs(store, vrid, "r1")
+    answer = {vrid: asyncio.Event() for vrid in "abcdef"}
+    listed: list[str] = []
+
+    async def hung(org_id: str, vrid: str, *, timeout_seconds: float | None = None) -> list[dict[str, Any]]:
+        listed.append(vrid)
+        await answer[vrid].wait()
+        raise TimeoutError("storage did not answer")
+
+    store.list_revisions = hung  # type: ignore[method-assign]
+    page = asyncio.ensure_future(_sweep(graph, store, concurrency=3).run_page(None))
+    for vrid in "abc":
+        answer[vrid].set()
+        for _ in range(50):  # loop turns, not time: room for a freed slot to start another vrid
+            await asyncio.sleep(0)
+    for event in answer.values():
+        event.set()
+    key, report = await page
+
+    assert listed == ["a", "b", "c"]
+    assert report.cut_short and report.failed == 3 and key == "c"
 
 
 async def test_a_failure_between_successes_is_passed_over_when_the_page_is_cut_short(

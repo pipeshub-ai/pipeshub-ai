@@ -26,6 +26,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import ProgressStatus
+from app.modules.indexing.embed_resume import EMBED_FIELDS
 from app.modules.transformers.transformer import PARSE_NOW, STORE_ONLY
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -75,8 +76,10 @@ _STATUS_FIELDS = frozenset({
     "hasIndexedCopy",
     "extractionDeferred",
     "reason",
+    "indexingNote",
     "retryNotBefore",
-})
+    # The embedding resume marker too: a store-only run must not end a pending retry's resume.
+}) | frozenset(EMBED_FIELDS)
 
 
 @dataclass

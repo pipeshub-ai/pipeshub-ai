@@ -1,18 +1,20 @@
 """Retire artifact-set revisions and pipeline stage states nothing will read again.
 
-Every content revision of a virtual record leaves an artifact set
-(``record-revisions/{vrid}/{rev}/``, one storage document) and stage states keyed
-``{vrid}:{rev}:{stage}``. Both are removed with the virtual record when it is
-released, but a record that changes keeps adding revisions while it lives. This
-sweep walks ``virtualRecordToDocIdMapping`` by key and, for each virtual record:
+Every stored write of a content revision leaves an artifact set of its own
+(``record-revisions/{vrid}/{rev}-{writeId}/``, one storage document; sets written before
+writes had their own are one per revision, at ``record-revisions/{vrid}/{rev}/``) and every
+revision stage states keyed ``{vrid}:{rev}:{stage}``. Both are removed with the virtual record
+when it is released, but a record that changes, or is indexed again, keeps adding sets while it
+lives. This sweep walks ``virtualRecordToDocIdMapping`` by key and, for each virtual record:
 
-* keeps every revision while any record holding it is in the trash, since a
+* keeps every set while any record holding it is in the trash, since a
   restore must find its content where it left it;
-* deletes an artifact set whose rev is neither ``currentRev`` nor
-  ``previousRev`` (the previous revision is what the next index of the record
-  inherits image descriptions from) nor the ``contentRev`` of a record holding
-  the virtual record, and that is older than the grace; with no ``currentRev``
-  it deletes none;
+* keeps the set the pointer names (``manifestDocId``) and the newest set of each kept
+  revision: ``currentRev``, ``previousRev`` (the previous revision is what the next index of
+  the record inherits image descriptions from) and the ``contentRev`` of every record holding
+  the virtual record (an in-flight write of it is the newest); deletes every other set older
+  than the grace, a superseded or failed write's set of a kept revision included; with no
+  ``currentRev`` it deletes none;
 * deletes the stage states of a revision no record holding the virtual record
   is on (trashed records count), once its newest state is older than the grace.
 
@@ -122,6 +124,21 @@ def _stored_at_ms(revision: dict[str, Any]) -> int | None:
 
 def _held_revs(holders: list[dict[str, Any]]) -> set[str]:
     return {str(h["contentRev"]) for h in holders if h.get("contentRev")}
+
+
+def _kept_sets(revisions: list[dict[str, Any]], revs: set[Any], named: object = None) -> set[str]:
+    """Document ids of the sets kept: *named* (the pointer's) and the newest set of each revision in *revs*."""
+    newest: dict[str, tuple[int, str]] = {}
+    for revision in revisions:
+        rev, document_id = revision.get("rev"), revision.get("documentId")
+        if rev in revs and document_id:
+            stamp = (_stored_at_ms(revision) or 0, str(document_id))
+            if rev not in newest or stamp > newest[rev]:
+                newest[rev] = stamp
+    kept = {document_id for _, document_id in newest.values()}
+    if named:
+        kept.add(str(named))
+    return kept
 
 
 @dataclass
@@ -243,6 +260,8 @@ class RevisionRetentionSweep:
         finished = [k is None or k in trashed for k in key_of]
         failing_run: list[int] = []
         tried = 0
+        running = 0
+        settled = asyncio.Condition()
 
         started: set[str] = set()
 
@@ -260,37 +279,52 @@ class RevisionRetentionSweep:
                 report.cut_short = True
             return report.cut_short
 
+        def run_decided() -> bool:
+            return not failing_run or running == 0 or len(failing_run) >= self.max_consecutive_failures
+
         async def one(index: int, pointer: dict[str, Any]) -> None:
-            nonlocal tried
+            nonlocal tried, running
             vrid = str(pointer["virtualRecordId"])
             key = key_of[index]
             if key is None:      # a pointer without an organisation starts out finished
                 return
             async with gate:
+                # After a failure, wait for the vrids still running: their answers decide whether storage is down (the
+                # run reaches the limit) or not (one succeeds), in whatever order they arrive. Started on the slot the
+                # first failure freed, this vrid would spend a whole timeout on storage that is down.
+                async with settled:
+                    await settled.wait_for(run_decided)
                 if not leader() or stop_starting(vrid):
                     return
                 tried += 1
+                running += 1
                 # An organisation that joins a group already started is finished whatever the deadline says: the cursor moves past
                 # the whole group, so what is left of it here would wait for the next lap.
                 joined = vrid in started
                 started.add(vrid)
                 try:
-                    with for_org(key[0], job="revision_retention"):
-                        ok = await self._retire_virtual_record(
-                            pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
+                    try:
+                        with for_org(key[0], job="revision_retention"):
+                            ok = await self._retire_virtual_record(
+                                pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
+                            )
+                    except Exception as exc:
+                        ok = False
+                        report.failed += 1
+                        self.logger.warning(
+                            "Revision retention: could not retire old revisions of %s; next pass retries: %s: %s",
+                            vrid, type(exc).__name__, exc,
                         )
-                except Exception as exc:
-                    ok = False
-                    report.failed += 1
-                    self.logger.warning(
-                        "Revision retention: could not retire old revisions of %s; next pass retries: %s: %s",
-                        vrid, type(exc).__name__, exc,
-                    )
-                if ok:
-                    failing_run.clear()
-                else:
-                    failing_run.append(index)
-                finished[index] = True
+                    if ok:
+                        failing_run.clear()
+                    else:
+                        failing_run.append(index)
+                    finished[index] = True
+                finally:
+                    # Also when cancelled: a vrid waiting on this run would otherwise wait for good.
+                    running -= 1
+                    async with settled:
+                        settled.notify_all()
 
         await asyncio.gather(*(one(i, p) for i, p in enumerate(pointers) if not finished[i]))
         if report.interrupted:
@@ -329,15 +363,18 @@ class RevisionRetentionSweep:
 
     async def _deletable_revisions(
         self, pointer: dict[str, Any], cutoff_ms: int, report: RetentionReport
-    ) -> tuple[list[dict[str, Any]], bool]:
-        """Artifact sets past the grace that are neither the current nor the previous revision.
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """``(candidates, listed, ok)``: the sets past the grace that are not the newest set of the current
+        or the previous revision, every set listed (the sets kept are told apart again under the leases,
+        with the set the pointer names), and False when the listing failed (storage or network), which
+        feeds the page's failures-in-a-row stop.
 
-        The flag is False when the listing failed (storage or network), which feeds
-        the page's failures-in-a-row stop.
+        Sets are grouped by the content revision the listing names (``rev``), a stored write's own set
+        included; ``writeId`` only tells the sets of one revision apart.
         """
         vrid = str(pointer["virtualRecordId"])
         if not pointer.get("currentRev") or not ARTIFACT_ROUTES.available:
-            return [], True
+            return [], [], True
         try:
             revisions = await self.store.list_revisions(
                 current_org_id(), vrid, timeout_seconds=self.list_timeout_seconds
@@ -350,7 +387,7 @@ class RevisionRetentionSweep:
                     "Storage has no artifact routes (HTTP %d); old revisions are not retired "
                     "until this service restarts", exc.status,
                 )
-            return [], True
+            return [], [], True
         except Exception as exc:
             # The stage states of this virtual record are retired all the same.
             report.failed += 1
@@ -358,13 +395,13 @@ class RevisionRetentionSweep:
                 "Revision retention: could not list the revisions of %s; next pass retries: %s: %s",
                 vrid, type(exc).__name__, exc,
             )
-            return [], False
-        keep = {pointer.get("currentRev"), pointer.get("previousRev")}
+            return [], [], False
+        keep = _kept_sets(revisions, {pointer.get("currentRev"), pointer.get("previousRev")})
         candidates = []
         for revision in revisions:
             stored_at = _stored_at_ms(revision)
             if (
-                revision.get("rev") in keep
+                revision.get("documentId") in keep
                 or not revision.get("documentId")
                 or stored_at is None
                 or stored_at >= cutoff_ms
@@ -373,7 +410,7 @@ class RevisionRetentionSweep:
                 record_retention("revision", "kept")
             else:
                 candidates.append(revision)
-        return candidates, True
+        return candidates, revisions, True
 
     async def _retire_virtual_record(
         self,
@@ -386,7 +423,7 @@ class RevisionRetentionSweep:
     ) -> bool:
         """Retire one virtual record; False when its artifact listing failed."""
         vrid = str(pointer["virtualRecordId"])
-        candidates, listed = await self._deletable_revisions(pointer, cutoff_ms, report)
+        candidates, revisions, listed = await self._deletable_revisions(pointer, cutoff_ms, report)
         if not candidates and not unheld_revs:
             return listed
         org_id = current_org_id()      # run_page binds the pointer's org around this call
@@ -426,7 +463,7 @@ class RevisionRetentionSweep:
                 record_retention("stage_state", "deleted", deleted)
             if candidates:
                 await self._retire_revisions(
-                    str(org_id), candidates, mapping, holders, lease, report, leader, deadline
+                    str(org_id), candidates, revisions, mapping, holders, lease, report, leader, deadline
                 )
             return listed
 
@@ -469,6 +506,7 @@ class RevisionRetentionSweep:
         self,
         org_id: str,
         candidates: list[dict[str, Any]],
+        revisions: list[dict[str, Any]],
         mapping: dict[str, Any] | None,
         holders: list[dict[str, Any]],
         lease: _HolderLeases,
@@ -485,11 +523,15 @@ class RevisionRetentionSweep:
         if mapping is None or not mapping.get("currentRev"):
             keep(len(candidates))
             return
-        # A record whose source went back to earlier bytes is on an old rev, and its
-        # writer re-uses that revision's document.
-        held = {mapping.get("currentRev"), mapping.get("previousRev")} | _held_revs(holders)
+        # A record whose source went back to earlier bytes is on an old rev: its newest set is kept, and
+        # its next write files a set of its own. The pointer's set is read from the mapping as it is now.
+        held = _kept_sets(
+            revisions,
+            {mapping.get("currentRev"), mapping.get("previousRev")} | _held_revs(holders),
+            mapping.get("manifestDocId"),
+        )
         for index, revision in enumerate(candidates):
-            if revision.get("rev") in held:
+            if revision.get("documentId") in held:
                 keep()
                 continue
             if revision.get("deleteFence") is not True:

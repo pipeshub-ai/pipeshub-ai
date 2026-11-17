@@ -30,6 +30,12 @@ from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
+from app.api.middlewares.request_log import (
+    add_request_log_fields,
+    bind_request_log_fields,
+    mark_request_failure,
+    path_log_fields,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
@@ -74,7 +80,9 @@ from app.utils.oauth_config import (
     extract_oauth_error_message,
     get_oauth_config,
 )
+from app.utils import error_class
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_user_or_503
@@ -88,7 +96,10 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/toolsets", tags=["toolsets"])
+router = APIRouter(
+    prefix="/api/v1/toolsets", tags=["toolsets"],
+    dependencies=[Depends(path_log_fields(instance_id="toolset_id", agent_key="agent_id"))],
+)
 
 # Constants
 MAX_AGENT_NAMES_DISPLAY = 3
@@ -531,7 +542,6 @@ async def _load_toolset_instances(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to load toolset instances from {instances_path}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to access toolset instances. Please try again or contact support."
@@ -831,10 +841,10 @@ async def _create_or_update_toolset_oauth_config(
     registry: ToolsetRegistry,
     base_url: str,
     oauth_config_id: str | None = None,
-) -> str | None:
+) -> str:
     """
     Create or update an OAuth config for a toolset type.
-    Returns the OAuth config _id.
+    Returns the OAuth config _id; a failed save raises HTTPException(500).
     """
     try:
         check_salesforce_login_url_setting(toolset_type, auth_config)
@@ -872,7 +882,7 @@ async def _create_or_update_toolset_oauth_config(
                     await _save_config(config_service, path, oauth_configs)
                     return oauth_config_id
             # Not found - fall through to create
-            logger.warning("OAuth config not found, creating new one")
+            logger.debug("OAuth config not found, creating new one")
 
         # Create new OAuth config
         if any(is_redacted_placeholder(v) for v in auth_config.values()):
@@ -907,8 +917,11 @@ async def _create_or_update_toolset_oauth_config(
     except InvalidAuthConfigError:
         raise
     except Exception as e:
-        logger.error(f"Error creating/updating toolset OAuth config: {e}", exc_info=True)
-        return None
+        # Saving the instance anyway would leave its client secret inline in the shared instance list.
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to save the OAuth app. Please try again.",
+        ) from e
 
 
 async def _get_oauth_config_by_id(
@@ -1420,13 +1433,6 @@ async def create_toolset_instance(
                     registry=registry,
                     base_url=base_url,
                 )
-
-                if not oauth_config_id:
-                    # Saving the instance anyway would leave its client secret inline in the shared instance list.
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Failed to save the OAuth app. Please try again.",
-                    )
             else:
                 logger.debug(
                     f"No OAuth credentials provided for instance '{instance_name}'. "
@@ -1465,7 +1471,6 @@ async def create_toolset_instance(
     try:
         await _save_config(config_service, instances_path, instances)
     except Exception as e:
-        logger.error(f"Failed to save toolset instance to {instances_path}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to save toolset instance. Please try again."
@@ -1623,7 +1628,7 @@ async def get_toolset_instance(
                         oauth_config_dict["clientSecretSet"] = bool(cfg_data["clientSecret"])
                     result["oauthConfig"] = oauth_config_dict
             except Exception as e:
-                logger.warning(f"Could not load OAuth config for instance {instance_id}: {e}")
+                error_class.log_failure(logger, "toolset.route.failed", e, op="load_oauth_config")
 
         # Count authenticated users via prefix scan
         try:
@@ -1631,7 +1636,7 @@ async def get_toolset_instance(
             user_keys = await config_service.list_keys_in_directory(prefix)
             result["authenticatedUserCount"] = len(user_keys)
         except Exception as e:
-            logger.warning(f"Could not count authenticated users for instance {instance_id}: {e}")
+            error_class.log_failure(logger, "toolset.route.failed", e, op="count_authenticated_users")
             result["authenticatedUserCount"] = 0
 
     return {"status": "success", "instance": result}
@@ -1652,7 +1657,7 @@ async def _deauth_all_instance_users(
     try:
         user_keys = await config_service.list_keys_in_directory(prefix)
     except Exception as e:
-        logger.error(f"Could not list user auth keys for instance: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="list_user_credentials")
         return 0
 
     if not user_keys:
@@ -1670,7 +1675,7 @@ async def _deauth_all_instance_users(
             auth["deauthAt"] = now
             await config_service.set_config(key, auth)
         except Exception as e:
-            logger.warning(f"Could not deauth user at key {key}: {e}")
+            error_class.log_failure(logger, "toolset.route.failed", e, op="deauth_user")
 
     await asyncio.gather(*[_deauth_one(k) for k in user_keys])
     return len(user_keys)
@@ -1830,11 +1835,6 @@ async def update_toolset_instance(
                 base_url=base_url,
                 oauth_config_id=current_oauth_config_id,
             )
-            if not new_oauth_id:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to save the OAuth app. Please try again.",
-                )
             if new_oauth_id != instance.get("oauthConfigId"):
                 instance["oauthConfigId"] = new_oauth_id
             oauth_credentials_changed = True
@@ -1868,7 +1868,6 @@ async def update_toolset_instance(
     try:
         await _save_config(config_service, instances_path, instances)
     except Exception as e:
-        logger.error(f"Failed to update toolset instance in {instances_path}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.") from e
 
     # Deauthenticate all users in parallel if credentials changed
@@ -1876,7 +1875,7 @@ async def update_toolset_instance(
     if oauth_credentials_changed:
         deauthed_count = await _deauth_all_instance_users(instance_id, config_service)
         if deauthed_count > 0:
-            logger.info(f"Deauthenticated {deauthed_count} users for instance {instance_id} after OAuth config update.")
+            logger.info("Deauthenticated users after an OAuth config update", extra={"users": deauthed_count})
 
     msg = "Toolset instance updated successfully."
     if deauthed_count > 0:
@@ -1913,7 +1912,6 @@ async def delete_toolset_instance(
         try:
             deleted_credentials_count = await toolset_store.delete_personal_instance(config_service, personal)
         except RuntimeError as e:
-            logger.error(f"Failed to delete personal toolset instance {instance_id}: {e}")
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
         return {
             "status": "success",
@@ -1947,9 +1945,7 @@ async def delete_toolset_instance(
     try:
         # set_config will automatically invalidate cache for this path
         await _save_config(config_service, instances_path, updated)
-        logger.info("Toolset instance deleted successfully.")
     except Exception as e:
-        logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
 
     await toolset_store.delete_instance_rules(config_service, instance_id)
@@ -1976,7 +1972,6 @@ async def _assert_instance_not_in_use(request: Request, instance: dict[str, Any]
 
         # Validate that agent_names is a list (defensive programming)
         if not isinstance(agent_names, list):
-            logger.error(f"check_toolset_instance_in_use returned unexpected type: {type(agent_names)} for instance {instance_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Cannot delete toolset instance: Invalid response from agent usage check. Please try again or contact support."
@@ -1985,18 +1980,15 @@ async def _assert_instance_not_in_use(request: Request, instance: dict[str, Any]
         # Explicit check: if any agents are using this instance, block deletion
         # ToolsetInUseError will automatically be handled by FastAPI (it's an HTTPException)
         if agent_names and len(agent_names) > 0:
-            logger.warning(f"⚠️ Blocking deletion of instance {instance_id}: found {len(agent_names)} agent(s) using this toolset")
             raise ToolsetInUseError(
                 toolset_name=instance.get('instanceName', instance_id),
                 agent_names=agent_names
             )
 
-        logger.info(f"✅ Agent usage check passed for instance {instance_id}: no agents found using this toolset")
     except HTTPException:
         # Let HTTPException (including ToolsetInUseError) propagate - FastAPI handles it automatically
         raise
     except Exception as e:
-        logger.error(f"Failed to check agent usage for instance {instance_id}: {e}", exc_info=True)
         # FAIL-CLOSED: Block deletion if we cannot verify (prevent accidental deletion)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -2170,7 +2162,7 @@ async def get_authenticated_toolsets(
     try:
         instances = await _load_toolset_instances(org_id, config_service)
     except Exception as e:
-        logger.error(f"Failed to load toolset instances from etcd: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="load_instances")
         instances = []
 
     # Filter by org (safety check), then the user's own personal instances
@@ -2303,7 +2295,6 @@ async def authenticate_toolset_instance(
     try:
         await _save_config(config_service, auth_path, user_auth)
     except Exception as e:
-        logger.error(f"Failed to save user auth for instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save credentials.") from e
 
     return {"status": "success", "message": "Toolset authenticated successfully.", "isAuthenticated": True}
@@ -2347,7 +2338,6 @@ async def update_toolset_credentials(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to update credentials for instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update credentials.") from e
 
     return {"status": "success", "message": "Credentials updated successfully."}
@@ -2374,12 +2364,12 @@ async def remove_toolset_credentials(
         if refresh_service:
             refresh_service.cancel_refresh_task(auth_path)
     except Exception as e:
-        logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
-        logger.warning(f"Failed to delete auth for instance {instance_id}: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
 
     return {"status": "success", "message": "Credentials removed successfully."}
 
@@ -2413,12 +2403,11 @@ async def reauthenticate_toolset_instance(
         if refresh_service:
             refresh_service.cancel_refresh_task(auth_path)
     except Exception as e:
-        logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
-        logger.error(f"Failed to reauthenticate instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.") from e
 
     return {"status": "success", "message": "Credentials cleared. Please re-authenticate."}
@@ -2529,7 +2518,6 @@ async def get_instance_oauth_authorization_url(
     except (OAuthConfigError, InvalidAuthConfigError):
         raise
     except Exception as e:
-        logger.error(f"Error generating OAuth URL for instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to generate OAuth authorization URL.") from e
     finally:
         await oauth_provider.close()
@@ -2560,7 +2548,7 @@ async def _notify_toolset_auth_error(
             recipient_user_ids=[user_id] if user_id else None,
         )
     except Exception as e:
-        logger.warning("Failed to publish toolset multi-site notification: %s", e)
+        error_class.log_failure(logger, "toolset.route.failed", e, op="notify_setup_error", include_error_text=False)
 
 
 async def _validate_toolset_oauth_setup(
@@ -2601,7 +2589,7 @@ async def _validate_toolset_oauth_setup(
         setup_error_msg = str(e)  # user-written message
         setup_error_title = e.title  # factory-supplied notification heading
     except Exception as e:
-        logger.warning("Toolset %s setup validation skipped: %s", toolset_type, e)
+        error_class.log_failure(logger, "toolset.route.failed", e, op="validate_setup", include_error_text=False, toolset_type=toolset_type)
 
     if not setup_error_msg:
         return None
@@ -2609,10 +2597,6 @@ async def _validate_toolset_oauth_setup(
     await _notify_toolset_auth_error(
         notification_service, org_id, user_id, toolset_type, setup_error_msg,
         title=setup_error_title,
-    )
-    logger.error(
-        "❌ Toolset %s (%s): setup validation failed, not marking authenticated: %s",
-        instance_id, toolset_type, setup_error_msg,
     )
     return {
         "success": False,
@@ -2638,11 +2622,17 @@ async def handle_toolset_oauth_callback(
     state = strip_desktop_state(state)
 
     if error and error not in ["null", "undefined", "None", ""]:
+        # The raw parameter is unauthenticated input: only a known code reaches the line.
+        add_request_log_fields(request, oauth_error=authorization_error_code(error))
+        mark_request_failure(request, None, error_class=authorization_error_class(error), reason="provider_error")
         return {"success": False, "error": error, "redirect_url": f"{base_url}/tools?oauth_error={error}"}
 
     if not code or not state:
+        mark_request_failure(request, None, error_class="bad_request", reason="missing_parameters")
         return {"success": False, "error": "missing_parameters", "redirect_url": f"{base_url}/tools?oauth_error=missing_parameters"}
 
+    # Set before the raises whose OAuthConfigError alone can't say why (the body's error is its class name).
+    failure_class: str | None = None
     try:
         user_context = _get_user_context(request)
         user_id = user_context["user_id"]
@@ -2653,6 +2643,7 @@ async def handle_toolset_oauth_callback(
         instance_id = state_data["instance_id"]
         state_user_id = state_data["user_id"]
         is_agent_flow = state_data.get("is_agent", False)
+        bind_request_log_fields(request, toolset_id=instance_id, agent_id=state_user_id if is_agent_flow else None)
 
         # For regular user flows, validate that the callback user matches the initiating user.
         # For agent flows, the state carries the agentKey (not a user ID), so we skip that
@@ -2686,6 +2677,10 @@ async def handle_toolset_oauth_callback(
                 else:
                     err_param = "agent_auth_error"
                     err_message = "We couldn't check your access to this agent. Please try again."
+                mark_request_failure(
+                    request, auth_exc, error_class="forbidden" if auth_exc.status_code in (403, 404) else None,
+                    reason=err_param, include_error_text=False,
+                )
                 return {
                     "success": False,
                     "error": err_param,
@@ -2703,10 +2698,12 @@ async def handle_toolset_oauth_callback(
         if personal:
             oauth_cfg = _own_oauth_app(instance)
         elif not oauth_config_id:
+            failure_class = "misconfigured"
             raise OAuthConfigError("Instance has no OAuth configuration.")
         else:
             oauth_cfg = await _resolve_oauth_config_for_flow(toolset_type, oauth_config_id, org_id, config_service, request)
             if not oauth_cfg:
+                failure_class = "misconfigured"
                 raise OAuthConfigError(f"OAuth configuration '{oauth_config_id}' not found.")
 
         auth_config = {"type": "OAUTH", **oauth_cfg.get("config", {})}
@@ -2734,6 +2731,7 @@ async def handle_toolset_oauth_callback(
             await oauth_provider.close()
 
         if not token or not token.access_token:
+            failure_class = "upstream_5xx"  # the provider answered without an access token
             raise OAuthConfigError("Failed to exchange authorization code for access token")
 
         # Optional setup validation: reject an unusable, just-authenticated setup (e.g.
@@ -2752,6 +2750,7 @@ async def handle_toolset_oauth_callback(
             base_url=base_url,
         )
         if setup_error_response is not None:
+            mark_request_failure(request, None, error_class="misconfigured", reason="toolset_setup_error")
             return setup_error_response
 
         # Update auth record (user or agent depending on flow). A failed read or write reaches
@@ -2793,7 +2792,7 @@ async def handle_toolset_oauth_callback(
             if refresh_service:
                 await refresh_service.schedule_token_refresh(auth_storage_path, toolset_type, token)
         except Exception as e:
-            logger.error(f"Could not schedule token refresh for instance {instance_id}: {e}")
+            error_class.log_failure(logger, "toolset.route.failed", e, op="schedule_refresh")
 
         return {
             "success": True,
@@ -2802,7 +2801,9 @@ async def handle_toolset_oauth_callback(
 
     except (ToolsetError, OAuthConfigError, InvalidAuthConfigError) as e:
         error_detail = getattr(e, 'detail', str(e))
-        logger.error(f"OAuth callback error: {error_detail}")
+        mark_request_failure(
+            request, e, error_class=failure_class, reason=type(e).__name__, include_error_text=False,
+        )
         return {
             "success": False,
             "error": type(e).__name__,
@@ -2810,7 +2811,7 @@ async def handle_toolset_oauth_callback(
             "redirect_url": f"{base_url}/tools?oauth_error={type(e).__name__}"
         }
     except HTTPException as e:
-        logger.error(f"OAuth callback HTTP error: {e.detail}")
+        mark_request_failure(request, e, reason="auth_failed", include_error_text=False)
         return {
             "success": False,
             "error": "auth_failed",
@@ -2818,7 +2819,7 @@ async def handle_toolset_oauth_callback(
             "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"
         }
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
+        mark_request_failure(request, e, reason="server_error", include_error_text=False)
         error_message = extract_oauth_error_message(e)
         return {
             "success": False,
@@ -2860,7 +2861,7 @@ async def list_toolset_oauth_configs(
             )
             configs_from_resolver = True
         except Exception as e:
-            logger.warning(f"OAuth config inheritance resolve_all failed: {e}")
+            error_class.log_failure(logger, "toolset.route.failed", e, op="resolve_inherited_oauth_configs")
             configs = await _get_oauth_configs_for_type(toolset_type, config_service)
     else:
         configs = await _get_oauth_configs_for_type(toolset_type, config_service)
@@ -2937,11 +2938,6 @@ async def update_toolset_oauth_config(
         base_url=base_url,
         oauth_config_id=oauth_config_id,
     )
-    if not new_oauth_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to save the OAuth app. Please try again.",
-        )
 
     # Deauthenticate all users of all instances using this OAuth config (parallel)
     affected_instances = [i for i in instances if i.get("oauthConfigId") == oauth_config_id and i.get("orgId") == org_id]
@@ -3014,7 +3010,6 @@ async def delete_toolset_oauth_config(
         updated_configs = [c for c in all_configs if c.get("_id") != oauth_config_id]
         await _save_config(config_service, path, updated_configs)
     except Exception as e:
-        logger.error(f"Failed to delete OAuth config: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete OAuth configuration.") from e
 
     return {"status": "success", "message": "OAuth configuration deleted successfully."}
@@ -3350,7 +3345,6 @@ async def _resolve_agent_with_permission(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error resolving agent {agent_key}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to verify agent permissions.") from e
 
 
@@ -3507,7 +3501,6 @@ async def authenticate_agent_toolset(
     try:
         await _save_config(config_service, auth_path, agent_auth)
     except Exception as e:
-        logger.error(f"Failed to save agent auth for instance {instance_id}, agent {agent_key}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save agent credentials.") from e
 
     return {"status": "success", "message": "Agent toolset authenticated successfully.", "isAuthenticated": True}
@@ -3548,7 +3541,6 @@ async def update_agent_toolset_credentials(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to update agent credentials for instance {instance_id}, agent {agent_key}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update agent credentials.") from e
 
     return {"status": "success", "message": "Agent credentials updated successfully."}
@@ -3575,12 +3567,12 @@ async def remove_agent_toolset_credentials(
         if refresh_service:
             refresh_service.cancel_refresh_task(auth_path)
     except Exception as e:
-        logger.warning(f"Could not cancel refresh task for agent {agent_key}: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
-        logger.warning(f"Failed to delete agent auth for instance {instance_id}, agent {agent_key}: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
 
     return {"status": "success", "message": "Agent credentials removed successfully."}
 
@@ -3615,12 +3607,11 @@ async def reauthenticate_agent_toolset(
         if refresh_service:
             refresh_service.cancel_refresh_task(auth_path)
     except Exception as e:
-        logger.warning(f"Could not cancel refresh task for agent {agent_key}: {e}")
+        error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
-        logger.error(f"Failed to reauthenticate agent {agent_key} for instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear agent credentials.") from e
 
     return {"status": "success", "message": "Agent credentials cleared. Please re-authenticate."}
@@ -3712,7 +3703,6 @@ async def get_agent_toolset_oauth_url(
     except (OAuthConfigError, InvalidAuthConfigError):
         raise
     except Exception as e:
-        logger.error(f"Error generating OAuth URL for agent {agent_key}, instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to generate OAuth authorization URL.") from e
     finally:
         await oauth_provider.close()

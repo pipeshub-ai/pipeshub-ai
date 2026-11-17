@@ -23,6 +23,12 @@ export class UnauthorizedError extends HttpError {
     super('UNAUTHORIZED', message, HTTP_STATUS.UNAUTHORIZED, metadata);
   }
 }
+/**
+ * A 401 for a credential the request submitted (a sign-in code, a password, a
+ * CAPTCHA, an identity-provider token) that is wrong, expired or already used.
+ * Answered like any 401; logged as bad_request, since no session expired.
+ */
+export class WrongCredentialError extends UnauthorizedError {}
 export class GoneError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('GONE', message, HTTP_STATUS.GONE, metadata);

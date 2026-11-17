@@ -815,7 +815,7 @@ def test_cancel_while_admitting_a_spawn(
 ) -> None:
     budget = make_budget(1)
     pool = make_pool(budget, hub=hub)
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: None)
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: None)
     job = submit(pool, quick)
     assert wait_for(lambda: pool._spawn_waiters == 1)
     job.cancelled.set()
@@ -845,7 +845,7 @@ def test_lost_checkout_race_respawns_through_admission(
     budget, pool = real_pool(make_budget, make_pool, 2)
     admitted = []
     real_admit = budget.admit_spawn
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: admitted.append(1) or real_admit(ws))
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: admitted.append(1) or real_admit(ws, **kw))
     first = submit(pool, pid_job, os.devnull, 0.0).future.result(timeout=60)
     real_checkout = pool.checkout
 
@@ -870,7 +870,7 @@ def test_every_spawn_goes_through_admission(
     budget, pool = real_pool(make_budget, make_pool, 2)
     admitted = []
     real_admit = budget.admit_spawn
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: admitted.append(1) or real_admit(ws))
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: admitted.append(1) or real_admit(ws, **kw))
     pid = submit(pool, pid_job, os.devnull, 0.0).future.result(timeout=60)
     assert len(admitted) == 1
     os.kill(pid, signal.SIGKILL)  # dies idle
@@ -947,7 +947,7 @@ def test_lane_wait_is_bounded(
     assert raised.value.cause == "unavailable" and time.monotonic() - started < 5
     # And the same bound for a spawn that is never admitted.
     blocker.release()
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: None)
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: None)
     with pytest.raises(ParseWorkerError) as raised:
         submit(pool, quick).future.result(timeout=10)
     assert raised.value.cause == "unavailable"

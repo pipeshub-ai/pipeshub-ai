@@ -215,7 +215,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Install Node.js runtime only (not full dev environment)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 

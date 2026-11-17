@@ -51,6 +51,6 @@ async def test_a_rejected_write_settles_the_event_once_and_is_counted(
 
 async def test_any_other_write_failure_is_still_a_failed_event() -> None:
     svc, _ = _service(RuntimeError("db down"))
-    with patch.object(entity_module, "record_schema_rejection") as counted:
-        assert await svc.process_event("orgUpdated", {"orgId": "org-1", "registeredName": "Acme"}) is False
+    with patch.object(entity_module, "record_schema_rejection") as counted, pytest.raises(RuntimeError, match="db down"):
+        await svc.process_event("orgUpdated", {"orgId": "org-1", "registeredName": "Acme"})
     counted.assert_not_called()

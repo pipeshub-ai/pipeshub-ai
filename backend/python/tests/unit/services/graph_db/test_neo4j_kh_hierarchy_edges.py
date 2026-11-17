@@ -122,8 +122,8 @@ class TestListingHelpersWalkOnlyHierarchyEdges:
 
     async def test_the_groups_under_a_declared_group(self) -> None:
         provider = _provider(state=False)
-        await provider._kh_v3_declared_groups(["g1"], None)
-        _assert_only_hierarchy(provider, walks=1)
+        await provider._kh_v3_declared_scope(["g1"], "app1", ["g1"], None, None)
+        _assert_only_hierarchy(provider, walks=2)
 
     async def test_the_granted_children_of_the_app(self) -> None:
         provider = _provider(state=False)

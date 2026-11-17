@@ -125,6 +125,44 @@ describe('Connector routes over HTTP', () => {
     })
   })
 
+  describe('GET /:connectorId/permissions/status', () => {
+    const PATH = `/api/v1/connectors/${CONNECTOR_ID}/permissions/status`
+
+    it('forwards the call with the caller\'s own token and returns the status as it comes', async () => {
+      h.backend.on('GET', PATH, { status: 200, body: { state: 'healthy' } })
+
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`, sessionToken(h, admin))
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ state: 'healthy' })
+      expect(single(h.backend.callsTo('GET', PATH)).headers.authorization).to.match(/^Bearer /)
+    })
+
+    it('passes on the 404 the connector service gives a non-admin', async () => {
+      h.backend.on('GET', PATH, { status: 404, body: { detail: 'This connector was removed, or you no longer have access.' } })
+
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`, sessionToken(h, member))
+
+      expect(r.status).to.equal(404)
+    })
+
+    it('rejects a request with no token without asking the connector service', async () => {
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`)
+
+      expect(r.status).to.equal(401)
+      expect(h.backend.calls).to.have.length(0)
+    })
+
+    it('tells the user to try again later when the connector service is down', async () => {
+      h.backend.on('GET', PATH, 'drop')
+
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`, sessionToken(h, admin))
+
+      expect(r.status).to.equal(503)
+      expect(errorMessage(r)).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+    })
+  })
+
   describe('GET /record/:recordId/content', () => {
     it('returns the parsed content for a record', async () => {
       h.backend.on('GET', `/api/v1/records/${CONNECTOR_ID}/content`, { status: 200, body: { content: 'hello' } })
@@ -441,6 +479,22 @@ describe('Connector routes over HTTP', () => {
       expect(r.status).to.equal(200)
       const forwarded = single(h.backend.calls)
       expect(forwarded.query.getAll('node_types')).to.deep.equal(['record'])
+    })
+
+    it('forwards the cursor of a previous page', async () => {
+      h.backend.on('GET', '/api/v1/knowledge-graph/navigate', { status: 200, body: { rows: [] } })
+
+      const r = await call(h, 'GET', '/navigate?nodeId=grp-1&cursor=eyJ2IjoyfQ.c2ln', sessionToken(h, member))
+
+      expect(r.status).to.equal(200)
+      expect(single(h.backend.calls).query.get('cursor')).to.equal('eyJ2IjoyfQ.c2ln')
+    })
+
+    it('rejects a cursor longer than any it hands out', async () => {
+      const r = await call(h, 'GET', `/navigate?cursor=${'a'.repeat(4097)}`, sessionToken(h, member))
+
+      expect(r.status).to.equal(400)
+      expect(h.backend.calls).to.have.length(0)
     })
   })
 

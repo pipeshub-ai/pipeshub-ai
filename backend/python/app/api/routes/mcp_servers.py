@@ -48,6 +48,8 @@ from app.agents.mcp.failure import (
     SIGN_IN_FAILURES,
     MCPFailureReason,
     classify_mcp_failure,
+    log_discover_end,
+    mcp_error_class,
 )
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
@@ -69,7 +71,16 @@ from app.agents.mcp.url_guard import (
 from app.agents.mcp.www_authenticate import challenge_scopes
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
-from app.config.configuration_service import ConfigurationService
+from app.api.middlewares.request_log import (
+    add_request_log_fields,
+    bind_request_log_fields,
+    mark_request_failure,
+    path_log_fields,
+)
+from app.config.configuration_service import (
+    ConfigurationService,
+    delete_config_confirmed,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.core.org_context import current_org_id
@@ -83,12 +94,19 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.utils import error_class
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.credential_refresh_log import (
+    EVENT_DEAUTHENTICATE_FAILED,
+    log_deauthenticated,
+)
 from app.utils.desktop_state import (
     mark_desktop_state,
     strip_desktop_state,
 )
 from app.utils.env_utils import env_int
+from app.utils.logging_fields import log_event
+from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -232,8 +250,25 @@ async def _require_mcp_enabled(request: Request) -> None:
 router = APIRouter(
     prefix="/api/v1/mcp-servers",
     tags=["mcp-servers"],
-    dependencies=[Depends(_require_mcp_enabled)],
+    dependencies=[
+        Depends(_require_mcp_enabled), Depends(path_log_fields(instance_id="mcp_server_id", agent_key="agent_id")),
+    ],
 )
+
+# Classes of a provider that is down or failing, as opposed to one refusing what we sent.
+_UPSTREAM_CLASSES = frozenset({"unavailable", "timeout", "upstream_5xx"})
+
+
+def _hand_over_mcp_failure(
+    request: Request, e: BaseException, *, status: int, detail: str, reason: str, error_class: str | None = None,
+) -> HTTPException:
+    """The HTTPException to raise ``from e`` for an MCP server's or OAuth provider's failure, marked for the
+    request's line with what only this route knows: the MCP class, the reason, and that the cause's text (the
+    server's or provider's answer) stays off the line."""
+    http_exc = HTTPException(status_code=status, detail=detail)
+    mark_request_failure(request, http_exc, error_class=error_class or mcp_error_class(e), reason=reason,
+                         include_error_text=False)
+    return http_exc
 
 
 def _get_mcp_registry(request: Request) -> MCPRegistry:
@@ -253,7 +288,6 @@ async def _get_configured_frontend_base_url(config_service: ConfigurationService
     try:
         endpoints = await config_service.get_config(DEFAULT_ENDPOINTS_PATH, use_cache=False, raise_on_error=True)
     except Exception as e:
-        logger.error(f"Could not read the configured frontend endpoint: {e}")
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
             detail="The server's public address couldn't be read. Please try again in a moment.",
@@ -735,7 +769,6 @@ async def _assert_instance_not_in_use(request: Request, instance: dict[str, Any]
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to check agent usage for MCP instance {instance['_id']}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Cannot delete the MCP server: unable to verify whether agents use it. Please try again.",
@@ -764,7 +797,7 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
 
     # The record goes first and must go: if it stays, the server is still listed and usable.
     # What hangs off it is removed best-effort.
-    if not await config_service.delete_config(mcp_service.instance_record_path(instance)):
+    if not await delete_config_confirmed(config_service, mcp_service.instance_record_path(instance)):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete MCP server instance.")
     await mcp_lifecycle.delete_instance_data(config_service, instance)
 
@@ -1159,6 +1192,7 @@ async def _resolve_oauth_client(
     token_url: Optional[str],
     *,
     policy: MCPUrlPolicy,
+    request: Request,
 ) -> _SignInClient:
     """The client a new sign-in uses: the admin's static app, then a legacy per-owner DCR client,
     then the shared DCR client while it still fits (`_dcr_client_fits`), then PipesHub's client
@@ -1200,19 +1234,20 @@ async def _resolve_oauth_client(
                 auth_methods_supported=discovered.token_endpoint_auth_methods_supported,
             )
         except dcr_module.DCRError as e:
-            # `DCRError`'s message embeds the registration endpoint's raw response body
-            # (see `dcr.register_dynamic_client`) — log it server-side only; a third-party
-            # AS's response text is not something to echo back to our own API caller.
-            logger.error(f"MCP dynamic client registration failed for instance {instance_id}: {e}")
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_GATEWAY.value,
+            # `DCRError`'s message embeds the registration endpoint's raw response body (see
+            # `dcr.register_dynamic_client`): it goes neither to our API caller nor on the line.
+            # A provider that is down is degraded; any other refusal needs an administrator.
+            cls = mcp_error_class(e)
+            raise _hand_over_mcp_failure(
+                request, e, status=HttpStatusCode.BAD_GATEWAY.value,
                 detail="Dynamic client registration with the OAuth provider failed. Ask an administrator to configure a static OAuth app instead.",
+                reason="dcr_failed", error_class=cls if cls in _UPSTREAM_CLASSES else "misconfigured",
             ) from e
         # One shared registration per instance, not one per owner — every subsequent
         # owner (any user/agent) reuses this same client instead of registering their own.
         record = dcr_client.model_dump(by_alias=True)
         if shared_exists:
-            logger.info(f"Replacing the registered OAuth client for MCP instance {instance_id}")
+            logger.info("Replacing the registered OAuth client for an MCP instance")
             if not _dcr_secret_expired(shared_dcr):
                 # It no longer fits new sign-ins, but the tokens it issued may still refresh.
                 record[mcp_token_refresh.PREVIOUS_CLIENT_FIELD] = {
@@ -1273,6 +1308,7 @@ async def _build_oauth_authorization_url(
     org_id: str,
     base_url: Optional[str],
     *,
+    request: Request,
     initiated_by: str,
     owner_type: str,
     registry: Optional[MCPRegistry] = None,
@@ -1320,7 +1356,7 @@ async def _build_oauth_authorization_url(
     # it is re-resolved at callback/exchange time instead of being carried through this flow.
     client = await _resolve_oauth_client(
         config_service, instance_id, owner_id, redirect_uri, discovered, authorization_url, token_url,
-        policy=policy,
+        policy=policy, request=request,
     )
     client_id = client.client_id
 
@@ -1417,7 +1453,7 @@ async def get_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, user_id, org_id, base_url,
-        initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request), desktop=desktop,
+        request=request, initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request), desktop=desktop,
     )
 
 
@@ -1489,7 +1525,7 @@ async def _note_a_refused_client_document(
     try:
         record = await config_service.get_config(get_mcp_oauth_state_path(state), default=None, use_cache=False)
     except Exception as e:
-        logger.warning(f"Couldn't read the sign-in state behind a refused MCP authorization: {e}")
+        error_class.log_failure(logger, "mcp.route.failed", e, op="read_sign_in_state")
         return
     if isinstance(record, dict) and record.get("clientKind") == "cimd" and record.get("initiatedBy") == caller_id:
         await cimd.remember_refusal(config_service, record.get("authorizationServer") or "")
@@ -1571,6 +1607,15 @@ def _token_exchange_failure_message(error_code: Optional[str], *, registered_cli
     return "Failed to exchange the authorization code for tokens. Please try connecting again."
 
 
+def _callback_failure(
+    request: Request, response: dict[str, Any], exc: BaseException | None = None, *, error_class: str | None = None,
+) -> dict[str, Any]:
+    """``response``, the callback's failure body, with the failure marked for the request's line: the body's
+    ``error`` is the reason, so the line and the sign-in window agree."""
+    mark_request_failure(request, exc, error_class=error_class, reason=response["error"], include_error_text=False)
+    return response
+
+
 @router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def handle_oauth_callback(
     request: Request,
@@ -1588,9 +1633,15 @@ async def handle_oauth_callback(
 
     if error:
         await _note_a_refused_client_document(config_service, state, error, caller_id)
+        # The raw parameter is anyone's input: only a code a spec defines goes on the line.
+        add_request_log_fields(request, oauth_error=authorization_error_code(error))
+        mark_request_failure(request, error_class=authorization_error_class(error), reason="provider_error")
         return {"success": False, "error": error, "errorMessage": f"OAuth provider returned an error: {error}"}
     if not code or not state:
-        return {"success": False, "error": "missing_params", "errorMessage": "Missing code or state parameter."}
+        return _callback_failure(
+            request, {"success": False, "error": "missing_params", "errorMessage": "Missing code or state parameter."},
+            error_class="bad_request",
+        )
 
     state_path = get_mcp_oauth_state_path(state)
     claim_path = get_mcp_oauth_state_claim_path(state)
@@ -1602,10 +1653,18 @@ async def handle_oauth_callback(
         claim_path = get_mcp_unhashed_oauth_state_claim_path(state)
         state_record = await config_service.get_config(state_path, default=None, use_cache=False)
     if not isinstance(state_record, dict):
-        return {"success": False, "error": "invalid_state", "errorMessage": "Invalid or expired authorization state."}
+        return _callback_failure(
+            request,
+            {"success": False, "error": "invalid_state", "errorMessage": "Invalid or expired authorization state."},
+            error_class="bad_request",
+        )
 
     if state_record.get("expiresAt", 0) < get_epoch_timestamp_in_ms():
-        return {"success": False, "error": "expired_state", "errorMessage": "The authorization request expired. Please try again."}
+        return _callback_failure(
+            request,
+            {"success": False, "error": "expired_state", "errorMessage": "The authorization request expired. Please try again."},
+            error_class="bad_request",
+        )
 
     # Bind the callback to whoever's session started it — without this, anyone who could
     # guess or intercept a valid `state` value could complete someone else's authorization
@@ -1617,17 +1676,17 @@ async def handle_oauth_callback(
     initiated_by = state_record.get("initiatedBy")
     instance_id = state_record.get("instanceId")
     org_id = state_record.get("orgId")
+    bind_request_log_fields(
+        request, mcp_server_id=instance_id,
+        agent_id=state_record.get("userId") if state_record.get("ownerType") == "agent" else None,
+    )
     # The org check also covers a user moved between orgs mid-flow.
     if not initiated_by or initiated_by != caller_id or not org_id or org_id != caller_user.get("orgId"):
-        logger.warning(
-            f"Rejected MCP OAuth callback for instance {instance_id}: "
-            f"caller {caller_id!r} does not match initiator {initiated_by!r} of org {org_id!r}"
-        )
-        return {
+        return _callback_failure(request, {
             "success": False,
             "error": "caller_mismatch",
             "errorMessage": "This authorization was not started from the current session. Please try connecting again.",
-        }
+        }, error_class="forbidden")
 
     # Single-use. Read-then-delete let two concurrent callbacks both pass, and etcd's delete
     # doesn't say whether the key existed, so the claim is an atomic create instead.
@@ -1636,26 +1695,30 @@ async def handle_oauth_callback(
     )
     await config_service.delete_config(state_path)
     if not claimed:
-        return {"success": False, "error": "invalid_state", "errorMessage": "Invalid or expired authorization state."}
+        return _callback_failure(
+            request,
+            {"success": False, "error": "invalid_state", "errorMessage": "Invalid or expired authorization state."},
+            error_class="bad_request",
+        )
 
     if state_record.get("ownerType") == "agent":
         # Edit access to the agent may have been revoked since the sign-in started.
         try:
             await _require_mcp_agent_edit_access(state_record["userId"], request)
-        except HTTPException:
-            logger.warning(f"Rejected MCP OAuth callback for agent {state_record['userId']!r}: edit access is gone")
-            return {
+        except HTTPException as e:
+            # "No access" is a 403 or a 404; any other status (an outage behind the check) keeps its own class.
+            return _callback_failure(request, {
                 "success": False,
                 "error": "agent_access_revoked",
                 "errorMessage": "You can no longer edit this agent, so its sign-in wasn't saved.",
-            }
+            }, e, error_class="forbidden" if e.status_code in (403, 404) else None)
     instance = await _get_org_instance(instance_id, config_service, org_id, initiated_by)
     if not instance:
-        return {
+        return _callback_failure(request, {
             "success": False,
             "error": "instance_not_found",
             "errorMessage": "This MCP server no longer exists. Please refresh and try again.",
-        }
+        }, error_class="not_found")
 
     user_id = state_record["userId"]
     client_id = state_record["clientId"]
@@ -1667,15 +1730,14 @@ async def handle_oauth_callback(
             config_service, instance_id, user_id, client_id, is_dcr,
         )
     except ValueError as e:
-        logger.error(f"MCP OAuth client resolution failed for instance {instance_id}: {e}")
-        return {
+        return _callback_failure(request, {
             "success": False,
             "error": "client_config_changed",
             "errorMessage": (
                 "The OAuth app configuration for this instance changed during authorization. "
                 "Please try connecting again."
             ),
-        }
+        }, e, error_class="conflict")
 
     try:
         tokens = await oauth_client_module.exchange_code_for_token(
@@ -1691,17 +1753,16 @@ async def handle_oauth_callback(
             auth_method=state_record.get("tokenEndpointAuthMethod"),
         )
     except oauth_client_module.MCPOAuthError as e:
-        logger.error(f"MCP OAuth code exchange failed for instance {instance_id}: {e}")
         if e.rejected_client and is_dcr:
             # The next attempt registers a new client instead of failing the same way again.
             await mcp_token_refresh.retire_rejected_dcr_client(config_service, instance_id, user_id, client_id)
         elif e.rejected_client and metadata_document:
             await cimd.remember_refusal(config_service, state_record.get("authorizationServer") or "")
-        return {
+        return _callback_failure(request, {
             "success": False,
             "error": "token_exchange_failed",
             "errorMessage": _token_exchange_failure_message(e.error_code, registered_client=is_dcr or metadata_document),
-        }
+        }, e, error_class=mcp_error_class(e))
     tokens = tokens.model_copy(update={"client_id": client_id})
 
     now_ms = get_epoch_timestamp_in_ms()
@@ -1716,11 +1777,11 @@ async def handle_oauth_callback(
         "connectedAt": now_ms,
     }
     if not await config_service.set_config(get_mcp_credentials_path(instance_id, user_id), record):
-        return {
+        return _callback_failure(request, {
             "success": False,
             "error": "credentials_not_saved",
             "errorMessage": "Your sign-in couldn't be saved. Please try connecting again.",
-        }
+        }, error_class="unavailable")
     await step_up.clear_step_up_scopes(config_service, instance_id, user_id)
 
     from app.connectors.core.base.token_service.startup_service import startup_service
@@ -1748,6 +1809,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     if not await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"]):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
+    rejected: oauth_client_module.MCPRefreshTokenInvalidError | None = None
     try:
         await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
     except mcp_token_refresh.MCPTokenRefreshError as e:
@@ -1756,28 +1818,43 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
         # must configure OAuth, not that the token endpoint itself rejected anything.
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
     except oauth_client_module.MCPRefreshTokenInvalidError as e:
-        cred_path = get_mcp_credentials_path(instance_id, user_id)
-        record = await config_service.get_config(cred_path, default=None, use_cache=False)
-        if isinstance(record, dict):
-            record["isAuthenticated"] = False
-            await config_service.set_config(cred_path, record)
-        # Both `MCPRefreshTokenInvalidError` and `MCPOAuthError` embed the token endpoint's
-        # raw response body (see `oauth_client._post_token_request`) — log it server-side
-        # only, same treatment as `/oauth/callback`'s token-exchange-failure branch above.
-        logger.warning(f"MCP OAuth refresh token rejected for instance {instance_id}: {e}")
-        # Not 401: that means the caller's own PipesHub session ended, and the app signs them out.
-        raise HTTPException(
-            status_code=HttpStatusCode.CONFLICT.value,
-            detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
-        ) from e
+        rejected = e
     except oauth_client_module.MCPOAuthError as e:
-        logger.error(f"MCP OAuth token refresh failed for instance {instance_id}: {e}")
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
+        raise _hand_over_mcp_failure(
+            request, e, status=HttpStatusCode.BAD_GATEWAY.value,
             detail="Failed to refresh the OAuth token. Please try again or reconnect this MCP server.",
+            reason=classify_mcp_failure(e).value,
         ) from e
 
+    if rejected is not None:
+        # After the except: a store error in the write must not carry the provider's answer as its context.
+        await _deauthenticate_rejected(config_service, instance_id, user_id)
+        # Both `MCPRefreshTokenInvalidError` and `MCPOAuthError` embed the token endpoint's
+        # raw response body (see `oauth_client._post_token_request`): kept off the line.
+        # Not 401: that means the caller's own PipesHub session ended, and the app signs them out.
+        raise _hand_over_mcp_failure(
+            request, rejected, status=HttpStatusCode.CONFLICT.value,
+            detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
+            reason=classify_mcp_failure(rejected).value,
+        ) from rejected
+
     return {"success": True}
+
+
+async def _deauthenticate_rejected(config_service: ConfigurationService, instance_id: str, user_id: str) -> None:
+    """The provider rejected the refresh token: sign the credential out, and say whether that was saved."""
+    cred_path = get_mcp_credentials_path(instance_id, user_id)
+    record = await config_service.get_config(cred_path, default=None, use_cache=False)
+    updated = False
+    if isinstance(record, dict):
+        record["isAuthenticated"] = False
+        updated = await config_service.set_config(cred_path, record)
+    with mcp_token_refresh.credential_scope(instance_id, user_id):
+        if updated:
+            log_deauthenticated(logger, reason="refresh_token_invalid", strikes=1, path="route")
+        else:
+            log_event(logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure",
+                      reason="not_updated" if isinstance(record, dict) else "not_found")
 
 
 @router.get(
@@ -1920,6 +1997,15 @@ def _report_listing_timeout(entry: dict[str, Any], *, cut_by_deadline: bool) -> 
     ) + "Chats still wait for it up to its own timeout."
 
 
+def _log_listing_failure(instance: dict[str, Any], e: BaseException, reason: MCPFailureReason) -> None:
+    """One server the listing couldn't list. A server that only wants a sign-in is a user's state, not a
+    degraded upstream, and the listing is reopened often: INFO."""
+    log_discover_end(
+        logger, instance["_id"], e, source="listing", mcp_reason=reason.value,
+        level=logging.INFO if reason in SIGN_IN_FAILURES else None,
+    )
+
+
 async def _discover_listing_tools(
     entry: dict[str, Any],
     instance: dict[str, Any],
@@ -1937,7 +2023,7 @@ async def _discover_listing_tools(
     try:
         cached = await cached_tools_for_owner(instance, effective_auth, credential_owner, config_service, namespace=namespace)
     except Exception as e:
-        logger.warning(f"Couldn't read the cached tools of MCP instance {instance['_id']}: {e}")
+        error_class.log_failure(logger, "mcp.route.failed", e, op="read_tool_cache", mcp_server_id=instance["_id"])
         cached = None
     if cached is not None:
         tools, discovered_at = cached
@@ -1947,6 +2033,7 @@ async def _discover_listing_tools(
     async with discovery.slot() as budget:
         if budget <= 0:
             _report_listing_timeout(entry, cut_by_deadline=True)
+            log_discover_end(logger, instance["_id"], None, source="listing", reason="listing_deadline")
             return
         try:
             tools, _ = await asyncio.wait_for(
@@ -1954,23 +2041,26 @@ async def _discover_listing_tools(
                 timeout=budget,
             )
             entry["tools"] = [t.model_dump(by_alias=True) for t in tools]
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             _report_listing_timeout(entry, cut_by_deadline=budget < LISTING_DISCOVERY_BUDGET_SECONDS)
+            _log_listing_failure(instance, e, MCPFailureReason.TIMEOUT)
         except MCPConnectionError as e:
-            entry["toolsErrorCode"] = _failure_reason(instance, e).value
+            reason = _failure_reason(instance, e)
+            entry["toolsErrorCode"] = reason.value
             entry["toolsError"] = (
                 _SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e)
                 else _connection_error_text(e, is_admin=is_admin)
             )
+            _log_listing_failure(instance, e, reason)
         except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
-            logger.warning(f"MCP token refresh during discovery failed for instance {instance['_id']}: {e}")
             reason = classify_mcp_failure(e)
             entry["toolsErrorCode"] = reason.value
             entry["toolsError"] = _REAUTH_REQUIRED if reason in SIGN_IN_FAILURES else _SIGN_IN_RENEWAL_UNAVAILABLE
+            _log_listing_failure(instance, e, reason)
         except Exception as e:
-            logger.warning(f"Unexpected error discovering tools for MCP instance {instance['_id']}: {e}")
             entry["toolsErrorCode"] = "error"
             entry["toolsError"] = "Failed to discover tools."
+            _log_listing_failure(instance, e, MCPFailureReason.ERROR)
 
 
 async def _build_mcp_instance_entry(
@@ -2082,23 +2172,27 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         # Live (Refresh, or nothing cached), and what it finds replaces the cached tools.
         tools, _ = await discover_tools_for_owner(instance, effective_auth, owner_id, config_service, namespace=namespace)
     except MCPConnectionError as e:
-        if _failure_reason(instance, e) in SIGN_IN_FAILURES:
-            logger.info("MCP instance %s asks for a sign-in (auth mode %s): %s", instance_id, instance.get("authMode"), e)
+        reason = _failure_reason(instance, e)
+        if reason in SIGN_IN_FAILURES:
             # 409, not 502: the gateway passes a 409's reason on, so the panel can say what fixes it.
-            raise HTTPException(
-                status_code=HttpStatusCode.CONFLICT.value,
+            raise _hand_over_mcp_failure(
+                request, e, status=HttpStatusCode.CONFLICT.value,
                 detail=_SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e) else _REAUTH_REQUIRED,
+                reason=reason.value,
             ) from e
-        logger.warning("Tool discovery failed for MCP instance %s: %s", instance_id, e, exc_info=True)
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
+        raise _hand_over_mcp_failure(
+            request, e, status=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
+            reason=reason.value,
         ) from e
     except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
-        logger.warning(f"MCP token refresh during discovery failed for instance {instance_id}: {e}")
-        if classify_mcp_failure(e) in SIGN_IN_FAILURES:
-            raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail=_REAUTH_REQUIRED) from e
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
+        reason = classify_mcp_failure(e)
+        if reason in SIGN_IN_FAILURES:
+            raise _hand_over_mcp_failure(
+                request, e, status=HttpStatusCode.CONFLICT.value, detail=_REAUTH_REQUIRED, reason=reason.value,
+            ) from e
+        raise _hand_over_mcp_failure(
+            request, e, status=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
+            reason=reason.value,
         ) from e
 
     return {"tools": [t.model_dump(by_alias=True) for t in tools], "syncedAt": get_epoch_timestamp_in_ms()}
@@ -2292,7 +2386,7 @@ async def get_agent_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, agent_key, org_id, base_url,
-        initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request), desktop=desktop,
+        request=request, initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request), desktop=desktop,
     )
 
 

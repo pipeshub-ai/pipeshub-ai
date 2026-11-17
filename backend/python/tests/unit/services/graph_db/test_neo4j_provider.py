@@ -482,7 +482,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # the org's apps, by id
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
                   "subcategory": None, "version": "1.0.0", "status": "active",
                   "deprecatedReason": None, "replacedBy": None}],  # skills
@@ -566,7 +566,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # the org's apps, by id
                 [],  # skills query
                 [],  # mcp servers projection
                 [],  # org share query
@@ -576,7 +576,7 @@ class TestGetAgent:
             side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
-        result = await neo4j_provider.get_agent("agent-1")
+        result = await neo4j_provider.get_agent("agent-1", org_id="org-1")
 
         assert result is not None
         assert result["knowledge"][0]["filtersParsed"] == {}
@@ -2253,9 +2253,8 @@ class TestUserAndOrganizationLookups:
         assert "u.orgId = $org_id" in query
         assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com", "org_id": "org-1"}
 
-        await neo4j_provider.get_user_by_email("a@x.com")
-        assert "orgId" not in neo4j_provider.client.execute_query.await_args.args[0]
-        assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com"}
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await neo4j_provider.get_user_by_email("a@x.com")  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
     async def test_get_user_by_email_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2265,11 +2264,11 @@ class TestUserAndOrganizationLookups:
             "app.services.graph_db.neo4j.neo4j_provider.User.from_arango_user",
             return_value={"user": "ok"},
         ):
-            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue")
+            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue", org_id="org-1")
         assert found == {"user": "ok"}
 
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        assert await neo4j_provider.get_user_by_email("missing@x.com") is None
+        assert await neo4j_provider.get_user_by_email("missing@x.com", org_id="org-1") is None
 
     @pytest.mark.asyncio
     async def test_get_user_by_source_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -4748,6 +4747,23 @@ class TestListUserKnowledgeBases:
             assert "kb2" not in query
 
     @pytest.mark.asyncio
+    async def test_folders_are_the_first_100_by_id_read_per_collection_of_the_page_and_say_when_there_are_more(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[], [{"total": 0}], []])
+
+        await neo4j_provider.list_user_knowledge_bases("user1", "org1", skip=0, limit=10)
+
+        call = neo4j_provider.client.execute_query.call_args_list[0]
+        query, params = call[0][0], call[1]["parameters"]
+        assert params["folders_cap"] == 100 and params["folders_fetch"] == 101
+        # The page of collections is cut before any folder is read, and each collection reads at most one folder more than the cap, in id order.
+        assert query.index("LIMIT $limit") < query.index("MATCH (folderRecord:Record)")
+        assert query.index("ORDER BY folderRecord.id") < query.index("LIMIT $folders_fetch") < query.index("RETURN collect({")
+        assert "folders: folders[0..$folders_cap]" in query
+        assert "foldersTruncated: size(folders) > $folders_cap" in query
+
+    @pytest.mark.asyncio
     async def test_exception_raises(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=Exception("neo4j error")
@@ -5258,8 +5274,23 @@ class TestExternalCollaboratorBrowse:
         )
 
         call = provider.client.execute_query.await_args
-        assert "WITH app, allNodes + kh_placed AS allNodes" in call.args[0]
+        assert "WITH app, allNodes + [kh_x IN kh_placed WHERE NOT kh_x IN allNodes] AS allNodes" in call.args[0]      # each once
         assert call.kwargs["parameters"]["kh_lists"]["kh_placed"] == ["r9", "g9"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("start", [None, "f1"])
+    async def test_the_stubs_are_read_once_after_the_children_are_collected(self, provider, start) -> None:
+        """Joined to the collect in one WITH, the planner read the start's children for the stubs once per child: 25M rows and a timeout
+        on a 5k-record folder. In a WITH of its own it runs once per page."""
+        provider._kh_v3_connector_and_size = AsyncMock(return_value=("app1", 1))
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=False,
+            **({"start_id": start, "start_type": "folder"} if start else {}),
+        )
+        query = next(c.args[0] for c in provider.client.execute_query.await_args_list if "kh_sn IN" in c.args[0])
+        with_stubs = next(line for line in query.splitlines() if "kh_sn IN" in line)
+        assert "collect(" not in with_stubs
+        assert ("collect(DISTINCT na) AS rawNodes" if start else "collect(DISTINCT ca) AS allNodes") in query
 
 
     @pytest.mark.asyncio
@@ -5741,7 +5772,7 @@ class TestAppUserMembershipClearsExternalFlag:
                 email="member@corp.com",
                 full_name="Member",
             )
-        ])
+        ], org_id="org-1")
 
         app_edges = [
             c for c in mocked.batch_create_edges.await_args_list
@@ -6181,7 +6212,8 @@ class TestPrincipalLookupsCanRaise:
             "get_person_by_email": ("a@b.com", "org-1"),
             "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
         }[method]
-        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+        scope = {"org_id": "org-1"} if method == "get_user_by_email" else {}
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error, **scope)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])

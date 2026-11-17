@@ -71,7 +71,7 @@ from app.services.vector_db.const.const import (
     ROOT_RECORD_GROUP_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
     forbid_fence_in_payload,
     forbid_org_in_payload,
@@ -941,6 +941,20 @@ class OpenSearchService(IVectorDBService):
 
         return ScrollResult(points=points, next_offset=next_offset)
 
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        await self._assert_connected()
+        result = await self.client.count(  # type: ignore
+            index=collection_name, body={"query": OpenSearchUtils.filter_expression_to_bool_query(count_filter)},
+        )
+        if result.get("_shards", {}).get("failed"):
+            raise PartialResult(f"{collection_name}: {result['_shards']['failed']} shard(s) failed to count")
+        return int(result["count"])
+
+    async def make_searchable(self, collection_name: str) -> None:
+        """A write reaches a search at the next refresh (30 s here), a get by id at once: publish every write acknowledged so far."""
+        await self._assert_connected()
+        await self.client.indices.refresh(index=collection_name)  # type: ignore
+
     @staticmethod
     def _hit_to_point(hit: Dict[str, Any]) -> VectorPoint:
         source = hit.get("_source", {})
@@ -971,6 +985,18 @@ class OpenSearchService(IVectorDBService):
             _source_excludes=["dense_embedding"],
         )
         return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """``mget`` with the source switched off: realtime, and no payload or vector crosses the wire."""
+        await self._assert_connected()
+        if not ids:
+            return set()
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source=False,
+        )
+        return {doc["_id"] for doc in result.get("docs", []) if doc.get("found")}
 
     async def _clause_limit(self) -> int:
         """The cluster's ``indices.query.bool.max_clause_count`` (1024 unless set), read once. If it cannot be read the default is assumed: a

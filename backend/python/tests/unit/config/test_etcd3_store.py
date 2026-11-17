@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import threading
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,7 +11,7 @@ import grpc
 import pytest
 from etcd3.etcdrpc import kv_pb2, rpc_pb2
 from etcd3.events import Event, new_event
-from etcd3.exceptions import RevisionCompactedError
+from etcd3.exceptions import ConnectionFailedError, RevisionCompactedError
 from etcd3.watch import WatchResponse
 
 # The sentinel KeyValueStore.subscribe_changes documents for "drop every cached value".
@@ -337,11 +338,20 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_delete_key_failure_raises(self, store, mock_client):
         """Exception during delete raises ConnectionError."""
-        mock_client.delete = MagicMock(side_effect=RuntimeError("fail"))
+        err = RuntimeError("fail")
+        mock_client.delete = MagicMock(side_effect=err)
 
         with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
-            with pytest.raises(ConnectionError, match="Failed to delete key"):
+            with pytest.raises(ConnectionError, match="Failed to delete key") as excinfo:
                 await store.delete_key("key1")
+        assert excinfo.value.__cause__ is err
+
+    @pytest.mark.asyncio
+    async def test_delete_key_absent_returns_false(self, store, mock_client) -> None:
+        mock_client.delete = MagicMock(return_value=False)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            assert await store.delete_key("key1") is False
 
     # ------------------------------------------------------------------ #
     # get_all_keys tests
@@ -1001,3 +1011,99 @@ class TestLoggingInAgain:
             await store.get_key("/k")
 
         assert second_refusing.call_count == 2
+
+
+# ============================================================================
+# Failures are raised, not logged: the layer that handles one logs it once
+# ============================================================================
+
+# (store method, its arguments, the client method that fails)
+_FAILING_CALLS = [
+    ("create_key", ("/k", {"a": 1}), "get"),
+    ("create_key", ("/k", {"a": 1}, False), "put_if_not_exists"),
+    ("get_key", ("/k",), "get"),
+    ("get_all_keys", (), "get_all"),
+    ("watch_key", ("/k", lambda _value: None), "add_watch_callback"),
+]
+
+
+def _warnings_or_worse(records: list[logging.LogRecord]) -> list[str]:
+    return [f"{r.levelname} {r.getMessage()}" for r in records if r.levelno >= logging.WARNING]
+
+
+class TestFailuresRaiseWithoutLogging:
+    """The store and its connection manager raise; ConfigurationService, the
+    encrypted wrapper or another caller handles the error and logs it."""
+
+    @pytest.fixture
+    def make_store(self) -> Callable[[MagicMock], tuple]:
+        from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
+
+        def make(client: MagicMock) -> tuple:
+            store = Etcd3DistributedKeyValueStore(
+                serializer=lambda v: json.dumps(v).encode(),
+                deserializer=lambda b: json.loads(b.decode()),
+                host="etcd.test",
+                port=2379,
+            )
+            return store, patch("app.config.providers.etcd.etcd3_connection_manager.etcd3.client", return_value=client)
+
+        return make
+
+    @pytest.mark.parametrize(("method", "args", "client_method"), _FAILING_CALLS)
+    async def test_a_failed_call_raises_with_its_cause_and_logs_nothing(
+        self, make_store, method: str, args: tuple, client_method: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        unreachable = ConnectionFailedError()
+        client = MagicMock()
+        getattr(client, client_method).side_effect = unreachable
+        store, factory = make_store(client)
+
+        with factory, pytest.raises(ConnectionError, match="etcd connection failed") as raised:
+            await getattr(store, method)(*args)
+
+        assert raised.value.__cause__ is unreachable
+        assert _warnings_or_worse(caplog.records) == []
+
+    @pytest.mark.parametrize(("method", "args", "client_method"), _FAILING_CALLS)
+    async def test_an_etcd_unreachable_at_connect_raises_with_its_cause_and_logs_nothing(
+        self, make_store, method: str, args: tuple, client_method: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        unreachable = ConnectionFailedError()
+        client = MagicMock()
+        client.status.side_effect = unreachable
+        store, factory = make_store(client)
+
+        with factory, pytest.raises(ConnectionError, match="Failed to connect to ETCD: etcd connection failed") as raised:
+            await getattr(store, method)(*args)
+
+        assert raised.value.__cause__.__cause__ is unreachable
+        assert _warnings_or_worse(caplog.records) == []
+
+    async def test_an_unreadable_value_raised_on_request_is_not_logged(
+        self, make_store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = MagicMock()
+        client.get.return_value = (b"not-json{{{", MagicMock())
+        store, factory = make_store(client)
+
+        with factory, pytest.raises(ConnectionError, match="Failed to get key") as raised:
+            await store.get_key("/k", raise_on_error=True)
+
+        assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+        assert _warnings_or_worse(caplog.records) == []
+
+    async def test_an_unreadable_value_swallowed_is_logged_once(
+        self, make_store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = MagicMock()
+        client.get.return_value = (b"not-json{{{", MagicMock())
+        store, factory = make_store(client)
+
+        with factory:
+            assert await store.get_key("/k") is None
+
+        logged = _warnings_or_worse(caplog.records)
+        assert len(logged) == 1
+        assert logged[0].startswith("ERROR Failed to deserialize value")
+        assert "11 bytes" in logged[0]

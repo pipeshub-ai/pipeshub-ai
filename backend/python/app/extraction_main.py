@@ -18,18 +18,24 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.routes.extraction import (
     CLASSIFY_PATH,
     MAX_CLASSIFY_REQUEST_BYTES,
 )
 from app.api.routes.extraction import router as extraction_router
+from app.api.validation_errors import input_free_422
 from app.containers.extraction import ExtractionAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.edition_services import configure_app
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
 from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.utils.env_utils import env_int
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -44,6 +50,9 @@ def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
 
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ExtractionAppContainer.init("extraction_service")
 container_lock = asyncio.Lock()
@@ -92,11 +101,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         config_service=config_service,
     )
 
+    # The model providers' circuit breaker is the fleet's: shared with the indexing service through Redis, so every
+    # process and pod sees the same outage.
+    fleet_registry = await bind_service_fleet(config_service, app_logger)
+
     app_logger.info("✅ Extraction Service started")
 
     yield
 
     app_logger.info("🔄 Extraction Service shutting down")
+    bind_fleet_redis(None)
+    await fleet_registry.aclose()
     try:
         config_service.close()
     except Exception:
@@ -108,6 +123,7 @@ app = FastAPI(
     description="LLM-based document classification and metadata extraction",
     version="2.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "extraction")
 # Refuse before the block container is parsed into memory (see the cap in the route module).
@@ -122,6 +138,7 @@ async def health_check() -> JSONResponse:
     try:
         # Classification calls the model through this process's gateway: its cap and breakers.
         content["llm_gateway"] = get_llm_gateway().stats()
+        content["llm_wire_hooks"] = wire_hook_status()
     except Exception:
         # Logged, not returned: exception text does not belong in an unauthenticated response.
         logger.exception("Could not read the LLM gateway's stats")

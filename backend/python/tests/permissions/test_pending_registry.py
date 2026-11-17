@@ -308,9 +308,9 @@ async def test_a_connector_with_a_pending_root_does_not_admit_its_container_poin
     resolver = ViewerScopeResolver(view, InMemoryPrincipalView(who, {(ORG, "u"): frozenset({"g1", "g2"})}))
 
     async def admitted() -> set[str]:
-        flt = filters.ScopeFilter.of(await resolver.resolve(ORG, "u"), apps, version=5, generation=3)
+        flt = filters.ScopeFilter.of(await resolver.resolve(ORG, "u"), apps, version=SCOPE_FIELDS_VERSION, generation=3)
         node = sx.admits(flt)
-        points = {c: {"connectorIds": [c], "recordGroupIds": [f"g{c[-1]}"], "scopeStamp": "container", "scopeFieldsVersion": 5, "scopeGeneration": 3}
+        points = {c: {"connectorIds": [c], "recordGroupIds": [f"g{c[-1]}"], "scopeStamp": "container", "scopeFieldsVersion": SCOPE_FIELDS_VERSION, "scopeGeneration": 3}
                   for c in apps}
         return {c for c, p in points.items() if sx.evaluate(node, p)}
 
@@ -454,6 +454,12 @@ class Apps:
         return self.update_ok
 
     async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:
+        for field in updates:
+            how = self.fail.get((key, field))
+            if how == "raise":
+                raise RuntimeError("write failed")
+            if how == "none":
+                return False
         if any((self.docs[key].get(f) or None) != v for f, v in expected.items()):
             return False
         self.docs[key].update(updates)

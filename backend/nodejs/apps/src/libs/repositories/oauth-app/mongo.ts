@@ -12,10 +12,12 @@ import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
   OAuthAppStatus,
+  OAuthGrantType,
   type NewOAuthApp,
   type OAuthAppDto,
   type OAuthAppPatch,
   type OAuthAppRepository,
+  type OrgAppListQuery,
   type OwnedAppListQuery,
   type UpdateOwnedOptions,
 } from './types';
@@ -23,14 +25,17 @@ import {
 const oid = (id: string): Types.ObjectId => new Types.ObjectId(id);
 const ID_FIELDS = new Set(['tokenIdentityUserId', 'deletedBy']);
 
-/** The apps a person manages in Developer Settings (index `{orgId, createdBy, isDeleted, createdAt}`). */
+/**
+ * The apps a person manages in Developer Settings (index `{orgId, createdBy, isDeleted, createdAt}`); without a
+ * creator, every such app of the org.
+ */
 const ownedFilter = (
   orgId: string,
-  userId: string,
+  userId?: string,
 ): Record<string, unknown> => ({
   orgId: oid(orgId),
   isDeleted: false,
-  createdBy: oid(userId),
+  ...(userId !== undefined && { createdBy: oid(userId) }),
   clientId: {
     $nin: [FIRST_PARTY_DEVICE_CLIENT_ID],
     $not: new RegExp(
@@ -38,6 +43,18 @@ const ownedFilter = (
     ),
   },
   isDynamic: { $ne: true },
+});
+
+/** Live apps the user created whose own `client_credentials` tokens act as them: no service account named. */
+const actingAsCreatorFilter = (
+  orgId: string,
+  userId: string,
+): Record<string, unknown> => ({
+  orgId: oid(orgId),
+  createdBy: oid(userId),
+  isDeleted: false,
+  allowedGrantTypes: OAuthGrantType.CLIENT_CREDENTIALS,
+  tokenIdentityUserId: null,
 });
 
 export class MongoOAuthAppRepository implements OAuthAppRepository {
@@ -74,7 +91,28 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     userId: string,
     q: OwnedAppListQuery,
   ): Promise<{ rows: OAuthAppDto[]; total: number }> {
-    const filter = ownedFilter(orgId, userId);
+    return this.listWhere(ownedFilter(orgId, userId), q);
+  }
+
+  async findInOrg(orgId: string, appId: string): Promise<OAuthAppDto | null> {
+    const app = await OAuthApp.findOne({
+      _id: oid(appId),
+      ...ownedFilter(orgId),
+    });
+    return app ? toPlain<OAuthAppDto>(app) : null;
+  }
+
+  async listInOrg(
+    orgId: string,
+    q: OrgAppListQuery,
+  ): Promise<{ rows: OAuthAppDto[]; total: number }> {
+    return this.listWhere(ownedFilter(orgId, q.createdBy), q);
+  }
+
+  private async listWhere(
+    filter: Record<string, unknown>,
+    q: OwnedAppListQuery,
+  ): Promise<{ rows: OAuthAppDto[]; total: number }> {
     if (q.status) {
       filter.status = { $eq: q.status };
     }
@@ -211,35 +249,39 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     return apps.map((a) => a.clientId);
   }
 
-  async listClientIdsCreatedBy(
+  async listClientIdsActingAsCreator(
     orgId: string,
     userId: string,
   ): Promise<string[]> {
-    const apps = await OAuthApp.find({
-      orgId: oid(orgId),
-      createdBy: oid(userId),
-      isDeleted: false,
-    })
+    const apps = await OAuthApp.find(actingAsCreatorFilter(orgId, userId))
       .select('clientId')
       .lean()
       .exec();
     return apps.map((a) => a.clientId);
   }
 
-  async softDeleteCreatedBy(
+  async softDeleteActingAsCreator(
     orgId: string,
     userId: string,
     deletedBy: string,
   ): Promise<void> {
-    await OAuthApp.updateMany(
-      { orgId: oid(orgId), createdBy: oid(userId), isDeleted: false },
-      {
-        $set: {
-          isDeleted: true,
-          status: OAuthAppStatus.REVOKED,
-          deletedBy: oid(deletedBy),
-        },
+    await OAuthApp.updateMany(actingAsCreatorFilter(orgId, userId), {
+      $set: {
+        isDeleted: true,
+        status: OAuthAppStatus.REVOKED,
+        deletedBy: oid(deletedBy),
       },
+    });
+  }
+
+  async transferCreatedBy(
+    orgId: string,
+    fromUserId: string,
+    toUserId: string,
+  ): Promise<void> {
+    await OAuthApp.updateMany(
+      { orgId: oid(orgId), createdBy: oid(fromUserId), isDeleted: false },
+      { $set: { createdBy: oid(toUserId) } },
     );
   }
 }

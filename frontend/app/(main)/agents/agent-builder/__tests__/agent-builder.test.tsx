@@ -5,6 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import type { AgentFormPayload } from '../types';
+import type { KnowledgeHubAppNode } from '../../types';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import {
   OWNER_USER_ID,
@@ -87,7 +88,12 @@ const mcpApi = vi.hoisted(() => ({
 }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/(main)/workspace/web-search/api', () => ({
-  WebSearchApi: { getConfig: vi.fn(async () => ({ providers: [] })) },
+  // A member only sees the search providers an admin has set up.
+  WebSearchApi: {
+    getConfig: vi.fn(async () => ({
+      providers: [{ providerKey: 'ddg-1', provider: 'duckduckgo', configuration: {}, isDefault: true }],
+    })),
+  },
 }));
 const getUsersByIds = vi.hoisted(() => vi.fn());
 vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds } }));
@@ -407,6 +413,40 @@ describe('service agents', () => {
 
     expect(await screen.findByRole('dialog', { name: /agent toolset credentials/i })).toBeTruthy();
     expect(toolsetsApi.getAllAgentToolsets).toHaveBeenCalledWith('agent-1', expect.anything());
+  });
+});
+
+describe('knowledge a service agent is offered', () => {
+  const appNode = (id: string, name: string, sharingStatus: 'personal' | 'team') =>
+    ({ id, name, connector: 'DRIVE', sharingStatus }) as unknown as KnowledgeHubAppNode;
+
+  beforeEach(() => {
+    agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([
+      appNode('drive-mine', 'My Drive', 'personal'),
+      appNode('drive-team', 'Team Drive', 'team'),
+    ]);
+  });
+
+  it('offers no personal connector, and no collection while the agent is not bound', async () => {
+    await renderExistingAgent({ isServiceAccount: true, shareWithOrg: true });
+    expect(await screen.findByText('Team Drive')).toBeTruthy();
+    expect(screen.queryByText('My Drive')).toBeNull();
+    expect(screen.queryByText('Sales playbook')).toBeNull();
+    expect(
+      screen.getByText('Collections can be added once this service agent is bound to a service account.'),
+    ).toBeTruthy();
+  });
+
+  it('offers collections once the agent is bound to a service account', async () => {
+    await renderExistingAgent({ isServiceAccount: true, shareWithOrg: true, serviceAccountUserId: 'sa-live' });
+    expect(await screen.findByText('Sales playbook')).toBeTruthy();
+    expect(screen.queryByText('My Drive')).toBeNull();
+  });
+
+  it('offers an agent a person runs their own connectors and collections', async () => {
+    await renderExistingAgent();
+    expect(await screen.findByText('My Drive')).toBeTruthy();
+    expect(screen.getByText('Sales playbook')).toBeTruthy();
   });
 });
 

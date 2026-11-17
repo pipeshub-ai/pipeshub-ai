@@ -1,0 +1,508 @@
+{
+ "cells": {
+  "code_5mb": {
+   "kind": "code",
+   "median_parent_growth_bytes": 7865379,
+   "median_peak_bytes": 291196928,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 7865379,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 7865379,
+     "peak_bytes": 291196928,
+     "seconds": 6.65
+    },
+    {
+     "parent_growth_bytes": 7865379,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 7865379,
+     "peak_bytes": 291409920,
+     "seconds": 6.78
+    },
+    {
+     "parent_growth_bytes": 7865379,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 7865379,
+     "peak_bytes": 291000320,
+     "seconds": 6.7
+    }
+   ],
+   "size_bytes": 5242880
+  },
+  "csv_20mb": {
+   "kind": "csv",
+   "median_parent_growth_bytes": 122202255,
+   "median_peak_bytes": 328249344,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 122202122,
+     "parent_rss_growth_bytes": 42360832,
+     "parent_traced_peak_bytes": 122202122,
+     "peak_bytes": 328249344,
+     "seconds": 5.21
+    },
+    {
+     "parent_growth_bytes": 122202255,
+     "parent_rss_growth_bytes": 41455616,
+     "parent_traced_peak_bytes": 122202255,
+     "peak_bytes": 328269824,
+     "seconds": 5.16
+    },
+    {
+     "parent_growth_bytes": 122220480,
+     "parent_rss_growth_bytes": 41476096,
+     "parent_traced_peak_bytes": 122220480,
+     "peak_bytes": 328200192,
+     "seconds": 5.21
+    }
+   ],
+   "size_bytes": 20971528
+  },
+  "csv_5mb": {
+   "kind": "csv",
+   "median_parent_growth_bytes": 30635450,
+   "median_peak_bytes": 105107456,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 30655700,
+     "parent_rss_growth_bytes": 16384,
+     "parent_traced_peak_bytes": 30655700,
+     "peak_bytes": 105078784,
+     "seconds": 1.31
+    },
+    {
+     "parent_growth_bytes": 30635450,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 30635450,
+     "peak_bytes": 105132032,
+     "seconds": 1.32
+    },
+    {
+     "parent_growth_bytes": 30635450,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 30635450,
+     "peak_bytes": 105107456,
+     "seconds": 1.32
+    }
+   ],
+   "size_bytes": 5242953
+  },
+  "inspect_digital_1000": {
+   "kind": "inspect",
+   "median_parent_growth_bytes": 4177664,
+   "median_peak_bytes": 152678400,
+   "note": "",
+   "pages": 1000,
+   "runs": [
+    {
+     "parent_growth_bytes": 4186259,
+     "parent_rss_growth_bytes": 36864,
+     "parent_traced_peak_bytes": 4186259,
+     "peak_bytes": 153055232,
+     "seconds": 3.24
+    },
+    {
+     "parent_growth_bytes": 4154458,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 4154458,
+     "peak_bytes": 152678400,
+     "seconds": 3.4
+    },
+    {
+     "parent_growth_bytes": 4177664,
+     "parent_rss_growth_bytes": 20480,
+     "parent_traced_peak_bytes": 4177664,
+     "peak_bytes": 147087360,
+     "seconds": 3.42
+    }
+   ],
+   "size_bytes": 2099478
+  },
+  "inspect_scan_60": {
+   "kind": "inspect",
+   "median_parent_growth_bytes": 19502615,
+   "median_peak_bytes": 89587712,
+   "note": "",
+   "pages": 60,
+   "runs": [
+    {
+     "parent_growth_bytes": 19502615,
+     "parent_rss_growth_bytes": 303104,
+     "parent_traced_peak_bytes": 19502615,
+     "peak_bytes": 89587712,
+     "seconds": 0.6
+    },
+    {
+     "parent_growth_bytes": 19472340,
+     "parent_rss_growth_bytes": 8192,
+     "parent_traced_peak_bytes": 19472340,
+     "peak_bytes": 99127296,
+     "seconds": 0.48
+    },
+    {
+     "parent_growth_bytes": 19503341,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 19503341,
+     "peak_bytes": 74801152,
+     "seconds": 0.48
+    }
+   ],
+   "size_bytes": 9737889
+  },
+  "md_1mb": {
+   "kind": "text",
+   "median_parent_growth_bytes": 44481380,
+   "median_peak_bytes": 120856576,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 59424768,
+     "parent_rss_growth_bytes": 59424768,
+     "parent_traced_peak_bytes": 44471839,
+     "peak_bytes": 120594432,
+     "seconds": 2.84
+    },
+    {
+     "parent_growth_bytes": 44470723,
+     "parent_rss_growth_bytes": 31285248,
+     "parent_traced_peak_bytes": 44470723,
+     "peak_bytes": 121520128,
+     "seconds": 2.83
+    },
+    {
+     "parent_growth_bytes": 44481380,
+     "parent_rss_growth_bytes": 20574208,
+     "parent_traced_peak_bytes": 44481380,
+     "peak_bytes": 120856576,
+     "seconds": 2.73
+    }
+   ],
+   "size_bytes": 1048576
+  },
+  "md_20mb": {
+   "kind": "text",
+   "median_parent_growth_bytes": 881466844,
+   "median_peak_bytes": 1516179456,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 991264768,
+     "parent_rss_growth_bytes": 991264768,
+     "parent_traced_peak_bytes": 881466654,
+     "peak_bytes": 1516154880,
+     "seconds": 55.43
+    },
+    {
+     "parent_growth_bytes": 881458746,
+     "parent_rss_growth_bytes": 715796480,
+     "parent_traced_peak_bytes": 881458746,
+     "peak_bytes": 1516179456,
+     "seconds": 55.21
+    },
+    {
+     "parent_growth_bytes": 881466844,
+     "parent_rss_growth_bytes": 612130816,
+     "parent_traced_peak_bytes": 881466844,
+     "peak_bytes": 1516322816,
+     "seconds": 56.1
+    }
+   ],
+   "size_bytes": 20971520
+  },
+  "md_5mb": {
+   "kind": "text",
+   "median_parent_growth_bytes": 220538225,
+   "median_peak_bytes": 421036032,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 259645440,
+     "parent_rss_growth_bytes": 259645440,
+     "parent_traced_peak_bytes": 220534369,
+     "peak_bytes": 416460800,
+     "seconds": 13.98
+    },
+    {
+     "parent_growth_bytes": 220527401,
+     "parent_rss_growth_bytes": 143851520,
+     "parent_traced_peak_bytes": 220527401,
+     "peak_bytes": 421036032,
+     "seconds": 13.81
+    },
+    {
+     "parent_growth_bytes": 220538225,
+     "parent_rss_growth_bytes": 118308864,
+     "parent_traced_peak_bytes": 220538225,
+     "peak_bytes": 421040128,
+     "seconds": 14.08
+    }
+   ],
+   "size_bytes": 5242880
+  },
+  "pdf_digital_1000": {
+   "kind": "pdf_layout",
+   "median_parent_growth_bytes": 7056905,
+   "median_peak_bytes": 787238912,
+   "note": "",
+   "pages": 1000,
+   "runs": [
+    {
+     "parent_growth_bytes": 7056905,
+     "parent_rss_growth_bytes": 6742016,
+     "parent_traced_peak_bytes": 7056905,
+     "peak_bytes": 787238912,
+     "seconds": 274.08
+    }
+   ],
+   "size_bytes": 2099478
+  },
+  "pdf_figures_300": {
+   "kind": "pdf_layout",
+   "median_parent_growth_bytes": 12037685,
+   "median_peak_bytes": 1205874688,
+   "note": "",
+   "pages": 300,
+   "parent_growth_source": "second pass, 1 run, tracemalloc",
+   "parent_pass_peak_bytes": 1224568832,
+   "runs": [
+    {
+     "parent_growth_bytes": 4096,
+     "peak_bytes": 1205874688,
+     "seconds": 495.0
+    },
+    {
+     "parent_growth_bytes": 4096,
+     "peak_bytes": 1219170304,
+     "seconds": 491.6
+    },
+    {
+     "parent_growth_bytes": 24576,
+     "peak_bytes": 1204273152,
+     "seconds": 489.42
+    }
+   ],
+   "size_bytes": 8024396
+  },
+  "pdf_figures_60": {
+   "kind": "pdf_layout",
+   "median_parent_growth_bytes": 2512959,
+   "median_peak_bytes": 1160249344,
+   "note": "",
+   "pages": 60,
+   "parent_growth_source": "second pass, 1 run, tracemalloc",
+   "parent_pass_peak_bytes": 1146970112,
+   "runs": [
+    {
+     "parent_growth_bytes": 233472,
+     "peak_bytes": 1148837888,
+     "seconds": 125.5
+    },
+    {
+     "parent_growth_bytes": 4096,
+     "peak_bytes": 1169264640,
+     "seconds": 139.26
+    },
+    {
+     "parent_growth_bytes": 1679360,
+     "peak_bytes": 1160249344,
+     "seconds": 136.12
+    }
+   ],
+   "size_bytes": 1674617
+  },
+  "pdf_large_113mb": {
+   "kind": "pdf_layout",
+   "median_parent_growth_bytes": 212407601,
+   "median_peak_bytes": 1201078272,
+   "note": "image-only, incompressible; file size is in the record",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 212407601,
+     "parent_rss_growth_bytes": 141623296,
+     "parent_traced_peak_bytes": 212407601,
+     "peak_bytes": 1201078272,
+     "seconds": 12.17
+    }
+   ],
+   "size_bytes": 141604341
+  },
+  "pdf_tables_300": {
+   "kind": "pdf_layout",
+   "median_parent_growth_bytes": 13070211,
+   "median_peak_bytes": 1203703808,
+   "note": "",
+   "pages": 300,
+   "parent_growth_source": "second pass, 1 run, tracemalloc",
+   "parent_pass_peak_bytes": 1209143296,
+   "runs": [
+    {
+     "parent_growth_bytes": 3387392,
+     "peak_bytes": 1203703808,
+     "seconds": 565.73
+    },
+    {
+     "parent_growth_bytes": 4096,
+     "peak_bytes": 1203089408,
+     "seconds": 570.24
+    },
+    {
+     "parent_growth_bytes": 4096,
+     "peak_bytes": 1218928640,
+     "seconds": 583.3
+    }
+   ],
+   "size_bytes": 710964
+  },
+  "render_scan_300": {
+   "kind": "render",
+   "median_parent_growth_bytes": 3714217923,
+   "median_peak_bytes": 593526784,
+   "note": "",
+   "pages": 300,
+   "runs": [
+    {
+     "parent_growth_bytes": 3714203325,
+     "parent_rss_growth_bytes": 2971045888,
+     "parent_traced_peak_bytes": 3714203325,
+     "peak_bytes": 593014784,
+     "seconds": 44.65
+    },
+    {
+     "parent_growth_bytes": 3714220420,
+     "parent_rss_growth_bytes": 2971045888,
+     "parent_traced_peak_bytes": 3714220420,
+     "peak_bytes": 593526784,
+     "seconds": 45.35
+    },
+    {
+     "parent_growth_bytes": 3714217923,
+     "parent_rss_growth_bytes": 2971045888,
+     "parent_traced_peak_bytes": 3714217923,
+     "peak_bytes": 594391040,
+     "seconds": 44.23
+    }
+   ],
+   "size_bytes": 48740555
+  },
+  "render_scan_60": {
+   "kind": "render",
+   "median_parent_growth_bytes": 928573685,
+   "median_peak_bytes": 573083648,
+   "note": "",
+   "pages": 60,
+   "runs": [
+    {
+     "parent_growth_bytes": 928563647,
+     "parent_rss_growth_bytes": 232128512,
+     "parent_traced_peak_bytes": 928563647,
+     "peak_bytes": 573116416,
+     "seconds": 8.64
+    },
+    {
+     "parent_growth_bytes": 928573685,
+     "parent_rss_growth_bytes": 232128512,
+     "parent_traced_peak_bytes": 928573685,
+     "peak_bytes": 573067264,
+     "seconds": 8.36
+    },
+    {
+     "parent_growth_bytes": 928573801,
+     "parent_rss_growth_bytes": 232128512,
+     "parent_traced_peak_bytes": 928573801,
+     "peak_bytes": 573083648,
+     "seconds": 8.75
+    }
+   ],
+   "size_bytes": 9737889
+  },
+  "xlsx_1mb": {
+   "kind": "excel_load",
+   "median_parent_growth_bytes": 22281109,
+   "median_peak_bytes": 164990976,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 22283121,
+     "parent_rss_growth_bytes": 241664,
+     "parent_traced_peak_bytes": 22283121,
+     "peak_bytes": 168796160,
+     "seconds": 8.08
+    },
+    {
+     "parent_growth_bytes": 22260864,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 22260864,
+     "peak_bytes": 164675584,
+     "seconds": 8.05
+    },
+    {
+     "parent_growth_bytes": 22281109,
+     "parent_rss_growth_bytes": 4096,
+     "parent_traced_peak_bytes": 22281109,
+     "peak_bytes": 164990976,
+     "seconds": 8.08
+    }
+   ],
+   "size_bytes": 3016687
+  },
+  "xlsx_20mb": {
+   "kind": "excel_load",
+   "median_parent_growth_bytes": 156486423,
+   "median_peak_bytes": 859672576,
+   "note": "",
+   "pages": 0,
+   "runs": [
+    {
+     "parent_growth_bytes": 156483389,
+     "parent_rss_growth_bytes": 36028416,
+     "parent_traced_peak_bytes": 156483389,
+     "peak_bytes": 854110208,
+     "seconds": 55.87
+    },
+    {
+     "parent_growth_bytes": 156504245,
+     "parent_rss_growth_bytes": 34197504,
+     "parent_traced_peak_bytes": 156504245,
+     "peak_bytes": 859672576,
+     "seconds": 57.51
+    },
+    {
+     "parent_growth_bytes": 156486423,
+     "parent_rss_growth_bytes": 33177600,
+     "parent_traced_peak_bytes": 156486423,
+     "peak_bytes": 861364224,
+     "seconds": 58.54
+    }
+   ],
+   "size_bytes": 20947780
+  }
+ },
+ "fewer_runs": [
+  "pdf_digital_1000",
+  "pdf_large_113mb"
+ ],
+ "host": {
+  "cpus_pinned": 4,
+  "page_size": 4096,
+  "python": "3.12.3",
+  "runs": 3
+ },
+ "notes": {
+  "host": "8 CPUs shared, pinned to CPUs 0-3 (taskset), loadavg < 4 at the start of each cell; 3 runs per cell, median of the worker-tree peak RSS (worker plus raster child), a fresh worker per run",
+  "inspect": "indexing path: open_pdf, detect_ocr(30 pages), repair_pdf (the chat path walks every page on the uncharged interactive pool and held 5.2 GiB on 1000 pages)",
+  "parent_growth": "max(tracemalloc peak while the parent receives and holds the result, resident growth); render cells hold every batch result so their figure is the sum of all batches",
+  "pdf_digital_1000": "1 run",
+  "pdf_large_113mb": "file is 135 MiB (the corpus generator rounds up to whole images); 1 run"
+ }
+}

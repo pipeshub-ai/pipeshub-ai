@@ -19,6 +19,7 @@ settings (``artifact_settings``); nothing below the sink reads them again.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
@@ -79,6 +80,18 @@ def in_place_write() -> StoredWrite:
 
 def is_none_run(run: object) -> bool:
     return isinstance(run, str) and run.startswith("none:")
+
+
+def write_id(run: object) -> str | None:
+    """The id of the artifact set a stored write files its files in: 32 hex digits of its run.
+
+    Every stored write of a revision has a set of its own, so a write that lost its place, or an upload
+    of it that storage commits late, never lands in another write's set. None for a run that is never
+    served (``none``, or no run): such a write keeps no set.
+    """
+    if not isinstance(run, str) or not run or is_none_run(run):
+        return None
+    return hashlib.sha256(run.encode()).hexdigest()[:32]
 
 
 def run_generation(run: object) -> str | None:

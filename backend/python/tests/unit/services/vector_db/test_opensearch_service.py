@@ -2091,3 +2091,23 @@ class TestPayloadKeepsOrg:
 
         flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
         await connected_service.overwrite_payload("col", {"page_content": "t", "metadata": {"orgId": "o1", "virtualRecordId": "vr-1"}}, flt)
+
+
+class TestExistingPointIds:
+    @pytest.mark.asyncio
+    async def test_is_a_realtime_mget_with_the_source_off(self, connected_service) -> None:
+        connected_service.client.mget = AsyncMock(return_value={"docs": [
+            {"_id": "p1", "found": True},
+            {"_id": "p2", "found": False},
+        ]})
+
+        assert await connected_service.existing_point_ids("records", ["p1", "p2"]) == {"p1"}
+
+        kwargs = connected_service.client.mget.await_args.kwargs
+        assert kwargs == {"index": "records", "body": {"ids": ["p1", "p2"]}, "_source": False}
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, connected_service) -> None:
+        connected_service.client.mget = AsyncMock()
+        assert await connected_service.existing_point_ids("records", []) == set()
+        connected_service.client.mget.assert_not_called()

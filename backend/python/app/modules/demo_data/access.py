@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import Connectors, ProgressStatus
 
 if TYPE_CHECKING:
@@ -170,7 +171,7 @@ async def write_preference(
         # Nothing saved means already on the default; deleting a missing key reports failure.
         if await read_preference(config_service, org_id, user_id) is None:
             return
-        saved = await config_service.delete_config(key)
+        saved = await delete_config_confirmed(config_service, key)
     else:
         saved = await config_service.set_config(key, {"include": include})
     if not saved:

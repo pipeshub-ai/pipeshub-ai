@@ -79,7 +79,13 @@ class LegacyRecordArtifactReader:
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        exact: bool = False,
     ) -> dict[str, Any] | None:
+        """``exact`` reads only the document ``lookup`` names, never the mapping's current one."""
+        if exact:
+            return await self._blob_store.get_record_from_storage(
+                virtual_record_id, org_id, lookup_result=lookup, relookup=False
+            )
         return await self._blob_store.get_record_from_storage(
             virtual_record_id, org_id, lookup_result=lookup
         )

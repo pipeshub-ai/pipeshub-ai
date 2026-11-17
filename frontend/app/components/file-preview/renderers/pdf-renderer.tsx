@@ -366,6 +366,12 @@ export function PDFRenderer({
   useEffect(() => {
     lastReportedPage.current = 0;
     isViewerReady.current = false;
+    // A citation scroll parked or scheduled for the previous document must not move this one.
+    pendingCitationScroll.current = null;
+    if (pendingScrollTimeoutRef.current !== null) {
+      window.clearTimeout(pendingScrollTimeoutRef.current);
+      pendingScrollTimeoutRef.current = null;
+    }
     setViewerReady(false);
     setViewerReadyEpoch((n) => n + 1);
   }, [fileUrl]);
@@ -422,10 +428,13 @@ export function PDFRenderer({
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
   // pendingCitationScroll and execute it from the scrollRef callback below.
   useEffect(() => {
-    if (!activeCitationId || highlights.length === 0) return;
-
-    const targetHighlight = highlights.find((h) => h.id === activeCitationId);
-    if (!targetHighlight) return;
+    const targetHighlight = activeCitationId
+      ? highlights.find((h) => h.id === activeCitationId)
+      : undefined;
+    if (!targetHighlight) {
+      pendingCitationScroll.current = null;
+      return;
+    }
 
     if (!isViewerReady.current) {
       // Defer: execute once viewer signals ready via scrollRef
@@ -438,7 +447,8 @@ export function PDFRenderer({
     }, SCROLL_DELAY_MS);
 
     return () => clearTimeout(timer);
-  }, [activeCitationId, highlights, navigateToHighlightSafely]);
+    // fileUrl: a new document re-parks its own matching citation after the reset above.
+  }, [fileUrl, activeCitationId, highlights, navigateToHighlightSafely]);
 
   // Detect page count for pagination
   const handleDocumentLoaded = useCallback(

@@ -2,6 +2,10 @@
 import httpx
 import httpx2
 
+from app.utils.error_class import (
+    first_leaf as first_leaf,  # re-exported: the MCP modules import it from here
+)
+
 _HTTP_UNAUTHORIZED = 401
 
 
@@ -142,10 +146,3 @@ def request_may_have_run(exc: BaseException) -> bool:
     """The connection failed after the request went out, so the server may have run it."""
     found = _first_of(exc, (MCPRequestLostError, MCPConnectionLostError))
     return found is not None and not isinstance(found, MCPSessionExpiredError) and not request_never_reached_server(exc)
-
-
-def first_leaf(exc: BaseException) -> BaseException:
-    """The first exception in `exc` that isn't a group: what a task group's failure was."""
-    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        exc = exc.exceptions[0]
-    return exc

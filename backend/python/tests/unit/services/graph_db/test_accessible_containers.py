@@ -39,6 +39,7 @@ METHOD = "get_accessible_containers"
 SOURCES = {
     "arango": ("app/services/graph_db/arango/arango_http_provider.py", METHOD),
     "neo4j": ("app/services/graph_db/neo4j/neo4j_provider.py", METHOD),
+    "postgres": ("app/services/graph_db/postgres/permissions.py", METHOD),
 }
 BACKENDS = sorted(SOURCES)
 
@@ -357,8 +358,9 @@ class TestInterfaceDefault:
     def test_both_providers_override_it(self):
         from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
         from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+        from app.services.graph_db.postgres.permissions import PermissionsMixin
 
-        for cls in (ArangoHTTPProvider, Neo4jProvider):
+        for cls in (ArangoHTTPProvider, Neo4jProvider, PermissionsMixin):
             assert METHOD in vars(cls), cls.__name__
 
 
@@ -430,6 +432,22 @@ async def _render_containers(backend: str, filters=None, rows=(), user=True) -> 
         provider.client = MagicMock()
         provider.client.execute_query = _execute
         provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"} if user else None)
+    elif backend == "postgres":
+        from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+
+        class _Tx:
+            async def fetch(self, query: str, *args: object) -> list:
+                # the positional parameters under the names the other backends bind
+                captured["query"], captured["params"] = query, {"org_id": args[0], "app_ids": args[1], "scope_ids": args[2]}
+                return list(rows)
+
+        async def _q(fn: object, transaction: str | None) -> object:
+            return await fn(_Tx())
+
+        provider._q = _q
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"} if user else None)
     else:
         from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
@@ -445,7 +463,10 @@ async def _render_containers(backend: str, filters=None, rows=(), user=True) -> 
     # The gate alone: containers need no grants.
     provider.get_knowledge_hub_access_context_v2 = AsyncMock(return_value=access)
     provider.logger = MagicMock()
-    result = await provider.get_accessible_containers("user-1", "org-1", filters)
+    from app.core.org_context import OrgContext, bind
+
+    with bind(OrgContext("org-1", None, "job", "job:test", "t")):      # the PostgreSQL provider reads the org from the context
+        result = await provider.get_accessible_containers("user-1", "org-1", filters)
     return captured.get("query"), captured.get("params"), result, bool(captured)
 
 
@@ -569,6 +590,7 @@ class TestHiddenCollections:
         guard = {
             "neo4j": "NOT coalesce(a.isHidden, false) OR $scope_ids IS NOT NULL",
             "arango": "FILTER a.isHidden != true OR @scope_ids != null",
+            "postgres": "NOT coalesce((a.doc->>'isHidden')::boolean, false) OR $3::text[] IS NOT NULL",
         }[backend]
         assert query.count(guard) == 1
 
@@ -581,6 +603,7 @@ class TestHiddenCollections:
         scope_clause = {
             "neo4j": "$scope_ids IS NULL OR a.id IN $scope_ids",
             "arango": "FILTER @scope_ids == null OR a._key IN @scope_ids",
+            "postgres": "$3::text[] IS NULL OR a.id = ANY($3::text[])",
         }[backend]
         assert scope_clause in query
 

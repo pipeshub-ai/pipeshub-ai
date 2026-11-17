@@ -109,9 +109,20 @@ def not_(part: Node) -> Node:
 
 
 def admits(flt: ScopeFilter) -> Node:
-    """The tree of the points ``flt`` admits (FALSE for a filter that can trust nothing)."""
+    """The tree of the points ``flt`` admits (FALSE for a filter that can trust nothing; TRUE, every point left to the request's own arms, when
+    it defers)."""
     if flt.trusts_nothing:
-        return FALSE
+        return TRUE if flt.defer else FALSE
+    by_stamp = _by_stamp(flt)
+    if not flt.defer:
+        return by_stamp
+    # a point a trusted stamp of a current connector decides is admitted or hidden by it; every other point is left to the request's own arms
+    decided = all_of(Is(SCOPE_VERSION_FIELD, flt.version), Is(SCOPE_GENERATION_FIELD, flt.generation),
+                     Within(CONNECTOR_IDS_FIELD, tuple(sorted(flt.current))), has(SCOPE_STAMP_FIELD, (*OWN_ID_STAMPS, *PATH_STAMPS)))
+    return some_of(by_stamp, not_(decided))
+
+
+def _by_stamp(flt: ScopeFilter) -> Node:
     # a subtree being rewritten is hidden whatever the stamp; a connector with a pending root is not read from its container stamps
     not_pending = not_(has(PATH_IDS_FIELD, flt.pending))
     not_blocked = not_(has(CONNECTOR_IDS_FIELD, flt.blocked))

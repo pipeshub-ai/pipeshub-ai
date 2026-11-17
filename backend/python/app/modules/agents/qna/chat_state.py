@@ -112,6 +112,7 @@ class ChatState(TypedDict):
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
     deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
+    web_search_unset: bool  # The org has no web search provider: the prompt tells the model so
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -657,6 +658,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "web_search_config": _build_web_search_tool_config(chat_query),
         # Applies only with web search on; AgentContext.from_chat_state checks that.
         "deep_research": bool(chat_query.get("deepResearch")),
+        "web_search_unset": bool(chat_query.get("webSearchUnset")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 

@@ -574,6 +574,23 @@ class TestEmbeddingServerEmbeddings:
         assert result == [[0.7], [0.8]]
         mock_inner.aembed_documents.assert_awaited_once_with(["async", "docs"])
 
+    @patch("app.utils.embedding_retry.asyncio.sleep", new_callable=AsyncMock)
+    @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
+    @pytest.mark.asyncio
+    async def test_aembed_documents_single_attempt_fails_at_once_without_a_backoff_sleep(
+        self, mock_openai_cls: MagicMock, sleep: AsyncMock
+    ) -> None:
+        mock_inner = MagicMock()
+        mock_inner.aembed_documents = AsyncMock(side_effect=openai.APIConnectionError(request=MagicMock()))
+        mock_openai_cls.return_value = mock_inner
+
+        client = EmbeddingServerEmbeddings(max_retries=3)
+        with pytest.raises(openai.APIConnectionError):
+            await client.aembed_documents(["x"], single_attempt=True)
+
+        assert mock_inner.aembed_documents.await_count == 1
+        sleep.assert_not_awaited()
+
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
     @pytest.mark.asyncio
     async def test_aembed_query_delegates_to_inner(self, mock_openai_cls):

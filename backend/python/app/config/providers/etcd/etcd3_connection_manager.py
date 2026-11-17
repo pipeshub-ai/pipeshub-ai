@@ -104,59 +104,44 @@ class Etcd3ConnectionManager:
 
         except Exception as e:
             self.state = ConnectionState.FAILED
-            logger.error("❌ Failed to connect to ETCD: %s", str(e))
-            logger.debug("📋 Connection attempt details:")
-            logger.debug("   - Host: %s", self.config.hosts[0])
-            logger.debug("   - Port: %s", self.config.port)
-            logger.debug("   - Error type: %s", type(e).__name__)
-            logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to connect to ETCD: {str(e)}")
+            raise ConnectionError(f"Failed to connect to ETCD: {e}") from e
 
     def _create_client(self) -> etcd3.client:
         """Create new ETCD client instance."""
         logger.debug("🔄 Creating new ETCD client")
-        try:
-            logger.debug("📋 Client configuration:")
-            logger.debug("   - Host: %s", self.config.hosts[0])
-            logger.debug("   - Port: %s", self.config.port)
-            logger.debug("   - Timeout: %s", self.config.timeout)
+        logger.debug("📋 Client configuration:")
+        logger.debug("   - Host: %s", self.config.hosts[0])
+        logger.debug("   - Port: %s", self.config.port)
+        logger.debug("   - Timeout: %s", self.config.timeout)
 
-            client_kwargs = {
-                "host": self.config.hosts[0],
-                "port": self.config.port,
-                "timeout": self.config.timeout,
-            }
+        client_kwargs = {
+            "host": self.config.hosts[0],
+            "port": self.config.port,
+            "timeout": self.config.timeout,
+        }
 
-            if any([self.config.ca_cert, self.config.cert_key, self.config.cert_cert]):
-                client_kwargs.update(
-                    {
-                        "ca_cert": self.config.ca_cert,
-                        "cert_key": self.config.cert_key,
-                        "cert_cert": self.config.cert_cert,
-                    }
-                )
+        if any([self.config.ca_cert, self.config.cert_key, self.config.cert_cert]):
+            client_kwargs.update(
+                {
+                    "ca_cert": self.config.ca_cert,
+                    "cert_key": self.config.cert_key,
+                    "cert_cert": self.config.cert_cert,
+                }
+            )
 
-            if self.config.auth_enabled:
-                client_kwargs["user"] = self.config.username
-                client_kwargs["password"] = self.config.password
+        if self.config.auth_enabled:
+            client_kwargs["user"] = self.config.username
+            client_kwargs["password"] = self.config.password
 
-            # Create client synchronously since etcd3 doesn't support async
-            client = etcd3.client(**client_kwargs)
+        # Create client synchronously since etcd3 doesn't support async
+        client = etcd3.client(**client_kwargs)
 
-            logger.debug("🔍 Testing connection with status check")
-            status = client.status()
-            logger.debug("📋 ETCD cluster status: %s", status)
+        logger.debug("🔍 Testing connection with status check")
+        status = client.status()
+        logger.debug("📋 ETCD cluster status: %s", status)
 
-            logger.debug("✅ ETCD client created successfully")
-            return client
-
-        except Exception as e:
-            logger.error("❌ Failed to create ETCD client: %s", str(e))
-            logger.debug("📋 Creation attempt details:")
-            logger.debug("   - Error type: %s", type(e).__name__)
-            logger.debug("   - Error message: %s", str(e))
-            logger.exception("Detailed error stack:")
-            raise
+        logger.debug("✅ ETCD client created successfully")
+        return client
 
     async def reconnect(self) -> None:
         """Attempt to reconnect to ETCD cluster."""
@@ -201,7 +186,6 @@ class Etcd3ConnectionManager:
                 await self.connect()
 
         if not self.client:
-            logger.error("❌ No ETCD client available after connection attempt")
             raise ConnectionError("No ETCD client available")
 
         logger.debug("✅ Returning active ETCD client")

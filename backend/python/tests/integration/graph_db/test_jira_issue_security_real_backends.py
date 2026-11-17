@@ -121,7 +121,7 @@ async def _remove(graph: IGraphDBProvider, org_id: str, connector_id: str, user_
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query(
             "MATCH (n) WHERE n.connectorId = $c OR n.id IN $ids DETACH DELETE n",
-            parameters={"c": connector_id, "ids": [connector_id, org_id, *user_keys]},
+            parameters={"c": connector_id, "ids": [connector_id, org_id, f"all_{org_id}", *user_keys]},
         )
 
 
@@ -174,7 +174,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         connector = JiraConnector(logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
         connector.notify = AsyncMock()
         yield {"graph": graph, "processor": processor, "connector": connector, "run": run,
-               "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids}
+               "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids, "user_keys": user_keys}
 
 
 async def _sync_project(world: dict[str, Any]) -> None:
@@ -214,10 +214,13 @@ def _users(world: dict[str, Any]) -> list[AppUser]:
             for name, acc in PEOPLE.items()]
 
 
-async def _write(world: dict[str, Any], issues: list[dict], *, again: bool = False) -> None:
-    """Build and write issues as a sync does; ``again`` rebuilds unchanged ones, as a re-read does."""
+async def _write(world: dict[str, Any], issues: list[dict], *, again: bool = False,
+                 users: list[AppUser] | None = None) -> None:
+    """Build and write issues as a sync does; ``again`` rebuilds unchanged ones, as a re-read does.
+    ``users`` is the directory the sync read, everyone by default."""
     connector = world["connector"]
-    built, _ = await connector._build_issue_records(issues, PROJECT_ID, _users(world), is_new_project=again)
+    built, _ = await connector._build_issue_records(
+        issues, PROJECT_ID, _users(world) if users is None else users, is_new_project=again)
     await connector._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
 
 
@@ -378,16 +381,21 @@ async def test_a_story_stored_under_its_project_moves_under_its_epic_when_read_a
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
 
 
-async def _reindex(world: dict[str, Any], issue: dict) -> None:
-    """Re-index the stored copy of ``issue`` against the source's current state of it."""
+async def _reindex(world: dict[str, Any], issue: dict, *, context: IssueSecurityContext | None = None) -> None:
+    """Re-index the stored copy of ``issue`` against the source's current state of it. With
+    ``context``, the project's security and Browse holders are read as a fresh read reads them."""
     connector = world["connector"]
     ds = MagicMock()
     ds.get_issue = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=issue)))
     parents = [i for i, _ in ISSUES.values() if i["id"] == (issue["fields"]["parent"] or {}).get("id")]
     ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"issues": parents})))
+    grants = [{"permission": "BROWSE_PROJECTS", "holder": h} for h in (context.browse_holders or [])] if context else []
+    ds.get_assigned_permission_scheme = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"id": 7})))
+    ds.get_permission_scheme_grants = AsyncMock(
+        return_value=MagicMock(status=200, json=MagicMock(return_value={"permissions": grants})))
     connector._get_fresh_datasource = AsyncMock(return_value=ds)
     connector.data_source = ds
-    connector._load_issue_security = AsyncMock(return_value=connector._issue_security[PROJECT_ID])
+    connector._load_issue_security = AsyncMock(return_value=context or connector._issue_security[PROJECT_ID])
     connector.indexing_filters = MagicMock()
     stored = await world["processor"].get_record_by_external_id(
         connector_id=world["connector_id"], external_record_id=issue["id"])
@@ -426,3 +434,164 @@ async def test_a_sub_task_that_became_a_story_is_read_as_one_after_a_reindex(wor
     readers = {issue["key"]: who for issue, who in ISSUES.values()} | {"PROJ-21": PROJECT_READERS}
     assert not await _mismatches(world, readers, by_key)
     assert by_key["PROJ-21"] not in await _listed_under(world, "alice", by_key["PROJ-7"])
+
+
+async def test_a_reporter_outside_the_project_reads_only_their_own_issue_and_the_story_leaves_its_epic(
+    world: dict[str, Any],
+) -> None:
+    """Browse held by the reporter: a direct grant on the top-level issue (and its files), no more.
+
+    The story is then not filed under its epic, so the old parent edge must go; when the project
+    drops the holder it goes back, and the reporter loses it."""
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "unleveled story under the unleveled epic"
+    assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
+
+    context.browse_holders = [{"type": "reporter"}]
+    story = _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _write(world, [story], again=True)
+    # dave reads PROJ-10 alone: not its sub-task PROJ-12, which follows it and needs the project.
+    assert not await _mismatches(world, {**readers, "PROJ-10": PROJECT_READERS | {"dave"}}, by_key)
+    for name in ("alice", "bob", "carol"):
+        assert by_key["PROJ-10"] not in await _listed_under(world, name, by_key["PROJ-6"])
+
+    context.browse_holders = []
+    await _write(world, [_edited(label, "2024-06-17T10:00:00.000+0000")], again=True)
+    assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
+
+
+async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
+    world: dict[str, Any],
+) -> None:
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "unleveled story under the unleveled epic"
+    context.browse_holders = [{"type": "reporter"}]
+    await _write(world, [_edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+
+    # The scheme could not be read, and the project has no issue security scheme.
+    world["connector"]._issue_security[PROJECT_ID] = IssueSecurityContext(
+        knowledge=SchemeKnowledge.NONE, browse_holders=None)
+    kept = _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    del kept["fields"]["security"]  # a payload that does not return the level: the stored grants stay
+    await _write(world, [kept])
+    assert not await _mismatches(world, {**readers, "PROJ-10": PROJECT_READERS | {"dave"}}, by_key)
+
+
+async def test_a_level_cleared_while_the_scheme_is_unread_takes_the_issue_from_its_old_level_members(
+    world: dict[str, Any],
+) -> None:
+    """dave held the level but cannot browse the project; OPEN with his stored grant would still let him in."""
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    context.browse_holders = None
+    await _write(world, [_edited("task leveled for someone outside the project", "2024-06-17T10:00:00.000+0000",
+                                 security=None)])
+    assert not await _mismatches(world, {**readers, "PROJ-9": PROJECT_READERS}, by_key)
+
+
+async def test_reassigning_an_issue_moves_the_assignee_grant_on_the_stored_record(world: dict[str, Any]) -> None:
+    """Browse held by the assignee: an incremental write replaces the old assignee's grant."""
+    await _sync_project(world)
+    world["connector"]._issue_security[PROJECT_ID].browse_holders = [{"type": "assignee"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    for stamp, assignee, who in (
+        ("2024-06-16", "dave", PROJECT_READERS | {"dave"}),   # dave gains it
+        ("2024-06-17", "alice", PROJECT_READERS),             # reassigned: dave loses it
+        ("2024-06-18", "dave", PROJECT_READERS | {"dave"}),   # and back
+    ):
+        await _write(world, [_edited("plain task", f"{stamp}T10:00:00.000+0000", assignee={"accountId": PEOPLE[assignee]})])
+        assert not await _mismatches(world, {**readers, "PROJ-1": who}, by_key)
+
+
+async def test_a_withdrawn_reporter_reads_nothing_of_theirs_through_the_org_team_before_and_after_a_resync(
+    world: dict[str, Any],
+) -> None:
+    """dave reads PROJ-1 as its reporter and holds a role. His Jira account is deactivated: the withdrawal takes his
+    grants with the link, so the org's All team passing the gate (as a public project makes it) opens nothing of
+    his, and a re-sync that no longer lists him does not grant him the issue again. Listed again, a re-read does."""
+    await _sync_project(world)
+    graph, connector, processor = world["graph"], world["connector"], world["processor"]
+    org_id, connector_id, run = world["org_id"], world["connector_id"], world["run"]
+    connector._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    task = _edited("plain task", "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _write(world, [task])
+    now = get_epoch_timestamp_in_ms()
+    role = f"{run}-role"
+    assert await graph.batch_upsert_nodes([{"id": role, "orgId": org_id, "connectorId": connector_id, "name": "Developers",
+                                            "externalRoleId": f"{PROJECT_KEY}_10002", "connectorName": Connectors.JIRA.value,
+                                            "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+                                          collection=CollectionNames.ROLES.value)
+    dave_key = f"{run}-dave"
+    assert await graph.batch_create_edges(
+        [{"from_id": dave_key, "from_collection": CollectionNames.USERS.value, "to_id": role,
+          "to_collection": CollectionNames.ROLES.value, "type": "USER", "role": "READER",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.PERMISSION.value)
+    assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
+
+    for key in world["user_keys"]:
+        await graph.add_user_to_all_team(org_id, key)
+    await processor.ensure_team_app_edge(connector_id)
+    connector._stored_app_users = await processor.get_all_app_users(connector_id)
+    listed = [u for u in _users(world) if u.source_user_id != PEOPLE["dave"]]
+    await connector._withdraw_ineligible_app_users(listed, {PEOPLE["dave"]})
+    assert not await _mismatches(world, readers, by_key)
+    held = {str(e.get("_to") or e.get("to_id") or "") for e in await graph.get_edges_from_node(
+        f"{CollectionNames.USERS.value}/{dave_key}", CollectionNames.PERMISSION.value)}
+    assert not any(role in t or by_key["PROJ-1"] in t for t in held), held  # his role and his grant went too
+
+    await _write(world, [_edited("plain task", "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 users=listed)
+    assert not await _mismatches(world, readers, by_key)
+
+    await processor.on_new_app_users(_users(world))  # reactivated
+    await _write(world, [_edited("plain task", "2024-06-18T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})])
+    assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
+
+
+@pytest.mark.parametrize("read_in_full", [True, False], ids=["read_in_full", "read_cut_short"])
+async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_the_payload(
+    world: dict[str, Any], read_in_full: bool,
+) -> None:
+    """The reindex resolves the issue's own people from its payload too; the grants it writes, and those a sync's
+    rewrite writes, must still name only the synced directory (with the linked accounts when the user list was not
+    read in full), or a withdrawn reporter named there with an email would get the issue back."""
+    await _sync_project(world)
+    connector, processor = world["connector"], world["processor"]
+    context = connector._issue_security[PROJECT_ID]
+    context.browse_holders = [{"type": "reporter"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    dave = {"accountId": PEOPLE["dave"], "emailAddress": _email("dave", world["run"]), "displayName": "dave"}
+    await _write(world, [_edited("plain task", "2024-06-16T10:00:00.000+0000", reporter=dave)])
+    assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
+
+    for key in world["user_keys"]:  # the org's All team passes the gate (as a public project makes it)
+        await world["graph"].add_user_to_all_team(world["org_id"], key)
+    await processor.ensure_team_app_edge(world["connector_id"])
+    connector._stored_app_users = await processor.get_all_app_users(world["connector_id"])
+    listed = [u for u in _users(world) if u.source_user_id != PEOPLE["dave"]]
+    connector._listed_account_ids = {u.source_user_id for u in listed}
+    await connector._withdraw_ineligible_app_users(listed, {PEOPLE["dave"]})
+    assert not await _mismatches(world, readers, by_key)
+
+    # The next sync starts from the links left; its user list may be cut short.
+    connector._stored_app_users = await processor.get_all_app_users(world["connector_id"])
+    connector._user_read_unfinished = not read_in_full
+    await _write(world, [_edited("plain task", "2024-06-17T10:00:00.000+0000", reporter=dave)], users=listed)
+    assert not await _mismatches(world, readers, by_key)
+
+    await _reindex(world, _edited("plain task", "2024-06-18T10:00:00.000+0000", reporter=dave), context=context)
+    assert not await _mismatches(world, readers, by_key)

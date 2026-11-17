@@ -289,8 +289,8 @@ describe('JitProvisioningService - additional coverage', () => {
       expect(mockEventService.start.calledOnce).to.be.true
       expect(mockEventService.publishEvent.calledOnce).to.be.true
       expect(mockEventService.stop.calledOnce).to.be.true
-      expect(mockLogger.info.calledWith(sinon.match(/Auto-provisioning user/))).to.be.true
-      expect(mockLogger.info.calledWith(sinon.match(/auto-provisioned successfully/))).to.be.true
+      // The audit line (auth.jit_provision) replaces both; neither carried anything but the email.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should call eventService.stop even when publishEvent fails', async () => {

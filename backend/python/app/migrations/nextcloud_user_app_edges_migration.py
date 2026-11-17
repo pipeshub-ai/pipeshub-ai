@@ -2,6 +2,7 @@ from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_jobs import for_each_org, of_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -53,10 +54,12 @@ class NextcloudUserAppEdgesMigrationService:
             return {"success": True, "removed": 0, "skipped": True}
         removed = 0
         unresolved: list[str] = []
-        try:
-            apps = await self.graph_provider.get_nodes_by_filters(
+
+        async def migrate_org(org_id: str) -> None:
+            nonlocal removed
+            apps = of_org(await self.graph_provider.get_nodes_by_filters(
                 CollectionNames.APPS.value, {"type": CONNECTOR_TYPE}, raise_on_error=True
-            )
+            ), org_id)
             for app in apps:
                 app_key = app.get("_key") or app.get("id")
                 creator = await self._creator_key(app)
@@ -76,9 +79,17 @@ class NextcloudUserAppEdgesMigrationService:
                             CollectionNames.USER_APP_RELATION.value,
                         )
                         removed += 1
+
+        try:
+            failed = await for_each_org(
+                self.graph_provider, "nextcloud_user_app_edges_migration", migrate_org, self.logger, raise_on_error=True,
+            )
         except Exception as e:
             self.logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
             return {"success": False, "removed": removed, "error": str(e)}
+        if failed:
+            self.logger.error(f"Nextcloud user-app edges migration failed for {len(failed)} org(s); it runs again next startup")
+            return {"success": False, "removed": removed, "failed_orgs": failed}
 
         if removed:
             self.logger.info(f"Nextcloud: removed {removed} user-to-app edge(s) of users who are not the creator")

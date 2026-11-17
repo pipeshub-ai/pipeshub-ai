@@ -95,6 +95,9 @@ user_schema = {
             # survive one. Absent means not disabled, so a node that predates
             # this field, or a person, reads as usable.
             "isDisabled": {"type": "boolean"},
+            # The user's default knowledge base. Claimed here, in one conditional write, before the knowledge base is
+            # written, so two writers of one user's default agree on its key and a key is never used twice.
+            "defaultKnowledgeBaseId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -209,6 +212,8 @@ app_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
+            # Moves with every sync toggle, whose events carry the value (_handle_app_disabled). Incremented in AQL, which computes in doubles.
+            "toggleSeq": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
@@ -221,6 +226,9 @@ app_schema = {
             "scopeProjectionPendingRoots": {"type": ["string", "null"]},  # {root: generation} awaiting a rewrite (see permissions.pending)
             "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
             "scopeProjectionClosed": {"type": ["number", "null"]},
+            "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
+            "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
+            "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
@@ -231,6 +239,8 @@ app_schema = {
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
+            "scopeBackfillLegacy": {"type": ["integer", "null"]},
+            "scopeBackfillExact": {"type": ["boolean", "null"]},  # the pass ended with no stale or legacy point (see currency.app_is_exact)
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},
@@ -370,11 +380,24 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # Record processing diagnostics (internal; never returned by the API):
+            # when the record first went in line for the current run, when its
+            # last run failed, how many attempts it has had, and the PDF page count.
+            "firstQueuedAt": {"type": ["number", "null"]},
+            "failedAt": {"type": ["number", "null"]},
+            "indexingAttempts": {"type": ["integer", "null"], "minimum": 0},
+            "pageCount": {"type": ["integer", "null"], "minimum": 1},
             # A record whose source rate-limited its content fetch: when it may
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).
             "retryNotBefore": {"type": ["number", "null"]},
             "rateLimitedSince": {"type": ["number", "null"]},
+            # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
+            # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).
+            "deferredUntilMs": {"type": ["number", "null"]},
+            # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
+            # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
+            "rateLimitedSinceMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
@@ -385,6 +408,8 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # How the record was indexed, e.g. that only part of a large text file is (not a failure).
+            "indexingNote": {"type": ["string", "null"]},
             # Credentials redacted from the content before indexing (S-2).
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
@@ -447,6 +472,20 @@ record_schema = {
             "parseNowRev": {"type": ["string", "null"]},
             "parseNowReason": {"type": ["string", "null"]},
             "parseNowAt": {"type": ["number", "null"]},
+            # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
+            # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            "embedVrid": {"type": ["string", "null"]},
+            "embedRev": {"type": ["string", "null"]},
+            "embedKey": {"type": ["string", "null"]},
+            "embedDigest": {"type": ["string", "null"]},
+            "embedTotal": {"type": ["number", "null"]},
+            "embedDeliveryId": {"type": ["string", "null"]},
+            "embedStartedMs": {"type": ["number", "null"]},
+            # Seconds of embedding spent by cut attempts of this chain, how many of those cuts were not
+            # counted as failures, and how many points are done (display only; never read to decide).
+            "embedSeconds": {"type": ["number", "null"]},
+            "embedUncounted": {"type": ["number", "null"]},
+            "embedDone": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -467,6 +506,13 @@ record_schema = {
 # ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
 STAGE_TIERS = ["heavy", "light"]
 STAGE_PRIORITIES = ["interactive", "bulk"]
+#
+# Forward-compatible (expand-then-contract): a later release may add a field, or a status, tier or
+# priority value, and a pod still on this schema must accept the row. So unknown properties are
+# allowed and ``status``, ``tier`` and ``priority`` are plain strings; ``StageState`` keeps the closed
+# sets in code. Required fields and the types of the declared ones are still checked. Record nodes
+# (``record_schema``) stay strict. Once a later release has written a new field or value, rolling back
+# past the release that carries this schema is unsupported for the stage collections.
 stage_state_schema = {
     "rule": {
         "type": "object",
@@ -475,12 +521,12 @@ stage_state_schema = {
             "virtualRecordId": {"type": "string"},
             "rev": {"type": "string"},
             "stage": {"type": "string"},
-            "status": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
+            "status": {"type": "string"},
             "stageVersion": {"type": "integer", "minimum": 1},
             "recordIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "connectorId": {"type": "string"},
-            "tier": {"type": "string", "enum": STAGE_TIERS},
-            "priority": {"type": "string", "enum": STAGE_PRIORITIES},
+            "tier": {"type": "string"},
+            "priority": {"type": "string"},
             "trigger": {"type": "string"},
             "force": {"type": "boolean"},
             "mimeType": {"type": ["string", "null"]},
@@ -518,7 +564,7 @@ stage_state_schema = {
             "hasImages",
             "updatedAtMs",
         ],
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "level": "strict",
     "message": "Document does not match the stage state schema.",

@@ -566,6 +566,22 @@ class TestUpdateConfig:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_update_store_failure_logs_one_classified_error(self, caplog) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(return_value="old")
+        store.update_value = AsyncMock(side_effect=ConnectionError("Failed to create key: etcd down"))
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.update_config("/k", "new") is False
+
+        errors = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [r.getMessage() for r in errors] == ["config.update.failed"]
+        assert errors[0].error_class == "unavailable"
+        assert errors[0].config_path == "/k"
+        assert errors[0].exc_text
+
+    @pytest.mark.asyncio
     async def test_update_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.get_key = AsyncMock(return_value="old")
@@ -617,6 +633,64 @@ class TestDeleteConfig:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_delete_absent_key_logs_debug_not_error(self, caplog) -> None:
+        store = AsyncMock()
+        store.delete_key = AsyncMock(return_value=False)
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/missing") is False
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert any(r.levelno == logging.DEBUG and "/missing" in r.getMessage() for r in caplog.records)
+        store.publish_change.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_store_failure_logs_one_classified_error(self, caplog) -> None:
+        store = AsyncMock()
+        store.delete_key = AsyncMock(side_effect=ConnectionError("Failed to delete key: Error 111 connecting"))
+        svc = _build_service(store)
+        svc.cache["/k"] = "val"
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/k") is False
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert errors[0].getMessage() == "config.delete.failed"
+        assert errors[0].error_class == "unavailable"
+        assert errors[0].config_path == "/k"
+        assert errors[0].exc_text
+        # The store may have deleted it before the reply was lost: the copy cached here is dropped.
+        assert "/k" not in svc.cache
+
+    @pytest.mark.asyncio
+    async def test_delete_absent_key_drops_a_stale_cached_copy(self) -> None:
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
+
+        svc = _build_service(InMemoryKeyValueStore(logging.getLogger("test-config-store")))
+        svc.cache["/k"] = "stale"
+
+        assert await svc.delete_config("/k") is False
+
+        assert "/k" not in svc.cache
+        assert await svc.get_config("/k", use_cache=True) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_twice_on_real_store_errors_never(self, caplog) -> None:
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
+
+        store = InMemoryKeyValueStore(logging.getLogger("test-config-store"))
+        await store.create_key("/k", {"a": 1})
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/k") is True
+        assert await svc.delete_config("/k") is False
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
     async def test_delete_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.delete_key = AsyncMock(return_value=True)
@@ -625,6 +699,84 @@ class TestDeleteConfig:
         await svc.delete_config("/k")
 
         store.publish_change.assert_awaited_once_with("/k")
+
+    @pytest.mark.asyncio
+    async def test_the_cached_copy_is_gone_before_the_invalidation_is_published(self) -> None:
+        store = AsyncMock()
+        store.delete_key = AsyncMock(return_value=True)
+        svc = _build_service(store, kv_store_type="redis")
+        svc.cache["/k"] = {"a": 1}
+        seen: list[object] = []
+
+        async def publish(key: str) -> None:
+            seen.append(svc.cache.get(key))  # what a cached read would get while the publish is awaited
+
+        store.publish_change = AsyncMock(side_effect=publish)
+
+        await svc.delete_config("/k")
+
+        assert seen == [None]
+
+
+class TestDeleteConfigConfirmed:
+    """delete_config_confirmed: True when the key is gone after the call, whatever delete_config answered."""
+
+    @pytest.mark.asyncio
+    async def test_a_delete_the_store_confirms_is_not_read_back(self) -> None:
+        from app.config.configuration_service import delete_config_confirmed
+
+        store = AsyncMock()
+        store.delete_key = AsyncMock(return_value=True)
+
+        assert await delete_config_confirmed(_build_service(store), "/k") is True
+        store.get_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_false_answer_for_a_key_that_is_gone_is_done(self) -> None:
+        """etcd: a delete retried after its answer was lost finds nothing and answers False."""
+        from app.config.configuration_service import delete_config_confirmed
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
+
+        svc = _build_service(InMemoryKeyValueStore(logging.getLogger("test-config-store")))
+
+        assert await delete_config_confirmed(svc, "/k") is True
+
+    @pytest.mark.asyncio
+    async def test_a_delete_whose_reply_was_lost_leaves_no_cached_copy(self) -> None:
+        """The store deleted the key but the call raised: the read-back finds it gone, and the copy
+        cached before the delete must not be served afterwards."""
+        from app.config.configuration_service import delete_config_confirmed
+
+        store = AsyncMock()
+        store.delete_key = AsyncMock(side_effect=ConnectionError("reply lost"))
+        store.get_key = AsyncMock(return_value=None)
+        svc = _build_service(store)
+        svc.cache["/k"] = "stale"
+
+        assert await delete_config_confirmed(svc, "/k") is True
+        assert await svc.get_config("/k", use_cache=True) is None
+
+    @pytest.mark.asyncio
+    async def test_a_key_still_there_is_not_done(self) -> None:
+        from app.config.configuration_service import delete_config_confirmed
+
+        store = AsyncMock()
+        store.delete_key = AsyncMock(return_value=False)
+        store.get_key = AsyncMock(return_value={"a": 1})
+
+        assert await delete_config_confirmed(_build_service(store), "/k") is False
+        store.get_key.assert_awaited_once_with("/k", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_a_read_back_the_store_cannot_answer_raises(self) -> None:
+        from app.config.configuration_service import delete_config_confirmed
+
+        store = AsyncMock()
+        store.delete_key = AsyncMock(return_value=False)
+        store.get_key = AsyncMock(side_effect=ConnectionError("store down"))
+
+        with pytest.raises(ConnectionError):
+            await delete_config_confirmed(_build_service(store), "/k")
 
 
 # =========================================================================

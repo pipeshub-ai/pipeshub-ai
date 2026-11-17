@@ -9,8 +9,12 @@ describe('defaultProviderLabel', () => {
     ])).toBe('SearXNG');
   });
 
-  it('falls back to DuckDuckGo when nothing is default', () => {
-    expect(defaultProviderLabel([{ provider: 'crawl4ai', isDefault: false }])).toBe('DuckDuckGo');
-    expect(defaultProviderLabel([])).toBe('DuckDuckGo');
+  it('is null when nothing is default, because web search is then off', () => {
+    expect(defaultProviderLabel([{ provider: 'crawl4ai', isDefault: false }])).toBeNull();
+    expect(defaultProviderLabel([])).toBeNull();
+  });
+
+  it('names DuckDuckGo only when an admin chose it', () => {
+    expect(defaultProviderLabel([{ provider: 'duckduckgo', isDefault: true }])).toBe('DuckDuckGo');
   });
 });

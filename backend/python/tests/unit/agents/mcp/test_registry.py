@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
         assert "notion" in type_ids
+        assert "monday" in type_ids
         assert "airtable" in type_ids
         assert "slack" in type_ids
         assert "exa" in type_ids
@@ -92,9 +93,57 @@ class TestMCPRegistry:
         assert "okta" in type_ids
         assert "zoom" in type_ids
         assert "trello" in type_ids
+        assert "hubspot" in type_ids
         assert "cloudflare" in type_ids
         assert "paypal" in type_ids
+        assert "gitlab" in type_ids
         assert "posthog" in type_ids
+        assert "egnyte" in type_ids
+        assert "lucid" in type_ids
+
+    def test_lucid_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        lucid = registry.get_template("lucid")
+
+        assert lucid is not None
+        assert lucid.display_name == "Lucid"
+        assert lucid.transport == MCPTransport.STREAMABLE_HTTP
+        assert lucid.default_url == "https://mcp.lucid.app/mcp"
+        assert lucid.default_auth_mode == MCPAuthMode.OAUTH
+        assert lucid.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert lucid.supports_dcr is True
+        assert lucid.require_oauth_client is False
+        assert lucid.url_editable is False
+        assert lucid.authorization_url == "https://mcp.lucid.app/oauth/authorize"
+        assert lucid.token_url == "https://mcp.lucid.app/oauth/token"
+        assert lucid.default_scopes == []
+        assert lucid.icon == "/icons/connectors/lucid.svg"
+        assert lucid.documentation_url == (
+            "https://help.lucid.co/hc/en-us/articles/42578801807508"
+        )
+
+    def test_monday_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        monday = registry.get_template("monday")
+
+        assert monday is not None
+        assert monday.display_name == "monday.com"
+        assert monday.transport == MCPTransport.STREAMABLE_HTTP
+        assert monday.default_url == "https://mcp.monday.com/mcp"
+        assert monday.default_auth_mode == MCPAuthMode.OAUTH
+        assert monday.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert monday.supports_dcr is True
+        assert monday.require_oauth_client is False
+        assert monday.url_editable is False
+        assert monday.authorization_url == "https://auth.monday.com/oauth2/authorize"
+        assert monday.token_url == "https://auth.monday.com/oauth_ms/oauth/token"
+        assert monday.default_scopes == []
+        assert monday.icon == "/icons/connectors/monday.svg"
+        assert monday.documentation_url == (
+            "https://developer.monday.com/api-reference/docs/mondaycom-mcp"
+        )
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -147,6 +196,26 @@ class TestMCPRegistry:
             "cors",
         }
 
+    def test_hubspot_catalog_entry(self) -> None:
+        """HubSpot is one official CRM host; no DCR — admin pastes an MCP connector app."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        hubspot = registry.get_template("hubspot")
+        assert hubspot is not None
+        assert hubspot.display_name == "HubSpot"
+        assert hubspot.transport == MCPTransport.STREAMABLE_HTTP
+        assert hubspot.default_url == "https://mcp.hubspot.com"
+        assert hubspot.default_auth_mode == MCPAuthMode.OAUTH
+        assert hubspot.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert hubspot.supports_dcr is False
+        assert hubspot.require_oauth_client is True
+        assert hubspot.url_editable is False
+        assert hubspot.authorization_url == "https://mcp.hubspot.com/oauth/authorize/user"
+        assert hubspot.token_url == "https://mcp.hubspot.com/oauth/v3/token"
+        assert hubspot.default_scopes == []
+        assert hubspot.icon == "/icons/connectors/hubspot.svg"
+        assert hubspot.documentation_url == "https://developers.hubspot.com/ai-tools/mcp"
+
     def test_zoom_catalog_entry(self) -> None:
         """Zoom is one official host, no DCR, and the admin pastes a Marketplace app."""
         registry = MCPRegistry()
@@ -187,6 +256,42 @@ class TestMCPRegistry:
         assert paypal.default_scopes == []
         assert paypal.icon == "/icons/connectors/paypal.svg"
         assert paypal.documentation_url == "https://developer.paypal.com/tools/mcp-server/"
+
+    def test_gitlab_catalog_entry(self) -> None:
+        """GitLab targets GitLab.com over Streamable HTTP with OAuth + DCR."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        gitlab = registry.get_template("gitlab")
+        assert gitlab is not None
+        assert gitlab.display_name == "GitLab"
+        assert gitlab.transport == MCPTransport.STREAMABLE_HTTP
+        assert gitlab.default_auth_mode == MCPAuthMode.OAUTH
+        assert gitlab.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert gitlab.default_url == "https://gitlab.com/api/v4/mcp"
+        assert gitlab.url_editable is False
+        assert gitlab.supports_dcr is True
+        assert gitlab.authorization_url == "https://gitlab.com/oauth/authorize"
+        assert gitlab.token_url == "https://gitlab.com/oauth/token"
+        assert gitlab.default_scopes == ["mcp"]
+        assert gitlab.icon == "/icons/connectors/gitlab.svg"
+        assert gitlab.documentation_url == "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
+
+    def test_egnyte_catalog_entry(self) -> None:
+        """Egnyte is one official host that registers PipesHub itself, so the admin only signs in."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        egnyte = registry.get_template("egnyte")
+        assert egnyte is not None
+        assert egnyte.default_url == "https://mcp-server.egnyte.com/mcp"
+        assert egnyte.transport == MCPTransport.STREAMABLE_HTTP
+        assert egnyte.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert egnyte.supports_dcr is True
+        assert egnyte.url_editable is False
+        assert egnyte.require_oauth_client is False
+        assert egnyte.authorization_url == "https://mcp-oauth.egnyte.com/external/oauth2/authorize/egnyte-connect"
+        assert egnyte.token_url == "https://mcp-oauth.egnyte.com/egnyte-connect/oauth2/token"
+        assert egnyte.default_scopes == []
+        assert egnyte.icon == "/icons/connectors/egnyte.svg"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

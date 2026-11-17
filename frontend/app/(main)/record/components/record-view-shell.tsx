@@ -27,6 +27,7 @@ import {
   requiresForceReindexConfirmation,
 } from '@/app/(main)/knowledge-base/utils/reindex-label';
 import { toast } from '@/lib/store/toast-store';
+import { NoAccessPage } from '@/app/components/feedback';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { DeleteConfirmationDialog } from '@/app/(main)/knowledge-base/components/dialogs/delete-confirmation-dialog';
 import { ReindexBlockedDialog } from '@/app/(main)/knowledge-base/components/dialogs/reindex-blocked-dialog';
@@ -92,6 +93,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [fileType, setFileType] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [noAccess, setNoAccess] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -118,6 +120,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    setNoAccess(false);
     setPreviewError(null);
     setRecordDetails(null);
     revokeBlobUrl();
@@ -130,7 +133,24 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
     (async () => {
       try {
-        const details = await KnowledgeBaseApi.getRecordDetails(recordId);
+        let details: RecordDetailsResponse;
+        try {
+          // No toast for a refusal: the server's words for a 403 ("not shared with this connected app") would confirm the record exists.
+          details = await KnowledgeBaseApi.getRecordDetails(recordId, {
+            suppressErrorToast: (e) => e.statusCode === 403 || e.statusCode === 404,
+          });
+        } catch (detailsErr) {
+          if (cancelled) return;
+          // Only this request says "no access": a 403 or 404 from it looks the same on purpose (revoked, never held and
+          // deleted must not be told apart). A failure of the preview or the stream below keeps its own handling.
+          const status = (detailsErr as { statusCode?: number })?.statusCode;
+          if (status === 403 || status === 404) {
+            setNoAccess(true);
+            setIsLoading(false);
+            return;
+          }
+          throw detailsErr;
+        }
         if (cancelled) return;
 
         const canPreviewRecord =
@@ -420,6 +440,8 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       <LoadingScreen />
     );
   }
+
+  if (noAccess) return <NoAccessPage recordId={recordId} onBack={goBack} />;
 
   return (
     <Flex

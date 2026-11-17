@@ -293,6 +293,31 @@ async def test_a_tracking_failure_still_finalizes(step: str) -> None:
     coordinator.end.assert_awaited_once_with(lease)
 
 
+@pytest.mark.asyncio
+async def test_the_viewer_scope_version_moves_before_the_connector_is_written_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A served search reads the connector's stamps once it is IDLE, so what the sync wrote must already be behind the cached viewer scopes."""
+    from app.services.cache import invalidation_hooks
+
+    calls: list[str] = []
+    gp = _graph_provider()
+
+    async def update_node(key, collection, updates, *a) -> None:
+        calls.append("idle" if updates.get("status") == AppStatus.IDLE.value else "other")
+
+    async def moved(org_id=None) -> None:
+        calls.append("version")
+
+    gp.update_node = AsyncMock(side_effect=update_node)
+    monkeypatch.setattr(invalidation_hooks, "notify_principals_changed", moved)
+    monkeypatch.setattr(invalidation_hooks, "notify_connector_sync_completed", AsyncMock())
+    connector = _connector(None)
+    connector.run_sync = _writes_one_record(connector)
+
+    await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    assert calls.index("version") < calls.index("idle")
+
+
 class TestWhatTheProcessorNotes:
     """Seen only once its write committed; first visit replaces, later ones add."""
 

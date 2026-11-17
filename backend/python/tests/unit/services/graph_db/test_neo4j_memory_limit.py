@@ -9,6 +9,7 @@ sleep counted.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,6 +30,8 @@ from app.exceptions.graph_db_exceptions import (
 )
 from app.services.graph_db.neo4j.neo4j_client import MEMORY_LIMIT_CODES, Neo4jClient
 from app.services.graph_db.neo4j.neo4j_provider import BULK_EDGE_ROWS, Neo4jProvider
+from app.utils import error_class
+from app.utils.logger import log_record_fields
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -200,17 +203,22 @@ class TestPoolErrorOnABulkStatement:
         _assert_not_retryable(raised.value, provider)
 
     @pytest.mark.asyncio
-    async def test_it_is_logged_once_at_the_mapping_site(self) -> None:
+    async def test_it_is_logged_once_at_the_mapping_site(self, caplog: pytest.LogCaptureFixture) -> None:
         server = _Server("run")
         provider = _provider(server)
+        provider.client.logger = logging.getLogger("test.neo4j_memory_limit")  # a MagicMock would accept the record silently
 
-        with pytest.raises(GraphMemoryLimitError):
+        with caplog.at_level(logging.DEBUG, logger="test.neo4j_memory_limit"), pytest.raises(GraphMemoryLimitError) as raised:
             await provider.replace_edges_to("g1", "groups", BIG, "permission")
 
-        logged = [c for c in provider.client.logger.error.call_args_list if "memory limit" in str(c.args[0])]
+        logged = [r for r in caplog.records if r.getMessage() == "db.query.failed"]
         assert len(logged) == 1
-        assert "group replace" in str(logged[0].args[1])
-        assert "10,000 rows" in str(logged[0].args[1])
+        fields = log_record_fields(logged[0])
+        assert logged[0].levelno == logging.ERROR and fields["error_class"] == "misconfigured"
+        assert fields["bulk"] == "group replace" and fields["size"] == BULK_EDGE_ROWS
+        caplog.clear()
+        error_class.log_failure(provider.client.logger, "sync_run.end", raised.value)  # the handler keeps our own hint
+        assert "10,000 rows" in caplog.records[0].error_message and "NEO4J_HEAP_MAX" in caplog.records[0].error_message
 
     @pytest.mark.asyncio
     async def test_execute_in_transaction_runs_it_once(self) -> None:

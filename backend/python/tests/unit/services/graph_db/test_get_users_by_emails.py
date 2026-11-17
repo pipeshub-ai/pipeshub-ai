@@ -104,8 +104,8 @@ async def test_postgres_reads_only_the_ambient_org() -> None:
         p._id_rows.assert_not_awaited()
         await p.get_users_by_emails(["ANN@acme.com"])
     sql, args, _tx = p._id_rows.await_args.args
-    assert "/* pipeshub:graph.get_users_by_emails */" in sql and "org_id = $1" in sql and "lower(doc->>'email')" in sql
-    assert args == ["o1", ["ann@acme.com"]]
+    assert "/* pipeshub:graph.principals_by_email */" in sql and "graph.principals_by_email(" in sql      # the vetted read: the function takes the ambient org itself
+    assert args == [["users"], ["ann@acme.com"]]
 
 
 # ---- PostgreSQL page_record_ids_by_type ---------------------------------------------------------------------------------------------

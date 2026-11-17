@@ -17,8 +17,16 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The knowledge-hub sort-field parity test reads it (pr_changes.py python_unit).
+      - 'frontend/app/(main)/knowledge-base/sort-fields.json'
       - 'scripts/unit_shards.py'
       - 'scripts/unit_shard_durations.json'
+      - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/env.template'
+      - 'deployment/docker-compose/tests/capacity_blank_env_test.sh'
+      - 'deployment/helm/pipeshub-ai/templates/deployment.yaml'
+      - 'deployment/helm/pipeshub-ai/values.yaml'
+      - 'deployment/process_monitor.sh'
       - 'deployment/docker-compose/docker-compose.integration.redis-cluster.yml'
       - 'scripts/pr_changes.py'
       - '.github/actions/pr-changes/**'
@@ -81,7 +89,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node-version: [20]
+        node-version: [22, 24]
 
     steps:
       - name: Checkout code
@@ -131,7 +139,7 @@ jobs:
         if: ${{ always() && inputs.generate-coverage-reports == true }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nodejs-coverage-report-${{ matrix.os }}
+          name: nodejs-coverage-report-${{ matrix.os }}-node${{ matrix.node-version }}
           path: backend/nodejs/apps/coverage-report.zip
           retention-days: 7
           if-no-files-found: ignore
@@ -174,6 +182,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
+
+      # Real-file conversions run in the modules shard and must not skip there (checked below). The
+      # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
+      - name: Install LibreOffice
+        if: ${{ matrix.shard == 'modules' }}
+        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui
 
       - name: Install uv
         run: pip install uv
@@ -245,6 +259,14 @@ jobs:
           pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
 
+      # Every capacity knob blank, as compose and Helm deliver an unset one: each service's start-up import must
+      # succeed and log its capacity line. The image run of the same script is a live check (IMAGE=...).
+      - name: Capacity knobs blank
+        if: ${{ matrix.shard == 'services' }}
+        env:
+          CAPACITY_TEST_LOCAL: '1'
+        run: bash deployment/docker-compose/tests/capacity_blank_env_test.sh
+
       # The pgvector building blocks run again on their own, with a report of their own, so that a collection error or a skipped case
       # in them fails the build, whatever else the shard skips: every case must have run, and the counts must be the files' counts.
       - name: pgvector unit suites ran in full
@@ -256,6 +278,17 @@ jobs:
           python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
+
+      # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
+      # runner lost fails the build instead of skipping them.
+      - name: LibreOffice conversion suite ran in full
+        if: ${{ matrix.shard == 'modules' }}
+        working-directory: backend/python
+        run: |
+          pytest -p no:cacheprovider tests/unit/modules/parsers/real_files/test_realfile_libreoffice_types.py \
+            --timeout=300 --junitxml=junit-libreoffice.xml
+          python3 ../../scripts/assert_no_skips.py junit-libreoffice.xml --min-tests 1 \
+            --expect-suite 'tests.unit.modules.parsers.real_files.test_realfile_libreoffice_types=15'
 
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
@@ -439,12 +472,89 @@ jobs:
             --ignore=tests/integration/db \
             --ignore=tests/integration/graph_db/postgres \
             --ignore=tests/integration/skills/test_npm_import_live.py \
+            --ignore=tests/integration/spend \
             -v --timeout=300 --session-timeout=900
+
+  # The spend-safety suites (the fleet breaker's Lua, the pause budget, the wire contract of every model wrapper)
+  # against a real Redis, the same tests the unit tier runs on fakeredis's Lua engine. They fail, never skip, when
+  # Redis is missing: SPEND_IT_REDIS_URL is set, so the fixtures connect to it. No external network: the model
+  # providers are local sockets and a black-holed address that is never routed.
+  # The suite is split in three shards by a hash of each test's id (tests/support/shard_plugin.py), each on its own runner
+  # and Redis: a new test lands in one shard on its own, and test_shard_partition.py proves the shards cover every test
+  # exactly once. On a runner the whole suite took about 14 min of test time; a shard takes about a third of that.
+  python-spend-redis:
+    name: python-spend-redis (shard ${{ matrix.shard }}/3)
+    needs: changes
+    if: needs.changes.outputs.python_unit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      redis:
+        image: redis:7.4-bookworm
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the spend-safety suites on a real Redis
+        working-directory: backend/python
+        env:
+          SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
+          # A test that needs the real Redis fails here, never skips, if the variable goes missing.
+          SPEND_IT_REQUIRE_REDIS: "1"
+        # Four workers (the runner has four CPUs), each on its own Redis logical database (tests/support/spend_world.py
+        # moves the URL's database up by the worker index), so no two workers share a keyspace. worksteal hands the
+        # longest simulations out first-come, so one 1000-job case does not hold a worker while others sit idle.
+        run: |
+          python -m pytest -p tests.support.shard_plugin --shard="${{ matrix.shard }}/3" tests/integration/spend \
+            tests/unit/services/llm_gateway/test_fleet_breaker.py \
+            tests/unit/modules/pipeline/test_hold_ledger.py \
+            tests/unit/modules/pipeline/test_pause_budget_simulation.py \
+            tests/unit/services/messaging/test_fleet_state_startup.py \
+            -m "not live_smoke" \
+            -n 4 --dist worksteal --durations=15 \
+            -v --timeout=600 --session-timeout=900 --junitxml="$RUNNER_TEMP/spend.xml"
+
+      # A store that is down must fail these tests, never skip them.
+      - name: Fail on skipped tests
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/spend.xml" --min-tests 60
 
   # One check for everything the single python-unit-tests job used to run, so a
   # required status check keeps one name however the shards change.
   python-unit-tests:
-    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline]
+    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline, python-spend-redis]
     if: ${{ always() && needs.changes.outputs.python_unit == 'true' }}
     runs-on: ubuntu-latest
 
@@ -499,12 +609,17 @@ jobs:
         env:
           REDIS_MODE: cluster
           REDIS_CLUSTER_ENDPOINTS: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002
-        run: pytest tests/integration/redis_cluster -v -m integration
+        run: pytest tests/integration/redis_cluster -v -m integration --junitxml="$RUNNER_TEMP/redis-cluster-junit.xml"
+
+      # A cluster that did not answer must not read as a pass: the conftest fails under CI, and this step fails on any
+      # skipped test in the report (or on a report with no tests).
+      - name: No skipped Redis Cluster tests
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/redis-cluster-junit.xml" --min-tests 1
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Node dependencies
         working-directory: backend/nodejs/apps

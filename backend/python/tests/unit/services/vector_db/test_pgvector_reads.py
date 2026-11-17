@@ -237,3 +237,34 @@ def test_a_stamped_group_comes_back_with_its_scope_keys_and_an_unstamped_one_wit
     assert (stamped.payload["scopeFieldsVersion"], stamped.payload["scopeGeneration"]) == (5, 3)
     plain = reads.to_point(row(), None, A).payload
     assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(plain)       # never stamped: not "container"
+
+
+@pytest.mark.asyncio
+async def test_existing_ids_use_the_requests_org_skip_non_ids_and_read_no_text(svc) -> None:
+    ids = [str(uuid.UUID(int=n)) for n in (3, 1, 2)]
+    with pytest.raises(OrgRequired):
+        await svc.existing_point_ids("records", ids)
+    svc._db.run = AsyncMock(return_value={ids[0], ids[1]})
+    with org_context.bind(org_context.OrgContext(A, None, "service", "t", "-")):
+        assert await svc.existing_point_ids("records", [*ids, "not-a-uuid"]) == {ids[0], ids[1]}
+        svc._db.run.reset_mock()
+        assert await svc.existing_point_ids("records", ["not-a-uuid"]) == set()
+        assert await svc.existing_point_ids("records", []) == set()
+        svc._db.run.assert_not_awaited()
+        svc._catalog.active_space = AsyncMock(return_value=None)
+        assert await svc.existing_point_ids("records", ids) == set()
+
+
+@pytest.mark.asyncio
+async def test_the_existence_statement_pins_org_collection_space_and_tombstones_and_joins_no_payload() -> None:
+    class Tx(RecordingTx):
+        async def fetch(self, sql: str, *args: object) -> list:
+            self.sql.append(sql)
+            return [{"point_id": uuid.UUID(int=1)}]
+
+    tx = Tx()
+    assert await reads.existing_ids(tx, A, 1, 1, [uuid.UUID(int=1)]) == {str(uuid.UUID(int=1))}
+    (statement,) = tx.sql
+    assert "p.org_id = $1" in statement and "p.collection_id = $2" in statement and "p.space_id = $3" in statement
+    assert "point_tombstones t WHERE t.org_id = $1" in statement
+    assert "point_text" not in statement and "payload" not in statement

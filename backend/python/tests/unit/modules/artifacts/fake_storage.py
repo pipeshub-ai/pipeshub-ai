@@ -40,6 +40,10 @@ class FakeStorage:
     missing_status: int = 404
     put_status: int = 201
     presign_status: int = 200
+    # False: a storage service that ignores writeId (older than sets per write) and files every write in the
+    # revision's one shared set. echo_write_id, when set, is what the answer echoes instead of the writeId sent.
+    honours_write_id: bool = True
+    echo_write_id: str | None = None
     fail_paths: set[str] = field(default_factory=set)
     refused_paths: set[str] = field(default_factory=set)
     refuse_other_with_properties: str = ""
@@ -90,12 +94,24 @@ class FakeStorage:
         return storage
 
     @staticmethod
-    def document_id(vrid: str, rev: str) -> str:
-        return hashlib.sha256(f"{vrid}/{rev}".encode()).hexdigest()[:24]
+    def _folder(rev: str, write_id: str | None) -> str:
+        """The set's folder under the virtual record's: one per stored write, or the revision's for a set without one."""
+        return f"{rev}-{write_id}" if write_id else rev
 
     @staticmethod
-    def root(vrid: str, rev: str) -> str:
-        return f"org-1/PipesHub/record-revisions/{vrid}/{rev}"
+    def document_id(vrid: str, rev: str, write_id: str | None = None) -> str:
+        return hashlib.sha256(f"{vrid}/{FakeStorage._folder(rev, write_id)}".encode()).hexdigest()[:24]
+
+    @staticmethod
+    def root(vrid: str, rev: str, write_id: str | None = None) -> str:
+        return f"org-1/PipesHub/record-revisions/{vrid}/{FakeStorage._folder(rev, write_id)}"
+
+    @staticmethod
+    def _set_of_key(key: str) -> tuple[str, str, str | None]:
+        """``(vrid, rev, writeId)`` of a stored file's key."""
+        vrid, folder = key.split("/")[3:5]
+        rev, _, write_id = folder.partition("-")
+        return vrid, rev, write_id or None
 
     def _signed(self, root: str, path: str, method: str, content_type: str | None) -> dict[str, Any]:
         url = f"{self.base}/blob/{root}/{path}?sv=2024-08-04&se=2099&sp=cw&sig={SIGNATURE}%2F%2B"
@@ -125,12 +141,15 @@ class FakeStorage:
         if not 1 <= len(files) <= 1000 or len(set(paths)) != len(paths):
             return web.json_response({"error": {"message": "bad files"}}, status=400)
         vrid, rev = body["virtualRecordId"], body["rev"]
-        root = self.root(vrid, rev)
-        self.roots[self.document_id(vrid, rev)] = root
+        write_id = body.get("writeId") if self.honours_write_id else None
+        root = self.root(vrid, rev, write_id)
+        self.roots[self.document_id(vrid, rev, write_id)] = root
+        echo = self.echo_write_id or write_id
         return web.json_response({
-            "documentId": self.document_id(vrid, rev),
+            "documentId": self.document_id(vrid, rev, write_id),
             "virtualRecordId": vrid,
             "rev": rev,
+            **({"writeId": echo} if echo else {}),
             "root": root,
             "expiresInSeconds": 900,
             "files": [self._signed(root, f["path"], "PUT", f["contentType"]) for f in files],
@@ -154,10 +173,13 @@ class FakeStorage:
         if self.list_status != 200:
             return web.json_response({"error": "unavailable"}, status=self.list_status)
         vrid = request.query["virtualRecordId"]
-        revs = sorted({k.split("/")[4] for k in self.puts if k.split("/")[3] == vrid})
+        sets = sorted({self._set_of_key(k)[1:] for k in self.puts if self._set_of_key(k)[0] == vrid}, key=str)
         return web.json_response({"revisions": [
-            {"documentId": self.document_id(vrid, r), "virtualRecordId": vrid, "rev": r, "deleteFence": True}
-            for r in revs
+            {
+                "documentId": self.document_id(vrid, r, w), "virtualRecordId": vrid, "rev": r, "deleteFence": True,
+                **({"writeId": w} if w else {}),
+            }
+            for r, w in sets
         ]})
 
     async def _delete(self, request: web.Request) -> web.Response:
@@ -171,7 +193,7 @@ class FakeStorage:
             return web.json_response(self.delete_conflict_body, status=409)
         if since is not None and self.stamps.get(doc, 0) > int(since):
             return web.json_response({"purged": 0, "reason": "changed"}, status=409)
-        gone = [k for k in self.puts if self.document_id(*k.split("/")[3:5]) == doc]
+        gone = [k for k in self.puts if self.document_id(*self._set_of_key(k)) == doc]
         for key in gone:
             del self.puts[key]
         return web.json_response({"purged": 1 if gone else 0})

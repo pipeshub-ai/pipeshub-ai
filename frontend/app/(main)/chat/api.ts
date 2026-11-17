@@ -8,6 +8,8 @@ import {
   Conversation,
   ConversationMessage,
   ConversationPagination,
+  ForkChild,
+  ForkOrigin,
   ConversationsListResponse,
   ConversationApiResponse,
   ConversationSource,
@@ -290,6 +292,8 @@ export const ChatApi = {
       modelInfo: ModelInfo;
       isShared: boolean;
       sharedWith: SharedWithEntry[];
+      forkedFrom?: ForkOrigin;
+      forks?: ForkChild[];
       access: {
         isOwner: boolean;
         accessLevel: string;
@@ -309,6 +313,8 @@ export const ChatApi = {
         status: string;
         messages: ConversationMessage[];
         modelInfo: ModelInfo;
+        forkedFrom?: ForkOrigin;
+        forks?: ForkChild[];
         /** Optional: older API versions may not include this field. */
         pagination?: ConversationPagination;
         access: {

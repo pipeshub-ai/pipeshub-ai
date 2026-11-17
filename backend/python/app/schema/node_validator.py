@@ -31,7 +31,8 @@ class SchemaValidationError(Exception):
     Custom exception for schema validation failures.
 
     Wraps jsonschema.ValidationError with additional context about the collection
-    and provides a clear error message.
+    and provides a clear error message. The message names the field and the rule, never the
+    rejected value: handlers log it. The value stays on ``original_error``.
     """
 
     def __init__(self, collection: str, message: str, original_error: Optional[Exception] = None) -> None:
@@ -40,10 +41,26 @@ class SchemaValidationError(Exception):
         super().__init__(f"Schema validation failed for collection '{collection}': {message}")
 
 
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _is_integer(_checker: object, instance: object) -> bool:
+    """``integer`` as ArangoDB and the graph stores read it: an integral *type* within 64 bits.
+
+    jsonschema's own rule also accepts ``2.0`` (a float with no fraction) and Python ints of any size;
+    ArangoDB refuses the first (it stores a double), and no store can keep the second. A writer
+    that built such a value must fail on every store, not only on ArangoDB.
+    """
+    return isinstance(instance, int) and not isinstance(instance, bool) and _INT64_MIN <= instance <= _INT64_MAX
+
+
 def _compile(schema: dict) -> Validator:
     validator_cls = validators.validator_for(schema)
     validator_cls.check_schema(schema)
-    return validator_cls(schema)
+    strict = validators.extend(
+        validator_cls, type_checker=validator_cls.TYPE_CHECKER.redefine("integer", _is_integer),
+    )
+    return strict(schema)
 
 
 #: Properties a backend keeps on a node or edge for its own bookkeeping: the listing sort name and
@@ -166,9 +183,27 @@ def _clean(collection: str, payload: dict[str, Any], strip: frozenset[str]) -> d
     return cleaned
 
 
+#: Rules whose message names fields, never a value: the keys of our schemas or a source's metadata property names.
+_NAMES_ONLY = frozenset({"required", "additionalProperties", "dependentRequired"})
+
+
+def _rule_text(error: JsonSchemaValidationError) -> str:
+    """jsonschema's message without the rejected value, which most rules quote first ("'Ada' is not of type 'integer'").
+
+    Allow-listed shapes only: a message that quotes the value or part of it anywhere else keeps just the rule.
+    """
+    shown = repr(error.instance)
+    rest = error.message[len(shown):]
+    if error.message.startswith(shown) and shown not in rest:
+        return f"value{rest}"
+    if error.validator in _NAMES_ONLY:
+        return error.message
+    return f"value fails '{error.validator}'"
+
+
 def _raise(collection: str, error: JsonSchemaValidationError) -> None:
-    error_path = ".".join(str(p) for p in error.path) if error.path else "root"
-    raise SchemaValidationError(collection, f"at '{error_path}': {error.message}", error)
+    error_path = ".".join(str(p) for p in error.absolute_path) or "root"
+    raise SchemaValidationError(collection, f"at '{error_path}': {_rule_text(error)}", error)
 
 
 def _check(validator: Validator | None, collection: str, payload: dict[str, Any]) -> None:

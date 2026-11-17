@@ -64,7 +64,7 @@ class TestLoadTokenFromConfig:
     @pytest.mark.asyncio
     async def test_not_authenticated_returns_false(self, service: MCPTokenRefreshService, mock_config_service: MagicMock) -> None:
         mock_config_service.get_config = AsyncMock(return_value={"isAuthenticated": False})
-        token, has_oauth = await service._load_token_from_config(CONFIG_PATH)
+        token, has_oauth, _ = await service._load_token_from_config(CONFIG_PATH)
         assert has_oauth is False
         assert token is None
 
@@ -73,7 +73,7 @@ class TestLoadTokenFromConfig:
         mock_config_service.get_config = AsyncMock(
             return_value={"isAuthenticated": True, "oauthTokens": {"accessToken": "tok"}}
         )
-        _, has_oauth = await service._load_token_from_config(CONFIG_PATH)
+        _, has_oauth, _ = await service._load_token_from_config(CONFIG_PATH)
         assert has_oauth is False
 
     @pytest.mark.asyncio
@@ -81,7 +81,7 @@ class TestLoadTokenFromConfig:
         mock_config_service.get_config = AsyncMock(
             return_value={"isAuthenticated": True, "oauthTokens": _oauth_token_dict()}
         )
-        token, has_oauth = await service._load_token_from_config(CONFIG_PATH)
+        token, has_oauth, _ = await service._load_token_from_config(CONFIG_PATH)
         assert has_oauth is True
         assert token.access_token == "access-1"
         assert token.refresh_token == "refresh-1"
@@ -89,7 +89,7 @@ class TestLoadTokenFromConfig:
     @pytest.mark.asyncio
     async def test_non_dict_record_returns_false(self, service: MCPTokenRefreshService, mock_config_service: MagicMock) -> None:
         mock_config_service.get_config = AsyncMock(return_value=None)
-        _, has_oauth = await service._load_token_from_config(CONFIG_PATH)
+        _, has_oauth, _ = await service._load_token_from_config(CONFIG_PATH)
         assert has_oauth is False
 
 
@@ -413,7 +413,7 @@ class TestLoadTokenParseFailure:
                 "oauthTokens": {"refreshToken": "rt"},  # missing required accessToken
             }
         )
-        token, has_oauth = await service._load_token_from_config(CONFIG_PATH)
+        token, has_oauth, _ = await service._load_token_from_config(CONFIG_PATH)
         assert has_oauth is False
         assert token is None
 

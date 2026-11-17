@@ -35,7 +35,7 @@ export interface AgentBuilderWebSearchSectionProps {
 
 /**
  * Providers an agent can attach that this user may see: searching providers only (Crawl4AI just
- * reads pages), and for non-admins only those that need no setup or are already configured.
+ * reads pages), and for non-admins only those an admin has already set up (DuckDuckGo too).
  */
 export function visibleWebSearchProviders(
   isAdmin: boolean,
@@ -44,7 +44,7 @@ export function visibleWebSearchProviders(
   const searchers = WEB_SEARCH_PROVIDER_META.filter((meta) => meta.searches);
   if (isAdmin) return searchers;
   const configured = new Set(configuredProviders.map((p) => p.provider));
-  return searchers.filter((meta) => !meta.configurable || configured.has(meta.type));
+  return searchers.filter((meta) => configured.has(meta.type));
 }
 
 function buildWebSearchDragData(

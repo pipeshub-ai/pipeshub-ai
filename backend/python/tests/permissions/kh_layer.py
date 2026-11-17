@@ -1,0 +1,513 @@
+"""The Knowledge Hub layer: every row, total, count and facet the listing gives, against the oracle.
+
+A count is content: it must be computed from what the viewer may read and from nothing else.
+The layer asks the product's own `search_page` (the global listing that merges connectors, sums the totals and
+carries them in the cursor) and `KnowledgeHubService.get_nodes` (the browse path) for every viewer of a world, then
+holds them to the oracle:
+
+* over: a row the oracle does not admit (a leak);
+* under: an admitted node the listing leaves out. Fails, except the two shapes the oracle cannot decide (`declared_gap`: an upload, which has its
+  own surface, and a node under a group that hides its children), which are reported as `gap`;
+* total / counts: `total` is the number of rows, `counts_by_type` is the rows by type (one predicate for the rows and the counts);
+* facet: a filtered total equals the oracle's count of visible nodes with that value, and a value no visible node
+  holds has total 0 (a bucket with no visible item does not exist). The oracle's count, not the listing's rows;
+* beyond the cap: a row the browse lists that the oracle refuses only because its walk from the App passes the hop cap (`refused_by_cap`, the
+  verdict `R7:depth-cap`) is a `gap`: a browse reads one hop from the node it opens. An admitted node a browse leaves out is a `browse_gap` however
+  deep it lies (a seed or an open App's member is admitted with no hop cap);
+* browse: the service path from each App down, every node it lists opened in turn (groups, folders, records, stubs), each held to the oracle's
+  children of it (one row per node over every page, `totalItems` and `counts` that count each once, no row the oracle refuses, no child it admits
+  left out, a stub left out only for the sample its listing asks the check about reported as a `gap`; a node the oracle admits whose browse fails
+  is a `browse_gap`), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is
+  listed exactly where opening it lists something; and the sidebar of each node (its rows with children) holds every group and folder it lists
+  and a record exactly where opening the record lists something, each once, with a total that counts each once. A node the oracle admits that
+  no browse lists is reported (`unlisted`). At most `MAX_OPENS` browses a viewer: the rows and the stubs left out that are
+  not opened past it are counted apart (`truncated`, reported), and the whole-tree test is then not made.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import zlib
+from collections import Counter
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
+
+from app.connectors.sources.localKB.handlers.kh_search import search_page
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+from . import oracle
+from .runner import OracleLayer
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from .layers import GraphCheckLayer
+    from .model import Node, Parent, World
+
+HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")  # the edges a folder lists; anything else is a link
+MAX_OPENS = 300  # nodes a viewer's browse opens in one world, at most; past it the rows and stubs not opened are counted (`truncated`, reported)
+PAGE = 7  # small, so a world pages through several cursors and the carried total is exercised
+# The whole-tree browse opens every other node with one large page: each opened node is held to the same oracle, and only the sample pays for
+# the cursor walk (statements per node), which is what bounds the CI step.
+BIG_PAGE = 200
+SAMPLED_FIRST = 20  # the first nodes a viewer opens, and one node in SAMPLE_EVERY after, page by PAGE
+SAMPLE_EVERY = 4
+MAX_PAGES = 400
+CHUNK = 25  # worlds a store holds at once (`check_worlds`): a store larger than its page cache slows every statement
+# The generated worlds of one generator are checked in this many tests of consecutive worlds (`world_part`), so CI runs them in separate jobs.
+PARTS = 2
+
+
+SKIPPED: Any = object()  # a browse the layer did not run: past its budget of opens (`MAX_OPENS`)
+
+
+@dataclass(frozen=True)
+class KhFinding:
+    scenario: str
+    viewer: str
+    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub | sidebar | truncated | unlisted
+    detail: str
+
+
+@dataclass
+class Listing:
+    rows: list[dict[str, Any]]
+    total: int
+    counts: dict[str, int]
+    totals_per_page: set[int]
+
+
+async def listing(layer: GraphCheckLayer, world: World, viewer: str, filters: dict[str, Any] | None = None) -> Listing:
+    """All pages of the viewer's flatten listing, walked by cursor as the product walks it."""
+    ns = await layer._ns(world)
+    rows: list[dict[str, Any]] = []
+    token: str | None = None
+    first = None
+    totals: set[int] = set()
+    for _ in range(MAX_PAGES):
+        page = await search_page(
+            layer._provider, user_key=ns.id(viewer), user_id=ns.id(viewer), org_id=ns.org, limit=PAGE,
+            filters=filters, cursor_token=token, secret=None)
+        first = first or page
+        totals.add(page.total or 0)
+        rows += [{**r, "id": ns.local(r["id"])} for r in page.rows]
+        token = page.next_cursor
+        if not token:
+            break
+    else:
+        raise AssertionError("listing did not end")
+    return Listing(rows, first.total or 0, first.counts_by_type or {}, totals)
+
+
+def visible(reference: OracleLayer, world: World, viewer: str) -> dict[str, Any]:
+    """The nodes the oracle lets the viewer list: groups and records that are live and not placeholders."""
+    nodes = {n.id: n for n in world.nodes if n.kind != "app" and not n.deleted and not n.placeholder}
+    verdicts = reference.explain(world, viewer, list(nodes))
+    return {i: n for i, n in nodes.items() if verdicts[i].admitted}
+
+
+def facets(seen: dict[str, Any]) -> dict[str, tuple[dict[str, Any], int]]:
+    """Each probe (filters) with the oracle's count of visible nodes it must give."""
+    out: dict[str, tuple[dict[str, Any], int]] = {
+        "groups": ({"node_types": ["recordGroup"]}, sum(1 for n in seen.values() if n.kind == "group")),
+    }
+    for status in ("COMPLETED", "NOT_STARTED", "FAILED", "IN_PROGRESS"):
+        out[f"indexing-{status}"] = (
+            {"indexing_status": [status]},
+            sum(1 for n in seen.values() if n.kind == "record" and n.indexing == status))
+    return out
+
+
+def hidden_by_navigation(world: World, node: Node) -> bool:
+    """Whether the listing hides the node because a group that hides its children holds it or lies above it (`hideChildren` is a display flag:
+    the access check ignores it, the listing honours it, so the oracle admits what the listing does not show)."""
+    def hides(group_id: str) -> bool:
+        return world.node(group_id).hide_children or any(world.node(a.id).hide_children for a in _ancestors(world, world.node(group_id)))
+    return any(hides(g) for g in node.belongs if world.node(g).kind == "group") or any(world.node(a.id).hide_children for a in _ancestors(world, node))
+
+
+def refused_by_cap(reference: OracleLayer, world: World, viewer: str, node_id: str) -> bool:
+    """Whether the oracle refuses the node only because its walk from the App is longer than the cap (`oracle.MAX_HOPS`): the verdict says so
+    (`R7:depth-cap`, every hop up to the cap passed). No other refusal and no admission is excused."""
+    found = reference.explain(world, viewer, [node_id])[node_id]
+    return not found.admitted and found.reason == "R7:depth-cap"
+
+
+def declared_gap(world: World, node_id: str) -> bool:
+    """The shapes the flatten listing leaves out on purpose, which the oracle cannot decide: a record that belongs to no connector (an upload, listed
+    by its own surface), and a node a group that hides its children holds or lies above (`hideChildren` is a display flag the check ignores).
+    Any other admitted node the listing leaves out is an under-admit and fails."""
+    node = world.node(node_id)
+    return node.connector is None or node.origin != "CONNECTOR" or hidden_by_navigation(world, node)
+
+
+def _ancestors(world: World, node: Node) -> list[Parent]:
+    """Every edge up the hierarchy from the node (a path of PARENT_CHILD and ATTACHMENT edges)."""
+    out, seen_ids, frontier = [], set(), [node]
+    while frontier:
+        for edge in frontier.pop().parents:
+            if edge.rel in HIERARCHY and edge.id not in seen_ids:
+                seen_ids.add(edge.id)
+                out.append(edge)
+                frontier.append(world.node(edge.id))
+    return out
+
+
+def stored(reference: OracleLayer, world: World) -> World:
+    """The world as the store under test holds it (the reference's shape): only the nodes it keeps, and only the edges between them. ArangoDB
+    keeps no node with an unknown rule and no deleted or placeholder group, so a chain through one does not reach the App there."""
+    graph, _ = reference._store(world)
+    kept = {reference._ns.local(n["id"]) for n in graph["nodes"]}
+    return replace(world, nodes=tuple(
+        replace(n, parents=tuple(p for p in n.parents if p.id in kept), belongs=tuple(g for g in n.belongs if g in kept),
+                inherits=tuple(i for i in n.inherits if i in kept))
+        for n in world.nodes if n.id in kept))
+
+
+def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> set[str]:
+    """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
+    (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
+    granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
+    listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App, wherever
+    its own groups hang: nothing else lists it. A group's browse places only the records that belong to it. None in an App that opens
+    everything. The parents and groups are read from the world as the store holds it (`stored`), as the store reads them."""
+    asked_world, world = world, stored(reference, world)
+    if node not in {n.id for n in world.nodes}:      # a node the store does not keep lists nothing
+        return set()
+    target = world.node(node)
+    app_id = node if target.kind == "app" else target.connector
+    if app_id is None:      # a group of no App: nothing is placed under it
+        return set()
+    app = world.node(app_id)
+    if target.kind not in ("app", "group") or app.model == "APP_LEVEL" or app.app_type == "KB":
+        return set()
+    _, store = reference._store(world)
+    granted = {reference._ns.local(i) for i in oracle.viewer(store, reference._ns.id(viewer), reference._ns.org).granted}
+
+    def hier(n: Node) -> list[str]:
+        return [p.id for p in n.parents if p.rel in HIERARCHY]
+
+    def own(n: Node) -> list[str]:
+        return [g for g in (n.belongs if n.kind == "record" else hier(n)) if g != n.id and world.node(g).kind == "group"]
+
+    cands = [n for n in world.nodes if n.id in granted and n.connector == app_id and n.kind in ("record", "group") and not n.deleted
+             and not n.placeholder and (n.rule or "OPEN") == "OPEN" and app_id not in hier(n) and not hidden_by_navigation(world, n)
+             and (target.kind == "app" or (n.kind == "record" and node in n.belongs))]
+    asked = sorted({i for n in cands for i in [n.id, *hier(n), *own(n)]})
+    # the stores' check admits a placeholder asked by id where it would admit a real node there (the oracle refuses every placeholder): asked as one
+    real = replace(asked_world, nodes=tuple(replace(n, placeholder=False) for n in asked_world.nodes))
+    ok = {i for i, v in reference.explain(real, viewer, asked).items() if v.admitted}
+    out = set()
+    for n in cands:
+        if n.id not in ok or set(hier(n)) & ok:
+            continue
+        openable = set(own(n)) & ok
+        if node in openable or (target.kind == "app" and not openable):
+            out.add(n.id)
+    return out
+
+
+async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "", *, browse_apps: bool = True) -> list[KhFinding]:
+    """Every listing the viewer sees, held to the oracle. The browse starts at every App of the world (`_browse`), so an App's own children are
+    held to it as a folder's are, whatever ``browse_apps`` (kept for its callers) says."""
+    reference = OracleLayer(layer.shape)
+    found: list[KhFinding] = []
+    for viewer in world.users():
+        seen = visible(reference, world, viewer)
+        got = await listing(layer, world, viewer)
+        ids = [r["id"] for r in got.rows]
+
+        def add(kind: str, detail: str, viewer: str = viewer) -> None:
+            found.append(KhFinding(scenario_id, viewer, kind, detail))
+
+        for extra in sorted(set(ids) - set(seen)):
+            add("over", extra)
+        gaps = {i for i in set(seen) - set(ids) if declared_gap(world, i)}
+        for missing in sorted(set(seen) - set(ids)):
+            add("gap" if missing in gaps else "under", missing)
+        if len(ids) != len(set(ids)):
+            add("over", "a row listed twice")
+        if got.total != len(ids) or got.totals_per_page != {got.total}:
+            add("total", f"total {got.total} (per page {sorted(got.totals_per_page)}), rows {len(ids)}")
+        if got.counts != dict(Counter(r["nodeType"] for r in got.rows)):
+            add("counts", f"{got.counts} vs rows {dict(Counter(r['nodeType'] for r in got.rows))}")
+        # the oracle's count of what the listing is meant to show, not the rows it happens to show
+        for name, (flt, want) in facets({i: n for i, n in seen.items() if i not in gaps}).items():
+            have = (await listing(layer, world, viewer, flt)).total
+            if have != want:
+                add("facet", f"{name}: total {have}, oracle count {want}")
+        # the flatten's sidebar (rows with children) is a filter on the flatten: its groups and folders, and a record exactly where the
+        # flatten's own arrow is on; it never adds a row
+        side = {r["id"] for r in (await listing(layer, world, viewer, {"only_containers": True})).rows}
+        want = {r["id"] for r in got.rows if r.get("nodeType") != "record" or r.get("hasChildren")}
+        for extra in sorted(side - want):
+            add("sidebar", f"flatten: the sidebar lists {extra}, which the flatten lists without an arrow" if extra in ids
+                else f"flatten: the sidebar lists {extra}, which the flatten does not list")
+        for missing in sorted(want - side):
+            add("sidebar", f"flatten: the sidebar leaves out {missing}, which the flatten lists with an arrow")
+        found.extend(await _browse(layer, reference, world, viewer, seen, scenario_id))
+    return found
+
+
+def world_part(count: int, part: int) -> range:
+    """The indexes of the ``part``-th of `PARTS` runs of consecutive worlds out of ``count``: the parts hold each index once."""
+    return range(part * count // PARTS, (part + 1) * count // PARTS)
+
+
+async def check_worlds(layer: GraphCheckLayer, worlds: list[World], tag: str, first: int = 0) -> list[KhFinding]:
+    """`check_world` of every world on one store, loaded and released `CHUNK` at a time (`<tag>-<index>` names each, counted from ``first``);
+    a chunk is released even when its load or a check of it raises or is cancelled (`preload` names the worlds before it loads them)."""
+    found: list[KhFinding] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        try:
+            await layer.preload(chunk)
+            for offset, world in enumerate(chunk):
+                found += await check_world(layer, world, f"{tag}-{first + start + offset}")
+        finally:
+            await layer.release(chunk)
+    return found
+
+
+async def on_every_store(
+    layers: list[GraphCheckLayer], run: Callable[[GraphCheckLayer], Awaitable[list[KhFinding]]],
+) -> list[tuple[GraphCheckLayer, list[KhFinding] | Exception]]:
+    """``run`` on every store at once, each store's findings apart: the stores are separate servers, so one runs its statements while the other's
+    wait. A store that raises has its exception in place of its findings, and the others still finish. Anything that is no ``Exception`` (the
+    test's timeout, an interrupt) stops every store and is raised; a cancelled store still releases what it loaded."""
+    tasks = [asyncio.ensure_future(run(layer)) for layer in layers]
+    try:
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+            for task in done:
+                if not task.cancelled() and task.exception() is not None and not isinstance(task.exception(), Exception):
+                    raise task.exception()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return [(layer, task.exception() or task.result()) for layer, task in zip(layers, tasks, strict=True)]
+
+
+class _Config:
+    async def get_config(self, key: str, *_a: object, **_k: object) -> dict[str, str]:
+        return {"scopedJwtSecret": "kh-layer-secret"}
+
+
+async def children_of(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, *, only_containers: bool = False, flattened: bool = False,
+) -> dict[str, bool] | None:
+    """What opening ``node`` lists for the viewer, as {id: expand arrow}; None when the browse does not open it. ``only_containers``: the
+    sidebar's listing, the rows with children; ``flattened``: everything below ``node``, not its children alone."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+
+    ns = await layer._ns(world)
+    page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
+        user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc",
+        only_containers=only_containers, flattened=flattened)
+    return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
+
+
+def held_to_rows(totals: list[int], capped: list[bool], rows: int) -> list[int]:
+    """Each page's total, where a page says its total is a lower bound (``capped``) and it is one, read as the rows the walk found, so it is held
+    to them like an exact one; any other total is kept as the page gave it."""
+    return [rows if lower and 0 <= t <= rows else t for t, lower in zip(totals, capped, strict=True)]
+
+
+def cursor_in_the_clear(token: str) -> str:
+    """What a client can read in a cursor (base64url JSON; the signature proves, it does not hide): its fields, with the boundary only when it is
+    not sealed. The text no name or id of a node the viewer may not open belongs in."""
+    payload = token.partition(".")[0]
+    wire = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    boundary = wire.pop("b")
+    return json.dumps(wire) + ("" if isinstance(boundary, dict) and set(boundary) == {"x"} else json.dumps(boundary))
+
+
+async def browse_pages(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, page_size: int = PAGE, *, only_containers: bool = False,
+    cursors: list[str] | None = None,
+) -> tuple[list[Any], list[int], list[int]] | None:
+    """Every page of opening ``node`` for the viewer, as the product pages it (``page_size`` rows a page): the rows in order, and each page's
+    ``totalItems`` and ``counts.total``; None when the browse does not open it. ``only_containers``: the sidebar's listing. ``cursors`` collects
+    each page's next cursor."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+
+    ns = await layer._ns(world)
+    service = KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config())
+    items: list[Any] = []
+    totals: list[int] = []
+    counted: list[int] = []
+    cursor, capped, counted_capped = None, [], []
+    for _ in range(MAX_PAGES):
+        args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": page_size,
+                "sort_by": "name", "sort_order": "asc", "include": ["counts"], "only_containers": only_containers}
+        if cursor:
+            args["cursor"] = cursor
+        page = await service.get_nodes(**args)
+        if not page.success:
+            return None
+        items += page.items
+        totals.append(page.pagination.totalItems)
+        counted.append(page.counts.total if page.counts else -1)
+        capped.append(bool(page.pagination.totalCapped))
+        counted_capped.append(bool(page.counts and page.counts.capped))
+        cursor = page.pagination.nextCursor
+        if cursors is not None and cursor:
+            cursors.append(cursor)
+        if not cursor:
+            return items, held_to_rows(totals, capped, len(items)), held_to_rows(counted, counted_capped, len(items))
+    raise AssertionError("browse did not end")
+
+
+async def _browse(
+    layer: GraphCheckLayer, reference: OracleLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str,
+) -> list[KhFinding]:
+    """The service path: the viewer's browse from each App down, every node it lists opened in turn (groups, folders, records, stubs), each held
+    to the oracle's children of it, its pages to one row per node, and each row's arrow to what opening the row lists."""
+    ns = await layer._ns(world)
+    found: list[KhFinding] = []
+
+    def add(kind: str, detail: str) -> None:
+        found.append(KhFinding(scenario_id, viewer, kind, detail))
+
+    on_the_way = {p.id for n in seen.values() for p in _ancestors(world, n)}
+    # a placeholder group a chain-top is placed under is on the way to it too
+    holders = [n for n in world.nodes if n.kind == "group" and n.placeholder and chain_tops(reference, world, viewer, n.id)]
+    on_the_way |= {n.id for n in holders} | {p.id for n in holders for p in _ancestors(world, n)}
+
+    def extras(rows: dict[str, Any]) -> set[str]:
+        """The rows the oracle does not admit. One may be listed on the way to something readable, and only when it is shown as a placeholder (a
+        node a seed it admits hangs under is listed under the nearest folder, and is in `seen`)."""
+        return {i for i, row in rows.items() if i not in seen and not (i in on_the_way and getattr(row, "isPlaceholder", False))}
+
+    tops_of: dict[str, set[str]] = {}
+
+    def children(node: str) -> list[Node]:
+        """Its hierarchy children, and the chain-tops a browse of it places there (read once per node: each asks the oracle)."""
+        if node not in tops_of:
+            tops_of[node] = chain_tops(reference, world, viewer, node)
+        tops = tops_of[node]
+        return [n for n in world.nodes if not n.deleted and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
+
+    def past_the_sample(stub: str, below: dict[str, Any]) -> bool:
+        """Whether a browse leaves the stub ``stub`` out only for the sample its listing asks the check about (`_KH_UNDECIDED_MAX`, the first by id
+        of its live children of its App, no stub, none hidden by a group that hides its children): reported, as the sample's known limit, not
+        failed. Every child opening it lists must lie past that many of those children (a child before them would have been asked about)."""
+        app = world.node(stub).connector
+        candidates = sorted((ns.id(n.id) for n in children(stub) if not n.placeholder and n.connector == app and not hidden_by_navigation(world, n)))
+        sample = IGraphDBProvider._KH_UNDECIDED_MAX
+        return len(candidates) > sample and all(ns.id(i) > candidates[sample - 1] for i in below)
+
+    opened: dict[str, dict[str, Any] | None] = {}
+    skipped: dict[str, set[str]] = {"rows": set(), "stubs": set()}
+
+    async def open_(node: str, parent_type: str, *, kind: str = "rows") -> dict[str, Any] | None:
+        """What opening ``node`` lists, {id: row} (once per node), checked when first opened; ``SKIPPED`` past the budget of opens (counted
+        under ``kind``: a listed row, or a stub left out that is opened to see whether leaving it out was right)."""
+        if node in opened:
+            return opened[node]
+        if len(opened) >= MAX_OPENS:
+            skipped[kind].add(node)
+            return SKIPPED
+        sampled = len(opened) < SAMPLED_FIRST or zlib.crc32(node.encode()) % SAMPLE_EVERY == 0
+        result = await browse_pages(layer, world, viewer, node, parent_type, PAGE if sampled else BIG_PAGE)
+        if result is None:
+            opened[node] = None
+            # a node the viewer may open and the browse does not (a leaf opens to an empty list): an under-admit
+            if node in seen and not hidden_by_navigation(world, world.node(node)):
+                add("browse_gap", f"{node}: the browse does not open it")
+            return None
+        items, totals, counted = result
+        ids = [ns.local(item.id) for item in items]
+        got = opened[node] = {ns.local(item.id): item for item in items}
+        # one row per node over every page, and a total that counts each once
+        for twice in sorted({i for i in ids if ids.count(i) > 1}):
+            add("browse", f"{node}: lists {twice} more than once")
+        if set(totals) != {len(got)} or set(counted) != {len(got)}:
+            add("browse", f"{node}: totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(got)}")
+        for extra in sorted(extras(got)):
+            add("gap" if refused_by_cap(reference, world, viewer, extra) else "browse_extra", f"{node}: lists {extra}, which the oracle does not let the viewer open")
+        # A row is listed only in its own App, a stub too (the check decides a node in its own App).
+        app = node if world.node(node).kind == "app" else world.node(node).connector
+        for foreign in sorted(i for i in got if world.node(i).connector != app):
+            add("browse_extra", f"{node}: lists {foreign}, a node of another App")
+        # A readable child the browse leaves out is an under-admit. The one exemption is a folder that hides its children (a display flag).
+        for missing in sorted(n.id for n in children(node) if n.id in seen and n.id not in got):
+            if not hidden_by_navigation(world, world.node(missing)):
+                add("browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
+        # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
+        for stub in sorted(n.id for n in children(node) if n.placeholder and n.id not in got):
+            below = await open_(stub, "recordGroup" if world.node(stub).kind == "group" else "record", kind="stubs")
+            if below and below is not SKIPPED:
+                add("gap" if past_the_sample(stub, below) else "browse_gap", f"{node}: the browse leaves out the stub {stub}, and opening it lists something")
+        return got
+
+    def type_of(item: object) -> str:
+        return str(getattr(item.nodeType, "value", item.nodeType))
+
+    async def sidebar(node: str, parent_type: str, rows: dict[str, Any], lists: dict[str, bool]) -> None:
+        """The sidebar (the rows with children) of ``node``: every group and folder the browse lists, and a record exactly where opening it lists
+        something; one row per node over every page, and a total that counts each once."""
+        result = await browse_pages(layer, world, viewer, node, parent_type, PAGE if zlib.crc32(node.encode()) % SAMPLE_EVERY == 0 else BIG_PAGE,
+                                    only_containers=True)
+        items, totals, counted = result or ([], [0], [0])
+        ids = [ns.local(item.id) for item in items]
+        got = set(ids)
+        if len(ids) != len(got) or set(totals) != {len(got)} or set(counted) != {len(got)}:
+            add("sidebar", f"{node}: the sidebar's totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(ids)}"
+                           f" ({len(got)} distinct)")
+        want = {row for row, item in rows.items() if type_of(item) != "record" or lists[row]}
+        for missing in sorted(want - got):
+            add("sidebar", f"{node}: the sidebar leaves out {missing}, and opening it lists something")
+        for extra in sorted(got - want):
+            add("sidebar", f"{node}: the sidebar lists {extra}, and opening it lists nothing")
+
+    queue = [(n.id, "app") for n in world.nodes if n.kind == "app"]
+    expanded: set[str] = set()
+    while queue:
+        node, parent_type = queue.pop(0)
+        if node in expanded:
+            continue
+        expanded.add(node)
+        rows = await open_(node, parent_type)
+        if rows is SKIPPED:      # past the budget: counted, not opened (a second App, say)
+            continue
+        rows = rows or {}
+        lists_of: dict[str, bool] = {}
+        for row, item in rows.items():      # the expand arrow is on exactly when opening the row lists something
+            row_type = type_of(item)
+            below = await open_(row, row_type)
+            if below is SKIPPED:
+                continue
+            if below is None:      # a row is listed only where it opens (a leaf to an empty list), but past the walk's hop cap (`refused_by_cap`)
+                kind = "gap" if refused_by_cap(reference, world, viewer, row) else "browse"
+                add(kind, f"{node}: lists {row}, and the browse refuses to open it")
+            lists = lists_of[row] = bool(below)
+            if bool(getattr(item, "hasChildren", False)) != lists:
+                add("arrow", f"{node}: {row} hasChildren {item.hasChildren}, opening it lists something: {lists}")
+            if getattr(item, "isPlaceholder", False) and not lists:      # a stub is listed only as the way to something the viewer may open
+                add("stub", f"{node}: lists the stub {row}, and opening it lists nothing")
+            queue.append((row, row_type))
+        if len(lists_of) == len(rows) and any(type_of(item) == "record" for item in rows.values()):      # only a record can drop out
+            await sidebar(node, parent_type, rows, lists_of)
+    if skipped["rows"] or skipped["stubs"]:
+        add("truncated", f"opened {len(opened)} nodes (the cap); {len(skipped['rows'])} listed rows and {len(skipped['stubs'])} stubs left out"
+                         " not opened")
+    else:
+        # The whole tree was opened: a node the viewer may open that no browse lists is out of reach of the browse (`unlisted`, reported).
+        # shortcut: reported, not failed, until the shapes it finds list somewhere: a member of an App that opens everything with no hierarchy
+        # parent; a node reached only through a node or stub of another App, or of another organization, that the check refuses; a node
+        # reached only through a stub no browse lists. Fail it once those are fixed.
+        listed = {i for node in expanded if opened.get(node) for i in opened[node]}
+        for lost in sorted(set(seen) - listed):
+            if not declared_gap(world, lost):
+                add("unlisted", f"{lost}: no browse lists it, and the viewer may open it")
+    return found

@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import aclosing
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Literal
@@ -51,6 +51,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.modules.agents.capability_summary import (
     PARTLY_SHARED_KEY,
     fetch_connector_configs,
@@ -62,6 +63,7 @@ from app.modules.agents.knowledge_scope import (
     project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
+    service_account_knowledge,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
@@ -106,7 +108,7 @@ from app.utils.attachment_utils import (
 from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import get_caller_user, get_org_or_503, get_user_or_503
 from app.utils.user_messages import action_failed
 from app.web.config import resolve_web_search
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
@@ -677,12 +679,11 @@ async def _enrich_user_info_for_service_account_agent_chat(
     the agent can see is something granted rather than inherited.
 
     Otherwise the agent's creator, which is where every agent made before
-    binding existed still stands. That is the older behaviour and it is worth
-    being plain about what it means: a service agent is shared with the whole
-    organisation, so everyone chatting with an unbound one searches with its
-    creator's access. Binding is how an administrator ends that; nothing here
-    ends it for them, because doing so silently would cut off agents that work
-    today.
+    binding existed still stands. A service agent is shared with the whole
+    organisation, so what it may search is limited to what is shared with the
+    whole organisation: the org's team connectors, never its creator's personal
+    ones, and collections only when it is bound (``service_account_knowledge``,
+    applied on every run and when the agent is saved).
 
     Either way the identity must belong to the caller's own organisation. This
     path skips check_agent_permission, so that is checked here instead.
@@ -1078,11 +1079,13 @@ async def _resolve_turn_filters(
     connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
+    admit_project_collections: bool = True,
 ) -> dict[str, Any]:
     """This turn's source filters, never wider than the agent's knowledge.
 
     Ids outside it are dropped, except the caller's own project collection
-    (see ``admit_caller_project_collections``). A selection below app level
+    (see ``admit_caller_project_collections``) when ``admit_project_collections``:
+    an unbound service-account agent searches no collection. A selection below app level
     is resolved once here, as the identity the search runs as, and bounded by
     a saved agent's sources and by the project's.
 
@@ -1098,7 +1101,7 @@ async def _resolve_turn_filters(
     )
     filters = scope.filters
     dropped_kbs = list(scope.dropped_kb_ids)
-    if dropped_kbs:
+    if dropped_kbs and admit_project_collections:
         admitted = await admit_caller_project_collections(
             graph_provider,
             kb_ids=dropped_kbs,
@@ -1723,6 +1726,49 @@ def _assert_no_personal_toolsets(
         raise InvalidRequestError(
             f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
             "with the organization or runs as a service account."
+        )
+
+
+async def _assert_service_account_knowledge(
+    connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
+) -> None:
+    """A service-account agent is run by anyone in the organisation on one identity, so it may
+    only be given sources shared with the whole organisation: no personal connector, and a
+    collection only when it runs as a bound service account. A source that is not the
+    organisation's (or no longer exists) is refused too. The run applies the same rule."""
+    ids = list(dict.fromkeys(connector_ids))
+    if not ids:
+        return
+    try:
+        apps = await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True, app_ids=ids)
+    except Exception as e:
+        raise AgentError(
+            "This agent's knowledge couldn't be checked, so it can't be saved right now. Please try again in a moment.",
+            status_code=503,
+        ) from e
+    missing = len(ids) - len(apps)
+    if missing:
+        raise InvalidRequestError(f"{missing} knowledge source(s) of this agent were not found in your organization.")
+    kb = Connectors.KNOWLEDGE_BASE.value
+
+    def label(app: dict[str, Any]) -> str:
+        # Only the editor's own source is named.
+        if app.get("createdBy") != user_id:
+            return "one that someone else owns"
+        return app.get("name") or str(app.get("_key") or app.get("id"))
+
+    personal = [
+        label(a) for a in apps if a.get("type") != kb and a.get("scope") == ConnectorScope.PERSONAL.value
+    ]
+    if personal:
+        raise InvalidRequestError(
+            f"Personal sources ({', '.join(personal)}) can't be attached to an agent that runs as a service account."
+        )
+    collections = [] if bound else [label(a) for a in apps if a.get("type") == kb]
+    if collections:
+        raise InvalidRequestError(
+            f"Collections ({', '.join(collections)}) can be attached to a service-account agent only when it is "
+            "bound to a service account."
         )
 
 
@@ -2690,6 +2736,12 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         user_context = _get_user_context(request)
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
+        if not template:
+            raise AgentTemplateNotFoundError(template_id)
+        if not template.get("can_delete", False):
+            raise PermissionDeniedError("delete this template (only owner can delete)")
+
         result = await services["graph_provider"].delete_agent_template(template_id, user_doc["_key"])
 
         if not result:
@@ -2717,6 +2769,12 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
         if "memory" in body and body["memory"] is None:
             body["memory"] = {"type": []}
+
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
+        if not template:
+            raise AgentTemplateNotFoundError(template_id)
+        if not template.get("can_edit", False):
+            raise PermissionDeniedError("edit this template (only owner can edit)")
 
         result = await services["graph_provider"].update_agent_template(template_id, body, user_doc["_key"])
         if not result:
@@ -2807,6 +2865,11 @@ async def create_agent(request: Request) -> JSONResponse:
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
+        if is_service_account:
+            await _assert_service_account_knowledge(
+                knowledge_sources, services["graph_provider"], org_key, user_context["userId"],
+                bound=bool(service_account_binding),
+            )
         api_toolset_tools = await _checked_api_toolset_tools(
             body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
         )
@@ -3547,6 +3610,15 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
                 raise _toolset_attachments_unreadable() from e
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+        if final_service_account and ("knowledge" in body or converting or "serviceAccountUserId" in body):
+            await _assert_service_account_knowledge(
+                _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
+                else [k.get("connectorId") for k in agent.get("knowledge") or [] if k.get("connectorId")],
+                services["graph_provider"],
+                org_key,
+                user_context["userId"],
+                bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
+            )
         if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
             # Becoming a service account re-checks what is already attached.
             body["apiToolsetTools"] = await _checked_api_toolset_tools(
@@ -4723,6 +4795,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
+                # An unbound service agent would read a collection as its creator, so it reads none,
+                # the caller's project collection included (project_files_knowledge reads it from filters).
+                collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
+                if is_service_account:
+                    agent_knowledge = await service_account_knowledge(
+                        graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
+                        bound=collections_allowed,
+                    )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 try:
                     filters = await _resolve_turn_filters(
@@ -4737,6 +4817,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
+                        admit_project_collections=collections_allowed,
                     )
                 except (SelectionTooLargeError, SelectionNotReadyError) as exc:
                     code, message = selection_error(
@@ -4833,6 +4914,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     web_search_off = "capability_off"
                 else:
                     web_search_off = None
+                # Only the org default can be unset; an agent with no web search attached is a choice.
+                # A turn that switched web search off itself (capability, tools filter) is not asked to set it up.
+                web_search_unset = (
+                    web_search_off == "not_configured"
+                    and web_search_coro is not None
+                    and caps.web_search
+                    and _is_web_search_enabled(
+                        chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                    )
+                )
                 if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
@@ -4902,6 +4993,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
+                    "webSearchUnset": web_search_unset,
                     "deepResearch": caps.deep_search,
                     "attachments": attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
@@ -5125,7 +5217,7 @@ async def get_assistant_agent(
 
     try:
         # Get active connector instances accessible to the user
-        user = user_doc or await graph_provider.get_user_by_user_id(user_id=user_id)
+        user = user_doc or await get_caller_user(graph_provider, user_id)
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}, toolset_auth_by_instance

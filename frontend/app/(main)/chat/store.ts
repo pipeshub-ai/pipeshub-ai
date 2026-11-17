@@ -341,6 +341,8 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     stopping: false,
     messagePagination: null,
     rawMessages: null,
+    forkedFrom: null,
+    forks: [],
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
     sharedWith: isNew ? [] : null,

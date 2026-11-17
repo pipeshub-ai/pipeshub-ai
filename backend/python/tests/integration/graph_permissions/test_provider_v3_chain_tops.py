@@ -81,7 +81,7 @@ def _graph() -> tuple[list, list]:
         rg("sw-drive", "Someone else's drive", **GROUP), rec("sw-r", "Shared both ways", **ITEM),
         # No parent and no group.
         rec("orphan-r", "Orphan shared", **ITEM),
-        # Own group outside the App.
+        # Own group outside the App, closed like its parent: nothing else lists it, so the App does.
         rg("fl-group", "Floating group", **GROUP), rg("fl-x", "Closed parent", **GROUP),
         rec("fl-r", "Own group outside the App", **ITEM),
         # Beneath a group that hides its children, and in such a group.
@@ -118,11 +118,11 @@ APP_CHILDREN = {
 }
 APP_CHAIN_TOPS = {
     "ac21-r3", "ac43-r3", "nv07-r6", "nv11-rg1", "nv12-r6", "nv12-r11", "nv16-rg3", "nv21-r6",
-    "orphan-r", "ol-msg",
+    "orphan-r", "ol-msg", "fl-r",
 }
 # Visible, but never listed under the App.
 NEVER_AT_APP = {
-    "nv08-r11", "nv10-r6", "nv11-r6", "op-r", "sw-r", "fl-r", "dc-r", "dc-loose", "nv16-r7",
+    "nv08-r11", "nv10-r6", "nv11-r6", "op-r", "sw-r", "dc-r", "dc-loose", "nv16-r7",
 }
 # Hidden from everything.
 HIDDEN = {
@@ -131,11 +131,6 @@ HIDDEN = {
     "ol-box", "ol-folder", "sr-x", "sr-strict", "sr-restricted", "ex-x", "ex-deleted",
     "ex-placeholder", "ex-otherorg",
 }
-# Visible in the flatten under the App, though browse lists them nowhere: their own
-# group is not under the App, so the App fallback does not apply and no openable
-# parent exists. The one known exception to "browse lists a row at its parentId".
-UNPLACED = {"fl-r"}
-
 
 @pytest.fixture(scope="module")
 async def ct_graph(neo4j_provider, arango_provider, neo4j_settings, arango_settings) -> dict:
@@ -267,8 +262,6 @@ async def test_every_flatten_row_is_listed_at_its_parent_and_its_trail_agrees(pr
     parent_of = {row["id"]: (row["parentId"], row["parentType"]) for row in flatten["rows"]}
     assert set(parent_of) & HIDDEN == set()
     for node, (parent_id, parent_type) in sorted(parent_of.items()):
-        if node in UNPLACED:
-            continue
         listing = await _page(provider) if parent_type == "app" else await _browse(
             provider, parent_id, "recordGroup" if parent_type == "recordGroup" else "record",
         )
@@ -310,8 +303,8 @@ async def test_paging_the_app_with_chain_tops_mixed_in(provider, sort_field, sor
         assert _ids(back) == [row["id"] for row in pages[index - 1]]
 
 
-async def test_a_deleted_own_group_lists_its_chain_top_nowhere(neo4j_provider, neo4j_settings, ct_graph) -> None:
-    """No App fallback for a deleted group. Neo4j only: Arango
+async def test_a_deleted_own_group_falls_back_to_the_app(neo4j_provider, neo4j_settings, ct_graph) -> None:
+    """A deleted group never opens, so the chain-top is listed under the App. Neo4j only: Arango
     removes a group rather than flagging it deleted, so it has no such state."""
     nodes = [
         rg("dg-group", "Deleted group", isDeleted=True, **GROUP), rg("dg-x", "Closed parent", **GROUP),
@@ -320,4 +313,4 @@ async def test_a_deleted_own_group_lists_its_chain_top_nowhere(neo4j_provider, n
     edges = [nr(APP, "dg-group"), nr(APP, "dg-x"), nr("dg-x", "dg-r"), ip("dg-r", "dg-x"),
              bt("dg-r", "dg-group"), perm(USER_U, "dg-r")]
     await load_into_neo4j(neo4j_settings, nodes, edges)
-    assert "dg-r" not in _ids(await _page(neo4j_provider))
+    assert _parents(await _page(neo4j_provider)).get("dg-r") == APP

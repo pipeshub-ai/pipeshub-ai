@@ -293,11 +293,12 @@ def _run_on_route(route: str, fn: Callable[..., T], *args: object) -> T:
         with _inproc_lock:
             return fn(*args)
     from app.modules.parsers import parse_pool
+    from app.services.resource_governor.kinds import ParseKind
 
     with _raster_jobs_lock:
         _raster_jobs[0] += 1
     return parse_pool.run_blocking(
-        fn, *args, label="pdf raster", cancelled=_cancel_event.get()
+        fn, *args, label="pdf raster", cancelled=_cancel_event.get(), kind=ParseKind.RENDER
     )
 
 

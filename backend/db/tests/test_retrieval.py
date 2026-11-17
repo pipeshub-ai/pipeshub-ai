@@ -6,6 +6,8 @@ import psycopg
 import pytest
 from psycopg import errors as pg
 
+from db import vetted_harness
+
 from .conftest import run_migrate
 from .rls_fixture import ORG_A, ORG_B, uow
 
@@ -426,6 +428,52 @@ def test_the_membership_path_widens_to_every_point_when_the_best_ones_do_not_pas
     assert search(cluster, name, ORG_A, (5,), arms=(["nobody"], [], [], []), leg=1) == []
 
 
+@pytest.mark.parametrize("points", [7, 8, 9])
+def test_the_lexical_search_goes_over_every_point_exactly_when_the_best_ones_may_not_be_all(rdb, points):
+    """Leg 1 checks the best 8 first. With fewer than 8 candidates they are all of them; with 8 or more there may be more, so the last pass
+    (no bound) runs: only the lowest-scoring point passes, and it is found whatever the count, and nothing is found when none passes."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sks = [write_terms(c, ORG_A, f"a0000000-0000-0000-0000-0000000000{i:02d}", f"g{i}", {5: 2.0 - i / 100}) for i in range(points)]
+        delta(c, ORG_A, points)
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, %s, 1, 'only')", (ORG_A, f"g{points - 1}"))
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,), arms=(["only"], [], [], []), leg=1)] == [sks[-1]]
+    assert search(cluster, name, ORG_A, (5,), arms=(["nobody"], [], [], []), leg=1) == []
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,), leg=points)] == sks                      # whole org: best first, in one pass
+
+
+SPARSE = "retrieval.search_sparse(smallint, bigint[], real[], text[], text[], text[], text[], text[], int)"
+
+
+def test_downgrading_the_cheaper_lexical_search_keeps_the_function_and_an_upgrade_replaces_it(rdb):
+    """retrieval_0003 replaces the body of a function retrieval_0001 owns: a downgrade keeps the function and its registry row
+    (retrieval_0001 runs the same generated file), and an upgrade from there replaces it again with nothing left over."""
+    cluster, name = rdb
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def state() -> tuple:
+        with cluster.admin(name) as a:
+            return (a.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'retrieval'::regnamespace AND proname = 'search_sparse'").fetchone()[0],
+                    a.execute(f"SELECT count(*) FROM kernel.function_registry WHERE proc = '{SPARSE}'::regprocedure").fetchone()[0],
+                    a.execute(f"SELECT prosrc LIKE '%%agg AS MATERIALIZED%%' FROM pg_proc WHERE oid = '{SPARSE}'::regprocedure").fetchone()[0],
+                    a.execute("SELECT count(*) FROM kernel.rls_violations").fetchone()[0])
+
+    assert state() == (1, 1, False, 0)
+    r = run_migrate(url, "downgrade", "retrieval_0002", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    assert state() == (1, 1, False, 0)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    assert state() == (1, 1, False, 0)
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sk = write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000001", "g1", {5: 1.0})
+        delta(c, ORG_A, 1)
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,))] == [sk]                  # the query role can still call it
+
+
 def test_a_space_check_is_written_and_read_by_its_own_org_only_and_the_lock_classes_are_registered(rdb):
     cluster, name = rdb
     adopt(cluster, name, ORG_A)
@@ -539,3 +587,105 @@ def test_downgrading_the_scope_fields_removes_the_path_and_scope_members_of_ever
     with cluster.admin(name) as a:
         a.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1'), (%s, 1, 'g', 5, 's1')", (ORG_A, ORG_B))
         assert a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND table_name = 'point_groups' AND column_name = 'scope_stamp'").fetchone()[0] == 1
+
+
+# ---- whether another org still holds a vrid (retrieval_0004) ------------------------------------------------------------------------------
+HELD = "SELECT retrieval.vrid_held_elsewhere(%s)"
+HELD_SIG = "retrieval.vrid_held_elsewhere(text)"
+
+
+def put_vrid(c: psycopg.Connection, org: str, vrid: str, tombstone: bool = False) -> None:
+    sk = c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                   "VALUES (%s, 1, 1, gen_random_uuid(), %s, %s, %s::ext.halfvec, 4) RETURNING point_sk", (org, vrid, vrid, VEC)).fetchone()[0]
+    if tombstone:
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) VALUES (%s, %s)", (org, sk))
+
+
+def held(cluster, name: str, org: str | None, vrid: str) -> bool:
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", org):
+        return c.execute(HELD, (vrid,)).fetchone()[0]
+
+
+def test_vrid_held_elsewhere_answers_for_the_other_orgs_only(rdb):
+    """A and B both hold vr-shared; only A holds vr-a; B's only point of vr-gone is tombstoned (deleted in safe mode)."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    adopt(cluster, name, ORG_B)
+    with connect_as(cluster, name, "pipeshub_jobs") as c:
+        with uow(c, "pipeshub_jobs", ORG_A):
+            put_vrid(c, ORG_A, "vr-shared")
+            put_vrid(c, ORG_A, "vr-a")
+            put_vrid(c, ORG_A, "vr-gone")
+        with uow(c, "pipeshub_jobs", ORG_B):
+            put_vrid(c, ORG_B, "vr-shared")
+            put_vrid(c, ORG_B, "vr-gone", tombstone=True)
+    assert held(cluster, name, ORG_A, "vr-shared") is True
+    assert held(cluster, name, ORG_B, "vr-shared") is True
+    assert held(cluster, name, ORG_A, "vr-a") is False               # the caller's own points do not count
+    assert held(cluster, name, ORG_B, "vr-a") is True
+    assert held(cluster, name, ORG_A, "vr-gone") is False            # a tombstoned point is not held
+    assert held(cluster, name, ORG_A, "vr-none") is False
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_B):
+        c.execute("DELETE FROM retrieval.points WHERE org_id = %s AND vrid = 'vr-shared'", (ORG_B,))
+    assert held(cluster, name, ORG_A, "vr-shared") is False          # the last other copy went
+    assert held(cluster, name, None, "vr-a") is True                 # no org: the answer that keeps the mapping, whatever is stored
+
+
+def test_vrid_held_elsewhere_returns_one_boolean_and_nothing_else(rdb):
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        row = a.execute("SELECT prorettype::regtype::text, proretset, proallargtypes, pg_get_function_arguments(oid) FROM pg_proc "
+                        "WHERE oid = %s::regprocedure", (HELD_SIG,)).fetchone()
+    assert row == ("boolean", False, None, "p_vrid text")              # one scalar boolean, no OUT argument, no set
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        cur = c.execute(HELD, ("vr-x",))
+        assert [d.name for d in cur.description] == ["vrid_held_elsewhere"] and cur.fetchall() == [(False,)]
+    for bad in ("", None, "v" * 2001):
+        with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A), pytest.raises(pg.InvalidParameterValue):
+            c.execute(HELD, (bad,))
+
+
+def test_vrid_held_elsewhere_is_executable_by_the_indexing_role_only(rdb):
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        for role, ok in (("pipeshub_indexing", True), ("pipeshub_node", False), ("pipeshub_connectors", False), ("pipeshub_query", False),
+                         ("pipeshub_jobs", False), ("pipeshub_kv", False), ("pipeshub_backup", False), ("pipeshub_restore", False), ("public", False)):
+            assert a.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, HELD_SIG)).fetchone()[0] is ok, role
+        definer, config = a.execute("SELECT prosecdef, proconfig FROM pg_proc WHERE oid = %s::regprocedure", (HELD_SIG,)).fetchone()
+    assert definer and "search_path=pg_catalog, retrieval, pg_temp" in config
+    for login, role in (("pipeshub_query_login", "pipeshub_query"), ("pipeshub_connectors_login", "pipeshub_connectors"), ("pipeshub_node_login", "pipeshub_node")):
+        with connect_as(cluster, name, login) as c, uow(c, role, ORG_A), pytest.raises(pg.InsufficientPrivilege):
+            c.execute(HELD, ("vr-a",))
+
+
+def test_vrid_held_elsewhere_counts_a_point_in_a_space_that_is_not_active(rdb):
+    """Org B holds its only point of the vrid in a shadow space and has no active space: it still holds the vrid."""
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        a.execute("INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30005, 'shadow-model', 4, 'cosine') "
+                  "ON CONFLICT DO NOTHING")
+        a.execute("INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (%s, 30005, 4, 'shadow')", (ORG_B,))
+        a.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 30005, gen_random_uuid(), 'vr-shadow', 'vr-shadow', %s::ext.halfvec, 4)", (ORG_B, VEC))
+        assert a.execute("SELECT count(*) FROM retrieval.org_spaces WHERE org_id = %s AND role = 'active'", (ORG_B,)).fetchone()[0] == 0
+    assert held(cluster, name, ORG_A, "vr-shadow") is True
+
+
+def test_vrid_held_elsewhere_probes_the_vrid_index_and_never_scans_the_points(rdb):
+    """20,000 points in each of two orgs, half of B's tombstoned. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    adopt(cluster, name, ORG_B)
+    with cluster.admin(name) as c:
+        for org in (ORG_A, ORG_B):
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                      "SELECT %s, 1, 1, gen_random_uuid(), 'vr-' || g, 'vr-' || g, %s::ext.halfvec, 4 FROM generate_series(1, 20000) g", (org, VEC))
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) SELECT org_id, point_sk FROM retrieval.points WHERE org_id = %s AND point_sk %% 2 = 0", (ORG_B,))
+        c.execute("ANALYZE retrieval.points, retrieval.point_tombstones")
+        big = vetted_harness.org_tables_over(c, 1000)
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_indexing", ORG_A, HELD, ("vr-777",))
+    assert any(t.startswith("points_") for t in big) and any(t.startswith("point_tombstones_") for t in big), big
+    # an empty leaf may be read whole; a leaf that holds rows is probed: points by (org, collection, vrid), a tombstone by its key
+    for i in (0, 6):
+        assert "_vrid_block_id_idx" in plans[i] and "Scan using point_tombstones_h" in plans[i], (i, plans[i])
+        assert vetted_harness.seq_scanned(plans[i], big) == [], (i, plans[i])

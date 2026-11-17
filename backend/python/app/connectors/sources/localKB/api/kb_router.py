@@ -47,6 +47,8 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinKBResponse,
 )
 from app.connectors.sources.localKB.handlers.kb_service import (
+    MAX_TRASH_CURSOR_LENGTH,
+    PAGE_BEYOND_LIMIT,
     ConnectionCheck,
     KnowledgeBaseService,
 )
@@ -58,6 +60,7 @@ from app.connectors.sources.localKB.push.service import KbPushService
 from app.containers.connector import ConnectorAppContainer
 from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from app.services.graph_db.common.utils import api_record
 from app.services.storage_documents import StorageDocuments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -128,6 +131,10 @@ async def get_kafka_service(request: Request) -> KafkaService:
 HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
+
+# `UpdateRecordResponseSchema.record` documents these although they are internal elsewhere: a
+# record in the trash can still be renamed, and the answer carries its trash state.
+UPDATE_RESPONSE_DOCUMENTED_FIELDS = frozenset({"deletedAtTimestamp", "deleteBatchId", "deleteSource"})
 
 kb_router = APIRouter(
     prefix="/api/v1/kb",
@@ -396,7 +403,7 @@ async def update_knowledge_base(
         except ValidationError as ve:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=ve.errors()
+                detail=ve.errors(include_input=False),
             )
         updates = body.model_dump(exclude_none=True)
         if not updates:
@@ -1449,6 +1456,10 @@ async def update_record(
             except Exception as e:
                 logger.error(f"❌ Failed to publish update event: {str(e)}")
 
+        # The stored document, as the record endpoint returns it.
+        if isinstance(result.get("updatedRecord"), dict):
+            result = {**result, "updatedRecord": api_record(result["updatedRecord"], keep=UPDATE_RESPONSE_DOCUMENTED_FIELDS)}
+
         # Enrich response with required fields for UpdateRecordResponse
         graph_provider = request.app.state.graph_provider
         try:
@@ -1760,8 +1771,9 @@ async def list_trash(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
+    cursor: str | None = Query(None, min_length=1, max_length=MAX_TRASH_CURSOR_LENGTH),
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> ListTrashResponse:
+) -> ListTrashResponse | JSONResponse:
     try:
         result = await kb_service.list_trash(
             kb_id=kb_id,
@@ -1769,13 +1781,16 @@ async def list_trash(
             org_id=request.state.user.get("orgId"),
             page=page,
             limit=limit,
+            cursor=cursor,
         )
         if not result or result.get("success") is False:
             error_code = int((result or {}).get("code", HTTP_INTERNAL_SERVER_ERROR))
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=(result or {}).get("reason") or action_failed("load the recently deleted items"),
-            )
+            status_code = error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR
+            detail = (result or {}).get("reason") or action_failed("load the recently deleted items")
+            if (result or {}).get("errorCode") == PAGE_BEYOND_LIMIT:
+                # The gateway tells this 400 apart by its code, not its words.
+                return JSONResponse(status_code=status_code, content={"detail": detail, "errorCode": PAGE_BEYOND_LIMIT})
+            raise HTTPException(status_code=status_code, detail=detail)
         return ListTrashResponse(**result)
     except HTTPException:
         raise
@@ -1912,6 +1927,7 @@ def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_serv
         publish_event=publish,
         materialiser=runtime.materialiser,
         image_admission=runtime.image_admission,
+        ledger=runtime.ledger,
     )
 
 
@@ -1938,6 +1954,7 @@ async def push_record(
             raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
         service = _push_service(request, kb_service, kafka_service)
         user_key = await service.authorize(kb_id, user_id)
+        service.precheck(org_id, user_id)  # a suspended or over-budget caller is refused before a byte of the body is read
         admission = push_api.runtime_for(request.app).admission
         admission.claim(user_key)  # one push at a time per caller per process: held until the push ends
         task: asyncio.Future[Any] | None = None

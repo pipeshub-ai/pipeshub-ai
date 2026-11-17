@@ -27,7 +27,7 @@ from .graph import Graph, Namespace, compile_world
 if TYPE_CHECKING:
     from .model import World
 
-KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED")
+KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT")
 # The permission-type values Arango's edge schema accepts (schema/arango/edges.py); ANYONE is not one of them.
 ARANGO_GRANT_TYPES = {None, "USER", "GROUP", "DOMAIN", "TEAM", "ORG", "ROLE", "ORGANIZATION"}
 LoadFn = Callable[[list, list], Awaitable[None]]
@@ -83,7 +83,10 @@ class GraphCheckLayer:
         so long runs load and release in chunks."""
         gone = [w for w in dict.fromkeys(worlds) if w in self._prefix]
         if gone:
-            await self._unload([f"{self._prefix.pop(w)}-" for w in gone])
+            # forgotten only once deleted: a delete cut short leaves records that a later release must still find
+            await self._unload([f"{self._prefix[w]}-" for w in gone])
+            for w in gone:
+                del self._prefix[w]
 
     async def _ns(self, world: World) -> Namespace:
         if world not in self._prefix:

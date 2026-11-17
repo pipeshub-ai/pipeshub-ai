@@ -70,6 +70,7 @@
       "restoredMany_one": "已恢复 {{count}} 个项目",
       "restoredMany_other": "已恢复 {{count}} 个项目",
       "showing": "第 {{from}}–{{to}} 项，共 {{total}} 项",
+      "showingAtLeast": "第 {{from}}–{{to}} 项，共 {{total, number}}+ 项",
       "previous": "上一页",
       "next": "下一页",
       "nameAndMore_one": "{{name}} 及另外 {{count}} 项",
@@ -528,6 +529,7 @@
     "created": "创建时间",
     "updated": "更新时间",
     "source": "来源",
+    "actions": "操作",
     "noData": "没有可用数据",
     "loading": "正在加载数据...",
     "selectAll": "全选",
@@ -579,6 +581,8 @@
     "pagination": {
       "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "显示第 {{start}}-{{end}} 项，至少 {{total}} 项",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每页 {{value}} 条"
     },
     "yes": "是",
@@ -736,6 +740,8 @@
     "indexingStatus": {
       "completed": "已完成",
       "inProgress": "进行中",
+      "embeddingProgress_one": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
+      "embeddingProgress_other": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
       "failed": "失败",
       "fileTypeNotSupported": "不支持的文件类型",
       "notStarted": "未开始",
@@ -791,7 +797,9 @@
     "nameRules": {
       "folderSeparator": "文件夹名称不能包含“/”或“\\”。",
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
-    }
+    },
+    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。",
+    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -933,7 +941,17 @@
     "copy": "复制",
     "fork": "分叉对话",
     "forkFromHere": "从此处分叉",
+    "forkedHere": "已在此处分叉",
+    "untitledChat": "未命名聊天",
+    "forkedFrom": "分叉自",
+    "copiedUpToHere": "已复制到此处 · 新消息从下方开始",
+    "forkOriginUnavailable": "原始对话已不可用",
     "regenerate": "重新生成",
+    "answerHidden": {
+      "lost": "此回答使用了您已无权访问的内容。",
+      "unconfirmed": "无法确认您的访问权限，请重试。",
+      "askAgain": "重新提问"
+    },
     "readAloud": "朗读",
     "stopReading": "停止朗读",
     "ttsNotSupported": "此浏览器不支持文字转语音",
@@ -1604,6 +1622,15 @@
         "done": "已完成",
         "error": "失败"
       }
+    },
+    "webSearchSetup": {
+      "title": "网页搜索尚未设置",
+      "adminBody": "您的组织尚未配置搜索提供商。请在 Workspace → 网页搜索 中选择一个，为所有人开启网页搜索。",
+      "memberBody": "您的组织尚未设置网页搜索提供商，因此回答无法使用网络。",
+      "memberHint": "请联系管理员在 Workspace → 网页搜索 中进行配置。",
+      "setUp": "设置网页搜索",
+      "notNow": "暂不",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -1651,6 +1678,8 @@
         "demoteAdminBeforeRemove": "请先将该管理员降级为成员，然后再移除。",
         "removeUserTitle": "移除用户？",
         "removeUserMessage": "确定要将 {{email}} 从 {{workspace}} 工作区中移除吗？",
+        "removeUserOAuthAppsOne": "此用户创建了 1 个 OAuth 应用。它将转移给您，通过它连接的用户将保持连接。",
+        "removeUserOAuthAppsMany": "此用户创建了 {{count}} 个 OAuth 应用。它们将转移给您，通过它们连接的用户将保持连接。",
         "removeButton": "移除",
         "cancelButton": "取消",
         "removeSuccess": "用户已成功移除",
@@ -1941,7 +1970,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "创建和管理您注册的 OAuth 应用。这里的应用仅您本人可见。",
+      "subtitle": "创建和管理您注册的 OAuth 应用。仅您本人和组织管理员可见。",
+      "subtitleAdmin": "组织中的所有 OAuth 应用及其创建者。暂停或删除任何您不认识的应用。",
       "searchPlaceholder": "搜索…",
       "newApplication": "新建 OAuth 应用",
       "emptyTitle": "暂无 OAuth 2.0 应用",
@@ -1951,6 +1981,7 @@
       "retry": "重试",
       "scopesBadgeOne": "{{count}} 个权限范围",
       "scopesBadgeMany": "{{count}} 个权限范围",
+      "createdBy": "创建者：{{name}}",
       "manage": "管理",
       "noSearchResults": "没有符合搜索条件的应用。",
       "manageComingSoonTitle": "即将推出",
@@ -1961,6 +1992,7 @@
         "saveDisabledNoChanges": "没有需要保存的更改。",
         "saveDisabledInvalid": "请先修正验证错误再保存。",
         "tabAdvanced": "高级",
+        "creatorOnlyNotice": "只有创建此应用的人可以更改它。您仍可以在“高级”中暂停或删除它。",
         "aboutHeading": "关于",
         "aboutHelper": "在您的 OAuth 流程中使用此客户端 ID。",
         "copyClientIdAria": "复制客户端 ID",
@@ -2434,6 +2466,7 @@
       "nav": {
         "general": "常规",
         "labs": "实验室",
+        "mcpAccess": "MCP 访问",
         "authentication": "身份验证",
         "connectors": "连接器",
         "mcpServers": "MCP 服务器",
@@ -2727,6 +2760,30 @@
         "cancel": "继续编辑"
       }
     },
+    "mcpAccess": {
+      "title": "MCP 访问",
+      "subtitle": "选择 Claude、Cursor 或 ChatGPT 等 MCP 客户端可以通过此工作区的 /mcp 端点执行哪些操作。",
+      "enabled": {
+        "label": "允许 MCP 访问",
+        "description": "关闭后，MCP 客户端的每个请求都会被拒绝。重新开启后，已连接的客户端会立即恢复工作。"
+      },
+      "writeTools": {
+        "label": "允许写入工具",
+        "description": "关闭后，MCP 客户端无法创建集合、上传文件或添加网站，聊天也不会运行已连接的操作。"
+      },
+      "tools": {
+        "title": "工具",
+        "subtitle": "关闭单个工具。关闭的工具不会提供给 MCP 客户端，对它的调用会被拒绝。",
+        "writes": "写入"
+      },
+      "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
+      "loadError": "无法加载 MCP 访问设置。请重新加载页面后重试。",
+      "toasts": {
+        "saveSuccess": "MCP 访问设置已保存",
+        "saveError": "无法保存 MCP 访问设置",
+        "saveErrorDescription": "请检查网络连接后重试。"
+      }
+    },
     "labs": {
       "title": "平台配置",
       "subtitle": "平台设置的更改将影响所有用户并立即生效。",
@@ -2828,6 +2885,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML 单点登录和 OpenID Connect",
+        "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。",
+        "contactSales": "如需购买，请发送邮件至 {{email}}"
       }
     },
     "connectors": {
@@ -3282,7 +3344,28 @@
         "loadingOptions": "正在加载选项…",
         "noResults": "未找到结果",
         "optionsLoadFailed": "无法加载此筛选条件的选项。请关闭此列表后重新打开以重试。",
-        "loadingMore": "正在加载更多…"
+        "loadingMore": "正在加载更多…",
+        "folderPaths": {
+          "help": "路径从顶层开始。* 匹配单个文件夹名称中的任意字符，** 匹配任意数量的文件夹，? 匹配一个字符。匹配的文件夹中的所有内容都会包含在内。未匹配任何内容的模式会在连接器卡片上标出。",
+          "examples": {
+            "oneLevel": "customer/*/quotes：每个客户的 quotes 文件夹",
+            "anyDepth": "**/quotes：任意深度下名为 quotes 的每个文件夹（会读取每个文件夹）",
+            "exclude": "archive 配合排除：除 archive 文件夹外的所有内容"
+          },
+          "caseInsensitive": "名称匹配不区分大小写。\\ 和 / 都可分隔文件夹。",
+          "caseSensitive": "名称区分大小写。要在名称中匹配这些字符，请写 \\* 或 \\?。",
+          "notFiles": "模式选择的是文件夹，而不是文件。要选择文件类型，请使用 File Extensions。",
+          "errors": {
+            "climbsOut": "文件夹“{{value}}”必须是从顶层开始的路径，且不含“..”。",
+            "emptySegment": "文件夹“{{value}}”的两个斜杠之间有空文件夹名称。请删除多余的“/”。",
+            "excludesEverything": "排除“{{value}}”后将没有可同步的内容。请删除它，或切换为包含。",
+            "tooLong": "文件夹“{{value}}”超过 1024 个字符。",
+            "uncPath": "文件夹“{{value}}”看起来像网络路径。请从共享的顶层开始，不要包含 \\\\server\\share。",
+            "doubleStarInName": "在文件夹“{{value}}”中，“**”必须是完整的文件夹名称，例如 reports/**/2026。名称的一部分请使用“*”。",
+            "tooManyDoubleStars": "文件夹“{{value}}”使用“**”超过 4 次。请减少使用。",
+            "tooManyStars": "“{{value}}”中的某个文件夹名称包含超过 16 个“*”。请减少使用。"
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "定时",
@@ -3428,7 +3511,24 @@
         "badge": "需要处理",
         "title": "需要处理",
         "openAuthentication": "更新身份验证",
-        "viewSteps": "查看设置步骤"
+        "viewSteps": "查看设置步骤",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki 拒绝成员和页面结构查询",
+            "message": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。",
+            "message_dated": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。 正在使用的最早访问权限确认于 {{confirmedOn}}。"
+          },
+          "folder_filter_unmatched": {
+            "title": "文件夹模式未匹配任何内容",
+            "message": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此不会为其同步任何内容。请检查 Folders 筛选器中的拼写。",
+            "title_several": "{{count}} 个文件夹模式未匹配任何内容",
+            "message_several": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此不会为它们同步任何内容。请检查 Folders 筛选器中的拼写。",
+            "title_exclude": "文件夹模式未匹配任何内容",
+            "message_exclude": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此它不会排除任何内容。请检查 Folders 筛选器中的拼写。",
+            "title_several_exclude": "{{count}} 个文件夹模式未匹配任何内容",
+            "message_several_exclude": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此它们不会排除任何内容。请检查 Folders 筛选器中的拼写。"
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "组织中的所有人都将看到这些数据",
@@ -3438,6 +3538,104 @@
         "cancel": "取消",
         "continueTeam": "继续使用团队连接器",
         "goToPersonal": "设置个人连接器"
+      },
+      "accessCheck": {
+        "open": "检查某人的访问权限",
+        "title": "检查某人的访问权限",
+        "description": "查看某人能否读取此连接器中的记录，以及无法读取的原因。",
+        "personLabel": "人员",
+        "personPlaceholder": "选择人员",
+        "peopleLoading": "正在加载人员...",
+        "peopleFailed": "无法加载人员列表。",
+        "recordLabel": "记录 ID",
+        "recordHint": "打开记录并复制其 ID。",
+        "check": "检查",
+        "checking": "正在检查...",
+        "close": "关闭",
+        "resultHeading": "结果",
+        "restrictedArea": "受限区域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "参考编号：{{ref}}（如果原因看起来不对，请提供给支持人员）",
+        "verdict": {
+          "granted": "{{name}} 可以查看此记录。",
+          "denied": "{{name}} 无法查看此记录。"
+        },
+        "reason": {
+          "granted": "如果它在搜索中缺失，可能是尚未建立索引，或连接器仍在同步。",
+          "not_linked": "{{name}} 没有关联到此连接器的账户。",
+          "no_grant": "{{container}} 中没有任何内容授予 {{name}} 访问权限。",
+          "restricted_container": "{{container}} 仅限其他人访问。",
+          "item_restricted": "此记录有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 无法打开此记录所需的上级项目。",
+          "pending_rewrite": "此记录所在的文件夹正在更新。",
+          "syncing": "连接器尚未完成此部分的同步。",
+          "scheme_unreadable": "连接器无法读取此区域的访问规则，因此对所有人隐藏。",
+          "deleted_at_source": "此记录已在源端删除。",
+          "unexplained": "我们无法显示原因。"
+        },
+        "next": {
+          "not_linked": "请在源端修复账户，然后同步。",
+          "no_grant": "请在源端添加 {{name}}。",
+          "restricted_container": "请让所有者添加 {{name}}。",
+          "item_restricted": "请让所有者添加 {{name}}。",
+          "parent_not_readable": "请将上级项目共享给 {{name}}。",
+          "pending_rewrite": "请等待几分钟后再检查。",
+          "syncing": "请等待同步完成。",
+          "scheme_unreadable": "请在源端修复同步账户的权限。",
+          "deleted_at_source": "无需操作。",
+          "unexplained": "请联系支持人员并提供参考编号。"
+        },
+        "errors": {
+          "failed": "无法完成检查。请重试。",
+          "notFound": "在此连接器中找不到该人员或记录。",
+          "rateLimited": "检查次数过多。请一分钟后重试。"
+        },
+        "peopleRetry": "重试",
+        "askedAbout": "关于记录 {{record}}"
+      },
+      "access": {
+        "title": "访问",
+        "loading": "正在加载访问详情…",
+        "loadError": "无法加载访问详情。",
+        "retry": "重试",
+        "reach": "{{connector}} 中的更改会在{{interval}}内同步到 PipesHub。",
+        "reachUnknown": "{{connector}} 中的更改会在下次同步时到达 PipesHub。",
+        "syncNow": "立即同步权限",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "权限",
+          "succeeded": "上次刷新：{{when}}。",
+          "failed": "上次权限刷新失败，因此来源中的最新更改可能尚未生效。请选择“立即同步权限”重试。",
+          "never": "权限尚未刷新。在首次同步完成之前，此连接器的内容将保持隐藏。",
+          "running": "正在刷新权限。",
+          "incomplete": "上一次权限刷新没有运行到结束。"
+        },
+        "pending": {
+          "label": "等待生效",
+          "none": "没有等待中的项目。",
+          "some_other": "{{count}} 个文件夹正在更新。更新完成前，所有人都看不到它们，通常需要几分钟。",
+          "overflow": "某项更改涉及整个连接器，因此需要完整重建其权限索引。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unknown": "未知：无法读取等待更新的文件夹列表。请参阅“需要关注”。"
+        },
+        "attention": {
+          "label": "需要处理（{{count}}）",
+          "none": "没有需要处理的事项。",
+          "warning": "{{container}} 中有 {{items}} 个项目被隐藏。同步账户无法读取此容器的权限。",
+          "fix": "解决办法：在 {{vendor}} 中为同步账户授予 {{permission}} 权限，然后选择“立即同步权限”。",
+          "showAll": "再显示 {{count}} 项",
+          "warningNoContainer": "同步账户无法读取部分项目的权限，因此这些项目被隐藏。",
+          "rebuild": "此连接器的权限索引需要完整重建。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unfinished": "某项权限更改没有顺利完成。请让运行 PipesHub 的人员检查此连接器的权限索引。",
+          "stale": "部分项目无法通过更快的搜索进行检查，会改由经典搜索查找。",
+          "sweep": "此连接器的权限更新持续失败。请让运行 PipesHub 的人员检查其日志。",
+          "other": "此连接器的权限需要有人查看。",
+          "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
+        }
       }
     },
     "mcpServers": {
@@ -4149,6 +4347,11 @@
         "settingDefault": "正在设置…",
         "editConfiguration": "编辑配置",
         "deleteConfiguration": "删除配置"
+      },
+      "duckduckgoWarning": "在共享服务器上可能被封锁或限速，不建议团队使用。",
+      "notSetUp": {
+        "title": "网络搜索尚未设置。",
+        "description": "请在下方选择一个提供商来开启。在此之前，组织中的任何人都无法在聊天中搜索网络。"
       }
     },
     "profile": {
@@ -4309,6 +4512,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "会话和用户元数据"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "会话和用户元数据"
         },
         "messageBroker": {
@@ -5197,6 +5404,7 @@
     "mcpServerNeedsToolsTooltip": "请为每个 MCP 服务器选择工具，或开启“全部工具”。",
     "mcpServerNeedsToolsBanner": "请为 {{names}} 至少选择一个工具，或开启“全部工具”。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的个人 MCP 服务器，不能添加到与组织共享或以服务账号运行的智能体中。",
+    "serviceAgentCollectionsNeedBinding": "将此服务智能体绑定到服务账号后，才能添加集合。",
     "mcpAgentApprovalsEnterprise": "按智能体设置的工具审批属于企业版。在这里，适用每个人自己的工具审批设置。",
     "mcpAgentApprovals": "按智能体设置工具审批",
     "limitSource": "选择 {{name}} 的搜索范围",
@@ -5235,6 +5443,7 @@
       "noRecordMetadata": "此项目没有其他记录元数据。"
     },
     "indexingReasonAria": "索引失败详情",
+    "indexingNoteAria": "索引说明",
     "stageTrackLabel": "处理流程",
     "stageParsed": "已解析",
     "stageSearchable": "可搜索",
@@ -5342,6 +5551,7 @@
     "notGrantedOfflineAccess": "此应用不会保持登录状态。会话结束后，你需要重新登录。",
     "unreviewedApp": "此应用是自行注册的，没有管理员审核过。",
     "clientIdHost": "由 {{host}} 标识",
+    "registeredBy": "注册者：{{name}}",
     "redirectTo": "将您送回 {{uri}}",
     "legalNotice": "点击「允许」，即表示您授权 {{appName}} 按上述说明访问您的数据。",
     "privacyPolicy": "隐私政策",
@@ -5823,5 +6033,20 @@
     },
     "nothingNew": "此节点没有更多内容可显示。",
     "tableOnly": "为保持流畅，仅显示表格。"
+  },
+  "accessNotice": {
+    "permissions_updating": "部分来源正在更新权限，因此几分钟内可能缺少一些结果。",
+    "connector_syncing": "{{name}} 仍在同步，因此来自它的结果可能不完整。",
+    "connector_syncing_unnamed": "有来源仍在同步，因此来自它的结果可能不完整。",
+    "check_unavailable": "我们暂时无法检查您有权访问哪些文档，因此不显示结果。请一分钟后重试。",
+    "emptySyncing": "暂时没有可搜索的内容。{{name}} 仍在同步。",
+    "emptySyncing_unnamed": "暂时没有可搜索的内容。有来源仍在同步。",
+    "noAccess": {
+      "title": "您无权访问此项目",
+      "body": "它可能已被移动、删除或受到限制。请询问所有者，或在您有链接时从原处打开。",
+      "justGotAccess": "刚在源端获得访问权限？新的访问权限会在下次同步后显示。",
+      "copyDetails": "复制详细信息给管理员",
+      "copied": "详细信息已复制"
+    }
   }
 }

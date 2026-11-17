@@ -20,6 +20,7 @@ import logging
 import os
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -95,3 +96,26 @@ async def test_concurrent_claims_have_exactly_one_winner(store) -> None:
 
         assert results.count(True) == 1, results
         assert await inner.get_key(key) == claimants[results.index(True)]
+
+
+async def test_deleting_reports_whether_the_key_was_there(store, key) -> None:
+    """The KeyValueStore contract: True when the key was deleted, False when it was not there."""
+    await store.create_key(key, {"owner": "a"})
+
+    assert await store.delete_key(key) is True
+    assert await store.get_key(key) is None
+    assert await store.delete_key(key) is False
+
+
+async def test_delete_config_of_an_absent_key_reports_false(store, key) -> None:
+    """Callers branch on this answer: False means there was nothing to delete, as on Redis and PostgreSQL."""
+    from app.config.configuration_service import ConfigurationService
+
+    # No watch thread: it would subscribe on the module-scoped store from a loop of its own.
+    with pytest.MonkeyPatch.context() as mp, patch.object(ConfigurationService, "_start_watch"):
+        mp.setenv("SECRET_KEY", "etcd-it-secret")
+        svc = ConfigurationService(logging.getLogger("etcd-it-svc"), store)
+    await store.create_key(key, {"owner": "a"})
+
+    assert await svc.delete_config(key) is True
+    assert await svc.delete_config(key) is False

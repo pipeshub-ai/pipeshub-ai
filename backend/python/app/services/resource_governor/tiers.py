@@ -8,55 +8,8 @@ built into ``ParserRegistry`` (see ``app/parsing_main.py::_build_registry``)
 """
 from __future__ import annotations
 
+from app.config import file_types
 from app.services.resource_governor.models import ParseTier, Pool
-
-# CPU- and/or memory-heavy: Docling conversions, LibreOffice-backed doc/ppt
-# shims, and OCR/VLM image pipelines.
-HEAVY_EXTENSIONS: frozenset[str] = frozenset({
-    "pdf",
-    "doc", "docx",
-    "ppt", "pptx",
-    "xls", "xlsx",
-    "png", "jpg", "jpeg", "webp", "svg",
-})
-
-HEAVY_MIME_TYPES: frozenset[str] = frozenset({
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.ms-powerpoint",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "image/png", "image/jpeg", "image/webp", "image/svg+xml",
-})
-
-# Fast, low-memory, non-Docling parsers: plain text/markup, tabular text,
-# structured data, connector "blocks" payloads (Jira/Confluence-shaped), and
-# source code (parsed the same way as plain text).
-LIGHT_EXTENSIONS: frozenset[str] = frozenset({
-    "txt", "md", "mdx", "html", "htm", "csv", "tsv", "json", "yaml", "yml",
-    "sql_table", "sql_view",
-    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx", "cs", "java", "py",
-    "js", "jsx", "mjs", "cjs", "ts", "tsx", "go", "rs", "rb", "php",
-    "swift", "kt", "kts", "dart", "sh", "bash",
-})
-
-LIGHT_MIME_TYPES: frozenset[str] = frozenset({
-    "text/plain", "text/markdown", "text/html",
-    "text/csv", "text/tab-separated-values",
-    "application/json", "application/yaml", "application/x-yaml",
-    "application/blocks",
-    # Connector-specific types that reach a text parser, not Docling. They
-    # matter more than their obscurity suggests: the tier also picks the index
-    # pool a record holds for its whole lifetime, so a Gmail sync classifying
-    # as HEAVY would draw entirely on the small heavy budget — the head-of-line
-    # blocking the split exists to prevent.
-    "text/gmail_content",  # -> Processor.process_gmail_message
-    "text/mdx",            # -> Processor.process_mdx_document; "mdx" is
-                           #    already in LIGHT_EXTENSIONS, this closes the
-                           #    gap for records carrying only a mime type
-})
 
 # Above this size a "heavy" document is treated as extra-large: it consumes
 # two HEAVY_PARSE permits instead of one, since Docling/OCR RSS scales with
@@ -72,18 +25,7 @@ def classify(extension: str | None, mime_type: str | None) -> ParseTier:
     safe direction, since an unrecognised format is more likely to need a
     slow/expensive fallback parser than to be simple structured text.
     """
-    ext = (extension or "").lower().lstrip(".")
-    mime = (mime_type or "").lower()
-
-    if ext in HEAVY_EXTENSIONS:
-        return ParseTier.HEAVY
-    if ext in LIGHT_EXTENSIONS:
-        return ParseTier.LIGHT
-    if mime in HEAVY_MIME_TYPES:
-        return ParseTier.HEAVY
-    if mime in LIGHT_MIME_TYPES:
-        return ParseTier.LIGHT
-    return ParseTier.HEAVY
+    return ParseTier(file_types.tier(extension, mime_type))
 
 
 def parse_cost(tier: ParseTier, size_bytes: int | None) -> int:

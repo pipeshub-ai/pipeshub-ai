@@ -15,10 +15,19 @@ from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
 
-from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
+from app.core.envelope import (
+    EnvelopeRejected,
+    ctx_of,
+    decode_message,
+    open_stream_message,
+)
 from app.core.org_context import bind_optional, spawn_detached
-from app.core.org_context import pop as pop_org
-from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.modules.indexing.record_progress import (
+    begin_progress,
+    end_progress,
+    new_progress,
+)
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
@@ -50,11 +59,19 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.lanes.assignment import read_lane_map, write_lane_count
-from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
+from app.services.messaging.lanes.backlog import (
+    LaneBacklog,
+    StalePending,
+    redis_lanes_for_key,
+)
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
-from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
+from app.services.messaging.message_log import bound_message
+from app.services.messaging.redis_streams.backlog import (
+    PendingBounds,
+    read_stream_backlog_detail,
+)
 from app.services.messaging.redis_streams.retention import (
     DEFAULT_INTERVAL_SECONDS,
     LEADER_KEY,
@@ -81,13 +98,13 @@ from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
+from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
+from app.utils.logging_fields import log_fields
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
-    bind_context,
     context_from_envelope,
-    reset_context,
     run_in_context,
 )
 
@@ -122,18 +139,65 @@ _BUSY_BLOCK_MS = 50
 # taken back per look. The batch matches __recovery_claim_budget's cap.
 _RECOVERY_INTERVAL_SECONDS = 1.0
 _RECOVERY_BATCH = 10
+# XAUTOCLAIM looks at up to COUNT x 10 pending entries per call (Redis docs).
+_XAUTOCLAIM_SCAN_FACTOR = 10
+# Entries another consumer left idle past the claim time are taken over while
+# reading, at most this many per look (see __reclaim_while_reading).
+_RECLAIM_PER_LOOK = 500
+_RECLAIM_PAGE = 100
+# Entries recovery failed to hand on, remembered for another try.
+_UNHANDED_LIMIT = 1000
+_RECLAIM_LOG_EVERY_SECONDS = 60.0
+# Recovery leaves 1/N of the buffer free for new events (__buffer_headroom).
+_RECLAIM_HEADROOM_DIVISOR = 4
+# Checked and removed in one step: a consumer that reads between a separate
+# check and XGROUP DELCONSUMER would have those entries dropped from the
+# pending list, and nothing would deliver them again. 1 when removed.
+# Reasserts ownership of an entry only if it is still pending under this
+# consumer: a peer's claim between the read-only scan that found it and this
+# would otherwise be taken back. JUSTID, so no delivery is counted. 1 if done.
+_REASSERT_OWN_SCRIPT = """
+local entry = redis.call('XPENDING', KEYS[1], ARGV[1], ARGV[3], ARGV[3], 1)[1]
+if not entry or entry[2] ~= ARGV[2] then
+    return 0
+end
+redis.call('XCLAIM', KEYS[1], ARGV[1], ARGV[2], 0, ARGV[3], 'JUSTID')
+return 1
+"""
+_REMOVE_STOPPED_CONSUMER_SCRIPT = """
+for _, consumer in ipairs(redis.call('XINFO', 'CONSUMERS', KEYS[1], ARGV[1])) do
+    local info = {}
+    for i = 1, #consumer, 2 do info[consumer[i]] = consumer[i + 1] end
+    if info['name'] == ARGV[2] then
+        if tonumber(info['pending']) == 0 and tonumber(info['idle']) > tonumber(ARGV[3]) then
+            redis.call('XGROUP', 'DELCONSUMER', KEYS[1], ARGV[1], ARGV[2])
+            return 1
+        end
+        return 0
+    end
+end
+return 0
+"""
+# A consumer silent for this many claim windows has stopped: a live one polls
+# every few seconds and refreshes what it holds every third of a window.
+_STOPPED_CONSUMER_CLAIM_WINDOWS = 10
+_STOPPED_CONSUMER_MIN_MS = 60_000
 # A held entry whose ownership was last confirmed this fraction of the
 # idle-claim window ago has missed a refresh (they run every third of it),
 # so a peer may be about to claim it (see __release_entries_at_risk).
 _AT_RISK_FRACTION = 2 / 3
 
 
-def _loads_possibly_double_encoded(value: str) -> object:
-    """Decode an envelope that producers sometimes JSON-encode twice."""
-    raw = json.loads(value)
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    return raw
+def _headroom(capacity: int) -> int:
+    """Places of ``capacity`` recovery leaves free: none below the divisor, so a
+    tiny buffer is never kept entirely free and recovery always progresses."""
+    if capacity < _RECLAIM_HEADROOM_DIVISOR:
+        return 0
+    return max(1, capacity // _RECLAIM_HEADROOM_DIVISOR)
+
+
+def _text(value: object) -> str:
+    return value.decode() if isinstance(value, bytes) else str(value)
 
 
 class RedisAcknowledgementError(RuntimeError):
@@ -236,6 +300,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self.gate_waiters = concurrency.GateWaiters()
+        # Read-only counts of records waiting at each admission stage (see consumer_concurrency).
+        from app import edition_services
+
+        self.admission_backlog = edition_services.admission_backlog()
+        self._suspects_waiting = 0
         self._backpressure_active = False
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
@@ -303,6 +372,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # starts from next.
         self._last_recovery = 0.0
         self._recovery_lane_offset = 0
+        # Reclaim while reading: when it last looked, whether that look found
+        # anything, and the lane it starts from.
+        self._last_reclaim = 0.0
+        self._reclaim_found = True
+        self._reclaim_lane_offset = 0
+        self._reclaimed_unlogged = 0
+        self._reclaim_logged_at = 0.0
+        # Entries recovery failed to hand on, left pending under this consumer
+        # (see __remember_unhanded); insertion-ordered, oldest first.
+        self._unhanded: dict[tuple[str, str], None] = {}
+        # Of those, ids whose entry is gone: they need only an XACK, no room.
+        self._unacked_gone: dict[tuple[str, str], None] = {}
+        self._last_unhanded_retry = 0.0
+        # Per lane, where the next own-pending scan resumes (see
+        # __own_unheld_pending_payloads).
+        self._own_scan_resume: dict[str, str] = {}
+        # Per lane, the stopped owners last logged as no longer holding back
+        # the stranded-record sweep, so the line is written once per change.
+        self._stale_pending_logged: dict[str, frozenset[str]] = {}
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
@@ -694,9 +782,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             judged = [s for s in every_lane if s not in streams]
             await self.__ensure_groups(judged)
             streams = [*streams, *judged]
-        oldest, pending = await read_stream_backlog_detail(
-            self.redis, self.config.group_id, streams
+        detail = await read_stream_backlog_detail(
+            self.redis, self.config.group_id, streams, self.__pending_bounds()
         )
+        self.__log_stale_pending(detail.stale)
 
         # The same settings the lane-aware producer routes by.
         laned = topic in messaging_env.fair_scheduling_laned_topics
@@ -716,7 +805,54 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 assignments,
             )
 
-        return LaneBacklog(topic, oldest, lanes_for_event, pending)
+        return LaneBacklog(
+            topic,
+            detail.oldest_ms,
+            lanes_for_event,
+            detail.pending,
+            oldest_pending_ms=detail.oldest_pending_ms,
+            oldest_live_ms=detail.oldest_live_ms,
+            stale=detail.stale,
+        )
+
+    def stopped_consumer_after_ms(self) -> int:
+        """How long a consumer, and what it holds, may go untouched before it
+        counts as stopped. Never under a minute: a live consumer's own loop can
+        pause for seconds (a slow import, a long synchronous step) without
+        refreshing anything."""
+        if self.config.stopped_consumer_after_ms is not None:
+            return self.config.stopped_consumer_after_ms
+        return max(
+            self.config.claim_min_idle_ms * _STOPPED_CONSUMER_CLAIM_WINDOWS,
+            _STOPPED_CONSUMER_MIN_MS,
+        )
+
+    def __pending_bounds(self) -> PendingBounds:
+        max_age_seconds = messaging_env.stranded_record_pending_max_age_seconds
+        return PendingBounds(
+            stale_owner_after_ms=self.stopped_consumer_after_ms(),
+            max_age_ms=int(max_age_seconds * 1000) if max_age_seconds > 0 else None,
+        )
+
+    def __log_stale_pending(self, stale: "Mapping[str, StalePending]") -> None:
+        for stream in [s for s in self._stale_pending_logged if s not in stale]:
+            del self._stale_pending_logged[stream]
+        for stream, entry in stale.items():
+            owners = frozenset(entry.owners)
+            if self._stale_pending_logged.get(stream) == owners:
+                continue
+            self._stale_pending_logged[stream] = owners
+            held = ", ".join(
+                f"{name} ({count} pending, silent {idle_ms / 1000:.0f}s)"
+                for name, (count, idle_ms) in sorted(entry.owners.items())
+            )
+            self.logger.warning(
+                "Queue lane %s: pending entries from %.1fh ago no longer hold back "
+                "the stranded-record sweep (%s); they are reclaimed by a live consumer",
+                stream,
+                max(0.0, time.time() * 1000 - entry.oldest_ms) / 3_600_000,
+                held or "older than the pending age cap",
+            )
 
     async def __ensure_groups(self, streams: list[str]) -> None:
         """Create the group, from the start, on lanes another pool consumes, so
@@ -844,6 +980,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Dispatch admission state for the health endpoint."""
         return self._dispatch_budget().as_dict()
 
+    def read_paused_for_admission(self) -> bool:
+        """Whether reads are paused because no record could be admitted (not a downstream pause)."""
+        return self._backpressure_active
+
+    def admission_explain(self) -> dict[str, Any]:
+        """Why this consumer is or is not admitting records (see consumer_concurrency)."""
+        return concurrency.admission_explain(self)
+
     def _slot_pool_of(self, key: FairnessKey) -> str:
         return concurrency.slot_pool_of_key(
             self, key, tier_level=self.fair_scheduler_config.tier_level
@@ -962,10 +1106,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     )
                     if pending != 0:
                         continue
-                    if (
-                        name != self.consumer_name
-                        and idle_ms < self.config.claim_min_idle_ms
-                    ):
+                    if name != self.consumer_name:
+                        if idle_ms > self.stopped_consumer_after_ms():
+                            await self.__remove_if_stopped(stream_name, name)
                         continue
                     await self.redis.xgroup_delconsumer(  # type: ignore
                         stream_name,
@@ -1189,31 +1332,143 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
         try:
             parsed_message = await self._parse_message(message_id, fields, topic)
-            stable_message_id = self._get_stable_message_id(message_id, parsed_message)
-            if await self._should_dead_letter(
-                topic, message_id, stable_message_id, parsed_message
-            ):
-                return False
-            if owned:
-                await self.__reclaim_for_dispatch(topic, message_id)
-            self.logger.info(
-                "Recovering %spending message: stream=%s, id=%s",
-                prefix,
-                topic,
-                message_id,
-            )
-            # Acknowledges an unparseable envelope, as a fresh read does;
-            # left pending it would sit at the head of this lane's recovery
-            # for good, since reclaiming never counts a delivery.
-            await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
-            if parsed_message is None:
-                return True
-            return self.__already_held(message_id, topic)
+            with log_fields(topic=topic, message_id=message_id), bound_message(parsed_message):
+                stable_message_id = self._get_stable_message_id(message_id, parsed_message)
+                # Before the dead-letter check, which may acknowledge the entry:
+                # one a peer claimed since the scan found it is not ours to ack.
+                # Reasserted, its idle time is reset, so no peer can claim it
+                # in the claim window that follows.
+                if owned and not await self.__reclaim_for_dispatch(topic, message_id):
+                    return False
+                if await self._should_dead_letter(
+                    topic, message_id, stable_message_id, parsed_message
+                ):
+                    return False
+                self.logger.info(
+                    "Recovering %spending message: stream=%s, id=%s",
+                    prefix,
+                    topic,
+                    message_id,
+                )
+                # Acknowledges an unparseable envelope, as a fresh read does;
+                # left pending it would sit at the head of this lane's recovery
+                # for good, since reclaiming never counts a delivery.
+                await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
+                if parsed_message is None:
+                    return True
+                return self.__already_held(message_id, topic)
         except Exception as e:
             self.logger.error(
                 "Error recovering %spending message %s: %s", prefix, message_id, e
             )
+            self.__remember_unhanded(topic, message_id)
             return False
+
+    def __remember_unhanded(self, topic: str, message_id: str, *, gone: bool = False) -> None:
+        """Keep an entry that recovery may have left pending under this consumer
+        without holding it, for ``__retry_unhanded``: a faster way back than
+        read-time own-pending recovery, which finds it again from the pending
+        list (beside other consumers too, once a second and only with room),
+        so a full list never strands it."""
+        key = (topic, message_id)
+        self._unhanded.pop(key, None)
+        self._unacked_gone.pop(key, None)
+        if len(self._unhanded) + len(self._unacked_gone) >= _UNHANDED_LIMIT:
+            # Unreachable for claimed entries: every claim is bounded by
+            # __retry_room. An own entry found by a pending-list scan is not
+            # remembered past the bound, but nothing is evicted either, and the
+            # next scan finds it again.
+            self.logger.warning(
+                "Not remembering pending entry %s on %s for a retry: %d already are",
+                message_id, topic, len(self._unhanded) + len(self._unacked_gone),
+            )
+            return
+        (self._unacked_gone if gone else self._unhanded)[key] = None
+
+    def __retry_room(self) -> int:
+        """Claims recovery may still make. Each claimed entry that is not handed
+        on is remembered for a retry, so no path claims past the list's room
+        and none is ever forgotten while pending under this consumer."""
+        return max(0, _UNHANDED_LIMIT - len(self._unhanded) - len(self._unacked_gone))
+
+    async def __retry_unhanded_when_due(self) -> None:
+        """At most once a second, and before any full-buffer or backpressure
+        return: an entry left without a body needs no room to be acknowledged."""
+        now = time.monotonic()
+        if (self._unhanded or self._unacked_gone) and now - self._last_unhanded_retry >= _RECOVERY_INTERVAL_SECONDS:
+            self._last_unhanded_retry = now
+            await self.__retry_unhanded()
+
+    async def __retry_unhanded(self) -> None:
+        """Retry what recovery left pending under this consumer, in two parts
+        so neither waits behind the other.
+
+        Ids whose entry is gone need only an XACK: all of them, every pass,
+        whatever the buffer. Entries with a body are offered again in turn, up
+        to ``_RECOVERY_BATCH`` a pass from the front of the list, each moved to
+        the back as it is examined, so every one is examined within
+        ceil(n / batch) passes. Each is first
+        confirmed pending under this consumer (else it was acknowledged or
+        taken, and is forgotten); ``__recover_entry(owned=True)`` reasserts
+        ownership with ``XCLAIM JUSTID``, so no delivery is counted.
+        """
+        for topic, message_id in list(self._unacked_gone):
+            if not self.running:
+                return
+            try:
+                if await self.__pending_here(topic, message_id):
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
+                del self._unacked_gone[(topic, message_id)]
+            except Exception as e:
+                self.logger.warning("Could not acknowledge trimmed entry %s on %s: %s", message_id, topic, e)
+        for topic, message_id in list(self._unhanded)[:_RECOVERY_BATCH]:
+            if not self.running:
+                return
+            key = (topic, message_id)
+            # To the back before anything else, whatever the outcome (done,
+            # failed, still waiting): no set of ids can keep the front of the
+            # list and shadow the rest.
+            self._unhanded.pop(key, None)
+            self._unhanded[key] = None
+            try:
+                if self.__already_held(message_id, topic) or not await self.__pending_here(topic, message_id):
+                    self._unhanded.pop(key, None)
+                    continue
+                found = await self.redis.xrange(topic, min=message_id, max=message_id, count=1)  # type: ignore[union-attr]
+                if not found:
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
+                    self._unhanded.pop(key, None)
+                    continue
+                if self._scheduler is not None and not self.__buffer_has_room():
+                    continue
+                if self._scheduler is None and not self.__fifo_admission_open():
+                    # Without a scheduler the handoff starts the task: the same
+                    # admission as the FIFO read loop applies.
+                    continue
+                self._unhanded.pop(key, None)
+                await self.__recover_entry(topic, message_id, found[0][1], owned=True)
+            except Exception as e:
+                self.logger.warning("Could not retry pending entry %s on %s: %s", message_id, topic, e)
+
+    def __fifo_admission_open(
+        self,
+        *,
+        budget: concurrency.DispatchBudget | None = None,
+        saturated: bool | None = None,
+    ) -> bool:
+        """Whether the FIFO path may start another task: the dispatch budget is
+        not blocked and the index gates are not all in use."""
+        budget = budget or self._dispatch_budget()
+        if saturated is None:
+            saturated = concurrency.index_gates_saturated(self)
+        return not (budget.blocked or saturated)
+
+    async def __pending_here(self, topic: str, message_id: str) -> bool:
+        mine = await self.redis.xpending_range(  # type: ignore[union-attr]
+            topic, self.config.group_id, min=message_id, max=message_id,
+            count=1, consumername=self.consumer_name,
+        )
+        return bool(mine)
 
     async def __autoclaim(
         self, topic: str, start_id: str, count: int
@@ -1229,7 +1484,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             start_id=start_id,
             count=count,
         )
-        next_id, claimed, _deleted = result
+        # Redis 7 replies (cursor, entries, deleted ids); 6.2 has no third part
+        # and answers a deleted entry with an empty slot instead, which carries
+        # no id: own-pending recovery acknowledges those (it finds no body).
+        next_id, claimed = result[0], [
+            (message_id, fields)
+            for message_id, fields in result[1] or []
+            if message_id is not None and fields is not None
+        ]
         if claimed:
             self.logger.debug(
                 "XAUTOCLAIM on %s took %d idle entry(ies)", topic, len(claimed)
@@ -1259,6 +1521,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         # Phase 1: claim idle messages from other (possibly crashed) consumers.
         cursors: dict[str, str] = dict.fromkeys(topics, "0-0")
+        # Entries an empty page stepped over, per lane. An empty page is not
+        # the end of a lane: its head can be entries this consumer holds and
+        # keeps fresh, with a stopped consumer's entries behind them.
+        stepped: dict[str, int] = dict.fromkeys(topics, 0)
         active = list(topics)
         while active and self.running:
             # A drain can run long; keep held entries confirmed meanwhile.
@@ -1286,8 +1552,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
                     active.remove(topic)
                     continue
+                stepped[topic] = 0 if claimed else stepped[topic] + claim * _XAUTOCLAIM_SCAN_FACTOR
+                moved = next_id != cursors[topic]
                 cursors[topic] = next_id
-                if not claimed or next_id == "0-0":
+                if (
+                    next_id == "0-0"
+                    or not moved
+                    or stepped[topic] > self.__pending_scan_pages(topic) * _PENDING_SCAN_PAGE
+                ):
                     active.remove(topic)
                 for message_id, fields in claimed:
                     if not self.running:
@@ -1459,13 +1731,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Whether no other consumer is listed in this consumer's group on
         any of its lanes (``XINFO CONSUMERS``).
 
-        Read-phase recovery runs only then. With other consumers -- live
-        replicas, or a crashed or replaced process still listed with pending
-        entries -- the group behaves as before this existed: taking entries
-        back and making room safely next to another consumer needs an atomic
-        ownership check, which is a separate design. A replaced process's
-        entries come back as they always have, through the startup and idle
-        drains, after which it is removed from the group.
+        Read-phase recovery makes room for an entry, by giving up a held one,
+        only then. A replaced process's entries come back through the read-time
+        reclaim and the drains, after which it is removed from the group.
         """
         for topic in topics:
             try:
@@ -1478,9 +1746,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for consumer in consumers or []:
                 raw_name = consumer.get("name", consumer.get(b"name"))
                 name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
-                if name != self.consumer_name:
+                if name != self.consumer_name and not self.__gone_and_empty(consumer):
                     return False
         return True
+
+    def __gone_and_empty(self, consumer: Mapping) -> bool:
+        """A consumer holding nothing and silent past the claim time: one the
+        group used to drop at once. It is now removed only once stopped, but it
+        has nothing to share, so it does not count as another consumer."""
+        pending = int(consumer.get("pending", consumer.get(b"pending", 0)) or 0)
+        idle_ms = int(consumer.get("idle", consumer.get(b"idle", 0)) or 0)
+        return pending == 0 and idle_ms >= self.config.claim_min_idle_ms
 
     async def __recover_while_reading(self) -> None:
         """Re-offer entries pending under this consumer's own name that it
@@ -1500,13 +1776,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
           entry from the lane it holds most from (``__release_for_room``).
           A full buffer of one connector can no longer lock the others out.
 
-        It never claims another consumer's entries, and it runs only while
-        this consumer is the only one in its group (``__only_consumer``).
+        It never claims another consumer's entries: each is reasserted with a
+        check-and-claim script that refuses one a peer took meanwhile. With
+        other consumers in the group it serves only while there is room; the
+        displacing branch runs only while this consumer is alone
+        (``__only_consumer``).
         An XPENDING summary per lane decides where to look; it is cheap and
         changes nothing.
         """
         scheduler = self._scheduler
-        if scheduler is None or self.redis is None:
+        if self.redis is None:
             return
         now = time.monotonic()
         if now - self._last_recovery < _RECOVERY_INTERVAL_SECONDS:
@@ -1516,8 +1795,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         topics = list(self.config.topics)
         if not topics:
             return
-        if not await self.__only_consumer(topics):
-            return
+        # Beside other consumers too: then this is the only path that brings
+        # back an entry this consumer owns but does not hold while traffic
+        # flows (the retry list is bounded). Only with room, though: making
+        # room by giving up a held entry is kept to a consumer on its own.
+        alone = await self.__only_consumer(topics)
         start = self._recovery_lane_offset % len(topics)
         self._recovery_lane_offset += 1
         topics = topics[start:] + topics[:start]
@@ -1537,17 +1819,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if not unheld:
             return
 
-        room = self.__buffer_room() or 0
+        # Without a scheduler (both read loops call this) room is the dispatch
+        # budget, and there is nothing held to give up.
+        room = self.__buffer_room() if scheduler is not None else self._dispatch_budget().remaining
+        room = room or 0
         if room > 0:
             lanes = [t for t in topics if t in unheld]
             limit = min(_RECOVERY_BATCH, room)
-        else:
+        elif alone and scheduler is not None:
             lanes = [
                 t
                 for t in topics
                 if t in unheld and held_by_stream.get(t, 0) + in_flight.get(t, 0) == 0
             ]
             limit = _RECOVERY_BATCH
+        else:
+            return
         if not lanes:
             return
 
@@ -1566,7 +1853,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 continue
             for message_id, fields in found:
                 undo = None
-                if not self.__buffer_has_room():
+                if scheduler is None:
+                    if self._dispatch_budget().remaining <= 0:
+                        break
+                elif not self.__buffer_has_room():
                     undo = self.__release_for_room(topic)
                     if undo is None:
                         break
@@ -1581,6 +1871,186 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 "Recovered %d of this consumer's own pending entry(ies) while reading",
                 taken,
             )
+
+    async def __reclaim_while_reading(self) -> None:
+        """Take over what stopped consumers left pending, on the read pass.
+
+        ``_drain_pending`` claims such entries too, but only after every lane
+        has been quiet for several polls in a row, which steady traffic never
+        allows. Only consumers silent for ``stopped_consumer_after_ms`` are
+        taken from, one targeted ``XCLAIM`` page at a time (with the claim
+        idle time as its guard), so an entry a live consumer is holding or
+        working on is never claimed and never has a delivery counted. It runs
+        only once the read pass knows the buffer is not full, and leaves a
+        quarter of it free (``__reclaim_allowance``), so new events of other
+        connectors still get in and are scheduled fairly beside the backlog.
+        A look finding nothing waits a third of the claim window before the
+        next.
+        """
+        if self.redis is None or not self.config.topics or self._dispatch_budget().blocked:
+            return
+        interval = (
+            _RECOVERY_INTERVAL_SECONDS
+            if self._reclaim_found
+            else self.__ownership_refresh_interval()
+        )
+        now = time.monotonic()
+        if now - self._last_reclaim < interval:
+            return
+        allowance = self.__reclaim_allowance()
+        if allowance <= 0:
+            return
+        self._last_reclaim = now
+
+        start = self._reclaim_lane_offset % len(self.config.topics)
+        self._reclaim_lane_offset += 1
+        lanes = self.config.topics[start:] + self.config.topics[:start]
+        taken = 0
+        found = False
+        for topic in lanes:
+            if not self.running:
+                break
+            if taken >= allowance:
+                found = True
+                break
+            owners = await self.__stopped_owners(topic)
+            for name, pending in owners:
+                if pending == 0:
+                    await self.__remove_if_stopped(topic, name)
+                    continue
+                found = True
+                if taken < allowance:
+                    taken += await self.__reclaim_from(topic, name, allowance - taken)
+        self._reclaim_found = found
+        self.__note_reclaimed(taken, now)
+
+    def __reclaim_allowance(self) -> int:
+        """How many entries this look may claim: the free room in the buffer
+        (or, without a scheduler, the dispatch budget) less a headroom kept
+        for new events, within the per-look cap."""
+        budget = self._dispatch_budget()
+        # Each claim may end up remembered for a retry; never claim past what
+        # that list can hold, or a forgotten entry would stay pending here.
+        retry_room = self.__retry_room()
+        if self._scheduler is None:
+            headroom = _headroom(budget.total_ceiling)
+            return min(budget.remaining - headroom, _RECLAIM_PER_LOOK, retry_room)
+        room = (self.__buffer_room() or 0) - self.__buffer_headroom()
+        return min(room, budget.remaining, _RECLAIM_PER_LOOK, retry_room)
+
+    async def __stopped_owners(self, topic: str) -> list[tuple[str, int]]:
+        """Other consumers on ``topic`` silent past ``stopped_consumer_after_ms``,
+        with their pending counts."""
+        try:
+            consumers = await self.redis.xinfo_consumers(topic, self.config.group_id)  # type: ignore[union-attr]
+        except Exception as e:
+            self.logger.debug("Could not list consumers of %s: %s", topic, e)
+            return []
+        stopped: list[tuple[str, int]] = []
+        for consumer in consumers or []:
+            name = _text(consumer.get("name", consumer.get(b"name")))
+            idle_ms = int(consumer.get("idle", consumer.get(b"idle", 0)) or 0)
+            if name != self.consumer_name and idle_ms > self.stopped_consumer_after_ms():
+                stopped.append((name, int(consumer.get("pending", consumer.get(b"pending", 0)) or 0)))
+        return stopped
+
+    async def __reclaim_from(self, topic: str, owner: str, limit: int) -> int:
+        """Claim up to ``limit`` of ``owner``'s pending entries on ``topic`` and
+        hand each on. The claim itself refuses an entry idle for less than
+        ``stopped_consumer_after_ms`` (its owner refreshed it, so it is alive),
+        and this stops there."""
+        taken = 0
+        while taken < limit and self.running:
+            # Re-read each page: a failed handoff in this look, of a body or of
+            # an entry left without one, takes a place in the retry list.
+            want = min(limit - taken, _RECLAIM_PAGE, self.__retry_room())
+            if want <= 0:
+                return taken
+            try:
+                listed = await self.redis.xpending_range(  # type: ignore[union-attr]
+                    topic, self.config.group_id, min="-", max="+", count=want, consumername=owner
+                )
+                ids = [_text(entry["message_id"]) for entry in listed or []]
+                if not ids:
+                    return taken
+                claimed = await self.redis.xclaim(  # type: ignore[union-attr]
+                    topic,
+                    self.config.group_id,
+                    self.consumer_name,
+                    min_idle_time=self.stopped_consumer_after_ms(),
+                    message_ids=ids,
+                )
+            except Exception as e:
+                self.logger.warning("Could not reclaim %s's entries on %s: %s", owner, topic, e)
+                return taken
+            bodies = [
+                (_text(m), f) for m, f in claimed or [] if m is not None and f is not None
+            ]
+            for message_id, fields in bodies:
+                await self.__recover_entry(topic, message_id, fields, owned=False)
+            taken += len(bodies)
+            returned = {message_id for message_id, _fields in bodies}
+            await self.__ack_claimed_without_body(topic, [i for i in ids if i not in returned])
+            if len(bodies) < len(ids):
+                return taken
+        return taken
+
+    async def __ack_claimed_without_body(self, topic: str, candidates: list[str]) -> None:
+        """Acknowledge requested ids the claim left pending under this consumer
+        with no entry to hand on.
+
+        Before Redis 7.0, XCLAIM of a trimmed or deleted entry moves its id to
+        the claimer and replies with an empty slot (no id), so it would sit at
+        the head of the lane held by a live consumer. An id that is absent for
+        another reason (its owner refreshed it, so the claim refused it) is
+        still that owner's and is left alone: only ids now pending under this
+        consumer are acknowledged.
+        """
+        for message_id in candidates:
+            try:
+                if await self.__pending_here(topic, message_id):
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
+            except Exception as e:
+                self.logger.warning(
+                    "Could not acknowledge trimmed entry %s on %s: %s", message_id, topic, e
+                )
+                self.__remember_unhanded(topic, message_id, gone=True)
+
+    async def __remove_if_stopped(self, topic: str, name: str) -> None:
+        """Remove a stopped consumer that holds nothing, checked and removed in
+        one step so a consumer that reads between the two keeps its entries."""
+        try:
+            removed = await self.redis.eval(  # type: ignore[union-attr]
+                _REMOVE_STOPPED_CONSUMER_SCRIPT,
+                1,
+                topic,
+                self.config.group_id,
+                name,
+                self.stopped_consumer_after_ms(),
+            )
+        except Exception as e:
+            self.logger.debug("Could not remove consumer %s from %s: %s", name, topic, e)
+            return
+        if int(removed or 0) == 1:
+            self.logger.info(
+                "Removed consumer %s from %s on %s: nothing pending, silent for over %.0fs",
+                name,
+                self.config.group_id,
+                topic,
+                self.stopped_consumer_after_ms() / 1000,
+            )
+
+    def __note_reclaimed(self, taken: int, now: float) -> None:
+        """One line a minute at most while reclaiming, not one per look."""
+        self._reclaimed_unlogged += taken
+        if not self._reclaimed_unlogged or now - self._reclaim_logged_at < _RECLAIM_LOG_EVERY_SECONDS:
+            return
+        self.logger.info(
+            "Reclaimed %d pending entry(ies) from stopped consumers since the last report",
+            self._reclaimed_unlogged,
+        )
+        self._reclaimed_unlogged = 0
+        self._reclaim_logged_at = now
 
     def __retry_not_before(self, parsed: StreamMessage) -> float | None:
         not_before = parsed.payload.get("_retry_not_before")
@@ -1681,67 +2151,106 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 remaining = min(remaining, max(1, limit))
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         found: list[tuple[str, dict[str, str]]] = []
-        cursor = "-"
-        for _ in range(self.__pending_scan_pages(topic)):
-            details = await self.redis.xpending_range(  # type: ignore
-                topic,
-                self.config.group_id,
-                min=cursor,
-                max="+",
-                count=page_size,
-                consumername=self.consumer_name,
+        pages = self.__pending_scan_pages(topic)
+        # Resumed after the last entry examined, wrapping round to the head
+        # only once the scan has truly reached the end of the list: entries
+        # at the head that keep failing (their handoff, or the ack of a gone
+        # one) would otherwise fill every scan, and one behind them would
+        # never be reached. Whatever the exit -- limit reached, page budget
+        # used up, an error -- the next scan carries on from here.
+        resume = self._own_scan_resume.get(topic, "-")
+        segments = [(resume, "+")] if resume == "-" else [(resume, "+"), ("-", resume[1:])]
+        last_examined: str | None = None
+        reached_end = False
+        raised = False
+        try:
+            for low, high in segments:
+                cursor = low
+                while True:
+                    if pages <= 0:
+                        return found
+                    pages -= 1
+                    details = await self.redis.xpending_range(  # type: ignore
+                        topic,
+                        self.config.group_id,
+                        min=cursor,
+                        max=high,
+                        count=page_size,
+                        consumername=self.consumer_name,
+                    )
+                    if not isinstance(details, list) or not details:
+                        break
+                    for detail in details:
+                        message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
+                        if not message_id:
+                            continue
+                        last_examined = message_id
+                        if self.__already_held(message_id, topic):
+                            continue
+                        entries = await self.redis.xrange(  # type: ignore
+                            topic, min=message_id, max=message_id, count=1
+                        )
+                        if not entries:
+                            # Trimmed or deleted: nothing left to process, and
+                            # pending here it would hold its lane's head.
+                            await self.__ack_claimed_without_body(topic, [message_id])
+                            continue
+                        _entry_id, fields = entries[0]
+                        found.append((message_id, fields))
+                        if len(found) >= remaining:
+                            return found
+                    if len(details) < page_size:
+                        break
+                    cursor = f"({last_examined}"
+            reached_end = True
+            return found
+        except Exception as e:
+            raised = True
+            if not found:
+                raise
+            # Entries already read are handed on, not dropped: the callers
+            # discard everything when the scan raises, and the cursor is past
+            # them, so they would wait for the scan to wrap round the list.
+            self.logger.warning(
+                "Pending scan on %s stopped after %d entries: %s", topic, len(found), e
             )
-            if not isinstance(details, list) or not details:
-                break
-            last_id = cursor
-            for detail in details:
-                message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
-                if not message_id:
-                    continue
-                last_id = message_id
-                if self.__already_held(message_id, topic):
-                    continue
-                entries = await self.redis.xrange(  # type: ignore
-                    topic, min=message_id, max=message_id, count=1
-                )
-                if not entries:
-                    continue
-                _entry_id, fields = entries[0]
-                found.append((message_id, fields))
-                if len(found) >= remaining:
-                    return found
-            if len(details) < page_size:
-                break
-            cursor = f"({last_id}"
-        return found
+            return found
+        finally:
+            if reached_end:
+                self._own_scan_resume[topic] = "-"
+            elif raised and found:
+                # The entry that raised is examined again on the next scan.
+                self._own_scan_resume[topic] = f"({found[-1][0]}"
+            elif last_examined is not None:
+                # Stepping past it keeps one entry that keeps failing from
+                # filling every scan.
+                self._own_scan_resume[topic] = f"({last_examined}"
 
-    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> None:
-        """Reassert ownership of a PEL entry before dispatching it.
+    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> bool:
+        """Reassert ownership of a PEL entry before dispatching it; False if it
+        is no longer this consumer's (acknowledged, or claimed by a peer).
 
-        Phase 2 discovers entries with read-only XPENDING + XRANGE, so the
-        entry's idle timer is never reset by the scan itself. A peer's
-        XAUTOCLAIM (min_idle_time = ``claim_min_idle_ms``) can therefore steal
-        the entry between the scan and the dispatch. ``XCLAIM JUSTID`` with
-        ``min_idle_time=0`` resets the idle timer without inflating
-        ``times_delivered``, closing the window for the next
-        ``claim_min_idle_ms`` milliseconds.
+        Own-pending recovery discovers entries with read-only XPENDING + XRANGE,
+        so the entry's idle timer is never reset by the scan itself, and a
+        peer's XAUTOCLAIM can take it between the scan and the dispatch. The
+        check and the ``XCLAIM JUSTID`` (idle reset, no delivery counted) run
+        in one script (``_REASSERT_OWN_SCRIPT``), so a peer's claim is never
+        taken back -- which is what lets this recovery run beside other
+        consumers.
         """
         if self.redis is None:
-            return
+            return False
         try:
-            await self.redis.xclaim(  # type: ignore
-                topic,
-                self.config.group_id,
-                self.consumer_name,
-                min_idle_time=0,
-                message_ids=[message_id],
-                justid=True,
+            done = await self.redis.eval(  # type: ignore[union-attr]
+                _REASSERT_OWN_SCRIPT, 1, topic, self.config.group_id, self.consumer_name, message_id
             )
         except Exception as e:
             self.logger.debug(
                 "Could not reclaim %s on %s before dispatch: %s",
                 message_id, topic, e,
             )
+            return False
+        return int(done or 0) == 1
 
     async def __refresh_held_ownership(self) -> None:
         """Reset the idle timer on entries this consumer is holding.
@@ -1759,7 +2268,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         is recorded as confirmed, which is what ``__sweep_stale_buffered``
         judges risk by.
         """
-        if self.redis is None or not self._held_entries:
+        in_flight = self._in_flight_by_stream()
+        if self.redis is None or not (self._held_entries or in_flight):
             return
         interval = self.__ownership_refresh_interval()
         now = time.monotonic()
@@ -1767,7 +2277,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
         self._last_ownership_refresh = now
 
-        by_stream: dict[str, list[str]] = {}
+        # Entries being processed too: left to go idle, a long one (a large
+        # parse) is claimed again every claim window, by a peer or by this
+        # consumer's own recovery, each claim counting a delivery.
+        by_stream: dict[str, list[str]] = {
+            stream: list(message_ids) for stream, message_ids in in_flight.items()
+        }
         for stream, message_id in self._held_entries:
             by_stream.setdefault(stream, []).append(message_id)
         for stream, message_ids in by_stream.items():
@@ -1815,13 +2330,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         budget = max(0, pipeline_capacity)
         scheduler = self._scheduler
         if scheduler is not None:
-            buffer_room = (
-                self.fair_scheduler_config.max_buffered_messages
-                - scheduler.pending_count
-                - len(self._deferred_entries)
-            )
-            budget = min(budget, max(0, buffer_room))
-        return min(10, budget)
+            budget = min(budget, max(0, (self.__buffer_room() or 0) - self.__buffer_headroom()))
+        return min(10, budget, self.__retry_room())
+
+    def __buffer_headroom(self) -> int:
+        """Buffer places recovery leaves free for new events. Filled to the last
+        place, every read pass found the buffer full and read nothing, so other
+        connectors' new events waited behind a whole recovered backlog."""
+        return _headroom(self.fair_scheduler_config.max_buffered_messages)
 
     def __already_held(self, message_id: str, stream_name: str | None = None) -> bool:
         """Whether this consumer is already responsible for an entry.
@@ -2189,6 +2705,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.__sweep_stale_buffered()
         await self.__drain_deferred()
         await self.__recover_while_reading()
+        await self.__retry_unhanded_when_due()
         # Parked entries are held in memory too, so they count against the
         # buffer budget -- that budget is what bounds this consumer's memory.
         scheduler_full = (
@@ -2212,6 +2729,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         elif self._backpressure_active:
             self.logger.info("Backpressure cleared: %s", budget.describe())
             self._backpressure_active = False
+
+        await self.__reclaim_while_reading()
+        if not self.__buffer_has_room():
+            return
 
         # Skip lanes holding parked entries, so the shared buffer budget goes
         # to lanes that can still make progress. A lane is a stream here, so
@@ -2289,15 +2810,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for stream_name, messages in results
             for message_id, fields in messages
         ]
-        parsed = [
-            await self._parse_message(message_id, fields, _stream)
-            for _stream, message_id, fields in entries
-        ]
+        parsed: list[StreamMessage | None] = []
+        unparsed: set[int] = set()
+        for position, (stream_name, message_id, fields) in enumerate(entries):
+            try:
+                parsed.append(await self._parse_message(message_id, fields, stream_name))
+            except Exception as e:
+                # Not the message (that parses to None): left pending for recovery, so the rest of the read goes on.
+                error_class.log_failure(
+                    self.logger, "message.parse_deferred", e, topic=stream_name, message_id=message_id
+                )
+                parsed.append(None)
+                unparsed.add(position)
         settled = await self.__settle_connector_off(entries, parsed)
         for position, (stream_name, message_id, fields) in enumerate(entries):
             if not self.running:
                 return
-            if position in settled:
+            if position in settled or position in unparsed:
                 continue
             try:
                 await self.__enqueue_parsed(
@@ -2455,6 +2984,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.__publish_scheduler_metrics()
                         continue
 
+                    # First, so a consumer held back by full gates still keeps
+                    # its running entries fresh and is not taken for stopped.
+                    await self.__refresh_held_ownership()
+                    await self.__retry_unhanded_when_due()
                     budget = self._dispatch_budget()
                     # Saturation matters as much as queue depth: with both
                     # index pools full and nothing queued behind them, the
@@ -2462,7 +2995,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # single further record. Claiming more entries then only
                     # grows this consumer's PEL.
                     saturated = concurrency.index_gates_saturated(self)
-                    if budget.blocked or saturated:
+                    if not self.__fifo_admission_open(budget=budget, saturated=saturated):
                         if not self._backpressure_active:
                             self.logger.warning(
                                 "Backpressure engaged: tasks waiting for "
@@ -2479,6 +3012,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         )
                         self._backpressure_active = False
 
+                    await self.__recover_while_reading()
+                    await self.__reclaim_while_reading()
+                    budget = self._dispatch_budget()
+                    if budget.remaining <= 0:
+                        continue
                     streams = dict.fromkeys(self.config.topics, ">")
                     available_capacity = budget.remaining
                     results = await self._xreadgroup_grouped(
@@ -2550,31 +3088,36 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Parse a Redis stream entry into a ``StreamMessage``.
 
         Returns ``None`` for any unparseable ("poison") entry — missing value
-        field, malformed JSON, non-object payload, or a payload that fails
+        field, malformed or undecodable JSON, a rejected envelope, non-object
+        payload, or a payload that fails
         ``StreamMessage`` validation. Such entries can never become valid on
         retry, so the caller drops them (see ``_process_message_wrapper``).
         """
-        if _MESSAGE_VALUE_FIELD not in fields:
-            self.logger.debug(
-                "Message %s has no value field (likely init message); treating as unparseable",
-                message_id,
-            )
-            return None
+        with log_fields(topic=stream_name, message_id=message_id):
+            if _MESSAGE_VALUE_FIELD not in fields:
+                self.logger.debug(
+                    "Message %s has no value field (likely init message); treating as unparseable",
+                    message_id,
+                )
+                return None
 
-        try:
-            value_str = fields[_MESSAGE_VALUE_FIELD]
-            # Offloaded above a size threshold: a connector can emit a record
-            # whose whole body rides in the envelope, and parsing it inline
-            # blocks every other in-flight record on this one worker loop.
-            raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
-            return await open_stream_message(stream_name, raw, StreamMessage)
-        except EnvelopeRejected as e:
-            self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
-        except (json.JSONDecodeError, ValidationError, TypeError) as e:
-            self.logger.error(
-                "Failed to parse message %s as StreamMessage: %s", message_id, e
-            )
-            return None
+            try:
+                value_str = fields[_MESSAGE_VALUE_FIELD]
+                # Offloaded above a size threshold: a connector can emit a record
+                # whose whole body rides in the envelope, and parsing it inline
+                # blocks every other in-flight record on this one worker loop.
+                raw = await offload_if_large(decode_message, value_str)
+                return await open_stream_message(stream_name, raw, StreamMessage)
+            except EnvelopeRejected as e:
+                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
+            except (json.JSONDecodeError, ValidationError, TypeError) as e:
+                # The type only: a ValidationError's text quotes the payload's values. The cause names nesting or a
+                # too-long number behind a JSONDecodeError (decode_json).
+                self.logger.error(
+                    "Failed to parse message %s as StreamMessage", message_id,
+                    extra={"error_type": type(e.__cause__ or e).__name__, "size_bytes": len(value_str)},
+                )
+                return None
 
     async def _start_processing_task(
         self,
@@ -2614,7 +3157,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # be known before the token exists. The wrapper reuses this parse.
                 parsed_message = await self._parse_message(message_id, fields, stream_name)
             waiter_token = concurrency.GateWaiterToken(
-                self, concurrency.dispatch_tier(self, parsed_message)
+                self,
+                concurrency.dispatch_tier(self, parsed_message),
+                parsed_message,
             )
             processing_coro = self._process_message_wrapper(
                 stream_name,
@@ -2804,6 +3349,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         stable_message_id: str,
         retry_count: int = 1,
         delay_s: float | None = None,
+        parse_enqueued_at_ms: int | None = None,
     ) -> None:
         """Re-publish a failed message for retry.
 
@@ -2836,6 +3382,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             payload["_retry_tracking_id"] = stable_message_id
             backoff = delay_s if delay_s is not None else compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff
+            if parse_enqueued_at_ms:
+                # PARSE_ADMISSION=classes: when it first queued, kept across hand-backs so aging survives them.
+                payload.setdefault("parseEnqueuedAtMs", parse_enqueued_at_ms)
 
             # The handler's context is reset by now, and the send runs on the
             # main loop under its own: re-bind the message's so the retry
@@ -2913,6 +3462,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         waiter_token: "concurrency.GateWaiterToken | None" = None,
         parsed_message: "StreamMessage | None" = None,
     ) -> bool:
+        """Process a message with its root, org and ids bound for the whole run, so the lines
+        after the handler (re-queue, dead-letter, the timing summary) carry them too."""
+        with log_fields(topic=stream_name, message_id=message_id):
+            # Reuses the caller's parse when the read/dispatch split (or PEL
+            # recovery) already did it -- avoids a second full json.loads (and,
+            # above the offload threshold, a second thread hop) on the same
+            # envelope.
+            if parsed_message is None:
+                parsed_message = await self._parse_message(message_id, fields, stream_name)
+            with bound_message(parsed_message):
+                return await self._process_bound_message(
+                    stream_name, message_id, fields, waiter_token, parsed_message
+                )
+
+    async def _process_bound_message(
+        self,
+        stream_name: str,
+        message_id: str,
+        fields: dict[str, str],
+        waiter_token: "concurrency.GateWaiterToken | None",
+        parsed_message: "StreamMessage | None",
+    ) -> bool:
         """Process a message under bounded pipeline and parsing concurrency.
 
         Semaphore lifecycle:
@@ -2957,16 +3528,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error("Concurrency gates not initialized for %s", message_id)
             return False
 
-        # Parse (and, for re-queued messages, wait out any backoff) before
+        # Parsed (and, for re-queued messages, any backoff waited out) before
         # acquiring the parsing semaphore, so a retry waiting for a downed
         # service to recover only occupies a pending-task slot (counted
         # against backpressure), never a parsing/indexing concurrency slot.
-        # Reuses the caller's parse when the read/dispatch split (or PEL
-        # recovery) already did it -- avoids a second full json.loads (and,
-        # above the offload threshold, a second thread hop) on the same
-        # envelope.
-        if parsed_message is None:
-            parsed_message = await self._parse_message(message_id, fields, stream_name)
         if parsed_message is None:
             self.logger.warning(
                 "Unparseable message %s from stream %s (%d byte payload); "
@@ -3042,6 +3607,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
+        class_ctx = concurrency.class_context(self, parsed_message.payload)  # None unless PARSE_ADMISSION=classes
         index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
         # Set where an exit is neither a success nor a failure; the
         # timing summary falls back to indexing_complete/shutting_down.
@@ -3078,13 +3644,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # one; one that will be given up on below does not need it.
             unfinished = await concurrency.unfinished_attempts(self, record_lock_id)
             if 0 < unfinished < concurrency.MAX_UNFINISHED_ATTEMPTS:
-                await self._suspects.acquire()
+                self._suspects_waiting += 1
+                try:
+                    await self._suspects.acquire()
+                finally:
+                    self._suspects_waiting -= 1
                 suspect_held = True
 
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
-            index_admission = await concurrency.acquire_index_slot(self, index_tier)
+            index_admission = await concurrency.at_gate(
+                waiter_token, concurrency.acquire_index_slot(self, index_tier, **concurrency.class_kwargs(class_ctx))
+            )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
             if waiter_token is not None:
@@ -3095,11 +3667,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # recovery reads this lease as proof of active processing, so
                 # a task still queued on the gate must not own one.
                 with timing.stage("lease.index"):
-                    index_lease_held = await self._acquire_distributed_slot(
-                        index_lease_pool,
-                        lease_owner,
-                        concurrency.index_ceiling(self, index_tier),
-                        leases=distributed_leases,
+                    index_lease_held = await concurrency.in_phase(
+                        self,
+                        concurrency.PHASE_LEASE,
+                        index_tier,
+                        parsed_message,
+                        self._acquire_distributed_slot(
+                            index_lease_pool,
+                            lease_owner,
+                            concurrency.index_ceiling(self, index_tier),
+                            leases=distributed_leases,
+                        ),
+                        pool=index_lease_pool,
                     )
                 if not index_lease_held:
                     # Capacity leases only give up when self.running flips.
@@ -3132,6 +3711,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
+            stamp_delivery_id(parsed_message.payload, stable_message_id, parsed_message.org_ctx)
+
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.
             unfinished = await concurrency.start_attempt(self, record_lock_id)
@@ -3155,25 +3736,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             parsed_message.is_final_failure = will_be_final_on_failure
 
             if self.message_handler:
-                token = bind_context(
-                    context_from_envelope(
-                        {
-                            "requestId": parsed_message.requestId,
-                            "orgId": parsed_message.orgId,
-                        }
-                    )
-                )
+                record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
-                org_token = push_org(ctx_of(parsed_message))
+
+                progress = new_progress()
+                begin_progress(progress)
 
                 async def consume_handler_events() -> None:
-                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool, class_ctx
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
+                            progress.attach(budget)
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_DOWNLOAD
@@ -3190,14 +3767,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         # Place first: a record waiting for memory
                                         # must not hold what a place holder needs,
                                         # nor the reverse (one cycle, both time out).
-                                        download_admission = await concurrency.acquire_download_slot(
-                                            self, index_tier, timeout=wait.remaining(),
+                                        download_admission = await concurrency.in_phase(
+                                            self,
+                                            concurrency.PHASE_DOWNLOAD,
+                                            index_tier,
+                                            parsed_message,
+                                            concurrency.acquire_download_slot(
+                                                self, index_tier, timeout=wait.remaining(),
+                                                **concurrency.class_kwargs(
+                                                    class_ctx, size_bytes=event.data.size_bytes if event.data else None
+                                                ),
+                                            ),
                                         )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self,
                                             index_tier,
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -3205,8 +3793,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 ):
                                     parse_tier = event.data.tier if event.data else None
                                     timeline.mark(timing.PARSE_REQUESTED)
-                                    if self.governor is not None:
-                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier, self)
+                                    parse_lease_pool = concurrency.admission_parse_lease_pool(self, parse_tier)
                                     # Node-local gate first, cluster lease
                                     # second. The gate is an asyncio Event and
                                     # costs nothing to queue on, so it absorbs
@@ -3220,16 +3807,34 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         self, budget, message_id
                                     ) as wait:
                                         size_bytes = event.data.size_bytes if event.data else None
+                                        # The size and what the inspection found are known now: the index permit
+                                        # moves to its class in place.
+                                        if class_ctx is not None and event.data is not None:
+                                            class_ctx = class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)
+                                        concurrency.reclass_index_slot(index_admission, class_ctx, size_bytes)
+                                        download_admission = await concurrency.reclass_download_slot(
+                                            download_admission, class_ctx, size_bytes, wait.remaining()
+                                        )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
-                                            current=memory_admission,
+                                            current=memory_admission, kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
-                                        parsing_admission = await concurrency.acquire_parsing_slot(
+                                        parsing_admission = await concurrency.in_phase(
                                             self,
+                                            concurrency.PHASE_PARSE,
                                             parse_tier,
-                                            size_bytes,
-                                            timeout=wait.remaining(),
+                                            parsed_message,
+                                            concurrency.acquire_parsing_slot(
+                                                self,
+                                                parse_tier,
+                                                size_bytes,
+                                                timeout=wait.remaining(),
+                                                kind=record_kind,
+                                                reserved_bytes=memory_admission.cost if memory_admission else 0,
+                                                **concurrency.class_kwargs(class_ctx),
+                                            ),
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit
@@ -3237,12 +3842,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         parsing_held = True
                                         lease_held = (
                                             self.concurrency_manager is None
-                                            or await self._acquire_distributed_slot(
-                                                parse_lease_pool,
-                                                lease_owner,
-                                                concurrency.parse_ceiling(self, parse_tier),
-                                                deadline_seconds=wait.remaining(),
-                                                leases=distributed_leases,
+                                            or await concurrency.in_phase(
+                                                self,
+                                                concurrency.PHASE_LEASE,
+                                                parse_tier,
+                                                parsed_message,
+                                                self._acquire_distributed_slot(
+                                                    parse_lease_pool,
+                                                    lease_owner,
+                                                    concurrency.parse_ceiling(self, parse_tier),
+                                                    deadline_seconds=wait.remaining(),
+                                                    leases=distributed_leases,
+                                                ),
+                                                pool=parse_lease_pool,
                                             )
                                         )
                                         if not lease_held and self.running:
@@ -3322,6 +3934,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         processing_timeout,
                         message_id,
                     )
+                    await concurrency.requeue_after_productive_cut(
+                        self, progress, lease_handle, message_id
+                    )
                     raise
                 finally:
                     if handler_task is not None and not handler_task.done():
@@ -3334,8 +3949,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
-                    pop_org(org_token)
-                    reset_context(token)
+                    end_progress()
 
                 if shutting_down:
                     # Consumer stopped while waiting for the parsing slot:
@@ -3379,8 +3993,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # whose dependency is paused): hand the message back with no attempt
             # counted, so it cannot be dead-lettered for waiting.
             outcome = "requeued"
-            self.logger.warning(
-                "%s handed back without counting an attempt: %s", message_id, e,
+            self.logger.log(
+                e.log_level, "%s handed back without counting an attempt: %s", message_id, e,
             )
             if parsed_message is not None:
                 if not e.counts_toward_backstop:
@@ -3402,7 +4016,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         return False
                 try:
                     await self._requeue_message(
-                        stream_name, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
+                        stream_name, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s,
+                        **concurrency.first_admission_kwargs(e),
                     )
                     await self._ack_message(stream_name, message_id)
                     acked = True

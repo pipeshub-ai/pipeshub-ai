@@ -3,6 +3,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 import copy
+import json
 from logging import Logger
 from typing import Any, Dict, List, Literal, Optional
 import weakref
@@ -84,6 +85,30 @@ class ActionItem(BaseModel):
     message: str
     action: Literal["authenticate"] | None = None
     docs_url: str | None = Field(default=None, serialization_alias="docsUrl")
+    # Values for the UI's own wording of a known item (``actionItems.known.<code>``).
+    params: dict[str, str] | None = None
+
+
+def replace_action_item(connector: object, code: str, item: ActionItem | None) -> None:
+    """Set or clear the connector's item ``code`` for this run, keeping its other items.
+
+    The runner writes ``last_action_items`` only when it is a list, so this always
+    leaves one: an empty list clears the card's badge.
+    """
+    items = [i for i in (getattr(connector, "last_action_items", None) or []) if i.code != code]
+    if item is not None:
+        items.append(item)
+    connector.last_action_items = items
+
+
+def action_items_json(items: list[ActionItem]) -> str | None:
+    """Action items as the app doc stores them: JSON text, or None when nothing is left
+    to do, which clears the card's badge."""
+    return json.dumps([
+        # params is newer than the stored shape; other items keep exactly the keys they had.
+        item.model_dump(by_alias=True, exclude={"params"} if item.params is None else None)
+        for item in items
+    ]) if items else None
 
 
 class ConnectorSyncSkippedError(Exception):
@@ -155,6 +180,10 @@ class BaseConnector(ABC):
     # alone, so dispose_connector() closes that processor's broker connection.
     # Left False for a shared org processor, which other instances still use.
     _owns_entities_processor: bool = False
+    # True where reading a file can cost the source (a network share recalls a file moved to
+    # slower storage): the file-type re-queue then leaves the records for manual indexing and
+    # requeue_records takes back only what it can read without that cost.
+    REQUEUE_PARKED: bool = False
 
     def __init__(
         self,
@@ -420,6 +449,14 @@ class BaseConnector(ABC):
     @abstractmethod
     async def reindex_records(self, record_results: List[Record]) -> None:
         raise NotImplementedError("This method should be implemented by the subclass")
+
+    async def requeue_records(self, records: list[Record]) -> None:
+        """Send records already in the graph back to indexing, unchanged at the source.
+
+        The file-type re-queue calls it for records it moved out of FILE_TYPE_NOT_SUPPORTED. The
+        default publishes them as they are stored, skipping placeholders and internal records.
+        """
+        await self.data_entities_processor.reindex_existing_records(records)
 
     @classmethod
     @abstractmethod
@@ -804,8 +841,10 @@ class BaseConnector(ABC):
         A notice that failed to publish does not hold back the next attempt.
         ``suppress_repeats=False`` sends it even when the same notice went out recently.
         """
-        key = self._notification_key(title, message)
-        reservation_before = self._notification_cache.get(key)
+        user_keys, role_keys = self._notification_keys(
+            title, message, *self._notification_recipients(recipient_user_ids, recipient_roles)
+        )
+        reservations_before = {key: self._notification_cache.get(key) for key in (*user_keys, *role_keys)}
         prepared = self._prepare_notification(
             type, severity, title, message, payload, recipient_user_ids, recipient_roles,
             suppress_repeats=suppress_repeats,
@@ -820,11 +859,12 @@ class BaseConnector(ABC):
             published = False
         if published:
             return NotificationOutcome.SENT
-        # The suppression check reserved this notice's backoff before publishing.
-        if reservation_before is None:
-            self._notification_cache.pop(key, None)
-        else:
-            self._notification_cache[key] = reservation_before
+        # The suppression check reserved each recipient's backoff before publishing.
+        for key, before in reservations_before.items():
+            if before is None:
+                self._notification_cache.pop(key, None)
+            else:
+                self._notification_cache[key] = before
         return NotificationOutcome.FAILED
 
     def _prepare_notification(
@@ -852,21 +892,20 @@ class BaseConnector(ABC):
             )
             return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+        recipient_user_ids, recipient_roles = self._notification_recipients(recipient_user_ids, recipient_roles)
 
-        if suppress_repeats and self._suppress_notification(title, message, severity):
-            return NotificationOutcome.SUPPRESSED
+        if suppress_repeats:
+            recipient_user_ids, recipient_roles = self._unsuppressed_recipients(
+                title, message, severity, recipient_user_ids, recipient_roles
+            )
+            if not recipient_user_ids and not recipient_roles:
+                return NotificationOutcome.SUPPRESSED
 
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
         if payload and "redirect_link" in payload:
             redirect_link = payload["redirect_link"]
         else:
             redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
-
-        if not recipient_user_ids and not recipient_roles:
-            ids = [self.created_by]
-            if self.last_synced_by and self.last_synced_by != self.created_by:
-                ids.append(self.last_synced_by)
-            recipient_user_ids = ids
 
         return svc, {
             "org_id": str(org_id),
@@ -881,15 +920,56 @@ class BaseConnector(ABC):
             "recipient_roles": recipient_roles,
         }
 
-    def _notification_key(self, title: str, message: str) -> str:
-        return f"{self.connector_id}:{title}:{message}"
+    def _notification_recipients(
+        self,
+        recipient_user_ids: list[str] | None,
+        recipient_roles: list[NotificationRecipientRole] | None,
+    ) -> tuple[list[str] | None, list[NotificationRecipientRole] | None]:
+        """Who a notice goes to: as given, or else the connector's creator and whoever last synced it."""
+        if recipient_user_ids or recipient_roles:
+            return recipient_user_ids, recipient_roles
+        ids = [self.created_by]
+        if self.last_synced_by and self.last_synced_by != self.created_by:
+            ids.append(self.last_synced_by)
+        return ids, recipient_roles
 
-    def _suppress_notification(self, title: str, message: str, severity: NotificationSeverity) -> bool:
+    def _notification_key(self, title: str, message: str, recipient: str) -> str:
+        org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+        return f"{org_id}:{self.connector_id}:{recipient}:{title}:{message}"
+
+    def _notification_keys(
+        self,
+        title: str,
+        message: str,
+        recipient_user_ids: list[str] | None,
+        recipient_roles: list[NotificationRecipientRole] | None,
+    ) -> tuple[dict[str, str], dict[str, NotificationRecipientRole]]:
+        """One repeat key per user and per role: one recipient's backoff never holds back or re-sends to another."""
+        return (
+            {self._notification_key(title, message, f"user:{u}"): u for u in recipient_user_ids or ()},
+            {self._notification_key(title, message, f"role:{getattr(r, 'value', r)}"): r for r in recipient_roles or ()},
+        )
+
+    def _unsuppressed_recipients(
+        self,
+        title: str,
+        message: str,
+        severity: NotificationSeverity,
+        recipient_user_ids: list[str] | None,
+        recipient_roles: list[NotificationRecipientRole] | None,
+    ) -> tuple[list[str], list[NotificationRecipientRole]]:
+        """The recipients outside their backoff for this notice; each one returned now has its backoff reserved."""
+        user_keys, role_keys = self._notification_keys(title, message, recipient_user_ids, recipient_roles)
+        return (
+            [u for key, u in user_keys.items() if not self._suppress_notification(key, title, severity)],
+            [r for key, r in role_keys.items() if not self._suppress_notification(key, title, severity)],
+        )
+
+    def _suppress_notification(self, key: str, title: str, severity: NotificationSeverity) -> bool:
 
         if severity in [NotificationSeverity.INFO, NotificationSeverity.SUCCESS]:
             return False
 
-        key = self._notification_key(title, message)
         now = get_epoch_timestamp_in_ms()
 
         if key in self._notification_cache:

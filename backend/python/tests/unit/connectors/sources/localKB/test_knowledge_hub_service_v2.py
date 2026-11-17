@@ -26,6 +26,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
 )
 from app.utils.kh_cursor import (
@@ -438,6 +439,29 @@ async def test_a_busy_listing_is_a_503(service, provider) -> None:
     result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
 
     assert (result.success, result.errorCode) == (False, 503)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent", [("app1", "app"), ("f1", "folder"), (None, None)], ids=["browse", "folder", "all_records"])
+async def test_a_source_still_being_prepared_is_an_empty_page_that_says_so_not_a_503(service, provider, parent) -> None:
+    """The source holds nodes its copy has not reached yet: a successful, empty page marked ``preparing``, with nothing to page on to."""
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingNotReady()
+    parent_id, parent_type = parent
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id=parent_id, parent_type=parent_type, flattened=parent_id is None, include=["counts"])
+
+    assert (result.success, result.errorCode, result.preparing, result.items) == (True, None, True, [])
+    assert (result.pagination.totalItems, result.pagination.hasNext, result.pagination.hasPrev) == (0, False, False)
+    assert result.pagination.nextCursor is None and result.pagination.prevCursor is None
+    assert (result.counts.total, result.counts.items) == (0, [])
+    assert "preparing" in result.model_dump(exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_a_listing_with_rows_is_not_marked_preparing(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([], scope=admitted_scope(node_type="app"))
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert result.success is True and result.preparing is None
 
 
 @pytest.mark.asyncio
@@ -994,3 +1018,37 @@ async def test_switched_off_demo_apps_leave_the_gate(logger, provider, config_se
     # No grants are handed over: the page reads its connector's own, behind this gate.
     assert kwargs["granted_ids"] is None and kwargs.get("grants_by_connector") is None
     assert result.success is False and result.error == "Node not found"
+
+
+# --------------------------------------------------------------- sort by origin
+
+@pytest.mark.asyncio
+async def test_an_origin_sort_reaches_the_root_query_and_stays_in_its_cursor(service, provider) -> None:
+    """A sort the service does not map falls back to name, which is not what was asked for."""
+    provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
+        [row("app1", "App One", node_type="app")], total=2, has_more=True,
+    )
+    first = await service.get_nodes(user_id="u1", org_id="o1", limit=1, sort_by="origin", sort_order="asc")
+
+    assert first.success is True
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["sort_field"] == "origin"
+    assert first.filters.applied.sortBy == "origin"
+
+    after = await service.get_nodes(user_id="u1", org_id="o1", limit=1, cursor=first.pagination.nextCursor)
+    assert after.success is True
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["sort_field"] == "origin"
+    assert after.filters.applied.sortBy == "origin"
+
+
+@pytest.mark.asyncio
+async def test_an_origin_sort_reaches_the_folder_query(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
+        [row("r1", "Record")], scope=admitted_scope(),
+    )
+    result = await service.get_nodes(
+        user_id="u1", org_id="o1", parent_id="p1", parent_type="recordGroup",
+        sort_by="origin", sort_order="desc",
+    )
+    assert result.success is True
+    kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
+    assert (kwargs["sort_field"], kwargs["sort_dir"]) == ("origin", "DESC")

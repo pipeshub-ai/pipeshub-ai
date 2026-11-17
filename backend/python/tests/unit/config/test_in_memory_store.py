@@ -220,9 +220,11 @@ class TestUpdateValue:
         assert (await store.get_key("/u")) == "new"
 
     @pytest.mark.asyncio
-    async def test_update_missing_key_raises(self, store):
+    async def test_update_missing_key_raises(self, store, caplog):
         with pytest.raises(KeyError, match="does not exist"):
             await store.update_value("/missing", "val")
+        # Absent is part of the contract, as in every other store: the caller decides.
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     @pytest.mark.asyncio
     async def test_update_expired_key_raises(self, store):

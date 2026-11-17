@@ -13,6 +13,8 @@ The kernel drops a lock when its holder exits, however it exits, so a worker
 that is OOM-killed mid-parse gives its slots back with it and nothing needs
 renewing or expiring. Counting the held slots and taking free ones happen
 under a mutex file, so two workers cannot both see room for the last one.
+A worker stopped (SIGSTOP) while it counts keeps that mutex until it resumes
+or exits, and every other caller gets ``None`` and polls until then.
 
 Every file is opened once, when the worker starts, and locked and unlocked
 through that descriptor. A lock belongs to the open file, not to its name, so

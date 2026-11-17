@@ -231,6 +231,19 @@ export const UsersApi = {
   },
 
   /**
+   * How many OAuth apps this person created. Deleting them moves those apps
+   * to the admin who deletes them.
+   * GET /api/v1/oauth-clients?createdBy=:userId&limit=1
+   */
+  async countOAuthAppsCreatedBy(userId: string): Promise<number> {
+    const { data } = await apiClient.get<{ pagination?: { total?: number } }>(
+      '/api/v1/oauth-clients',
+      { params: { createdBy: userId, limit: 1 }, suppressErrorToast: true }
+    );
+    return data.pagination?.total ?? 0;
+  },
+
+  /**
    * Resend an invite to a pending user.
    * POST /api/v1/users/:userId/resend-invite
    */

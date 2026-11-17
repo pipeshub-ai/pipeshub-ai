@@ -254,6 +254,35 @@ describe('a new conversation, start to finish', () => {
     expect(degradedRows(slotId)).toEqual(['a1']);
   });
 
+  it('keeps the access notices on the answer they came with, and a later answer without them does not inherit them', async () => {
+    const slotId = newSlot();
+    const noticesOf = () => slot(slotId).messages
+      .filter((m) => m.role === 'assistant')
+      .map((m) => (m.metadata?.custom as { accessNotices?: unknown } | undefined)?.accessNotices ?? null);
+    const notices = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }];
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue was $4.2M.' }),
+      frame('TEXT_MESSAGE_END'),
+      frame('RUN_FINISHED', { result: { conversation: finishedConversation('Revenue was $4.2M.'), meta: { accessNotices: notices } } }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    expect(noticesOf()).toEqual([notices]);
+    expect(degradedRows(slotId)).toEqual([]);
+
+    const secondTurn = {
+      ...finishedConversation('x'),
+      messages: [
+        ...finishedConversation('x').messages,
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: 'And Q4?' }),
+        storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Q4 was lower.' }),
+      ],
+    };
+    respondWith([frame('RUN_FINISHED', { result: { conversation: secondTurn, meta: {} } })]);
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-real' }));
+    expect(noticesOf()).toEqual([notices, null]);
+  });
+
   it('ignores an artifact event with no payload instead of failing the run', async () => {
     const slotId = newSlot();
     respondWith([

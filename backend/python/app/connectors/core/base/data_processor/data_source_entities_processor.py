@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
@@ -553,7 +554,12 @@ class DataSourceEntitiesProcessor:
         if getattr(error, "schema_reported", False):
             return
         error.schema_reported = True
-        self.logger.error("Graph write rejected by schema validation (collection=%s): %s", error.collection, error)
+        # Where and which rule, never the message: jsonschema's text quotes the rejected value.
+        rule = error.original_error
+        self.logger.error(
+            "Graph write rejected by schema validation (collection=%s)", error.collection,
+            extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
+        )
         record_schema_rejection(error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
@@ -2142,8 +2148,25 @@ class DataSourceEntitiesProcessor:
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
 
-    @staticmethod
-    def _keeps_stored_indexing(record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
+    @classmethod
+    def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
+        """Whether indexing would read *new_record* differently from *old_record*.
+
+        A new revision, but also the same bytes read as another file type (a GCS
+        object whose Content-Type changed keeps its MD5 revision; a rename to
+        another extension keeps a Drive revision). The save and a move decide on
+        it alike. A code file's path is not compared here: it is part of its
+        external id, so a save (matched on that id) cannot change it, and the
+        stored row a save reads is a base Record with no file_path, which would
+        read as a new path on every sync. A move compares it (_code_path_changed).
+        """
+        return (
+            new_record.external_revision_id != old_record.external_revision_id
+            or cls._file_type_changed(new_record, old_record)
+        )
+
+    @classmethod
+    def _keeps_stored_indexing(cls, record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
         """Whether a connector save leaves the stored indexing state as it is.
 
         It does when the content indexing saw is unchanged and the stored status
@@ -2161,16 +2184,9 @@ class DataSourceEntitiesProcessor:
         """
         if record.is_placeholder or reindex_restored:
             return False
-        if record.external_revision_id != existing_record.external_revision_id:
+        if cls._content_changed(record, existing_record):
             return False
         stored = existing_record.indexing_status
-        if (
-            stored == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
-            and DataSourceEntitiesProcessor._file_type_changed(record, existing_record)
-        ):
-            # The type can become supported with the revision unchanged (an object
-            # store's MD5 does not move): the outcome was for the old type.
-            return False
         if stored == ProgressStatus.QUEUED.value:
             return record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
         return stored in INDEXING_OUTCOME_STATUSES or stored in INDEXING_PENDING_STATUSES
@@ -2480,7 +2496,7 @@ class DataSourceEntitiesProcessor:
         there, so "could not be read" answered as None took a grant or a membership
         away without an error or a retry.
         """
-        user = await tx_store.get_user_by_email(email, raise_on_error=True)
+        user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
         if user:
             return (user.id, CollectionNames.USERS.value)
 
@@ -2758,6 +2774,8 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return _not_stored(record, SkipReason.OWNED_ELSEWHERE)
+        if existing_record is not None:
+            self._keep_the_stored_text_mime(record, existing_record)
         if record.is_placeholder:
             # Stubs are never published, so a stub left at the model's QUEUED
             # default (connector placeholder sweeps) would stay QUEUED forever.
@@ -2791,6 +2809,15 @@ class DataSourceEntitiesProcessor:
                     "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return _not_stored(record, SkipReason.NOT_CONTENT)
+        if existing_record is None:
+            # One rule for every connector: a client's stamp or a guessed text/plain must not put a
+            # new .log/.cfg on the old text path. A row stored under this id keeps its mime.
+            stored_mime = (
+                same_id.get("mimeType") if isinstance(same_id, dict) else getattr(same_id, "mime_type", None)
+            )
+            record.mime_type = file_types.mime_to_store(
+                record.mime_type, record.record_name, stored_mime, existing=same_id is not None
+            )
         restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
@@ -3301,8 +3328,8 @@ class DataSourceEntitiesProcessor:
         self._report_schema_rejection(error)
         _stats_sink().records[RecordOutcome.FAILED] += 1
         self.logger.error(
-            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
-            record.id, error.collection, error,
+            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s)",
+            record.id, error.collection,
         )
 
     @retry_on_deadlock()
@@ -3364,6 +3391,8 @@ class DataSourceEntitiesProcessor:
         self,
         record: Record,
         permissions: list[Permission] | None = None,
+        *,
+        content_changed: bool = True,
     ) -> None:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
@@ -3391,7 +3420,11 @@ class DataSourceEntitiesProcessor:
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
             elif processed_record is not None:
-                should_publish = True
+                # A caller that says the content did not change (a write only to keep the stored grants) gets the
+                # event only when the save asked for indexing, as on_new_records does; a kept outcome would only
+                # repeat work. Callers that do not say keep publishing: several store the new revision through a
+                # metadata update first, so the save alone cannot tell their content changed.
+                should_publish = content_changed or _requests_index_event(processed_record)
 
         await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)
@@ -3495,6 +3528,20 @@ class DataSourceEntitiesProcessor:
         return (
             getattr(new_record.record_type, "value", new_record.record_type) == RecordType.CODE_FILE.value
             and getattr(new_record, "file_path", None) != getattr(old_record, "file_path", None)
+        )
+
+    @staticmethod
+    def _keep_the_stored_text_mime(new_record: Record, old_record: Record) -> None:
+        """The mime to save for a file already stored (file_types.mime_to_store).
+
+        A .log/.cfg stored as text/plain keeps it and the text reader it had; one stored
+        under its own mime keeps that when its connector sends text/plain again.
+        """
+        new_record.mime_type = file_types.mime_to_store(
+            getattr(new_record, "mime_type", None),
+            getattr(new_record, "record_name", None),
+            getattr(old_record, "mime_type", None),
+            existing=True,
         )
 
     @staticmethod
@@ -3769,11 +3816,10 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = (
-                        content_changed
-                        or self._file_type_changed(new_record, old_record)
-                        or self._code_path_changed(new_record, old_record)
-                    )
+                    self._keep_the_stored_text_mime(new_record, old_record)
+                    needs_reindex = self._content_changed(
+                        new_record, old_record
+                    ) or self._code_path_changed(new_record, old_record)
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD
                     if not is_kb_item:
@@ -5470,18 +5516,28 @@ class DataSourceEntitiesProcessor:
                 return
 
             async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_upsert_app_users(users)
+                await tx_store.batch_upsert_app_users(users, self.org_id)
 
         except Exception as e:
             self._log_failure(f"Transaction on_new_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
-    async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
+    async def withdraw_app_user_access(
+        self, connector_id: str, users: list[AppUser], *, drop_grants: bool = False,
+    ) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
-        the user's node). Without it no grant of the connector reaches the user."""
+        the user's node). Without it no grant of the connector reaches the user, unless the gate is
+        passed another way (the org's All team), so ``drop_grants`` also removes the user's own grants
+        on the connector's records, record groups, user groups and roles in the same transaction.
+        The connector then writes them again for a user it lists again."""
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
+                # Grants first: where each statement commits alone (Neo4j without explicit transactions), a
+                # failure in between leaves a linked user short of grants until the retry, never grants
+                # without the withdrawal that should have taken them.
+                if drop_grants:
+                    await tx_store.remove_user_access_to_connector(connector_id, user_id)
                 await tx_store.delete_edge(
                     user_id, CollectionNames.USERS.value,
                     connector_id, CollectionNames.APPS.value,
@@ -5507,14 +5563,14 @@ class DataSourceEntitiesProcessor:
             elif (authenticator.get("email") or "").lower() == email.lower():
                 link_changed = await tx_store.remove_authenticated_as(connector_id)
             else:
-                source_user = await tx_store.get_user_by_email(email)
+                source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     # Same inactive stub + userAppRelation the user sync would create for this email
                     await tx_store.batch_upsert_app_users([AppUser(
                         app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
                         email=email, full_name=email, org_id=self.org_id,
-                    )])
-                    source_user = await tx_store.get_user_by_email(email)
+                    )], self.org_id)
+                    source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
                 if source_user is None:
                     raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
 
@@ -5851,7 +5907,7 @@ class DataSourceEntitiesProcessor:
                         if member.email:
                             # Find the user's internal DB ID. A read that fails is raised:
                             # answered as "no such user", the rewrite below dropped the member.
-                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True)
+                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True, org_id=self.org_id)
 
                         if not user:
                             self.logger.warning(f"Could not find user with email {member.email} for AppRole permission.")
@@ -5974,7 +6030,7 @@ class DataSourceEntitiesProcessor:
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
         """``raise_on_error`` raises a failed read instead of answering None."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error)
+            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error, org_id=self.org_id)
 
     async def get_user_group_by_external_id(
         self, connector_id: str, external_id: str, *, raise_on_error: bool = False
@@ -6286,7 +6342,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # A user or group that could not be read is not one that is not there:
             # returning False on a failed read would leave the user in the group.
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 self.logger.warning(
                     f"Cannot remove member from group {external_group_id}: "
@@ -6341,9 +6397,10 @@ class DataSourceEntitiesProcessor:
         connector_id: str
     ) -> bool:
         try:
-            async with self.data_store_provider.transaction() as tx_store:
+            # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
+            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
+                user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
                 if not user:
                     self.logger.warning(
                         f"Cannot add member to group {external_group_id}: "
@@ -6669,7 +6726,7 @@ class DataSourceEntitiesProcessor:
         user_email: str,
         connector_id: str,
         tx_store: TransactionStore | None = None
-    ) -> None:
+    ) -> bool:
         """
         Migrate all permissions from a group to a user.
 
@@ -6686,6 +6743,10 @@ class DataSourceEntitiesProcessor:
             connector_id: Connector ID for logging
             tx_store: Optional transaction store to participate in caller's transaction.
                      If not provided, a new transaction will be created.
+
+        Returns:
+            True when every grant of the group is now the user's (or it had none); False when the
+            user is not found in this org or a grant could not be moved, so the group must be kept.
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
@@ -6695,27 +6756,30 @@ class DataSourceEntitiesProcessor:
                 )
 
         # Get the user object
-        user = await tx_store.get_user_by_email(user_email)
+        user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
         if not user:
             self.logger.warning(
                 f"User {user_email} not found in users collection, "
                 f"cannot migrate permissions. Skipping."
             )
-            return None
+            return False
 
         # Get all permission edges FROM the group
         group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
+        # raise_on_error: an unread list is not an empty one, and "nothing to move" lets the caller delete the group
         permission_edges = await tx_store.get_edges_from_node(
             from_node_id=group_node_id,
-            edge_collection=CollectionNames.PERMISSION.value
+            edge_collection=CollectionNames.PERMISSION.value,
+            raise_on_error=True,
         )
 
         if not permission_edges:
             self.logger.debug(f"No permissions found for group {group_id}")
-            return None
+            return True
 
         migrated_count = 0
         skipped_count = 0
+        failed_count = 0
         new_permission_edges = []
 
         # Process each permission edge
@@ -6805,6 +6869,7 @@ class DataSourceEntitiesProcessor:
                     f"for user {user_email}: {e}",
                     exc_info=True
                 )
+                failed_count += 1
                 continue
 
         # Batch create all new permission edges
@@ -6819,8 +6884,7 @@ class DataSourceEntitiesProcessor:
                 f"Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
-            return None
-        return None
+        return failed_count == 0
 
     @retry_on_deadlock()
     async def migrate_group_to_user_by_external_id(
@@ -6862,12 +6926,17 @@ class DataSourceEntitiesProcessor:
             )
 
             # Migrate permissions (using the same transaction)
-            await self.migrate_group_permissions_to_user(
+            if not await self.migrate_group_permissions_to_user(
                 group_id=group.id,
                 user_email=user_email,
                 connector_id=connector_id,
                 tx_store=tx_store
-            )
+            ):
+                # deleting the group now would drop grants nobody received; the next sync retries
+                self.logger.warning(
+                    f"Kept group '{group.name}' ({group.id}): its permissions were not all moved to the user"
+                )
+                return
 
             # Delete the group (this will also delete all its edges)
             await tx_store.delete_user_group_by_id(group.id)
@@ -7090,6 +7159,43 @@ class DataSourceEntitiesProcessor:
             await self._handle_record_permissions(record, permissions, tx_store)
 
     @retry_on_deadlock()
+    async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
+        """Remove the record's edges to the records it inherits permissions from. Its own grants stay. A failed read
+        of the edges raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            edges = await tx_store.get_edges_from_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.INHERIT_PERMISSIONS.value,
+                raise_on_error=True,
+            )
+            for edge in edges:
+                parent_collection, _, parent_id = str(edge.get("_to") or "").partition("/")
+                if not parent_id:
+                    continue
+                if parent_collection == CollectionNames.RECORD_GROUPS.value:
+                    await tx_store.delete_inherit_permissions_relation_record_group(record_id, parent_id)
+                else:
+                    await tx_store.delete_inherit_permissions_relation_record(record_id, parent_id)
+        if edges:
+            await self._access_changed([connector_id])
+
+    @retry_on_deadlock()
+    async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
+        """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold
+        has no edge; a failed read of it raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_user_group_by_external_id(connector_id, group_external_id, raise_on_error=True)
+            if group is None:
+                return
+            deleted = await tx_store.batch_delete_edges([{
+                "from_id": group.id,
+                "from_collection": CollectionNames.GROUPS.value,
+                "to_id": record_id,
+                "to_collection": CollectionNames.RECORDS.value,
+            }], collection=CollectionNames.PERMISSION.value)
+        if deleted:
+            await self._access_changed([connector_id])
+
+    @retry_on_deadlock()
     async def delete_permission_from_record(
         self, record_id: str, user_email: str, connector_id: str | None = None
     ) -> None:
@@ -7102,7 +7208,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # A user who could not be read is not a user who is not there: returning
             # here on a failed read would leave the permission in place unreported.
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return
@@ -7210,7 +7316,7 @@ class DataSourceEntitiesProcessor:
         """Take away everything the user was granted directly on this connector's content and groups, for a
         person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
         async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
                 return 0
             removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)

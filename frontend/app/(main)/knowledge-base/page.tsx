@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Box, Flex } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -34,6 +34,7 @@ import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/f
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
+import { preparingKey, usePreparingRetry } from './hooks/use-preparing-retry';
 import type {
   KnowledgeBaseItem,
   FolderTreeNode,
@@ -123,6 +124,9 @@ import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
+
+/** Empty pages in a row that All Records goes on from before it shows the empty state (a page the server stopped scanning early has no rows and a cursor to go on with). */
+const MAX_EMPTY_ALL_RECORDS_PAGES = 20;
 
 // Outlives a remount. The abort ref does not, so an older request's finally
 // would otherwise clear the loading flag a newer fetch just set.
@@ -603,7 +607,14 @@ function KnowledgeBasePageContent() {
   // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
   const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const allRecordsBusyTries = useRef(0);
-  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
+  const allRecordsEmptyHops = useRef(0);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean, retryOf?: number | null) => Promise<void>) | null>(null);
+  // A source still being prepared answers an empty page that says so: it is asked again by itself until its rows can be listed.
+  // One timer, for the listing on screen: leaving it (another node, the other view) cancels the retry.
+  const { settle: settlePreparing, isCurrent: isPreparingCurrent } = usePreparingRetry(
+    preparingKey(isAllRecordsMode, searchParams.get('nodeType'), searchParams.get('nodeId'))
+  );
+  const fetchTableDataRef = useRef<((nodeType: string, nodeId: string, retryOf?: number | null) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -615,7 +626,10 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false, retryOf: number | null = null) => {
+    // A retry of a source being prepared carries the generation of the answer that scheduled it: once a newer All Records request has started (a search,
+    // a filter, a page, a refresh), that one stands, and the retry is not sent.
+    if (retryOf !== null && retryOf !== allRecordsFetchGeneration) return;
     allRecordsFetchRef.current?.abort();
     // Each request the user makes gets its own retries; only the timer's retries share them.
     if (!busyRetry) allRecordsBusyTries.current = 0;
@@ -663,8 +677,24 @@ function KnowledgeBasePageContent() {
         // Root level - fetch all records
         data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
-      if (controller.signal.aborted || !stillSignedIn()) return;
+      // A retry whose listing the user has left by now (another node, the Collections view) shows nothing.
+      if (controller.signal.aborted || !stillSignedIn() || (busyRetry && !isPreparingCurrent(preparingKey(true, nodeType, nodeId)))) return;
+      // A page with no rows that says more follows is the server having stopped looking for the moment, not the end: go on from where it got to. A cursor that did not move, or
+      // too many such pages in a row, is the end (the empty state shows), never a silent stall. The cursors this page carries are kept, so the way back is not lost.
+      // It goes on the way it was asked: a page asked for with the previous page's cursor (Previous, or an empty page going back) goes on backwards.
+      const backwards = !!currentPagination.cursor && currentPagination.cursor === currentPagination.prevCursor;
+      const onward = backwards
+        ? data.pagination?.hasPrev && data.pagination.prevCursor
+        : data.pagination?.hasNext && data.pagination.nextCursor;
+      if (data.items?.length === 0 && onward && onward !== currentPagination.cursor && allRecordsEmptyHops.current < MAX_EMPTY_ALL_RECORDS_PAGES) {
+        allRecordsEmptyHops.current += 1;
+        syncAllRecordsPaginationMeta(toTablePagination(data.pagination!, currentPagination.cursor));
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(onward);
+        return;
+      }
+      allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
+      settlePreparing(preparingKey(true, nodeType, nodeId), data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true, fetchGeneration));
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
@@ -729,6 +759,8 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    settlePreparing,
+    isPreparingCurrent,
     t,
   ]);
   fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
@@ -816,14 +848,25 @@ function KnowledgeBasePageContent() {
 
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
-    async (nodeType: string, nodeId: string) => {
-      collectionsFetchRef.current?.abort();
+    async (nodeType: string, nodeId: string, retryOf: number | null = null) => {
+      // A retry of a source being prepared asks quietly with its own request: it never cancels a request the user made. It carries the
+      // generation of the request it was scheduled from (``retryOf``), so it is dropped, sent or answered, once the user has asked for
+      // anything else since, or left this node (``stale``).
+      const retry = retryOf !== null;
+      const key = preparingKey(false, nodeType, nodeId);
       const controller = new AbortController();
-      collectionsFetchRef.current = controller;
-      const fetchGeneration = ++collectionsFetchGeneration;
+      if (!retry) {
+        collectionsFetchRef.current?.abort();
+        collectionsFetchRef.current = controller;
+      }
+      const fetchGeneration = retry ? retryOf : ++collectionsFetchGeneration;
+      const stale = () => retry && (fetchGeneration !== collectionsFetchGeneration || !key || !isPreparingCurrent(key));
+      if (stale()) return;
       const stillSignedIn = kbSessionToken();
-      setIsLoadingTableData(true);
-      setTableDataError(null);
+      if (!retry) {
+        setIsLoadingTableData(true);
+        setTableDataError(null);
+      }
 
       try {
         // Get the latest state from store to avoid stale closure
@@ -857,11 +900,12 @@ function KnowledgeBasePageContent() {
           params,
           { suppressErrorToast: suppressNotFoundToast, signal: controller.signal }
         );
-        if (controller.signal.aborted || !stillSignedIn()) return;
+        if (controller.signal.aborted || !stillSignedIn() || stale()) return;
 
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        if (key) settlePreparing(key, data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, fetchGeneration));
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.
@@ -906,7 +950,8 @@ function KnowledgeBasePageContent() {
             ];
 
             for (let i = 0; i < path.length; i += 1) {
-              if (controller.signal.aborted || !stillSignedIn()) return;
+              // A retry has its own request, which the user's next request does not abort: it stops here once it is stale too.
+              if (controller.signal.aborted || !stillSignedIn() || stale()) return;
               const { id, nodeType: pathNodeType } = path[i];
               const nextId = path[i + 1]?.id ?? (nodeId !== id ? nodeId : undefined);
               expandFolderExclusive(id);
@@ -923,10 +968,10 @@ function KnowledgeBasePageContent() {
           }
         }
 
-        if (!controller.signal.aborted && stillSignedIn()) restoreOpenFoldersInSidebar();
+        if (!controller.signal.aborted && stillSignedIn() && !stale()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
-        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn() || stale()) return;
         // A refused cursor goes back to the first page instead of erroring;
         // clearing it rewrites the URL, which re-runs this fetch without one.
         const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
@@ -1004,8 +1049,13 @@ function KnowledgeBasePageContent() {
       isAllRecordsMode,
       debouncedSearchQuery,
       debouncedAllRecordsSearchQuery,
+      settlePreparing,
+      isPreparingCurrent,
     ]
   );
+  useEffect(() => {
+    fetchTableDataRef.current = fetchTableData;
+  }, [fetchTableData]);
 
   // Helper to build navigation URLs that preserve view mode
   const buildNavUrl = useCallback(
@@ -1317,7 +1367,8 @@ function KnowledgeBasePageContent() {
         sortBy: 'name',
         sortOrder: 'asc',
       });
-      if (!stillSignedIn()) return;
+      // A source still being prepared lists no children yet, not none: cache nothing, so a later open asks again.
+      if (!stillSignedIn() || response.preparing) return;
 
       const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
@@ -3159,6 +3210,20 @@ function KnowledgeBasePageContent() {
           </>
         )}
 
+        {/* Sources still being prepared are left off All Records and named on every page: say so, so the list does not look complete. */}
+        {isAllRecordsMode && (allRecordsTableData?.notReady?.length ?? 0) > 0 && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcesNotReady', { count: allRecordsTableData?.notReady?.length ?? 0 })}</Text>
+          </Flex>
+        )}
+
+        {/* A source still being prepared has nothing to list yet: say so instead of an empty list; the page asks again by itself. */}
+        {(isAllRecordsMode ? allRecordsTableData : tableData)?.preparing && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcePreparing')}</Text>
+          </Flex>
+        )}
+
         {/* Data Table - shows appropriate items based on mode */}
         <KbDataTable
           items={isAllRecordsMode ? allRecordsItems : tableItems}
@@ -3166,6 +3231,7 @@ function KnowledgeBasePageContent() {
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
           errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
+          preparing={!!(isAllRecordsMode ? allRecordsTableData : tableData)?.preparing}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}

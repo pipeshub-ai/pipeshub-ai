@@ -353,7 +353,15 @@ async function insert(
     ['awaiting_direct_upload', i.awaitingDirectUpload ?? null],
     [
       'artifact_set',
-      json(storageInfo(i.artifactSet, ['virtualRecordId', 'rev', 'root'])),
+      json(
+        storageInfo(i.artifactSet, [
+          'virtualRecordId',
+          'rev',
+          'contentRev',
+          'writeId',
+          'root',
+        ]),
+      ),
     ],
     ['retired_at', i.retiredAt ?? null],
     ['created_at', created],

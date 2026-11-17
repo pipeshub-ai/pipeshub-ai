@@ -66,6 +66,7 @@ export const OAuthScopeNames = Object.freeze({
 
   // Code graph
   CODE_READ: 'code:read',
+  CODE_WRITE: 'code:write',
 
   // Configuration
   CONFIG_READ: 'config:read',

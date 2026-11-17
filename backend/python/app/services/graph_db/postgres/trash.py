@@ -162,6 +162,7 @@ class TrashMixin(PgBase):
         return items
 
     async def list_trashed_records(self, connector_id: str, org_id: str, *, skip: int = 0, limit: int = 25, single_file_batches_only: bool = False,
+                                   after: tuple[int, str] | None = None, count_cap: int | None = None,
                                    transaction: str | None = None) -> dict[str, Any]:
         """One row per delete batch of a connector's trash (a batch restores whole), newest first."""
         if not connector_id or not org_id or limit <= 0:
@@ -177,22 +178,24 @@ class TrashMixin(PgBase):
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
                                                 WHERE ie.org_id = $1 AND ie.coll = 'isOfType' AND ie.from_id = r.id AND t.doc->>'isFile' = 'true') END),
             page AS (SELECT batch, max(ts) AS deleted_at, min(id) AS first_id, count(*) AS root_count FROM roots GROUP BY batch
+                     HAVING $8::bigint IS NULL OR (max(ts), batch) < ($8::bigint, $9::text)
                      ORDER BY deleted_at DESC, batch DESC OFFSET $5 LIMIT $6)
-            SELECT r.doc AS rec, p.id AS parent_id, p.doc->>'recordName' AS parent_name, p.doc->>'isDeleted' AS parent_deleted,
+            SELECT page.batch, page.deleted_at, r.doc AS rec, p.id AS parent_id, p.doc->>'recordName' AS parent_name, p.doc->>'isDeleted' AS parent_deleted,
                    ty.doc->>'isFile' AS is_file, ty.doc->>'mimeType' AS file_mime, ty.doc->'sizeInBytes' AS size, page.root_count,
                    CASE WHEN page.root_count < 2 THEN '{}'::text[] ELSE ARRAY(SELECT x.name FROM roots x WHERE x.batch = page.batch AND x.id <> r.id
                         ORDER BY x.id LIMIT $7) END AS other_names,
                    (SELECT count(*) FROM tr x WHERE x.doc->>'deleteBatchId' = page.batch AND x.doc->>'connectorId' = $2) AS batch_size,
                    CASE WHEN u.id IS NULL THEN NULL WHEN coalesce(u.doc->>'fullName', '') <> '' THEN u.doc->>'fullName'
                         ELSE trim(coalesce(u.doc->>'firstName', '') || ' ' || coalesce(u.doc->>'lastName', '')) END AS user_name, u.doc->>'email' AS user_email
-            FROM page JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = page.first_id
+            FROM page CROSS JOIN LATERAL (SELECT x.org_id, x.id, x.doc, x.doc->>'deletedByUserId' AS deleted_by FROM graph.nodes x
+              WHERE x.org_id = $1 AND x.coll = 'records' AND x.id = page.first_id LIMIT 1) r
             LEFT JOIN LATERAL (SELECT pn.id, pn.doc FROM graph.edges e JOIN graph.nodes pn ON pn.org_id = e.org_id AND pn.coll = e.from_coll AND pn.id = e.from_id
               WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.to_id = r.id ORDER BY e.from_id LIMIT 1) p ON true
             LEFT JOIN LATERAL (SELECT t.doc, t.coll AS tcoll FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
     WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
-            LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.doc->>'deletedByUserId'
+            LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.deleted_at DESC, page.batch DESC""", org, connector_id, org_id, single_file_batches_only, max(skip, 0), limit,
-                                TRASH_LIST_OTHER_ROOT_NAMES, transaction=transaction)
+                                TRASH_LIST_OTHER_ROOT_NAMES, *(after or (None, None)), transaction=transaction)
         total = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
@@ -201,14 +204,16 @@ class TrashMixin(PgBase):
                          WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN tr p ON p.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
-                                                WHERE ie.org_id = $1 AND ie.coll = 'isOfType' AND ie.from_id = r.id AND t.doc->>'isFile' = 'true') END) SELECT count(DISTINCT batch) FROM roots""",
-                                                      org, connector_id, org_id, single_file_batches_only), transaction)
+                                                WHERE ie.org_id = $1 AND ie.coll = 'isOfType' AND ie.from_id = r.id AND t.doc->>'isFile' = 'true') END)
+            SELECT count(*) FROM (SELECT DISTINCT batch FROM roots LIMIT $5::bigint) b""",
+                                                      org, connector_id, org_id, single_file_batches_only, None if count_cap is None else count_cap + 1), transaction)
         items = [{"record": _rec(r["rec"]), "parentId": r["parent_id"], "parentName": r["parent_name"],
                   "parentIsDeleted": (r["parent_deleted"] == "true") if r["parent_id"] else None,
                   "isFile": None if r["is_file"] is None else r["is_file"] == "true", "fileMimeType": r["file_mime"],
                   "sizeInBytes": json.loads(r["size"]) if r["size"] else None, "rootCount": r["root_count"] or 1,
                   "otherRootNames": [n for n in r["other_names"] or [] if n is not None], "batchSize": r["batch_size"] or 0,
-                  "deletedByName": r["user_name"] or None, "deletedByEmail": r["user_email"]} for r in rows]
+                  "deletedByName": r["user_name"] or None, "deletedByEmail": r["user_email"],
+                  "batchId": r["batch"], "batchDeletedAt": r["deleted_at"]} for r in rows]
         return {"items": items, "total": total or 0}
 
     async def _trash_purge_row(self, rec: dict, type_doc: dict | None, taxonomy_refs: list[dict[str, str]] | None = None) -> dict:
@@ -226,14 +231,14 @@ class TrashMixin(PgBase):
         after_ts, after_key = after if after else (None, None)
         lower = after_ts if after_ts is not None else -1
         rows = await self._qrows("""/* pipeshub:graph.get_purgeable_trashed_records */ WITH c AS (
-              SELECT r.id, r.doc, (r.doc->>'deletedAtTimestamp')::bigint AS ts FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $2 AND coalesce((r.doc->>'isDeleted')::boolean, false) AND (r.doc->>'isDeleted') = 'true'
+              SELECT r.id, r.doc, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'connectorId' AS cid FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $2 AND coalesce((r.doc->>'isDeleted')::boolean, false) AND (r.doc->>'isDeleted') = 'true'
                 AND coalesce((r.doc->>'purgeAttempts')::int, 0) < $3 AND r.doc->>'deletedAtTimestamp' IS NOT NULL
                 AND (((r.doc->>'deletedAtTimestamp')::bigint = $4 AND r.id > $5) OR ((r.doc->>'deletedAtTimestamp')::bigint > $6 AND (r.doc->>'deletedAtTimestamp')::bigint <= $7))
               ORDER BY (r.doc->>'deletedAtTimestamp')::bigint, r.id LIMIT $8)
             SELECT c.doc AS rec, ty.doc AS typ, coalesce(app.doc->>'status', '') = $9 AS skip,
                    EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = 'records' AND e.from_id = c.id
                            AND e.to_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')) AS held
-            FROM c LEFT JOIN graph.nodes app ON app.org_id = $1 AND app.coll = 'apps' AND app.id = c.doc->>'connectorId'
+            FROM c LEFT JOIN graph.nodes app ON app.org_id = $1 AND app.coll = 'apps' AND app.id = c.cid
             LEFT JOIN LATERAL (SELECT t.doc FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
               WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id = c.id ORDER BY e.to_id LIMIT 1) ty ON true
             ORDER BY c.ts, c.id""", org, org_id, max_attempts, after_ts if after_ts is not None else lower - 1, after_key or "", lower, deleted_before,
@@ -284,12 +289,13 @@ class TrashMixin(PgBase):
             rows = await tx.fetch("""/* pipeshub:graph.purge_trashed_records_due */ SELECT r.id, r.doc AS rec, ty.doc AS typ, (
                   coalesce((r.doc->>'isDeleted')::boolean, false) AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND (r.doc->>'deletedAtTimestamp')::bigint <= $4 AND coalesce((r.doc->>'purgeAttempts')::int, 0) < $5
                   AND coalesce(app.doc->>'status', '') <> $6
-                  AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = r.org_id AND e.coll = 'nodeRelations' AND e.from_coll = 'records' AND e.from_id = r.id
+                  AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = 'records' AND e.from_id = r.id
                                   AND e.to_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT'))) AS due
-                FROM graph.nodes r LEFT JOIN graph.nodes app ON app.org_id = r.org_id AND app.coll = 'apps' AND app.id = r.doc->>'connectorId'
-                LEFT JOIN LATERAL (SELECT t.doc FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
-                  WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
-                WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[]) AND r.doc->>'orgId' = $3""",
+                FROM (SELECT x.org_id, x.id, x.doc, x.doc->>'connectorId' AS cid FROM graph.nodes x
+                  WHERE x.org_id = $1 AND x.coll = 'records' AND x.id = ANY($2::text[]) AND x.doc->>'orgId' = $3 OFFSET 0) r
+                LEFT JOIN graph.nodes app ON app.org_id = $1 AND app.coll = 'apps' AND app.id = r.cid
+                LEFT JOIN LATERAL (SELECT t.doc FROM graph.edges e JOIN graph.nodes t ON t.org_id = $1 AND t.coll = e.to_coll AND t.id = e.to_id
+                  WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true""",
                                   org, keys, org_id, deleted_before, max_attempts, APP_STATUS_DELETING)
             await _remove_records(tx, org, [r["id"] for r in rows if r["due"]])
             return rows

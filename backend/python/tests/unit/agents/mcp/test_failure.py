@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
 import pytest
 from mcp.shared.exceptions import MCPError
 
+from app.agents.mcp import failure as mcp_failure
 from app.agents.mcp.errors import (
     MCPConnectionError,
     MCPHttpStatusError,
@@ -20,10 +22,15 @@ from app.agents.mcp.errors import (
 from app.agents.mcp.failure import (
     MCPFailureReason,
     classify_mcp_failure,
+    log_discover_end,
     mcp_error_class,
 )
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils import logging_fields
+from app.utils.credential_refresh_log import MISCONFIGURED_REPEAT_S
+from app.utils.error_class import log_failure
+from app.utils.logger import log_record_fields
 from tests.unit.agents.mcp.refresh_failures import (
     lock_contention_error,
     token_endpoint_error,
@@ -174,3 +181,105 @@ class TestTheLogErrorClass:
 
     def test_the_callers_reason_is_used_when_given(self) -> None:
         assert mcp_error_class(RuntimeError("?"), MCPFailureReason.TIMEOUT) == "timeout"
+
+
+def test_log_discover_end_names_its_source_and_takes_a_level(caplog: pytest.LogCaptureFixture) -> None:
+    log = logging.getLogger("app.test.discover")
+    caplog.set_level(logging.DEBUG, logger=log.name)
+
+    log_discover_end(log, "mcp-1", MCPConnectionError("down"), source="listing", mcp_reason="unreachable")
+    log_discover_end(log, "mcp-2", None, source="listing", reason="listing_deadline")
+    log_discover_end(log, "mcp-3", MCPOAuthError("x", error_code="invalid_grant"), source="listing", level=logging.INFO)
+
+    lines = [(r.levelno, log_record_fields(r)) for r in caplog.records]
+    assert [(level, f["mcp_server_id"], f["source"], f["outcome"], f.get("error_class"), f.get("reason"))
+            for level, f in lines] == [
+        (logging.WARNING, "mcp-1", "listing", "failure", "unavailable", None),
+        (logging.WARNING, "mcp-2", "listing", "skipped", None, "listing_deadline"),
+        (logging.INFO, "mcp-3", "listing", "failure", "auth_expired", None),
+    ]
+    assert all(r.getMessage() == "mcp.discover.end" and "error_message" not in log_record_fields(r)
+               for r in caplog.records)
+
+
+class TestARefreshFailureOnATurnOrListing:
+    """The refresh's own `credential_refresh.end` already logged it: the turn's and the listing's line keep their
+    level (never demoted to DEBUG), say the class the `end` said, and a `misconfigured` one is ERROR once an hour."""
+
+    LOG = logging.getLogger("app.test.discover")
+
+    @pytest.fixture(autouse=True)
+    def _fresh_gate(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+        caplog.set_level(logging.DEBUG, logger=self.LOG.name)
+
+    @staticmethod
+    def _logged_at(level: int, exc: BaseException) -> BaseException:
+        log_failure(logging.getLogger("app.test.refresh"), "credential_refresh.end", exc, level=level, include_error_text=False)
+        return exc
+
+    def _lines(self, caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
+        return [(r.levelno, log_record_fields(r)["error_class"]) for r in caplog.records
+                if r.name == self.LOG.name and r.getMessage() == "mcp.discover.end"]
+
+    async def test_a_turns_line_keeps_its_level_without_a_stack_or_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        failure = self._logged_at(logging.WARNING, await token_endpoint_error(503, {"error": "temporarily_unavailable"}))
+
+        log_discover_end(self.LOG, "mcp-1", failure, source="turn")
+
+        [line] = [r for r in caplog.records if r.name == self.LOG.name]
+        assert (line.levelno, line.exc_text) == (logging.WARNING, None)
+        assert log_record_fields(line).items() >= {
+            "error_class": "unavailable", "outcome": "failure", "error_type": "MCPOAuthError", "source": "turn",
+        }.items()
+        assert "error_message" not in log_record_fields(line)
+
+    async def test_a_listings_sign_in_line_keeps_the_level_it_asks_for(self, caplog: pytest.LogCaptureFixture) -> None:
+        failure = self._logged_at(logging.WARNING, await token_endpoint_error(400, {"error": "invalid_grant"}))
+
+        log_discover_end(self.LOG, "mcp-1", failure, source="listing", level=logging.INFO)
+
+        assert self._lines(caplog) == [(logging.INFO, "auth_expired")]
+
+    def test_control_a_failure_nobody_logged_is_the_full_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        log_discover_end(self.LOG, "mcp-1", KeyError("ours"), source="turn")
+
+        [line] = [r for r in caplog.records if r.name == self.LOG.name]
+        assert (line.levelno, log_record_fields(line)["error_class"]) == (logging.ERROR, "internal")
+        assert line.exc_text
+
+    @pytest.mark.parametrize(("error", "reason", "cls"), [
+        (MCPTokenRefreshError, "no_credential", "not_found"),
+        (MCPTokenRefreshError, "credential_removed", "conflict"),
+        (MCPTokenRefreshError, "config_missing", "misconfigured"),
+        (MCPOAuthError, "url_blocked", "misconfigured"),
+        (MCPOAuthError, "host_unresolved", "unavailable"),
+    ])
+    def test_a_tagged_refresh_failure_has_the_class_its_end_said(self, error: type, reason: str, cls: str) -> None:
+        assert mcp_error_class(error("x", refresh_reason=reason)) == cls
+
+    async def test_a_refused_request_shape_is_an_expired_sign_in_not_a_bad_request(self) -> None:
+        assert mcp_error_class(await token_endpoint_error(400, {"error": "invalid_request"})) == "auth_expired"
+
+    def test_a_misconfigured_line_is_an_error_once_an_hour_per_server(self, caplog: pytest.LogCaptureFixture) -> None:
+        def turn(server: str) -> None:
+            log_discover_end(self.LOG, server, MCPTokenRefreshError("x", refresh_reason="config_missing"), source="turn")
+
+        turn("mcp-s")
+        turn("mcp-s")
+        turn("mcp-t")
+        for key in logging_fields._log_once_last:
+            logging_fields._log_once_last[key] -= MISCONFIGURED_REPEAT_S + 1
+        turn("mcp-s")
+
+        assert [level for level, _ in self._lines(caplog)] == [logging.ERROR, logging.DEBUG, logging.ERROR, logging.ERROR]
+        assert all(cls == "misconfigured" for _, cls in self._lines(caplog))
+
+    @pytest.mark.parametrize("kwargs", [{"status": 503}, {"refresh_reason": "host_unresolved"}], ids=["outage", "dns"])
+    def test_other_classes_are_never_gated(self, caplog: pytest.LogCaptureFixture, kwargs: dict[str, Any]) -> None:
+        exc = MCPOAuthError("x", **kwargs)
+        log_discover_end(self.LOG, "mcp-s", exc, source="turn")
+        log_discover_end(self.LOG, "mcp-s", exc, source="listing")
+
+        assert self._lines(caplog) == [(logging.WARNING, "unavailable")] * 2
+        assert mcp_failure.misconfigured_level("mcp-s", "unavailable") is None

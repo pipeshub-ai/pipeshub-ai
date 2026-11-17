@@ -1,5 +1,6 @@
 """Tests for app.config.providers.etcd.etcd3_connection_manager."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -193,6 +194,27 @@ class TestGetClient:
             mgr.client = None
             with pytest.raises(ConnectionError, match="No ETCD client"):
                 await mgr.get_client()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_connect_is_raised_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The store call that asked for the client fails with this error, and its caller logs it."""
+        mgr = Etcd3ConnectionManager(ConnectionConfig(hosts=["localhost"]))
+        refused = OSError("connection refused")
+        client = MagicMock()
+        client.status.side_effect = refused
+        with patch("app.config.providers.etcd.etcd3_connection_manager.etcd3.client", return_value=client):
+            with pytest.raises(ConnectionError, match="Failed to connect to ETCD: connection refused") as raised:
+                await mgr.get_client()
+        assert raised.value.__cause__ is refused
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
+    async def test_no_client_is_raised_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        mgr = Etcd3ConnectionManager(ConnectionConfig(hosts=["localhost"]))
+        with patch.object(mgr, "connect", new_callable=AsyncMock):
+            with pytest.raises(ConnectionError, match="No ETCD client"):
+                await mgr.get_client()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 class TestClose:

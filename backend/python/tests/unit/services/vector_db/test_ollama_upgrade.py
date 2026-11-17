@@ -31,7 +31,7 @@ async def test_saved_dimensions_keep_existing_collection_usable(path, monkeypatc
     )
     requests = []
 
-    def build_model(provider, effective) -> MagicMock:
+    def build_model(provider, effective, **_kwargs) -> MagicMock:
         assert provider == "ollama"
         dimension = effective["configuration"].get("dimensions", 768)
         requests.append(dimension)

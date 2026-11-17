@@ -388,6 +388,26 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
             for txn in (t1, t2):
                 await provider.commit_transaction(txn)
 
+    async def test_an_alias_update_that_matches_no_node_is_retried(self, arango) -> None:
+        """Under concurrent updates ArangoDB can answer the alias UPDATE's
+        lookup with no node; the UPDATE then matched nothing and reported
+        success. Here the node appears after the first attempt."""
+        provider, org_id = arango
+        key, node = _topic(org_id, "Standup")
+
+        async def create_late() -> None:
+            await asyncio.sleep(0.05)
+            await provider.create_taxonomy_node_if_absent(TOPICS, node)
+
+        await asyncio.gather(
+            provider.add_taxonomy_aliases(TOPICS, key, ["Daily"], ["daily"], org_id=org_id),
+            create_late(),
+        )
+        docs = await provider.http_client.execute_aql(
+            f"FOR d IN {TOPICS} FILTER d._key == @key RETURN d", {"key": key},
+        )
+        assert docs[0]["normalizedAliases"] == ["daily"]
+
     async def test_two_records_enriching_the_same_new_topic_both_succeed(self, arango) -> None:
         """The real transformer: each record resolves the same new canonical
         topic and enriches in its own graph transaction, concurrently."""
