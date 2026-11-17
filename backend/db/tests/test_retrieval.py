@@ -757,3 +757,68 @@ def test_vrid_held_elsewhere_probes_the_vrid_index_and_never_scans_the_points(rd
         assert "_vrid_block_id_idx" in plans[i] and "Scan using point_tombstones_h" in plans[i], (i, plans[i])
         assert vetted_harness.seq_scanned(plans[i], big) == [], (i, plans[i])
 
+
+# ---- the membership keys on the point row (retrieval_0006) ------------------------------------------------------------------------
+
+def keys_of(cluster, name, org: str) -> dict[str, list[str] | None]:
+    with cluster.admin(name) as c:
+        return dict(c.execute("SELECT point_id::text, member_keys FROM retrieval.points WHERE org_id = %s ORDER BY 1", (org,)))
+
+
+def group(c, org: str, key: str, members: dict[int, list[str]]) -> None:
+    """A group row and its membership rows, as write_groups leaves them (the row first, then the member diff)."""
+    c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 1, %s, clock_timestamp()) "
+              "ON CONFLICT (org_id, collection_id, group_key) DO UPDATE SET computed_at = EXCLUDED.computed_at", (org, key))
+    c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND collection_id = 1 AND group_key = %s AND kind IN (1, 2, 3)", (org, key))
+    for kind, ids in members.items():
+        c.execute("INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id) SELECT %s, 1, %s, %s, unnest(%s::text[])",
+                  (org, key, kind, ids))
+
+
+P1, P2, P3 = (f"a0000000-0000-0000-0000-00000000010{i}" for i in (1, 2, 3))
+
+
+def test_a_point_row_carries_its_groups_membership_keys_whoever_writes_and_in_whatever_order(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+        with uow(c, "pipeshub_indexing", ORG_A):
+            group(c, ORG_A, "g1", {1: ["c1"], 2: ["rg2", "rg1"]})
+            put(c, ORG_A, P1)                                                   # group_key = point id: no group row
+            c.execute("UPDATE retrieval.points SET group_key = 'g1' WHERE org_id = %s AND point_id = %s", (ORG_A, P1))   # moved into g1
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                      "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4), (%s, 1, 1, %s, 'g2', %s::ext.halfvec, 4)", (ORG_A, P2, VEC, ORG_A, P3, VEC))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c1", "2:rg1", "2:rg2"], P2: ["1:c1", "2:rg1", "2:rg2"], P3: None}   # g2 has no row: unknown
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c2"], 3: ["root"]})                         # the membership changes after the points were written
+        group(c, ORG_A, "g2", {})
+        c.execute("INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id) VALUES (%s, 1, 'g1', 4, 'path')", (ORG_A,))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c2", "3:root"], P2: ["1:c2", "3:root"], P3: None}     # kind 4 is not an arm; g2 has no members
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))   # a job removes members
+    assert keys_of(cluster, name, ORG_A)[P1] == ["3:root"]
+
+
+def test_a_point_and_a_membership_change_of_its_group_wait_for_each_other(rdb):
+    """The keys a point takes are never those of a membership another transaction is changing: the two writers are serialised on the
+    group row (FOR SHARE against the membership writer's update), so the later one sees and keeps the earlier one's state."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+    with connect_as(cluster, name, "pipeshub_indexing_login") as members, connect_as(cluster, name, "pipeshub_indexing_login") as points:
+        with uow(members, "pipeshub_indexing", ORG_A):
+            group(members, ORG_A, "g1", {1: ["c2"]})                            # uncommitted
+            with pytest.raises(pg.LockNotAvailable), uow(points, "pipeshub_indexing", ORG_A):
+                points.execute("SET LOCAL lock_timeout = '300ms'")
+                points.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                               "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+        with uow(points, "pipeshub_indexing", ORG_A):                           # after the membership committed: its keys
+            points.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                           "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+            with pytest.raises(pg.LockNotAvailable), uow(members, "pipeshub_indexing", ORG_A):     # and the other way round
+                members.execute("SET LOCAL lock_timeout = '300ms'")
+                group(members, ORG_A, "g1", {1: ["c3"]})
+        with uow(members, "pipeshub_indexing", ORG_A):
+            group(members, ORG_A, "g1", {1: ["c3"]})
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c3"]}

@@ -260,10 +260,14 @@ _LOCK_GROUPS = """/* pipeshub:pgvector.lock_groups */
 async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime | None, *, safe_mode: bool) -> None:
     """Points, their text, payload and postings, and their groups' membership, in this transaction. New points are inserted; points
     that exist are locked and updated in place (``point_sk`` is kept: the generated bit column and the indexes follow). A point
-    deleted between the two steps is inserted by the next round. The rows of the points' groups are locked first (see ``_LOCK_GROUPS``)."""
+    deleted between the two steps is inserted by the next round. The rows of the points' groups are locked first (see ``_LOCK_GROUPS``), and
+    their membership is written before the points: a point takes its group's membership keys when it is written (retrieval_0006), so a
+    new point is written once, not written and then rewritten by the membership that follows it."""
     args = (b.org, collection_id, space_id, b.point_ids, b.group_keys, b.vrids, b.block_ids, b.ent_types, b.ent_ids, b.ent_kinds,
             b.ent_levels, b.embeddings, b.term_start, b.term_end, b.terms, b.weights, b.payloads, b.contents)
     await tx.execute(_LOCK_GROUPS, b.org, collection_id, sorted(set(b.group_keys)))
+    if b.groups:
+        await write_groups(tx, b.org, collection_id, b.groups, computed_at, allow_empty=False)
     todo = list(b.point_ids)
     for _ in range(4):
         made = {r["point_id"] for r in await tx.fetch(_INSERT_NEW, *args, todo)}
@@ -280,8 +284,6 @@ async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, compute
     # A point deleted while HNSW safe mode was on (a tombstone) and written again is alive again, and counted again. Always run, not
     # only in safe mode: the tombstone outlives a switch of the mode, and without tombstones this is an index probe that finds nothing.
     await tx.execute(_REVIVE, b.org, collection_id, space_id, b.point_ids)
-    if b.groups:
-        await write_groups(tx, b.org, collection_id, b.groups, computed_at, allow_empty=False)
 
 
 _GROUP_ROWS = """/* pipeshub:pgvector.write_groups */
