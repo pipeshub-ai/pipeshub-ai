@@ -11,6 +11,9 @@ class ReconciliationContext(BaseModel):
     # old block id -> new block id, for blocks whose content is unchanged but whose stored points carry ids of another
     # scheme: their points are moved to the new id with the stored vectors, not embedded again
     rekey_ids: dict[str, str] | None = None
+    # The ids (as the stored metadata names them, so the old ids of a record being re-keyed) of the blocks that had a point when the
+    # record was last indexed; None for a record indexed before that was recorded.
+    recorded_points: set[str] | None = None
 
 #: ``TransformContext.settings`` key: the record is handed to the pipeline
 #: stages once indexed, so the indexed write also marks extraction QUEUED (the

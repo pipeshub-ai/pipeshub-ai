@@ -31,6 +31,7 @@ from tests.support.index_world import (
     ORG,
     RID,
     VRID,
+    Blob,
     legacy_record,
     make_store,
     record_of,
@@ -510,3 +511,65 @@ async def test_on_a_multimodal_model_an_image_is_not_counted(db, described: bool
         del db.collections[COLL][pid]            # the image has no point (the provider returned nothing for it)
     await run(store, blob, _image_record(described))
     assert store._embed_documents_with_retry.await_count == 0
+
+
+def _anchors(db: InMemoryVectorDBService) -> list[str]:
+    """What an index that recorded the points it wrote would have stored: the block ids the store has points for."""
+    return sorted({p.payload["metadata"]["blockId"] for p in db.collections[COLL].values() if p.payload["metadata"].get("blockId")})
+
+
+async def _legacy_with_record(db: InMemoryVectorDBService, container: BlocksContainer) -> Blob:
+    _, blob = await legacy_record(db, container)
+    blob.saved["pointedBlocks"] = _anchors(db)
+    return blob
+
+
+async def test_the_index_records_which_blocks_got_a_point(db) -> None:
+    """The sweep lists the record whole after the write: the ids it found are saved with the record's reconciliation metadata."""
+    blob = Blob()
+    container = _image_record(True)
+    await run(make_store(db), blob, container, "newRecord")
+    ids = {b.id for b in container.blocks}
+    assert set(blob.saved["pointedBlocks"]) <= ids
+    assert len(blob.saved["pointedBlocks"]) == len(container.blocks), "the five paragraphs and the described image each have a point"
+
+    skipped = _image_record(False)
+    blob2 = Blob()
+    db2 = InMemoryVectorDBService()
+    await db2.create_collection(COLL, CollectionConfig(embedding_size=2))
+    await run(make_store(db2), blob2, skipped, "newRecord")
+    assert len(blob2.saved["pointedBlocks"]) == len(skipped.blocks) - 1, "an undescribed image on a text model has no point: not recorded"
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+async def test_a_recorded_image_whose_point_is_gone_embeds_the_record_on_any_model(db, multimodal: bool) -> None:
+    """With the written set recorded nothing is predicted: a recorded block that has lost its point is healed, on a multimodal model too."""
+    blob = await _legacy_with_record(db, _image_record(True))
+    image_point = next(pid for pid, p in db.collections[COLL].items() if "bar chart" in p.payload["page_content"])
+    del db.collections[COLL][image_point]
+    store = make_store(db)
+    store.get_embedding_model_instance = AsyncMock(return_value=multimodal)
+    await run(store, blob, _image_record(True))
+    embedded = [t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]
+    assert len(embedded) >= 5, "the record was embedded (its paragraphs went again): the lost point was seen"
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+async def test_a_block_that_never_had_a_point_is_not_expected_when_the_written_set_is_recorded(db, multimodal: bool) -> None:
+    """A provider-skipped image (no point was ever written) is not in the recorded set: the migration embeds nothing."""
+    blob = await _legacy_with_record(db, _image_record(False))
+    store = make_store(db)
+    store.get_embedding_model_instance = AsyncMock(return_value=multimodal)
+    await run(store, blob, _image_record(False))
+    assert store._embed_documents_with_retry.await_count == 0
+
+
+async def test_a_record_that_predates_the_recording_follows_the_counting_rule(db) -> None:
+    """No recorded set: a lost described image on a text model is counted (and healed), on a multimodal model it is not."""
+    _, blob = await legacy_record(db, _image_record(True))
+    assert "pointedBlocks" not in blob.saved
+    image_point = next(pid for pid, p in db.collections[COLL].items() if "bar chart" in p.payload["page_content"])
+    del db.collections[COLL][image_point]
+    store = make_store(db)
+    await run(store, blob, _image_record(True))
+    assert any("bar chart" in t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0])

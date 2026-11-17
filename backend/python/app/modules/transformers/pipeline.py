@@ -91,6 +91,7 @@ class IndexingPipeline:
                             blocks_to_index_ids=blocks_to_index_ids,
                             block_ids_to_delete=block_ids_to_delete,
                             rekey_ids=rekey_ids,
+                            recorded_points=old_metadata.pointed_blocks,
                         )
                     blocks_to_index_ids, block_ids_to_delete, unchanged_id_map = reconciliation_service.compute_diff(
                         old_metadata, new_metadata

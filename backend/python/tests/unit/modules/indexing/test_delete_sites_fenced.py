@@ -46,11 +46,53 @@ def _function_calls(function_name: str, called: str) -> bool:
     return any(function_name in _calls_by_function(called) for _ in [0])
 
 
-def test_every_delete_of_points_sits_in_a_fenced_function() -> None:
-    sites = set(_calls_by_function("delete_points"))
-    assert sites == {"delete_blocks_by_ids", "delete_embeddings", "_fence_and_verify"}, f"a new delete site: {sorted(sites)}"
-    fenced = set(_calls_by_function("_fenced"))
-    assert sites <= fenced, f"unfenced delete sites: {sorted(sites - fenced)}"
+APP = Path(vs_mod.__file__).resolve().parents[2]
+VECTOR_PROVIDERS = ("services/vector_db/qdrant", "services/vector_db/opensearch", "services/vector_db/redis", "services/vector_db/pgvector",
+                    "services/vector_db/interface")
+
+# Every ``delete_points`` call in the application, by (file, function), and what makes it safe. A new call site fails the test until it
+# is listed here with its reason (and, for a write of a record's points, until it is fenced).
+FENCED = {  # the points of a record being indexed: under the virtual record's lease, confirmed before the call
+    ("modules/transformers/vectorstore.py", "delete_blocks_by_ids"),
+    ("modules/transformers/vectorstore.py", "delete_embeddings"),
+    ("modules/transformers/vectorstore.py", "_fence_and_verify"),
+    ("modules/indexing/run.py", "delete_points_for_virtual_record"),
+}
+SWEEP = {("modules/indexing/stray_sweep.py", "sweep_stray_points")}   # runs under apply's lease, with a fence around each call
+GRAPH_CHECKED = {   # the last record of a virtual record, or a connector, went away: the graph is re-read before deleting
+    ("modules/indexing/run.py", "purge_connector"),
+    ("modules/indexing/run.py", "bulk_delete_embeddings"),
+    ("services/vector_db/membership.py", "_drop_points_where_no_record_remains"),
+    ("services/vector_db/membership.py", "_rewrite_or_delete_locked"),
+}
+ENTITY_FILES = {"modules/transformers/entity_vectorstore.py"}   # the entity index, keyed by entity: not the points of a record
+
+
+def _all_delete_sites() -> set[tuple[str, str]]:
+    sites: set[tuple[str, str]] = set()
+    for path in APP.rglob("*.py"):
+        relative = path.relative_to(APP).as_posix()
+        if relative.startswith(VECTOR_PROVIDERS) or "delete_points" not in path.read_text(encoding="utf-8"):
+            continue
+        for function in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "delete_points":
+                        sites.add((relative, function.name))
+    return sites
+
+
+def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writing_ones_are_fenced() -> None:
+    sites = _all_delete_sites()
+    unlisted = {s for s in sites if s not in FENCED | SWEEP | GRAPH_CHECKED and s[0] not in ENTITY_FILES}
+    assert not unlisted, f"a delete of vector points that is not listed (fence it, or list it with its reason): {sorted(unlisted)}"
+    assert FENCED <= sites and SWEEP <= sites, "a listed fenced site no longer exists"
+    fenced_calls = set(_calls_by_function("_fenced")) | set(_calls_by_function("fenced_delete"))
+    for file, function in FENCED:
+        text = (APP / file).read_text(encoding="utf-8")
+        node = next(n for n in ast.walk(ast.parse(text)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
+        assert "_fenced(" in ast.get_source_segment(text, node) or "fenced_delete(" in ast.get_source_segment(text, node), f"{file}:{function}"
+    assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_fence_and_verify"}
 
 
 def test_every_release_of_an_orphaned_virtual_record_confirms_the_lease() -> None:
@@ -173,3 +215,39 @@ async def test_one_failed_renewal_during_a_delete_does_not_drop_the_lease(db, ma
     async with store._vrid_lease("t", ORG, VRID):
         await store.delete_embeddings(VRID, COLL, org_id=ORG)
     assert landed == ["delete landed"]
+
+
+async def test_the_vector_only_reindex_delete_runs_under_the_virtual_records_lease(db, manager) -> None:
+    """``IndexingPipeline.delete_points_for_virtual_record`` wipes a whole virtual record: while a sibling holds its lease it waits and
+    is handed back, deleting nothing."""
+    from app.modules.indexing.run import IndexingPipeline
+    from app.services.vector_db.collection_locator import StaticCollectionLocator
+    from tests.support.vector_db import make_collection_registry
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(vs_mod, "messaging_env", SimpleNamespace(record_lease_wait_seconds=0.1))
+    monkey.setattr(leases_mod, "messaging_env", SimpleNamespace(concurrency_lease_seconds=5.0, record_lease_wait_seconds=0.1))
+    try:
+        pipeline = IndexingPipeline(
+            logger=MagicMock(), config_service=AsyncMock(), graph_provider=AsyncMock(),
+            collection_registry=make_collection_registry(COLL), vector_db_service=db,
+        )
+        pipeline.collection_locator = StaticCollectionLocator([COLL])
+        spied: list[str] = []
+        real_delete = db.delete_points
+
+        async def spy(*args: object, **kwargs: object) -> None:
+            spied.append("delete")
+            await real_delete(*args, **kwargs)
+
+        db.delete_points = spy  # type: ignore[method-assign]
+        manager.owner[f"record:vrid:{ORG}:{VRID}"] = "a sibling that is writing the virtual record"
+        ctx = SimpleNamespace(org_id=ORG, connector_id="c1", record_group_id=None, mime_type="text/plain")
+        with pytest.raises(VirtualRecordBusy):
+            await pipeline.delete_points_for_virtual_record(VRID, ctx)
+        assert spied == []
+        manager.owner.clear()
+        await pipeline.delete_points_for_virtual_record(VRID, ctx)    # free: it deletes, under the lease
+        assert spied == ["delete"] and manager.owner == {}
+    finally:
+        monkey.undo()

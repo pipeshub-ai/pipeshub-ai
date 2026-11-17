@@ -26,6 +26,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Tuple
 
@@ -1046,6 +1047,10 @@ class VirtualRecordBusy(IndexingError, RecordLeaseHeld):
         IndexingError.__init__(self, message)
 
 
+# The block ids the stray sweep found points for in this ``apply`` (set by the sweep when it listed the record whole), to be recorded in
+# the record's reconciliation metadata.
+_POINTED: contextvars.ContextVar["set[str] | None"] = contextvars.ContextVar("pointed_blocks", default=None)
+
 # The lease on the virtual record held by the ``apply`` this task is running in (None: no lease is bound, nothing to confirm).
 _HELD_LEASE: contextvars.ContextVar["LeaseHandle | None"] = contextvars.ContextVar("vrid_lease", default=None)
 
@@ -1065,6 +1070,31 @@ async def _fenced(what: str) -> AsyncIterator[None]:
     here would drop the lease on a transient error while the delete could still land."""
     await _require_lease(what)
     yield
+
+
+@contextlib.asynccontextmanager
+async def hold_virtual_record(owner: str, org_id: str | None, virtual_record_id: str | None) -> AsyncIterator[None]:
+    """Hold the lease on the virtual record for the body (unless this task already holds it, or none is bound), with the handle
+    published so every delete under it confirms the lease. A wait past the limit, or a lost lease, is a ``VirtualRecordBusy``."""
+    leases = VectorStore.vrid_leases
+    if _HELD_LEASE.get() is not None or leases is None or not leases.bound or not org_id or not virtual_record_id:
+        yield
+        return
+    try:
+        async with leases.hold(
+            f"vrid:{org_id}:{virtual_record_id}", owner=owner,
+            wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
+        ) as handle:
+            token = _HELD_LEASE.set(handle)
+            try:
+                yield
+            finally:
+                _HELD_LEASE.reset(token)
+    except RecordBusy as e:  # the lease stayed busy past the wait, or was lost: not a failure of this record
+        raise VirtualRecordBusy(f"the virtual record {virtual_record_id} is being written by another record: {e}") from e
+
+
+fenced_delete = _fenced  # for the deletes outside this module that run under ``hold_virtual_record``
 
 
 async def _always_current() -> bool:
@@ -1318,31 +1348,30 @@ class VectorStore(Transformer):
     #: without a lease manager) nothing is held.
     vrid_leases: ClassVar["RecordLeases | None"] = None
 
-    @contextlib.asynccontextmanager
-    async def _vrid_lease(self, owner: str, org_id: str | None, virtual_record_id: str | None) -> AsyncIterator[None]:
-        """Hold the lease on the virtual record for the body (unless this task already holds it, or none is bound), with the handle
-        published so every delete under it confirms the lease. A wait past the limit, or a lost lease, is a ``VirtualRecordBusy``."""
-        leases = type(self).vrid_leases
-        if _HELD_LEASE.get() is not None or leases is None or not leases.bound or not org_id or not virtual_record_id:
-            yield
-            return
-        try:
-            async with leases.hold(
-                f"vrid:{org_id}:{virtual_record_id}", owner=owner,
-                wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
-            ) as handle:
-                token = _HELD_LEASE.set(handle)
-                try:
-                    yield
-                finally:
-                    _HELD_LEASE.reset(token)
-        except RecordBusy as e:  # the lease stayed busy past the wait, or was lost: not a failure of this record
-            raise VirtualRecordBusy(f"the virtual record {virtual_record_id} is being written by another record: {e}") from e
+    def _vrid_lease(self, owner: str, org_id: str | None, virtual_record_id: str | None) -> AbstractAsyncContextManager[None]:
+        return hold_virtual_record(owner, org_id, virtual_record_id)
 
     async def apply(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
         async with self._vrid_lease(f"index:{record.id}", record.org_id, record.virtual_record_id):
-            return await self._apply_locked(ctx)
+            token = _POINTED.set(None)
+            try:
+                result = await self._apply_locked(ctx)
+                self._record_pointed_blocks(ctx)
+                return result
+            finally:
+                _POINTED.reset(token)
+
+    def _record_pointed_blocks(self, ctx: TransformContext) -> None:
+        """Write the ids of the blocks that really have a point (as the sweep listed them) into the metadata saved with the record, so
+        a later verification expects exactly those and never a block the writers gave no point (a provider-skipped image, code with no
+        unit of its own). Not recorded when the sweep did not list the record whole."""
+        seen, rc = _POINTED.get(), ctx.reconciliation_context
+        if seen is None or rc is None or not isinstance(rc.new_metadata, dict) or not rc.new_metadata:
+            return
+        container = ctx.record.block_containers
+        ids = {b.id for b in container.blocks} | {g.id for g in container.block_groups}
+        rc.new_metadata["pointedBlocks"] = sorted(seen & ids)
 
     async def _apply_locked(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
@@ -1380,6 +1409,7 @@ class VectorStore(Transformer):
             if rekey_ids:
                 blocks_to_index_ids, block_ids_to_delete = await self._move_points_to_new_ids(
                     record, rekey_ids, set(blocks_to_index_ids), set(block_ids_to_delete),
+                    recorded=ctx.reconciliation_context.recorded_points,
                 )
                 if not blocks_to_index_ids and not block_ids_to_delete:
                     self.logger.info(f"Re-key: every block of record {record_id} moved, nothing to embed")
@@ -1418,8 +1448,13 @@ class VectorStore(Transformer):
         rekey_ids: dict[str, str],
         blocks_to_index_ids: set[str],
         block_ids_to_delete: set[str],
+        recorded: set[str] | None = None,
     ) -> tuple[set[str], set[str]]:
         """Move the points of unchanged blocks from their old ids to their content-derived ids, with the stored vectors: all or nothing.
+
+        *recorded*: the old ids of the blocks that had a point when the record was last indexed (its reconciliation metadata), when that
+        was recorded: the verification then expects exactly those. Without it (a record that predates it) a block is expected to have
+        a point when the writers would give it one (``_embeds_a_point``).
 
         A record indexed before block ids followed content has its points under random block ids. Its blocks of unchanged content
         keep their vectors, but only if the move can be shown complete first. Pass one reads every stored point of the record's blocks
@@ -1467,6 +1502,7 @@ class VectorStore(Transformer):
         try:
             # Pass one: verify. Only ids are kept; the vectors of a window are dropped with it.
             covered: set[str] = set()  # old ids some stored point speaks for: as its blockId or in rowBlockIds
+            anchors: set[str] = set()  # old ids that are the blockId of a stored point (what the recorded set names)
             counts: list[int] = []
             for window in windows:
                 points = await self._read_points_whole(collection_name, org_id, vrid, window_ids(window))
@@ -1476,9 +1512,17 @@ class VectorStore(Transformer):
                         if point.dense_vector is None or any(r not in new_by_old for r in rows_of(point)):
                             return embed_whole_record("unmovable")
                         covered.update(rows_of(point))
+                        anchors.add(rows_of(point)[0])
                     else:  # already under its new id: an earlier run moved it
                         covered.update(old_by_new[r] for r in rows_of(point) if r in old_by_new)
-            uncovered = [blocks_by_id.get(new_by_old[old]) for old in old_ids if old not in covered]
+                        anchors.update(old_by_new[r] for r in rows_of(point)[:1] if r in old_by_new)
+            if recorded is not None:
+                # What the writer recorded: a recorded block whose point is gone lost it; a block never recorded never had one.
+                if any(old in recorded and old not in anchors for old in old_ids):
+                    return embed_whole_record("missing")
+                uncovered = []
+            else:
+                uncovered = [blocks_by_id.get(new_by_old[old]) for old in old_ids if old not in covered]
             if uncovered:
                 code_units = await self._code_unit_ids(record) if any(i is not None and _is_code_item(i) for i in uncovered) else frozenset()
                 needs_model = any(
@@ -1605,6 +1649,7 @@ class VectorStore(Transformer):
                 self._record_context(record.org_id, record))
             # A record larger than one pass lists is swept in steps: the next pass of this revision resumes where the last stopped.
             where = (record.org_id, vrid, hash(frozenset(keep)))
+            await self.vector_db_service.make_searchable(collection_name)  # the listing must see what this run just wrote
             result = await sweep_stray_points(
                 self.vector_db_service, collection_name,
                 org_id=org_for_filter(record.org_id, match_bound=True), virtual_record_id=vrid, keep_block_ids=keep,
@@ -1612,6 +1657,8 @@ class VectorStore(Transformer):
                 may_delete=lambda: self._still_current(record),
                 fence=lambda: _fenced("the stray sweep"),
             )
+            if result.seen_blocks is not None:
+                _POINTED.set(set(result.seen_blocks))
             if result.next_offset is not None:
                 self._sweep_resume[where] = result.next_offset
                 while len(self._sweep_resume) > _SWEEP_RESUME_RECORDS:

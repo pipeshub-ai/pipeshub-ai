@@ -132,3 +132,11 @@ def test_the_scheme_survives_a_round_trip() -> None:
     assert "idScheme" not in meta.to_dict()
     meta.id_scheme = ID_SCHEME
     assert ReconciliationMetadata.from_dict(meta.to_dict()).id_scheme == ID_SCHEME
+
+
+def test_the_recorded_set_of_pointed_blocks_survives_a_metadata_round_trip() -> None:
+    meta = ReconciliationService().build_metadata(_container("x"))
+    assert "pointedBlocks" not in meta.to_dict() and ReconciliationMetadata.from_dict(meta.to_dict()).pointed_blocks is None
+    meta.pointed_blocks = {"b2", "b1"}
+    assert meta.to_dict()["pointedBlocks"] == ["b1", "b2"]
+    assert ReconciliationMetadata.from_dict(meta.to_dict()).pointed_blocks == {"b1", "b2"}

@@ -1,6 +1,7 @@
 """The stray-point sweep: removes the points a record's current revision does not reference."""
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest_asyncio
@@ -270,3 +271,43 @@ async def test_the_store_asks_again_before_each_delete_batch_not_only_before_the
     store.graph_provider.get_document = AsyncMock(side_effect=[same, same, other, other, other])   # pre-check, batch 1, then superseded
     await store._sweep_stray_points(record, record.block_containers)
     assert len(_ids(db)) == 7, "one batch of 5 went; the record was on another revision before the next"
+
+
+async def test_each_delete_call_of_the_sweep_runs_inside_the_fence(db, monkeypatch) -> None:
+    monkeypatch.setattr(stray_sweep, "_DELETE_BATCH", 5)
+    await db.upsert_points(COLL, [_point(f"s-{i:02d}", f"stray-{i:02d}") for i in range(12)])
+    events: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def fence():  # noqa: ANN202
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    real_delete = db.delete_points
+
+    async def spy(*args: object, **kwargs: object) -> None:
+        events.append("delete")
+        await real_delete(*args, **kwargs)
+
+    db.delete_points = spy  # type: ignore[method-assign]
+    await _sweep(db, set(), fence=fence)
+    assert events == ["enter", "delete", "exit"] * 3, "three batches, each delete between the fence's enter and exit"
+
+
+async def test_the_stores_sweep_deletes_through_the_lease_fence(db, monkeypatch) -> None:
+    from app.modules.transformers import vectorstore as vs_mod
+
+    fenced: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def counting(what: str):  # noqa: ANN202
+        fenced.append(what)
+        yield
+
+    monkeypatch.setattr(vs_mod, "_fenced", counting)
+    await db.upsert_points(COLL, [_point("stale-point", "stale-block")])
+    store = _store(db)
+    record = _record(["b0"])
+    await store._sweep_stray_points(record, record.block_containers)
+    assert fenced == ["the stray sweep"], "the sweep's delete went through the fence"

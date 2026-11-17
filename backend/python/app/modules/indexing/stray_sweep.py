@@ -61,6 +61,8 @@ class SweepResult:
     stray_blocks: int = 0
     truncated: bool = False
     next_offset: str | None = None
+    # The kept block ids the listing found a point for, when it listed the record from its start to its end (None: it did not).
+    seen_blocks: frozenset[str] | None = None
 
 
 async def sweep_stray_points(
@@ -89,6 +91,7 @@ async def sweep_stray_points(
     scroll_filter = await vector_db.filter_collection(must={"orgId": org_id, "virtualRecordId": virtual_record_id})
 
     strays: set[str] = set()
+    kept_seen: set[str] = set()
     stray_points = 0
     scanned = 0
     truncated = False
@@ -110,6 +113,8 @@ async def sweep_stray_points(
             if block_id and block_id not in keep:
                 strays.add(block_id)
                 stray_points += 1
+            elif block_id:
+                kept_seen.add(block_id)
         if not page.next_offset or page.next_offset == offset:
             break
         offset = page.next_offset
@@ -145,4 +150,8 @@ async def sweep_stray_points(
         )
     if stopped_at is not None:
         stopped_at = vector_db.scroll_offset_after_delete(stopped_at, stray_points)
-    return SweepResult(scanned=scanned, stray_blocks=removed, truncated=truncated, next_offset=stopped_at)
+    complete = resume is None and not truncated and not refused
+    return SweepResult(
+        scanned=scanned, stray_blocks=removed, truncated=truncated, next_offset=stopped_at,
+        seen_blocks=frozenset(kept_seen) if complete else None,
+    )

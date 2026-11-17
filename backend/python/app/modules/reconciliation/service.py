@@ -50,6 +50,10 @@ class ReconciliationMetadata:
         self.legacy_group_hashes: frozenset[str] = frozenset()
         # How the ids were derived (``block_identity.ID_SCHEME``); None for metadata of random ids.
         self.id_scheme: str | None = None
+        # The block and group ids that actually had a point in the store when the record was last indexed, as the stray sweep listed
+        # them (None: not recorded, the record predates it). A block that is not in it never had a point (a provider-skipped image, code
+        # with no unit of its own) and is not expected to have one; a block in it whose point is gone lost it.
+        self.pointed_blocks: set[str] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: dict[str, Any] = {
@@ -60,6 +64,8 @@ class ReconciliationMetadata:
             out["block_group_ids"] = sorted(self.block_group_ids)
         if self.id_scheme is not None:
             out["idScheme"] = self.id_scheme
+        if self.pointed_blocks is not None:
+            out["pointedBlocks"] = sorted(self.pointed_blocks)
         return out
 
     @classmethod
@@ -77,6 +83,8 @@ class ReconciliationMetadata:
         )
         scheme = data.get("idScheme")
         metadata.id_scheme = scheme if isinstance(scheme, str) else None
+        pointed = data.get("pointedBlocks")
+        metadata.pointed_blocks = {p for p in pointed if isinstance(p, str)} if isinstance(pointed, list) else None
         return metadata
 
 
