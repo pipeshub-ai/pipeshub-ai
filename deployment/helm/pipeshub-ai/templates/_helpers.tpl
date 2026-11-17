@@ -572,6 +572,9 @@ pod. Empty otherwise.
 {{- if .Values.autoscaling.enabled -}}
 {{- $pods = int .Values.autoscaling.maxReplicas -}}
 {{- end -}}
+{{- if gt $pods 64 -}}
+{{- fail (printf "%d pods share one external Docker daemon, but the code sandbox splits its capacity at most 64 ways: lower the pod count (autoscaling.maxReplicas or replicaCount) or set sandbox.capacity.maxTotal" $pods) -}}
+{{- end -}}
 {{- if gt $pods 1 -}}
 {{- $pods -}}
 {{- end -}}

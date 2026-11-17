@@ -584,6 +584,7 @@ REFUSED=(
   "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
   "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
+  "external daemon shared by more pods than the capacity split allows|splits its capacity at most 64 ways|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=65"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
 )
 for entry in "${REFUSED[@]}"; do
