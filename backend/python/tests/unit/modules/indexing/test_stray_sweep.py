@@ -37,7 +37,7 @@ def _ids(db: InMemoryVectorDBService) -> set[str]:
     return set(db.collections[COLL])
 
 
-async def _sweep(db: InMemoryVectorDBService, keep: set[str], **kw: int) -> SweepResult:
+async def _sweep(db: InMemoryVectorDBService, keep: set[str], **kw: object) -> SweepResult:
     return await sweep_stray_points(db, COLL, org_id=A, virtual_record_id=VRID, keep_block_ids=keep, **kw)
 
 
@@ -221,3 +221,18 @@ async def test_a_record_that_cannot_be_read_is_not_swept(db) -> None:
     record = _record(["b0"])
     await store._sweep_stray_points(record, record.block_containers)
     assert _ids(db) == {"p"}
+
+
+async def test_the_revision_is_asked_again_before_each_delete_batch(db, monkeypatch) -> None:
+    """The listing can be long: a run superseded while it lists must not delete the batches that follow."""
+    monkeypatch.setattr(stray_sweep, "_DELETE_BATCH", 5)
+    await db.upsert_points(COLL, [_point(f"s-{i:02d}", f"stray-{i:02d}") for i in range(20)])
+    asked = {"n": 0}
+
+    async def may_delete() -> bool:
+        asked["n"] += 1
+        return asked["n"] <= 2
+
+    result = await _sweep(db, set(), may_delete=may_delete)
+    assert asked["n"] == 3 and len(_ids(db)) == 10, "two batches of 5 went, the third was refused"
+    assert result.stray_blocks == 20

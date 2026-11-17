@@ -1451,6 +1451,13 @@ class VectorStore(Transformer):
             raise PartialResult(f"{collection_name}: the scroll saw {len(points)} points and the store counts {counted}")
         return points
 
+    async def _still_current(self, record: "Record") -> bool:
+        """Asked before each delete batch of the sweep: the record is still on this run's revision (and readable)."""
+        try:
+            return not await self._run_superseded(record)
+        except Exception:  # cannot tell: nothing more is deleted
+            return False
+
     async def _run_superseded(self, record: "Record") -> bool:
         """Whether the stored record is no longer the revision this run indexed (a newer run took the record meanwhile, for instance after
         this one lost its lease): its virtual record or its content checksum differs. The sweep deletes by what this run's revision
@@ -1490,6 +1497,7 @@ class VectorStore(Transformer):
                 self.vector_db_service, collection_name,
                 org_id=org_for_filter(record.org_id, match_bound=True), virtual_record_id=vrid, keep_block_ids=keep,
                 resume=self._sweep_resume.pop(where, None),
+                may_delete=lambda: self._still_current(record),
             )
             if result.next_offset is not None:
                 self._sweep_resume[where] = result.next_offset

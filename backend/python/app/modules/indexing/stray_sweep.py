@@ -31,7 +31,7 @@ from app.services.vector_db.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from app.services.vector_db.interface.vector_db import IVectorDBService
 
@@ -70,11 +70,13 @@ async def sweep_stray_points(
     keep_block_ids: Iterable[str],
     max_points: int | None = None,
     resume: str | None = None,
+    may_delete: Callable[[], Awaitable[bool]] | None = None,
 ) -> SweepResult:
     """Delete the points of *virtual_record_id* whose block id is not in *keep_block_ids*.
 
     A pass lists at most *max_points* points. When the record has more, ``SweepResult.next_offset`` is where the listing stopped (moved
     back by the points the pass deleted before it, for a store whose cursor is a position): pass it as *resume* to continue there.
+    *may_delete* is asked before each delete batch (the listing can be long): when it says no, nothing more is deleted.
     """
     if not org_id or not virtual_record_id:
         return SweepResult()
@@ -114,6 +116,8 @@ async def sweep_stray_points(
 
     ordered = sorted(strays)
     for start in range(0, len(ordered), _DELETE_BATCH):
+        if may_delete is not None and not await may_delete():
+            break
         batch: list[str | int | float | bool] = [*ordered[start:start + _DELETE_BATCH]]
         must: dict[str, FilterValue] = {"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": batch}
         delete_filter = await vector_db.filter_collection(must=must)
