@@ -127,6 +127,17 @@ class TestWhenToWatch:
         warnings = [r for r in caplog.records if "does not enforce" in r.getMessage()]
         assert len(warnings) == 1
 
+    @pytest.mark.parametrize("info", [
+        {"Driver": "btrfs"},
+        {"Driver": "zfs", "DriverStatus": []},
+        {"Driver": "overlay2", "DriverStatus": [["Backing Filesystem", "extfs"]]},
+    ])
+    def test_unknown_status_or_a_non_xfs_overlay2_is_watched(self, monkeypatch, info) -> None:
+        monkeypatch.setattr(ef, "_storage_opt_usable", True)
+        client = MagicMock()
+        client.info.return_value = info
+        assert docker_mod._disk_watch_limit_for(client) == MiB
+
     def test_a_rejected_quota_is_watched(self, monkeypatch) -> None:
         monkeypatch.setattr(ef, "_storage_opt_usable", False)
         client = MagicMock()

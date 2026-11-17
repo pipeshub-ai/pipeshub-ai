@@ -334,6 +334,13 @@ def _daemon_enforces_quota(client: Any) -> tuple[bool, str]:
         return False, f"{driver or '?'} (containerd snapshotter)"
     backing = status_map.get("backing filesystem")
     label = f"{driver or '?'}{f' on {backing}' if backing else ''}"
+    if not status_map:
+        # No driver status (an older proxy filters it out): the backing
+        # filesystem can't be checked, so count the quota as not enforced.
+        return False, f"{driver or '?'} (driver status unknown)"
+    if driver == "overlay2" and (backing or "").lower() != "xfs":
+        # overlay2 enforces a size only on xfs mounted with pquota.
+        return False, label
     return driver in _QUOTA_ENFORCING_DRIVERS, label
 
 
