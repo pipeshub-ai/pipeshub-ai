@@ -66,13 +66,13 @@ class TestTheAttemptStart:
 
         gp.write_attempt_start.assert_not_awaited()
 
-    def test_the_service_path_attempt_start_in_on_event_passes_the_flag(self) -> None:
-        """The in-process-pipeline-with-services attempt start is one ``update_record_fields`` call in ``on_event``: it must ask
+    def test_the_service_path_attempt_start_in_dispatch_event_passes_the_flag(self) -> None:
+        """The in-process-pipeline-with-services attempt start is one ``update_record_fields`` call in ``_dispatch_event`` (the body of ``on_event``): it must ask
         for an attempt start (a plain write would never count the attempt or start the run)."""
         tree = ast.parse(inspect.getsource(events_module))
-        on_event = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_event")
+        dispatch = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_dispatch_event")
         writers = [
-            call for call in ast.walk(on_event)
+            call for call in ast.walk(dispatch)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "update_record_fields"
             and "IN_PROGRESS" in ast.unparse(call) and "parsingStatus" in ast.unparse(call)
         ]
