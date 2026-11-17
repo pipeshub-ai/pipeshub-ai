@@ -684,10 +684,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
-        Only connectors whose next record could be dispatched now count as
-        waiting (``can_dispatch`` is the dispatch phase's own check). One
-        whose head is waiting out a retry backoff cannot take a slot, so it
-        must not shrink anyone else's share."""
+        A connector counts as waiting in two cases. Its next buffered record
+        could be dispatched now (``can_dispatch`` is the dispatch phase's own
+        check): one whose head is waiting out a retry backoff cannot take a
+        slot, so it must not shrink anyone else's share. Or it has a
+        dispatched record that has not reached the gate yet (``started`` but
+        not ``admitted``, counted by ``SlotShare.plan``): that record holds
+        no earlier place in the gate's arrival order, so without counting it
+        another connector would get no cap and fill the gate ahead of it."""
         scheduler = self._scheduler
         slot_share = self._slot_share
         if scheduler is None or slot_share is None:
@@ -2240,7 +2244,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Counted against the connector's share from dispatch until the
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
-            # arrival order.
+            # arrival order. Until it is admitted it also marks the connector
+            # as waiting, since it may be held up before the gate.
             slot_share.started(slot_token, slot_key, self._slot_pool_of(slot_key))
         try:
             future = asyncio.run_coroutine_threadsafe(
@@ -2788,6 +2793,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
+            if self._slot_share is not None:
+                self._slot_share.admitted(
+                    (message.topic, message.partition, message.offset)
+                )
             if waiter_token is not None:
                 waiter_token.admit()
 

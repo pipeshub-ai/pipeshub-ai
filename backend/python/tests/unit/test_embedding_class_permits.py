@@ -170,3 +170,8 @@ async def test_a_busy_node_answers_429_with_retry_after_and_frees_its_encode_slo
 class SimpleHttpRequest:
     async def is_disconnected(self) -> bool:
         return False
+
+
+def test_the_wait_for_member_tokens_is_short_because_it_holds_an_encode_slot() -> None:
+    """600 s let bulk requests queued for tokens take every encode slot; a busy node answers 429 within seconds."""
+    assert 1.0 <= em.EMBED_PERMIT_WAIT_S <= 30.0

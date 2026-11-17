@@ -18703,7 +18703,8 @@ components:
             Unique feature flag key. Current keys: ENABLE_MCP, ENABLE_API_TOOLSETS, ENABLE_ACTIONS,
             ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_CHAT_COMPARE, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
             ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
-            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
+            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_RECORD_PREVIEW_CACHE,
+            ENABLE_KH_SCOPE_LISTING.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
           example: "ENABLE_MCP"
         label:
@@ -24973,6 +24974,16 @@ components:
         message:
           type: string
           description: Set when nothing matched.
+        incomplete:
+          type: boolean
+          description: >-
+            Present (true) when the search ran out of time before every match could be checked against
+            the caller's access, so an entity the caller can reach may be missing. Every listed result
+            was checked; search again for the rest. Absent when the search finished. A search that
+            checked nothing at all fails with 503 instead.
+        incompleteNote:
+          type: string
+          description: Set with `incomplete`; says what it means for the results.
         results:
           type: array
           items:
@@ -40206,6 +40217,11 @@ paths:
 
         A record that does not exist, one the caller has no access to and one that is in the
         trash all answer `404` with the same message, so a record's existence is not revealed.
+
+        **Opening content.** A request that carries the header `X-Record-Content-Open: 1` is
+        the first call of a content open. For a record from a connected source it also refuses
+        what the content route would refuse: `404` when the connector no longer exists and
+        `409` when it is disabled. Without the header the answer is unchanged.
       operationId: getRecordById
       x-pipeshub-sdk: true
       security:
@@ -40914,6 +40930,27 @@ paths:
         itself (`400`, `401`, scope `403`, malformed body `500`) use `ErrorResponse`.
 
         **Request:** unknown query parameters are ignored.
+
+        **Caching and ranges.** A request without `If-None-Match` and without the header
+        `X-Record-Content-Open: 1` is answered as it always was, whatever other headers it
+        carries (a bare `Range` or `If-Range` is ignored and the whole file is sent). A request that carries
+        `If-None-Match` or that header gets `Cache-Control: private, no-store`, and for a file
+        stored in the platform's own storage an `ETag` that changes when the stored file changes
+        (a converted PDF has a weak `ETag`). A client may send that value back in
+        `If-None-Match`; if the file is unchanged and the caller may read it, the answer is `304`
+        with no body. Every refusal is evaluated first, so a caller without access gets the
+        refusal even with a valid `If-None-Match`, and a refusal never carries an `ETag`.
+        Content from a connected source and artifact content carry no `ETag` and never answer
+        `304`.
+
+        The original bytes of a stored file can be read in parts, on a request that also carries
+        `If-None-Match` or `X-Record-Content-Open: 1`: a request with one range,
+        `Range: bytes=a-b` or `bytes=a-`, of at most 8 MiB is answered `206` with `Content-Range`,
+        and `Accept-Ranges: bytes` says so. A range that starts at or after the end of the file is
+        answered `416` with `Content-Range: bytes */<length>`. Any other `Range` (a suffix, several
+        ranges, a larger span, a malformed value) is ignored and the whole file is sent. A request
+        with `If-Range` is answered with a range only while the value is the current strong
+        `ETag`; otherwise the whole file is sent. A converted PDF is never answered in parts.
       operationId: streamRecordBuffer
       x-pipeshub-sdk: true
       security:

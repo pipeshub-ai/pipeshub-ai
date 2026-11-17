@@ -25,6 +25,7 @@ import {
   S3StorageConfig,
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -1054,6 +1055,7 @@ export class StorageController {
       }
     });
     stream.pipe(res);
+    releaseOnClientClose(res, stream);
   }
 
   /**
@@ -2572,7 +2574,14 @@ export class StorageController {
         // Local files are bound to the identity the caller verified (`ifMatch`): S3 and Azure callers send `If-Match` themselves.
         const ifMatch =
           typeof req.query.ifMatch === 'string' ? req.query.ifMatch : undefined;
-        serveFileFromLocalStorage(document, res, resolvedVersion, ifMatch);
+        const range = req.headers.range;
+        serveFileFromLocalStorage(
+          document,
+          res,
+          resolvedVersion,
+          ifMatch,
+          typeof range === 'string' ? range : undefined,
+        );
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }
