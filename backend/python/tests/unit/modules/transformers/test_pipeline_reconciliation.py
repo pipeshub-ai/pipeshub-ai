@@ -369,6 +369,38 @@ class TestApplyEmptyCleanup:
         pipeline.document_extraction.graph_provider.update_node.assert_awaited_once()
 
 
+class TestPurgeBusyLeaseIsAHandBack:
+    """A busy or lost virtual-record lease on the purge is the delivery's to retry, not a best-effort cleanup that failed: the old points
+    would stay searchable while the record is marked EMPTY."""
+
+    @pytest.mark.asyncio
+    async def test_an_empty_update_whose_lease_is_held_is_handed_back_and_not_marked_empty(self) -> None:
+        from app.modules.transformers.vectorstore import VirtualRecordBusy
+
+        pipeline = _pipeline()
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors = AsyncMock(side_effect=VirtualRecordBusy("held by a sibling"))
+        record = _record(blocks=[], block_groups=[])
+        ctx = _ctx(record, event_type=EventTypes.UPDATE_RECORD.value, prev_vrid=record.virtual_record_id)
+
+        with pytest.raises(VirtualRecordBusy):
+            await pipeline.apply(ctx)
+
+        pipeline.document_extraction.graph_provider.update_node.assert_not_awaited()
+        pipeline.sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_first_reconciliation_pass_hands_a_busy_lease_back_too(self) -> None:
+        from app.modules.transformers.vectorstore import VirtualRecordBusy
+
+        pipeline = _pipeline(blob_meta=None)
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors = AsyncMock(side_effect=VirtualRecordBusy("held by a sibling"))
+        record = _record(blocks=[Block(index=0, type=BlockType.TEXT, data="hello")])
+        ctx = _ctx(record, event_type=EventTypes.UPDATE_RECORD.value, prev_vrid=record.virtual_record_id)
+
+        with pytest.raises(VirtualRecordBusy):
+            await IndexingPipeline.build_reconciliation_context(ctx, pipeline.logger, pipeline.sink_orchestrator)
+
+
 class TestApplyReconciliationContextBuildsWhenNone:
     """Line 128-129: when ctx.reconciliation_context is None, it is built."""
 

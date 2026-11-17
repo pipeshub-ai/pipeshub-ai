@@ -38,7 +38,6 @@ from app.core.org_context import (
     MissingOrgContext,
     current_or_system,
     for_org,
-    spawn_detached,
 )
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
@@ -1061,36 +1060,11 @@ async def _require_lease(what: str) -> None:
 
 @contextlib.asynccontextmanager
 async def _fenced(what: str) -> AsyncIterator[None]:
-    """Around a delete: confirm the lease before the call, and keep confirming it while the call is in flight (a delete slower than a
-    lease term must not land after the lease is lost: the call is cancelled and the delivery handed back instead)."""
-    handle = _HELD_LEASE.get()
-    if handle is None:
-        yield
-        return
+    """Around a delete: confirm the lease right before the call. While the call is in flight the hold's own renewer keeps the lease and
+    is the only thing that cancels the run (it does so when the lease is really lost, not on one failed renewal): a second canceller
+    here would drop the lease on a transient error while the delete could still land."""
     await _require_lease(what)
-    task = asyncio.current_task()
-    lost: list[bool] = []
-
-    async def beat() -> None:
-        while True:
-            await asyncio.sleep(handle.beat_s)
-            if not await handle.confirm():
-                lost.append(True)
-                if task is not None:
-                    _ = task.cancel()
-                return
-
-    heartbeat = spawn_detached(beat())
-    try:
-        yield
-    except asyncio.CancelledError:
-        if lost:
-            if task is not None:
-                _ = task.uncancel()
-            raise LeaseLost(f"the lease on the virtual record was lost while {what} was in flight") from None
-        raise
-    finally:
-        _ = heartbeat.cancel()
+    yield
 
 
 async def _always_current() -> bool:

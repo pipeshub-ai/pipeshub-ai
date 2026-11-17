@@ -156,3 +156,20 @@ async def test_a_delete_slower_than_the_lease_cannot_land_after_the_lease_is_los
     with pytest.raises(VirtualRecordBusy):  # the in-flight call was cancelled and the lost lease handed the delivery back
         await attempt()
     assert landed == []
+
+
+async def test_one_failed_renewal_during_a_delete_does_not_drop_the_lease(db, manager) -> None:
+    """Only the hold's renewer cancels the run, and only when the lease is really lost: one renewal error while a delete is in flight
+    (the lease store briefly unreachable) leaves the lease held and the delete to finish."""
+    store = make_store(db)
+    landed: list[str] = []
+
+    async def slow_delete(*args: object, **kwargs: object) -> None:
+        manager.errors = 1               # one renewal fails while the call is in flight
+        await asyncio.sleep(0.3)
+        landed.append("delete landed")
+
+    db.delete_points = slow_delete  # type: ignore[method-assign]
+    async with store._vrid_lease("t", ORG, VRID):
+        await store.delete_embeddings(VRID, COLL, org_id=ORG)
+    assert landed == ["delete landed"]

@@ -14,6 +14,7 @@ class FakeLeases(IDistributedLeaseManager):
     def __init__(self) -> None:
         self.owner: dict[str, str] = {}
         self.renews = True
+        self.errors = 0  # the next this many renewals raise (a lease store that is briefly unreachable)
 
     async def initialize(self) -> None: ...
     async def cleanup(self) -> None: ...
@@ -25,6 +26,9 @@ class FakeLeases(IDistributedLeaseManager):
         return True
 
     async def renew(self, pool: str, owner: str, lease_seconds: float) -> bool:
+        if self.errors > 0:
+            self.errors -= 1
+            raise ConnectionError("lease store unreachable")
         return self.renews and self.owner.get(pool) == owner
 
     async def renew_many(self, leases: Sequence[tuple[str, str]], lease_seconds: float) -> dict:

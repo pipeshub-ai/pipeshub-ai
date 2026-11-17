@@ -3,13 +3,16 @@ from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
+from app.modules.indexing.parse_now_marker import shape_status_write
 from app.modules.reconciliation.block_identity import ID_SCHEME, BlockIdentity
-from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
+from app.modules.reconciliation.service import (
+    ReconciliationMetadata,
+    ReconciliationService,
+)
 from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.indexing.parse_now_marker import shape_status_write
 from app.modules.transformers.transformer import (
     ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
@@ -17,6 +20,7 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
+from app.modules.transformers.vectorstore import VirtualRecordBusy
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
@@ -124,6 +128,8 @@ class IndexingPipeline:
                     await sink_orchestrator.vector_store.purge_record_vectors(
                         record.org_id, record.virtual_record_id, record
                     )
+                except VirtualRecordBusy:
+                    raise  # the virtual record's lease is busy or lost: the delivery is handed back, not indexed over the old points
                 except Exception as e:
                     logger.warning(
                         f"⚠️ Failed to purge stale vectors during first reconciliation pass "
@@ -212,8 +218,8 @@ class IndexingPipeline:
                             record_group_id=getattr(record, "record_group_id", None),
                             create_if_missing=path_known,
                         )
-                    except StorageLookupUnavailableError:
-                        raise  # the event is retried; stale metadata must not stay
+                    except (StorageLookupUnavailableError, VirtualRecordBusy):
+                        raise  # the event is retried; stale metadata must not stay, and the old points must not stay searchable
                     except Exception as e:
                         self.logger.warning(
                             f"⚠️ Failed to clean up old vectors for empty document: {str(e)}"
