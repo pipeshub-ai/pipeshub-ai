@@ -525,7 +525,7 @@ export async function runCli(
           open && j?.status !== 'running'
             ? {
                 warning:
-                  'the import login (pipeshub_import) can log in and no move is running: run scripts/migrate-to-postgres.sh or scripts/rollback-to-mongo.sh to close it, or ALTER ROLE pipeshub_import NOLOGIN',
+                  'the import login (pipeshub_import) can log in and no move is running: close it with scripts/migrate-to-postgres.sh --close-login, or ALTER ROLE pipeshub_import NOLOGIN',
               }
             : {};
         out(j ? { ...j, ...warn } : { job: null, ...warn });

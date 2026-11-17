@@ -145,7 +145,7 @@ export async function preflight(
         red.push({
           check: 'change_streams',
           message:
-            'MongoDB is a standalone server: the online path needs a replica set (change streams). Use the offline cut (scripts/migrate-to-postgres.sh)',
+            'MongoDB is a standalone server: the online path needs a replica set (change streams). Use the offline cut (scripts/migrate-to-postgres.sh --offline)',
         });
     }
   } catch (e) {
@@ -162,7 +162,7 @@ export async function preflight(
     if (clients.length > 0)
       (opts.allowClients ? yellow : red).push({
         check: 'app_running',
-        message: `the application is still connected to MongoDB: ${describeClients(clients)}. Stop it before the copy (scripts/migrate-to-postgres.sh does); a preflight run only reads, but the cut itself refuses while it is connected`,
+        message: `the application is still connected to MongoDB: ${describeClients(clients)}. Stop it before the copy (scripts/migrate-to-postgres.sh --offline does); a preflight run only reads, but the cut itself refuses while it is connected`,
         data: clients.length,
       });
   } catch (e) {
