@@ -59,6 +59,13 @@ async def test_an_oversized_output_file_is_reported_and_never_read(tmp_path, mon
         return await real_download(path)
 
     backend.download_file = _spy  # type: ignore[method-assign]
+    real_head = backend.read_file_head
+
+    async def _head_spy(path: str, max_bytes: int) -> tuple[bytes, bool]:
+        downloads.append(path)
+        return await real_head(path, max_bytes)
+
+    backend.read_file_head = _head_spy  # type: ignore[method-assign]
     manager = MagicMock()
     manager.get.return_value = backend
     data: dict[str, Any] = {}

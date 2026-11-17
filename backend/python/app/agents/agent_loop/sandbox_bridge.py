@@ -1187,11 +1187,11 @@ async def _fetch_within_cap(
             continue
         try:
             read_head = getattr(backend, "read_file_head", None)
-            if (isinstance(size, int) and not isinstance(size, bool)) or read_head is None:
+            if read_head is None:
                 content = await backend.download_file(rel_path)
             else:
-                # Size unknown: read at most one byte past the cap, so an
-                # oversized file is never read whole.
+                # Read at most one byte past the cap even when the size was
+                # known: the file may have grown since it was checked.
                 content, more = await read_head(rel_path, cap)
                 if more:
                     logger.warning(

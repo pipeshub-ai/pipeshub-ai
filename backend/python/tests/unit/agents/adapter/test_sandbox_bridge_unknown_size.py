@@ -3,6 +3,7 @@ one byte past the artifact cap is read, and a larger file is reported."""
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -101,3 +102,31 @@ async def test_the_e2b_head_read_streams_and_stops_past_the_limit() -> None:
 
     sandbox._sbx = SimpleNamespace(files=SimpleNamespace(read=read_small))
     assert await sandbox.read_file_head("output/ok.txt", CAP) == (b"hi", False)
+
+
+class _Grows(LocalCodingSandbox):
+    """Reports the size before another command makes the file larger."""
+
+    def __init__(self, working_dir: str) -> None:
+        super().__init__(working_dir=working_dir)
+        self.whole_reads: list[str] = []
+
+    async def file_size(self, path: str) -> int | None:
+        size = await super().file_size(path)
+        with open(os.path.join(self.working_dir, path), "ab") as f:
+            f.write(b"y" * (4 * CAP))
+        return size
+
+    async def download_file(self, path: str) -> bytes:
+        self.whole_reads.append(path)
+        return await super().download_file(path)
+
+
+async def test_a_file_that_grows_after_its_size_check_is_still_read_up_to_the_cap(tmp_path: Path) -> None:
+    backend = _Grows(working_dir=str(tmp_path / "sbx"))
+    await backend.provision()
+    (tmp_path / "sbx" / "output" / "late.bin").write_bytes(b"x" * 10)
+    fetched, oversized = await _fetch_within_cap(backend, ["output/late.bin"], _registry(), "sbx-1")
+    assert backend.whole_reads == []
+    assert fetched == []
+    assert [e["file"] for e in oversized] == ["late.bin"]
