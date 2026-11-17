@@ -121,6 +121,8 @@ class SandboxAlertRunner:
         # The back-to-normal notice of this clear episode went out; only
         # marking the claims resolved is left.
         self._resolve_notified = False
+        # Claims of unsent alerts whose release failed: (level, alert id, value it replaced).
+        self._pending_releases: list[tuple[str, str, dict[str, Any] | None]] = []
 
     @property
     def is_leader(self) -> bool:
@@ -130,6 +132,8 @@ class SandboxAlertRunner:
         """Evaluate once if this worker is (or becomes) the leader."""
         if not self._leader.try_acquire():
             return None
+        if self._pending_releases:
+            await self._release_targets(list(self._pending_releases))
         now = self._clock()
         totals = await asyncio.to_thread(read_window, self._directory, now, self._settings.window_s)
         if totals.stale:
@@ -172,16 +176,27 @@ class SandboxAlertRunner:
 
     async def _release(self, claims: list[AlertClaim], level: str, alert_id: str) -> None:
         # A claim that failed (or timed out) may still have been written.
-        targets = [(c.level, c.previous) for c in claims] or [(level, None)]
-        for claimed, previous in targets:
+        targets = [(c.level, alert_id, c.previous) for c in claims] or [(level, alert_id, None)]
+        await self._release_targets(targets)
+
+    async def _release_targets(self, targets: list[tuple[str, str, dict[str, Any] | None]]) -> None:
+        """Release each claim; one that fails is kept and tried again at the
+        next evaluation, or it would hold back an alert that was never sent
+        until the claim expires."""
+        for target in targets:
+            claimed, alert_id, previous = target
             try:
                 await self._cooldown.release_if_ours(claimed, alert_id, previous)
             except Exception as exc:
+                if target not in self._pending_releases:
+                    self._pending_releases.append(target)
                 # One line, no traceback: a store that hangs fails every release.
                 self._warn_once(
-                    "release", "sandbox load alert %s: could not release the claim (%r)", claimed, exc,
+                    "release", "sandbox load alert %s: could not release the claim (%r); retrying", claimed, exc,
                 )
             else:
+                if target in self._pending_releases:
+                    self._pending_releases.remove(target)
                 self._recovered("release")
 
     async def _fire(self, decision: AlertDecision, now: float) -> None:

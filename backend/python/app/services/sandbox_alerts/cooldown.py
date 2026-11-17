@@ -143,7 +143,11 @@ class AlertCooldown:
             return False
         if previous is not None and await self._restore(level, previous):
             return True
-        return await self._call(self._config.delete_config(self.key(level)))
+        if not await self._call(self._config.delete_config(self.key(level))):
+            # The claim was there a moment ago: a delete that did not happen is
+            # a store failure, which the caller retries.
+            raise ConnectionError(f"could not delete the {level} claim")
+        return True
 
     def _remaining_s(self, value: dict[str, Any]) -> float:
         claimed_at = value.get("claimedAt")
