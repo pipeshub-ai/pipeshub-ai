@@ -14,6 +14,7 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
+import contextvars
 import codecs
 import contextlib
 import hashlib
@@ -76,7 +77,7 @@ from app.modules.indexing.stray_sweep import sweep_enabled, sweep_stray_points
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
-from app.modules.pipeline.leases import RecordBusy
+from app.modules.pipeline.leases import LeaseLost, RecordBusy
 from app.modules.transformers.code_units import (
     RESIDUE_UNIT_KIND,
     class_header_unit,
@@ -144,7 +145,7 @@ _REKEY_PAGE = 500
 # Records whose stray sweep stopped at its bound, with where to resume (per process; losing it only restarts that record's sweep).
 _SWEEP_RESUME_RECORDS = 2048
 if TYPE_CHECKING:
-    from app.modules.pipeline.leases import RecordLeases
+    from app.modules.pipeline.leases import LeaseHandle, RecordLeases
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
@@ -1041,6 +1042,18 @@ class VirtualRecordBusy(IndexingError, RecordLeaseHeld):
         IndexingError.__init__(self, message)
 
 
+# The lease on the virtual record held by the ``apply`` this task is running in (None: no lease is bound, nothing to confirm).
+_HELD_LEASE: contextvars.ContextVar["LeaseHandle | None"] = contextvars.ContextVar("vrid_lease", default=None)
+
+
+async def _require_lease(what: str) -> None:
+    """Right before a delete: confirm the virtual record's lease is still this run's (a compare-and-renew on its own token). If not
+    (it lapsed and a newer run took it), nothing is deleted and the delivery is handed back."""
+    handle = _HELD_LEASE.get()
+    if handle is not None and not await handle.confirm():
+        raise LeaseLost(f"the lease on the virtual record is no longer held; {what} was not done")
+
+
 async def _always_current() -> bool:
     return True
 
@@ -1049,27 +1062,34 @@ def _has_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _embeds_a_point(item: Block | BlockGroup | None) -> bool:
-    """Whether indexing writes a point for *item* itself (a block or a group): text and code with text (a code block's text is
-    ``data["text"]``), images with a uri, table rows with their row text, tables and groups with a summary, DDL, view text or class
-    header. A little wider than the writers on purpose (a tiny code filler is skipped there): the cost of too wide is one more embed,
-    of too narrow a point lost from search for good."""
+def _is_code_item(item: Block | BlockGroup) -> bool:
+    if isinstance(item, BlockGroup):
+        return str(getattr(item.sub_type, "value", item.sub_type) or "").lower() == GroupSubType.CODE_CLASS.value
+    return _is_code_block(item)
+
+
+def _embeds_a_point(item: Block | BlockGroup | None, *, code_unit_ids: frozenset[str] = frozenset(), multimodal: bool = False) -> bool:
+    """Whether indexing writes a point for *item* itself (a block or a group), as the writers do under the active setup: text with text,
+    table rows with their row text, tables and groups with a summary, DDL or view text, images with a description (or any image on a
+    multimodal embedding model), and code only where the code writer emits a unit with that block or group as its own
+    (*code_unit_ids*: most code folds into a class unit or the file's residue and has no point of its own)."""
     if item is None:
         return False
     kind = str(getattr(item.type, "value", item.type)).lower()
     data = item.data
+    if _is_code_item(item):
+        return item.id in code_unit_ids
     if isinstance(item, BlockGroup):
-        sub = str(getattr(item.sub_type, "value", item.sub_type) or "").lower()
-        if kind not in ("table", "view") and sub != GroupSubType.CODE_CLASS.value:
+        if kind not in ("table", "view"):
             return False  # other groups (a JSON root, a list) are never points
         return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
     if kind in ("table", "table_cell"):
         return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
     if kind in ("image", "drawing"):
-        return isinstance(data, dict) and bool(data.get("uri"))
+        return isinstance(data, dict) and bool(data.get("uri")) and (multimodal or bool(VectorStore._image_block_description(item)))
     if kind == "table_row":
         return isinstance(data, dict) and any(_has_text(v) for k, v in data.items() if k != "row_number")
-    if kind in ("text", "paragraph", "textsection", "heading", "quote", "code"):
+    if kind in ("text", "paragraph", "textsection", "heading", "quote"):
         return _has_text(data.get("text")) if isinstance(data, dict) else _has_text(data)
     return False
 
@@ -1290,8 +1310,12 @@ class VectorStore(Transformer):
             async with leases.hold(
                 f"vrid:{record.org_id}:{record.virtual_record_id}", owner=f"index:{record.id}",
                 wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
-            ):
-                return await self._apply_locked(ctx)
+            ) as handle:
+                token = _HELD_LEASE.set(handle)
+                try:
+                    return await self._apply_locked(ctx)
+                finally:
+                    _HELD_LEASE.reset(token)
         except RecordBusy as e:  # the lease stayed busy past the wait, or was lost: not a failure of this record
             raise VirtualRecordBusy(f"the virtual record {record.virtual_record_id} is being written by another record: {e}") from e
 
@@ -1429,8 +1453,15 @@ class VectorStore(Transformer):
                         covered.update(rows_of(point))
                     else:  # already under its new id: an earlier run moved it
                         covered.update(old_by_new[r] for r in rows_of(point) if r in old_by_new)
-            if any(old not in covered and _embeds_a_point(blocks_by_id.get(new_by_old[old])) for old in old_ids):
-                return embed_whole_record("missing")
+            uncovered = [blocks_by_id.get(new_by_old[old]) for old in old_ids if old not in covered]
+            if uncovered:
+                code_units = await self._code_unit_ids(record) if any(i is not None and _is_code_item(i) for i in uncovered) else frozenset()
+                needs_model = any(
+                    i is not None and not isinstance(i, BlockGroup)
+                    and str(getattr(i.type, "value", i.type)).lower() in ("image", "drawing") for i in uncovered)
+                multimodal = bool(await self.get_embedding_model_instance()) if needs_model else False
+                if any(_embeds_a_point(i, code_unit_ids=code_units, multimodal=multimodal) for i in uncovered):
+                    return embed_whole_record("missing")
             # Pass two: move, window by window.
             index_of = {b.id: b.index for b in record.block_containers.blocks}
             group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
@@ -1466,6 +1497,19 @@ class VectorStore(Transformer):
         rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(old_ids)))
         return blocks_to_index_ids, block_ids_to_delete
 
+    async def _code_unit_ids(self, record: "Record") -> frozenset[str]:
+        """The blocks and groups the code writer gives a unit (a point) of their own, found by running the writer on the record's code."""
+        container = record.block_containers
+        code_blocks = [b for b in container.blocks if _is_code_block(b)]
+        class_groups = [g for g in container.block_groups if g.sub_type == GroupSubType.CODE_CLASS]
+        if not code_blocks and not class_groups:
+            return frozenset()
+        documents = await asyncio.to_thread(
+            code_documents_for_record, code_blocks, class_groups, record.virtual_record_id, record.org_id,
+            _record_context_line(record), member_blocks=container.blocks,
+        )
+        return frozenset(d.metadata["blockId"] for d in documents)
+
     async def _read_points_whole(
         self, collection_name: str, org_id: str, virtual_record_id: str, block_ids: list[str],
     ) -> list[VectorPoint]:
@@ -1491,9 +1535,13 @@ class VectorStore(Transformer):
         return points
 
     async def _still_current(self, record: "Record") -> bool:
-        """Asked before each delete batch of the sweep: the record is still on this run's revision (and readable)."""
+        """Asked before each delete batch of the sweep: the virtual record's lease is still this run's, and the record is still on this
+        run's revision (and readable)."""
         try:
+            await _require_lease("the stray sweep")
             return not await self._run_superseded(record)
+        except LeaseLost:
+            raise  # the lease is gone: the run stops and the delivery is handed back, it does not just skip a sweep
         except Exception:  # cannot tell: nothing more is deleted
             return False
 
@@ -1542,6 +1590,8 @@ class VectorStore(Transformer):
                 self._sweep_resume[where] = result.next_offset
                 while len(self._sweep_resume) > _SWEEP_RESUME_RECORDS:
                     self._sweep_resume.pop(next(iter(self._sweep_resume)))
+        except LeaseLost:
+            raise
         except Exception as e:  # a backstop must not fail an indexed record
             self.logger.warning(f"Stray point sweep of {vrid} failed: {e}")
 
@@ -2189,6 +2239,7 @@ class VectorStore(Transformer):
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
+        await _require_lease("a delete of replaced blocks")
         org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
@@ -2210,6 +2261,7 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     async def delete_embeddings(self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None) -> None:
+        await _require_lease("a delete of the record's embeddings")
         org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(

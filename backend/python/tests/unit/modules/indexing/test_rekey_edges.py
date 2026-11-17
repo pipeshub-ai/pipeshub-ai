@@ -419,3 +419,60 @@ async def test_the_move_holds_a_window_of_vectors_not_the_record(monkeypatch) ->
     """The peak memory of the move does not grow with the record (it was linear: 20 MB at 1,000 points and 80 MB at 4,000)."""
     small, large = await _peak_of_a_move(800, monkeypatch), await _peak_of_a_move(2400, monkeypatch)
     assert large < 1.5 * small + 1e6, f"800 points peaked at {small / 1e6:.1f} MB, 2,400 at {large / 1e6:.1f} MB"
+
+
+@pytest.mark.parametrize("policy", ["A", "B", "C"])
+async def test_a_code_record_moves_without_embedding_anything(db, monkeypatch, policy: str) -> None:
+    """Most code blocks fold into a class unit or the file's residue and have no point of their own: that is not a lost point."""
+    monkeypatch.setenv("EMBED_POINT_POLICY", policy)
+    monkeypatch.setattr("app.modules.transformers.vectorstore._record_context_line", lambda _record: "")
+    _, blob = await legacy_record(db, _code_container())
+    store = make_store(db)
+    await run(store, blob, _code_container())
+    assert store._embed_documents_with_retry.await_count == 0, f"policy {policy}: a code record is moved, not embedded again"
+    assert len(db.collections[COLL]) > 0
+
+
+@pytest.mark.parametrize("policy", ["A", "B", "C"])
+async def test_an_image_without_a_description_does_not_make_the_record_embed_again(db, monkeypatch, policy: str) -> None:
+    """A text-embedding model gives an image no point unless it has a description."""
+    from app.models.blocks import ImageMetadata
+
+    monkeypatch.setenv("EMBED_POINT_POLICY", policy)
+
+    def container(described: bool) -> BlocksContainer:
+        paragraphs = _text_container(_paragraphs(5)).blocks
+        image = Block(index=5, type=BlockType.IMAGE, format=DataFormat.BASE64, data={"uri": "data:image/png;base64,AAAA"})
+        if described:
+            image.image_metadata = ImageMetadata(description="A bar chart of revenue by quarter.")
+        return BlocksContainer(blocks=[*paragraphs, image])
+
+    for described in (False, True):
+        db2 = InMemoryVectorDBService()
+        await db2.create_collection(COLL, CollectionConfig(embedding_size=2))
+        _, blob = await legacy_record(db2, container(described))
+        store = make_store(db2)
+        await run(store, blob, container(described))
+        assert store._embed_documents_with_retry.await_count == 0, f"policy {policy}, described={described}: moved, not embedded again"
+
+
+async def test_a_point_that_goes_between_the_two_passes_embeds_the_whole_record(db) -> None:
+    """Pass two re-reads each window and compares with pass one: a point gone between them means the move is not trusted (otherwise
+    that block's old id would be deleted with no point written under the new one)."""
+    paras = _paragraphs(10)
+    _, blob = await legacy_record(db, _text_container(paras))
+    store = make_store(db)
+    real = db.scroll_with_vectors
+    calls = {"n": 0}
+
+    async def vanishing(*args: object, **kwargs: object) -> ScrollResult:
+        calls["n"] += 1
+        if calls["n"] == 2:                                   # the first read of pass two
+            del db.collections[COLL][next(iter(db.collections[COLL]))]
+        return await real(*args, **kwargs)
+
+    db.scroll_with_vectors = vanishing
+    await run(store, blob, _text_container(paras))
+    embedded = [t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0]]
+    assert sorted(embedded) == sorted(paras), "the whole record was embedded"
+    assert {p.payload["page_content"] for p in db.collections[COLL].values()} == set(paras)

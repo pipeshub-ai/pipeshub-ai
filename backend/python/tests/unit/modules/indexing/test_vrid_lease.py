@@ -12,13 +12,12 @@ from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.pipeline import leases as leases_mod
 from app.modules.pipeline.leases import LeaseLost, RecordLeases
 from app.modules.transformers.vectorstore import VectorStore, VirtualRecordBusy
-from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
-from app.services.vector_db.models import CollectionConfig
+from app.services.vector_db.models import CollectionConfig, VectorPoint
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.support.index_world import (
     COLL,
@@ -29,35 +28,9 @@ from tests.support.index_world import (
     parse,
     record_of,
 )
+from tests.support.lease_fakes import FakeLeases
 
 DOC = "\n\n".join(f"Paragraph {i} says something quite different about topic {i}." for i in range(5))
-
-
-class _Leases(IDistributedLeaseManager):
-    """One owner per pool; renewal can be made to fail."""
-
-    def __init__(self) -> None:
-        self.owner: dict[str, str] = {}
-        self.renews = True
-
-    async def initialize(self) -> None: ...
-    async def cleanup(self) -> None: ...
-
-    async def try_acquire(self, pool: str, owner: str, limit: int, lease_seconds: float) -> bool:
-        if pool in self.owner:
-            return False
-        self.owner[pool] = owner
-        return True
-
-    async def renew(self, pool: str, owner: str, lease_seconds: float) -> bool:
-        return self.renews and self.owner.get(pool) == owner
-
-    async def renew_many(self, leases, lease_seconds: float) -> dict:
-        return dict.fromkeys(leases, self.renews)
-
-    async def release(self, pool: str, owner: str) -> None:
-        if self.owner.get(pool) == owner:
-            del self.owner[pool]
 
 
 @pytest_asyncio.fixture
@@ -68,8 +41,8 @@ async def db() -> InMemoryVectorDBService:
 
 
 @pytest.fixture
-def manager(monkeypatch: pytest.MonkeyPatch) -> _Leases:
-    fake = _Leases()
+def manager(monkeypatch: pytest.MonkeyPatch) -> FakeLeases:
+    fake = FakeLeases()
     leases = RecordLeases()
     leases.bind(fake)
     monkeypatch.setattr(VectorStore, "vrid_leases", leases)
@@ -155,3 +128,46 @@ async def test_a_record_that_waits_past_the_limit_is_handed_back_not_dead_letter
     assert isinstance(raised.value, IndexingError) and isinstance(raised.value, RequeueWithoutAttempt)
     assert raised.value.counts_toward_backstop is False and raised.value.pauses_consumer is False
     assert MessageErrorClassifier.classify_by_exception(raised.value) != MessageErrorType.TERMINAL
+
+
+async def test_a_run_that_lost_the_lease_deletes_nothing_in_the_sweep(db, manager) -> None:
+    store = make_store(db)
+    real = store._sweep_stray_points
+
+    async def lapsed(record, revision) -> None:  # noqa: ANN001
+        await db.upsert_points(COLL, [VectorPoint(id="f" * 8 + "-0000-4000-8000-" + "0" * 12, dense_vector=[1.0, 1.0], payload={
+            "page_content": "kept by the newer run", "metadata": {"orgId": ORG, "virtualRecordId": VRID, "blockId": "newer-runs-block"}})])
+        manager.take_away()
+        await real(record, revision)
+
+    store._sweep_stray_points = lapsed
+    with pytest.raises(VirtualRecordBusy):
+        await store.apply(_apply_args("rec-A"))
+    assert "newer-runs-block" in {p.payload["metadata"]["blockId"] for p in db.collections[COLL].values()}
+
+
+@pytest.mark.parametrize("delete", ["blocks", "embeddings"])
+async def test_a_run_that_lost_the_lease_does_not_delete_replaced_blocks_or_embeddings(db, manager, delete: str) -> None:
+    """The reconcile's and the re-key's deletes confirm the lease too: they all go through these two methods."""
+    store = make_store(db)
+    deleted: list[str] = []
+    lost_at: list[int] = []
+    real_delete = db.delete_points
+
+    async def spy(*args: object, **kwargs: object) -> None:
+        deleted.append("delete")
+        await real_delete(*args, **kwargs)
+
+    async def lapsed(record, revision) -> None:  # noqa: ANN001
+        lost_at.append(len(deleted))
+        manager.take_away()
+        if delete == "blocks":
+            await store.delete_blocks_by_ids({"some-block"}, VRID, COLL, org_id=ORG)
+        else:
+            await store.delete_embeddings(VRID, COLL, org_id=ORG)
+
+    store._sweep_stray_points = lapsed
+    db.delete_points = spy  # type: ignore[method-assign]
+    with pytest.raises(VirtualRecordBusy):
+        await store.apply(_apply_args("rec-A"))
+    assert len(deleted) == lost_at[0], "no delete went out after the lease was lost"
