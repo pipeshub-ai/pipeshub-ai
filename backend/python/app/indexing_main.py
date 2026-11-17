@@ -186,6 +186,17 @@ container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
 
 
+def attach_parse_admission_config(config_service: Any) -> bool:  # noqa: ANN401
+    """Under ``PARSE_ADMISSION=classes`` read the admission numbers from the configuration store
+    (``/services/indexing/parseAdmission``, live); otherwise nothing changes."""
+    from app.modules.parse_engine import wiring as parse_wiring
+
+    if not parse_wiring.classes_enabled():
+        return False
+    parse_wiring.attach_config_service(config_service)
+    return True
+
+
 async def get_initialized_container() -> IndexingAppContainer:
     """Dependency provider for initialized container"""
     if not hasattr(get_initialized_container, "initialized"):
@@ -2847,6 +2858,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     app.state.governor = governor
     app_container.resource_governor = governor
+    attach_parse_admission_config(app_container.config_service())
     governor_task = asyncio.create_task(governor.run())
     # With several worker processes, each claims a cell index and publishes its stats, so that
     # whichever worker answers /health serves every cell's.
@@ -3262,6 +3274,11 @@ async def health_check(request: Request) -> JSONResponse:
                 # the service itself is still healthy.
                 container.logger().warning("Resource governor stats failed: %s", stats_error)
                 content["resource_governor"] = {"error": "unavailable"}
+        from app.modules.parse_engine import wiring as parse_wiring
+
+        if parse_wiring.classes_enabled():
+            # Per cost class: how many wait, how many run, how long the oldest waiter has waited.
+            content["parseEngine"] = parse_wiring.parse_engine_stats()
         # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.

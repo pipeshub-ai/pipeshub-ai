@@ -53,6 +53,21 @@ def test_each_python_service_start_line_uses_it() -> None:
     text = SCRIPT.read_text()
     for service, module in (("indexing", "indexing_main"), ("connectors", "connectors_main"), ("query", "query_main")):
         assert f"(use_own_pg_login {service}; exec python -m app.{module}) &" in text
+    # the configuration-only services take the key-value login but keep their own capacity name; nothing starts a
+    # Python service on the shared one
+    for name in ("embedding", "docling"):
+        assert f"(use_own_pg_login kv; PIPESHUB_SERVICE={name} exec python -m app.{name}_main) &" in text
+    for name in ("parsing", "extraction"):
+        port = name.upper()
+        assert (f"(use_own_pg_login kv; PIPESHUB_SERVICE={name} {port}_SERVICE_PORT=${{{port}_PORT}} "
+                f"exec python -m app.{name}_main) &") in text
+    assert not re.search(r"^\s*(\w+=\S+ )*python -m app\.", text, re.M)
+
+
+def test_the_configuration_only_services_use_the_key_value_login_and_role() -> None:
+    env = {**SHARED, "PG_CORE_KV_URL": "postgresql://kv", "PG_CORE_QUERY_URL": "postgresql://query"}
+    assert _env_after("kv", env) == "kv|postgresql://kv|10"
+    assert _env_after("kv", env, show="env | grep ^PG_CORE_ | sort").split() == ["PG_CORE_URL=postgresql://kv"]
 
 
 def test_the_pgvector_store_uses_the_same_login_as_the_process() -> None:
