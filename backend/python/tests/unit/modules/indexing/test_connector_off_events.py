@@ -18,6 +18,7 @@ from app.modules.indexing.connector_off_events import (
     GraphConnectorOffFilter,
     ReadTimeOutcome,
     RecordHeldForDelete,
+    SameBytesSkipPending,
     clears_embeddings_first,
     connector_off_updates,
     connector_state,
@@ -770,3 +771,25 @@ async def test_a_same_bytes_update_handed_back_writes_no_status_even_on_its_last
     assert _writes(graph) == {}
     assert graph.records["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value
     assert graph.records["r1"]["extractionStatus"] == "QUEUED"
+
+
+async def test_a_same_bytes_hand_back_on_the_connector_stream_path_writes_no_status() -> None:
+    """The bytes came over the connector stream (no signed url): the hand-back is not wrapped into a failure, so the
+    last delivery leaves the record COMPLETED."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value, extractionStatus="QUEUED")
+    handler, event_processor = _handler(graph)
+    handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://connectors"}})
+    event_processor.on_event = MagicMock(side_effect=SameBytesSkipPending("r1: sync failed", delay_s=1))
+
+    with (
+        patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"),
+        patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF-1.4"}),
+        pytest.raises(SameBytesSkipPending),
+    ):
+        _ = [e async for e in handler.process_event(UPDATE, dict(_payload(mimeType="application/pdf", extension="pdf")))]
+
+    event_processor.on_event.assert_called_once()
+    assert _writes(graph) == {}
+    assert graph.records["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value

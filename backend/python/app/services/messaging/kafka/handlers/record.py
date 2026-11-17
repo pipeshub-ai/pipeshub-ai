@@ -2574,6 +2574,8 @@ class RecordEventHandler(BaseEventService):
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
                     return
+                except SameBytesSkipPending:
+                    raise  # a hand-back, not a failure: the outer handler leaves the record alone
                 except IndexingError:
                     error_occurred = True
                     raise  # preserve DocumentProcessingError and other IndexingError subtypes
