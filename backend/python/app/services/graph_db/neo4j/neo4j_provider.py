@@ -16656,8 +16656,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             reason_clause = ", n.reason = $reason" if reason is not None else ""
             run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
+            # Locked, then filtered again, before the run fields are read: a status or an attempt count another writer committed while
+            # this waited for the lock is the one the rule reads (the earlier-read lost-update pattern of the other status writers).
             query = f"""
             MATCH (n:{label})
+            WHERE n.connectorId = $connector_id
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
             WHERE n.connectorId = $connector_id
             {exclude_clause}
             {include_clause}
