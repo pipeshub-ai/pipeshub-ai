@@ -8,13 +8,27 @@ import pytest
 import pytest_asyncio
 
 from app.config.constants.arangodb import EventTypes
+from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.pipeline import leases as leases_mod
 from app.modules.pipeline.leases import LeaseLost, RecordLeases
-from app.modules.transformers.vectorstore import VectorStore
+from app.modules.transformers.vectorstore import VectorStore, VirtualRecordBusy
 from app.services.distributed.interface import IDistributedLeaseManager
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.services.vector_db.models import CollectionConfig
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
-from tests.support.index_world import COLL, context_of, make_store, parse, record_of
+from tests.support.index_world import (
+    COLL,
+    ORG,
+    VRID,
+    context_of,
+    make_store,
+    parse,
+    record_of,
+)
 
 DOC = "\n\n".join(f"Paragraph {i} says something quite different about topic {i}." for i in range(5))
 
@@ -123,6 +137,21 @@ async def test_a_run_whose_lease_lapsed_stops_before_its_next_delete(db, manager
         await real(record, revision)
 
     store._sweep_stray_points = slow
-    with pytest.raises(LeaseLost):
+    with pytest.raises(VirtualRecordBusy) as raised:
         await store.apply(_apply_args("rec-A"))
+    assert isinstance(raised.value.__cause__, LeaseLost)
     assert reached == [], "cancelled at the next await: nothing is deleted after the loss"
+
+
+async def test_a_record_that_waits_past_the_limit_is_handed_back_not_dead_lettered(db, manager, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wait for a sibling record of the same virtual record ends in a hand-back with no attempt counted: the format processors
+    re-raise an IndexingError and wrap anything else as a terminal DocumentProcessingError, so it is one, and a RequeueWithoutAttempt."""
+    monkeypatch.setattr("app.modules.transformers.vectorstore.messaging_env", SimpleNamespace(record_lease_wait_seconds=0.1))
+    monkeypatch.setattr(leases_mod, "messaging_env", SimpleNamespace(concurrency_lease_seconds=5.0, record_lease_wait_seconds=0.1))
+    manager.owner[f"record:vrid:{ORG}:{VRID}"] = "a sibling still writing"
+    store = make_store(db)
+    with pytest.raises(VirtualRecordBusy) as raised:
+        await store.apply(_apply_args("rec-B"))
+    assert isinstance(raised.value, IndexingError) and isinstance(raised.value, RequeueWithoutAttempt)
+    assert raised.value.counts_toward_backstop is False and raised.value.pauses_consumer is False
+    assert MessageErrorClassifier.classify_by_exception(raised.value) != MessageErrorType.TERMINAL

@@ -76,6 +76,7 @@ from app.modules.indexing.stray_sweep import sweep_enabled, sweep_stray_points
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
+from app.modules.pipeline.leases import RecordBusy
 from app.modules.transformers.code_units import (
     RESIDUE_UNIT_KIND,
     class_header_unit,
@@ -92,6 +93,7 @@ from app.services.llm_gateway import wire
 from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.config import messaging_env
+from app.services.messaging.consumer_concurrency import RecordLeaseHeld
 from app.services.messaging.error_classifier import format_exception_chain
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
@@ -1028,6 +1030,17 @@ def _is_code_block(block: object) -> bool:
     return str(getattr(kind, "value", kind)).lower() == BlockType.CODE.value
 
 
+class VirtualRecordBusy(IndexingError, RecordLeaseHeld):
+    """Another record of the same virtual record holds the lease on it (or this run lost it): the delivery is handed back, not counted
+    as an attempt, like a held record lease. An ``IndexingError`` too, so the format processors, which re-raise those and wrap any other
+    exception as a terminal ``DocumentProcessingError``, let it through to the consumer."""
+
+    pauses_consumer = False
+
+    def __init__(self, message: str) -> None:
+        IndexingError.__init__(self, message)
+
+
 async def _always_current() -> bool:
     return True
 
@@ -1273,11 +1286,14 @@ class VectorStore(Transformer):
         leases, record = type(self).vrid_leases, ctx.record
         if leases is None or not leases.bound or not record.org_id or not record.virtual_record_id:
             return await self._apply_locked(ctx)
-        async with leases.hold(
-            f"vrid:{record.org_id}:{record.virtual_record_id}", owner=f"index:{record.id}",
-            wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
-        ):
-            return await self._apply_locked(ctx)
+        try:
+            async with leases.hold(
+                f"vrid:{record.org_id}:{record.virtual_record_id}", owner=f"index:{record.id}",
+                wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
+            ):
+                return await self._apply_locked(ctx)
+        except RecordBusy as e:  # the lease stayed busy past the wait, or was lost: not a failure of this record
+            raise VirtualRecordBusy(f"the virtual record {record.virtual_record_id} is being written by another record: {e}") from e
 
     async def _apply_locked(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
