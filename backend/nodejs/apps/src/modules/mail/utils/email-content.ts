@@ -6,12 +6,14 @@ import {
   domainLimitReached,
   emailChangeNotice,
   isEmailChangeNoticeData,
+  isSandboxCapacityAlertData,
   joinRequestDecision,
   joinRequestNotify,
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
   resetPassword,
+  sandboxCapacityAlert,
   suspiciousLoginAttempt,
 } from './emailTemplates';
 
@@ -60,6 +62,14 @@ export function getEmailContent(
 
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
+
+    case EmailTemplateType.SandboxCapacityAlert:
+      if (!isSandboxCapacityAlertData(templateData)) {
+        throw new BadRequestError(
+          'sandboxCapacityAlert requires heading, intro, reasonText, actions, stats and docsUrl',
+        );
+      }
+      return sandboxCapacityAlert(templateData);
 
     default:
       throw 'Unknown Template';

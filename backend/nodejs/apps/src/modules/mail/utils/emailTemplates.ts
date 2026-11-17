@@ -16,6 +16,7 @@ const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appu
 const joinRequestNotifyTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs');
 const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs');
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
+const sandboxCapacityAlertTemplate = loadTemplate('src/modules/mail/views/layouts/system/sandboxCapacityAlert.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
 const headTemplate = loadTemplate('src/modules/mail/views/partials/head.hbs');
@@ -100,5 +101,45 @@ export const orgEmailVerification = (templateData: Record<string,any>): string =
 export const domainLimitReached = (templateData: Record<string,any>): string => compileTemplate(domainLimitReachedTemplate, templateData);
 export const joinRequestNotify = (templateData: Record<string,any>): string => compileTemplate(joinRequestNotifyTemplate, templateData);
 export const joinRequestDecision = (templateData: Record<string,any>): string => compileTemplate(joinRequestDecisionTemplate, templateData);
+
+export interface SandboxCapacityAlertStat {
+  label: string;
+  value: string;
+}
+export interface SandboxCapacityAlertData {
+  heading: string;
+  intro: string;
+  reasonText: string;
+  indexingText?: string;
+  actions: string[];
+  stats: SandboxCapacityAlertStat[];
+  docsUrl: string;
+}
+export const isSandboxCapacityAlertData = (
+  data: unknown,
+): data is SandboxCapacityAlertData => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  return (
+    typeof record.heading === 'string' &&
+    typeof record.intro === 'string' &&
+    typeof record.reasonText === 'string' &&
+    (record.indexingText === undefined || typeof record.indexingText === 'string') &&
+    Array.isArray(record.actions) &&
+    record.actions.every((action) => typeof action === 'string') &&
+    Array.isArray(record.stats) &&
+    record.stats.every(
+      (stat) =>
+        typeof stat === 'object' &&
+        stat !== null &&
+        typeof (stat as Record<string, unknown>).label === 'string' &&
+        typeof (stat as Record<string, unknown>).value === 'string',
+    ) &&
+    typeof record.docsUrl === 'string'
+  );
+};
+export const sandboxCapacityAlert = (templateData: SandboxCapacityAlertData): string => compileTemplate(sandboxCapacityAlertTemplate, templateData as unknown as Record<string, unknown>);
 
 

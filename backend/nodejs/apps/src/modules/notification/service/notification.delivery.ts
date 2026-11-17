@@ -1,0 +1,61 @@
+import { Logger } from '../../../libs/services/logger.service';
+import { getNotificationRepository } from '../../../libs/repositories/notification';
+import { forOrg } from '../../../libs/context/orgContext';
+import { NotificationService } from './notification.service';
+import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
+import {
+  NotificationBrokerMessage,
+  buildNotificationDocForUser,
+} from '../utils/notification-payload.resolver';
+
+/**
+ * Stores one notification per recipient of *event* in its org and pushes each
+ * to the user's open sockets. Returns how many were stored. Store errors are
+ * thrown to the caller, which decides whether the message is redelivered.
+ */
+export function deliverToOrg(
+  event: NotificationBrokerMessage,
+  notificationService: NotificationService,
+  logger: Logger,
+): Promise<number> {
+  // The org comes from the event, bound before any repository is touched.
+  return forOrg(event.orgId, 'notification-consumer', async () => {
+    const recipientUserIds = await resolveNotificationRecipientUserIds(
+      event.orgId,
+      event.recipientUserIds,
+      event.recipientRoles,
+    );
+
+    if (recipientUserIds.length === 0) {
+      logger.warn('Notification event skipped: no recipients', {
+        orgId: event.orgId,
+        type: event.type,
+      });
+      return 0;
+    }
+
+    const docs = recipientUserIds.map((userOid) =>
+      buildNotificationDocForUser(event, userOid),
+    );
+    const savedDocs = await getNotificationRepository().insertMany(docs);
+
+    const savedIds: string[] = [];
+    const dispatchedUserIds: string[] = [];
+
+    for (const saved of savedDocs) {
+      const userId = saved.assignedTo;
+      notificationService.sendToUser(userId, 'newNotification', saved);
+      savedIds.push(saved._id);
+      dispatchedUserIds.push(userId);
+    }
+
+    logger.debug('Notification saved and dispatched', {
+      orgId: event.orgId,
+      type: event.type,
+      recipientCount: dispatchedUserIds.length,
+      notificationIds: savedIds,
+      userIds: dispatchedUserIds,
+    });
+    return savedDocs.length;
+  });
+}

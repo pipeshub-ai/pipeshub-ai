@@ -3,16 +3,15 @@ import {
   StreamMessage,
 } from '../../../libs/types/messaging.types';
 import { Logger } from '../../../libs/services/logger.service';
-import { injectable, inject } from 'inversify';
-import { getNotificationRepository } from '../../../libs/repositories/notification';
-import { forOrg } from '../../../libs/context/orgContext';
+import { injectable, inject, optional } from 'inversify';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import { NotificationService } from './notification.service';
-import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
+import { toBrokerMessage } from '../utils/notification-payload.resolver';
+import { deliverToOrg } from './notification.delivery';
 import {
-  buildNotificationDocForUser,
-  toBrokerMessage,
-} from '../utils/notification-payload.resolver';
+  PlatformAlertHandler,
+  isPlatformAudience,
+} from './platform-alert.handler';
 
 @injectable()
 export class NotificationConsumer {
@@ -21,7 +20,19 @@ export class NotificationConsumer {
     @inject('Logger') private readonly logger: Logger,
     @inject(NotificationService)
     private readonly notificationService: NotificationService,
+    @inject(PlatformAlertHandler)
+    @optional()
+    private readonly platformAlertHandler?: PlatformAlertHandler,
   ) {}
+
+  /** An event for the installation's admins rather than one org's users. */
+  private async handlePlatformEvent(value: unknown): Promise<void> {
+    if (!this.platformAlertHandler) {
+      this.logger.warn('Platform alert skipped: no handler is configured');
+      return;
+    }
+    await this.platformAlertHandler.handle(value);
+  }
 
   async start(): Promise<void> {
     if (!this.consumer.isConnected()) {
@@ -53,6 +64,10 @@ export class NotificationConsumer {
         async (message: StreamMessage<INotification>) => {
           let redeliver = false;
           try {
+            if (isPlatformAudience(message.value)) {
+              await this.handlePlatformEvent(message.value);
+              return;
+            }
             const event = toBrokerMessage(message.value);
             if (!event) {
               this.logger.warn(
@@ -64,51 +79,7 @@ export class NotificationConsumer {
               return;
             }
 
-            // The org comes from the event, bound before any repository is touched.
-            await forOrg(event.orgId, 'notification-consumer', async () => {
-              const recipientUserIds =
-                await resolveNotificationRecipientUserIds(
-                  event.orgId,
-                  event.recipientUserIds,
-                  event.recipientRoles,
-                );
-
-              if (recipientUserIds.length === 0) {
-                this.logger.warn('Notification event skipped: no recipients', {
-                  orgId: event.orgId,
-                  type: event.type,
-                });
-                return;
-              }
-
-              const docs = recipientUserIds.map((userOid) =>
-                buildNotificationDocForUser(event, String(userOid)),
-              );
-              const savedDocs =
-                await getNotificationRepository().insertMany(docs);
-
-              const savedIds: string[] = [];
-              const dispatchedUserIds: string[] = [];
-
-              for (const saved of savedDocs) {
-                const userId = saved.assignedTo;
-                this.notificationService.sendToUser(
-                  userId,
-                  'newNotification',
-                  saved,
-                );
-                savedIds.push(saved._id);
-                dispatchedUserIds.push(userId);
-              }
-
-              this.logger.debug('Notification saved and dispatched', {
-                orgId: event.orgId,
-                type: event.type,
-                recipientCount: dispatchedUserIds.length,
-                notificationIds: savedIds,
-                userIds: dispatchedUserIds,
-              });
-            });
+            await deliverToOrg(event, this.notificationService, this.logger);
           } catch (error) {
             // A store that is frozen or away is not a bad message: let the broker deliver it again.
             if (isRetryableStoreError(error)) {
