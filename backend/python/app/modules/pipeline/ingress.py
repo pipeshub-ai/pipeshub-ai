@@ -70,15 +70,16 @@ class StageIngress:
         and `reason` stay as they are and its queued copies are not held. Unforced and at bulk priority,
         so the claim keeps the stage's pause budget (only a forced claim resets it). None when the
         runtime holds no state for the revision, which the caller treats as "run the record in full".
-        A record still QUEUED for classification, with no classify state, lost its hand-off between the
-        embed record and the dispatch: classification is owed and is dispatched here too (a deferred
-        one is NOT_STARTED, not QUEUED, and stays deferred)."""
+        A stage with no state whose prerequisites are done is a hand-off the process stopped in the middle
+        of: it is recorded SKIPPED when it does not apply and dispatched otherwise. Classification is the
+        exception unless the record is still QUEUED for it: a deferred one stays deferred to first use."""
         queued = record is not None and record.get("extractionStatus") == ProgressStatus.QUEUED.value
-        owed = frozenset({CLASSIFY}) if queued else frozenset()
+        defer = frozenset() if queued else frozenset({CLASSIFY})
         return await self._coordinator.redrive_revision(
             virtual_record_id, rev, self._coordinator.stage_names(), priority=Priority.BULK, force=False,
             only_unfinished=True,
-            owed=owed,
+            recover_missing=True,
+            defer=defer,
         )
 
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:

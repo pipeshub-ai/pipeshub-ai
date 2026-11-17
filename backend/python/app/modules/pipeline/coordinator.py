@@ -188,16 +188,19 @@ class Coordinator:
         priority: Priority,
         force: bool,
         only_unfinished: bool = False,
-        owed: frozenset[str] = frozenset(),
+        recover_missing: bool = False,
+        defer: frozenset[str] = frozenset(),
     ) -> list[str] | None:
         """Re-dispatch ``stages`` for a revision the runtime has seen, from what its external
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
         instead, which dispatches every stage. With ``only_unfinished``, only a stage whose state
         is FAILED or PAUSED is dispatched: a finished stage is left alone (a claim writes its
         headline status and its finish clears the record's ``reason``), and a stage with no state
-        (classification deferred to first use) stays deferred, unless it is in ``owed``: a stage the
-        caller knows the record is waiting on (its hand-off was interrupted), which is dispatched even
-        with no state. The statuses are enforced again by the claim, not only by this snapshot."""
+        (classification deferred to first use) stays deferred. With ``recover_missing``, a stage with
+        no state whose prerequisites are done is an unfinished hand-off (the process stopped between
+        the embed record and the dispatch): it goes through the same applicability check as a normal
+        dispatch (a stage that does not apply is recorded SKIPPED) and is dispatched otherwise, except
+        the stages in ``defer``. The statuses are enforced again by the claim, not only by this snapshot."""
         states = await self._states.get_many(virtual_record_id, rev)
         recorded = [s for s in states.values() if self._recorded(s)]
         if not recorded:
@@ -214,16 +217,28 @@ class Coordinator:
         view = origin.to_job().view
         dispatched: list[str] = []
         by_stage = {s.stage: s for s in states.values()}
+        policy = self._policy_for(view.org_id)
         for stage in stages:
             if not self._registry.has(stage):
                 self._logger.warning("Cannot re-run unknown stage %r for %s", stage, virtual_record_id)
                 continue
             only_from: frozenset[ProgressStatus] | None = None
             if only_unfinished:
-                only_from = _UNFINISHED | ({ProgressStatus.NOT_STARTED} if stage in owed else frozenset())
+                only_from = _UNFINISHED
                 present = by_stage.get(stage)
-                if (present is None and stage not in owed) or (present is not None and present.status not in only_from):
+                if present is not None and present.status not in only_from:
                     continue
+                if present is None:
+                    target = self._registry.get(stage)
+                    if not recover_missing or stage in defer or not all(
+                        req in by_stage and by_stage[req].status in _DONE for req in target.requires
+                    ):
+                        continue
+                    if not target.applies(view, policy):
+                        await self._skip(target, view, priority=priority, trigger="redrive")
+                        by_stage = {s.stage: s for s in (await self._states.get_many(virtual_record_id, rev)).values()}
+                        continue
+                    only_from = frozenset({ProgressStatus.NOT_STARTED})
             job_id = await self.redrive(view, stage, priority=priority, force=force, only_from=only_from)
             if job_id is not None:
                 dispatched.append(job_id)

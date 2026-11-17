@@ -589,9 +589,9 @@ async def test_a_forced_redrive_keeps_a_live_twins_reservation(fleet) -> None:
 from app.modules.pipeline.ingress import StageIngress  # noqa: E402
 
 
-def _ingress_for(h: _Harness, store: PauseStore) -> StageIngress:
+def _ingress_for(h: _Harness, store: PauseStore, registry: StageRegistry | None = None) -> StageIngress:
     coordinator = Coordinator(
-        _classify_after_embed(), h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        registry or _classify_after_embed(), h.states, h.headlines, h.producer,  # type: ignore[arg-type]
         policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
     )
     return StageIngress(coordinator, graph=None, logger=logging.getLogger("test"))  # type: ignore[arg-type]
@@ -693,3 +693,46 @@ async def test_redrive_unchanged_claims_only_a_failed_or_paused_stage(fleet, sta
         assert dispatched == [] and h.producer.sent == []
     else:
         assert dispatched == [f"{stage_state_key(VRID, REV, 'classify')}@1"]
+
+
+def _classify_and_entities(*, entities_applies: bool = True, classify_applies: bool = True) -> StageRegistry:
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_stage("classify", "embed", applicable=classify_applies, headline=HeadlineField.EXTRACTION))
+    registry.register(_stage("entities", "embed", applicable=entities_applies))
+    return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("applies", "expected"), [(True, ProgressStatus.QUEUED), (False, ProgressStatus.SKIPPED)])
+async def test_redrive_unchanged_recovers_entities_lost_after_the_classify_claim(
+    fleet, applies: bool, expected: ProgressStatus
+) -> None:
+    """embed is recorded and classify finished, but the process stopped before entities got a state: the hand-off
+    is unfinished whatever the record's extraction status says. It goes through the normal applicability check."""
+    registry = _classify_and_entities(entities_applies=applies)
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+    h.complete("classify")
+
+    dispatched = await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"})
+
+    assert h.status("entities") is expected
+    assert dispatched == ([f"{stage_state_key(VRID, REV, 'entities')}@1"] if applies else [])
+    assert h.status("classify") is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_does_not_publish_a_classify_that_does_not_apply(fleet) -> None:
+    """The record is QUEUED for classification and the hand-off died before the applicability check (no text, no
+    images): the recovery records SKIPPED and publishes nothing, as a finished hand-off would have."""
+    registry = _classify_and_entities(classify_applies=False, entities_applies=False)
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == []
+
+    assert h.status("classify") is ProgressStatus.SKIPPED and h.status("entities") is ProgressStatus.SKIPPED
+    assert h.producer.sent == []
