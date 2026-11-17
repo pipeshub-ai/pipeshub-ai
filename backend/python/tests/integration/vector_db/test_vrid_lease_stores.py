@@ -39,7 +39,7 @@ def svc(request: pytest.FixtureRequest):  # noqa: ANN201
     return request.getfixturevalue(name)
 
 
-async def test_a_run_that_lost_the_lease_does_not_sweep_away_the_newer_runs_point(svc, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+async def test_a_run_that_lost_the_lease_does_not_sweep_away_the_newer_runs_point(svc, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = FakeLeases()
     leases = RecordLeases()
     leases.bind(manager)
@@ -55,7 +55,7 @@ async def test_a_run_that_lost_the_lease_does_not_sweep_away_the_newer_runs_poin
         store = make_store(svc, dim=DIM, collection=col)
         real = store._sweep_stray_points
 
-        async def lapsed(record, revision) -> None:  # noqa: ANN001
+        async def lapsed(record, revision) -> None:
             await svc.upsert_points(col, [VectorPoint(id=point_id("newer"), dense_vector=make_dense([1.0]), payload={
                 "page_content": "kept by the newer run", "metadata": {"orgId": ORG, "virtualRecordId": VRID, "blockId": "newer-block"}})])
             await svc.make_searchable(col)

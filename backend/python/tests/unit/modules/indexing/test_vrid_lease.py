@@ -134,7 +134,7 @@ async def test_a_run_that_lost_the_lease_deletes_nothing_in_the_sweep(db, manage
     store = make_store(db)
     real = store._sweep_stray_points
 
-    async def lapsed(record, revision) -> None:  # noqa: ANN001
+    async def lapsed(record, revision) -> None:
         await db.upsert_points(COLL, [VectorPoint(id="f" * 8 + "-0000-4000-8000-" + "0" * 12, dense_vector=[1.0, 1.0], payload={
             "page_content": "kept by the newer run", "metadata": {"orgId": ORG, "virtualRecordId": VRID, "blockId": "newer-runs-block"}})])
         manager.take_away()
@@ -158,7 +158,7 @@ async def test_a_run_that_lost_the_lease_does_not_delete_replaced_blocks_or_embe
         deleted.append("delete")
         await real_delete(*args, **kwargs)
 
-    async def lapsed(record, revision) -> None:  # noqa: ANN001
+    async def lapsed(record, revision) -> None:
         lost_at.append(len(deleted))
         manager.take_away()
         if delete == "blocks":

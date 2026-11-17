@@ -14,9 +14,9 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
-import contextvars
 import codecs
 import contextlib
+import contextvars
 import hashlib
 import inspect
 import json
