@@ -7,9 +7,10 @@ import os
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -166,6 +167,31 @@ _INSTALL_OOM_NOTE = (
     "[sandbox] Package installation ran out of memory (limit {limit} MB). "
     "Install fewer packages at once, or pick lighter ones.\n"
 )
+
+
+# How long a cancelled call waits for its container to be removed and its
+# worker thread to finish before it gives up and lets its slot go.
+_CANCEL_CLEANUP_S = 30.0
+
+
+@dataclass
+class _RunHandle:
+    """Shared between a container run's worker thread and the event loop,
+    so a cancel on the loop can reach a container the thread is driving.
+
+    The thread writes `container_id` and then reads `cancelled`; the loop
+    sets `cancelled` and then reads `container_id`. Whichever comes second
+    sees the other, so the container is removed at least once (a second
+    remove gets a 404, which is ignored).
+    """
+
+    container_id: str | None = None
+    cancelled: threading.Event = field(default_factory=threading.Event)
+
+
+class _RunCancelled(Exception):
+    """Raised in the worker thread when its run was cancelled: skip the
+    rest of the run and go straight to removing the container."""
 
 
 @dataclass
@@ -390,17 +416,24 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 logger.error("egress network %s has no readable IPv4 subnet", egress_network)
                 network_enabled, egress_network = False, None
                 network_note = _NETWORK_UNAVAILABLE_NOTE
+        handle = _RunHandle()
+        fut = asyncio.ensure_future(self._provider.run_blocking(
+            self._run_container_sync,
+            run_cmd, src_dir, request.timeout, network_enabled,
+            staged_inputs, self._provider.client, egress_network,
+            egress_cidrs, handle,
+        ))
         try:
-            outcome = await asyncio.wait_for(
-                self._provider.run_blocking(
-                    self._run_container_sync,
-                    run_cmd, src_dir, request.timeout, network_enabled,
-                    staged_inputs, self._provider.client, egress_network,
-                    egress_cidrs,
-                ),
-                timeout=request.timeout + 30,
-            )
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # Shielded: a cancel or the host-side timeout must not abandon the
+            # worker thread, which still owns a running container.
+            outcome = await asyncio.wait_for(asyncio.shield(fut), timeout=request.timeout + 30)
+        except asyncio.CancelledError:
+            # Never turn a cancel into a result. The caller's slot is released
+            # when this raises, so the container has to be gone first.
+            await self._stop_run(handle, fut)
+            raise
+        except asyncio.TimeoutError:
+            await self._stop_run(handle, fut)
             duration_ms = (time.monotonic() - start) * 1000
             result = CodeResult(
                 stdout="",
@@ -481,10 +514,16 @@ class DockerCodingSandbox(CodingSandboxBackend):
         network_name = self._egress_network
         try:
             egress_cidrs = await self._provider.egress_network_cidrs(network_name)
-            success, stdout, stderr = await self._provider.run_blocking(
+            handle = _RunHandle()
+            fut = asyncio.ensure_future(self._provider.run_blocking(
                 self._install_packages_sync, to_install, language,
-                self._provider.client, network_name, egress_cidrs,
-            )
+                self._provider.client, network_name, egress_cidrs, handle,
+            ))
+            try:
+                success, stdout, stderr = await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                await self._stop_run(handle, fut)
+                raise
         except CodingSandboxError:
             raise
         except Exception as exc:
@@ -500,6 +539,57 @@ class DockerCodingSandbox(CodingSandboxBackend):
             stdout=stdout,
             stderr=stderr,
         )
+
+    async def _stop_run(self, handle: _RunHandle, fut: asyncio.Future[Any]) -> None:
+        """Stop a run whose caller was cancelled or timed out, and wait for
+        its worker thread to finish, at most `_CANCEL_CLEANUP_S`.
+
+        Force-remove kills and removes the container in one call, so the
+        thread's `container.wait` returns at once and the thread is freed
+        too. It runs on the control pool, because the run pool is full
+        exactly when something has to be stopped. A second cancel during
+        the wait is remembered and re-raised at the end, so it cannot cut
+        the wait short and release a slot while the container still runs.
+        """
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        handle.cancelled.set()
+        # Retrieved here so an abandoned run's error is not logged as
+        # "never retrieved" when it finally ends.
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+        cancelled_again = False
+        container_id = handle.container_id
+        if container_id:
+            try:
+                await self._provider.run_control(
+                    self._provider.client.api.remove_container, container_id, force=True,
+                )
+            except asyncio.CancelledError:
+                cancelled_again = True
+            except Exception as exc:
+                logger.debug("removing cancelled sandbox container %.12s failed: %s", container_id, exc)
+        deadline = started + _CANCEL_CLEANUP_S
+        while not fut.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait({fut}, timeout=remaining)
+            except asyncio.CancelledError:
+                cancelled_again = True
+        if fut.done():
+            logger.info(
+                "sandbox run cancelled: container %.12s removed after %.1fs",
+                handle.container_id or "-", loop.time() - started,
+            )
+        else:
+            logger.warning(
+                "sandbox run %.12s did not stop within %gs of cancel; releasing its slot "
+                "(the proxy reaper removes the container if it is still there)",
+                handle.container_id or "-", _CANCEL_CLEANUP_S,
+            )
+        if cancelled_again:
+            raise asyncio.CancelledError
 
     async def upload_file(self, path: str, content: bytes) -> None:
         if not self._provisioned:
@@ -676,11 +766,13 @@ class DockerCodingSandbox(CodingSandboxBackend):
         client: Any,
         egress_network: str | None,
         egress_cidrs: list[str] | None = None,
+        handle: _RunHandle | None = None,
     ) -> _RunOutcome:
+        handle = handle or _RunHandle()
         token = new_firewall_token()
         outcome = self._run_container_once(
             command, src_dir, timeout, network_enabled, staged_inputs, client,
-            egress_network, egress_cidrs or [], token,
+            egress_network, egress_cidrs or [], token, handle,
         )
         if network_enabled and firewall_unavailable(outcome.exit_code, outcome.stderr, token):
             # The firewall step exits before the command starts, so running
@@ -690,7 +782,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 "running without network: %.500s", self._image, outcome.stderr,
             )
             outcome = self._run_container_once(
-                command, src_dir, timeout, False, staged_inputs, client, None, [], "",
+                command, src_dir, timeout, False, staged_inputs, client, None, [], "", handle,
             )
             outcome.stderr = _NETWORK_UNAVAILABLE_NOTE + outcome.stderr
         return outcome
@@ -706,7 +798,9 @@ class DockerCodingSandbox(CodingSandboxBackend):
         egress_network: str | None,
         egress_cidrs: list[str],
         token: str,
+        handle: _RunHandle | None = None,
     ) -> _RunOutcome:
+        handle = handle or _RunHandle()
         container = None
         try:
             has_py_deps = os.path.isdir(self._deps_python_dir) and bool(os.listdir(self._deps_python_dir))
@@ -743,6 +837,9 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 container_kwargs["network_mode"] = "none"
                 container_kwargs["network_disabled"] = self._network_disabled
             container = create_sandbox_container(client, **container_kwargs)
+            handle.container_id = container.id
+            if handle.cancelled.is_set():
+                raise _RunCancelled
             logger.info(
                 "_run_container_sync: container created id=%.12s image=%s "
                 "network_enabled=%s mem_limit=%dMB cpu=%.1f env=%s",
@@ -786,6 +883,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 "(has_py_deps=%s has_node_deps=%s)",
                 container.id, has_py_deps, has_node_deps,
             )
+            if handle.cancelled.is_set():
+                raise _RunCancelled
             container.start()
 
             timed_out = False
@@ -802,6 +901,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     pass
             else:
                 oom_killed, ran_s = _container_exit_state(container)
+            if handle.cancelled.is_set():
+                raise _RunCancelled
 
             stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
             stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
@@ -862,6 +963,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
     def _install_packages_sync(
         self, to_install: list[str], language: CodingLanguage,
         client: Any, network_name: str, egress_cidrs: list[str] | None = None,
+        handle: _RunHandle | None = None,
     ) -> tuple[bool, str, str]:
         if language == "python":
             cmd = [
@@ -895,7 +997,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         token = new_firewall_token()
         exit_code, stdout, stderr = self._install_in_container(
             client, network_name, extract_path, host_target, to_install,
-            self._firewalled(cmd, egress_cidrs, token),
+            self._firewalled(cmd, egress_cidrs, token), handle,
         )
         if firewall_unavailable(exit_code, stderr, token):
             logger.error(
@@ -908,7 +1010,9 @@ class DockerCodingSandbox(CodingSandboxBackend):
     def _install_in_container(
         self, client: Any, network_name: str, extract_path: str, host_target: str,
         to_install: list[str], command_kwargs: dict[str, Any],
+        handle: _RunHandle | None = None,
     ) -> tuple[int, str, str]:
+        handle = handle or _RunHandle()
         container = create_sandbox_container(
             client,
             image=self._image,
@@ -920,13 +1024,20 @@ class DockerCodingSandbox(CodingSandboxBackend):
             detach=True,
             **command_kwargs,
         )
+        handle.container_id = container.id
         try:
+            if handle.cancelled.is_set():
+                raise _RunCancelled
             if extract_path == "/deps":
                 container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
             else:
                 container.put_archive("/", _tar_empty_dir("install", mode=0o777))
+            if handle.cancelled.is_set():
+                raise _RunCancelled
             container.start()
             exit_info = container.wait(timeout=300)
+            if handle.cancelled.is_set():
+                raise _RunCancelled
             exit_code = exit_info.get("StatusCode", -1)
             oom_killed, _ran_s = _container_exit_state(container)
             stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")

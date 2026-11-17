@@ -202,3 +202,26 @@ class TestDockerClientProvider:
         provider = DockerClientProvider(max_workers=2)
         assert provider._executor._max_workers == 2
         provider.close()
+
+    async def test_run_control_runs_while_every_run_worker_is_busy(self) -> None:
+        import asyncio
+        import threading
+
+        provider = DockerClientProvider(max_workers=1)
+        release = threading.Event()
+        busy = asyncio.ensure_future(provider.run_blocking(release.wait, 5))
+        try:
+            await asyncio.sleep(0.05)
+            result = await asyncio.wait_for(provider.run_control(lambda: "removed"), timeout=2)
+            assert result == "removed"
+            assert not busy.done()
+        finally:
+            release.set()
+            await busy
+            provider.close()
+
+    def test_close_shuts_down_both_executors(self) -> None:
+        provider = DockerClientProvider()
+        provider.close()
+        assert provider._executor._shutdown
+        assert provider._control_executor._shutdown

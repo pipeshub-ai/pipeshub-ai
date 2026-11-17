@@ -492,7 +492,9 @@ class _TimeoutBackend(_CapturingBackend):
         return result.model_copy(update={"error_analysis": ReflectionEngine().analyze(result)})
 
 
-def _capped_tool(backend_cls=_CapturingBackend, cap: float | None = 300.0):
+def _capped_tool(
+    backend_cls: type = _CapturingBackend, cap: float | None = 300.0,
+) -> tuple[CodingSandboxTool, _CapturingBackend]:
     from app.agent_loop_lib.sandbox.manager import SandboxLimits
 
     backend = backend_cls()

@@ -946,3 +946,178 @@ class TestDockerTime:
         assert _parse_docker_time("0001-01-01T00:00:00Z") is None
         assert _parse_docker_time("not a time") is None
         assert _parse_docker_time(None) is None
+
+
+class _BlockingRun:
+    """A fake client whose container's `wait` (or another chosen call)
+    blocks until the container is force-removed, like a real long run."""
+
+    def __init__(self, *, block_in: str = "wait", exit_code: int = 137) -> None:
+        import threading
+
+        self.removed = threading.Event()
+        self.entered = threading.Event()
+        self.thread_done = threading.Event()
+        self.container = _fake_container(exit_code=exit_code)
+        self.container.id = "c0ffee000000aaaa"
+        self.client = MagicMock()
+        self.client.containers.create.return_value = self.container
+        self.client.api.remove_container.side_effect = lambda *a, **k: self.removed.set()
+        self.container.remove.side_effect = lambda *a, **k: self.removed.set()
+
+        def _block(*_a: object, **_k: object) -> dict:
+            self.entered.set()
+            self.removed.wait(10)
+            return {"StatusCode": exit_code}
+
+        getattr(self.container, block_in).side_effect = _block
+
+    async def wait_entered(self) -> None:
+        import asyncio
+
+        for _ in range(200):
+            if self.entered.is_set():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the run never reached the blocking call")
+
+
+class TestCancelRemovesTheContainerFirst:
+    async def _start(self, tmp_path, run: _BlockingRun, *, install: bool = False) -> object:
+        import asyncio
+
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        _with_egress_network(run.client, "sandbox_egress")
+        if install:
+            coro = sandbox.install_packages(["pandas"], "python")
+        else:
+            coro = sandbox.execute(CodeRequest(code="while True: pass", language="python", timeout=120))
+        task = asyncio.ensure_future(coro)
+        await run.wait_entered()
+        return task
+
+    async def test_cancel_raises_after_the_container_is_removed(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun()
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.client.api.remove_container.assert_called_once_with(run.container.id, force=True)
+        assert run.removed.is_set()
+        # The thread went straight to its own cleanup: no logs, no extraction.
+        run.container.logs.assert_not_called()
+        run.container.get_archive.assert_not_called()
+
+    async def test_cancel_before_start_never_starts_the_container(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun(block_in="put_archive")
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.container.start.assert_not_called()
+        assert run.removed.is_set()
+
+    async def test_cancel_while_the_container_is_created(self, tmp_path) -> None:
+        import asyncio
+        import threading
+
+        run = _BlockingRun()
+        gate = threading.Event()
+
+        def _slow_create(**_kwargs: object) -> MagicMock:
+            run.entered.set()
+            gate.wait(5)
+            return run.container
+
+        run.client.containers.create.side_effect = _slow_create
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            gate.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.container.start.assert_not_called()
+        run.container.remove.assert_called_with(force=True)
+
+    async def test_host_timeout_still_returns_the_timeout_result(self, tmp_path) -> None:
+        run = _BlockingRun()
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        with patch("docker.from_env", return_value=run.client), patch(
+            "app.agent_loop_lib.sandbox.coding.docker.asyncio.wait_for",
+            side_effect=_immediate_timeout,
+        ):
+            result = await sandbox.execute(CodeRequest(code="while True: pass", language="python", timeout=1))
+
+        assert result.exit_code == -1
+        assert "timed out" in result.stderr.lower()
+        assert result.error_analysis.category == ErrorCategory.TIMEOUT
+        assert run.removed.is_set()
+
+    async def test_second_cancel_during_cleanup_still_waits_for_the_thread(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun()
+        # The remove does not unblock the run on its own; it is let go later.
+        run.client.api.remove_container.side_effect = None
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done()
+            run.removed.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    async def test_cleanup_bound_logs_and_raises(self, tmp_path, caplog, monkeypatch) -> None:
+        import asyncio
+        import logging
+
+        from app.agent_loop_lib.sandbox.coding import docker as docker_mod
+
+        monkeypatch.setattr(docker_mod, "_CANCEL_CLEANUP_S", 0.1)
+        run = _BlockingRun()
+        run.client.api.remove_container.side_effect = None  # a hung daemon
+        try:
+            with patch("docker.from_env", return_value=run.client), caplog.at_level(logging.WARNING):
+                task = await self._start(tmp_path, run)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert "did not stop within 0.1s of cancel" in caplog.text
+        finally:
+            run.removed.set()
+
+    async def test_install_cancel_removes_the_container(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun()
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run, install=True)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.client.api.remove_container.assert_called_once_with(run.container.id, force=True)
+
+
+async def _immediate_timeout(awaitable: object, timeout: float) -> None:
+    """`asyncio.wait_for` stand-in that times out at once, without waiting
+    `timeout + 30` seconds; the shielded run keeps going."""
+    import asyncio
+
+    inner = asyncio.ensure_future(awaitable)
+    await asyncio.sleep(0.05)
+    inner.cancel()
+    raise asyncio.TimeoutError

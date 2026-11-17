@@ -132,11 +132,15 @@ class TestPythonVenvFailureSaysWhy:
 
 class TestResourceLimitMessages:
     async def test_memory_error_is_out_of_memory_naming_the_local_limit(self, tmp_path, monkeypatch) -> None:
-        from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult, ErrorCategory
+        from app.agent_loop_lib.sandbox.coding.base import (
+            CodeRequest,
+            CodeResult,
+            ErrorCategory,
+        )
 
         sandbox = LocalCodingSandbox(working_dir=str(tmp_path / "sandbox-1"))
 
-        async def fake_execute(request):
+        async def fake_execute(request: CodeRequest) -> CodeResult:
             return CodeResult(
                 stdout="", exit_code=1, language="python", duration_ms=1.0,
                 stderr='Traceback (most recent call last):\n  File "main.py", line 1\nMemoryError\n',

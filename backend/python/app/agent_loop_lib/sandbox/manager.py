@@ -333,6 +333,11 @@ class SandboxManager:
         Waits for a free slot (see `slot_wait_s`), then raises
         `SandboxLimitExceeded`. A no-op for a sandbox that keeps its slot for
         life (metered backends), an unknown id, or a manager with no governor.
+
+        The slot is released when the body returns or raises. So a backend
+        must not return or raise from a cancelled call while its compute (a
+        container, a subprocess) is still running: it stops that first, and
+        only then lets the cancel through.
         """
         record = self._instances.get((type, sandbox_id))
         if record is None or self._governor is None or record.governor_lease is not None:

@@ -252,6 +252,12 @@ class CodeExecutor:
         except asyncio.TimeoutError:
             await _kill_process_tree(proc)
             return "", f"Timed out after {timeout}s", -1
+        except asyncio.CancelledError:
+            # The caller's slot is released when this raises, so the process
+            # group has to be gone first. Shielded so a second cancel cannot
+            # skip the kill.
+            await asyncio.shield(_kill_process_tree(proc))
+            raise
         return (
             stdout_bytes.decode(errors="replace"),
             stderr_bytes.decode(errors="replace"),

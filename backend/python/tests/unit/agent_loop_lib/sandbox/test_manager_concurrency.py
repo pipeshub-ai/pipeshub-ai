@@ -354,6 +354,43 @@ class TestPerCallSlots:
         assert notes == [("run_code", True), ("run_code", False)]
 
 
+class TestSlotOutlivesTheCompute:
+    async def test_next_waiter_is_granted_only_after_the_cancelled_calls_cleanup(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = SandboxManager(governor=gov, slot_wait_s=5)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        events: list[str] = []
+        running = asyncio.Event()
+
+        async def first() -> None:
+            async with mgr.slot(SandboxType.CODING, sid1):
+                running.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    # A backend stopping its container before it lets the cancel through.
+                    await asyncio.shield(asyncio.sleep(0.2))
+                    events.append("cleanup done")
+                    raise
+
+        async def second() -> None:
+            async with mgr.slot(SandboxType.CODING, sid2):
+                events.append("second granted")
+
+        t1 = asyncio.create_task(first())
+        await running.wait()
+        t2 = asyncio.create_task(second())
+        await asyncio.sleep(0.02)
+        t1.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t1
+        await asyncio.wait_for(t2, 1)
+        assert events == ["cleanup done", "second granted"]
+        assert gov.snapshot()["total"] == 0
+
+
 class TestMeteredSlots:
     """Metered backends (the default when a backend reports no capabilities) keep their slot for life."""
 

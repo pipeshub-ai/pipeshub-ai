@@ -54,6 +54,12 @@ class DockerClientProvider:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="docker-sandbox",
         )
+        # Stop and remove calls get their own small pool: the run pool is
+        # full exactly when a run has to be stopped, and a remove queued
+        # behind the runs it is meant to end would wait for them.
+        self._control_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="docker-sandbox-ctl",
+        )
         self._image_cache: set[str] = set()
         self._network_cidrs: dict[str, list[str]] = {}
         self._closed = False
@@ -80,6 +86,14 @@ class DockerClientProvider:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._executor, lambda: fn(*args, **kwargs),
+        )
+
+    async def run_control(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a short blocking call that stops or removes a container, on
+        the control pool, so it never waits behind running containers."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._control_executor, lambda: fn(*args, **kwargs),
         )
 
     async def ensure_image(self, image: str) -> bool:
@@ -164,6 +178,7 @@ class DockerClientProvider:
                 pass
             self._client = None
         self._executor.shutdown(wait=False)
+        self._control_executor.shutdown(wait=False)
         logger.debug("DockerClientProvider: closed")
 
 
