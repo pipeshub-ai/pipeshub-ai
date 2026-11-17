@@ -212,6 +212,20 @@ def _download_use() -> dict[str, int]:
     return {n: a.stats()["in_use"] for n, a in wiring._Registry.ahead.get(asyncio.get_running_loop(), {}).items()}
 
 
+async def _until(condition, timeout: float = 10.0) -> bool:  # noqa: ANN001
+    """Poll a condition on observable state (bounded): readiness is what the system reports, not elapsed time."""
+    end = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < end:
+        if condition():
+            return True
+        await asyncio.sleep(0.02)
+    return condition()
+
+
+def _reclassed(use: dict[str, int]) -> bool:
+    return use.get("small", 0) == 0 and use.get("big") == 1
+
+
 async def test_the_redis_consumer_moves_the_download_place_when_inspection_makes_a_record_huge(monkeypatch: pytest.MonkeyPatch) -> None:
     """The second record waits for the one parse slot holding a download place: after inspection it is a huge record's."""
     monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
@@ -221,13 +235,18 @@ async def test_the_redis_consumer_moves_the_download_place_when_inspection_makes
     fleet = _Fleet(pages=1000)
     consumer.message_handler = fleet.handler
     first = asyncio.create_task(consumer._process_message_wrapper("t", "1-0", _fields("r1")))
-    await asyncio.sleep(0.3)  # r1 holds the one parse slot
-    second = asyncio.create_task(consumer._process_message_wrapper("t", "2-0", _fields("r2")))
-    await asyncio.sleep(0.4)  # r2 is inspected and waits for the parse slot, holding its download place
-    use = _download_use()
-    fleet.release.set()
-    await asyncio.gather(first, second)
-    assert use.get("small", 0) == 0 and use.get("big") == 1, use  # a small place held by a huge record blocks small PDFs
+    second = None
+    try:
+        gate = consumer.governor.gate(Pool.HEAVY_PARSE)
+        assert await _until(lambda: gate.in_use >= 1), "r1 never took the one parse slot"
+        second = asyncio.create_task(consumer._process_message_wrapper("t", "2-0", _fields("r2")))
+        # r2 is inspected and waits for the parse slot, holding its download place: wait for what that looks like
+        await _until(lambda: _reclassed(_download_use()))
+        use = _download_use()
+    finally:
+        fleet.release.set()
+        await asyncio.gather(first, *([second] if second else []), return_exceptions=True)
+    assert _reclassed(use), use  # a small place held by a huge record blocks small PDFs
 
 
 async def test_the_kafka_consumer_moves_the_download_place_when_inspection_makes_a_record_huge(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,10 +282,14 @@ async def test_the_kafka_consumer_moves_the_download_place_when_inspection_makes
 
     wrapper = consumer._IndexingKafkaConsumer__process_message_wrapper
     first = asyncio.create_task(wrapper(message("r1", 1)))
-    await asyncio.sleep(0.3)
-    second = asyncio.create_task(wrapper(message("r2", 2)))
-    await asyncio.sleep(0.4)
-    use = _download_use()
-    release.set()
-    await asyncio.gather(first, second)
-    assert use.get("small", 0) == 0 and use.get("big") == 1, use
+    second = None
+    try:
+        gate = consumer.governor.gate(Pool.HEAVY_PARSE)
+        assert await _until(lambda: gate.in_use >= 1), "r1 never took the one parse slot"
+        second = asyncio.create_task(wrapper(message("r2", 2)))
+        await _until(lambda: _reclassed(_download_use()))
+        use = _download_use()
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second else []), return_exceptions=True)
+    assert _reclassed(use), use
