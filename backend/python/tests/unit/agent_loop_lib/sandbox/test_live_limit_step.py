@@ -140,8 +140,46 @@ class TestRules:
     def test_a_shrink_resets_slow_start(self) -> None:
         trace = Trace(_sample(7.0), ceiling=6)
         trace.rec = replace(trace.rec, limit=6, cooldown_until=0, in_slow_start=False, slow_start_step=4)
+        trace(_sample(4.0))
         rec = trace(_sample(4.0))
         assert (rec.rule, rec.in_slow_start, rec.slow_start_step) == ("mem_target", True, 1)
+
+
+class TestReversalAfterGrowth:
+    """A shrink right after a grow needs the target below the limit twice."""
+
+    def _grown(self) -> Trace:
+        trace = Trace(_sample(7.0), ceiling=6)
+        trace.rec = replace(trace.rec, limit=3, cooldown_until=0, in_slow_start=True, slow_start_step=1)
+        assert trace(_sample(5.4), waiting=True).rule == "grow"
+        assert trace.rec.limit == 4 and trace.rec.target == 6
+        return trace
+
+    def test_one_low_sample_holds_and_a_second_shrinks(self) -> None:
+        trace = self._grown()
+        # target (3.9 - 2.4) / 0.5 = 3: the runs the grow let in took memory
+        assert (trace(_sample(3.9)).limit, trace.rec.rule) == (4, "no_demand")
+        assert (trace(_sample(3.9)).limit, trace.rec.rule) == (3, "mem_target")
+
+    def test_it_shrinks_only_to_the_higher_of_the_two_targets(self) -> None:
+        trace = self._grown()
+        trace(_sample(3.4))  # target 2
+        rec = trace(_sample(3.9))  # target 3
+        assert (rec.limit, rec.rule) == (3, "mem_target")
+
+    def test_a_hard_floor_still_halves_at_once(self) -> None:
+        trace = self._grown()
+        rec = trace(_sample(1.3))
+        assert (rec.limit, rec.rule) == (2, "mem_hard")
+
+    def test_a_lost_reading_does_not_carry_an_old_target(self) -> None:
+        trace = self._grown()
+        assert trace(None).rule == "unknown"
+        assert (trace(_sample(3.9)).limit, trace.rec.rule) == (3, "mem_target")
+
+    def test_without_a_grow_the_target_applies_at_once(self) -> None:
+        trace = Trace(_sample(7.0), ceiling=6)
+        assert trace(_sample(3.9)).limit == 4
 
     def test_unknown_memory_holds(self) -> None:
         trace = Trace(_sample(7.0), ceiling=6)

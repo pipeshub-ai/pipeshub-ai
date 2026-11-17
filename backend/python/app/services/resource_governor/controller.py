@@ -627,9 +627,13 @@ class ResourceGovernor:
                 "(index x0.75, heavy -1 per sample)",
             )
         elif was and not state.active:
+            with self._state_lock:
+                heavy = self._state.get(Pool.HEAVY_PARSE).yield_holdoff_set
             self._logger.info(
-                "ResourceGovernor: sandbox yield released; growth resumes after %.0f s",
+                "ResourceGovernor: sandbox yield released; growth resumes after %.0f s%s",
                 YIELD_GROW_CONFIRM_SAMPLES * self._sample_interval,
+                f", heavy parse after {heavy * self._sample_interval:.0f} s"
+                if heavy > YIELD_GROW_CONFIRM_SAMPLES else "",
             )
         if not state.active:
             return

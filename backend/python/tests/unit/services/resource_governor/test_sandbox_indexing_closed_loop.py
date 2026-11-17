@@ -27,13 +27,15 @@ SCENARIOS = {
     "sync_alone": sim.Scenario(H16),
     "chat_alone": replace(STEADY, sync=False),
 }
-# Recorded: 23-25 episodes an hour on the 16 GB host across seeds. The cycle is
-# yield -> indexing shrinks -> memory frees -> waiters drain -> TTL -> holdoff
-# -> +1 per sample, about two and a half minutes.
-MAX_YIELDS_PER_HOUR = 30
+# Recorded 6-12 episodes an hour on the 16 GB host over seeds 1-30 (23-25
+# with a fixed one-minute holdoff, when regrowing one heavy parse slot sent
+# runs back to waiting every two and a half minutes). Fewer than that needs
+# heavy parse held down for the whole chat session.
+MAX_YIELDS_PER_HOUR = 14
 MAX_INDEX_REVERSALS = 12
-# Recorded 10-12; the live limit follows memory that the runs themselves use.
-MAX_LIVE_REVERSALS = 14
+# Recorded 4-9 over seeds 1-30 (18-20 without the yield); the live limit
+# still follows memory that the runs and heavy parse's own steps take.
+MAX_LIVE_REVERSALS = 10
 
 
 @pytest.fixture(scope="module")

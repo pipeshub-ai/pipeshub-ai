@@ -255,6 +255,15 @@ DOWNSTREAM_LATENCY_HOLD_FACTOR = 2.0
 # into the memory the runs are waiting for.
 YIELD_INDEX_SHRINK_FACTOR = DOWNSTREAM_TIMEOUT_SHRINK_FACTOR
 YIELD_GROW_CONFIRM_SAMPLES = 4
+# One heavy parse slot is a whole working set (1.5 GiB by default), so on a
+# small host regrowing it is often what sends the next run back to waiting.
+# A yield that returns within YIELD_REPEAT_WINDOW_SAMPLES of heavy parse's
+# holdoff running out doubles its next holdoff, up to
+# YIELD_HEAVY_MAX_HOLDOFF_SAMPLES; a yield after a longer quiet spell starts
+# from YIELD_GROW_CONFIRM_SAMPLES again. The index pools are cheap per permit
+# and keep the short holdoff.
+YIELD_REPEAT_WINDOW_SAMPLES = 16
+YIELD_HEAVY_MAX_HOLDOFF_SAMPLES = 64
 # Light parse is cheap; braking it would only queue cheap records.
 YIELD_POOLS = frozenset({Pool.HEAVY_PARSE, Pool.INDEX_HEAVY, Pool.INDEX_LIGHT})
 HOLD_EWMA_ALPHA = 0.3
@@ -993,6 +1002,21 @@ def _yield_shrink_target(pool: Pool, current: int, floor: int) -> int:
     return min(current, max(floor, step_to))
 
 
+def _yield_holdoff(pool: Pool, state: PoolState, now: float, interval: float) -> int:
+    """The growth holdoff a yielding sample sets for *pool*."""
+    last = state.yield_holdoff_set
+    if pool is not Pool.HEAVY_PARSE or not last:
+        return YIELD_GROW_CONFIRM_SAMPLES
+    if state.yield_holdoff > 0:
+        # The same episode, or a yield back before growth resumed: indexing
+        # did not grow into it, so it is no reason to hold longer.
+        return last
+    released = state.yield_released_at
+    if released is not None and now - released <= YIELD_REPEAT_WINDOW_SAMPLES * interval:
+        return min(2 * last, YIELD_HEAVY_MAX_HOLDOFF_SAMPLES)
+    return YIELD_GROW_CONFIRM_SAMPLES
+
+
 def _next_pool_limit(
     pool: Pool,
     current: int,
@@ -1045,7 +1069,10 @@ def _next_pool_limit(
     yield_holdoff = state.yield_holdoff
     yielding = host_yield and pool in YIELD_POOLS
     if not host_yield and yield_holdoff:
-        state = replace(state, yield_holdoff=yield_holdoff - 1)
+        state = replace(
+            state, yield_holdoff=yield_holdoff - 1,
+            yield_released_at=now if yield_holdoff == 1 else state.yield_released_at,
+        )
 
     # Collect every shrink rule that applies this sample and take the
     # tightest. Each rule ends in ``min(current, ...)``: the floor is a lower
@@ -1100,8 +1127,9 @@ def _next_pool_limit(
         if downstream_shrink:
             next_state = replace(next_state, downstream_holdoff=DOWNSTREAM_GROW_CONFIRM_SAMPLES)
         if yielding:
+            holdoff = _yield_holdoff(pool, state, now, interval)
             next_state = replace(
-                next_state, yield_holdoff=YIELD_GROW_CONFIRM_SAMPLES, in_slow_start=False,
+                next_state, yield_holdoff=holdoff, yield_holdoff_set=holdoff, in_slow_start=False,
             )
         return shrink_to, next_state
 
@@ -1163,7 +1191,8 @@ def next_limits(
     (``DownstreamFeedback.drain``); it only ever shrinks or holds the index
     pools. ``host_yield`` says code sandbox runs are waiting for memory this
     container shares: heavy parse and the index pools shrink toward their
-    pressure floor and hold growth for a while after it clears.
+    pressure floor and hold growth for a while after it clears (heavy parse
+    longer each time the yield soon comes back).
     ``worker_count`` is how many processes share the cgroup's free
     memory, and ``ceilings`` must be one process's share of the budget. Pure
     and deterministic given its inputs — the caller supplies ``now`` and the

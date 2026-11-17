@@ -20,6 +20,8 @@ from app.services.resource_governor.policy import (
     SAMPLE_INTERVAL_SECONDS,
     SHRINK_COOLDOWN_SECONDS,
     YIELD_GROW_CONFIRM_SAMPLES,
+    YIELD_HEAVY_MAX_HOLDOFF_SAMPLES,
+    YIELD_REPEAT_WINDOW_SAMPLES,
     next_limits,
     pressure_floor,
 )
@@ -132,6 +134,71 @@ class TestRecovery:
         limits, state, now = self._yield_then_clear()
         limits, state = _step(limits, state, now, host_yield=False, pressure=0.75)
         assert state.get(Pool.INDEX_LIGHT).in_slow_start
+
+
+class TestHeavyParseBacksOffOnRepeats:
+    def _run(
+        self, limits: Limits, state: ControllerState, now: float, samples: int, *, host_yield: bool,
+    ) -> tuple[Limits, ControllerState, float]:
+        for _ in range(samples):
+            limits, state = _step(limits, state, now, host_yield=host_yield)
+            now += INTERVAL
+        return limits, state, now
+
+    def _episode(
+        self, limits: Limits, state: ControllerState, now: float, *, quiet: int,
+    ) -> tuple[Limits, ControllerState, float]:
+        """One yielding sample, the holdoff it set run out, then *quiet* more clear samples."""
+        limits, state, now = self._run(limits, state, now, 1, host_yield=True)
+        limits, state, now = self._run(
+            limits, state, now, state.get(Pool.HEAVY_PARSE).yield_holdoff + quiet, host_yield=False,
+        )
+        return limits, state, now
+
+    def test_a_yield_soon_after_growth_resumed_doubles_heavy_only(self) -> None:
+        limits, state, now = self._episode(_limits(), ControllerState.initial(), 1000.0, quiet=2)
+        limits, state, now = self._run(limits, state, now, 1, host_yield=True)
+        assert state.get(Pool.HEAVY_PARSE).yield_holdoff == 2 * YIELD_GROW_CONFIRM_SAMPLES
+        assert state.get(Pool.INDEX_HEAVY).yield_holdoff == YIELD_GROW_CONFIRM_SAMPLES
+        assert state.get(Pool.INDEX_LIGHT).yield_holdoff == YIELD_GROW_CONFIRM_SAMPLES
+
+    def test_the_longer_holdoff_holds_heavy_while_the_index_pools_grow(self) -> None:
+        limits, state, now = self._episode(_limits(), ControllerState.initial(), 1000.0, quiet=2)
+        limits, state, now = self._run(limits, state, now, 1, host_yield=True)
+        held = limits
+        limits, state, now = self._run(limits, state, now, YIELD_GROW_CONFIRM_SAMPLES + 1, host_yield=False)
+        assert limits.get(Pool.INDEX_HEAVY) > held.get(Pool.INDEX_HEAVY)
+        assert limits.get(Pool.HEAVY_PARSE) == held.get(Pool.HEAVY_PARSE)
+        limits, state, now = self._run(limits, state, now, YIELD_GROW_CONFIRM_SAMPLES, host_yield=False)
+        assert limits.get(Pool.HEAVY_PARSE) == held.get(Pool.HEAVY_PARSE) + 1
+
+    def test_repeats_double_up_to_the_cap(self) -> None:
+        limits, state, now = _limits(), ControllerState.initial(), 1000.0
+        seen = []
+        for _ in range(8):
+            limits, state, now = self._episode(limits, state, now, quiet=1)
+            seen.append(state.get(Pool.HEAVY_PARSE).yield_holdoff_set)
+        assert seen[:4] == [4, 8, 16, 32]
+        assert max(seen) == seen[-1] == YIELD_HEAVY_MAX_HOLDOFF_SAMPLES
+
+    def test_a_yield_after_a_quiet_spell_starts_again_from_the_base(self) -> None:
+        limits, state, now = _limits(), ControllerState.initial(), 1000.0
+        for _ in range(3):
+            limits, state, now = self._episode(limits, state, now, quiet=1)
+        assert state.get(Pool.HEAVY_PARSE).yield_holdoff_set == 4 * YIELD_GROW_CONFIRM_SAMPLES
+        limits, state, now = self._run(limits, state, now, YIELD_REPEAT_WINDOW_SAMPLES, host_yield=False)
+        limits, state, now = self._run(limits, state, now, 1, host_yield=True)
+        assert state.get(Pool.HEAVY_PARSE).yield_holdoff == YIELD_GROW_CONFIRM_SAMPLES
+
+    def test_a_yield_back_before_growth_resumed_does_not_lengthen_it(self) -> None:
+        limits, state, now = self._run(_limits(), ControllerState.initial(), 1000.0, 1, host_yield=True)
+        limits, state, now = self._run(limits, state, now, YIELD_GROW_CONFIRM_SAMPLES - 1, host_yield=False)
+        limits, state, now = self._run(limits, state, now, 1, host_yield=True)
+        assert state.get(Pool.HEAVY_PARSE).yield_holdoff == YIELD_GROW_CONFIRM_SAMPLES
+
+    def test_a_long_episode_counts_once(self) -> None:
+        limits, state, now = self._run(_limits(), ControllerState.initial(), 1000.0, 6, host_yield=True)
+        assert state.get(Pool.HEAVY_PARSE).yield_holdoff == YIELD_GROW_CONFIRM_SAMPLES
 
 
 @pytest.mark.parametrize("pressure", [0.125, 0.75, 0.9])

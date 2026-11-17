@@ -18,6 +18,7 @@ from app.services.resource_governor.policy import (
     HEAVY_START_INTERVAL_SECONDS,
     MEM_HARD,
     MEM_SOFT,
+    YIELD_GROW_CONFIRM_SAMPLES,
     floor_for,
     pressure_floor,
     start_rate_limiter_params,
@@ -539,7 +540,29 @@ class TestSandboxYield:
             await governor._sample_once()
         assert "slowing indexing" in caplog.text
         assert "growth resumes after 60 s" in caplog.text
+        assert "heavy parse after" not in caplog.text
         assert "yield=on" in caplog.text
+
+    async def test_a_yield_soon_after_release_logs_the_longer_heavy_parse_holdoff(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+
+        async def sample(active: bool) -> None:
+            signal.state = YieldState(active=active, since=0.0 if active else None)
+            await governor._sample_once()
+            clock.now += 15.0
+
+        with caplog.at_level(logging.INFO, logger="test.yield"):
+            await sample(True)
+            for _ in range(YIELD_GROW_CONFIRM_SAMPLES + 1):
+                await sample(False)
+            await sample(True)
+            await sample(False)
+        assert "growth resumes after 60 s, heavy parse after 120 s" in caplog.text
+        assert governor.stats()["yield_to_sandboxes"]["holdoff_samples"] == 2 * YIELD_GROW_CONFIRM_SAMPLES - 1
 
     def test_without_a_signal_stats_have_no_yield_block(self) -> None:
         governor = ResourceGovernor(

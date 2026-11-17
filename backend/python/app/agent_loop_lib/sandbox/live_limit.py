@@ -197,6 +197,22 @@ def _target(
     return _clamp(held + spare if profile.credit_running else spare, floor, ceiling)
 
 
+def _previous_target_after_growth(rec: LiveRecord) -> int | None:
+    """The previous sample's target when the limit last moved up, else None.
+
+    The runs a grow lets in take memory, so the next sample's target dips
+    under the limit they were let in at; shrinking on that one sample, then
+    growing again for the next waiter, turned the limit around about twice a
+    minute. Reversing a grow therefore needs the target below the limit on
+    two samples in a row. A hard floor or memory pressure still halves at
+    once, and each run still checks free memory before it starts.
+    """
+    # Only a grow leaves the slow-start step above 1; every shrink resets it.
+    if rec.slow_start_step <= 1 or rec.target is None or rec.sample_at < rec.last_step_at:
+        return None
+    return rec.target
+
+
 def _sample_fields(sample: HostSample, now: float) -> dict[str, Any]:
     return {
         "sample_at": now, "last_valid_at": now,
@@ -239,6 +255,7 @@ def step(
     # A run waited at the limit since the previous step: only then can
     # growth help anyone.
     waiting = rec.last_wait_limit_at > 0 and rec.last_wait_limit_at >= rec.last_step_at
+    settled_floor = _previous_target_after_growth(rec)
     rec = replace(rec, last_step_at=now, stamp=now, ceiling=ceiling, min=floor)
     if not _usable(sample):
         return replace(rec, limit=limit, rule="unknown", cpu_high_streak=0)
@@ -265,8 +282,9 @@ def step(
     candidates: list[tuple[int, int, str]] = []
     if hard:
         candidates.append((max(floor, limit // 2), 0, "mem_hard"))
-    if limit > target:
-        candidates.append((max(target, limit - math.ceil((limit - target) / 2)), 1, "mem_target"))
+    settled = target if settled_floor is None else max(target, settled_floor)
+    if limit > settled:
+        candidates.append((max(settled, limit - math.ceil((limit - settled) / 2)), 1, "mem_target"))
     if streak >= profile.cpu_sustain:
         candidates.append((max(floor, limit - 1), 2, "cpu"))
     if candidates:

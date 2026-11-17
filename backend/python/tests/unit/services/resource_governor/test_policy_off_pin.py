@@ -29,7 +29,8 @@ EDITED = {
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
         # The code sandbox yield: only acts with host_yield=True, which the grid never passes.
         "assign:YIELD_INDEX_SHRINK_FACTOR", "assign:YIELD_GROW_CONFIRM_SAMPLES", "assign:YIELD_POOLS",
-        "_yield_shrink_target",
+        "_yield_shrink_target", "_yield_holdoff",
+        "assign:YIELD_REPEAT_WINDOW_SAMPLES", "assign:YIELD_HEAVY_MAX_HOLDOFF_SAMPLES",
     },
     "memory_budget.py": {"kind_reservation_cost"},  # new; record_memory_cost itself is unchanged
     "consumer_concurrency.py": {
