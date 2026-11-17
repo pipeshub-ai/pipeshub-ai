@@ -1433,8 +1433,13 @@ export class StorageController {
       if (typeof recordParam !== 'string' || recordParam === '') {
         throw new BadRequestError('recordId must be a single value');
       }
+      // The validator has coerced it to a positive integer; anything else (an array, a non-number) is refused here too.
       const beforeQuery: unknown = req.query.before;
-      if (beforeQuery !== undefined && typeof beforeQuery !== 'string') {
+      if (
+        beforeQuery !== undefined &&
+        typeof beforeQuery !== 'string' &&
+        typeof beforeQuery !== 'number'
+      ) {
         throw new BadRequestError('before must be a single value');
       }
       const adapter = await this.initializeStorageAdapter(req);
@@ -1444,7 +1449,11 @@ export class StorageController {
       } else {
         // A purge that started at this instant removes only what existed then: a late DELETE (its caller lost its
         // lease and a newer one has stored results since) leaves the newer objects alone.
-        await this.deletePaidResultsOlderThan(adapter, root, Number(beforeQuery));
+        await this.deletePaidResultsOlderThan(
+          adapter,
+          root,
+          Number(beforeQuery),
+        );
       }
       res.status(HTTP_STATUS.OK).json({ purged: true });
     } catch (error) {
@@ -1470,7 +1479,9 @@ export class StorageController {
         limit: PAID_RESULT_LIST_PAGE,
       });
       const doomed = page.objects
-        .filter((o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before)
+        .filter(
+          (o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before,
+        )
         .map((o) => o.key);
       if (doomed.length > 0) {
         await adapter.deleteObjects(doomed);
