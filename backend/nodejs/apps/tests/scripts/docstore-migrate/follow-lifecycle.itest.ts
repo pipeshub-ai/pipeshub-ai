@@ -110,6 +110,49 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await rows(), 'a published event has no row, as after a fresh copy').to.equal(0);
       });
 
+      // two events of different organisations whose ids fold to one table key (same second, same counter, other process bytes)
+      const foldedPair = (): { a: ObjectId; b: ObjectId } => {
+        const secs = Math.floor(Date.now() / 1000).toString(16).padStart(8, '0');
+        return { a: new ObjectId(`${secs}aaaaaaaaaa638f31`), b: new ObjectId(`${secs}bbbbbbbbbb638f31`) };
+      };
+      const outboxEvent = (_id: ObjectId, org: unknown, status: string): Record<string, unknown> => ({
+        _id, topic: 'fold-probe', key: 'k', value: JSON.stringify({ payload: { orgId: String(org) } }), status, createdAt: new Date(), updatedAt: new Date(), __v: 0,
+      });
+      const foldRows = async (): Promise<string[]> => (await sql("SELECT org_id FROM platform.outbox WHERE topic = 'fold-probe' ORDER BY org_id")).map((r) => r.org_id);
+
+      it('a skipped event removes only its own organisation\'s row: another organisation\'s pending event under the same folded key stays', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const { a, b } = foldedPair();
+        await events.insertOne(outboxEvent(b, ORG_B, 'pending') as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows()).to.deep.equal([String(ORG_B)]);
+        await events.insertOne(outboxEvent(a, ORG_A, 'published') as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows(), 'organisation B\'s event is not the published one').to.deep.equal([String(ORG_B)]);
+      });
+
+      it('a delete event does not remove another organisation\'s row under the same folded key while that event is still in MongoDB', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const { a, b } = foldedPair();
+        await events.insertOne(outboxEvent(a, ORG_A, 'published') as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        await events.insertOne(outboxEvent(b, ORG_B, 'pending') as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows()).to.deep.equal([String(ORG_B)]);
+        await events.deleteOne({ _id: a } as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows(), 'the delete of organisation A\'s event leaves B\'s').to.deep.equal([String(ORG_B)]);
+        await events.deleteOne({ _id: b } as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows(), 'the delete of B\'s own event removes its row').to.deep.equal([]);
+      });
+
       it('does not guess which organisation an outbox delete meant when two hold the same folded id: both rows stay and the clash is named', async () => {
         const js = await JobState.attach(w.rt);
         await followStart(w.rt, js);
@@ -128,6 +171,23 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         await follow(w.rt, js, { untilIdleMs: 1500, log }).catch((e: Error) => (err = e));
         expect(err?.message).to.contain('more than one organisation').and.to.contain(String(ORG_A)).and.to.contain(String(ORG_B)).and.to.contain(hexA);
         expect(await rows(), 'neither row was deleted').to.equal(2);
+      });
+
+      it('when two organisations hold the same folded id and one event is published, only that organisation\'s row goes, without a refusal, and the follower moves on', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const { a, b } = foldedPair();
+        await events.insertMany([outboxEvent(a, ORG_A, 'pending'), outboxEvent(b, ORG_B, 'pending')] as never[]);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(await foldRows()).to.deep.equal([String(ORG_A), String(ORG_B)].sort());
+        await events.updateOne({ _id: a } as never, { $set: { status: 'published', publishedAt: new Date() } });
+        const r = await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(r.applied).to.equal(1);
+        expect(await foldRows(), 'organisation A\'s published event lost its row, B\'s pending one kept it').to.deep.equal([String(ORG_B)]);
+        const again = await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(again.applied, 'the position was saved: the published event is not applied again').to.equal(0);
       });
 
       it('a resync that cannot make the copy level fails, keeps the next run comparing, and finishes when the cause is gone', async () => {

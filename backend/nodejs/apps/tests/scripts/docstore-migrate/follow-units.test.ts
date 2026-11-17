@@ -7,6 +7,8 @@ import { cancelDrain } from '../../../src/scripts/docstore-migrate/drain'
 import { MARKER_COLLECTION, clearMarkers, isHistoryLost, majorityPoint, watchOptions } from '../../../src/scripts/docstore-migrate/follow'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 import { outboxTableId } from '../../../src/scripts/docstore-migrate/mapping/content'
+import { setOutboxRepository } from '../../../src/libs/repositories/outbox'
+import { PgOutboxRepository } from '../../../src/libs/repositories/outbox/pg'
 
 const mapping = (name: string) => MAPPINGS.find((m) => m.collection === name)!
 /** A transaction that records every statement and its parameters. */
@@ -29,13 +31,13 @@ describe('follow: deleting a document and what the stream asks for', () => {
     expect(none.log).to.have.length(0)
   })
 
-  it('an outbox delete converts the ObjectId to the table\'s number and binds it as a bigint', async () => {
+  it('an outbox delete converts the ObjectId to the table\'s number, binds it as a bigint, and spares the organisations told to keep', async () => {
     const hex = '6ad8b333aaaaaaaaaa000001'
     const { log, k } = record()
-    await deleteDocs(k, mapping('outbox_events'), [hex])
+    await deleteDocs(k, mapping('outbox_events'), [hex], { keep: new Map([[hex, ['6afcbe98f03c0c4c54f37bce']]]) })
     const root = log[log.length - 1]!
-    expect(root.sql).to.match(/DELETE FROM platform\.outbox WHERE id = ANY\(\$1::bigint\[\]\)/)
-    expect(root.params).to.deep.equal([[outboxTableId(hex)]])
+    expect(root.sql).to.match(/DELETE FROM platform\.outbox WHERE id = \$1::bigint AND org_id <> ALL\(\$2::text\[\]\)/)
+    expect(root.params).to.deep.equal([outboxTableId(hex), ['6afcbe98f03c0c4c54f37bce']])
     expect(outboxTableId(hex)).to.match(/^\d+$/)
   })
 
@@ -82,8 +84,8 @@ describe('follow: deleting a document and what the stream asks for', () => {
   })
 
   it('a document the copy now skips loses the row an earlier event wrote (an event published after it was copied pending)', async () => {
-    const previous = process.env.DOC_STORE
-    process.env.DOC_STORE = 'postgres'
+    // the registry keeps the first repository built in this process, which another test may have built on MongoDB
+    setOutboxRepository(new PgOutboxRepository())
     try {
       const event = (hex: string, status: string) => ({
         _id: new ObjectId(hex), topic: 'entity-events', key: 'k', status, attempts: 0, createdAt: new Date('2026-11-17T20:57:34.349Z'),
@@ -97,11 +99,11 @@ describe('follow: deleting a document and what the stream asks for', () => {
       }
       const published = await run('published')
       expect(published).to.have.length(1)
-      expect(published[0]!.params).to.deep.equal([[outboxTableId('6afcbfbe0d70d44bb8638f31')]])
+      expect(published[0]!.sql).to.match(/DELETE FROM platform\.outbox WHERE id = \$1::bigint AND org_id = \$2/)
+      expect(published[0]!.params).to.deep.equal([outboxTableId('6afcbfbe0d70d44bb8638f31'), '6afcbe98f03c0c4c54f37bce'])
       expect(await run('pending')).to.have.length(0)
     } finally {
-      if (previous === undefined) delete process.env.DOC_STORE
-      else process.env.DOC_STORE = previous
+      setOutboxRepository()
     }
   })
 })
