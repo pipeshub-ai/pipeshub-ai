@@ -213,7 +213,7 @@ describe('notification/service/platform-alert.handler edge cases', () => {
   });
 
   it('lets a retryable error while finding recipients reach the consumer', async () => {
-    resolveRecipients.rejects(new DocStoreReadOnlyError('frozen'));
+    resolveRecipients.rejects(new DocStoreReadOnlyError());
     let thrown: unknown;
     try {
       await handler.handle(event());

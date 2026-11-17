@@ -268,7 +268,7 @@ describe('platform alerts: only structured load alerts are delivered', () => {
   describe('dedup and rate limits', () => {
     it('delivers an event again after a store error, then never a third time', async () => {
       const first = event();
-      insertMany.onFirstCall().rejects(new DocStoreReadOnlyError('frozen'));
+      insertMany.onFirstCall().rejects(new DocStoreReadOnlyError());
       let thrown: unknown;
       try {
         await handler.handle(first);

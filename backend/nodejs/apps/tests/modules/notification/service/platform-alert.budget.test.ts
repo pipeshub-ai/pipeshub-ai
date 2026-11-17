@@ -81,7 +81,7 @@ describe('platform alerts: rate budgets are only used by delivered alerts', () =
   describe('failed deliveries', () => {
     it('a store error that the broker redelivers does not use up the hour', async () => {
       const same = event();
-      insertMany.rejects(new DocStoreReadOnlyError('frozen'));
+      insertMany.rejects(new DocStoreReadOnlyError());
       for (let i = 0; i < MAX_ALERTS_PER_TYPE_PER_HOUR + 5; i += 1) {
         try {
           await handler.handle(same);
