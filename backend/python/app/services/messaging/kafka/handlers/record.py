@@ -2206,8 +2206,15 @@ class RecordEventHandler(BaseEventService):
                 # first, and the run bypasses lookups. A storage failure raises and the event is retried.
                 refresh_org = payload.get("orgId") or record.get("orgId")
                 if refresh_org:
-                    await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(refresh_org, record_id)
-                    paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
+                    paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+                    event_id = payload.get(replay_set.EVENT_ID_KEY)
+                    if not event_id or await paid_cache.refresh_purge_needed(refresh_org, record_id, str(event_id)):
+                        await paid_cache.purge_record(refresh_org, record_id)
+                        if event_id:
+                            await paid_cache.mark_refresh_purged(refresh_org, record_id, str(event_id))
+                        paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
+                    # A redelivery of the same event already purged: what its first delivery paid for and stored is
+                    # reused by an ordinary run, not deleted and paid for again.
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:

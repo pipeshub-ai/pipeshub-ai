@@ -27,6 +27,7 @@ from app.services.paid_cache.locks import (
     LockBackend,
     deleted_name,
     lock_name,
+    refresh_name,
 )
 from app.services.paid_cache.run import RunScope, current_run
 from app.services.paid_cache.store import PAID_RESULT_ROUTES, ListedFile
@@ -236,6 +237,23 @@ class PaidResultCache:
         if not valid_record_id(record_id):
             return  # no result was ever stored under such an id (see ``valid_record_id``)
         await self._store.purge_record(org_id, record_id)
+
+    async def refresh_purge_needed(self, org_id: str, record_id: str, event_id: str) -> bool:
+        """False when this refresh event already purged the record's results: a redelivery reuses what its first
+        delivery stored instead of deleting it and paying again. True when it has not (or cannot be told)."""
+        try:
+            backend = await self._backend()
+            return not await backend.is_marked(refresh_name(org_id, record_id, event_id))
+        except Exception:
+            return True
+
+    async def mark_refresh_purged(self, org_id: str, record_id: str, event_id: str) -> None:
+        """Remembers (24 h) that this refresh event purged. Best effort: a miss only repeats the purge."""
+        try:
+            backend = await self._backend()
+            await backend.mark(refresh_name(org_id, record_id, event_id), DELETED_TTL_MS)
+        except Exception:
+            self.logger.debug("Paid-result refresh marker not written", exc_info=True)
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:
         """The record is deleted: no writer may store under it again, and what is stored goes.
@@ -577,6 +595,12 @@ class NullPaidResultCache:
         return _plain(await compute())
 
     async def purge_record(self, org_id: str, record_id: str) -> None:
+        return None
+
+    async def refresh_purge_needed(self, org_id: str, record_id: str, event_id: str) -> bool:
+        return True
+
+    async def mark_refresh_purged(self, org_id: str, record_id: str, event_id: str) -> None:
         return None
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:

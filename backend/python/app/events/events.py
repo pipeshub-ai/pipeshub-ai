@@ -589,7 +589,7 @@ class EventProcessor:
             )
             if self.config_service is not None:
                 # The revision is complete: its paid calls (a scan's page OCR) are listed in a final manifest.
-                await complete_run(paid_run, self.config_service, self.logger, sweep=False)
+                await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
                 data=PipelineEventData(record_id=record_id),

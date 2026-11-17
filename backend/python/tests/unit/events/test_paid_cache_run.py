@@ -323,3 +323,4 @@ async def test_a_document_that_parses_to_nothing_still_completes_its_run(store: 
     rev = content_revision(BODY)
     assert (ORG, REC, f"manifests/{rev}/index.json") in store.files
     assert (ORG, REC, f"manifests/{rev}/index.open.json") not in store.files
+    assert len(store.spawned) == 1                                   # the retention sweep is queued for an emptied record too

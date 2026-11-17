@@ -114,10 +114,10 @@ def test_a_field_cannot_borrow_the_separator_to_forge_another_key() -> None:
     assert a.digest() != b.digest()
 
 
-def test_the_model_identity_is_class_model_and_host_and_never_a_credential() -> None:
+def test_the_model_identity_is_class_model_host_and_port_and_never_a_credential() -> None:
     llm = _Llm(model_name="gpt-4o", openai_api_base="https://user:secret@api.example.com:8443/v1?key=abc")
     identity = model_identity(llm)
-    assert identity == "_Llm:gpt-4o@api.example.com"
+    assert identity == "_Llm:gpt-4o@api.example.com:8443"
     assert "secret" not in identity and "abc" not in identity
     assert model_identity(_Llm(model="m")) == "_Llm:m"
 
@@ -135,3 +135,16 @@ def test_an_unknown_kind_or_a_missing_record_cannot_make_a_key() -> None:
         _key(record_id="")
     with pytest.raises(ValueError, match="needs an org and a record"):
         _key(org_id="")
+
+
+def test_the_endpoint_port_is_part_of_the_model_identity() -> None:
+    from types import SimpleNamespace
+
+    from app.services.paid_cache.keys import model_identity
+
+    one = SimpleNamespace(model_name="m", base_url="http://localhost:8000/v1")
+    two = SimpleNamespace(model_name="m", base_url="http://localhost:8001/v1")
+    plain = SimpleNamespace(model_name="m", base_url="https://api.example.com/v1?key=secret")
+    assert model_identity(one) != model_identity(two)
+    assert model_identity(one).endswith("@localhost:8000")
+    assert model_identity(plain).endswith("@api.example.com") and "secret" not in model_identity(plain)

@@ -91,6 +91,11 @@ def deleted_name(org_id: str, record_id: str | None = None) -> str:
     return f"pc:deleted:{{{org_id}:{record_id}}}" if record_id is not None else f"pc:deleted:{{{org_id}}}"
 
 
+def refresh_name(org_id: str, record_id: str, event_id: str) -> str:
+    """The marker that a refresh event already purged its record's results (a redelivery must not purge again)."""
+    return f"pc:refresh:{{{org_id}:{record_id}}}:{event_id}"
+
+
 class LockBackend(Protocol):
     #: True when every replica sees this backend's locks and markers (Redis); False for one process's own.
     shared: bool

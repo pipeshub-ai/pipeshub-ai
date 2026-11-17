@@ -269,3 +269,27 @@ async def test_a_failed_graph_read_on_a_delete_without_an_org_is_retried_not_fen
         await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "virtualRecordId": "vr"})
 
     assert store.paths(ORG, REC) != []                       # nothing erased or fenced on a failed read
+
+
+async def test_a_redelivered_refresh_event_reuses_what_its_first_delivery_stored(store: MemoryResultStore) -> None:
+    """The first delivery purges and pays; a redelivery of the same event (an id the consumer stamps) must not purge
+    again and pay for the same pages a second time."""
+    _seed(store)
+    handler = _handler()
+    payload = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_event_id": "evt-1"}
+
+    await _reindex(handler, dict(payload))
+    first_run = current_run()
+    assert first_run is not None and first_run.refresh and store.paths(ORG, REC) == []
+
+    store.files[(ORG, REC, PAGE)] = (b"{}", 1)                          # a page the first delivery paid for and stored
+    clear_run()
+    await _reindex(handler, dict(payload))                              # the broker redelivers the same event
+
+    assert store.paths(ORG, REC) == [PAGE]                              # not purged again
+    run = current_run()
+    assert run is None or not run.refresh                               # reused by an ordinary run
+
+    clear_run()
+    await _reindex(handler, {**payload, "_event_id": "evt-2"})          # a new request purges and bypasses again
+    assert store.paths(ORG, REC) == [] and current_run() is not None and current_run().refresh

@@ -10,7 +10,8 @@ than a lock lives plus the longest signed upload. The consumers hold an event un
 Each hop purges, then publishes the next one (same payload, ``hop`` + 1, ``_retry_not_before`` one hop later),
 and stops once ``repurge_horizon_s()`` has passed since the delete (``deletedAt``). A hop is published, and so
 signed, when the hop before it runs, so no queued message waits longer than ``REPURGE_HOP_S`` before delivery:
-every one verifies well inside ``ENVELOPE_MAX_AGE_SECONDS`` (900 s by default) even with 600 s of consumer lag.
+every one verifies inside ``ENVELOPE_MAX_AGE_SECONDS`` with ``ENVELOPE_MAX_AGE_SECONDS - REPURGE_HOP_S`` of consumer lag to spare (600 s
+at the default 900 s). A consumer down for longer than that has the hop rejected as stale: a documented limit.
 An org purge schedules one chain for the org (``scope: "org"``), not one per record. The org a consumer purges
 is the verified envelope's.
 """

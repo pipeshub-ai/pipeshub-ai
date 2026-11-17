@@ -67,7 +67,7 @@ def params_digest(params: Mapping[str, Any]) -> str:
 
 
 def model_identity(llm: object) -> str:
-    """Provider class, model and endpoint host. Never a credential, a path or a query."""
+    """Provider class, model and endpoint host and port. Never a credential, a path or a query."""
     model = (
         getattr(llm, "model_name", None) or getattr(llm, "model", None) or getattr(llm, "model_id", None)
         or getattr(llm, "deployment_name", None) or "?"
@@ -79,7 +79,9 @@ def model_identity(llm: object) -> str:
     host = ""
     if endpoint:
         try:
-            host = urlsplit(str(endpoint)).hostname or ""
+            parts = urlsplit(str(endpoint))
+            # The port is part of the identity: two local servers on one host serve different deployments.
+            host = (parts.hostname or "") + (f":{parts.port}" if parts.hostname and parts.port else "")
         except ValueError:
             host = ""
     return f"{type(llm).__name__}:{model}@{host}" if host else f"{type(llm).__name__}:{model}"
