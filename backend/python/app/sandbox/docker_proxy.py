@@ -48,6 +48,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -122,6 +123,11 @@ _LOG_CONFIG_FIELDS = frozenset({"Type", "Config"})
 _RESTART_POLICY_FIELDS = frozenset({"Name"})
 _MOUNT_FIELDS = frozenset({"Type"})
 _NETWORKING_CONFIG_FIELDS = frozenset({"EndpointsConfig"})
+# What docker-py's EndpointConfig can send. Closed: the daemon attaches a
+# user-defined network's endpoint by its NetworkID when one is given, not by
+# the EndpointsConfig key the policy checks, so a NetworkID would join any
+# network on the daemon (another stack's, the default bridge).
+_ENDPOINT_FIELDS = frozenset({"Aliases", "Links", "IPAMConfig", "DriverOpts", "MacAddress"})
 _NETWORK_CREATE_FIELDS = frozenset({
     "Name", "Driver", "Options", "IPAM", "ConfigFrom", "ConfigOnly", "Ingress", "Scope",
     "EnableIPv6",
@@ -133,6 +139,12 @@ _HEAD_TIMEOUT_S = 30.0
 _COPY_CHUNK = 64 * 1024
 
 _VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)?(?=/)")
+# Request bodies the daemon parses into the same form as the query string
+# (Go's Request.ParseForm / ParseMultipartForm), ahead of the query values the
+# policy checks: a form body on /images/create turns a pull of the allowed
+# image into an import from any URL, tagged as the allowed image.
+_FORM_CONTENT_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
+_CHUNK_SIZE = re.compile(rb"[0-9A-Fa-f]{1,16}")
 _CONTAINER_IN_TARGET = re.compile(r"^((?:/v\d+(?:\.\d+)?)?/containers/)[^/?]+")
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _HTTP_VERSION = re.compile(r"HTTP/1\.[01]")
@@ -232,7 +244,7 @@ def _positive_env(env: Mapping[str, str], key: str, default: float, cast: Callab
         value = cast(raw)
     except ValueError:
         value = 0
-    if value <= 0 or value != value:  # NaN
+    if not math.isfinite(value) or value <= 0:
         logger.warning("%s=%r is not a positive number; using %g", key, raw, default)
         return default
     return value
@@ -280,12 +292,18 @@ class DockerApiPolicy:
             f"oom_score_adj 0..{_MAX_OOM_SCORE_ADJ}"
         )
 
-    def image_allowed(self, ref: str) -> bool:
-        return bool(ref) and normalize_image(ref) in self._allowed_normalized
+    def image_allowed(self, ref: object) -> bool:
+        return isinstance(ref, str) and bool(ref) and normalize_image(ref) in self._allowed_normalized
 
     def route(self, method: str, target: str) -> Route:
         """Classify a request. Raises ``PolicyDenied`` for anything unlisted."""
+        # The daemon keeps a '#' in the path and redirects a path with empty
+        # or dot segments to its cleaned form; neither is ever needed here.
+        if "#" in target:
+            raise PolicyDenied("a fragment in the request target is not permitted")
         path = _VERSION_PREFIX.sub("", urlsplit(target).path)
+        if any(seg in ("", ".", "..") for seg in unquote(path).split("/")[1:]):
+            raise PolicyDenied("empty or dot path segments are not permitted")
         query = parse_qs(urlsplit(target).query, keep_blank_values=True)
 
         if path.startswith("/_pipeshub/"):
@@ -432,9 +450,12 @@ class DockerApiPolicy:
             body.get("NetworkingConfig"), _NETWORKING_CONFIG_FIELDS, "NetworkingConfig",
         )
         endpoints = networking.get("EndpointsConfig") or {}
-        for name in endpoints:
+        if not isinstance(endpoints, dict):
+            raise PolicyDenied("NetworkingConfig.EndpointsConfig must be an object")
+        for name, endpoint in endpoints.items():
             if name not in self.allowed_networks:
                 raise PolicyDenied(f"network {name!r} is not permitted")
+            _struct_object(endpoint, _ENDPOINT_FIELDS, f"EndpointsConfig[{name!r}]", closed=True)
 
         swap = self._check_resources(host)
 
@@ -713,6 +734,16 @@ class _Request:
         return None
 
     @property
+    def form_body(self) -> bool:
+        """Whether the daemon would read the body as form fields."""
+        for k, v in self.headers:
+            if k.lower() == "content-type":
+                media = v.split(";", 1)[0].strip().lower()
+                if media in _FORM_CONTENT_TYPES:
+                    return True
+        return False
+
+    @property
     def chunked(self) -> bool:
         return "chunked" in (self.header("transfer-encoding") or "").lower()
 
@@ -770,11 +801,20 @@ def _parse_request_head(raw: bytes) -> _Request:
     return req
 
 
+def _chunk_size(size_line: bytes) -> int:
+    """The size of a chunk, read as strictly as the daemon reads it: Python's
+    ``int(x, 16)`` would also take ``0x``, ``+``, ``-`` and ``_``."""
+    raw = size_line.split(b";", 1)[0].strip(b" \t\r\n")
+    if not _CHUNK_SIZE.fullmatch(raw):
+        raise PolicyDenied("malformed chunk size")
+    return int(raw, 16)
+
+
 async def _read_chunked(reader: asyncio.StreamReader, limit: int) -> bytes:
     body = bytearray()
     while True:
         size_line = await reader.readuntil(b"\r\n")
-        size = int(size_line.split(b";", 1)[0].strip() or b"0", 16)
+        size = _chunk_size(size_line)
         if size == 0:
             while (await reader.readuntil(b"\r\n")) != b"\r\n":
                 pass
@@ -789,8 +829,8 @@ async def _pipe_chunked(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     """Forward a chunked body verbatim, stopping after the terminating chunk."""
     while True:
         size_line = await reader.readuntil(b"\r\n")
+        size = _chunk_size(size_line)
         writer.write(size_line)
-        size = int(size_line.split(b";", 1)[0].strip() or b"0", 16)
         if size == 0:
             while True:
                 trailer = await reader.readuntil(b"\r\n")
@@ -1024,6 +1064,12 @@ class DockerSocketProxy:
         req = _parse_request_head(raw_head)
         route = self._policy.route(req.method, req.target)
         target = req.target
+        if req.form_body:
+            raise PolicyDenied("form-encoded request bodies are not permitted")
+        # ping, version, network list and image pull / inspect never carry a
+        # body; the daemon would read one on /images/create.
+        if route.kind == "allow" and (req.chunked or req.content_length):
+            raise PolicyDenied("a request body is not permitted on this endpoint")
         # Clients that sent Expect hold the body back until told to continue,
         # and the create routes read it before going upstream.
         expects_continue = (req.header("expect") or "").lower() == "100-continue"
@@ -1060,11 +1106,11 @@ class DockerSocketProxy:
                 client_w.write(b"HTTP/1.1 100 Continue\r\n\r\n")
                 await client_w.drain()
             if req.chunked:
-                raw = await _read_chunked(client_r, _MAX_POLICY_BODY_BYTES)
+                raw = await asyncio.wait_for(_read_chunked(client_r, _MAX_POLICY_BODY_BYTES), _HEAD_TIMEOUT_S)
             else:
                 if req.content_length > _MAX_POLICY_BODY_BYTES:
                     raise PolicyDenied("request body too large")
-                raw = await client_r.readexactly(req.content_length)
+                raw = await asyncio.wait_for(client_r.readexactly(req.content_length), _HEAD_TIMEOUT_S)
             try:
                 payload = json.loads(raw or b"{}", object_pairs_hook=_reject_duplicate_keys)
             except ValueError as exc:
@@ -1247,8 +1293,12 @@ class ReaperSettings:
         raw = (env.get("DOCKER_PROXY_REAP_INTERVAL_S") or "").strip()
         if raw:
             try:
-                interval = max(float(raw), _MIN_REAP_INTERVAL_S)
+                value = float(raw)
             except ValueError:
+                value = math.nan
+            if math.isfinite(value):
+                interval = max(value, _MIN_REAP_INTERVAL_S)
+            else:
                 logger.warning(
                     "DOCKER_PROXY_REAP_INTERVAL_S=%r is not valid; using %gs", raw, _DEFAULT_REAP_INTERVAL_S,
                 )
@@ -1315,7 +1365,10 @@ class Reaper:
         status, managed = await self._proxy._upstream_call("GET", _containers_query(f"{MANAGED_LABEL}=true"))
         if status != 200 or not isinstance(managed, list):
             raise RuntimeError(f"listing containers returned {status}")
-        candidates = [item for item in listed if isinstance(item, dict)]
+        # The label filters are checked again here: a daemon (or a
+        # Docker-compatible API) that ignored them would otherwise hand every
+        # container on it, databases included, to the reaper.
+        candidates = [item for item in listed if _owned_by(item, self._proxy.instance)]
         candidates += [item for item in managed if _legacy(item)]
         now = self._clock()
         removed = 0
@@ -1358,6 +1411,14 @@ class Reaper:
                 "%d sandbox container(s) from an older proxy; removed once older than %gs",
                 legacy, self._settings.reap_after_s,
             )
+
+
+def _owned_by(item: object, instance: str) -> bool:
+    """A sandbox container this stack's proxy created."""
+    if not isinstance(item, dict):
+        return False
+    labels = item.get("Labels") or {}
+    return isinstance(labels, dict) and labels.get(MANAGED_LABEL) == "true" and labels.get(INSTANCE_LABEL) == instance
 
 
 def _legacy(item: object) -> bool:
