@@ -92,6 +92,7 @@ from app.connectors.core.base.data_processor.record_links import (
 )
 from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
+from app.modules.indexing.parse_now_marker import PARSE_NOW_STATUS
 from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
@@ -7490,7 +7491,9 @@ class DataSourceEntitiesProcessor:
             chunk = live[start:start + 500]
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_update_nodes(
-                    [{"id": r.id, "indexingStatus": ProgressStatus.QUEUED.value, HAS_INDEXED_COPY: False} for r in chunk],
+                    # A stored parse-now copy is served by id too: it waits for the new copy like search does.
+                    [{"id": r.id, "indexingStatus": ProgressStatus.QUEUED.value, HAS_INDEXED_COPY: False,
+                      PARSE_NOW_STATUS: ProgressStatus.QUEUED.value} for r in chunk],
                     CollectionNames.RECORDS.value,
                 )
         if live:

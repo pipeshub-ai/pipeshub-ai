@@ -789,7 +789,10 @@ class TestDropIndexedCopies:
         from app.connectors.core.base.data_processor.data_source_entities_processor import (
             DataSourceEntitiesProcessor,
         )
-        from app.services.graph_db.common.record_visibility import is_searchable_record
+        from app.services.graph_db.common.record_visibility import (
+            is_readable_record,
+            is_searchable_record,
+        )
 
         processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
         tx = MagicMock()
@@ -805,6 +808,10 @@ class TestDropIndexedCopies:
         updates, collection = tx.batch_update_nodes.await_args.args
         assert collection == "records" and [u["id"] for u in updates] == ["r-d1", "r-p1"]
         assert not any(is_searchable_record(u) for u in updates)
+        # Nor readable by id from a parse-now copy stored for the current revision.
+        stored = {"parseNowStatus": "STORED", "parseNowRev": "v1", "contentRev": "v1"}
+        assert is_readable_record(stored)
+        assert not any(is_readable_record({**stored, **u}) for u in updates)
         processor.reindex_existing_records.assert_awaited_once_with(records)
 
 
