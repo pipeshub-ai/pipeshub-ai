@@ -72,4 +72,18 @@ async def test_mark_resolved_keeps_the_original_expiry(store: FakeConfig, clock:
     key = "/services/sandbox/alerts/install/critical"
     assert store.values[key]["state"] == STATE_RESOLVED
     assert store.ttls[key] == 86400 - 3600
-    assert await c.claim("critical", "a2") is False
+
+
+async def test_a_resolved_claim_is_taken_over_by_a_new_alert(store: FakeConfig, clock: Clock) -> None:
+    c = cooldown(store, clock)
+    await c.claim("warning", "a1")
+    clock.now += 3600
+    current = await c.read("warning")
+    assert current is not None and await c.mark_resolved("warning", current)
+    clock.now += 600
+    assert await c.claim("warning", "a2") is True
+    key = "/services/sandbox/alerts/install/warning"
+    assert store.values[key]["alertId"] == "a2"
+    assert store.values[key]["state"] == "claimed"
+    assert store.ttls[key] == 86400
+    assert await c.claim("warning", "a3") is False

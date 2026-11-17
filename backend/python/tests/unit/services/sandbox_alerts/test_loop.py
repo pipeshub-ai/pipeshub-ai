@@ -301,3 +301,17 @@ class TestBackToNormal:
         await self.tick(env, runner, 200)
         await self.tick(env, runner, 120)
         assert env.store.ttls[WARN_KEY] == 86400 - 320
+
+    async def test_a_new_overload_after_the_notice_alerts_again(self, env: Env) -> None:
+        runner = env.runner()
+        await self.fire(env, runner, "critical")
+        await self.tick(env, runner, 200)
+        await self.tick(env, runner, 120)
+        assert len(self.resolved(env)) == 1
+        await self.tick(env, runner, 3600, "warn")
+        assert [e["type"] for _, e, _ in env.producer.sent] == [
+            "SANDBOX_CAPACITY_CRITICAL", "SANDBOX_CAPACITY_RESOLVED", "SANDBOX_CAPACITY_WARNING",
+        ]
+        assert env.store.values[WARN_KEY]["state"] == "claimed"
+        await self.tick(env, runner, 10, "warn")
+        assert len(env.producer.sent) == 3

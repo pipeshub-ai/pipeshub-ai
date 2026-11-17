@@ -2,7 +2,9 @@
 
 The claim is ``create_config_if_absent`` with a TTL, which is atomic on Redis,
 etcd and PostgreSQL, so restarts, a new leader or racing workers never send
-the same level twice.
+the same level twice. A claim marked resolved (the back-to-normal notice was
+sent) is taken over by the next alert, so a new overload is reported the
+same day.
 """
 
 from __future__ import annotations
@@ -53,9 +55,16 @@ class AlertCooldown:
             "cooldownS": self._cooldown_s,
             "state": STATE_CLAIMED,
         }
-        return await self._config.create_config_if_absent(
-            self.key(level), value, ttl_seconds=self._cooldown_s,
-        )
+        key = self.key(level)
+        if await self._config.create_config_if_absent(key, value, ttl_seconds=self._cooldown_s):
+            return True
+        current = await self.read(level)
+        if current is None or current.get("state") != STATE_RESOLVED:
+            return False
+        # The store has no compare-and-set; only the leader of this scope
+        # writes these keys, and the create below is still atomic.
+        await self._config.delete_config(key)
+        return await self._config.create_config_if_absent(key, value, ttl_seconds=self._cooldown_s)
 
     async def read(self, level: str) -> dict[str, Any] | None:
         value = await self._config.get_config(self.key(level), use_cache=False, raise_on_error=True)
