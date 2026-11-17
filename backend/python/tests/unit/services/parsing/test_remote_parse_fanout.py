@@ -279,6 +279,8 @@ def test_metrics_text_format(monkeypatch) -> None:
         "pipeshub_parsing_capacity": 8,
         "pipeshub_parsing_saturated_total": 1,
         "pipeshub_parsing_requests_total": 1,
+        "pipeshub_parse_stuck_conversions": 0,
+        "pipeshub_parse_stuck_oldest_seconds": 0,
     }
 
 

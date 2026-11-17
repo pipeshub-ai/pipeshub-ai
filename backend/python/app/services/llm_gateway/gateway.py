@@ -14,16 +14,19 @@ fleet Redis the per-process breaker below is used.
 """
 
 import asyncio
+import contextlib
 import functools
 import logging
-import random
 import threading
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
+import httpx
+
+from app.capacity.admission import llm_slot as member_llm_slot
 from app.core.org_context import spawn_in_request
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.base_client import (
@@ -51,6 +54,15 @@ from app.services.model_identity.errors import (
     report_background_refusal,
 )
 from app.services.model_identity.workload import WorkloadClass
+from app.services.spend_guard.retry_policy import (
+    MAX_ATTEMPTS,
+    RETRY,
+    RETRY_AFTER_BEYOND_BUDGET,
+    RetryBudget,
+    RetryKind,
+    decide_retry,
+    process_retry_budget,
+)
 from app.telemetry.modules.llm_gateway_metrics import (
     LLM_BREAKER_OPEN,
     LLM_CALLS,
@@ -62,13 +74,13 @@ from app.utils.llm import LLMUnavailableError, is_provider_unavailable
 # A ceiling on hangs, not a latency target: self-hosted models legitimately take minutes on long
 # inputs, and a tight bound would turn slowness into an outage. Below the classify stage budget.
 CALL_TIMEOUT_S = 600.0
-RATE_LIMIT_ATTEMPTS = 3
+# Attempts per logical call: the one retry layer of a paid call (``spend_guard.retry_policy``); SDK clients retry nothing.
+RATE_LIMIT_ATTEMPTS = MAX_ATTEMPTS
 # How long a paused job waits when the breaker's Redis cannot be read, and how often a trial renews its lease.
 CONTROLS_UNAVAILABLE_RETRY_S = 30.0
 TRIAL_LEASE_RENEW_S = 20.0  # the fallback renewal task's interval (the renewer has its own, in trial_lease)
-# A gateway that says when its limit resets is believed, up to this long.
-MAX_GATEWAY_RETRY_AFTER_SECONDS = 60.0
 _TOO_MANY_REQUESTS = 429
+_SERVER_ERROR = 500
 _RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "too many requests", "quota exceeded")
 
 _R = TypeVar("_R")
@@ -109,6 +121,14 @@ class ProviderUnavailableError(LLMUnavailableError):
         trace = _job_trace.get()
         if trace is not None:
             trace.note_unavailable(pk, size_class, provider)
+
+
+class RateLimited(ProviderUnavailableError):
+    """The provider asked for a longer wait than this call may spend (its Retry-After beyond what is left of the
+    call's sleep allowance). Nothing was slept; the caller defers the work for ``retry_after`` seconds."""
+
+    # Read by ``provider_rate_limit_wait`` (a duck-typed marker, so the deferral code needs no import of the gateways).
+    rate_limited = True
 
 
 class Invocable(Protocol):
@@ -388,6 +408,28 @@ def _is_background_call() -> bool:
     return ctx is None or ctx.workload_class is WorkloadClass.BACKGROUND
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """A timeout somewhere in the chain: the call hung, and a hang is never sent again."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, httpx.TimeoutException)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_throttle(exc: BaseException, policy: GatewayPolicyError | None, seen: wire.WireOutcome) -> bool:
+    """Whether the failed attempt was a throttle. The wire status decides when one was seen (only a 429 is); the text of the
+    error is read only when no status is known (a model that could not be hooked), because a 400's body can mention "429"."""
+    if policy is not None:
+        return policy.retryable
+    if seen.status is not None:
+        return seen.status == _TOO_MANY_REQUESTS
+    return _is_rate_limited(exc, None)
+
+
 def _is_rate_limited(exc: BaseException, policy: GatewayPolicyError | None = None) -> bool:
     # A budget or model-access refusal from the gateway looks like a 429 or 4xx but
     # comes back unchanged however often it is retried.
@@ -418,8 +460,10 @@ class LLMGateway:
         logger: logging.Logger | None = None,
         failure_threshold: int = DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
         cooldown_seconds: float = DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
+        retry_budget: RetryBudget | None = None,
     ) -> None:
         super().__init__()
+        self._retry_budget = retry_budget if retry_budget is not None else RetryBudget()
         self._limiter = CrossLoopSemaphore(limit)
         self._logger = logger or logging.getLogger(__name__)
         self._failure_threshold = failure_threshold
@@ -524,10 +568,12 @@ class LLMGateway:
         sent_any = False
         requests_total = 0
         charged_total = 0
+        slept_total = 0.0
         breaker = self.breaker(provider)
         # Per-process breaker, only where no fleet Redis is bound. The one caller allowed through after a cooldown
         # makes the real call as the probe: a health endpoint cannot tell whether the provider serves completions.
-        if fleet is None and not breaker.should_attempt_probe() and breaker.is_open:
+        process_probe = fleet is None and breaker.should_attempt_probe()
+        if fleet is None and not process_probe and breaker.is_open:
             LLM_CALLS.inc(site, "circuit_open")
             raise ProviderUnavailableError(
                 f"{provider} is failing; not calling it until its cooldown ends",
@@ -538,17 +584,35 @@ class LLMGateway:
         for attempt in range(RATE_LIMIT_ATTEMPTS):
             self._refuse_if_sends_used(provider, site, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total)
             policy: GatewayPolicyError | None = None
+            decision = None
             admission = None
             lease = None
             try:
-                async with self._limiter.slot():
+                async with self._limiter.slot(), self._member_slot(
+                    provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
+                ):
                     # Admitted with the slot held, right before the request: a call that waited for a slot while others
                     # opened the breaker must see the breaker as it is now.
+                    if fleet is None and not (process_probe and attempt == 0) and breaker.is_open:
+                        # The per-process breaker, as it is now: a failure settled since the last check (or while this call
+                        # waited for a slot) may have opened it. The probe's owner is let through once.
+                        LLM_CALLS.inc(site, "circuit_open")
+                        raise ProviderUnavailableError(
+                            f"{provider} is failing; not calling it until its cooldown ends",
+                            provider=provider,
+                            retry_after=breaker.retry_after(),
+                            sent=sent_any,
+                            chargeable=charged_total > 0,
+                            charged=charged_total,
+                            requests=requests_total,
+                        )
                     if fleet is not None:
                         admission = await self._admit(
-                            fleet, provider, pk, cls, job, site, sent_any=sent_any, requests=requests_total
+                            fleet, provider, pk, cls, job, site, sent_any=sent_any, requests=requests_total,
+                            charged=charged_total,
                         )
-                    trial = admission is not None and admission.trial
+                    # The per-process breaker's half-open probe is a trial too: one request decides it, none is repeated.
+                    trial = (admission is not None and admission.trial) or (process_probe and attempt == 0)
                     lease = self._start_lease(fleet, pk, cls, admission) if trial and fleet and admission else None
                     with wire.wire_scope() as seen:
                         try:
@@ -597,9 +661,16 @@ class LLMGateway:
                             requests_total += failed_here
                             provider_failed = judged in (wire.FAIL, wire.NEUTRAL)
                             _note_failed_sends(failed_here if provider_failed else max(0, seen.requests - 1))
-                            retry = (
-                                _is_rate_limited(exc, policy) or seen.status == _TOO_MANY_REQUESTS
-                            ) and attempt < RATE_LIMIT_ATTEMPTS - 1 and (policy is None or policy.retryable)
+                            retry_after = seen.retry_after
+                            if retry_after is None and policy is not None:
+                                retry_after = policy.retry_after
+                            kind = self._retry_kind(
+                                exc, policy, seen, judged, trial=trial, caller_expired=caller_expired
+                            )
+                            decision = decide_retry(
+                                attempt=attempt, kind=kind, budget=self._retry_budget, retry_after_s=retry_after,
+                                slept_s=slept_total, max_attempts=RATE_LIMIT_ATTEMPTS,
+                            )
                             # Requests an SDK retried inside this attempt failed too: each is settled and charged
                             # on its own, before the attempt's own outcome.
                             charged_total += await self._settle_retried(
@@ -613,10 +684,11 @@ class LLMGateway:
                                 charged_total += 1 if chargeable else 0
                                 if trace is not None:
                                     trace.note_attempt(pk, cls, provider, chargeable=chargeable, trial=trial)
-                            if not retry:
+                            if not decision.retry:
                                 self._raise_for(
                                     exc, judged, provider, site, breaker, admission, settlement, pk, cls,
                                     sent_any=sent_any, requests=requests_total, charged=charged_total,
+                                    rate_limited_after=self._deferral_wait(exc, policy, seen, decision.reason, retry_after),
                                 )
                         else:
                             sent_any = sent_any or seen.sent
@@ -625,6 +697,7 @@ class LLMGateway:
                                 fleet, breaker, pk, cls, admission, seen, trace, provider
                             )
                             await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.OK)
+                            self._retry_budget.refund()
                             LLM_BREAKER_OPEN.set(provider, value=0.0)
                             note_llm_call()
                             LLM_CALLS.inc(site, "ok")
@@ -633,15 +706,37 @@ class LLMGateway:
             finally:
                 if lease is not None:
                     lease()
-            self.note_rate_limit_retry()
-            LLM_CALLS.inc(site, "rate_limited")
-            # Jittered, and outside the permit: lock-step retries are what keep a provider at its limit.
-            delay = 2**attempt + random.uniform(0, 1)
-            if policy is not None and policy.retry_after is not None:
-                # The gateway said when; waiting less only earns another refusal.
-                delay = max(delay, min(policy.retry_after, MAX_GATEWAY_RETRY_AFTER_SECONDS))
-            await asyncio.sleep(delay)
+            assert decision is not None and decision.retry
+            if decision.kind is RetryKind.THROTTLE:
+                self.note_rate_limit_retry()
+                LLM_CALLS.inc(site, "rate_limited")
+            else:
+                LLM_CALLS.inc(site, "transient_retry")
+            # Full jitter (or the provider's Retry-After, when longer), outside the permit: lock-step retries are what
+            # keep a provider at its limit.
+            slept_total += decision.delay_s
+            await asyncio.sleep(decision.delay_s)
         raise AssertionError("unreachable: the last attempt returns or raises")
+
+    @contextlib.asynccontextmanager
+    async def _member_slot(
+        self, provider: str, pk: str, cls: str, *, sent_any: bool, requests: int, charged: int
+    ) -> AsyncIterator[None]:
+        """The container's member LLM slot for one call. When the wait for it runs out, the caller sees the outage it
+        already handles (nothing was sent), not a raw ledger timeout."""
+        from app.capacity.member_budget import AdmissionTimeout
+
+        stack = contextlib.AsyncExitStack()
+        try:
+            await stack.enter_async_context(member_llm_slot())
+        except AdmissionTimeout as exc:
+            raise ProviderUnavailableError(
+                f"{provider}: no LLM slot came free in this container; not calling the model",
+                provider=provider, sent=sent_any, chargeable=charged > 0, pk=pk, size_class=cls,
+                requests=requests, charged=charged,  # what the job's earlier attempts already sent and were charged
+            ) from exc
+        async with stack:
+            yield
 
     # ---- the job's sends -----------------------------------------------------------------------
 
@@ -712,7 +807,8 @@ class LLMGateway:
         return FleetBreaker(handle) if handle is not None else None
 
     async def _admit(
-        self, fleet: FleetBreaker, provider: str, pk: str, cls: str, job: str, site: str, *, sent_any: bool, requests: int
+        self, fleet: FleetBreaker, provider: str, pk: str, cls: str, job: str, site: str, *, sent_any: bool, requests: int,
+        charged: int = 0,
     ) -> Admission:
         try:
             admission = await fleet.admit(pk, cls, job)
@@ -724,6 +820,8 @@ class LLMGateway:
                 provider=provider,
                 retry_after=CONTROLS_UNAVAILABLE_RETRY_S,
                 sent=sent_any,
+                chargeable=charged > 0,
+                charged=charged,
                 pk=pk,
                 size_class=cls,
                 requests=requests,
@@ -736,6 +834,8 @@ class LLMGateway:
                 provider=provider,
                 retry_after=admission.retry_after_s,
                 sent=sent_any,
+                chargeable=charged > 0,
+                charged=charged,
                 pk=pk,
                 size_class=cls,
                 requests=requests,
@@ -767,6 +867,60 @@ class LLMGateway:
             await asyncio.shield(fleet.settle(pk, cls, wire.NEUTRAL, token=token, was_closed=False))
         except Exception:
             self._logger.debug("could not release a cancelled trial", exc_info=True)
+
+    @staticmethod
+    def _deferral_wait(
+        exc: BaseException,
+        policy: GatewayPolicyError | None,
+        seen: wire.WireOutcome,
+        reason: str,
+        retry_after: float | None,
+    ) -> float | None:
+        """The provider's wait to hand to the caller as ``RateLimited``: its Retry-After when it is beyond the call's sleep
+        allowance, and also when a throttled call may not be sent again for another reason (its attempts are used, or it was
+        a half-open trial). The caller defers the work for that wait either way."""
+        if retry_after is None or retry_after <= 0 or reason == RETRY:
+            return None
+        if reason == RETRY_AFTER_BEYOND_BUDGET:
+            return retry_after
+        if policy is not None and not policy.retryable:
+            return None
+        return retry_after if _is_throttle(exc, policy, seen) else None
+
+    @staticmethod
+    def _retry_kind(
+        exc: BaseException,
+        policy: GatewayPolicyError | None,
+        seen: wire.WireOutcome,
+        judged: str,
+        *,
+        trial: bool,
+        caller_expired: bool,
+    ) -> RetryKind | None:
+        """What kind of retry this failed attempt would be, or None when it is not worth repeating: a refusal that comes
+        back unchanged, a hang (it ran to its ceiling already), the caller's own budget, a half-open trial (one request
+        decides the breaker), or the request's own fault."""
+        if policy is not None and not policy.retryable:
+            return None
+        if trial:
+            # One request decides a half-open breaker: waiting and sending another is not the trial's to do (a throttled
+            # trial would otherwise sleep before the breaker refuses its retry).
+            return None
+        if trial or caller_expired or _is_timeout(exc):
+            # A half-open trial is one request; a call that ran out of time (headers may have said 429, the body never came)
+            # is not sent again.
+            return None
+        if _is_throttle(exc, policy, seen):
+            return RetryKind.THROTTLE
+        if judged != wire.FAIL:
+            return None
+        if seen.requests > 1:
+            # An SDK client already repeated the request inside this attempt: a second layer would multiply the sends.
+            return None
+        if seen.status is not None and seen.status >= _SERVER_ERROR:
+            return RetryKind.TRANSIENT
+        # Sent and nothing came back: a refused or reset connection.
+        return RetryKind.TRANSIENT if seen.status is None and seen.sent else None
 
     @staticmethod
     def _judge(
@@ -828,7 +982,22 @@ class LLMGateway:
         sent_any: bool,
         requests: int,
         charged: int = 0,
+        rate_limited_after: float | None = None,
     ) -> None:
+        if rate_limited_after is not None:
+            # The provider's Retry-After is longer than this call may wait: say so at once, sleep nothing.
+            LLM_CALLS.inc(site, "rate_limited_deferred")
+            raise RateLimited(
+                f"{provider} is rate limiting; it asks for {rate_limited_after:.0f}s, which this call does not wait for",
+                provider=provider,
+                retry_after=rate_limited_after,
+                sent=True,
+                chargeable=charged > 0,
+                charged=charged,
+                pk=pk,
+                size_class=cls,
+                requests=requests,
+            ) from exc
         if isinstance(exc, TimeoutError) and judged == wire.NEUTRAL:
             # The caller's budget ran out: a slow call, not evidence the provider is down.
             LLM_CALLS.inc(site, "timeout")
@@ -866,7 +1035,7 @@ def _build_default() -> LLMGateway:
     from app.utils.concurrency import MAX_CONCURRENT_INDEXING_LLM_CALLS
     from app.utils.worker_scaling import scaled
 
-    return LLMGateway(scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS))
+    return LLMGateway(scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS), retry_budget=process_retry_budget())
 
 
 def get_llm_gateway() -> LLMGateway:
