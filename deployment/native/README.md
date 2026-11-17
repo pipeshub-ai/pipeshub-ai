@@ -57,9 +57,11 @@ deployment/native/smoke.sh <out>/pipeshub-native      # start for real into a fr
 `bundle.sh` runs three steps, each of which can also run on its own:
 
 - `build-pg.sh <bundle>/pg`: OpenSSL (3.5 LTS) built from source into `pg/lib`, then PostgreSQL 18 `--with-ssl=openssl
-  --without-icu --without-readline --disable-rpath`, then pgvector and pg_textsearch against that tree. Libraries are found
-  relative to each file (`$ORIGIN/../lib`, `@loader_path/../lib`). A self-check runs initdb, starts the server from a copy in another
-  folder and creates every extension. Needs a C compiler, make, perl, flex and bison.
+  --without-icu --without-readline --disable-rpath`, then pgvector and pg_textsearch against that tree, built for any CPU of the
+  architecture (`OPTFLAGS=""`; on x86-64 an AVX instruction may appear only in a function chosen at run time after a CPU check,
+  which `objdump` verifies). Libraries are found relative to each file (`$ORIGIN/../lib`, `@loader_path/../lib`). A self-check runs
+  initdb, starts the server from a copy in another folder, creates every extension, computes a vector distance and searches an
+  HNSW index. Needs a C compiler, make, perl, flex and bison.
 - `build-py.sh <bundle>`: Python 3.12 from python-build-standalone (`uv python install`), CPU-only PyTorch, the backend's and
   the schema tools' dependencies, and the source, with bytecode compiled at build time.
 - `build-node.sh <bundle>`: the Node runtime, the API built and pruned to production dependencies, and the web UI as a static export.
