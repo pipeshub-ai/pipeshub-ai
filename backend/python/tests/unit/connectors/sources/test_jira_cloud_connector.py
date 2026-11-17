@@ -1337,6 +1337,38 @@ class TestFetchUsersPhases:
         assert await connector._keep_licensed_users(users, mapping) == users[:2]
 
     @pytest.mark.asyncio
+    async def test_a_product_group_identified_by_id_alone_is_read_by_its_id(self) -> None:
+        """GroupName: groupId "uniquely identifies the group across all Atlassian products"; name is optional. A group
+        groupDetails identify by id without a name is read like any other, not skipped (its members would be dropped
+        as unlicensed)."""
+        connector = _make_connector()
+        role = {"key": "jira-software", "groups": ["jira-software-users"], "groupDetails": [{"groupId": "g1"}]}
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is True
+        connector._fetch_group_members = AsyncMock(return_value=(["linked", "new"], True))
+        users = self._three(connector)
+        assert await connector._keep_licensed_users(users, mapping) == [users[0], users[2]]
+        connector._fetch_group_members.assert_awaited_once_with("g1", "g1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("role", [
+        {"key": "jira-software", "groups": ["jira-software-users", "contractors"],
+         "groupDetails": [{"groupId": "g1", "name": "jira-software-users"}]},
+        {"key": "jira-software", "groupDetails": [], "userCount": 3},
+    ], ids=["a_group_without_its_id", "users_outside_groups"])
+    async def test_a_project_granting_an_incompletely_read_role_keeps_its_stored_access(self, role: dict) -> None:
+        """The role's people are not all known, so a Browse grant to it is unread, not the groups that were read:
+        run_sync keeps the project's stored access instead of saving a partial list."""
+        connector = _make_connector()
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        connector._projects_naming_unread_roles = set()
+        grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}}
+        connector._permissions_for_browse_grant(grant, "ENG", mapping, {}, set())
+        assert connector._projects_naming_unread_roles == {"ENG"}
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [403, 404])
     async def test_a_role_list_refused_or_missing_leaves_product_access_unknown(self, status: int) -> None:
         connector = _make_connector()
@@ -4665,7 +4697,7 @@ class TestGroupSyncForbiddenNotification:
 
 @pytest.mark.parametrize("read_unfinished,account_type,licensed,granted", [
     (False, "atlassian", None, False),       # a complete user read without them: no Jira product access
-    (True, "atlassian", None, True),         # a cut-short read may have missed a licensed account
+    (True, "atlassian", None, False),        # product access unknown is not access: the stored access is kept
     (True, "customer", None, False),         # a portal customer never browses the project
     (True, "atlassian", set(), False),       # outside the product groups, listed or not
     (True, "atlassian", {"acc-u"}, True),    # in a product group but missing from the cut-short user read
@@ -4699,3 +4731,14 @@ async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_g
     users = {u.source_user_id: u for u in kept}
     assert connector._permissions_for_browse_grant(grant("acc-unlic"), "ENG", {}, users, set()) == []
     assert [p.email for p in connector._permissions_for_browse_grant(grant("acc-lic"), "ENG", {}, users, set())] == ["acc-lic@acme.com"]
+
+
+def test_a_user_grant_is_not_admitted_while_product_access_is_unknown() -> None:
+    """On a user list cut short, an account the list did not show and that product access could not be read for may
+    be unlicensed (Jira treats it as anonymous): no new grant names it; the project's stored access is kept instead."""
+    connector = _make_connector()
+    connector._user_read_unfinished = True
+    connector._licensed_account_ids = None
+    grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-x", "user": {
+        "accountId": "acc-x", "emailAddress": "x@acme.com", "active": True, "accountType": "atlassian"}}}
+    assert connector._permissions_for_browse_grant(grant, "ENG", {}, {}, set()) == []
