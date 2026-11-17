@@ -599,8 +599,11 @@ class GraphTransactionStore(TransactionStore):
             record_id, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Optional[User]:
-        return await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None
+    ) -> Optional[User]:
+        scope = {} if org_id is None else {"org_id": org_id}
+        return await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error, **scope)
 
     async def delete_record_by_key(self, key: str) -> None:
         self._memo_forget_record(key)

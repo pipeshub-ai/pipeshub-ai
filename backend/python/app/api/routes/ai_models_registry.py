@@ -94,7 +94,7 @@ async def preview_identity_forwarding(request: Request, body: IdentityPreviewReq
         )
     elif body.userId and body.userId != caller.get("userId"):
         graph_provider = await container.graph_provider()
-        target = await graph_provider.get_user_by_user_id(body.userId)
+        target = await graph_provider.get_user_by_user_id(body.userId, org_id=org_id)
         if not target or str(target.get("orgId") or "") != org_id:
             raise HTTPException(status_code=404, detail="That user was not found in this organisation.")
         principal = user_principal({"userId": body.userId, **target}, org_id)

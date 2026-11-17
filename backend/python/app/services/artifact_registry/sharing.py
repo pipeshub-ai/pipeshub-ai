@@ -124,7 +124,7 @@ class ArtifactSharingService:
         to_delete: list[dict[str, str]] = []
         to_keep_for_chat: list[dict[str, Any]] = []
         for user_id in dict.fromkeys(user_ids):
-            user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True, org_id=actor.org_id)
             user_key = user and (user.get("_key") or user.get("id"))
             if not user_key:
                 continue
@@ -178,7 +178,7 @@ class ArtifactSharingService:
             raise InvalidShareTargetError(f"At most {MAX_SHARE_TARGETS} users per request")
         targets: dict[str, str] = {}
         for user_id in unique:
-            user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True)
+            user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True, org_id=actor.org_id)
             user_key = user and (user.get("_key") or user.get("id"))
             if not user_key or user.get("orgId") != actor.org_id:
                 raise InvalidShareTargetError(f"User not found: {user_id}")
@@ -202,7 +202,7 @@ class ArtifactSharingService:
         by the notification service and never undoes it."""
         if not self._notifications:
             return
-        sharer = await self._graph.get_user_by_user_id(actor.user_id) or {}
+        sharer = await self._graph.get_user_by_user_id(actor.user_id, org_id=actor.org_id) or {}
         sharer_name = sharer.get("fullName") or sharer.get("email") or "A teammate"
         await self._notifications.publish_notification(
             org_id=actor.org_id,

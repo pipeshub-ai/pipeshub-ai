@@ -1251,7 +1251,7 @@ async def _attachment_caller(
     if user.get("isServiceAccount"):
         return org_id, None, True
     user_id = user.get("userId")
-    user_doc = await get_caller_user(graph_provider, user_id) if user_id else None
+    user_doc = await get_caller_user(graph_provider, user_id, org_id=org_id) if user_id else None
     return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
 
 
@@ -1304,7 +1304,7 @@ async def _org_user_keys(
     """User node keys for the ids that are users of this org; others are skipped."""
     keys: list[str] = []
     for user_id in dict.fromkeys(user_ids):
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await graph_provider.get_user_by_user_id(user_id, org_id=org_id)
         user_key = (user_doc or {}).get("_key") or (user_doc or {}).get("id")
         if not user_key or user_doc.get("orgId") != org_id:
             logger.warning("Not a user of this org, skipping: %s", user_id)

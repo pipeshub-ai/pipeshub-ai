@@ -422,7 +422,9 @@ class EntityEventService(BaseEventService):
             # The login user first, whatever its key (an address that changed must not leave it beside a new one);
             # then a connector's user of this address, which has no userId yet. raise_on_error: the providers
             # answer None to a failed read too, and "nobody" here would mint a second user for someone who is there.
-            by_user_id = await self.graph_provider.get_user_by_user_id(payload["userId"], raise_on_error=True)
+            by_user_id = await self.graph_provider.get_user_by_user_id(
+                payload["userId"], raise_on_error=True, org_id=org_id
+            )
             user_key = (by_user_id.get("id") or by_user_id.get("_key")) if by_user_id else None
             if not user_key:
                 existing_user = await self.graph_provider.get_user_by_email(
@@ -631,8 +633,9 @@ class EntityEventService(BaseEventService):
             self.logger.debug("Processing user updated event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "not found" would hide the outage from the classifier.
+            org_id = payload["orgId"]
             existing_user = await self.graph_provider.get_user_by_user_id(
-                payload["userId"], raise_on_error=True
+                payload["userId"], org_id=org_id, raise_on_error=True
             )
 
             if not existing_user:
@@ -643,7 +646,7 @@ class EntityEventService(BaseEventService):
             user_data = {
                 "id": user_id,
                 "userId": payload["userId"],
-                "orgId": payload["orgId"],
+                "orgId": org_id,
                 "email": payload["email"],
                 "fullName": payload.get("fullName", ""),
                 "firstName": payload.get("firstName", ""),
