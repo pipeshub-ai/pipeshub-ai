@@ -140,6 +140,7 @@ on:
       # Helpers outside tests/integration that the suites import.
       - 'backend/python/tests/conftest.py'
       - 'backend/python/tests/support/**'
+      - 'backend/python/tests/unit/attempt_start.py'
       - 'backend/python/tests/unit/agents/adapter/conftest.py'
       - 'backend/python/tests/unit/agents/adapter/support/scripted_transport.py'
       - 'backend/python/tests/unit/connectors/sources/localKB/push/bodies.py'
