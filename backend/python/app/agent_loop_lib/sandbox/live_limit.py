@@ -44,7 +44,7 @@ from app.agent_loop_lib.sandbox.host_reading import (
     SidecarReader,
     resolve_live_mode,
 )
-from app.agent_loop_lib.sandbox.live_record import BURST_SLOTS, LiveLedger, LiveRecord
+from app.agent_loop_lib.sandbox.live_record import BURST_SLOTS, LiveLedger, LiveRecord, LiveTxn
 from app.agent_loop_lib.sandbox.live_settings import MAX_MEMORY_OVERCOMMIT, LiveSettings
 from app.core.org_context import spawn_detached
 from app.services.resource_governor.lane_ledger import pid_alive
@@ -414,6 +414,8 @@ class LiveLimit:
         self._last_held = 0
         self._unknown_logged_at: float | None = None
         self._admit_error_logged_at: float | None = None
+        self._corrupt_logged = False
+        self._floor_logged = False
         self._task: asyncio.Task[None] | None = None
         # Called (on the event loop, never blocking) while a run waits for
         # memory where indexing shares it; see ``waiting()``.
@@ -665,6 +667,7 @@ class LiveLimit:
         assert sample is not None and sample.mem_total is not None and self._profile is not None
         old_limit = old.limit if old is not None and old.initialised else None
         hard_floor, soft = self._profile.memory_lines(sample.mem_total, m)
+        self._check_floor(sample.mem_total, self._profile.memory_lines(sample.mem_total, self._run_bytes(1.0))[0])
         waiting = old is not None and old.last_wait_limit_at > 0 and old.last_wait_limit_at >= old.last_step_at
         level = logging.INFO if old_limit != new.limit else logging.DEBUG
         logger.log(
@@ -752,8 +755,11 @@ class LiveLimit:
         if cached is not None and 0 <= now - cached[0] < profile.admit_cache_s:
             return cached[1], cached[2]
         available, total = mode.reader.memory()
-        with self._lock:
-            self._admit_reading = (now, available, total)
+        if available is not None and total is not None:
+            # A missing reading is asked again by the next run rather than
+            # kept: the reader may have it a moment later.
+            with self._lock:
+                self._admit_reading = (now, available, total)
         return available, total
 
     def _admit_locked(self) -> HoldReason | None:
@@ -766,19 +772,61 @@ class LiveLimit:
             # The floor cannot be read: admit, or chat would stop whenever the
             # reading misbehaves.
             return None
-        m = self._run_bytes(self._k(self._ledger.read(), now))
+        # Over-commit only raises the ceiling: each run is checked and charged
+        # at its full memory limit, since a run just started may use all of it.
+        m = self._run_bytes(1.0)
         hard_floor, _ = profile.memory_lines(total, m)
         with self._ledger.transaction(ADMIT_LOCK_BUDGET) as txn:
             if txn is None:
                 # Only a stopped lock holder keeps the lock this long; the next
                 # sample still catches a real shortage.
                 return None
-            rec = txn.read() or LiveRecord()
+            rec = txn.read()
+            if rec is None:
+                rec = self._replacement(txn, now)
             charges = live_charges(rec, now, profile.burst_window_s)
             if available - sum(size for _, size in charges) - m < hard_floor:
                 return HoldReason.HOST_MEMORY_FLOOR
             txn.write(replace(rec, charges=_add_charge(charges, now + profile.burst_window_s, int(m))))
         return None
+
+    def _replacement(self, txn: LiveTxn, now: float) -> LiveRecord:
+        """What an admission writes its charge into when the record is not
+        valid. Missing, or left by an older version: an uninitialised one.
+        Damaged: never one that lifts the limit, so this worker's last good
+        record, or failing that one at the floor stamped long ago, which the
+        next sample starts afresh."""
+        if not txn.corrupt:
+            return LiveRecord()
+        if not self._corrupt_logged:
+            self._corrupt_logged = True
+            logger.warning("sandbox live limit: the shared record is damaged; holding the limit until the next sample")
+        good = txn.last_good
+        if good is not None and good.initialised:
+            return good
+        ceiling = self._ceiling(self._k(None, now))
+        floor = min(self._capacity.floor(), ceiling)
+        return LiveRecord(
+            limit=floor, ceiling=ceiling, min=floor, rule="unknown",
+            shrink_cause="memory" if floor < ceiling else None, owner_pid=self._pid,
+        )
+
+    def _check_floor(self, total: int, hard_floor: int) -> None:
+        """One ERROR when the hard floor leaves no room for a single run."""
+        run = self._run_bytes(1.0)
+        if self._floor_logged or hard_floor + run < total:
+            return
+        self._floor_logged = True
+        floor_mb = self._settings.host_mem_floor_mb
+        source = (
+            f"SANDBOX_HOST_MEM_FLOOR_MB={floor_mb}" if floor_mb is not None and self._profile is not None
+            and self._profile.floor_bytes is not None else "the hard free-memory floor"
+        )
+        logger.error(
+            "sandbox live limit: %s (%s) plus one run (%s) is not below the %s memory size (%s); "
+            "no code run can start. Lower it below the memory size minus one run.",
+            source, _gib(hard_floor), _gib(run), self._mode.mode, _gib(total),
+        )
 
     def waiting(self, reason: HoldReason, waited_s: float) -> None:
         """Stamp the record so the sampler knows runs wait: a wait at the
@@ -823,8 +871,7 @@ class LiveLimit:
         view, profile = self.view(), self._profile
         if profile is None or view.mem_total_bytes is None:
             return None
-        k = 1.0 if view.mode == "off:reading-lost" else self._overcommit
-        return profile.memory_lines(view.mem_total_bytes, self._run_bytes(k))[0]
+        return profile.memory_lines(view.mem_total_bytes, self._run_bytes(1.0))[0]
 
     def wait_ended(self, *, granted: bool) -> None:
         return None

@@ -165,6 +165,13 @@ class LiveRecord:
         )
 
 
+def _other_version(data: bytes) -> bool:
+    if len(data) < _HEADER.size:
+        return False
+    magic, version, _ = _HEADER.unpack_from(data, 0)
+    return magic == _MAGIC and version != _VERSION
+
+
 class LiveTxn:
     """The record while the lock is held."""
 
@@ -178,6 +185,18 @@ class LiveTxn:
 
     def write(self, record: LiveRecord) -> None:
         self._ledger._write_raw(record)
+
+    @property
+    def corrupt(self) -> bool:
+        """Whether the last ``read()`` found bytes that are not a record of
+        any version: damaged, rather than missing or left by an older one."""
+        return self._ledger._last_corrupt
+
+    @property
+    def last_good(self) -> LiveRecord | None:
+        """The last valid record this worker read or wrote."""
+        with self._ledger._state_lock:
+            return self._ledger._last_good
 
 
 class LiveLedger:
@@ -194,6 +213,7 @@ class LiveLedger:
         self._thread_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._last_good: LiveRecord | None = None
+        self._last_corrupt = False
         self._memory: bytes = b""
         self._record_fd = self._lock_fd = -1
         self.shared = directory is not None
@@ -218,6 +238,7 @@ class LiveLedger:
             except OSError:
                 return None
         record = LiveRecord.decode(data)
+        self._last_corrupt = record is None and bool(data) and not _other_version(data)
         if record is not None and remember:
             with self._state_lock:
                 self._last_good = record

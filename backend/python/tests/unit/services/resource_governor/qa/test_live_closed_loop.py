@@ -94,3 +94,53 @@ def test_bounds_hold_across_seeds(tmp_path: Path, seed: int) -> None:
     assert result.overcommitted == 0 and result.refused == 0
     assert result.yield_episodes <= 14
     assert sim_host.reversals_per_window(result.live_limits, TEN_MINUTES) <= 10
+
+
+# Runs that use their full 512 MiB on a 16-CPU host (memory binds), with bursts.
+FULL_USE = sim.Scenario(
+    replace(sim.HOST_16, cpus=16), users=40, run_used=512 * sim.MiB, ramp_s=4.0,
+    bursts=tuple((600.0 * i, 600.0 * i + 60, 30) for i in range(6)),
+)
+
+
+@pytest.mark.parametrize("k", [1.0, 2.0, 4.0])
+def test_overcommit_never_takes_the_host_below_the_hard_floor(tmp_path: Path, k: float) -> None:
+    # Recorded before runs were checked at full size: 83 starts over the floor
+    # and -0.5 GiB free at 4x.
+    result = sim.run(replace(FULL_USE, overcommit=k), tmp_path / "state")
+    assert result.overcommitted == 0
+    assert result.min_available >= GiB  # the hard floor on 16 GiB
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 7])
+def test_four_workers_holding_heavy_parse_together_yield_less(tmp_path: Path, seed: int) -> None:
+    # Recorded, seeds 1/2/3/7: 36/31/25/23 yields an hour and p95 16/13/20/15 s
+    # without the shared cap; 11/8/9/11 and 4/2/7/5 s with it.
+    four = replace(STEADY, index_workers=4, seed=seed)
+    before = sim.run(replace(four, yield_heavy_cap=False), tmp_path / "a")
+    after = sim.run(four, tmp_path / "b")
+    assert after.yield_episodes <= 14 < before.yield_episodes
+    assert after.p95_wait() < before.p95_wait()
+    assert after.overcommitted == 0 and after.refused == 0
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_the_shared_cap_changes_nothing_for_one_or_two_workers(tmp_path: Path, workers: int) -> None:
+    scenario = replace(STEADY, index_workers=workers)
+    capped = sim.run(scenario, tmp_path / "a")
+    uncapped = sim.run(replace(scenario, yield_heavy_cap=False), tmp_path / "b")
+    assert (capped.yield_episodes, capped.waits, capped.live_limits, capped.heavy_totals) == (
+        uncapped.yield_episodes, uncapped.waits, uncapped.live_limits, uncapped.heavy_totals,
+    )
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_indexing_recovers_once_chat_stops(tmp_path: Path, workers: int) -> None:
+    # Chat for the first half hour only, then the sync alone.
+    chat_then_none = replace(STEADY, users=0, bursts=((0.0, 1800.0, STEADY.users),), index_workers=workers)
+    result = sim.run(chat_then_none, tmp_path / "a")
+    alone = sim.run(replace(chat_then_none, bursts=()), tmp_path / "b")
+    assert result.yield_episodes > 0
+    tail = slice(-40, None)  # the last ten minutes
+    assert max(result.index_limits[tail]) == max(alone.index_limits[tail])
+    assert max(result.heavy_totals[tail]) == max(alone.heavy_totals[tail])

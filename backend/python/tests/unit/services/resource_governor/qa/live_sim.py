@@ -57,7 +57,7 @@ class Host:
     other_used: int
     app_base: int
     app_limit: int
-    # One indexing worker's share of the pools.
+    # The pools for every indexing worker together.
     ceilings: Ceilings
 
 
@@ -91,6 +91,11 @@ class Scenario:
     think_mean_s: float = 45.0
     release_samples: int = 4
     seed: int = 7
+    overcommit: float = 1.0
+    # With several indexing workers: hold their heavy parses together to one
+    # worker's floor while the yield or its holdoff lasts, as
+    # ``ResourceGovernor.try_acquire_heavy_parse_slots`` does.
+    yield_heavy_cap: bool = True
 
 
 @dataclass
@@ -99,6 +104,8 @@ class Result:
     floor: int = 0
     live_limits: list[int] = field(default_factory=list)
     index_limits: list[int] = field(default_factory=list)
+    # Heavy parses the workers may run together, per indexing sample.
+    heavy_totals: list[int] = field(default_factory=list)
     yield_episodes: int = 0
     waits: list[float] = field(default_factory=list)
     starts: int = 0
@@ -144,11 +151,23 @@ class _Reader:
         return self._available(), self._total  # type: ignore[operator]
 
 
-def _indexing_bytes(limits: Limits) -> float:
+def _in_flight(index: list[Limits], fleet: Ceilings, heavy_cap: int | None) -> dict[Pool, int]:
+    """What the workers run together: each up to its own limit, and all of
+    them up to the shared heavy slots and the fleet-wide index leases."""
+    total = {pool: sum(limits.get(pool) for limits in index) for pool in Pool}
+    if len(index) > 1:
+        total[Pool.INDEX_HEAVY] = min(total[Pool.INDEX_HEAVY], fleet.index_heavy)
+        total[Pool.INDEX_LIGHT] = min(total[Pool.INDEX_LIGHT], fleet.index_light)
+        if heavy_cap is not None:
+            total[Pool.HEAVY_PARSE] = min(total[Pool.HEAVY_PARSE], heavy_cap)
+    return total
+
+
+def _indexing_bytes(total: dict[Pool, int]) -> float:
     return GiB * (
-        limits.get(Pool.HEAVY_PARSE) * policy.HEAVY_PARSE_WORKING_SET_GB
-        + limits.get(Pool.INDEX_HEAVY) * policy.INDEX_HEAVY_WORKING_SET_GB
-        + limits.get(Pool.INDEX_LIGHT) * policy.INDEX_LIGHT_WORKING_SET_GB
+        total[Pool.HEAVY_PARSE] * policy.HEAVY_PARSE_WORKING_SET_GB
+        + total[Pool.INDEX_HEAVY] * policy.INDEX_HEAVY_WORKING_SET_GB
+        + total[Pool.INDEX_LIGHT] * policy.INDEX_LIGHT_WORKING_SET_GB
     )
 
 
@@ -161,13 +180,19 @@ def run(scenario: Scenario, state_dir: Path) -> Result:
     workers = scenario.index_workers
 
     # Each worker gets its share of the pools, as the controller divides them.
-    share = Ceilings(**{
-        name: max(1, math.ceil(getattr(host.ceilings, name) / workers))
-        for name in ("heavy", "light", "index_heavy", "index_light")
-    })
+    share = policy.split_ceilings(host.ceilings, workers)
     index = [policy.warm_start_limits(share) for _ in range(workers)]
+    last_snap: ResourceSnapshot | None = None
+
+    def heavy_cap(yield_on: bool) -> int:
+        cap = policy.cgroup_heavy_parse_limit(last_snap, host.ceilings) if last_snap else host.ceilings.heavy
+        held = yield_on or any(st.get(Pool.HEAVY_PARSE).yield_holdoff > 0 for st in states)
+        if scenario.yield_heavy_cap and held:
+            cap = min(cap, policy.floor_for(Pool.HEAVY_PARSE, host.ceilings.heavy))
+        return cap
+
     states = [ControllerState.initial() for _ in range(workers)]
-    index_used = sum(_indexing_bytes(limits) for limits in index) if scenario.sync else 0.0
+    index_used = _indexing_bytes(_in_flight(index, host.ceilings, None)) if scenario.sync else 0.0
     runs: list[tuple[float, float]] = []  # (start, end)
     users: list[_User] = []
 
@@ -186,7 +211,7 @@ def run(scenario: Scenario, state_dir: Path) -> Result:
     capacity = SandboxCapacity("compose", CapacitySettings(), slot_files=256)
     capacity._apply(MachineSize(host.total, host.cpus, None, "docker_info"), None)
     mode = LiveMode(mode="on:host", reader=_Reader(available, host.total), profile="host")  # type: ignore[arg-type]
-    settings = LiveSettings()
+    settings = LiveSettings(memory_overcommit=scenario.overcommit)
     live = LiveLimit(capacity, None, settings=settings, resolver=lambda: mode, directory=None, clock=clock)
     live.apply_mode(mode)
     signal = YieldSignal(state_dir, clock=clock)
@@ -263,7 +288,7 @@ def run(scenario: Scenario, state_dir: Path) -> Result:
                     for pool in Pool
                 }
                 working_set = host.app_base + index_used
-                snap = ResourceSnapshot(
+                snap = last_snap = ResourceSnapshot(
                     cpu_quota=host.cpus, cpu_utilisation=0.5, cpu_throttled_ratio=0.0, cpu_pressure=0.0,
                     mem_limit_bytes=host.app_limit, mem_working_set_bytes=int(working_set),
                     mem_working_set_raw_bytes=int(working_set), source="sim",
@@ -273,10 +298,12 @@ def run(scenario: Scenario, state_dir: Path) -> Result:
                     worker_count=workers, host_yield=active,
                 )
                 if k == 0:
-                    result.index_limits.append(sum(limits.get(Pool.INDEX_HEAVY) for limits in index))
+                    flight = _in_flight(index, host.ceilings, heavy_cap(active))
+                    result.index_limits.append(flight[Pool.INDEX_HEAVY])
+                    result.heavy_totals.append(flight[Pool.HEAVY_PARSE])
 
             if scenario.sync:
-                wanted = sum(_indexing_bytes(limits) for limits in index)
+                wanted = _indexing_bytes(_in_flight(index, host.ceilings, heavy_cap(active)))
                 if wanted >= index_used:
                     index_used = wanted
                 else:

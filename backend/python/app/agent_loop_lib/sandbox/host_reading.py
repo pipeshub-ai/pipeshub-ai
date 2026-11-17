@@ -29,6 +29,7 @@ import logging
 import math
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -68,6 +69,13 @@ _SIDECAR_LIMIT_TOLERANCE = 0.01
 # dockerd, containerd, shims and page cache cannot be seen from container
 # stats; their share of the sidecar is left unmeasured.
 _CONTAINERS_SHARE = 0.9
+# The per-run check's sidecar reading: reused for this long, then refreshed
+# by one request that concurrent checks share. A check waits for it at most
+# _SIDECAR_MEMORY_WAIT_S, then uses a reading up to _SIDECAR_MEMORY_STALE_S
+# old (the exporter writes every 5 s), or none, and the run is admitted.
+_SIDECAR_MEMORY_FRESH_S = 1.0
+_SIDECAR_MEMORY_WAIT_S = 0.05
+_SIDECAR_MEMORY_STALE_S = 5.0
 
 Source = Literal["host", "cgroup", "sidecar", "sidecar-containers"]
 
@@ -255,6 +263,11 @@ class SidecarReader:
         self._cpus = cpu_millis / 1000 if cpu_millis else None
         # The last block read, for the governor's snapshot.
         self.last_block: dict[str, Any] | None = None
+        self._clock = time.monotonic
+        self._memory_lock = threading.Lock()
+        # (read at, (available, total)) of the last answered request.
+        self._memory_cache: tuple[float, tuple[int | None, int | None]] | None = None
+        self._memory_pending: threading.Event | None = None
 
     def _fetch(self) -> dict[str, Any] | None:
         containers = self.source == "sidecar-containers"
@@ -300,8 +313,37 @@ class SidecarReader:
         )
 
     def memory(self) -> tuple[int | None, int | None]:
-        sample = self.read()
-        return sample.mem_available, sample.mem_total
+        """``(available, total)`` for the per-run check. Never waits more
+        than ``_SIDECAR_MEMORY_WAIT_S`` for the proxy."""
+        now = self._clock()
+        with self._memory_lock:
+            cached = self._memory_cache
+            if cached is not None and 0 <= now - cached[0] < _SIDECAR_MEMORY_FRESH_S:
+                return cached[1]
+            pending = self._memory_pending
+            if pending is None:
+                pending = self._memory_pending = threading.Event()
+                threading.Thread(
+                    target=self._refresh_memory, args=(pending,), name="sandbox-sidecar-reading", daemon=True,
+                ).start()
+        pending.wait(_SIDECAR_MEMORY_WAIT_S)
+        with self._memory_lock:
+            cached = self._memory_cache
+        if cached is not None and 0 <= self._clock() - cached[0] < _SIDECAR_MEMORY_STALE_S:
+            return cached[1]
+        return None, None
+
+    def _refresh_memory(self, done: threading.Event) -> None:
+        try:
+            sample = self.read()
+            answer = (sample.mem_available, sample.mem_total)
+        except Exception:
+            answer = (None, None)
+        with self._memory_lock:
+            if answer[0] is not None:
+                self._memory_cache = (self._clock(), answer)
+            self._memory_pending = None
+        done.set()
 
 
 @dataclass(frozen=True)
