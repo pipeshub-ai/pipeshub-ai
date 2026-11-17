@@ -31,3 +31,12 @@ def sandbox_org_share() -> float | None:
     the current limit, and never below 2 slots.
     """
     return None
+
+
+def check_runtime_settings() -> None:
+    """Raise to refuse, at service start, a combination of settings this build does not run.
+
+    Every Python service main calls it at load, before it builds its container
+    or app, so it holds whatever ``edition_services`` supplies. OSS runs every
+    combination, so it refuses nothing.
+    """

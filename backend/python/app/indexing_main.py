@@ -19,6 +19,17 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.request_log import install_request_logging
 from app.api.validation_errors import input_free_422
+from app.capacity.apply import adopt_claim
+from app.capacity.cells import (
+    CLAIM_ATTEMPTS,
+    CLAIM_BACKOFF_S,
+    CellClaim,
+    cells_directory,
+    directory_problem,
+    process_claim,
+    read_cells,
+    write_cell,
+)
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -34,6 +45,7 @@ from app.core.org_context import (
     spawn_detached,
     system,
 )
+from app.edition import check_runtime_settings
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.events.dedup import will_promote_queued_copies
@@ -55,7 +67,10 @@ from app.modules.indexing.named_entity_persist_retry import (
     retry_pending_named_entity_persists,
 )
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
-from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.rate_limit_deferral import (
+    deferral_due,
+    is_deferred_until_later,
+)
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import (
     is_parked_duplicate,
@@ -79,6 +94,7 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.services.base_client import open_circuits
 from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -86,7 +102,22 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway.fleet_breaker import FleetBreaker, load_install_secret
+from app.services.llm_gateway.fleet_hold import (
+    TICK_SECONDS,
+    HoldKeeper,
+    run_hold_leader,
+)
+from app.services.llm_gateway.fleet_redis import (
+    FleetRedis,
+    bind_fleet_redis,
+    fleet_redis_config,
+    get_fleet_redis,
+    open_fleet_redis,
+)
 from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.trial_lease import get_trial_renewer
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -107,12 +138,14 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.services.resource_governor.yield_signal import YieldSignal
 from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
+from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
@@ -132,6 +165,8 @@ from app.utils.user_errors import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from app.modules.indexing.run import IndexingPipeline
     from app.modules.pipeline.runtime import PipelineRuntime
     from app.services.messaging.interface.producer import IMessagingProducer
@@ -149,8 +184,22 @@ class CoordinationRunner(Protocol):
 # signal.signal(signal.SIGTERM, handle_sigterm)
 # signal.signal(signal.SIGINT, handle_sigterm)
 
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
+
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
+
+
+def attach_parse_admission_config(config_service: Any) -> bool:  # noqa: ANN401
+    """Under ``PARSE_ADMISSION=classes`` read the admission numbers from the configuration store
+    (``/services/indexing/parseAdmission``, live); otherwise nothing changes."""
+    from app.modules.parse_engine import wiring as parse_wiring
+
+    if not parse_wiring.classes_enabled():
+        return False
+    parse_wiring.attach_config_service(config_service)
+    return True
 
 
 async def get_initialized_container() -> IndexingAppContainer:
@@ -339,6 +388,9 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
+                    if latest_record is not None and is_deferred_until_later(latest_record, get_epoch_timestamp_in_ms()):
+                        # Handed back for a provider's wait since the scan read it: not stuck, and not finished either.
+                        return None
                     if latest_record is None:
                         still_stuck = False
                     elif resume_enrichment:
@@ -586,6 +638,10 @@ async def recover_in_progress_records(
         page_size = max(1, messaging_env.stale_recovery_page_size)
 
         def is_stale(record: dict[str, Any]) -> bool:
+            if is_deferred_until_later(record, get_epoch_timestamp_in_ms()):
+                # Handed back to the broker for a wait (a model provider's rate limit): its delayed message is the
+                # wake-up, and a recovery event now would call the provider again before it said it can serve.
+                return False
             started_at = record.get("processingStartedAt")
             if started_at is None:
                 # Rows written before processingStartedAt was introduced are
@@ -918,6 +974,12 @@ ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 # Between pages, while the indexing loop is busy (see LoopShare).
 ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor: dict[str, int] = {}
+# A VRID whose mapping was kept because another org still holds points on it is
+# rechecked after this long, not every tick: until that org lets go, each pass
+# would repeat the same no-op delete. Keyed by (org, VRID): on PostgreSQL each org
+# has its own mapping row for a shared VRID. Per process, like the cursor.
+ORPHAN_KEPT_RECHECK_SECONDS = 3600.0
+_orphan_kept_until: dict[tuple[str, str], float] = {}
 
 
 
@@ -1165,6 +1227,9 @@ async def _sweep_orphaned_virtual_record_mappings(
     swept = 0
     offset = _orphan_sweep_cursor.get(org_id, 0)
     pages_scanned = 0
+    now = time.monotonic()
+    for key in [k for k, until in _orphan_kept_until.items() if until <= now]:
+        del _orphan_kept_until[key]
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
@@ -1221,6 +1286,8 @@ async def _sweep_orphaned_virtual_record_mappings(
                 continue
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
+            if (org_of[vrid], vrid) in _orphan_kept_until:
+                continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
                     outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -1234,6 +1301,8 @@ async def _sweep_orphaned_virtual_record_mappings(
             if outcome == "deleted":
                 swept += 1
                 swept_this_page += 1
+            elif outcome == "kept":
+                _orphan_kept_until[(org_of[vrid], vrid)] = time.monotonic() + ORPHAN_KEPT_RECHECK_SECONDS
         await pacer.pause()
 
         if len(page) < page_size:
@@ -1678,6 +1747,20 @@ async def _republish_stranded_records(
                     # Someone is working on it after all.
                     return False
 
+            # The scan's snapshot may be old: while it waited on other lookups the record can have been processed, handed
+            # back for a provider's wait and released. Read it again under the lease, before claiming or publishing.
+            try:
+                fresh = await graph_provider.get_document(
+                    record_key, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+            except Exception as exc:
+                # A read that failed is not "no wait": the delayed message may still be in the broker, and sending another
+                # now would call the provider before it said it can serve. Left for the next pass.
+                logger.warning("Could not re-read stranded record %s under its lease; skipping it this pass: %s", record_key, exc)
+                return False
+            if fresh is not None and is_deferred_until_later(fresh, get_epoch_timestamp_in_ms()):
+                return False
+
             # The marker is a durable claim written BEFORE the send, not
             # a receipt written after it. Written after, a Neo4j failure
             # following a successful Redis send left the record eligible
@@ -1844,6 +1927,8 @@ async def _republish_stranded_records(
                 # parked while its connector was off since then keeps the
                 # parked rules below (its turn-on clock), even if the wait's
                 # fields are still on it.
+                if is_deferred_until_later(record, pass_started_ms):
+                    continue
                 due = None if parked_while_off else deferral_due(record, pass_started_ms)
                 if due is not None:
                     if not due:
@@ -2183,6 +2268,17 @@ async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logge
                 await redis.aclose()
 
 
+def warn_if_deferral_fields_write(logger: logging.Logger) -> None:
+    """Say at start-up that records are being given the deferral fields, and what that commits the deployment to."""
+    if messaging_env.record_deferral_fields_write:
+        logger.warning(
+            "RECORD_DEFERRAL_FIELDS_WRITE is on: records handed back for a model provider's rate limit are given "
+            "deferredUntilMs and rateLimitedSinceMs. Every process must run a release whose record schema lists them, and "
+            "the deployment must not be rolled back past this release (a record carrying them cannot be written on an "
+            "older schema)."
+        )
+
+
 async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
     """Wait until the graph holds the schema indexing writes against.
 
@@ -2204,6 +2300,105 @@ async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logg
 def _indexing_worker_count() -> int:
     """Uvicorn worker processes running this service side by side (each with its own consumers)."""
     return indexing_worker_count()
+
+
+_CELL_TICK_S = 5.0
+
+
+async def _publish_cell_stats(claim: CellClaim, governor: ResourceGovernor) -> None:
+    """Write this cell's stats file every tick, so any worker can serve the merged ``/health``."""
+    while True:
+        worker = getattr(container, "worker_loop", None)
+        failure = worker.failure if isinstance(worker, WorkerLoop) else None
+        try:
+            stats = await run_for_health(governor.stats)
+            write_cell(
+                claim,
+                stats,
+                loop_failure=type(failure).__name__ if failure is not None else None,
+                tick_s=_CELL_TICK_S,
+            )
+        except Exception as exc:  # a missed tick shows as a stale file, which /health reports
+            container.logger().warning("Cell stats write failed: %s", exc)
+        await asyncio.sleep(_CELL_TICK_S)
+
+
+_CELL_CLAIM_RETRY_MAX_S = 5.0
+
+
+async def _claim_and_publish(app: FastAPI, governor: ResourceGovernor, cells_dir: "Path", workers: int) -> None:
+    """Keep trying for an index in the background, then publish this cell's stats.
+
+    A replacement worker can start while every index is still held by the worker it replaces (the
+    supervisor retires the old one only after the new one answers). Start-up must not wait for that,
+    so the claim goes on after the service is ready and is taken when the old worker lets go.
+    """
+    logger = container.logger()
+    delay = CLAIM_BACKOFF_S * 2 ** (CLAIM_ATTEMPTS - 1)
+    while True:
+        try:
+            claim = process_claim(cells_dir, workers)
+        except OSError as exc:
+            logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
+            return
+        if claim is not None:
+            break
+        if directory_problem(cells_dir) is not None:
+            return
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _CELL_CLAIM_RETRY_MAX_S)
+    app.state.cell_claim = claim
+    adopt_claim(claim.index)
+    logger.info("Claimed cell index %d after waiting for a free one", claim.index)
+    await _publish_cell_stats(claim, governor)
+
+
+async def _start_cell(app: FastAPI, governor: ResourceGovernor) -> None:
+    """Claim this worker's cell index and start publishing its stats.
+
+    A claim that finds every index taken is retried briefly. If it still finds none, this worker logs
+    one WARNING and goes on trying in the background, so it publishes as soon as an index is free;
+    until then it serves without a cells block.
+    """
+    app.state.cell_claim = None
+    app.state.cell_task = None
+    workers = _indexing_worker_count()
+    cells_dir = cells_directory() if workers > 1 else None
+    if cells_dir is None:
+        return
+    logger = container.logger()
+    claim: CellClaim | None = None
+    try:
+        for attempt in range(CLAIM_ATTEMPTS):
+            claim = process_claim(cells_dir, workers)
+            if claim is not None:
+                break
+            if directory_problem(cells_dir) is not None:
+                return  # permanent, and claim_cell has logged why: retrying cannot help
+            if attempt < CLAIM_ATTEMPTS - 1:
+                await asyncio.sleep(CLAIM_BACKOFF_S * 2**attempt)
+    except OSError as exc:
+        logger.warning("Could not claim a cell index in %s: %s", cells_dir, exc)
+        return
+    if claim is None:
+        logger.warning(
+            "No free cell index in %s after %d attempts: this worker keeps trying in the background and serves without a cells block until it has one",
+            cells_dir, CLAIM_ATTEMPTS,
+        )
+        app.state.cell_task = spawn_detached(_claim_and_publish(app, governor, cells_dir, workers), name="cell-claim")
+        return
+    app.state.cell_claim = claim
+    adopt_claim(claim.index)  # marks the process for its children; pins it if start-up found every index held
+    app.state.cell_task = spawn_detached(_publish_cell_stats(claim, governor), name="cell-stats")
+
+
+def _stop_cell(app: FastAPI) -> None:
+    task = getattr(app.state, "cell_task", None)
+    if task is not None:
+        task.cancel()
+    claim = getattr(app.state, "cell_claim", None)
+    if claim is not None:
+        claim.release()
 
 
 def _distributed_leases_wanted() -> bool:
@@ -2304,6 +2499,7 @@ async def start_kafka_consumers(
         retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+        await _bind_fleet_state(app_container, logger)
 
         if _distributed_leases_wanted():
             concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
@@ -2453,6 +2649,14 @@ async def start_kafka_consumers(
         stage_topics = [registry.topic_for(name) for name in registry.names()]
         stage_producer = retry_producer
         main_loop = asyncio.get_running_loop()
+        setattr(
+            app_container,
+            "provider_hold_task",
+            spawn_detached(_run_provider_hold_leader(
+                get_fleet_redis(), concurrency_manager, retry_producer, logger,
+                after_tick=_on_worker_loop(worker, pipeline_runtime.handler.retry_hold_redrives),
+            )),
+        )
 
         async def start_stage_consumers() -> None:
             # Bound only once the topics exist: Kafka holds a send to a missing topic for its
@@ -2552,12 +2756,66 @@ async def _close_worker_loop(container: IndexingAppContainer) -> None:
         setattr(container, "worker_loop", None)
 
 
+async def _bind_fleet_state(app_container: Any, logger: logging.Logger) -> FleetRedis:  # noqa: ANN401
+    """Open the Redis the model providers' circuit breaker and the stage pause budget live in, and bind it.
+
+    Independent of the retry tracker, which is a Redis wrapper or a PostgreSQL one depending on the state store."""
+    await load_install_secret(app_container.config_service())
+    # Not the broker's Redis config: with a PostgreSQL broker that is a default, and the fleet must be the same Redis the
+    # Extraction and parsing services bind (``fleet_redis_config``).
+    fleet, registry = await open_fleet_redis(logger, await fleet_redis_config(app_container.config_service()))
+    setattr(app_container, "fleet_redis_registry", registry)
+    bind_fleet_redis(fleet)
+    # Trial leases are renewed from this (main) loop, so a stall of the worker loop cannot lapse one.
+    get_trial_renewer().start()
+    logger.info("Fleet breaker and pause budget bound to Redis (namespace %r)", fleet.namespace)
+    return fleet
+
+
+def _on_worker_loop(worker: WorkerLoop, work: Callable[[], Awaitable[object]]) -> Callable[[], Awaitable[object]]:
+    """``work`` run on the shared worker loop, where the stage runtime's clients live, awaited from the caller's loop."""
+
+    async def run() -> object:
+        loop = worker.loop
+        if loop is None or not loop.is_running():
+            return None
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(work(), loop))  # type: ignore[arg-type]
+
+    return run
+
+
+async def _run_provider_hold_leader(
+    fleet: FleetRedis,
+    concurrency_manager: IDistributedLeaseManager | None,
+    producer: Any,  # noqa: ANN401
+    logger: logging.Logger,
+    *,
+    after_tick: Callable[[], Awaitable[object]] | None = None,
+) -> None:
+    """Every 10 s, on the replica holding the lease: advance the hold ledger of the model provider keys on hold
+    and raise their admin notices (``fleet_hold``)."""
+    owner = f"provider_hold:{uuid4().hex}"
+
+    async def send(document: dict[str, Any]) -> bool:
+        key = f"{document.get('type')}-{get_epoch_timestamp_in_ms()}"
+        return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=document, key=key))
+
+    keeper = HoldKeeper(fleet, FleetBreaker(fleet), sender=send, logger=logger)
+
+    async def is_leader() -> bool:
+        if concurrency_manager is None:
+            return True
+        return await concurrency_manager.try_acquire("provider_hold", owner, 1, TICK_SECONDS * 6)
+
+    await run_hold_leader(keeper, is_leader, logger=logger, after_tick=after_tick)
+
+
 async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_loop: bool = True) -> None:
     """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
     # A stage start still waiting for its topics must not start consumers once these stop.
-    for attr in ("stage_startup_task", "record_title_startup_task", "priority_startup_task"):
+    for attr in ("stage_startup_task", "record_title_startup_task", "priority_startup_task", "provider_hold_task"):
         startup = getattr(container, attr, None)
         if isinstance(startup, asyncio.Task) and not startup.done():
             _ = startup.cancel()
@@ -2565,6 +2823,13 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
                 await startup
     consumers = getattr(container, 'kafka_consumers', [])
     await _stop_consumers_then_shared_resources(consumers, logger)
+    registry = getattr(container, "fleet_redis_registry", None)
+    if registry is not None:
+        await get_trial_renewer().stop()
+        bind_fleet_redis(None)
+        with suppress(Exception):
+            await registry.aclose()
+        setattr(container, "fleet_redis_registry", None)
 
     # Closed only once every consumer running on it has stopped; the lifespan closes it later,
     # after the clients bound to it.
@@ -2610,6 +2875,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Indexing writes stage states and record fields declared by the connector service's schema
     # bootstrap, which may not have run yet (a first start, or an older connector image).
     await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
+    warn_if_deferral_fields_write(logger)
     await _check_redis_eviction_policy(app_container, logger)
 
     # One governor per process: derives parse/index ceilings from cgroup/CPU
@@ -2632,10 +2898,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # down for code sandbox runs waiting for memory; parsing and Docling
         # would brake the same parse a second time.
         yield_signal=YieldSignal.open_default(role="indexing governor"),
+        remote_parse_slots=remote_parse_concurrency(),
     )
     app.state.governor = governor
     app_container.resource_governor = governor
+    attach_parse_admission_config(app_container.config_service())
     governor_task = asyncio.create_task(governor.run())
+    ops_exporter = exporter_from_env(governor, "indexing")
+    if ops_exporter is not None:
+        ops_exporter.start()
+    # With several worker processes, each claims a cell index and publishes its stats, so that
+    # whichever worker answers /health serves every cell's.
+    await _start_cell(app, governor)
     # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
     # straight into the governor's fast incident path instead of only the
     # periodic sampler noticing the pressure it already caused.
@@ -2971,6 +3245,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.
     governor.stop()
+    _stop_cell(app)
     governor_task.cancel()
     try:
         await governor_task
@@ -2979,6 +3254,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
+    if ops_exporter is not None:
+        ops_exporter.stop()
 
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
@@ -3046,10 +3323,16 @@ async def health_check(request: Request) -> JSONResponse:
                 # the service itself is still healthy.
                 container.logger().warning("Resource governor stats failed: %s", stats_error)
                 content["resource_governor"] = {"error": "unavailable"}
+        from app.modules.parse_engine import wiring as parse_wiring
+
+        if parse_wiring.classes_enabled():
+            # Per cost class: how many wait, how many run, how long the oldest waiter has waited.
+            content["parseEngine"] = parse_wiring.parse_engine_stats()
         # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
         dispatch: dict[str, Any] = {}
+        admission: dict[str, Any] = {}
         loop_lag: dict[str, Any] = {}
         for entry in getattr(container, "kafka_consumers", None) or []:
             consumer = entry[1] if len(entry) > 1 else None
@@ -3058,6 +3341,13 @@ async def health_check(request: Request) -> JSONResponse:
             lag_monitor = getattr(consumer, "loop_lag_monitor", None)
             if isinstance(lag_monitor, LoopLagMonitor):
                 loop_lag[str(entry[0])] = lag_monitor.stats()
+            explain = getattr(consumer, "admission_explain", None)
+            if callable(explain):
+                try:
+                    admission[str(entry[0])] = explain()
+                except Exception as stats_error:
+                    container.logger().warning("Admission stats failed for %s: %s", entry[0], stats_error)
+                    admission[str(entry[0])] = {"error": "unavailable"}
             stats = getattr(consumer, "dispatch_stats", None)
             if not callable(stats):
                 continue
@@ -3068,6 +3358,14 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        if admission:
+            content["admission"] = admission
+        # Services whose circuit breaker is open or half open in this process.
+        try:
+            content["openCircuits"] = open_circuits()
+        except Exception as circuits_error:
+            container.logger().warning("Open circuit listing failed: %s", circuits_error)
+            content["openCircuits"] = {"error": "unavailable"}
         if loop_lag:
             content["worker_loop_lag"] = loop_lag
         from app.modules.indexing.replay_set import eviction_policy_warning
@@ -3090,6 +3388,7 @@ async def health_check(request: Request) -> JSONResponse:
                 content["stages"] = {"error": "unavailable"}
         try:
             content["llm_gateway"] = get_llm_gateway().stats()
+            content["llm_wire_hooks"] = wire_hook_status()
         except Exception as stats_error:
             container.logger().warning("LLM gateway stats failed: %s", stats_error)
             content["llm_gateway"] = {"error": "unavailable"}
@@ -3100,8 +3399,17 @@ async def health_check(request: Request) -> JSONResponse:
             # restarts. The type only: the traceback is in the CRITICAL log line.
             content["status"] = "unhealthy"
             content["worker_loop_failure"] = type(failure).__name__
+        cell_claim = getattr(request.app.state, "cell_claim", None)
+        cells_unhealthy = False
+        if isinstance(cell_claim, CellClaim):
+            # Every cell's stats file, whichever worker answers; one stale or dead cell is a 503.
+            merged = read_cells(cell_claim.directory, _indexing_worker_count())
+            content["cells"] = merged.as_dict()
+            if not merged.healthy:
+                cells_unhealthy = True
+                content["status"] = "unhealthy"
         return JSONResponse(
-            status_code=503 if failure is not None else 200,
+            status_code=503 if failure is not None or cells_unhealthy else 200,
             content=content,
         )
     except Exception:

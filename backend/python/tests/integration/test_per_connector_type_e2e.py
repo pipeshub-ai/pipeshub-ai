@@ -27,6 +27,7 @@ from app.services.vector_db.strategies.per_connector_type import (
 )
 from app.services.vector_db.strategy import DeleteContext, QueryContext, RecordContext
 from tests.support.bound_org import bind_test_org
+from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.support.vector_db import make_config_service
 
 pytestmark = pytest.mark.asyncio
@@ -41,8 +42,9 @@ def _bound_org() -> Iterator[str]:
     yield from bind_test_org()
 
 
-class FakeVectorDB:
+class FakeVectorDB(InMemoryVectorDBService):
     def __init__(self) -> None:
+        super().__init__()
         self.live: set[str] = set()
         self.created: list[str] = []
         self.payload_writes: list[str] = []

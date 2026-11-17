@@ -40,6 +40,9 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
+from app.services.messaging.redis_streams import (
+    indexing_consumer as indexing_consumer_module,
+)
 from app.services.messaging.redis_streams.indexing_consumer import (
     _BUSYGROUP_ERROR,
     _MESSAGE_VALUE_FIELD,
@@ -492,14 +495,20 @@ class TestWaitForActiveFutures:
         with consumer._futures_lock:
             consumer._active_futures.update(futures)
 
+        # The waits it asks for, not their wall time: a busy runner could stretch a 0.2 s wait past any small bound.
+        waits: list[tuple[int, float]] = []
+
+        def recording_wait(fs: list[Future], timeout: float | None = None, **kw: object) -> object:
+            waits.append((len(fs), timeout))
+            return real_wait(fs, timeout=timeout, **kw)
+
+        real_wait = indexing_consumer_module.futures_wait
         with patch.object(
             type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
-        ):
-            start = time.monotonic()
+        ), patch.object(indexing_consumer_module, "futures_wait", recording_wait):
             consumer._wait_for_active_futures()
-            elapsed = time.monotonic() - start
 
-        assert elapsed < 1.0
+        assert waits == [(5, 0.2)]  # one shared 0.2 s window for all five, not one per future
 
 
 # ===================================================================
@@ -2269,6 +2278,33 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer.retry_manager.clear_deliveries.assert_awaited_once()
         governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
         governor_consumer._ack_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_pause_hand_back_is_logged_below_warning(self, governor_consumer, caplog) -> None:
+        """A job that wakes again into the same outage says so once at WARNING (its first pause); every later wake is
+        routine, or 1000 paused jobs would write 1000 warnings per wake cycle."""
+
+        class DependencyPaused(concurrency.RequeueWithoutAttempt):
+            counts_toward_backstop = False
+
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+        levels = iter([logging.WARNING, logging.DEBUG])
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise DependencyPaused("provider down", delay_s=42.0, log_level=next(levels))
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        caplog.set_level(logging.DEBUG, logger=governor_consumer.logger.name)
+        for _ in range(2):
+            assert await governor_consumer._process_message_wrapper("stream-a", "1-0", _valid_fields()) is False
+        handed_back = [r.levelno for r in caplog.records if "handed back without counting an attempt" in r.getMessage()]
+        assert handed_back == [logging.WARNING, logging.DEBUG]
 
     @pytest.mark.asyncio
     async def test_admission_requeues_stop_at_the_delivery_backstop(

@@ -69,6 +69,8 @@ class TokenScopes(Enum):
     DOCUMENT_CLASSIFY = "document:classify"
     # Node -> connectors: write verified profile email onto the graph user.
     ENTITY_USER_WRITE = "entity:user:write"
+    # query -> connectors: write a brand-new caller's graph user before its userAdded event arrives.
+    USER_NODE_ENSURE = "entity:user:ensure"
 
 
 class OAuthScopes(str, Enum):
@@ -164,6 +166,11 @@ class Routes(Enum):
     STORAGE_ARTIFACTS_PRESIGN = "/api/v1/document/internal/artifacts/presign"
     STORAGE_ARTIFACT_SET = "/api/v1/document/internal/artifacts/{documentId}"
     STORAGE_ARTIFACT_READ_URLS = "/api/v1/document/internal/artifacts/{documentId}/read-urls"
+    # Paid-result cache: durable model outputs filed per (org, record).
+    STORAGE_PAID_RESULTS_PRESIGN = "/api/v1/document/internal/paid-results/presign"
+    STORAGE_PAID_RESULTS_ORG = "/api/v1/document/internal/paid-results/org"
+    STORAGE_PAID_RESULTS_RECORD = "/api/v1/document/internal/paid-results/{recordId}"
+    STORAGE_PAID_RESULTS_DELETE = "/api/v1/document/internal/paid-results/{recordId}/delete"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

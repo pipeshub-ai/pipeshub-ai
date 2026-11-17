@@ -46,6 +46,7 @@ from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
+from app.edition import check_runtime_settings  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.edition_containers import QueryAppContainer
 from app.edition_services import (  # noqa: E402 - like the imports around it, after set_service_suffix()
     configure_app,
@@ -61,8 +62,15 @@ from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.route_template import route_template
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import (  # noqa: E402 - after set_service_suffix(), like the imports around it
+    connectors_user_node_ensurer,
+    register_caller_node_ensurer,
+)
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = QueryAppContainer.init("query_service")
 
@@ -251,6 +259,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.services.permissions.wiring import register_scope_generation
 
     await register_scope_generation(app_container.config_service(), logger)
+    # A brand-new caller's graph user is written by the connectors service (it also registers their private
+    # knowledge base's connector); this service asks it when a route finds the caller missing.
+    register_caller_node_ensurer(connectors_user_node_ensurer(app_container.config_service()))
 
     # Start all message consumers centrally
     try:

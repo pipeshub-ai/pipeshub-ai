@@ -44,9 +44,10 @@ def service_key_headers(
     A separate key lets LiteLLM give indexing its own team, budget and model
     list, independent of any user.
     """
-    if identity.is_user or not settings.service_api_key or settings.service_auth != "apiKey":
+    key = settings.background_api_key
+    if identity.is_user or key is None:
         return []
-    return [(AUTHORIZATION_HEADER, f"Bearer {clean_header_value(settings.service_api_key)}")]
+    return [(AUTHORIZATION_HEADER, f"Bearer {clean_header_value(key)}")]
 
 
 class LiteLLMHeadersForwarder:

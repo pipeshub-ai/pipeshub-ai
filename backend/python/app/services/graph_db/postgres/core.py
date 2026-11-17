@@ -61,8 +61,9 @@ class CoreMixin(PgBase):
         org = None if _system_apps(collection) else current_org_id()     # a missing org raises: it is not an empty graph
         try:
             if org is None:
-                row = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT app_id, node_json FROM graph.system_app($1)", document_key))
-                return _arango(_doc(json.loads(row["node_json"])), collection) if row else None
+                row = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT org_id, app_id, node_json FROM graph.system_app($1)", document_key))
+                # the partition is the app's org: a legacy instance whose document has no orgId still names it, as in _system_app_pages
+                return {**_arango(_doc(json.loads(row["node_json"])), collection), "orgId": row[0]} if row else None      # row[0]: the row's org_id
             r = await self._q(lambda tx: tx.fetchrow("/* pipeshub:graph.get_document */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3",
                                                     org, collection, document_key), transaction)
             return _arango(_doc(r["doc"]), collection) if r else None

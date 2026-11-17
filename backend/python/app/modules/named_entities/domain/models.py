@@ -113,6 +113,9 @@ class NamedEntityExtraction(BaseModel):
     reference_time_ms: int | None = None
     tz: str = "UTC"
     key_scheme: int = KEY_SCHEME
+    # Why a FAILED run could not reach the model: the provider's unavailable error (its retry-after and whether a request
+    # was sent), for the stage's pause. It is not part of the stored extraction: never serialized, never read back.
+    pause_cause: Any = Field(default=None, exclude=True, repr=False)
 
 
 def _model_for(candidates: list[type[BaseModel]], data: dict) -> type[BaseModel] | None:

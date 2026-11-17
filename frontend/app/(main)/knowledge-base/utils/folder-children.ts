@@ -88,6 +88,8 @@ async function loadFirstPage(id: string, nodeType: NodeType): Promise<void> {
   if (!stillSignedIn()) return;
   // A reload or another loader may have filled it while this was in flight.
   if (useKnowledgeBaseStore.getState().nodeChildrenCache.has(id)) return;
+  // A source still being prepared lists no children yet, not none: cache nothing, so the next open asks again.
+  if (response.preparing) return;
   storeChildrenList(
     id,
     response.items,
@@ -117,6 +119,8 @@ async function readNextPage(parentId: string): Promise<boolean> {
   const response = await fetchChildrenPage(parentId, cursor.nodeType, cursor.nextCursor);
   const latest = useKnowledgeBaseStore.getState();
   if (!stillSignedIn() || latest.nodeChildrenPagination.get(parentId) !== cursor) return false;
+  // A source still being prepared answers an empty page with no cursor: the rows and the cursor read before stay, so a later page can still be asked for.
+  if (response.preparing) return false;
   // Purging a deleted child can drop the list while leaving its cursor; this
   // page alone would then pass for the whole list.
   const shown = latest.nodeChildrenCache.get(parentId);
@@ -155,8 +159,10 @@ export async function openFolderChildren(
   for (let step = 0; options.until && step < MAX_PAGES_PER_WALK; step += 1) {
     const state = useKnowledgeBaseStore.getState();
     if (options.until(state.nodeChildrenCache.get(id) ?? [])) break;
-    if (!state.nodeChildrenPagination.get(id)?.hasNext) break;
-    await loadNextChildrenPage(id);
+    const cursor = state.nodeChildrenPagination.get(id);
+    if (!cursor?.hasNext) break;
+    // A page that added nothing while the cursor stayed (the source is still being prepared) would only be asked again: the walk stops and the cursor waits for a later open.
+    if (!(await loadNextChildrenPage(id)) && useKnowledgeBaseStore.getState().nodeChildrenPagination.get(id) === cursor) break;
   }
   showFolderChildren(id);
 }
@@ -178,6 +184,8 @@ async function reloadChildren(id: string, fallbackNodeType: NodeType, keepVisibl
   let pageCursor: string | null = null;
   for (let page = 1; page <= pagesLoaded + (mustShow ? MAX_PAGES_PER_WALK : 0); page += 1) {
     const response = await fetchChildrenPage(id, nodeType, pageCursor);
+    // A source still being prepared lists nothing yet: the list read before stays.
+    if (response.preparing) return;
     for (const item of response.items) byId.set(item.id, item);
     next = sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType, page);
     if (!next.hasNext) break;
@@ -250,6 +258,8 @@ export function seedChildrenFromListing(
   params: KnowledgeHubQueryParams,
   response: KnowledgeHubApiResponse,
 ): void {
+  // A source still being prepared answers an empty page with no cursor: its children are not listed yet, not none.
+  if (response.preparing) return;
   // No pagination means nothing says the listing is complete.
   if (response.pagination?.hasNext !== false) return;
   if (Object.keys(params).some((key) => !PARAMS_THAT_KEEP_EVERY_CHILD.has(key))) return;

@@ -68,7 +68,7 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import spawn_in_request
+from app.core.org_context import MissingOrgContext, spawn_in_request
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphMemoryLimitError,
@@ -109,6 +109,7 @@ from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import (
     ORG_SHARE_PERMISSION_TYPES,
     RETIRED_ROLES,
+    best_record_access,
     read_role,
 )
 from app.models.source_dates import (
@@ -6341,16 +6342,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> User | None:
-        """Get user by email; with ``org_id``, only a user of that organisation."""
+        """Get the user of org ``org_id`` with this email."""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
-            scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
-            query = f"""
+            parameters = {"email": email, "org_id": org_id}
+            query = """
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email) {org_filter}
+            WHERE toLower(u.email) = toLower($email) AND u.orgId = $org_id
             RETURN u
             LIMIT 1
             """
@@ -6986,6 +6987,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         active_only: bool = True,
         app_type: str | None = None,
         raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
     ) -> list[dict]:
         """Get all apps for an organization"""
         try:
@@ -6994,6 +6996,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 conditions.append("app.isActive = true")
             if app_type is not None:
                 conditions.append("app.type = $app_type")
+            if app_ids is not None:
+                conditions.append("app.id IN $app_ids")
             where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
             query = f"""
             MATCH (o:Organization {{id: $org_id}})-[:ORG_APP_RELATION]->(app:App)
@@ -7003,7 +7007,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             results = await self.client.execute_query(
                 query,
-                parameters={"org_id": org_id, "app_type": app_type}
+                parameters={"org_id": org_id, "app_type": app_type, "app_ids": app_ids}
             )
 
             apps = []
@@ -10438,18 +10442,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_app_users(
         self,
         users: list[AppUser],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> None:
         """Batch upsert app users with org and app relations"""
         try:
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs(transaction=transaction)
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0].get("id") or orgs[0].get("_key")
+            if not org_id:
+                raise MissingOrgContext("batch_upsert_app_users needs the org of the connector the users come from")
             connector_id = users[0].connector_id
 
             # Get or create app
@@ -10459,6 +10462,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 now = get_epoch_timestamp_in_ms()
                 app_data = {
                     "id": connector_id,
+                    "orgId": org_id,      # the sync-state reads take only an app of the org
                     "name": connector_id,
                     "type": users[0].app_name.value,
                     "appGroup": users[0].app_name.value,
@@ -10475,7 +10479,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             for user in users:
                 # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -10490,7 +10494,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -10924,21 +10928,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
-        """Get entity ID (user or group) by email"""
+        """Get the ID of the user, group or person of the org with this email"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) = toLower($email)
+            AND toLower(n.email) = toLower($email) AND n.orgId = $org_id
             RETURN n.id AS id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters={"email": email, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -10951,9 +10959,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """Bulk get entity IDs for multiple emails"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             if not emails:
                 return {}
@@ -10963,13 +10975,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) IN [e IN $emails | toLower(e)]
+            AND toLower(n.email) IN [e IN $emails | toLower(e)] AND n.orgId = $org_id
             RETURN n.email AS email, n.id AS id, labels(n) AS labels
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"emails": unique_emails},
+                parameters={"emails": unique_emails, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -11379,10 +11391,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles."""
         query = """
         MATCH (u:User {id: $user_id})-[p:PERMISSION]->(n)
-        WHERE (n:Record OR n:RecordGroup OR n:Group) AND n.connectorId = $connector_id
+        WHERE (n:Record OR n:RecordGroup OR n:Group OR n:Role) AND n.connectorId = $connector_id
         DELETE p
         RETURN count(p) AS removed
         """
@@ -13583,13 +13595,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }
                     break
 
-            # Select the highest permission from all access paths
-            role_priority = {"OWNER": 3, "WRITER": 2, "READER": 1}
-
-            best_access = max(
-                access_result,
-                key=lambda a: role_priority.get(read_role(a.get("role", "")), 0)
-            )
+            best_access = best_record_access(access_result, record.get("accessRule"))
 
             permissions = [{
                 "id": record.get("id") or record.get("_key"),
@@ -14122,19 +14128,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         user_email: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """Get user's sync state for a specific service"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
+            # properties(): the client's result.data() turns a relationship into a (start, type, end) tuple, not its fields
             query = """
-            MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
-            RETURN rel, u.id AS from_id, app.id AS to_id
+            MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            // the org's app: by orgId, or one written without it that the org links
+            WHERE app.orgId = $org_id OR ((app.orgId IS NULL OR app.orgId = "") AND EXISTS { (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app) })
+            RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"user_email": user_email, "service_type": service_type},
+                parameters={"user_email": user_email, "service_type": service_type, "org_id": org_id},
                 txn_id=transaction
             )
 
@@ -14158,9 +14171,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_email: str,
         state: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """Update user's sync state for a specific service"""
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
         try:
             updated_timestamp = get_epoch_timestamp_in_ms()
             self.validator.validate_edge_update(
@@ -14168,15 +14185,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             query = """
-            MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            MATCH (u:User {email: $user_email, orgId: $org_id})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
+            // the org's app: by orgId, or one written without it that the org links
+            WHERE app.orgId = $org_id OR ((app.orgId IS NULL OR app.orgId = "") AND EXISTS { (:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app) })
             SET rel.syncState = $state, rel.lastSyncUpdate = $updated_timestamp
-            RETURN rel, u.id AS from_id, app.id AS to_id
+            RETURN properties(rel) AS rel, u.id AS from_id, app.id AS to_id
             """
 
             results = await self.client.execute_query(
                 query,
                 parameters={
                     "user_email": user_email,
+                    "org_id": org_id,
                     "service_type": service_type,
                     "state": state,
                     "updated_timestamp": updated_timestamp
@@ -21414,9 +21434,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The inheritance probe is spelled once: each spelling costs the planner
         # an Expand(Into) over INHERIT_PERMISSIONS. With R = accessRule, I = the
         # probe, G = the grant test:
-        #   (I AND (R IN ['STRICT','OPEN'] OR (R='RESTRICTED' AND G)))
+        #   (I AND (R IN ['STRICT','OPEN'] OR (R IN ['RESTRICTED','PARENT_AND_GRANT'] AND G)))
         #   OR (R IN ['STRICT','OPEN'] AND G)
-        # RESTRICTED: I AND G; STRICT/OPEN: I OR G; any other value: false. Keep
+        # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; any other value: false. Keep
         # the three branches: a shorter form admits an unknown accessRule value.
         # `hideChildren` is navigation only: access checks drop it.
         hide = f"\n              AND NOT {self._kh_hides(parent, state=state)}" if navigation else ""
@@ -21424,23 +21444,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # When the grant is tested from the node (`_kh_grants_by_probe`) it is
             # the costly term (every PERMISSION edge into the node), so the grant
             # is spelled once here and inheritance twice. With I, G, R as above:
-            #   (I AND R IN ['STRICT','OPEN']) OR (G AND ((I AND R='RESTRICTED') OR R IN ['STRICT','OPEN']))
-            # RESTRICTED: I AND G; STRICT/OPEN: I OR G; any other value: false.
+            #   (I AND R IN ['STRICT','OPEN']) OR (G AND ((I AND R IN ['RESTRICTED','PARENT_AND_GRANT']) OR R IN ['STRICT','OPEN']))
+            # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; any other value: false.
             rule = f"coalesce({child}.accessRule, 'OPEN')"
             inherits = self._kh_inherits(child, parent, state=state)
             return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({inherits} AND {rule} IN ['STRICT', 'OPEN'])
                 OR ({child}.id IN $grantedIds
-                    AND (({inherits} AND {rule} = 'RESTRICTED') OR {rule} IN ['STRICT', 'OPEN'])))"""
+                    AND (({inherits} AND {rule} IN ['RESTRICTED', 'PARENT_AND_GRANT']) OR {rule} IN ['STRICT', 'OPEN'])))"""
         return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({self._kh_inherits(child, parent, state=state)}
                     AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
-                      OR (coalesce({child}.accessRule, 'OPEN') = 'RESTRICTED'
+                      OR (coalesce({child}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT']
                           AND {child}.id IN $grantedIds)))
                 OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                     AND {child}.id IN $grantedIds))"""
+
+    def _kh_v3_seed_hop(self, c: str, p: str, *, state: bool) -> str:
+        """The hop ``c`` -> ``p`` below a seed: ``c`` is live, and OPEN and inherits or is granted, or PARENT_AND_GRANT and inherits and is
+        granted. Any other rule: false. Spelled once per use (each spelling costs the planner an Expand(Into) over INHERIT_PERMISSIONS)."""
+        rule = f"coalesce({c}.accessRule, 'OPEN')"
+        return (f"NOT {self._kh_deleted(c, state=state)}"
+                f" AND ({rule} = 'OPEN' OR ({rule} = 'PARENT_AND_GRANT' AND {c}.id IN $grantedIds))"
+                f" AND ({self._kh_inherits(c, p, state=state)} OR ({rule} = 'OPEN' AND {c}.id IN $grantedIds))")
 
     @staticmethod
     def _kh_v3_reach_pattern(
@@ -21463,7 +21491,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self, c: str, p: str, *, from_app: str, opens: str, state: bool, grant_once: bool = False,
     ) -> str:
         """Whether child ``c`` is listed under ``p`` when browsing: the hop where the
-        walk from the App (or an open App) reaches ``p``, OPEN nodes only below a seed,
+        walk from the App (or an open App) reaches ``p``, the seed hop below a seed,
         and the declared scope either way. Written once: the expansion and the row's
         arrow both read it, so an arrow means the expansion lists something."""
         deleted, hides = self._kh_deleted, self._kh_hides
@@ -21497,10 +21525,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               WHERE (kh_hp AND {from_app})
               OR ((kh_hp
                 OR (NOT {from_app} AND NOT {member_of_open_app}
-                  AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
-                  AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
-                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded})
+                  AND {self._kh_v3_seed_hop(c, p, state=state)} AND {walk_seeded} AND {below_member_seeded})
                 OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
@@ -21604,15 +21630,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f" AND {v}.id IN $grantedIds)"
             )
 
-        # Below a seed only OPEN nodes pass (something above the seed is not
+        # Below a seed only the seed hop passes (something above the seed is not
         # accessible). As in the listing, a granted node another arm already
         # admits is not a seed, so its hierarchy-only children stay out.
-        open_hop = (
-            "kh_hs.relationshipType " + hierarchy
-            + " AND NOT coalesce(kh_cs.isDeleted, false)"
-            " AND coalesce(kh_cs.accessRule, 'OPEN') = 'OPEN'"
-            " AND (EXISTS { (kh_cs)-[:INHERIT_PERMISSIONS]->(kh_ps) } OR kh_cs.id IN $grantedIds)"
-        )
+        open_hop = f"kh_hs.relationshipType {hierarchy} AND {self._kh_v3_seed_hop('kh_cs', 'kh_ps', state=False)}"
         below_seed = f"""EXISTS {{
                 MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_s)
                 WHERE {seed('kh_s')}
@@ -22141,11 +22162,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (sc)
                   ((pc)-[kh_rc:NODE_RELATION]->(cc)
                    WHERE kh_rc.relationshipType {hierarchy}
-                     AND NOT {deleted("cc", state=state)}
                      AND NOT {hides("pc", state=state)}
-                     AND coalesce(cc.accessRule, 'OPEN') = 'OPEN'
-                     AND ({self._kh_inherits("cc", "pc", state=state)}
-                       OR cc.id IN $grantedIds)
+                     AND {self._kh_v3_seed_hop("cc", "pc", state=state)}
                   ){{1,50}} (nc)
             RETURN collect(DISTINCT nc) AS belowSeeds
         }}
@@ -22933,9 +22951,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             c, p, r, s = (f"kh_s{x}{tag}" for x in ("c", "p", "r", "s"))
             return (f"EXISTS {{ MATCH ({v}) (({c})<-[{r}:NODE_RELATION]-({p})"
                     f" WHERE {r}.relationshipType {hierarchy}"
-                    f" AND NOT {deleted(c, state=state)} AND NOT {hides(p, state=state)}"
-                    f" AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'"
-                    f" AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds)){{1,50}} ({s})"
+                    f" AND NOT {hides(p, state=state)} AND {self._kh_v3_seed_hop(c, p, state=state)}){{1,50}} ({s})"
                     f" WHERE {seed(s, tag + 'x')} }}")
 
         return f"""
@@ -25490,6 +25506,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
 
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
+            WITH {node_var}, {user_var}, role_priority, principals,
+                 CASE WHEN coalesce({node_var}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT'] THEN [{node_var}]
+                      ELSE permission_targets END AS permission_targets
+
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
@@ -25618,6 +25640,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE linked.connectorId = {node_var}.connectorId
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
+
+            // A node whose rule needs its own grant (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: a grant on what it
+            // inherits from is not access to it, and never raises the role its own grants give.
+            WITH {node_var}, {user_var}, role_priority, principals,
+                 CASE WHEN coalesce({node_var}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT'] THEN [{node_var}]
+                      ELSE permission_targets END AS permission_targets
 
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target
@@ -26768,7 +26796,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return docs
 
     async def _project_agents_toolsets_and_knowledge(
-        self, agent_ids: list[str], transaction: str | None = None
+        self, agent_ids: list[str], transaction: str | None = None, org_id: str | None = None,
     ) -> dict[str, dict[str, list[dict]]]:
         """Build the toolsets + knowledge graph projection for many agents at once.
 
@@ -26868,7 +26896,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             staged.append((k_row["agent_id"], item))
 
         # ── Query 3: batch-resolve Apps docs ────────────────────────────────────
-        app_docs = await self._get_documents_by_ids(list(connector_ids), CollectionNames.APPS.value, transaction)
+        # Only through the agent's organisation: another org's app reads as UNKNOWN, name included.
+        app_docs = {
+            app["_key"]: app
+            for app in await self.get_org_apps(org_id, active_only=False, app_ids=list(connector_ids))
+        } if org_id and connector_ids else {}
 
         # Second pass: enrich each staged knowledge item from the prefetched map.
         for agent_id, item in staged:
@@ -27019,7 +27051,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
 
             # Get linked toolsets + knowledge (shared with the GET /agents list projection)
-            projection = await self._project_agents_toolsets_and_knowledge([agent_id], transaction)
+            projection = await self._project_agents_toolsets_and_knowledge([agent_id], transaction, org_id)
             agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
             agent["toolsets"] = agent_projection["toolsets"]
             agent["knowledge"] = agent_projection["knowledge"]
@@ -27365,7 +27397,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             async def _enrich(agent_list: list[dict]) -> list[dict]:
                 ids = [ag.get("_key") for ag in agent_list if ag.get("_key")]
                 try:
-                    projection = await self._project_agents_toolsets_and_knowledge(ids, transaction)
+                    projection = await self._project_agents_toolsets_and_knowledge(ids, transaction, org_id)
                 except Exception as e:
                     self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
                     projection = {}

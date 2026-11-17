@@ -541,3 +541,43 @@ async def test_the_per_call_read_timeout_reaches_the_request() -> None:
         )
 
     assert seen["timeout"]["read"] == pytest.approx(4320.0)
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_run_tells_the_parsing_service_to_bypass_its_stored_outputs() -> None:
+    from app.services.paid_cache.run import begin_run, clear_run
+
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    post = AsyncMock(return_value=_make_response(200, _success_response()))
+
+    async def parse() -> None:
+        await client.parse(file_content=b"data", record_name="test.csv", mime_type="text/csv", extension="csv")
+
+    with patch.object(client, "_post_multipart", new=post):
+        await parse()                                                    # no run: nothing is sent
+        begin_run("org-1", "rec-1", None, "index", refresh=True)
+        try:
+            await parse()
+        finally:
+            clear_run()
+
+    sent = [call.kwargs["data"] for call in post.await_args_list]
+    assert "refresh_paid_outputs" not in sent[0]
+    assert sent[1]["refresh_paid_outputs"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_every_parse_request_carries_the_record_budget_the_client_applies() -> None:
+    from app.services.messaging.config import messaging_env
+
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    post = AsyncMock(return_value=_make_response(200, _success_response()))
+    with patch.object(client, "_post_multipart", new=post):
+        await client.parse(file_content=b"d", record_name="a.pdf", mime_type="application/pdf", extension="pdf")
+        await client.parse(file_content=b"d", record_name="a.csv", mime_type="text/csv", extension="csv")
+
+    sent = [float(call.kwargs["data"]["record_budget_s"]) for call in post.await_args_list]
+    assert sent == [
+        messaging_env.record_processing_timeout_for("pdf", "application/pdf"),
+        messaging_env.record_processing_timeout_for("csv", "text/csv"),
+    ]

@@ -85,6 +85,13 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "frontend/app/(main)/knowledge-base/sort-fields.json",
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
+        # test_knob_passthrough.py reads these; capacity_blank_env_test.sh runs in the services shard.
+        f"{COMPOSE}/docker-compose.yml",
+        f"{COMPOSE}/env.template",
+        f"{COMPOSE}/tests/capacity_blank_env_test.sh",
+        "deployment/helm/pipeshub-ai/templates/deployment.yaml",
+        "deployment/helm/pipeshub-ai/values.yaml",
+        "deployment/process_monitor.sh",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml

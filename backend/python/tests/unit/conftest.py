@@ -19,12 +19,31 @@ def _no_table_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _record_and_org_deletes_do_not_reach_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The delete handlers purge a record's (or org's) stored model outputs through the storage service; a unit
+    test of them must not open a connection. Tests of the purge itself bind their own cache over the same name."""
+    from app.services.paid_cache import access
+    from app.services.paid_cache.cache import NullPaidResultCache
+
+    monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: NullPaidResultCache())
+
+
+@pytest.fixture(autouse=True)
 def _fresh_connector_name_cache() -> None:
     """Connector names are cached per process; a test must not see another's."""
     chat_helpers = sys.modules.get("app.utils.chat_helpers")
     if chat_helpers is not None:
         chat_helpers._connector_name_cache.clear()
         chat_helpers._connector_name_misses.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_registered_caller_node_ensurer() -> None:
+    """Building the entity message handler registers its caller-node ensurer process-wide; a test must not see
+    another's (a mocked one would answer every missing-user lookup)."""
+    user_lookup = sys.modules.get("app.utils.user_lookup")
+    if user_lookup is not None:
+        user_lookup._ensurer.clear()
 
 
 @pytest.fixture(autouse=True)

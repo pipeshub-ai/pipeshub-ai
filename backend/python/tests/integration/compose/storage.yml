@@ -42,6 +42,19 @@ services:
       timeout: 5s
       retries: 20
 
+  # The lock service of the paid-result cache: the tests that need Redis beside storage read
+  # PAID_RESULTS_IT_REDIS_URL (redis://127.0.0.1:19379/0).
+  redis-storage-it:
+    image: redis:7.4-bookworm
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports:
+      - "127.0.0.1:${REDIS_STORAGE_IT_PORT:-19379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   minio-storage-it:
     # Chainguard's build: MinIO's own images no longer allow anonymous pulls.
     # The -dev variant carries mc for the healthcheck. Pinned by digest.

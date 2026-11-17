@@ -90,6 +90,11 @@ def _best_role(rows: Any, coll: str, node_id: str, ranks: dict[str, int]) -> tup
     return best
 
 
+# A node whose rule needs a grant of its own (RESTRICTED, PARENT_AND_GRANT) takes its role from its own grants alone: the role walk reads the rule in the
+# same statement as the grants (one snapshot) and does not leave such a node, so a grant on what it inherits from never gives or raises its role
+# (the ``own_only`` column of ``_role_on``'s and ``_roles_on``'s walk).
+
+
 class PermissionsMixin(PgBase):
     async def get_user_kb_permission(self, kb_id: str, user_id: str, transaction: str | None = None) -> str | None:
         """The user's effective role on a collection: the highest of the direct grant and what each team the collection is shared with gives its members.
@@ -294,12 +299,14 @@ class PermissionsMixin(PgBase):
             await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
 
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str, transaction: str | None = None) -> int:
-        """The user's own grants on the connector's records and record groups, and their memberships of its user groups, go; grants held by a
-        group, a team or the organization stay. Returns how many edges went."""
-        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH d AS (DELETE FROM graph.edges e
-            USING graph.nodes n WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
-              AND e.to_coll IN ('records', 'recordGroups', 'groups') AND n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id
-              AND n.doc->>'connectorId' = $3 RETURNING 1) SELECT count(*) FROM d""", current_org_id(), user_id, connector_id), transaction, write=True) or 0)
+        """The user's own PERMISSION edges to the connector's records, record groups, user groups and roles go; grants
+        through groups, teams or the organization stay. Returns how many went."""
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH gone AS (
+            DELETE FROM graph.edges p USING graph.nodes n
+            WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2
+              AND p.to_coll IN ('records', 'recordGroups', 'groups', 'roles')
+              AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $3
+            RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), user_id, connector_id), transaction, write=True) or 0
 
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
@@ -484,16 +491,17 @@ class PermissionsMixin(PgBase):
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
     async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str, ranks: dict[str, int] = _CTX_RANK) -> tuple[str, str] | None:
         """The highest role the user holds on a record or record group: their own grant, a group's, a role's, a team's (never above WRITER) or the
-        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to; a source account the user authenticated
-        as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
-        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth) AS (
-              SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
+        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to (on the node alone when its rule needs a grant
+        of its own, read in the same statement); a source account the user authenticated as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
+        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth, own_only) AS (
+              SELECT n.coll, n.id, 0, coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT') FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
               UNION
-              SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+              SELECT i.to_coll, i.to_id, a.depth + 1, a.own_only FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20 AND NOT a.own_only),
             targets AS (
               SELECT coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                JOIN anc s0 ON s0.depth = 0 AND NOT s0.own_only
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
             principals AS (
               SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
@@ -533,14 +541,15 @@ class PermissionsMixin(PgBase):
         if not ids:
             return {}
         rows = await tx.fetch("""/* pipeshub:graph.node_roles_batch */ WITH RECURSIVE o(origin) AS (SELECT unnest($3::text[])),
-            anc(origin, coll, id, depth) AS (
-              SELECT n.id, n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
+            anc(origin, coll, id, depth, own_only) AS (
+              SELECT n.id, n.coll, n.id, 0, coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT') FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
               UNION
-              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
-                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1, a.own_only FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20 AND NOT a.own_only),
             targets(origin, coll, id, depth) AS (
               SELECT origin, coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.from_id, b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                JOIN anc s0 ON s0.origin = b.from_id AND s0.depth = 0 AND NOT s0.own_only
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = ANY($3::text[])),
             principals(origin, id) AS (
               SELECT o.origin, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4

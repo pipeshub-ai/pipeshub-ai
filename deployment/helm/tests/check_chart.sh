@@ -19,6 +19,7 @@ set -euo pipefail
 
 # Run from inside the chart so every path below is relative and space-free.
 cd "$(dirname "${BASH_SOURCE[0]}")/../pipeshub-ai"
+AWS_DIR="$(cd ../aws && pwd)"
 read -r -a K8S_VERSIONS <<<"${K8S_VERSIONS:-1.24.0 1.37.0}"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/pipeshub-chart.XXXXXX")"
 trap 'rm -rf "$OUT"' EXIT
@@ -54,10 +55,14 @@ EXTERNAL=(--set config.dockerHost=tcp://d:2375 --set persistence.accessModes={Re
 # variant can override one of them.
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
+  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
+  "local-parsing-netpol|${LOCAL[*]} --set parsing.enabled=true --set networkPolicy.enabled=true --set parsing.networkPolicy.extraIngress[0].from[0].namespaceSelector.matchLabels.team=monitoring --set parsing.networkPolicy.extraIngress[0].ports[0].port=8092"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
+  "local-metrics|${LOCAL[*]} --set metrics.podMonitor.enabled=true --set metrics.podMonitor.labels.release=prom"
+  "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
@@ -73,6 +78,8 @@ VARIANTS=(
   "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
   "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-parsing|-f values-eks.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-single-az-parsing|-f values-eks.yaml -f values-eks-single-az.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
   "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
 )
 
@@ -120,6 +127,18 @@ expect() { # variant, grep -F pattern, "present" | "absent" [, only in the docum
     echo "ok $1: '$2' $3${4:+ in $4}"
   fi
 }
+if [[ -f "$OUT/local-metrics.yaml" ]]; then
+  expect local-metrics 'kind: PodMonitor' present
+  expect local-metrics 'port: metrics' present 'kind: PodMonitor'
+  expect local-metrics 'release: prom' present 'kind: PodMonitor'
+  expect local-metrics 'name: PIPESHUB_METRICS_ENABLED' present
+  expect local-metrics 'name: PIPESHUB_METRICS_BIND' present
+  expect local-metrics 'fieldPath: status.podIP' present
+  expect local-metrics-bind 'name: PIPESHUB_METRICS_BIND' present
+  expect local-metrics-bind 'fieldPath: status.podIP' absent
+  expect local-neo4j-kafka 'kind: PodMonitor' absent
+  expect local-neo4j-kafka 'name: PIPESHUB_METRICS_PORT' present
+fi
 if [[ -f "$OUT/cloud.yaml" ]]; then
   # shellcheck disable=SC2016 # the literal template text, not an expansion
   expect cloud 'export ZOOKEEPER_SERVERS="$servers"' present
@@ -128,6 +147,98 @@ if [[ -f "$OUT/cloud.yaml" ]]; then
   expect cloud 'ZOO_SERVERS' absent
   expect local-neo4j-kafka 'ZOOKEEPER_SERVERS' absent
 fi
+# Parsing in its own pods: nothing renders by default; enabled, the Deployment,
+# Service and PDB use the documented names and labels, and the
+# app pods are pointed at the Service.
+if [[ -f "$OUT/local-parsing.yaml" ]]; then
+  expect local-neo4j-kafka 'ci-pipeshub-ai-parsing' absent
+  expect local-neo4j-kafka 'PIPESHUB_ROLE' absent
+  expect local-neo4j-kafka 'USE_PARSING_SERVICE' absent
+  expect local-parsing 'name: ci-pipeshub-ai-parsing' present
+  expect local-parsing 'pipeshub.ai/workload: parsing' present
+  expect local-parsing 'replicas: 3' present 'kind: Deployment'
+  expect local-parsing 'value: parsing' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'path: /health' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'cpu: "1"' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'pool: parse' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'kind: PodDisruptionBudget' present 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'HorizontalPodAutoscaler' absent 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'http://ci-pipeshub-ai-parsing:8092' present 'name: PARSING_SERVICE_URL'
+  expect local-parsing 'value: "2"' present 'name: PARSING_MAX_CONCURRENT'
+  expect local-parsing 'value: "8"' present 'name: PARSING_SERVICE_CONCURRENCY'
+  expect local-parsing 'name: PARSING_UVICORN_WORKERS' present 'name: PIPESHUB_ROLE'
+  expect local-parsing 'path: /health/ready' present 'name: PIPESHUB_ROLE'
+  # A scale-down or rollout gives an in-flight parse this long to finish before the kill.
+  expect local-parsing 'terminationGracePeriodSeconds: 120' present 'name: PIPESHUB_ROLE'
+  # The parsing pods must not match the main Deployment's selector.
+  expect local-parsing 'app.kubernetes.io/name: pipeshub-ai-parsing' present 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'kind: NetworkPolicy' absent 'name: ci-pipeshub-ai-parsing'
+  expect local-parsing 'value: "4"' absent 'name: PARSING_UVICORN_WORKERS'
+  expect local-parsing 'extra-marker' present 'name: PIPESHUB_ROLE'
+  expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent
+  expect local-neo4j-kafka 'PARSING_SERVICE_CONCURRENCY' absent
+fi
+# The parsing pods' own NetworkPolicy: only with networkPolicy.enabled and parsing.enabled, selecting only the
+# parsing pods, admitting the application's selector on the parsing port (and what extraIngress lists).
+netpol_check() { # rendered file, "present" | "absent"
+  python3 - "$1" "$2" <<'PY' || failed=1
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "NetworkPolicy"]
+parsing = [d for d in docs if d["metadata"]["name"].endswith("-parsing")]
+if sys.argv[2] == "absent":
+    assert not parsing, "parsing NetworkPolicy rendered without both flags"
+    print("ok", sys.argv[1], "no parsing NetworkPolicy")
+    raise SystemExit
+assert len(parsing) == 1, "want exactly one parsing NetworkPolicy"
+spec = parsing[0]["spec"]
+sel = spec["podSelector"]["matchLabels"]
+assert sel["app.kubernetes.io/name"].endswith("-parsing") and sel["pipeshub.ai/workload"] == "parsing", sel
+main = [d for d in docs if d is not parsing[0]]
+assert all(d["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] != sel["app.kubernetes.io/name"] for d in main), "main policy selects parsing pods"
+first = spec["ingress"][0]
+assert first["ports"] == [{"protocol": "TCP", "port": 8092}], first
+(source,) = first["from"]
+assert list(source) == ["podSelector"], source
+app = source["podSelector"]["matchLabels"]
+assert app["app.kubernetes.io/name"] and not app["app.kubernetes.io/name"].endswith("-parsing"), app
+# The rule must select the application pods: every selector label is a label of the main Deployment's pods.
+all_docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+main_pod = next(d for d in all_docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["metadata"]["labels"]
+assert all(main_pod.get(k) == v for k, v in app.items()), (app, main_pod)
+assert app.get("app.kubernetes.io/instance"), app
+extra = spec["ingress"][1:]
+assert extra == [{"from": [{"namespaceSelector": {"matchLabels": {"team": "monitoring"}}}], "ports": [{"port": 8092}]}], extra
+assert spec["egress"], "no egress rules"
+print("ok", sys.argv[1], "parsing NetworkPolicy: app selector on 8092 only, plus extraIngress")
+PY
+}
+netpol_check "$OUT/local-parsing-netpol.yaml" present
+# Parsing pod labels, rendered alone (the main workload's labels do not take these inputs): the name stays within
+# 63 characters, the selector keys are not overridable from global.commonLabels, other common labels are kept.
+helm template ci . "${SECRETS[@]}" "${LOCAL[@]}" --set parsing.enabled=true --show-only templates/parsing.yaml \
+  --set nameOverride=a-very-long-release-name-that-is-nearly-at-the-sixty-three-limit \
+  --set-string global.commonLabels.team=platform --set-string 'global.commonLabels.app\.kubernetes\.io/instance=hijack' >"$OUT/parsing-labels.yaml"
+helm template ci . "${SECRETS[@]}" "${LOCAL[@]}" --set parsing.enabled=true --show-only templates/deployment.yaml \
+  --set nameOverride=a-very-long-release-name-that-is-nearly-at-the-sixty-three-limit >"$OUT/parsing-url.yaml"
+python3 - "$OUT/parsing-labels.yaml" "$OUT/parsing-url.yaml" <<'PY' || failed=1
+import sys, yaml
+dep = next(d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "Deployment")
+pod = dep["spec"]["template"]["metadata"]["labels"]
+sel = dep["spec"]["selector"]["matchLabels"]
+assert len(pod["app.kubernetes.io/name"]) <= 63, pod["app.kubernetes.io/name"]
+assert pod["app.kubernetes.io/instance"] != "hijack", pod
+assert all(pod[k] == v for k, v in sel.items()), (pod, sel)
+assert pod["team"] == "platform", pod
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+names = {d["kind"]: d["metadata"]["name"] for d in docs if d["kind"] in ("Deployment", "Service")}
+assert all(len(n) <= 63 for n in names.values()), names
+app = next(d for d in yaml.safe_load_all(open(sys.argv[2])) if d and d["kind"] == "Deployment")
+env = {e["name"]: e.get("value") for c in app["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+assert env["PARSING_SERVICE_URL"] == f"http://{names['Service']}:8092", (env["PARSING_SERVICE_URL"], names)
+print("ok parsing pod labels: name within 63, selector keys not overridable, common labels kept")
+PY
+netpol_check "$OUT/local-parsing.yaml" absent
+netpol_check "$OUT/local-extras.yaml" absent
 if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'ReadWriteMany' absent
   expect eks 'efs' absent
@@ -158,6 +269,22 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'requiredDuringSchedulingIgnoredDuringExecution' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
 fi
+# The EKS preset puts parsing on its own tainted node group, sized for the
+# c7i.2xlarge in aws/cluster.yaml. Off, nothing renders; on, three 2 CPU pods
+# fit a node, and the application is told how many parses it may keep in flight.
+if [[ -f "$OUT/eks-parsing.yaml" ]]; then
+  expect eks 'ci-pipeshub-ai-parsing' absent
+  expect eks 'USE_PARSING_SERVICE' absent
+  expect eks-parsing 'name: ci-pipeshub-ai-parsing' present
+  expect eks-parsing 'replicas: 2' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'pipeshub/role: parsing' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'effect: NoSchedule' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'cpu: "2"' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'memory: 8Gi' present 'name: PIPESHUB_ROLE'
+  expect eks-parsing 'value: "2"' present 'name: PARSING_MAX_CONCURRENT'
+  expect eks-parsing 'value: "4"' present 'name: PARSING_SERVICE_CONCURRENCY'
+  expect eks-parsing 'HorizontalPodAutoscaler' absent 'name: ci-pipeshub-ai-parsing'
+fi
 if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'alb.ingress.kubernetes.io/scheme: internal' present
   expect eks-single-az 'topology.kubernetes.io/zone: us-east-1a' present
@@ -166,6 +293,11 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'topologyKey: topology.kubernetes.io/zone' absent
   expect eks-single-az 'app.kubernetes.io/component: redis' absent
   expect eks-single-az 'internet-facing' absent
+  # A preset that clears the parsing node pin must not render the cleared key (a null label value is refused by the API).
+  expect eks-single-az-parsing 'name: ci-pipeshub-ai-parsing' present
+  expect eks-single-az-parsing 'pipeshub/role: null' absent
+  expect eks-single-az-parsing 'pipeshub/role: parsing' absent
+  expect eks-single-az-parsing 'key: pipeshub/role' present 'name: ci-pipeshub-ai-parsing'
   # The release here is "ci"; a selector naming another release matches no pods.
   expect eks-single-az 'topologyKey: kubernetes.io/hostname' present 'kind: Deployment'
   expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent
@@ -449,6 +581,9 @@ REFUSED=(
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
+  "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
+  "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
+  "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
 )
 for entry in "${REFUSED[@]}"; do
@@ -530,6 +665,38 @@ check_notes "external 2 pods" has "each pod uses 1/2 of its capacity" "${EXTERNA
 check_notes "external 2 pods maxTotal 0" has "each pod uses 1/2 of its capacity" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=0
 check_notes "external 2 pods maxTotal 4" lacks "each pod uses 1/2" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=4
 check_notes "external run cap" has "SANDBOX_MAX_RUN_TIMEOUT_S=900" "${EXTERNAL[@]}" --set config.sandboxMaxRunTimeoutS=900
+
+# The eksctl config: it parses, and the parsing node group carries the taint and label and
+# a max that fits the pods the chart sizes for it.
+if python3 - "$AWS_DIR" "$OUT" <<'PY'; then echo "ok cluster.yaml: parsing node group"; else failed=1; fi
+import subprocess, sys, yaml
+aws_dir, out = sys.argv[1:3]
+render = subprocess.run(
+    ["bash", f"{aws_dir}/deploy.sh", "--render-cluster-config", "--region", "eu-west-1",
+     "--zones", "eu-west-1a,eu-west-1b,eu-west-1c", "--kms-key-arn", "arn:aws:kms:eu-west-1:111122223333:key/x",
+     "--k8s-version", "1.36", "--cluster", "acme"],
+    capture_output=True, text=True)
+errors = []
+if render.returncode:
+    errors.append(f"render-cluster-config failed: {render.stderr}")
+else:
+    cfg = yaml.safe_load(render.stdout)
+    groups = {g["name"]: g for g in cfg["managedNodeGroups"]}
+    g = groups.get("parsing")
+    if not g:
+        errors.append("no parsing node group")
+    else:
+        if g["instanceType"] != "c7i.2xlarge": errors.append(f"instance type {g['instanceType']}")
+        if (g["minSize"], g["desiredCapacity"]) != (1, 1) or g["maxSize"] < 2: errors.append("min/desired must be 1, max at least 2")
+        if g["labels"] != {"pipeshub/role": "parsing"}: errors.append(f"labels {g['labels']}")
+        if g["taints"] != [{"key": "pipeshub/role", "value": "parsing", "effect": "NoSchedule"}]: errors.append(f"taints {g['taints']}")
+        if g["availabilityZones"] != ["eu-west-1a", "eu-west-1b", "eu-west-1c"]: errors.append("zones not rewritten")
+    for n, g in groups.items():
+        if "tags" in g: errors.append(f"{n} carries tags {g['tags']}")
+for e in errors:
+    print("!! cluster.yaml:", e)
+sys.exit(1 if errors else 0)
+PY
 
 if [[ "$failed" -ne 0 ]]; then
   echo "check_chart: FAILED" >&2
