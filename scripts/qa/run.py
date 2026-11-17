@@ -40,6 +40,8 @@ DEFAULT_DEADLINE_SECONDS = 270 * 60
 # Each pytest session otherwise deletes the models it added while the previous group's records still index.
 LEAVE_MODELS = "PIPESHUB_TEST_LEAVE_SEEDED_MODELS"
 MODEL_CREDENTIALS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+# A workflow token can read (and on some events write) the repository; tests never need it.
+REPO_TOKENS = ("GITHUB_TOKEN", "GH_TOKEN")
 
 
 @dataclass
@@ -150,7 +152,9 @@ def resolve(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], 
             cmd = _split("QA_SCRIPTS_PYTHON", [sys.executable]) + ["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]
             invocations.append(Invocation(suite_id, suite_id, fam, cwd, cmd, ids, None))
         elif fam == "pytest":
-            cmd = python_cmd() + ["-m", "pytest", *targets, *PYTEST_FLAGS, "-q", f"--junitxml={jx}"] + _split("QA_PYTEST_ARGS", [])
+            # QA_PYTEST_ARGS (xdist, a short timeout) suits unit suites; integration suites keep their own timeouts, one process.
+            extra = _split("QA_PYTEST_ARGS", []) if suite_id.startswith("py-unit") else []
+            cmd = python_cmd() + ["-m", "pytest", *targets, *PYTEST_FLAGS, "-q", f"--junitxml={jx}"] + extra
             invocations.append(Invocation(suite_id, suite_id, fam, cwd, cmd, ids, jx, modules=junit.module_names(files)))
         elif fam == "it-pytest":
             node_ids = _it_node_ids(selected, suite_rows[suite_id], cwd, explicit)
@@ -349,8 +353,8 @@ def _execute(cfg: Config, inv: Invocation, log_dir: Path, extra_env: dict[str, s
     log_dir.mkdir(parents=True, exist_ok=True)
     log = log_dir / f"{inv.label}.log"
     env = {**os.environ, **extra_env, **inv.env}
-    # Tests are the PR's code: they never get the model credential the QA agent signs in with.
-    for name in MODEL_CREDENTIALS:
+    # Tests are the PR's code: they never get the model credential the QA agent signs in with, or a repository token.
+    for name in MODEL_CREDENTIALS + REPO_TOKENS:
         env.pop(name, None)
     if inv.family == "playwright":
         env.update({k: env[src] for k, src in PLAYWRIGHT_ENV.items() if not env.get(k) and env.get(src)})

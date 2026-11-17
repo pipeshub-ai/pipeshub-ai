@@ -92,7 +92,10 @@ NOT_MIRRORED = {"TEST_AI_MODEL_PROVIDER", "TEST_AZURE_OPENAI_API_KEY", "MESSAGE_
                 "CONN_SHARD_4", "DEMO_PACK_QUESTIONS", "NEEDS_GMAIL_SIM", "NEEDS_ATLASSIAN_SIM",
                 "NEEDS_NOTION_SIM", "NEEDS_SHAREPOINT_SIM",
                 "NEEDS_LOCAL_FS_SIM", "NEEDS_BOOKSTACK_SIM", "NEEDS_SALESFORCE_SIM", "NEEDS_SERVICENOW_SIM", "NEEDS_ZAMMAD_SIM",
-                "CONN_SHARD_5"}
+                "CONN_SHARD_5",
+                # Pins the simulator image the integration workflow builds; the QA stack builds none, and
+                # each edition's integration workflow pins its own.
+                "CONNSIM_SERVICENOW_REF"}
 
 
 def _job_env(path: Path, job: str) -> dict[str, str]:
@@ -154,15 +157,24 @@ class TestStandInModel(unittest.TestCase):
         text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
         for key in ("TEST_AI_MODEL_PROVIDER", "TEST_STAND_IN_MODEL_ENDPOINT"):
             line = next(l for l in text.splitlines() if l.strip().startswith(key + ":"))
-            self.assertIn("github.event_name == 'pull_request' || inputs.mode == 'pr'", line, key)
+            self.assertIn("github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'pr')", line, key)
             self.assertIn("secrets.TEST_AZURE_OPENAI_API_KEY == ''", line, key)
+            # A schedule passes the default mode pr, and a nightly must use the real model.
+            self.assertNotIn("|| inputs.mode == 'pr'", line, key)
 
     def test_the_unit_job_spreads_pytest_and_a_full_run_shards_it(self) -> None:
         text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
         job = text[text.index("\n  run-unit:"):text.index("\n  run-stack:")]
         self.assertIn("QA_PYTEST_ARGS: -n logical --dist loadfile --timeout=60", job)
-        self.assertIn("inputs.mode == 'full' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1]'", job)
+        # Sharded on the plan's own answer: a nightly passes mode pr but plans a full run.
+        self.assertIn("needs.plan.outputs.full == 'true' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1]'", job)
+        self.assertIn("FULL: ${{ needs.plan.outputs.full }}", job)
+        self.assertNotIn("inputs.mode == 'full'", job)
+        self.assertIn('echo "full=$([[ "$profile" == full ]] && echo true || echo false)"', text)
         self.assertIn('shard=(--shard "$SHARD/8")', job)
+        # The base branch's engine runs the tests, as in plan and gate.
+        self.assertIn('python3 "$ENGINE" run --plan qa-out/plan.json --scope unit', job)
+        self.assertNotIn("python3 scripts/qa run", text)
         self.assertIn("qa-results-unit-${{ matrix.shard }}-${{ inputs.edition }}", job)
 
 
@@ -174,6 +186,16 @@ class TestReportAndGate(unittest.TestCase):
         for name, step in steps.items():
             step = step[:step.index("\n      - ", 1)] if "\n      - " in step[1:] else step
             self.assertIn('--allow-not-run "$QA_ALLOW_NOT_RUN"', step, name)
+
+    def test_a_run_that_left_no_results_fails_the_gate_and_the_agent_does_not_hide_its_errors(self) -> None:
+        text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")
+        gate = text[text.index("- name: Gate\n"):]
+        self.assertIn("compgen -G 'qa-out/results*.json'", gate)
+        self.assertIn('echo "a run job succeeded but left no results"; exit 1', gate)
+        agent = text[text.index('if [[ "$AGENT" == true ]]; then'):]
+        agent = agent[:agent.index("\n          fi\n")]
+        self.assertNotIn("exit 0", agent)
+        self.assertNotIn("|| echo", agent)
 
 
 @unittest.skipUnless((WORKFLOWS / "integration-tests.yml").is_file(), "integration workflow not in this checkout")

@@ -121,6 +121,10 @@ class TestReleaseCommand(AgentCase):
         self.assertIn("whole product on the default branch", argv[argv.index("-p") + 1])
         doc = json.loads((self.out / "agent-batch-1.json").read_text())
         self.assertEqual(doc["verdict"]["verdict"], "ship-with-known-issues")
+        # Names the other batches' jobs cannot also write into the merged download.
+        self.assertTrue((self.out / "agent-plan-1.json").is_file())
+        self.assertFalse((self.out / "agent-plan.json").exists())
+        self.assertTrue((self.out / "agent" / "claude-1.log").is_file())
         self.assertEqual(doc["release"]["batch"], "1/2")
         self.assertIn("scripts/qa/features/search.toml", doc["tests_added"])
         self.assertIn("backend/python/tests/unit/services/test_new.py", doc["tests_added"])

@@ -90,6 +90,8 @@ jobs:
       variants: ${{ steps.validate.outputs.variants }}
       shards: ${{ steps.validate.outputs.shards }}
       shard_total: ${{ steps.validate.outputs.shard_total }}
+      # "true" when the plan selects every suite (mode full, a nightly, the qa-full label): the unit job shards then.
+      full: ${{ steps.args.outputs.full }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -157,6 +159,7 @@ jobs:
           [[ "$EVENT" == schedule && ( "$SCHEDULE" == "0 4 * * 0" || "$SCHEDULE" == "30 4 * * 0" ) ]] && profile=weekly
           echo "change=$change" >> "$GITHUB_OUTPUT"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "full=$([[ "$profile" == full ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Install the planner CLI
         if: inputs.use_model && (vars.QA_PLANNER || 'claude_code') == 'claude_code'
@@ -234,12 +237,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.mode == 'full' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.full == 'true' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1]') }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
+      # The base branch's engine runs the PR's tests, as in plan and gate: a PR's engine could report
+      # a test passed without running it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+      - name: Pick the engine
+        run: |
+          if [[ -f qa-engine/scripts/qa/__main__.py ]]; then
+            echo "ENGINE=qa-engine/scripts/qa" >> "$GITHUB_ENV"
+          else
+            echo "::warning::The base branch has no QA engine yet, so this run uses the PR's engine."
+            echo "ENGINE=scripts/qa" >> "$GITHUB_ENV"
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: qa-plan-${{ inputs.edition }}
@@ -275,12 +293,12 @@ jobs:
         # The same spread over the runner's cores as unit-test.yml (pytest-xdist comes with backend/python[dev]).
         env:
           QA_PYTEST_ARGS: -n logical --dist loadfile --timeout=60
-          FULL: ${{ inputs.mode == 'full' }}
+          FULL: ${{ needs.plan.outputs.full }}
           SHARD: ${{ matrix.shard }}
         run: |
           shard=()
           if [[ "$FULL" == true ]]; then shard=(--shard "$SHARD/8"); fi
-          python3 scripts/qa run --plan qa-out/plan.json --scope unit "${shard[@]}"
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" run --plan qa-out/plan.json --scope unit "${shard[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -414,14 +432,14 @@ jobs:
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
       # The perf smoke compares against the committed CI baseline; with none yet it only reports.
       PERF_SMOKE_LABEL: ${{ matrix.variant == 'perf' && 'smoke-ci-neo4j-4cpu' || '' }}
-      # A pull request, and a /qa run on one (mode pr), gets no model key (spec section 2, "LLM in tests"), so its stack
+      # A pull request, and a /qa run on one (dispatched with mode pr; a schedule's default mode pr is not one), gets no model key (spec section 2, "LLM in tests"), so its stack
       # indexes with the web-fixtures stand-in model. Tests that assert on a real
       # model's answers carry the live_model marker and stay not_run there.
       # The perf variant uses it too: it measures our code, not the provider's latency.
       # A full run with no Azure key uses it too, so a repository without model secrets still indexes.
       # Neither value is a secret.
-      TEST_AI_MODEL_PROVIDER: ${{ (github.event_name == 'pull_request' || inputs.mode == 'pr' || matrix.variant == 'perf' || secrets.TEST_AZURE_OPENAI_API_KEY == '') && 'standIn' || 'azureOpenAI' }}
-      TEST_STAND_IN_MODEL_ENDPOINT: ${{ (github.event_name == 'pull_request' || inputs.mode == 'pr' || matrix.variant == 'perf' || secrets.TEST_AZURE_OPENAI_API_KEY == '') && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
+      TEST_AI_MODEL_PROVIDER: ${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'pr') || matrix.variant == 'perf' || secrets.TEST_AZURE_OPENAI_API_KEY == '') && 'standIn' || 'azureOpenAI' }}
+      TEST_STAND_IN_MODEL_ENDPOINT: ${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'pr') || matrix.variant == 'perf' || secrets.TEST_AZURE_OPENAI_API_KEY == '') && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
       # Other events: Azure OpenAI is where the quota is, and TEST_AI_MODEL_PROVIDER
       # names it outright: the helper falls back to the next provider on a health
       # check failure, so without this an Azure problem retries against the
@@ -473,7 +491,6 @@ jobs:
       BOOKSTACK_SIM_IMAGE: pipeshub/connectors-simulator:bookstack-it
       CONNSIM_SALESFORCE_REF: c40c2911a800b46d87a47283c7197fe8c18e7ac2
       SALESFORCE_SIM_IMAGE: pipeshub/connectors-simulator:salesforce-it
-      CONNSIM_SERVICENOW_REF: 72f5b98a07c958604c64b86ead785a2236a7516b
       SERVICENOW_SIM_IMAGE: pipeshub/connectors-simulator:servicenow-it
       CONNSIM_ZAMMAD_REF: 8dac96d3a89c5fe85f56224e93151fb357dc4378
       ZAMMAD_SIM_IMAGE: pipeshub/connectors-simulator:zammad-it
@@ -624,14 +641,22 @@ jobs:
         run: |
           docker pull pipeshubai/pipeshub-ai-base:python-deps || true
           docker pull pipeshubai/pipeshub-ai-base:runtime || true
-      # The QA agent: the base branch's engine and prompt (the PR cannot change what Claude is told or
-      # allowed), the unit-test toolchains, the Claude Code CLI, and for a combined run the PR heads.
+      # The base branch's engine runs the tests (a PR's engine could report a test passed without running it),
+      # and for the QA agent its prompt too (the PR cannot change what Claude is told or allowed). The agent also
+      # gets the unit-test toolchains, the Claude Code CLI, and for a combined run the PR heads.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: inputs.agent
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
           path: qa-engine
           persist-credentials: false
+      - name: Pick the engine
+        run: |
+          if [[ -f qa-engine/scripts/qa/__main__.py ]]; then
+            echo "ENGINE=qa-engine/scripts/qa" >> "$GITHUB_ENV"
+          else
+            echo "::warning::The base branch has no QA engine yet, so this run uses the PR's engine."
+            echo "ENGINE=scripts/qa" >> "$GITHUB_ENV"
+          fi
       - name: Install the unit-test toolchains and Claude Code for the QA agent
         if: inputs.agent
         run: |
@@ -712,16 +737,17 @@ jobs:
             # A secret this repository lacks arrives as an empty variable; the unit suites the agent runs
             # read "set but empty" as a broken setting (SECRET_KEY), where the run-unit job leaves them unset.
             while IFS= read -r name; do unset "$name"; done < <(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=$/\1/p')
-            # The combine step commits; the gate is the report job's, so the agent's own exit code only goes to the log.
+            # The combine step commits. qa agent exits non-zero only when it could not run (a verdict never fails it),
+            # so that fails this job and the gate, instead of a run with no results reading as plan-only.
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            QA_ROOT="$GITHUB_WORKSPACE" python3 "$engine" --out qa-out agent "${args[@]}" || echo "qa agent exited $?"
-            exit 0
+            QA_ROOT="$GITHUB_WORKSPACE" python3 "$engine" --out qa-out agent "${args[@]}"
+            exit
           fi
           shard=()
           if [ "$SHARD_TOTAL" -gt 1 ]; then shard=(--shard "$SHARD/$SHARD_TOTAL"); fi
           if [ -n "$VARIANT" ]; then shard+=(--stack-variant "$VARIANT"); fi
-          python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" "${shard[@]}"
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" "${shard[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -734,10 +760,10 @@ jobs:
             qa-out/results-agent*.json
             qa-out/agent.json
             qa-out/agent-batch*.json
-            qa-out/agent-plan.json
+            qa-out/agent-plan*.json
             qa-out/agent-tests*.patch
             qa-out/combined.bundle
-            qa-out/agent/claude.log
+            qa-out/agent/claude*.log
             qa-out/agent/rounds/*/logs/
             !qa-out/stack/**
             frontend/test-results/**/*-diff.png
@@ -934,4 +960,9 @@ jobs:
           for r in "$UNIT" "$STACK"; do
             if [[ "$r" == failure || "$r" == cancelled ]]; then echo "a run job ended $r"; exit 1; fi
           done
+          # A run job that ran but left no results file would otherwise read as plan-only and pass.
+          if [[ "$UNIT" == success || "$STACK" == success ]] && ! compgen -G 'qa-out/results*.json' >/dev/null \
+             && ! compgen -G 'qa-out/qa-out/results*.json' >/dev/null; then
+            echo "a run job succeeded but left no results"; exit 1
+          fi
           QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" report --gate --quiet --allow-not-run "$QA_ALLOW_NOT_RUN"

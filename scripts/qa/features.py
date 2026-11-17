@@ -21,6 +21,8 @@ from qa.config import Config, list_files
 
 FEATURES_DIR = "scripts/qa/features"
 OPENAPI = "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml"
+# Specs merged into OPENAPI at start-up; they name no server, so their paths take OPENAPI's base.
+OPENAPI_OVERLAYS = "backend/nodejs/apps/src/**/api-docs/*-overlay.yaml"
 PAGE = "frontend/app/**/page.tsx"
 CONNECTORS = "backend/python/app/connectors/sources/"
 TOOLSETS = "backend/python/app/agents/actions/"
@@ -119,10 +121,14 @@ def behaviors(fmap: dict[str, Any]):
 
 # --- surfaces ------------------------------------------------------------------
 
-def openapi_routes(text: str) -> list[str]:
-    """'METHOD /api/v1/path' for every operation, the server's base path in front."""
+def server_base(text: str) -> str:
+    return next((m.group(1) for line in text.splitlines() if (m := _SERVER_BASE.match(line))), "")
+
+
+def openapi_routes(text: str, base: str | None = None) -> list[str]:
+    """'METHOD /api/v1/path' for every operation, the server's base path (or the given one) in front."""
     lines = text.splitlines()
-    base = next((m.group(1) for line in lines if (m := _SERVER_BASE.match(line))), "")
+    base = server_base(text) if base is None else base
     routes, current, in_paths = [], None, False
     for line in lines:
         if line.startswith("paths:"):
@@ -148,8 +154,13 @@ def _top_dirs(files: list[str], prefix: str) -> list[str]:
 def surfaces(root: Path) -> dict[str, list[str]]:
     files = list_files(root)
     spec = root / OPENAPI
+    text = spec.read_text(encoding="utf-8") if spec.is_file() else ""
+    routes = set(openapi_routes(text))
+    for p in files:
+        if globs.match(p, OPENAPI_OVERLAYS):
+            routes |= set(openapi_routes((root / p).read_text(encoding="utf-8"), server_base(text)))
     return {
-        "routes": openapi_routes(spec.read_text(encoding="utf-8")) if spec.is_file() else [],
+        "routes": sorted(routes),
         "pages": [p for p in files if globs.match(p, PAGE)],
         "connectors": _top_dirs(files, CONNECTORS),
         "toolsets": _top_dirs(files, TOOLSETS),

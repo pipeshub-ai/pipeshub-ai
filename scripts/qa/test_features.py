@@ -152,6 +152,13 @@ class FeatureMapTest(unittest.TestCase):
         self.assertEqual(features.openapi_routes(OPENAPI), [
             "DELETE /api/v1/knowledgebase/{kbId}", "GET /api/v1/health", "GET /api/v1/knowledgebase/{kbId}", "POST /api/v1/search"])
 
+    def test_an_overlay_spec_adds_its_routes_under_the_base_specs_server(self) -> None:
+        testing.write(self.root, "backend/nodejs/apps/src/plus/modules/api-docs/plus-overlay.yaml",
+                      "paths:\n  /branding:\n    get:\n      summary: B\n")
+        testing.commit(self.root, "overlay")
+        self.assertIn("GET /api/v1/branding", features.surfaces(self.root)["routes"])
+        self.assertIn("GET /api/v1/branding", [u["value"] for u in features.drift(self.root, self.load(), self.rows())["unclaimed"]])
+
     def test_route_patterns(self) -> None:
         m = features._route_matches
         self.assertTrue(m("* /api/v1/knowledgebase/{id}", "DELETE /api/v1/knowledgebase/{kbId}"))

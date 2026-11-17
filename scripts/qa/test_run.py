@@ -79,6 +79,18 @@ class TestResolve(RunCase):
         invs, _ = run.resolve(self.cfg, plan_for(ids, needed=False), self.rows, self.out)
         self.assertIn("tests/unit", invs[0].cmd)
 
+    def test_qa_pytest_args_reach_unit_suites_only(self) -> None:
+        ids = [i for i, r in self.rows.items() if r["suite"] == "py-unit"]
+        unit_suite = self.cfg.suite("py-unit")
+        with mock.patch.dict(os.environ, {"QA_PYTEST_ARGS": "-n logical --timeout=60"}):
+            invs, _ = run.resolve(self.cfg, plan_for(ids, needed=False), self.rows, self.out)
+            self.assertEqual(invs[0].cmd[-3:], ["-n", "logical", "--timeout=60"])
+            # An integration suite keeps its own timeouts and runs in one process.
+            rows = {i: {**r, "suite": "py-integration"} if i in ids else r for i, r in self.rows.items()}
+            with mock.patch.object(self.cfg, "suite", lambda sid: {**unit_suite, "id": sid}):
+                invs, _ = run.resolve(self.cfg, plan_for(ids, needed=False), rows, self.out)
+            self.assertNotIn("--timeout=60", invs[0].cmd)
+
     def test_mocha_gets_a_generated_config_with_explicit_spec(self) -> None:
         invs, _ = run.resolve(self.cfg, plan_for(["node:tests/modules/auth/auth.controller.test.ts"], needed=False), self.rows, self.out)
         config_path = Path(invs[0].cmd[invs[0].cmd.index("--config") + 1])
@@ -346,11 +358,12 @@ class TestConftestGroups(RunCase):
         def fake(cmd, **kw):
             envs.append(kw["env"])
             return mock.Mock(returncode=0)
-        with mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "tok-abcdefgh", "ANTHROPIC_API_KEY": "sk-abcdefgh"}), \
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "tok-abcdefgh", "ANTHROPIC_API_KEY": "sk-abcdefgh",
+                                          "GITHUB_TOKEN": "ghs_abcdefgh", "GH_TOKEN": "ghs_abcdefgh"}), \
              mock.patch.object(run.subprocess, "run", fake):
             run._execute(self.cfg, self.invs()[0], self.out / "logs", {"ANTHROPIC_API_KEY": "sk-from-stack"})
-        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", envs[0])
-        self.assertNotIn("ANTHROPIC_API_KEY", envs[0])
+        for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"):
+            self.assertNotIn(name, envs[0])
 
     def test_a_group_gets_its_own_timeout_or_the_time_left(self) -> None:
         inv = self.invs()[0]

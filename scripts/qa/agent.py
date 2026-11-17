@@ -398,14 +398,14 @@ WRAP_UP_MINUTES = 10.0
 
 
 def _ask(root: Path, prompt_file: str, inp: Path, agent_dir: Path, engine: str, minutes: float, max_turns: int,
-         creds: dict[str, str], started: float) -> list[str]:
+         creds: dict[str, str], started: float, log_name: str = "claude.log") -> list[str]:
     """Runs Claude on the prompt; if it stops (turns or time) before writing the verdict, resumes the same session once
     to write it from what it found, so a long run still ends with a judgment."""
     vfile = agent_dir / "verdict.json"
     prompt = (paths.REPO / "scripts/qa/prompts" / prompt_file).read_text(encoding="utf-8")
     prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{vfile}`.\n"
     session = str(uuid.uuid4())
-    log = agent_dir / "claude.log"
+    log = agent_dir / log_name
     notes = []
     reserve = min(WRAP_UP_MINUTES, minutes / 4)
     problem = _claude(root, prompt, engine, minutes - reserve, max_turns, log, creds, session)
@@ -447,7 +447,9 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
     elif release:
         engine = engine_cmd(root)
         inp = _release_input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, release)
-        notes += _ask(root, "release.md", inp, agent_dir, engine, minutes, max_turns, creds, started)
+        # Every batch's job uploads its log into one merged download: each needs its own name.
+        notes += _ask(root, "release.md", inp, agent_dir, engine, minutes, max_turns, creds, started,
+                      f"claude-{str(release.get('batch') or '1').split('/')[0]}.log")
     else:
         diff = subprocess.run(["git", "diff", f"{plan['base']}..{plan.get('head') or 'HEAD'}"], cwd=root, capture_output=True, text=True)
         (agent_dir / "changeset.diff").write_text(diff.stdout, encoding="utf-8")

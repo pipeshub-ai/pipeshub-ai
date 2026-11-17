@@ -95,6 +95,9 @@ def _merged(out: Path) -> tuple[dict, dict | None]:
     """plan.json and every results*.json part merged, as the report reads them."""
     # A merged artifact download can nest a run job's files one level down (see below).
     found = {n: next((p for p in (out / n, out / out.name / n) if p.is_file()), None) for n in ("agent-plan.json", "agent.json")}
+    # A release run's batches each leave agent-plan-<k>.json, all the same full run's plan.
+    found["agent-plan.json"] = found["agent-plan.json"] or next(
+        iter(sorted(out.glob("agent-plan-*.json")) + sorted(out.glob(f"{out.name}/agent-plan-*.json"))), None)
     # The QA agent plans its own floor (a combined run's differs from the PR's), so its plan wins.
     plan = _load(found["agent-plan.json"]) if found["agent-plan.json"] else _load(out / "plan.json")
     if found["agent.json"]:
@@ -511,7 +514,8 @@ def _release_agent(args, cfg: config.Config, out: Path, creds: dict) -> int:
         if sess:
             print("qa agent: stack down: " + "; ".join(session.down(cfg, out)), file=sys.stderr)
         signal.signal(signal.SIGTERM, previous)
-    _dump(out / "agent-plan.json", plan)
+    # One per batch: the batches' jobs upload into one merged download, where a shared name would be written twice at once.
+    _dump(out / f"agent-plan-{k}.json", plan)
     for note in doc["notes"]:
         print(f"qa agent: {note}", file=sys.stderr)
     verdict = (doc.get("verdict") or {}).get("verdict", "none")
