@@ -450,7 +450,7 @@ export async function runWorld(opts: RunOptions): Promise<{ world: World; stats:
     const [org, user] = sess; // the token is read when the request is sent
     const key = `${org}|${user}|${rid}|${variant}`;
     const srv: Srv = { abandoned: false, got: 0, key, gen: gen.v, epoch: cache.fenceEpoch() };
-    const jk = `${srv.gen}|${srv.epoch}|${key}`;
+    const jk = `${srv.gen}|${srv.epoch}|${key}|${args.label ?? ''}`;
     signal.addEventListener('abort', () => (srv.abandoned = true), { once: true });
     const live = (w.liveJobs.get(jk) ?? []).filter((x) => !x.abandoned);
     if (live.length) w.violations.push(`I1 second live server job for ${key}`);

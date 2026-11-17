@@ -177,14 +177,20 @@ describe('local file reads close the descriptor on every way out', function () {
   })
   after(() => fs.rmSync(dir, { recursive: true, force: true }))
 
-  const openFds = () =>
-    fs.readdirSync('/proc/self/fd').filter((fd) => {
+  // Descriptor accounting reads /proc, a Linux interface. Where it is absent the
+  // count is reported as 0 so the status and byte assertions below still run.
+  const fdDir = process.env.STREAM_TEST_FD_DIR ?? '/proc/self/fd'
+  const haveFdDir = fs.existsSync(fdDir)
+  const openFds = () => {
+    if (!haveFdDir) return 0
+    return fs.readdirSync(fdDir).filter((fd) => {
       try {
-        return fs.readlinkSync(`/proc/self/fd/${fd}`) === file
+        return fs.readlinkSync(`${fdDir}/${fd}`) === file
       } catch {
         return false
       }
     }).length
+  }
 
   const routes: Record<string, (req: express.Request, res: express.Response, next: express.NextFunction) => void> = {
     serveFileFromLocalStorage: (req, res, next) => {

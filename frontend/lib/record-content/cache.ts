@@ -65,6 +65,8 @@ export interface FetchArgs {
   suppressErrorToast?: boolean;
   /** Retention is on: ask the server for a validator with the bytes. Off, the request is the plain stream request. */
   wantsValidator?: boolean;
+  /** The connector grant label this load was made for. Loads of different labels run apart. Informational for the transport. */
+  label?: string | null;
 }
 
 export type FetchResult =
@@ -121,6 +123,8 @@ export interface Job {
   recordId: string;
   variant: Variant;
   label: string | null;
+  /** Start order among the jobs of this cache; the newest job of a key owns its retained entry. */
+  seq: number;
   waiters: Set<Waiter>;
   controller: AbortController;
   received: number;
@@ -177,6 +181,9 @@ export class RecordContentCache {
   protected readonly inflight = new Map<string, Job>();
   /** Every unsettled job, in `inflight` or not (superseded, abandoned, orphaned). */
   protected readonly jobs = new Set<Job>();
+  /** The `seq` of the newest job started for each key: only that job may retain its result. */
+  protected readonly newestSeq = new Map<string, number>();
+  protected jobSeq = 0;
 
   constructor(options: CacheOptions) {
     this.fetcher = options.fetcher;
@@ -291,7 +298,7 @@ export class RecordContentCache {
       return { promise, leave };
     }
 
-    job = this.findJob(key) ?? this.startJob(key, recordId, variant, checked?.label ?? null, entry ?? null);
+    job = this.findJob(key, checked?.label ?? null) ?? this.startJob(key, recordId, variant, checked?.label ?? null, entry ?? null);
     job.waiters.add(waiter);
     return { promise, leave };
   }
@@ -314,9 +321,16 @@ export class RecordContentCache {
     return this.now() - entry.fetchedAt <= RECORD_CONTENT_CONNECTOR_FRESH_MS;
   }
 
-  /** The load of a key that is already running, if any (single flight). */
-  protected findJob(key: string): Job | undefined {
-    return this.inflight.get(key);
+  /**
+   * The load of a key that is already running, if any (single flight). Only a load made with the same
+   * connector label is shared: an open that holds a different grant asked for a different result.
+   */
+  protected findJob(key: string, label: string | null): Job | undefined {
+    let found: Job | undefined;
+    for (const job of this.jobs) {
+      if (job.key === key && job.label === label && (!found || job.seq > found.seq)) found = job;
+    }
+    return found;
   }
 
   /** The grant of this open if it is genuine; spends it. */
@@ -374,6 +388,7 @@ export class RecordContentCache {
       recordId,
       variant,
       label,
+      seq: ++this.jobSeq,
       waiters: new Set(),
       controller: new AbortController(),
       received: 0,
@@ -387,6 +402,7 @@ export class RecordContentCache {
       retried: false,
     };
     this.inflight.set(key, job);
+    this.newestSeq.set(key, job.seq);
     this.jobs.add(job);
     void this.run(job, entry);
     return job;
@@ -441,6 +457,7 @@ export class RecordContentCache {
       signal: job.controller.signal,
       onProgress: (p) => this.onProgress(job, p),
       wantsValidator: this.enabledFn(),
+      label: job.label,
     };
   }
 
@@ -452,6 +469,8 @@ export class RecordContentCache {
     job.settled = true;
     this.jobs.delete(job);
     if (this.inflight.get(job.key) === job) this.inflight.delete(job.key);
+    // The mark outlives the newest job while an older one of the key still runs, so that one cannot replace its result.
+    if (![...this.jobs].some((j) => j.key === job.key)) this.newestSeq.delete(job.key);
   }
 
   protected onProgress(job: Job, p: FetchProgress): void {
@@ -508,6 +527,7 @@ export class RecordContentCache {
 
   protected land(job: Job, reuse: Entry | null, result: Extract<FetchResult, { status: 200 }> | null): void {
     const waiters = [...job.waiters];
+    const newest = (this.newestSeq.get(job.key) ?? job.seq) <= job.seq;
     this.finish(job);
     let entry: Entry | null = reuse;
     if (!entry && result) {
@@ -529,6 +549,8 @@ export class RecordContentCache {
       };
       const keep =
         this.enabledFn() &&
+        // A superseded job answers its own waiters but does not replace what a newer open retained.
+        newest &&
         candidate.bytes <= this.maxEntryFn() &&
         (candidate.etag !== null || candidate.label !== null);
       if (keep) {
@@ -637,6 +659,7 @@ export class RecordContentCache {
     const jobs = [...this.jobs];
     this.jobs.clear();
     this.inflight.clear();
+    this.newestSeq.clear();
     for (const job of jobs) {
       job.aborted = true;
       job.settled = true;

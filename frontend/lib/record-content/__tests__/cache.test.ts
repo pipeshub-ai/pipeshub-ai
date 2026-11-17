@@ -233,6 +233,41 @@ describe('RecordContentCache', () => {
       (await late.promise).release();
     });
 
+    it('does not share an in-flight load between opens with different grant labels', async () => {
+      const { cache, calls } = setup();
+      const plain = cache.acquire('c1', 'original', mintGrant('c1', null, 'org1|user1'));
+      const labelled = cache.acquire('c1', 'original', mintGrant('c1', label, 'org1|user1'));
+      expect(calls).toHaveLength(2);
+      const l1 = ok(100, '"e1"');
+      const l2 = ok(200, null);
+      calls[1].resolve(l2);
+      const second = await labelled.promise;
+      expect(second.blob).toBe(l2.blob);
+      second.release();
+      calls[0].resolve(l1);
+      const first = await plain.promise;
+      expect(first.blob).toBe(l1.blob);
+      first.release();
+      // The older load landing last did not replace the newer open's retained result.
+      const hit = cache.acquire('c1', 'original', mintGrant('c1', label, 'org1|user1'));
+      expect(calls).toHaveLength(2);
+      const kept = await hit.promise;
+      expect(kept.blob).toBe(l2.blob);
+      kept.release();
+    });
+
+    it('still shares an in-flight load between opens with the same grant label', async () => {
+      const { cache, calls } = setup();
+      const a = cache.acquire('c1', 'original', mintGrant('c1', label, 'org1|user1'));
+      const b = cache.acquire('c1', 'original', mintGrant('c1', label, 'org1|user1'));
+      const c = cache.acquire('c1', 'original');
+      const d = cache.acquire('c1', 'original');
+      expect(calls).toHaveLength(2);
+      calls[0].resolve(ok(10, null));
+      calls[1].resolve(ok(10, '"e"'));
+      for (const p of [a, b, c, d]) (await p.promise).release();
+    });
+
     it('a record with no label and no validator is not retained', async () => {
       const { cache, calls } = setup();
       const p = cache.acquire('x', 'original', mintGrant('x', null, 'org1|user1'));

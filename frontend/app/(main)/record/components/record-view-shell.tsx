@@ -251,6 +251,8 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
             } catch (conversionErr) {
               // The page leaving or the session ending is not a failed conversion: do not stream the original for nobody.
               if (conversionErr instanceof PartyLeftError || conversionErr instanceof SessionEndedError) throw conversionErr;
+              // The page may have gone while the failure was in flight: an original opened now would hold a lease nobody releases.
+              if (cancelled) return;
               // Conversion failed — still fetch the original so download works.
               const lease = await openContent(recordId, 'original');
               blob = lease.blob;

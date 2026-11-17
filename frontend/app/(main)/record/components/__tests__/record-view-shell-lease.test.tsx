@@ -127,4 +127,25 @@ describe('record page lease lifecycle (real cache)', () => {
       expect(getRecordContentCache().snapshot().entries.filter((e) => e.pins > 0)).toEqual([]);
     },
   );
+
+  // A conversion that fails (not a leave) falls back to the original file. If the page is gone by the time the
+  // failure reaches its catch, the fallback must not start: it would take a lease nobody releases.
+  it.each(Array.from({ length: 16 }, (_, ticks) => ticks))(
+    'leaving %i microtasks after the conversion failed leaves no lease on the fallback',
+    async (ticks) => {
+      const view = render(
+        <Theme>
+          <RecordViewShell recordId="r1" />
+        </Theme>,
+      );
+      await waitFor(() => expect(calls.map((c) => c.variant)).toEqual(['pdf']));
+      calls[0].reject(new Error('conversion failed'));
+      for (let i = 0; i < ticks; i += 1) await Promise.resolve();
+      view.unmount();
+      await new Promise((r) => setTimeout(r, 0));
+      for (const c of calls.slice(1)) c.resolve(ok('"o"'));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(getRecordContentCache().snapshot().entries.filter((e) => e.pins > 0)).toEqual([]);
+    },
+  );
 });
