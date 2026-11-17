@@ -12,6 +12,10 @@ bounds the host when N chats run at once, so both
 ``build_coding_sandbox_manager()`` and ``ControlPlane.start()`` take theirs
 from ``get_default_governor()`` rather than constructing one.
 
+How many may run at once is the limit provider's: ``LiveLimit`` follows the
+machine the sandboxes run on in docker and local mode (``live_limit.py``),
+``FixedLimit`` keeps the ceiling.
+
 A slot is a file lock in the sandbox state directory (``SharedSlots``), so
 every query worker of the container counts the same slots, and a worker that
 dies gives its slots back with it. Each held slot records a hash of its org,
@@ -412,6 +416,7 @@ class SandboxResourceGovernor:
             stale = True
         counts = self._last_counts
         view = self.limit_provider.view()
+        live_block = getattr(self.limit_provider, "live_block", None)
         return {
             "total": sum(counts.values()),
             "per_org": {tag.decode(): n for tag, n in counts.items() if tag},
@@ -424,6 +429,7 @@ class SandboxResourceGovernor:
             "slot_files": self.capacity.slot_files,
             "shared": self.shared,
             "waiting_here": self._waiting_here,
+            "live": None if live_block is None else live_block(view),
         }
 
 
@@ -468,6 +474,15 @@ def get_default_governor(
                 _default_governor = SandboxResourceGovernor(
                     capacity, slots, limit_provider=FixedLimit(capacity),
                 )
+                if capacity.mode in ("compose", "local", "helm_dind"):
+                    from app.agent_loop_lib.sandbox.live_limit import (
+                        LiveLimit,
+                        set_live_limit,
+                    )
+
+                    live = LiveLimit(capacity, _default_governor)
+                    _default_governor.limit_provider = live
+                    set_live_limit(live)
                 logger.info(
                     "sandbox governor: mode=%s ceiling=%s floor=%s slot_files=%s shared=%s",
                     capacity.mode, capacity.ceiling(), capacity.floor(),
@@ -488,4 +503,7 @@ def reset_default_governor() -> None:
         governor, _default_governor = _default_governor, None
     if governor is not None:
         governor.close()
+    from app.agent_loop_lib.sandbox.live_limit import set_live_limit
+
+    set_live_limit(None)
     reset_sandbox_capacity()

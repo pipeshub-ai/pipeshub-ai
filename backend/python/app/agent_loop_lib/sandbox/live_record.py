@@ -1,0 +1,274 @@
+"""The live limit's shared record: one 128-byte file every query worker reads.
+
+Written with one ``pwrite`` under a lock file and read with one ``pread``,
+with the same checksum scheme as the indexing lane ledger. A record that is
+missing, short, torn or of another version reads as ``None``; the reader
+then keeps its last good view, so a torn read never lifts a limit.
+
+``limit == 0`` means no step has been taken yet: a per-run check may already
+have written the burst charge, and the first sampler step initialises the
+rest. All times are ``time.monotonic()``, which every process in one
+container shares.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import errno
+import logging
+import os
+import struct
+import threading
+import time
+import zlib
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from app.services.resource_governor.shared_slots import (
+    ensure_private_directory,
+    open_private_file,
+)
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - not POSIX
+    fcntl = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
+
+__all__ = ["LiveLedger", "LiveRecord", "LiveTxn", "RULES"]
+
+logger = logging.getLogger(__name__)
+
+RECORD_SIZE = 128
+_MAGIC = b"PXSBXLV\0"
+_VERSION = 1
+_HEADER = struct.Struct("<8sII")
+# limit ceiling min target slow_start_step cpu_high_streak (H), rule
+# shrink_cause in_slow_start (B), owner_pid wait_events (I), stamp
+# last_step_at cooldown_until last_wait_limit_at last_wait_mem_at burst_until
+# sample_at last_valid_at (d), burst_bytes mem_total mem_available (Q).
+_BODY = struct.Struct("<6H3B2I8d3Q")
+assert _HEADER.size + _BODY.size <= RECORD_SIZE
+
+RULES = (
+    "", "start", "mem_hard", "mem_target", "cpu", "grow", "no_demand", "cooldown",
+    "cpu_hold", "at_target", "at_ceiling", "unknown",
+)
+_CAUSES = (None, "memory", "cpu")
+_NO_TARGET = 0xFFFF
+_NO_BYTES = 0xFFFFFFFFFFFFFFFF
+
+
+@dataclass(frozen=True)
+class LiveRecord:
+    limit: int = 0
+    ceiling: int = 0
+    min: int = 0
+    target: int | None = None
+    rule: str = ""
+    shrink_cause: str | None = None
+    stamp: float = 0.0
+    owner_pid: int = 0
+    last_step_at: float = 0.0
+    cooldown_until: float = 0.0
+    cpu_high_streak: int = 0
+    in_slow_start: bool = False
+    slow_start_step: int = 1
+    last_wait_limit_at: float = 0.0
+    last_wait_mem_at: float = 0.0
+    wait_events: int = 0
+    burst_bytes: int = 0
+    burst_until: float = 0.0
+    sample_at: float = 0.0
+    last_valid_at: float = 0.0
+    mem_total: int | None = None
+    mem_available: int | None = None
+
+    @property
+    def initialised(self) -> bool:
+        return self.limit > 0
+
+    def encode(self) -> bytes:
+        def small(value: int) -> int:
+            return min(max(int(value), 0), 0xFFFE)
+
+        def nbytes(value: int | None) -> int:
+            return _NO_BYTES if value is None else min(max(int(value), 0), _NO_BYTES - 1)
+
+        body = _BODY.pack(
+            small(self.limit), small(self.ceiling), small(self.min),
+            _NO_TARGET if self.target is None else small(self.target),
+            small(self.slow_start_step), small(self.cpu_high_streak),
+            RULES.index(self.rule) if self.rule in RULES else 0,
+            _CAUSES.index(self.shrink_cause) if self.shrink_cause in _CAUSES else 0,
+            1 if self.in_slow_start else 0,
+            self.owner_pid & 0xFFFFFFFF, self.wait_events & 0xFFFFFFFF,
+            self.stamp, self.last_step_at, self.cooldown_until, self.last_wait_limit_at,
+            self.last_wait_mem_at, self.burst_until, self.sample_at, self.last_valid_at,
+            nbytes(self.burst_bytes), nbytes(self.mem_total), nbytes(self.mem_available),
+        )
+        raw = bytearray(RECORD_SIZE)
+        raw[_HEADER.size:_HEADER.size + len(body)] = body
+        _HEADER.pack_into(raw, 0, _MAGIC, _VERSION, 0)
+        _HEADER.pack_into(raw, 0, _MAGIC, _VERSION, zlib.crc32(bytes(raw)))
+        return bytes(raw)
+
+    @classmethod
+    def decode(cls, data: bytes) -> LiveRecord | None:
+        """The record, or ``None`` for anything that is not a whole, valid one."""
+        if len(data) != RECORD_SIZE:
+            return None
+        magic, version, crc = _HEADER.unpack_from(data, 0)
+        if magic != _MAGIC or version != _VERSION:
+            return None
+        zeroed = bytearray(data)
+        _HEADER.pack_into(zeroed, 0, magic, version, 0)
+        if zlib.crc32(bytes(zeroed)) != crc:
+            return None
+        (limit, ceiling, minimum, target, slow_step, cpu_streak, rule, cause, slow,
+         owner, waits, stamp, last_step, cooldown, wait_limit, wait_mem, burst_until,
+         sample_at, last_valid, burst, total, available) = _BODY.unpack_from(data, _HEADER.size)
+        if rule >= len(RULES) or cause >= len(_CAUSES):
+            return None
+        return cls(
+            limit=limit, ceiling=ceiling, min=minimum,
+            target=None if target == _NO_TARGET else target, rule=RULES[rule],
+            shrink_cause=_CAUSES[cause], stamp=stamp, owner_pid=owner, last_step_at=last_step,
+            cooldown_until=cooldown, cpu_high_streak=cpu_streak, in_slow_start=bool(slow),
+            slow_start_step=slow_step, last_wait_limit_at=wait_limit, last_wait_mem_at=wait_mem,
+            wait_events=waits, burst_bytes=0 if burst == _NO_BYTES else burst,
+            burst_until=burst_until, sample_at=sample_at, last_valid_at=last_valid,
+            mem_total=None if total == _NO_BYTES else total,
+            mem_available=None if available == _NO_BYTES else available,
+        )
+
+
+class LiveTxn:
+    """The record while the lock is held."""
+
+    def __init__(self, ledger: LiveLedger) -> None:
+        self._ledger = ledger
+
+    def read(self) -> LiveRecord | None:
+        """The record now, or ``None`` when there is no valid one: under the
+        lock that means it is uninitialised and may be rewritten."""
+        return self._ledger._read_raw(remember=True)
+
+    def write(self, record: LiveRecord) -> None:
+        self._ledger._write_raw(record)
+
+
+class LiveLedger:
+    """The ``live`` record and its ``live.lock`` in *directory*.
+
+    With ``directory=None`` the record lives in this process only, for when
+    the state directory cannot be used: each worker then runs its own limit.
+    Raises ``OSError`` (``PermissionError`` for a directory that is not
+    private) when *directory* cannot be used.
+    """
+
+    def __init__(self, directory: Path | None, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._thread_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._last_good: LiveRecord | None = None
+        self._memory: bytes = b""
+        self._record_fd = self._lock_fd = -1
+        self.shared = directory is not None
+        if directory is None:
+            return
+        if fcntl is None:
+            raise OSError("the live record needs POSIX file locks")
+        ensure_private_directory(directory)
+        self._record_fd = open_private_file(directory / "live")
+        try:
+            self._lock_fd = open_private_file(directory / "live.lock")
+        except BaseException:
+            os.close(self._record_fd)
+            raise
+
+    def _read_raw(self, *, remember: bool = False) -> LiveRecord | None:
+        if not self.shared:
+            data = self._memory
+        else:
+            try:
+                data = os.pread(self._record_fd, RECORD_SIZE, 0)
+            except OSError:
+                return None
+        record = LiveRecord.decode(data)
+        if record is not None and remember:
+            with self._state_lock:
+                self._last_good = record
+        return record
+
+    def _write_raw(self, record: LiveRecord) -> None:
+        data = record.encode()
+        if self.shared:
+            os.pwrite(self._record_fd, data, 0)
+        else:
+            self._memory = data
+        with self._state_lock:
+            self._last_good = record
+
+    def read(self) -> LiveRecord | None:
+        """The record without waiting. A read that fails its checksum is
+        retried, then asked once under the lock (without waiting), and
+        failing that the last good record is kept. ``None`` only when there
+        has never been a valid one."""
+        for _ in range(3):
+            record = self._read_raw(remember=True)
+            if record is not None:
+                return record
+        with self.transaction(0.0) as txn:
+            if txn is not None:
+                record = txn.read()
+                if record is not None:
+                    return record
+        with self._state_lock:
+            return self._last_good
+
+    @contextlib.contextmanager
+    def transaction(self, lock_budget: float = 0.020) -> Iterator[LiveTxn | None]:
+        """The lock, tried for at most *lock_budget* seconds; ``None`` if busy.
+        Blocks for up to the budget: never call it with one on the event loop."""
+        if lock_budget > 0:
+            acquired = self._thread_lock.acquire(timeout=lock_budget)
+        else:
+            acquired = self._thread_lock.acquire(blocking=False)
+        if not acquired:
+            yield None
+            return
+        locked = False
+        try:
+            if not self.shared:
+                locked = True
+            else:
+                deadline = time.monotonic() + lock_budget
+                while True:
+                    try:
+                        fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        locked = True
+                        break
+                    except OSError as exc:
+                        if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                            break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.001)
+            yield LiveTxn(self) if locked else None
+        finally:
+            if locked and self.shared:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            self._thread_lock.release()
+
+    def close(self) -> None:
+        with self._thread_lock, self._state_lock:
+            for fd in (self._record_fd, self._lock_fd):
+                if fd >= 0:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+            self._record_fd = self._lock_fd = -1

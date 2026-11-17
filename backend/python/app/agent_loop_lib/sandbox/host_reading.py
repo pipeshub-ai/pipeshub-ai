@@ -307,6 +307,5 @@ def resolve_live_mode(
     # or no answer: fall back to comparing the daemon's /info with ours.
     if fingerprint_same_machine(capacity.docker_info, own_total):
         return LiveMode(mode="on:host", reader=reader, profile="host", note="fingerprint")
-    return LiveMode.off(
-        "unverified", "cannot prove the Docker daemon shares this machine", retry=status == 0,
-    )
+    # The daemon's /info may simply not have been read yet: try again later.
+    return LiveMode.off("unverified", "cannot prove the Docker daemon shares this machine", retry=True)

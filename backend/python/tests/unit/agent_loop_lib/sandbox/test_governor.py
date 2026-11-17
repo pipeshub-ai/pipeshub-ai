@@ -515,8 +515,9 @@ class TestAcquireLoop:
         assert gov.held_total() == 1
         assert set(snap) == {
             "total", "per_org", "stale", "limit", "ceiling", "floor", "mode", "sized",
-            "slot_files", "shared", "waiting_here",
+            "slot_files", "shared", "waiting_here", "live",
         }
+        assert snap["live"] is None
 
     def test_unusable_slots_fall_back_to_per_worker_counting(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture,

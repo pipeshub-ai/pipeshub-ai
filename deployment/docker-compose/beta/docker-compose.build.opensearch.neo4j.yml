@@ -276,6 +276,15 @@ services:
       # The sandbox host's size, when the daemon is remote and cannot be read.
       - SANDBOX_HOST_MEMORY_BYTES=${SANDBOX_HOST_MEMORY_BYTES:-}
       - SANDBOX_HOST_CPU_MILLIS=${SANDBOX_HOST_CPU_MILLIS:-}
+      # Live limit: holds new runs back while the host is short of memory or CPU
+      # (off disables it). Empty = defaults; see env.template.
+      - SANDBOX_LIVE_LIMIT=${SANDBOX_LIVE_LIMIT:-}
+      - SANDBOX_LIVE_INTERVAL_S=${SANDBOX_LIVE_INTERVAL_S:-}
+      - SANDBOX_HOST_MEM_FLOOR_MB=${SANDBOX_HOST_MEM_FLOOR_MB:-}
+      - SANDBOX_HOST_MEM_SOFT_MB=${SANDBOX_HOST_MEM_SOFT_MB:-}
+      - SANDBOX_HOST_CPU_BRAKE=${SANDBOX_HOST_CPU_BRAKE:-}
+      - SANDBOX_HOST_CPU_PSI_BRAKE=${SANDBOX_HOST_CPU_PSI_BRAKE:-}
+      - SANDBOX_MEMORY_OVERCOMMIT=${SANDBOX_MEMORY_OVERCOMMIT:-}
 
     depends_on:
       docker-socket-proxy:

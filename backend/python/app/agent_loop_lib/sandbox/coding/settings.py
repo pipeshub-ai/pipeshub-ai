@@ -9,7 +9,9 @@ same vars the legacy stack used (``SANDBOX_MODE``, ``SANDBOX_DOCKER_IMAGE``,
 The capacity variables (``SANDBOX_MAX_TOTAL``, ``SANDBOX_MAX_PER_ORG``,
 ``SANDBOX_MIN_TOTAL``, ``SANDBOX_MEMORY_SHARE``, ``SANDBOX_CPU_FACTOR``,
 ``SANDBOX_HOST_*``) are parsed by ``sandbox/capacity.py``; unset means the
-ceiling is sized from the machine.
+ceiling is sized from the machine. The live limit's (``SANDBOX_LIVE_*``,
+``SANDBOX_HOST_MEM_*``, ``SANDBOX_HOST_CPU_*``, ``SANDBOX_MEMORY_OVERCOMMIT``)
+are parsed by ``sandbox/live_settings.py``.
 
 Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 ``ConfigurationService`` — interface defined here, body raises

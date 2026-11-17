@@ -92,7 +92,7 @@ class TestResolveLiveMode:
         mode = _resolve(_capacity(info=info), proc, _get(404))
         assert mode.mode == "off:unverified"
 
-    def test_unreachable_proxy_without_fingerprint_retries(self, proc: Path) -> None:
+    def test_unverified_daemon_is_resolved_again_later(self, proc: Path) -> None:
         mode = _resolve(_capacity(), proc, _boom)
         assert mode.mode == "off:unverified" and mode.retry
 

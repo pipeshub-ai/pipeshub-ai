@@ -35,6 +35,13 @@ VARS=(
   "SANDBOX_SLOT_WAIT_S||30|app"
   "SANDBOX_HOST_MEMORY_BYTES||17179869184|app"
   "SANDBOX_HOST_CPU_MILLIS||4000|app"
+  "SANDBOX_LIVE_LIMIT||off|app"
+  "SANDBOX_LIVE_INTERVAL_S||30|app"
+  "SANDBOX_HOST_MEM_FLOOR_MB||2048|app"
+  "SANDBOX_HOST_MEM_SOFT_MB||4096|app"
+  "SANDBOX_HOST_CPU_BRAKE||0.8|app"
+  "SANDBOX_HOST_CPU_PSI_BRAKE||0.6|app"
+  "SANDBOX_MEMORY_OVERCOMMIT||2|app"
 )
 
 # render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables.

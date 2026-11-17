@@ -11,7 +11,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+import app.utils.runtime_threads
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_log import (
     install_request_logging,
@@ -382,6 +382,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             from app.agent_loop_lib.sandbox.capacity import get_sandbox_capacity
 
             get_sandbox_capacity().start_sizing()
+            # The live limit samples the machine in every worker; the governor
+            # builds it for the modes that have a reading.
+            from app.agent_loop_lib.sandbox.governor import get_default_governor
+            from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+            get_default_governor()
+            live_limit = get_live_limit()
+            if live_limit is not None:
+                live_limit.start()
             registry = build_default_registry(
                 shared_config=SharedSandboxConfig(max_lifetime_s=settings.max_lifetime_s),
                 backend_options=settings.backend_options,
@@ -459,6 +468,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await warmup_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    try:
+        from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+        live_limit = get_live_limit()
+        if live_limit is not None:
+            await live_limit.stop()
+    except Exception as e:
+        logger.error(f"❌ Error stopping the sandbox live limit: {e}")
 
     # Stop all message consumers
     try:
