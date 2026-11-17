@@ -212,7 +212,7 @@ def _download_use() -> dict[str, int]:
     return {n: a.stats()["in_use"] for n, a in wiring._Registry.ahead.get(asyncio.get_running_loop(), {}).items()}
 
 
-async def _until(condition, timeout: float = 10.0) -> bool:  # noqa: ANN001
+async def _until(condition, timeout: float = 10.0) -> bool:
     """Poll a condition on observable state (bounded): readiness is what the system reports, not elapsed time."""
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
