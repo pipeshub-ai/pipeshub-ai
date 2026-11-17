@@ -123,47 +123,53 @@ from tests.support.provider_configs import BASE, service_account_json  # noqa: E
 CONF = {**BASE, "serviceAccountJson": service_account_json(), "endpoint": "https://gateway.example.com/v1"}
 
 
-def _hook_boto(model: Any) -> None:  # noqa: ANN401
-    client = getattr(model, "client", None)
-    meta = getattr(client, "meta", None)
-    if meta is None:
-        return
+def _patch_botocore() -> None:
+    """Count at botocore's own transport, after every handler in the event chain (the admission hook included) has run."""
     from botocore.awsrequest import AWSResponse
+    from botocore.exceptions import EndpointConnectionError
+    from botocore.httpsession import URLLib3Session
 
     class _Raw:
         def stream(self, **_: Any) -> Any:  # noqa: ANN401
             yield _body()
 
-    def before_send(request: Any, **_: Any) -> AWSResponse:  # noqa: ANN401
+    def send(self: Any, request: Any) -> AWSResponse:  # noqa: ANN401
         COUNT["n"] += 1
         if STATUS == 0:
-            from botocore.exceptions import EndpointConnectionError
-
             raise EndpointConnectionError(endpoint_url=request.url)
-        return AWSResponse(request.url, STATUS, {"content-type": "application/json", "x-amzn-ErrorType": "InternalServerException"}, _Raw())
+        headers = {"content-type": "application/json", "x-amzn-ErrorType": "InternalServerException"}
+        return AWSResponse(request.url, STATUS, headers, _Raw())
 
-    meta.events.register("before-send.*", before_send)
+    URLLib3Session.send = send  # type: ignore[method-assign]
 
 
-async def _one(kind: str, provider: str, model_name: str, sdk_retries: int | None) -> tuple[int, str, str]:
+_patch_botocore()
+
+
+async def _one(
+    kind: str, provider: str, model_name: str, sdk_retries: int | None, allowance: int | None = None
+) -> tuple[int, str, str, int]:
     config = {"configuration": {**CONF, "model": model_name}, "isDefault": True}
     if kind == "chat":
         model = get_generator_model(provider, config, model_name, sdk_retries=sdk_retries)
     else:
         model = get_embedding_model(provider, config, model_name, sdk_retries=sdk_retries)
-    _hook_boto(model)
     COUNT["n"] = 0
     err = ""
     started = time.monotonic()
-    try:
-        if kind == "chat":
-            await asyncio.wait_for(model.ainvoke("DOC:x hello"), 120)
-        else:
-            await asyncio.wait_for(model.aembed_documents(["DOC:x"]), 120)
-        err = "no error?!"
-    except Exception as exc:
-        err = f"{type(exc).__name__}"
-    return COUNT["n"], type(model).__name__, f"{err} {time.monotonic() - started:.1f}s"
+    from app.services.llm_gateway import wire
+
+    meter = wire.SendMeter(allowance=allowance) if allowance is not None else wire.SendMeter()
+    with wire.metered(meter), wire.wire_scope() as seen:
+        try:
+            if kind == "chat":
+                await asyncio.wait_for(model.ainvoke("DOC:x hello"), 120)
+            else:
+                await asyncio.wait_for(model.aembed_documents(["DOC:x"]), 120)
+            err = "no error?!"
+        except Exception as exc:
+            err = f"{type(exc).__name__}"
+    return COUNT["n"], type(model).__name__, f"{err} {time.monotonic() - started:.1f}s", seen.requests
 
 
 CHAT = [(p.value, "m") for p in LLMProvider] + [("fireworks", "accounts/fireworks/models/llama-v3p1-8b-instruct"), ("azureAI", "claude-3-5-sonnet"), ("anthropic", "claude-3-5-sonnet")]
@@ -180,13 +186,18 @@ async def main() -> int:
             if only and provider != only:
                 continue
             try:
-                n0, wrapper, info0 = await _one(kind, provider, model_name, INDEXING_SDK_RETRIES)
-                nd, _, infod = await _one(kind, provider, model_name, None)
+                n0, wrapper, info0, counted = await _one(kind, provider, model_name, INDEXING_SDK_RETRIES)
+                nd, _, infod, _ = await _one(kind, provider, model_name, None)
+                spent, _, _, _ = await _one(kind, provider, model_name, INDEXING_SDK_RETRIES, allowance=0)
             except Exception as exc:
                 print(f"BUILD-ERR {kind:4} {provider:18} {type(exc).__name__}: {str(exc)[:100]}")
                 bad += 1
                 continue
             verdict = "OK" if n0 == 1 else ("UNSEEN" if n0 == 0 else "SDK-RETRIES")
+            if verdict == "OK" and spent:
+                verdict = "SENT-PAST-ALLOWANCE"  # a spent send allowance must stop the request before the wire
+            elif verdict == "OK" and counted != n0:
+                verdict = "UNCOUNTED"  # the wire scope must see every request the transport saw
             if verdict != "OK":
                 bad += 1
             print(f"{verdict:11} {kind:4} {provider:18} {wrapper:30} indexing={n0} ({info0})  default={nd} ({infod})")

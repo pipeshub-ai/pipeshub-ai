@@ -20,6 +20,8 @@ from typing import (
 
 import openai
 import requests
+from langchain_community.embeddings.jina import JINA_API_URL
+from langchain_community.embeddings.jina import JinaEmbeddings as CommunityJinaEmbeddings
 from langchain_core.embeddings import Embeddings
 from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
 from langchain_core.utils.utils import (
@@ -530,3 +532,47 @@ class TogetherEmbeddings(BaseModel, Embeddings):
         if not isinstance(response, dict):
             response = response.model_dump()
         return response["data"][0]["embedding"]
+
+
+class JinaAPIError(VoyageAPIError):
+    """A Jina reply without embeddings; carries the status and the response for the retry decision."""
+
+
+class JinaEmbeddings(CommunityJinaEmbeddings):
+    """Jina embeddings whose requests are admitted and counted like every other paid request.
+
+    The community class posts with a ``requests`` session, which has no hooks of its own: a stage job whose send allowance is
+    spent could still send, and a failed request was not counted. Each request is admitted against the allowance and counted in
+    the wire scope by hand (as ``embed_with_retry`` does for Voyage), and the async methods run in a thread that keeps the
+    context and is waited for when cancelled.
+    """
+
+    def _embed(self, input: Any) -> list[list[float]]:  # noqa: A002, ANN401 - the parent's signature
+        # Imported here: the gateway's wire module is a layer above this one.
+        from app.services.llm_gateway import wire
+
+        wire.admit_request()
+        wire.note_request_sent()
+        try:
+            response = self.session.post(JINA_API_URL, json={"input": input, "model": self.model_name})
+        except requests.exceptions.RequestException as exc:
+            wire.note_error(type(exc).__name__)
+            raise
+        wire.note_response(response.status_code, wire.parse_retry_after(response.headers))
+        try:
+            payload = response.json()
+        except ValueError:  # an outage page is not JSON: the status still says what it was
+            payload = {"detail": (response.text or "")[:200]}
+        if "data" not in payload:
+            raise JinaAPIError(
+                f"Jina API Error. Message: {payload.get('detail', json.dumps(payload))}",
+                status_code=response.status_code,
+                response=response,
+            )
+        return [item["embedding"] for item in sorted(payload["data"], key=lambda e: e["index"])]
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        return await to_thread_settled(lambda: self.embed_documents(texts))
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return await to_thread_settled(lambda: self.embed_query(text))

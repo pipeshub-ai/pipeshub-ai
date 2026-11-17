@@ -356,6 +356,26 @@ async def test_the_limit_check_and_the_stored_deadline_use_one_delay(monkeypatch
     assert before + 120_000 <= stored <= before + 121_000, "the stored deadline is not the delay that was checked"
 
 
+async def test_the_limit_check_counts_the_stored_jittered_delay_not_the_providers_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The limit is checked against the delay that would be stored (the provider's wait plus its jitter), so a delay the jitter
+    carries past the limit ends the record even when the provider's own wait is far inside it."""
+    from app.services.messaging import config as config_module
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 300.0))
+    monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: 310.0)
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    with pytest.raises(ProviderRateLimitedTooLongError):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert all("deferredUntilMs" not in w for w in harness.writes()), "no wait was stored for a delay past the limit"
+    monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: 290.0)
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    with pytest.raises(ProviderRateLimitRequeue):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+
+
 async def test_a_consumer_whose_clock_runs_behind_does_not_shorten_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Elapsed time is derived only from stamps the record carries (``max(now, deferredUntilMs) - rateLimitedSinceMs``), so a
     consumer 15 minutes behind the one that stamped the first hand-back cannot step the backoff back."""
