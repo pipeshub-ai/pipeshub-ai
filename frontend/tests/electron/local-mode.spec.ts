@@ -61,13 +61,12 @@ test.describe('desktop local mode (stub launcher)', () => {
     await expect(page.getByTestId('mode-local')).toBeHidden({ timeout: 60_000 });
     await expect.poll(() => fs.existsSync(path.join(dataDir(), 'stub.log')) && /req GET \/api\//.test(read('stub.log')), { timeout: 60_000 }).toBe(true);
     expect(page.url().startsWith('app://')).toBe(true);
-    // The page navigates (auth redirect), so read the saved server URL with retries.
-    await expect
-      .poll(() => page.evaluate(() => window.localStorage.getItem('PIPESHUB_API_BASE_URL')).catch(() => null), { timeout: 30_000 })
-      .toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    // The real UI reached its sign-in route against the local server.
+    // The real UI reached its sign-in route against this launch's server (the stub saw the request)...
     await expect.poll(() => page.url(), { timeout: 30_000 }).toMatch(/^app:\/\/.*\/login\/?$/);
     expect(read('stub.log')).toMatch(/req GET \/api\/v1\/org\/exists/);
+    // ...whose URL is held in memory for this launch only: the port changes at every start, so it is never saved.
+    const saved = await page.evaluate(() => [window.localStorage.getItem('PIPESHUB_API_BASE_URL'), window.sessionStorage.getItem('PIPESHUB_API_BASE_URL_SESSION')]);
+    expect(saved).toEqual([null, null]);
     if (process.env.PH_E2E_SHOT) await page.screenshot({ path: process.env.PH_E2E_SHOT });
 
     const pid = Number(read('stub.pid'));

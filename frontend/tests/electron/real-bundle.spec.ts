@@ -79,7 +79,8 @@ test('first run -> local mode -> UI at the sign-in route -> quit leaves nothing 
   expect(s?.running).toBe(true);
   expect(s?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   expect((await fetch(`${s!.url}/api/v1/health`)).status).toBe(200);
-  expect(await page.evaluate(() => window.localStorage.getItem('PIPESHUB_API_BASE_URL'))).toBe(s!.url);
+  // This launch's URL is held in memory only: the port changes at every start, so it is never saved.
+  expect(await page.evaluate(() => window.localStorage.getItem('PIPESHUB_API_BASE_URL'))).toBeNull();
 
   await quit(app);
   expect(status()).toBeNull();
