@@ -20,10 +20,15 @@ async def test_a_note_that_never_clears_does_not_hold_the_granted_slot(monkeypat
     monkeypatch.setattr(manager_mod, "_SLOT_NOTE_CLEAR_S", 0.05, raising=False)
     governor = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
     stalled = asyncio.Event()
+    queued = asyncio.Event()
+    cleared = asyncio.Event()
 
     async def note(tool: str, *, waiting: bool) -> None:
-        if not waiting:
-            await stalled.wait()  # the event queue is full and nobody drains it
+        if waiting:
+            queued.set()
+            return
+        cleared.set()
+        await stalled.wait()  # the event queue is full and nobody drains it
 
     holder, holder_sid = await _chat(governor)
     waiter, waiter_sid = await _chat(governor, slot_wait_s=5.0, on_slot_wait=note)
@@ -35,7 +40,8 @@ async def test_a_note_that_never_clears_does_not_hold_the_granted_slot(monkeypat
 
     async with holder.slot(SandboxType.CODING, holder_sid):
         task = asyncio.ensure_future(wait_for_slot())
-        await asyncio.sleep(0.05)  # the waiter is now queued, with the note shown
+        await asyncio.wait_for(queued.wait(), 2)  # the waiter is queued, with the note shown
     await asyncio.wait_for(ran.wait(), 2)
+    assert cleared.is_set()  # the stalled clear was really attempted
     await asyncio.wait_for(task, 2)
     assert governor.held_total() == 0
