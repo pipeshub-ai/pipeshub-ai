@@ -36,7 +36,7 @@ async function findMachOFiles(dir) {
 }
 
 /**
- * The launcher bundle under Resources (Bun executable, PostgreSQL, Python and
+ * The launcher bundle under Resources (Node, PostgreSQL, Python and
  * every .so/.dylib in it) is not part of the Electron app proper. List its
  * Mach-O files as extra binaries so electron-builder signs each one with the
  * hardened runtime and the entitlements (a no-op when the build is unsigned).

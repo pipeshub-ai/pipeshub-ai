@@ -7,7 +7,7 @@
  *   (neither)                                stage an empty folder: the build works and
  *                                            the app offers "connect to a server" only
  *
- * The launcher is expected at <bundle>/pipeshub-native (pipeshub-native.exe on Windows).
+ * The bundle must hold its Node (node/bin/node) and the launcher (launcher/src/main.ts); there is no Windows bundle.
  */
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'fs';
 import { spawnSync } from 'child_process';
@@ -37,8 +37,9 @@ if (!source && url) {
 
 if (source) {
   cpSync(source, DEST, { recursive: true, dereference: false, verbatimSymlinks: true });
-  const exe = process.platform === 'win32' ? 'pipeshub-native.exe' : 'pipeshub-native';
-  if (!existsSync(join(DEST, exe))) throw new Error(`launcher ${exe} not found in the bundle at ${source}`);
+  for (const need of ['node/bin/node', 'launcher/src/main.ts']) {
+    if (!existsSync(join(DEST, need))) throw new Error(`${need} not found in the bundle at ${source}`);
+  }
   console.log(`Staged launcher bundle from ${source}`);
 } else {
   console.log('No launcher bundle given: building without local mode (server mode only).');

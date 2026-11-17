@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       native_bundle_url:
-        description: 'Optional .tar.gz of the native launcher bundle to ship in the packages (launcher at its root).'
+        description: 'Optional .tar.gz of the native bundle to ship in the packages (launcher/ and node/ at its root).'
         type: string
         default: ''
 

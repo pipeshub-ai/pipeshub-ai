@@ -6,11 +6,12 @@ import * as path from 'path';
 
 /**
  * The same desktop flows against the REAL native bundle (not the stub).
- * Opt-in: PIPESHUB_E2E_BUNDLE=<folder holding pipeshub-native, pg/, py/, app/, node/>.
+ * Opt-in: PIPESHUB_E2E_BUNDLE=<a native bundle folder: launcher/, node/, pg/, py/, app/>.
  * A cold start into a fresh data folder takes 25-100 s, so timeouts are long and tests share one data folder.
  */
 const BUNDLE = process.env.PIPESHUB_E2E_BUNDLE;
-const LAUNCHER = BUNDLE ? path.join(BUNDLE, 'pipeshub-native') : '';
+const NODE = BUNDLE ? path.join(BUNDLE, 'node', 'bin', 'node') : '';
+const LAUNCHER_MAIN = BUNDLE ? path.join(BUNDLE, 'launcher', 'src', 'main.ts') : '';
 const ELECTRON_DIR = path.resolve(__dirname, '..', '..', 'electron');
 const START_MS = 240_000;
 
@@ -21,7 +22,7 @@ let userData: string;
 const dataDir = () => path.join(userData, 'local-server');
 
 function status(): { running?: boolean; url?: string; pid?: number; services?: Record<string, { pid: number }> } | null {
-  const r = spawnSync(LAUNCHER, ['status', '--json', '--data-dir', dataDir()], { encoding: 'utf8' });
+  const r = spawnSync(NODE, [LAUNCHER_MAIN, 'status', '--json', '--data-dir', dataDir()], { encoding: 'utf8' });
   if (r.status !== 0) return null;
   return JSON.parse(r.stdout.trim().split('\n').pop() as string);
 }
@@ -33,8 +34,7 @@ function leftovers(): string[] {
 }
 
 async function launch(): Promise<ElectronApplication> {
-  const env = { ...process.env, HOME: path.join(userData, 'home'), PIPESHUB_LAUNCHER: LAUNCHER } as Record<string, string>;
-  delete env.PIPESHUB_LAUNCHER_ARGS;
+  const env = { ...process.env, HOME: path.join(userData, 'home'), PIPESHUB_LAUNCHER: NODE, PIPESHUB_LAUNCHER_ARGS: JSON.stringify([LAUNCHER_MAIN]) } as Record<string, string>;
   // PIPESHUB_E2E_PACKAGED=<built app executable>: run the packaged app, which must find its own bundled launcher.
   const packaged = process.env.PIPESHUB_E2E_PACKAGED;
   if (packaged) {
@@ -65,7 +65,7 @@ test.beforeAll(() => {
   userData = fs.mkdtempSync(path.join(os.tmpdir(), 'ph-real-'));
 });
 test.afterAll(() => {
-  spawnSync(LAUNCHER, ['stop', '--data-dir', dataDir()]);
+  spawnSync(NODE, [LAUNCHER_MAIN, 'stop', '--data-dir', dataDir()]);
   fs.rmSync(userData, { recursive: true, force: true });
 });
 

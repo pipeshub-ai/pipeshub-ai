@@ -120,7 +120,7 @@ test.describe('desktop local mode (stub launcher)', () => {
 
   test('without a launcher bundle the local option is disabled and server mode still works', async () => {
     test.skip(
-      fs.existsSync(path.resolve(ELECTRON_DIR, '..', 'resources', 'pipeshub-native', 'pipeshub-native')),
+      fs.existsSync(path.resolve(ELECTRON_DIR, '..', 'resources', 'pipeshub-native', 'launcher', 'src', 'main.ts')),
       'a launcher bundle is staged in resources/',
     );
     const env = { ...process.env, HOME: path.join(userData, 'home') } as Record<string, string>;

@@ -38,7 +38,7 @@ Used by `npm run build:electron`, `electron:prepare`, and `electron:build:*` in 
 
 ## Run PipesHub on this computer (local mode)
 
-First launch asks "Run PipesHub on this computer" or "Connect to a PipesHub server" (existing installs with a saved server are not asked). Local mode starts the native launcher bundled under the app's resources (`pipeshub-native/pipeshub-native`, read-only), keeps its data in `<userData>/local-server`, waits for health and points the UI at the loopback URL the launcher reports. Quit stops it; **Workspace > This computer** has "keep running in the tray" and the repository list ("Add repository" pushes a folder to `/api/v1/local-repos`).
+First launch asks "Run PipesHub on this computer" or "Connect to a PipesHub server" (existing installs with a saved server are not asked). Local mode starts the native launcher bundled under the app's resources (`pipeshub-native/`, read-only: its own Node runs `launcher/src/main.ts`, see `deployment/native/README.md`), keeps its data in `<userData>/local-server`, waits for health and points the UI at the loopback URL the launcher reports. Quit stops it; **Workspace > This computer** has "keep running in the tray" and the repository list ("Add repository" pushes a folder to `/api/v1/local-repos`).
 
 | Piece | Where |
 |------|-------|
@@ -51,7 +51,7 @@ First launch asks "Run PipesHub on this computer" or "Connect to a PipesHub serv
 
 ## Signing
 
-Builds are unsigned by default. CI signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Bun, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). `after-pack.cjs` lists every Mach-O file under `Resources/pipeshub-native` as an extra binary for electron-builder to sign (unit-tested, but the signing itself is unverified: check on a Mac). For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
+Builds are unsigned by default. CI signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Node, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). `after-pack.cjs` lists every Mach-O file under `Resources/pipeshub-native` as an extra binary for electron-builder to sign (unit-tested, but the signing itself is unverified: check on a Mac). For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
 
 ## Host notes
 

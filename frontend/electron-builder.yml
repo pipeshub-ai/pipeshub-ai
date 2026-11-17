@@ -87,9 +87,8 @@ dmg:
   title: PipesHub
   artifactName: PipesHub-mac-${arch}.${ext}
 win:
-  # Stub: the Windows installer builds, but there is no Windows launcher yet, so
-  # the app offers server mode only (the launcher file is looked up as
-  # pipeshub-native.exe and is absent).
+  # Stub: the Windows installer builds, but there is no Windows launcher bundle,
+  # so the app offers server mode only.
   # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
   target:
     - nsis
