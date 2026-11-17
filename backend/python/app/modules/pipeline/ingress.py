@@ -61,16 +61,24 @@ class StageIngress:
             virtual_record_id, rev, stages, priority=Priority.INTERACTIVE, force=force
         )
 
-    async def redrive_unchanged(self, virtual_record_id: str, rev: str) -> list[str] | None:
+    async def redrive_unchanged(
+        self, virtual_record_id: str, rev: str, record: Mapping[str, Any] | None = None
+    ) -> list[str] | None:
         """Re-dispatch the stages after embed that did not finish, for a revision whose content did not change.
 
         Only a failed or paused stage is claimed: a finished one is left alone, so the record's statuses
         and `reason` stay as they are and its queued copies are not held. Unforced and at bulk priority,
         so the claim keeps the stage's pause budget (only a forced claim resets it). None when the
-        runtime holds no state for the revision, which the caller treats as "run the record in full"."""
+        runtime holds no state for the revision, which the caller treats as "run the record in full".
+        A record still QUEUED for classification, with no classify state, lost its hand-off between the
+        embed record and the dispatch: classification is owed and is dispatched here too (a deferred
+        one is NOT_STARTED, not QUEUED, and stays deferred)."""
+        queued = record is not None and record.get("extractionStatus") == ProgressStatus.QUEUED.value
+        owed = frozenset({CLASSIFY}) if queued else frozenset()
         return await self._coordinator.redrive_revision(
             virtual_record_id, rev, self._coordinator.stage_names(), priority=Priority.BULK, force=False,
             only_unfinished=True,
+            owed=owed,
         )
 
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:

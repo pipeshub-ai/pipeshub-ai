@@ -49,6 +49,9 @@ _CLAIMABLE = frozenset(
 )
 
 
+_UNFINISHED = frozenset({ProgressStatus.FAILED, ProgressStatus.PAUSED})
+
+
 class EventPublisher(Protocol):
     async def send_event(
         self, topic: str, event_type: str, payload: dict[str, Any], key: str | None = None
@@ -142,12 +145,22 @@ class Coordinator:
             raise ValueError(f"stage {job.stage!r} finished without a record view; successors cannot be evaluated")
         return await self._dispatch_after(job.stage, result.record_view, priority=job.priority, force=job.force)
 
-    async def redrive(self, view: RecordView, stage: str, *, priority: Priority, force: bool) -> str | None:
+    async def redrive(
+        self,
+        view: RecordView,
+        stage: str,
+        *,
+        priority: Priority,
+        force: bool,
+        only_from: frozenset[ProgressStatus] | None = None,
+    ) -> str | None:
         """Re-dispatch one stage for one revision; None when it is already queued or running, or a newer
-        release owns its state."""
+        release owns its state. With ``only_from``, the claim itself refuses a state whose status is not in
+        the set (NOT_STARTED there also lets a missing state be created), so a stage that finished since the
+        caller looked is not queued again."""
         target = self._registry.get(stage)
         job = self._job_for(target.name, target.version, view, priority=priority, trigger="redrive", force=force)
-        claimed_from = await self._claim(job)
+        claimed_from = await self._claim(job, only_from)
         if claimed_from is None:
             return None
         await self._publish(job, release_to=claimed_from)
@@ -175,13 +188,16 @@ class Coordinator:
         priority: Priority,
         force: bool,
         only_unfinished: bool = False,
+        owed: frozenset[str] = frozenset(),
     ) -> list[str] | None:
         """Re-dispatch ``stages`` for a revision the runtime has seen, from what its external
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
         instead, which dispatches every stage. With ``only_unfinished``, only a stage whose state
         is FAILED or PAUSED is dispatched: a finished stage is left alone (a claim writes its
         headline status and its finish clears the record's ``reason``), and a stage with no state
-        (classification deferred to first use) stays deferred."""
+        (classification deferred to first use) stays deferred, unless it is in ``owed``: a stage the
+        caller knows the record is waiting on (its hand-off was interrupted), which is dispatched even
+        with no state. The statuses are enforced again by the claim, not only by this snapshot."""
         states = await self._states.get_many(virtual_record_id, rev)
         recorded = [s for s in states.values() if self._recorded(s)]
         if not recorded:
@@ -202,11 +218,13 @@ class Coordinator:
             if not self._registry.has(stage):
                 self._logger.warning("Cannot re-run unknown stage %r for %s", stage, virtual_record_id)
                 continue
-            if only_unfinished and (
-                stage not in by_stage or by_stage[stage].status not in (ProgressStatus.FAILED, ProgressStatus.PAUSED)
-            ):
-                continue
-            job_id = await self.redrive(view, stage, priority=priority, force=force)
+            only_from: frozenset[ProgressStatus] | None = None
+            if only_unfinished:
+                only_from = _UNFINISHED | ({ProgressStatus.NOT_STARTED} if stage in owed else frozenset())
+                present = by_stage.get(stage)
+                if (present is None and stage not in owed) or (present is not None and present.status not in only_from):
+                    continue
+            job_id = await self.redrive(view, stage, priority=priority, force=force, only_from=only_from)
             if job_id is not None:
                 dispatched.append(job_id)
         return dispatched
@@ -360,12 +378,14 @@ class Coordinator:
                 view.record_ids, stage.headline, ProgressStatus.SKIPPED, rev=view.rev, reason=reason
             )
 
-    async def _claim(self, job: StageJob) -> ProgressStatus | None:
+    async def _claim(
+        self, job: StageJob, only_from: frozenset[ProgressStatus] | None = None
+    ) -> ProgressStatus | None:
         """Claim ``job``'s state for dispatch; returns the status it was claimed from, or None.
 
         A forced claim (a user's redrive) gives the revision a fresh pause budget; an automatic one keeps it,
         so a revision whose budget is spent cannot start over by being dispatched again."""
-        claimed = await self._claim_state(job)
+        claimed = await self._claim_state(job, only_from)
         if claimed is None:
             return None
         claimed_from, claimed_attempt = claimed
@@ -376,12 +396,17 @@ class Coordinator:
                 self._logger.warning("Could not reset the pause budget of %s; it expires on its own", job.state_key)
         return claimed_from
 
-    async def _claim_state(self, job: StageJob) -> tuple[ProgressStatus, int] | None:
+    async def _claim_state(
+        self, job: StageJob, only_from: frozenset[ProgressStatus] | None = None
+    ) -> tuple[ProgressStatus, int] | None:
         """The status the claim took the state from and its attempt (the runs up to it are over)."""
-        if await self._states.create_if_absent(StageState.from_job(job, ProgressStatus.QUEUED, self._clock_ms())):
+        if (only_from is None or ProgressStatus.NOT_STARTED in only_from) and await self._states.create_if_absent(
+            StageState.from_job(job, ProgressStatus.QUEUED, self._clock_ms())
+        ):
             return ProgressStatus.NOT_STARTED, 0
         existing = await self._states.get(job.state_key)
-        if existing is None or isinstance(existing.status, ForeignStatus) or existing.status not in _CLAIMABLE:
+        allowed = _CLAIMABLE if only_from is None else _CLAIMABLE & only_from
+        if existing is None or isinstance(existing.status, ForeignStatus) or existing.status not in allowed:
             return None
         if await self._states.cas(
             job.state_key,

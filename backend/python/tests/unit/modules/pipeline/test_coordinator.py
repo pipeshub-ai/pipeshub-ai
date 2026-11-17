@@ -641,3 +641,34 @@ async def test_redrive_unchanged_leaves_finished_and_deferred_stages_alone(fleet
 
     del h.states.states[stage_state_key(VRID, REV, "classify")]
     assert await ingress.redrive_unchanged(VRID, REV) == []
+
+
+@pytest.mark.asyncio
+async def test_the_claim_itself_refuses_a_stage_that_finished_after_the_snapshot(fleet) -> None:
+    """The snapshot said PAUSED; by the claim the stage is COMPLETED. The restricted claim does not queue it again."""
+    from app.modules.pipeline.coordinator import _UNFINISHED  # noqa: PLC0415
+
+    h = _Harness(_classify_after_embed())
+    h.complete("embed")
+    h.complete("classify")
+
+    assert await h.coordinator.redrive(_view(), "classify", priority=Priority.BULK, force=False, only_from=_UNFINISHED) is None
+    assert h.status("classify") is ProgressStatus.COMPLETED
+    assert h.producer.sent == [] and h.headlines.writes == []
+    # Unrestricted, the same redrive claims it, as before.
+    assert await h.coordinator.redrive(_view(), "classify", priority=Priority.BULK, force=False) is not None
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_recovers_an_interrupted_classify_hand_off(fleet) -> None:
+    """embed is recorded, classify never got a state, and the record still waits for classification (QUEUED): owed.
+    A deferred classification (NOT_STARTED) stays deferred."""
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "NOT_STARTED"}) == []
+    assert h.status("classify") is None
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [f"{stage_state_key(VRID, REV, 'classify')}@1"]
+    assert h.status("classify") is ProgressStatus.QUEUED

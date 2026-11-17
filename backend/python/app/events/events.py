@@ -273,7 +273,7 @@ class EventProcessor:
         if await ingress.handoff_lost(record):
             return False
         await self.sync_vector_membership(vrid)
-        dispatched = await ingress.redrive_unchanged(vrid, rev)
+        dispatched = await ingress.redrive_unchanged(vrid, rev, record)
         if dispatched is None:
             return False
         self.logger.info(

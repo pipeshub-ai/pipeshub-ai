@@ -126,7 +126,7 @@ async def test_same_bytes_update_side_effects() -> None:
     assert world.parses == 0
     world.processor.indexing_pipeline.sync_vector_membership.assert_awaited_once_with(VRID)
     # Unforced: only the redrive that keeps a stage's pause budget. A forced one is not used.
-    world.ingress.redrive_unchanged.assert_awaited_once_with(VRID, content_revision(NEW))
+    world.ingress.redrive_unchanged.assert_awaited_once_with(VRID, content_revision(NEW), world.state)
     world.ingress.redrive.assert_not_awaited()
     # Nothing of the record is written: statuses and `reason` stay as they were.
     world.graph.update_node.assert_not_awaited()
