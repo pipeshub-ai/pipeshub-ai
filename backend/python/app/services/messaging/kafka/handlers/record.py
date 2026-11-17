@@ -2616,7 +2616,7 @@ class RecordEventHandler(BaseEventService):
             if (wait := provider_rate_limit_wait(ie)) is not None:
                 # One draw of the jitter, used for the limit check and the stored deadline alike.
                 delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
-                too_long = self._rate_limited_too_long(record_id, record, handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record)))
+                too_long = self._rate_limited_too_long(record_id, record, delay)
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from ie
@@ -2639,7 +2639,7 @@ class RecordEventHandler(BaseEventService):
                 # time the record has spent rate-limited passes the limit.
                 # One draw of the jitter, used for the limit check and the stored deadline alike.
                 delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
-                too_long = self._rate_limited_too_long(record_id, record, handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record)))
+                too_long = self._rate_limited_too_long(record_id, record, delay)
                 if too_long is not None:
                     last_exception, error_msg = too_long, str(too_long)
                     raise too_long from e
