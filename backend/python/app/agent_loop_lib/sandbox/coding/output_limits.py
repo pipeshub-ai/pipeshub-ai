@@ -442,7 +442,7 @@ def extract_tar_stream(
     *,
     allow_symlinks: bool = False,
     unchanged: Callable[[str, tarfile.TarInfo], str | None] | None = None,
-    kept_dir: str | None = None,
+    charged: dict[str, int] | None = None,
 ) -> None:
     """Extract the tar stream ``chunks`` (``get_archive`` of
     ``container_path``) into ``local_dir`` within ``budget``.
@@ -465,10 +465,14 @@ def extract_tar_stream(
       not counted as new output; one rewritten to the same size and mtime
       is collected like any other file.
     - Retention counts what the sandbox keeps after the run: a file that
-      replaces one already kept under ``kept_dir`` (default ``local_dir``)
-      counts only its growth. Under a separate ``kept_dir`` a smaller
-      replacement earns no credit, since that file may never have been
-      charged.
+      replaces one already kept in ``local_dir`` counts only its growth.
+      When ``charged`` is given (path -> bytes charged by earlier runs),
+      ``local_dir`` may also hold files that were never charged (uploads),
+      so a file counts against what was charged for its path instead: a
+      file charged before counts its growth, and shrinking it gives back
+      what it no longer keeps; an uncharged file counts in full and
+      shrinking it gives nothing back. ``charged`` is updated with what
+      each kept file now charges.
     - Sizes are the sizes in the tar header, which for a sparse file is its
       full apparent size, so a sparse file cannot expand past the limits.
     - Every member is sanitised by ``filter="data"``, and one whose own
@@ -559,13 +563,16 @@ def extract_tar_stream(
                     )
                     logger.warning("sandbox output: total limit reached at %r", shown)
                     return
-                replaced = _kept_size(os.path.join(kept_dir or local_dir, member.name))
-                grows_by = size - (replaced or 0)
-                if kept_dir is not None:
-                    # Files under kept_dir include uploads that were never
-                    # charged, so shrinking one earns no credit.
-                    grows_by = max(0, grows_by)
-                new_file = replaced is None
+                charge_key = os.path.normpath(member.name)
+                if charged is not None:
+                    # local_dir also holds uploads that were never charged:
+                    # only what earlier runs charged for this path can be
+                    # given back.
+                    charged_before = charged.get(charge_key)
+                else:
+                    charged_before = _kept_size(os.path.join(local_dir, member.name))
+                grows_by = size - (charged_before or 0)
+                new_file = charged_before is None
                 if retention is not None and (
                     (new_file and budget.retained_files + 1 > retention.room_files)
                     or (grows_by > 0 and budget.retained_bytes + grows_by > retention.room_bytes)
@@ -606,6 +613,8 @@ def extract_tar_stream(
                 budget.kept_files += 1
                 budget.retained_bytes += grows_by
                 budget.retained_files += int(new_file)
+                if charged is not None:
+                    charged[charge_key] = size
     except _ArchiveTooLarge:
         budget.stopped_reason = (
             f"collection stopped because the archives of this run went past "

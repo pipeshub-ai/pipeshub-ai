@@ -747,6 +747,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
         # first run, so a sandbox reopened over an existing dir starts from
         # what is there. The lock serialises collection of parallel runs.
         self._kept: tuple[int, int] | None = None
+        # Bytes charged so far for each working-dir file collected from
+        # `/src`, by path. The working dir also holds uploads that were
+        # never charged, so its sizes on disk cannot say what to give back
+        # when a run shrinks a file.
+        self._src_charged: dict[str, int] = {}
         self._collect_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -1487,7 +1492,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             # /src files move up into the working dir, replacing what is there.
             _extract_container_dir(
                 container, "/src", src_dir, budget=budget, unchanged=_src_unchanged,
-                kept_dir=self._working_dir,
+                charged=self._src_charged,
             )
             self._kept = (
                 max(0, kept_bytes + budget.retained_bytes), max(0, kept_files + budget.retained_files),
@@ -1946,7 +1951,7 @@ def _extract_container_dir(
     container: object, container_path: str, local_dir: str, *, allow_symlinks: bool = False,
     budget: ExtractBudget | None = None,
     unchanged: Callable[[str, tarfile.TarInfo], str | None] | None = None,
-    kept_dir: str | None = None,
+    charged: dict[str, int] | None = None,
 ) -> ExtractBudget:
     """Pull a directory from a container via `get_archive` and extract it
     into `local_dir`, merging with (not clearing) whatever's already there.
@@ -1972,7 +1977,7 @@ def _extract_container_dir(
         bits, _ = container.get_archive(container_path)
         extract_tar_stream(
             bits, container_path, local_dir, budget,
-            allow_symlinks=allow_symlinks, unchanged=unchanged, kept_dir=kept_dir,
+            allow_symlinks=allow_symlinks, unchanged=unchanged, charged=charged,
         )
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)

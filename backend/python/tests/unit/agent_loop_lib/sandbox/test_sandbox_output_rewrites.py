@@ -137,3 +137,52 @@ class TestAnUploadDuringTheRunWins:
 
         assert host.read_bytes() == b"new upload,22\n"
         assert "data.csv" not in result.artifacts
+
+
+class TestShrinkingACollectedFileGivesBackItsCharge:
+    async def test_a_charged_working_dir_file_shrunk_then_regrown_leaves_room(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_OUTPUT_MAX_SANDBOX_BYTES", str(1 * MiB))
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        client, _c = _client({})
+        sizes = [800 * KiB, 100 * KiB, 800 * KiB]
+        for run, size in enumerate(sizes):
+            stamp = time.time() + 10 * (run + 1)
+            archive = _tar([("src", None, stamp), ("src/table.bin", bytes([65 + run]) * size, stamp)])
+            result, _ = await _run(sandbox, {"/src": archive}, client)
+            assert "Not all output" not in result.stderr, run
+        stamp = time.time() + 100
+        archive = _tar([("output", None, stamp), ("output/extra.bin", b"e" * (100 * KiB), stamp)])
+        result, _ = await _run(sandbox, {"/output": archive}, client)
+        # 800 KiB + 100 KiB kept is within the 1 MiB limit.
+        assert "Not all output" not in result.stderr
+        assert (tmp_path / "wd" / "output" / "extra.bin").exists()
+
+    async def test_a_charged_working_dir_file_shrunk_makes_room_for_new_output(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_OUTPUT_MAX_SANDBOX_BYTES", str(1 * MiB))
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        client, _c = _client({})
+        for run, size in enumerate([800 * KiB, 100 * KiB]):
+            stamp = time.time() + 10 * (run + 1)
+            archive = _tar([("src", None, stamp), ("src/table.bin", bytes([65 + run]) * size, stamp)])
+            result, _ = await _run(sandbox, {"/src": archive}, client)
+            assert "Not all output" not in result.stderr, run
+        stamp = time.time() + 100
+        archive = _tar([("output", None, stamp), ("output/extra.bin", b"e" * (700 * KiB), stamp)])
+        result, _ = await _run(sandbox, {"/output": archive}, client)
+        # 100 KiB + 700 KiB kept is within the 1 MiB limit.
+        assert "Not all output" not in result.stderr
+
+    async def test_rewriting_an_upload_charges_it_in_full_once(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_OUTPUT_MAX_SANDBOX_BYTES", str(1 * MiB))
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        await sandbox.upload_file("big_input.bin", b"i" * (900 * KiB))  # uploaded, never charged
+        client, _c = _client({})
+        stamp = time.time() + 10
+        archive_src = _tar([("src", None, stamp), ("src/big_input.bin", b"j" * (100 * KiB), stamp)])
+        result, _ = await _run(sandbox, {"/src": archive_src}, client)
+        assert "Not all output" not in result.stderr
+        stamp = time.time() + 20
+        archive_out = _tar([("output", None, stamp), ("output/new.bin", b"n" * (950 * KiB), stamp)])
+        result, _ = await _run(sandbox, {"/output": archive_out}, client)
+        # The rewritten upload now keeps 100 KiB that was charged; 950 KiB more is past 1 MiB.
+        assert "this sandbox already keeps" in result.stderr
