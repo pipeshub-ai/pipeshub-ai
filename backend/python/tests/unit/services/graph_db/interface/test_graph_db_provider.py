@@ -19,6 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# The forced TYPE_CHECKING reload below imports these; loaded first, the reload imports nothing new under its patch.dict(sys.modules).
+import app.modules.named_entities.graph_ops
+import app.services.graph_db.common.utils
+import app.services.permissions.ports  # noqa: F401
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # ---------------------------------------------------------------------------
