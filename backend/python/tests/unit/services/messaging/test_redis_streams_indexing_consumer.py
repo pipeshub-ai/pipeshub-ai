@@ -1009,7 +1009,7 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await asyncio.wait_for(two_handlers_started.wait(), timeout=1)
+        await two_handlers_started.wait()
         await asyncio.sleep(0)
 
         assert len(started) == 2
@@ -1074,8 +1074,8 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await asyncio.wait_for(four_started.wait(), timeout=1)
-        await asyncio.wait_for(two_parsing.wait(), timeout=1)
+        await four_started.wait()
+        await two_parsing.wait()
         await asyncio.sleep(0.05)
 
         assert len(started) == 4
@@ -1197,7 +1197,9 @@ class TestProcessMessageWrapper:
                 return_value=0.01,
             ),
         ):
-            await asyncio.wait_for(two_started.wait(), timeout=1)
+            # No wall-clock bound: a busy runner stalled this loop 1.5 s with both records admitted (pytest's
+            # --timeout still catches a hang).
+            await two_started.wait()
             await asyncio.sleep(0.05)
             assert len(started) == 2
             assert manager.max_active["indexing"] == 2
@@ -1336,12 +1338,13 @@ class TestProcessMessageWrapper:
                 _valid_fields(payload={"recordId": "cancelled-record"}),
             )
         )
-        await asyncio.wait_for(entered.wait(), timeout=1)
+        await entered.wait()
         processing.cancel()
         with pytest.raises(asyncio.CancelledError):
             await processing
 
-        await asyncio.wait_for(handler_cancelled.wait(), timeout=1)
+        # The wrapper awaits the cancelled handler task before it re-raises, so no wait is needed.
+        assert handler_cancelled.is_set()
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
         # The owner must be gone from the renewer, or a cancelled record keeps

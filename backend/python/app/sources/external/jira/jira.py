@@ -20466,6 +20466,24 @@ class JiraDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def get_server_info_v2(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
+        """GET /rest/api/2/serverInfo (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11003/api-group-serverinfo/
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        path: dict[str, Any] = {}
+        req = HTTPRequest(
+            method='GET',
+            url=self.base_url + _safe_format_url('/rest/api/2/serverInfo', path),
+            headers=_as_str_dict(dict(headers or {})),
+            path=_as_str_dict(path),
+            query=_as_str_dict({}),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_all_application_roles_v2(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
         """GET /rest/api/2/applicationrole (Data Center / Server).
 
