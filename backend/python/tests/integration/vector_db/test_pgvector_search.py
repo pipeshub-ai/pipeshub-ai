@@ -199,7 +199,8 @@ async def test_the_vector_index_tests_membership_on_the_point_row_with_the_answe
         moved = dataclasses.replace(pts[0], payload={**pts[0].payload, "connectorIds": ["c2"]})              # point 1 leaves c1
         await store.upsert_points("records", [moved])
         await admin.execute("UPDATE retrieval.points SET member_keys = NULL WHERE org_id = $1 AND point_id = $2", A, pid(A, 4))   # keys unknown
-        assert not any("never executed" in line for line in probes(await plan()))                         # that row is probed
+        shown = await plan()
+        assert probes(shown) and not any("never executed" in line for line in probes(shown)), shown       # that row is probed
     finally:
         await admin.close()
     [after] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])

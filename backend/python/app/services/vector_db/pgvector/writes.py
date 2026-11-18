@@ -249,12 +249,14 @@ _REVIVE = f"""/* pipeshub:pgvector.revive */
         {_COUNT % '(SELECT 1 FROM r WHERE r.lex_terms IS NOT NULL) x'}"""
 
 
-# The group rows the points join, locked FOR KEY SHARE (the lightest lock that the group collection's FOR UPDATE conflicts with; it does not
-# block another writer's update of the row) in key order, before any point is written: the collection never removes the membership of a
-# group under a writer that is adding points to it, whether or not the points carry membership. A group with no row has no membership to lose.
+# The group rows the points join, locked in key order before any point is written: the group collection (FOR UPDATE) never removes the
+# membership of a group under a writer that is adding points to it, whether or not the points carry membership. FOR NO KEY UPDATE, the
+# mode the membership update below needs and the point trigger's FOR SHARE (retrieval_0006) conflicts with: taken here, in the order every
+# membership writer locks, a batch holds all its groups before its first point, so it can neither upgrade a lock nor hold one group while
+# waiting for another (two writers of one group take turns). A group with no row has no membership to lose.
 _LOCK_GROUPS = """/* pipeshub:pgvector.lock_groups */
         SELECT 1 FROM retrieval.point_groups WHERE org_id = $1 AND collection_id = $2 AND group_key = ANY($3::text[])
-        ORDER BY group_key FOR KEY SHARE"""
+        ORDER BY group_key FOR NO KEY UPDATE"""
 
 
 async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime | None, *, safe_mode: bool) -> None:

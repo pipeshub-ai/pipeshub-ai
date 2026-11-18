@@ -822,3 +822,103 @@ def test_a_point_and_a_membership_change_of_its_group_wait_for_each_other(rdb):
         with uow(members, "pipeshub_indexing", ORG_A):
             group(members, ORG_A, "g1", {1: ["c3"]})
     assert keys_of(cluster, name, ORG_A) == {P1: ["1:c3"]}
+
+
+def test_a_membership_change_by_any_writer_waits_for_an_open_point_of_its_group_and_then_rewrites_its_keys(rdb):
+    """A job that deletes membership rows without touching the group row still waits for a point writer of that group (the membership
+    triggers take the group rows), so the point it had not seen when it ran gets its keys rewritten instead of keeping the old ones."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+    with connect_as(cluster, name, "pipeshub_indexing_login") as points, connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        with uow(points, "pipeshub_indexing", ORG_A):
+            points.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                           "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))           # uncommitted, keys 1:c1
+            with pytest.raises(pg.LockNotAvailable), uow(jobs, "pipeshub_jobs", ORG_A):
+                jobs.execute("SET LOCAL lock_timeout = '300ms'")
+                jobs.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
+        with uow(jobs, "pipeshub_jobs", ORG_A):
+            jobs.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
+    assert keys_of(cluster, name, ORG_A) == {P1: []}
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs, uow(jobs, "pipeshub_jobs", ORG_A):           # a group without a row: unknown keys
+        jobs.execute("DELETE FROM retrieval.point_groups WHERE org_id = %s AND group_key = 'g1'", (ORG_A,))
+        jobs.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 1, 'c9')", (ORG_A,))
+    assert keys_of(cluster, name, ORG_A) == {P1: None}
+
+
+def test_a_point_moved_to_another_collection_takes_that_collections_membership_keys(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+        c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 2, 'g1', clock_timestamp())", (ORG_A,))
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 2, 'g1', 1, 'c2')", (ORG_A,))
+        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c1"]}
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("UPDATE retrieval.points SET collection_id = 2 WHERE org_id = %s AND point_id = %s", (ORG_A, P1))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c2"]}
+
+
+def test_point_writers_and_membership_writers_running_at_once_leave_every_points_keys_equal_to_its_groups_membership(rdb):
+    """Point inserts and membership changes of one group, interleaved by two connections for a while (the membership writer a job that
+    never touches the group row itself): afterwards every point's keys are its group's membership, none kept from a state since replaced."""
+    import threading
+
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c0"]})
+    stop, errors = threading.Event(), []
+
+    def points() -> None:
+        with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+            for _ in range(60):
+                with uow(c, "pipeshub_indexing", ORG_A):
+                    c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                              "VALUES (%s, 1, 1, gen_random_uuid(), 'g1', %s::ext.halfvec, 4)", (ORG_A, VEC))
+                    c.execute("SELECT pg_sleep(0.005)")                                   # hold the group row while the other side runs
+        stop.set()
+
+    def members() -> None:
+        with connect_as(cluster, name, "pipeshub_jobs") as c:
+            i = 0
+            while not stop.is_set():
+                i += 1
+                try:
+                    with uow(c, "pipeshub_jobs", ORG_A):
+                        c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
+                        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 1, %s)", (ORG_A, f"c{i}"))
+                except psycopg.Error as e:                                                # a deadlock would be an error here
+                    errors.append(e)
+
+    threads = [threading.Thread(target=points), threading.Thread(target=members)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(120)
+    assert errors == []
+    with cluster.admin(name) as c:
+        want = c.execute("SELECT array_agg(kind || ':' || member_id ORDER BY kind, member_id) FROM retrieval.group_members "
+                         "WHERE org_id = %s AND group_key = 'g1' AND kind IN (1, 2, 3)", (ORG_A,)).fetchone()[0]
+        got = {tuple(r[0]) for r in c.execute("SELECT member_keys FROM retrieval.points WHERE org_id = %s", (ORG_A,))}
+    assert got == {tuple(want)}
+
+
+def test_a_restored_point_is_searched_through_the_membership_rows_whatever_keys_its_export_carried(rdb):
+    """A restore loads exported rows, and the export of points and of membership rows need not be one snapshot: the keys a restored
+    point carries could be out of date, so it gets none (NULL: the search probes the membership rows) until its group is written again."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with cluster.admin(name) as c:
+        with c.transaction():
+            c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 1, 'g1', now())", (ORG_A,))
+            c.execute("INSERT INTO kernel.restore_window (org, until) VALUES (%s, now() + interval '1 hour')", (ORG_A,))
+            c.execute("SET LOCAL ROLE pipeshub_restore")
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim, member_keys) "
+                      "VALUES (%s, 1, 1, %s, 'g1', %s, 4, '{1:exported}')", (ORG_A, P1, VEC))             # as a load does: text into the column
+            c.execute("RESET ROLE")
+            c.execute("DELETE FROM kernel.restore_window")
+    assert keys_of(cluster, name, ORG_A) == {P1: None}
