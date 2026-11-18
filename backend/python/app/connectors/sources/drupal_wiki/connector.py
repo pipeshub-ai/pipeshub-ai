@@ -24,6 +24,10 @@ Sync model, with the vendor's words where it documents a rule (all read 2026-11-
   members of those spaces (https://help.drupal-wiki.com/node/461); the page says nothing
   about sub-pages, so pages are ``STRICT`` and a share reaches only the shared page and
   its attachments (fail closed)
+* a stored attachment its page's complete attachment listing no longer has goes whenever that
+  page is written, which every page is on a full sync (the spec says neither that deleting an
+  attachment moves the page's ``lastModified`` nor offers any listing of deletions:
+  ``GET /attachment`` takes one ``pageId``, and ``modifiedAfter`` only narrows it to changes)
 * a stored page its space no longer lists goes on a 404 or once it is missing from a
   second complete listing (https://help.drupal-wiki.com/node/605: a list of the pages
   seen is how deletions are found); a space the listing no longer returns goes with its
@@ -262,6 +266,9 @@ class PageListing:
     stored: dict[int, dict[int, list[str]]] = field(default_factory=dict)
     # pages stored with grants of their own (written shared): the graph's record of shares
     stored_shared: set[int] = field(default_factory=set)
+    # page -> external ids of its stored attachments, and every attachment listed this run
+    stored_attachments: dict[int, set[str]] = field(default_factory=dict)
+    attachments_listed: set[str] = field(default_factory=set)
     # pages saved this run, and the grants digest each page record was saved with
     written: set[int] = field(default_factory=set)
     written_as: dict[int, str] = field(default_factory=dict)
@@ -1292,6 +1299,7 @@ class DrupalWikiConnector(BaseConnector):
                         listing.stored_shared.add(page_id)
                 elif (page_id := source_id_from_external(record.parent_external_record_id or "", PAGE_ID_PREFIX)) is not None:
                     attachments.setdefault(page_id, []).append(record.id)
+                    listing.stored_attachments.setdefault(page_id, set()).add(record.external_record_id)
             if len(records) < STORED_PAGE_READ_SIZE:
                 break
             after = records[-1].id
@@ -1547,6 +1555,19 @@ class DrupalWikiConnector(BaseConnector):
             "missing": [page_id for page_id, _ in missing],
         })
 
+    async def _remove_attachments_gone(self, page_id: int, listing: PageListing) -> None:
+        """Remove the stored attachments of a page that its complete attachment listing no longer
+        has. One listed under another page this run (moved) stays."""
+        for external_id in sorted(listing.stored_attachments.get(page_id, set()) - listing.attachments_listed):
+            try:
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, external_id)
+            except Exception as e:
+                self._fail(
+                    f"Could not remove the Drupal Wiki attachment {external_id}, which page {page_id} no longer "
+                    f"has: {describe_exception(e)}"
+                )
+                listing.incomplete.add(page_id)
+
     async def _delete_page_stored_under(self, page_id: int, space_id: int) -> None:
         """Delete a page the listing of ``space_id`` no longer has, if it is still stored there.
         A move whose save committed before the batch failed has already put it elsewhere, and
@@ -1572,6 +1593,7 @@ class DrupalWikiConnector(BaseConnector):
         # ``GET /attachment`` answers with a bare array rather than the envelope every
         # other listing uses, so a page shorter than the one asked for ends the walk.
         source_attachments: list[dict[str, Any]] = []
+        listed_in_full = False
         try:
             index = 0
             while True:
@@ -1585,11 +1607,20 @@ class DrupalWikiConnector(BaseConnector):
                 if len(batch) < PAGE_SIZE:
                     break
                 index += 1
+            # AttachmentExcerptDTO.id is required; a row without one may be a stored attachment,
+            # and would be saved as "attachment:None".
+            if any(_as_int(a.get("id")) is None for a in source_attachments):
+                source_attachments = [a for a in source_attachments if _as_int(a.get("id")) is not None]
+                raise DrupalWikiSyncError(f"Drupal Wiki listed an attachment of page {page_id} without an id")
+            listed_in_full = True
         except DrupalWikiSyncError as e:
             # The page is still written; it is owed until its attachments are listed, so the
             # next run writes it again even below its space's checkpoint.
             self._fail(str(e))
             listing.incomplete.add(page_id)
+        listing.attachments_listed |= {attachment_external_id(a.get("id")) for a in source_attachments}
+        if listed_in_full:
+            await self._remove_attachments_gone(page_id, listing)
 
         # Fetched only when one of the two things below is actually read off it. A page
         # already costs a request of its own, so a point lookup is cheaper than holding
@@ -1906,9 +1937,9 @@ class DrupalWikiConnector(BaseConnector):
     async def reindex_records(self, record_results: list[Record]) -> None:
         """Refresh content for records the platform asks to reindex.
 
-        A record the source no longer has is left alone here. A sync removes a page the wiki no
-        longer has, with its attachments; it does not remove an attachment deleted from a page
-        that still exists.
+        A record the source no longer has is left alone here: a sync removes a page the wiki no
+        longer has with its attachments, and an attachment its page no longer lists once it
+        lists that page's attachments again.
         """
         if not self.data_source:
             raise DrupalWikiSyncError("Drupal Wiki data source is not initialized")

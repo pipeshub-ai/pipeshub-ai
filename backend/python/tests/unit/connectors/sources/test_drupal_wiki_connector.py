@@ -922,6 +922,52 @@ class TestMovesAndDeletions:
         processor.delete_record_by_external_id.assert_not_awaited()
         assert any("without an id" in failure for failure in connector._failures)
 
+    @staticmethod
+    def page_with_attachments(connector: DrupalWikiConnector, processor: MagicMock, checkpoint: dict,
+                              last_modified: int, attachments: MagicMock) -> None:
+        """Page 1 of space 12, stored with attachments 88 and 89."""
+        TestMovesAndDeletions.wiki(connector, processor, {12: [page_payload(1, last_modified=last_modified)]}, {12: [1]})
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda _c, space, *_a, **_k: [
+            stored_record(1), attachment_record(88, page_id=1), attachment_record(89, page_id=1),
+        ] if space == "12" else [])
+        checkpoints = TestMovesAndDeletions.remembered(connector)
+        checkpoints.update({"WEBPAGE/space_pages/12": checkpoint} if checkpoint else {})
+        connector.data_source.list_attachments = AsyncMock(return_value=attachments)
+
+    @pytest.mark.parametrize(("checkpoint", "last_modified"), [
+        ({}, 1000),  # a full sync: no checkpoint, so every page and its attachments are listed
+        ({"last_modified": 5000}, 9000),  # the page changed
+    ])
+    @pytest.mark.asyncio
+    async def test_an_attachment_deleted_from_a_page_that_is_written_is_removed(
+        self, connector: DrupalWikiConnector, processor: MagicMock, checkpoint: dict, last_modified: int
+    ) -> None:
+        self.page_with_attachments(connector, processor, checkpoint, last_modified, response([
+            {"id": 88, "fileName": "a.pdf", "lastModified": 1000},
+        ]))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        processor.delete_record_by_external_id.assert_awaited_once_with("conn-1", "attachment:89")
+
+    @pytest.mark.parametrize("attachments", [
+        response(status=500),
+        response([{"fileName": "no-id.pdf", "lastModified": 1000}]),
+    ], ids=["listing failed", "row without an id"])
+    @pytest.mark.asyncio
+    async def test_an_attachment_listing_that_is_not_complete_removes_no_attachment(
+        self, connector: DrupalWikiConnector, processor: MagicMock, attachments: MagicMock
+    ) -> None:
+        self.page_with_attachments(connector, processor, {}, 1000, attachments)
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        processor.delete_record_by_external_id.assert_not_awaited()
+        # Owed: the next run lists its attachments again, whatever its date.
+        assert connector.record_sync_point.update_sync_point.await_args_list[-1].args == (
+            "owed/space/all", {"pages": [1]},
+        )
+
     @pytest.mark.asyncio
     async def test_a_looked_up_page_without_an_id_is_written_under_the_id_asked_for(
         self, connector: DrupalWikiConnector, processor: MagicMock

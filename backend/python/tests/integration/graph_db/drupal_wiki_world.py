@@ -51,6 +51,7 @@ ALICE, BOB, CAROL = "alice@wiki.test", "bob@wiki.test", "carol@wiki.test"
 OPEN_SPACE, PRIVATE_SPACE, TRASH_SPACE, PERSONAL_SPACE = 1, 2, 91, 90
 OPEN_PAGE, PRIVATE_PAGE, SUB_PAGE, TRASHED_PAGE, PERSONAL_PAGE = 20, 10, 11, 30, 40
 PAGES = (OPEN_PAGE, PRIVATE_PAGE, SUB_PAGE, TRASHED_PAGE, PERSONAL_PAGE)
+KEPT_ATTACHMENT, DELETED_ATTACHMENT = 201, 202
 
 
 class _Response:
@@ -91,6 +92,8 @@ class FakeWiki:
         PERSONAL_PAGE: {"space": PERSONAL_SPACE, "parent": None, "modified": 1000},
     })
     shares: dict[int, set[int]] = field(default_factory=dict)
+    # page -> its attachments, read by whoever reads the page
+    attachments: dict[int, list[int]] = field(default_factory=lambda: {OPEN_PAGE: [KEPT_ATTACHMENT, DELETED_ATTACHMENT]})
     # pages the next listing of their home space leaves out, as an offset listing does when
     # another page is deleted between two of its windows
     skipped_once: set[int] = field(default_factory=set)
@@ -115,6 +118,7 @@ class FakeWiki:
             shared = (readers(s) for s in self.shares.get(page_id, set()) if s in self.spaces)
             for email in readers(page["space"]).union(*shared):
                 out[email].add(f"page:{page_id}")
+                out[email].update(f"attachment:{a}" for a in self.attachments.get(page_id, []))
         return out
 
     # ---- the REST data source
@@ -144,8 +148,10 @@ class FakeWiki:
         self.skipped_once -= skipped
         return _Response({"content": [self._excerpt(p) for p in sorted(set(ids) - skipped)], "last": True})
 
-    async def list_attachments(self, **_: object) -> _Response:
-        return _Response([])
+    async def list_attachments(self, page_id: int, page: int = 0, **_: object) -> _Response:
+        return _Response([
+            {"id": a, "fileName": f"file-{a}.pdf", "lastModified": 1000} for a in self.attachments.get(page_id, [])
+        ] if page == 0 else [])
 
     async def get_page(self, page_id: int) -> _Response:
         if page_id not in self.pages:
@@ -241,10 +247,10 @@ class DrupalWorld:
 
     async def observed(self) -> dict[str, set[str]]:
         ids = {}
-        for page_id in PAGES:
-            record = await self.processor.get_record_by_external_id(self.connector_id, f"page:{page_id}")
+        for external_id in [f"page:{p}" for p in PAGES] + [f"attachment:{a}" for a in (KEPT_ATTACHMENT, DELETED_ATTACHMENT)]:
+            record = await self.processor.get_record_by_external_id(self.connector_id, external_id)
             if record is not None:
-                ids[record.id] = f"page:{page_id}"
+                ids[record.id] = external_id
         out = {}
         for email, user_id in self.user_ids.items():
             allowed = await self.graph.filter_accessible_record_ids(list(ids), user_id, self.org_id) if ids else set()
@@ -297,6 +303,22 @@ async def a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_n
     world.wiki.shares.clear()
     await world.sync()
     await world.check("share removed")
+
+
+async def a_deleted_attachment_goes_on_the_next_sync_that_lists_its_page(world: DrupalWorld) -> None:
+    """Deleting an attachment is not documented to change its page's lastModified, so it goes when its page's
+    attachments are next listed: when the page changes, and on every full sync."""
+    await world.sync()
+    await world.check("attachments of the open page")
+    world.wiki.attachments[OPEN_PAGE] = [KEPT_ATTACHMENT]
+    world.wiki.pages[OPEN_PAGE]["modified"] = 2000
+    await world.sync()
+    await world.check("attachment deleted and the page edited")
+    world.wiki.attachments[OPEN_PAGE] = []
+    await world.graph.delete_sync_points_by_connector_id(connector_id=world.connector_id)  # what a full sync does first
+    await world.sync()
+    await world.check("the last attachment deleted, then a full sync")
+    assert await world.processor.get_record_by_external_id(world.connector_id, f"attachment:{KEPT_ATTACHMENT}") is None
 
 
 async def the_trash_personal_and_deleted_spaces_are_read_by_nobody(world: DrupalWorld) -> None:
