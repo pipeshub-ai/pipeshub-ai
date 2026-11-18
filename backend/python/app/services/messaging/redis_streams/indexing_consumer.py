@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import math
 import re
 import threading
@@ -10,6 +11,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import CancelledError as FuturesCancelledError
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
+from dataclasses import dataclass
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional, override
 
@@ -148,6 +150,18 @@ _RECLAIM_PAGE = 100
 # Entries recovery failed to hand on, remembered for another try.
 _UNHANDED_LIMIT = 1000
 _RECLAIM_LOG_EVERY_SECONDS = 60.0
+# An entry whose record is busy waits for it (see _claim_record_or_wait). A
+# wait on this process's own run of the record ends when that run releases
+# it; this bound only covers a release that never reaches a waiter (the woken
+# sibling was acknowledged or taken elsewhere before it ran).
+_RECORD_WAIT_RECHECK_SECONDS = 60.0
+# A record lease held by another process has no release to listen for, so
+# the entry is retried after the lease wait, doubling up to this.
+_RECORD_LEASE_RETRY_MAX_SECONDS = 300.0
+# Ids only, no payloads. Past it an entry is left as before: pending, and
+# offered again by recovery.
+_RECORD_WAIT_LIMIT = 1000
+_RECORD_WAIT_LIMIT_LOG_EVERY_SECONDS = 60.0
 # Recovery leaves 1/N of the buffer free for new events (__buffer_headroom).
 _RECLAIM_HEADROOM_DIVISOR = 4
 # Checked and removed in one step: a consumer that reads between a separate
@@ -198,6 +212,31 @@ def _headroom(capacity: int) -> int:
 
 def _text(value: object) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _entry_order(message_id: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in message_id.split("-"))
+    except ValueError:
+        return (0,)
+
+
+@dataclass(slots=True)
+class _RecordWait:
+    """A pending entry this consumer keeps, and does not offer again, until
+    its record is free.
+
+    ``due_at`` (monotonic) is when recovery may offer it again: the recheck
+    bound for a wait on this process's own run of the record, which that
+    run's release brings forward to now; a growing delay for a record lease
+    held by another process.
+    """
+
+    record_key: str
+    on_lease: bool
+    due_at: float
+    parked_at: float
+    parks: int = 1
 
 
 class RedisAcknowledgementError(RuntimeError):
@@ -318,6 +357,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # the message-id set above cannot see that they are the same work.
         self._in_flight_record_ids: set[str] = set()
         self._in_flight_lock = threading.Lock()
+        # Entries waiting for their record, by (stream, entry id), under
+        # _in_flight_lock: a delivery that finds its record busy parks here
+        # in the same step as the check, and a run releasing a record wakes
+        # a waiter in the same step as the release (see _claim_record_or_wait).
+        self._record_waits: dict[tuple[str, str], _RecordWait] = {}
+        self._record_wait_limit_logged_at = 0.0
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
         # took it down is the only suspect in flight. Used on the worker loop.
@@ -926,6 +971,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._in_flight_lock:
             self._in_flight_message_ids.clear()
             self._in_flight_record_ids.clear()
+            self._record_waits.clear()
+        metrics.record_record_waits("redis", 0)
 
     def _wait_for_active_futures(self) -> None:
         """Wait for all active futures to complete, bounded by ONE shared timeout.
@@ -1062,9 +1109,235 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._in_flight_record_ids.add(record_id)
         return True
 
+    def _claim_record_or_wait(self, record_id: str, stream_name: str, message_id: str) -> bool:
+        """Take this process's claim on a record, or keep the entry waiting for it.
+
+        Returning with the entry pending but untracked, as a busy record used
+        to, had read-time recovery offer it again a second later, for as long
+        as the other run lasted: one long reindex re-offered the same 8
+        entries 34,000 times in two hours. A waiting entry stays pending under
+        this consumer, its ownership refreshed, and recovery passes it over
+        until the run holding the record releases it.
+
+        The check and the park are one step under the lock: a release landing
+        between them would wake no one, and the entry would wait out the
+        recheck bound for a record that was already free.
+        """
+        now = time.monotonic()
+        with self._in_flight_lock:
+            if record_id not in self._in_flight_record_ids:
+                self._in_flight_record_ids.add(record_id)
+                return True
+            wait = self.__park_locked(stream_name, message_id, record_id, on_lease=False, now=now)
+            waiting = len(self._record_waits)
+        self.__log_record_wait(
+            wait, record_id, stream_name, message_id, waiting,
+            "this process is already working on it; it is offered again when that run ends",
+        )
+        return False
+
+    def _wait_for_record_lease(self, record_id: str, stream_name: str, message_id: str) -> None:
+        """Keep an entry whose record lease is held by another delivery (another
+        replica, a pipeline stage, a retention sweep) waiting, for a delay that
+        grows each time. Offered again at once, each try would hold an index
+        slot for the whole lease wait."""
+        with self._in_flight_lock:
+            wait = self.__park_locked(
+                stream_name, message_id, record_id, on_lease=True, now=time.monotonic()
+            )
+            waiting = len(self._record_waits)
+        retry_in = f"; retried in {wait.due_at - wait.parked_at:.0f}s" if wait is not None else ""
+        self.__log_record_wait(
+            wait, record_id, stream_name, message_id, waiting,
+            f"its lease is held by another delivery{retry_in}",
+        )
+
+    def __park_locked(
+        self, stream_name: str, message_id: str, record_id: str, *, on_lease: bool, now: float
+    ) -> _RecordWait | None:
+        """Add or renew an entry's wait; None when the list is full. Hold _in_flight_lock."""
+        key = (stream_name, message_id)
+        wait = self._record_waits.get(key)
+        if wait is None:
+            if len(self._record_waits) >= _RECORD_WAIT_LIMIT:
+                return None
+            wait = _RecordWait(record_id, on_lease, now, now, parks=0)
+            self._record_waits[key] = wait
+        wait.parks = wait.parks + 1 if wait.on_lease == on_lease else 1
+        wait.record_key = record_id
+        wait.on_lease = on_lease
+        wait.parked_at = now
+        if on_lease:
+            delay = min(
+                messaging_env.record_lease_wait_seconds * 2 ** (wait.parks - 1),
+                _RECORD_LEASE_RETRY_MAX_SECONDS,
+            )
+        else:
+            delay = _RECORD_WAIT_RECHECK_SECONDS
+        wait.due_at = now + delay
+        return wait
+
+    def __log_record_wait(
+        self,
+        wait: _RecordWait | None,
+        record_id: str,
+        stream_name: str,
+        message_id: str,
+        waiting: int,
+        why: str,
+    ) -> None:
+        metrics.record_record_waits("redis", waiting)
+        if wait is None:
+            now = time.monotonic()
+            if now - self._record_wait_limit_logged_at >= _RECORD_WAIT_LIMIT_LOG_EVERY_SECONDS:
+                self._record_wait_limit_logged_at = now
+                self.logger.warning(
+                    "Entry %s on %s cannot wait for record %s (%s): %d entries already "
+                    "wait for their records. Left pending; recovery offers it again",
+                    message_id, stream_name, record_id, why, waiting,
+                )
+            return
+        # Once per wait at INFO: a re-park after the recheck bound, while a
+        # long run still holds the record, is expected and would repeat.
+        self.logger.log(
+            logging.INFO if wait.parks == 1 else logging.DEBUG,
+            "Entry %s on %s waits for record %s: %s (wait %d, %d entries waiting)",
+            message_id, stream_name, record_id, why, wait.parks, waiting,
+        )
+
+    def _end_record_wait(self, stream_name: str, message_id: str) -> None:
+        with self._in_flight_lock:
+            if self._record_waits.pop((stream_name, message_id), None) is None:
+                return
+            waiting = len(self._record_waits)
+        metrics.record_record_waits("redis", waiting)
+
+    def __wake_record_waiter_locked(self, record_id: str, now: float) -> tuple[str, str] | None:
+        """Make the oldest entry waiting for this process's run of a record due.
+
+        One at a time: the first to run takes the record again, so waking the
+        rest only sends them back to wait, and a record with many queued
+        events would cost a wasted delivery per waiter per run. Nothing is
+        woken while the record is held, or while a waiter is already due (it
+        is on its way). Hold _in_flight_lock.
+        """
+        if not self._record_waits or record_id in self._in_flight_record_ids:
+            return None
+        waiting = [
+            (key, wait)
+            for key, wait in self._record_waits.items()
+            if wait.record_key == record_id and not wait.on_lease
+        ]
+        if not waiting or any(self.__wait_is_due_locked(wait, now) for _key, wait in waiting):
+            return None
+        key, wait = min(waiting, key=lambda item: (_entry_order(item[0][1]), item[0][0]))
+        wait.due_at = now
+        return key
+
+    def __wake_and_log(self, record_ids: set[str]) -> None:
+        now = time.monotonic()
+        with self._in_flight_lock:
+            woken = [(r, self.__wake_record_waiter_locked(r, now)) for r in record_ids]
+        for record_id, key in woken:
+            if key is not None:
+                self.logger.info(
+                    "Record %s is free: entry %s on %s is offered again",
+                    record_id, key[1], key[0],
+                )
+
+    def __wait_is_due_locked(self, wait: _RecordWait, now: float) -> bool:
+        """Whether recovery may offer a waiting entry again. Hold _in_flight_lock.
+
+        Never while this process still runs its record: the recheck bound is
+        for a release that did not reach the waiter, and a record still held
+        here has not been released. Re-offered on that bound instead, each
+        waiter of a two-hour reindex would be dispatched every minute only to
+        wait again.
+        """
+        if wait.due_at > now:
+            return False
+        return wait.on_lease or wait.record_key not in self._in_flight_record_ids
+
+    def _is_waiting_for_record(self, message_id: str, stream_name: str | None = None) -> bool:
+        """Whether an entry is waiting for its record and not due yet."""
+        if not self._record_waits:
+            return False
+        now = time.monotonic()
+        with self._in_flight_lock:
+            if stream_name is not None:
+                wait = self._record_waits.get((stream_name, message_id))
+                return wait is not None and not self.__wait_is_due_locked(wait, now)
+            return any(
+                mid == message_id and not self.__wait_is_due_locked(wait, now)
+                for (_stream, mid), wait in self._record_waits.items()
+            )
+
+    def _record_waits_by_stream(self, *, not_due_only: bool) -> dict[str, list[str]]:
+        now = time.monotonic()
+        with self._in_flight_lock:
+            by_stream: dict[str, list[str]] = {}
+            for (stream, message_id), wait in self._record_waits.items():
+                if not not_due_only or not self.__wait_is_due_locked(wait, now):
+                    by_stream.setdefault(stream, []).append(message_id)
+            return by_stream
+
+    def __prune_record_waits(self, stream_name: str, still_pending: set[str]) -> None:
+        """Forget waits whose entry is no longer pending here (acknowledged,
+        trimmed, or taken by a peer), and wake the next waiter of their record."""
+        with self._in_flight_lock:
+            gone = [
+                (key, wait)
+                for key, wait in self._record_waits.items()
+                if key[0] == stream_name and key[1] not in still_pending
+            ]
+            for key, _wait in gone:
+                del self._record_waits[key]
+            waiting = len(self._record_waits)
+        if not gone:
+            return
+        metrics.record_record_waits("redis", waiting)
+        for (stream, message_id), wait in gone:
+            self.logger.debug(
+                "Entry %s on %s stopped waiting for record %s: no longer pending here",
+                message_id, stream, wait.record_key,
+            )
+        self.__wake_and_log({wait.record_key for _key, wait in gone})
+
+    def __release_record_waits_at_risk(self, risk_after: float, now: float) -> None:
+        """Stop keeping waits whose stream's ownership could not be confirmed,
+        for the reason __sweep_stale_buffered releases held entries: a peer
+        may be about to claim them. Recovery's reassert refuses an entry a
+        peer took, and offers one still ours again."""
+        with self._in_flight_lock:
+            at_risk = [
+                (key, wait)
+                for key, wait in self._record_waits.items()
+                if now - max(wait.parked_at, self._ownership_confirmed_at.get(key[0], 0.0)) >= risk_after
+            ]
+            for key, _wait in at_risk:
+                del self._record_waits[key]
+            waiting = len(self._record_waits)
+        if not at_risk:
+            return
+        metrics.record_record_waits("redis", waiting)
+        self.logger.warning(
+            "Stopped keeping %d entry(ies) waiting for their records: their "
+            "ownership could not be confirmed for %.0fs; recovery offers them "
+            "again if no one else takes them",
+            len(at_risk),
+            risk_after,
+        )
+
     def _release_record(self, record_id: str) -> None:
+        now = time.monotonic()
         with self._in_flight_lock:
             self._in_flight_record_ids.discard(record_id)
+            woken = self.__wake_record_waiter_locked(record_id, now)
+        if woken is not None:
+            self.logger.info(
+                "Record %s is free: entry %s on %s is offered again",
+                record_id, woken[1], woken[0],
+            )
 
     def _is_record_in_flight(self, record_id: str) -> bool:
         with self._in_flight_lock:
@@ -1810,6 +2083,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         held_by_stream = self.__held_count_by_stream()
         in_flight = self._in_flight_count_by_stream()
+        # A lane whose only unheld entries wait for their records has nothing
+        # to recover; counted as unheld, a full buffer would give up a held
+        # entry of another lane for room nothing then uses.
+        waiting = {
+            stream: len(ids)
+            for stream, ids in self._record_waits_by_stream(not_due_only=True).items()
+        }
         unheld: set[str] = set()
         for topic in topics:
             try:
@@ -1818,7 +2098,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.debug("Could not summarise pending list of %s: %s", topic, e)
                 continue
             own, _others = self.__pending_by_owner(summary)
-            if own - held_by_stream.get(topic, 0) - in_flight.get(topic, 0) > 0:
+            if own - held_by_stream.get(topic, 0) - in_flight.get(topic, 0) - waiting.get(topic, 0) > 0:
                 unheld.add(topic)
         if not unheld:
             return
@@ -2070,13 +2350,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         The entries this consumer holds and works on sit in that list too,
         so the scan has to be able to page past all of them: one full buffer
-        plus the stream's in-flight entries, and a page to spare. Never
+        plus the stream's in-flight and waiting entries, and a page to spare. Never
         fewer than ``_PENDING_SCAN_MAX_PAGES``.
         """
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         tracked = (
             self.fair_scheduler_config.max_buffered_messages
             + self._in_flight_count_by_stream().get(topic, 0)
+            + len(self._record_waits_by_stream(not_due_only=False).get(topic, []))
         )
         return max(_PENDING_SCAN_MAX_PAGES, math.ceil(tracked / page_size) + 1)
 
@@ -2273,7 +2554,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         judges risk by.
         """
         in_flight = self._in_flight_by_stream()
-        if self.redis is None or not (self._held_entries or in_flight):
+        if self.redis is None or not (self._held_entries or in_flight or self._record_waits):
             return
         interval = self.__ownership_refresh_interval()
         now = time.monotonic()
@@ -2283,23 +2564,32 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         # Entries being processed too: left to go idle, a long one (a large
         # parse) is claimed again every claim window, by a peer or by this
-        # consumer's own recovery, each claim counting a delivery.
+        # consumer's own recovery, each claim counting a delivery. Entries
+        # waiting for their record too, which wait as long as that record's run.
+        waits = self._record_waits_by_stream(not_due_only=False)
         by_stream: dict[str, list[str]] = {
             stream: list(message_ids) for stream, message_ids in in_flight.items()
         }
         for stream, message_id in self._held_entries:
             by_stream.setdefault(stream, []).append(message_id)
+        for stream, message_ids in waits.items():
+            by_stream.setdefault(stream, []).extend(message_ids)
         for stream, message_ids in by_stream.items():
             try:
-                await self.redis.xclaim(  # type: ignore
+                claimed = await self.redis.xclaim(  # type: ignore
                     stream,
                     self.config.group_id,
                     self.consumer_name,
                     min_idle_time=0,
-                    message_ids=message_ids,
+                    message_ids=list(dict.fromkeys(message_ids)),
                     justid=True,
                 )
                 self._ownership_confirmed_at[stream] = now
+                if stream in waits and isinstance(claimed, (list, tuple)):
+                    # Only ids still pending come back: a wait whose entry was
+                    # acknowledged or trimmed meanwhile would otherwise keep its
+                    # record's next waiter from being woken.
+                    self.__prune_record_waits(stream, {_text(i) for i in claimed})
             except Exception as e:
                 self.logger.warning(
                     "Could not refresh ownership of %d held entry(ies) on %s: %s",
@@ -2307,6 +2597,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     stream,
                     e,
                 )
+        if self._record_waits:
+            self.__release_record_waits_at_risk(self.__ownership_risk_after(), now)
 
     def __buffer_has_room(self) -> bool:
         """Whether anything more can be held in memory.
@@ -2352,14 +2644,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         dead-letter backstop reads as a failed attempt -- so re-claiming
         entries that are merely waiting their turn dead-letters healthy
         records, and duplicates the work besides.
+
+        An entry waiting for its record counts until it is due: recovery
+        offering it again would only find the record still busy.
         """
         if stream_name is None:
-            return any(
-                held_id == message_id for _stream, held_id in self._held_entries
-            ) or self._is_in_flight(message_id)
+            return (
+                any(held_id == message_id for _stream, held_id in self._held_entries)
+                or self._is_in_flight(message_id)
+                or self._is_waiting_for_record(message_id)
+            )
         return (
             (stream_name, message_id) in self._held_entries
             or self._is_in_flight(message_id, stream_name)
+            or self._is_waiting_for_record(message_id, stream_name)
         )
 
     def __publish_scheduler_metrics(self) -> None:
@@ -3590,15 +3888,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
 
         # Claimed after the backoff wait and the ownership check, so a message
-        # that is only sleeping or is not ours never holds one.
-        if not self._claim_record(record_lock_id):
-            self.logger.debug(
-                "Skipping %s: another in-flight delivery in this process "
-                "already holds record %s. Left un-acked so it is redelivered "
-                "once that one finishes.",
-                message_id,
-                record_lock_id,
-            )
+        # that is only sleeping or is not ours never holds one. Held by another
+        # delivery here, the entry stays pending and waits for that one's release.
+        if not self._claim_record_or_wait(record_lock_id, stream_name, message_id):
             return False
         record_claim_held = True
 
@@ -3706,18 +3998,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if not record_lease_held:
                     outcome = "contended" if self.running else "stopped"
                     if self.running:
-                        self.logger.debug(
-                            "Record lease contended for %s; another in-flight "
-                            "duplicate delivery already owns it, leaving this "
-                            "entry un-acked in the PEL (XAUTOCLAIM will retry "
-                            "it once idle, by which point the other delivery "
-                            "should have advanced the record past IN_PROGRESS)",
-                            message_id,
-                        )
+                        # Left pending, waiting with a growing delay: the holder
+                        # is in another process, so no release reaches this one.
+                        self._wait_for_record_lease(record_lock_id, stream_name, message_id)
                     return False
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
+            # The record is ours: whatever wait brought this entry here is over.
+            self._end_record_wait(stream_name, message_id)
             stamp_delivery_id(parsed_message.payload, stable_message_id, parsed_message.org_ctx)
 
             # Counted only now that the record is ours: a crash while it waited

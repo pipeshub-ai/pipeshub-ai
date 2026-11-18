@@ -48,6 +48,14 @@ DEFERRED = METRICS_BACKEND.counter(
     ["broker", "reason"],
 )
 
+# A count, never labelled by record: a waiter is a pending entry kept back
+# because another delivery holds its record.
+RECORD_WAITS = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_record_waits",
+    "Pending entries waiting for their record, which another delivery is working on",
+    ["broker"],
+)
+
 LANES_PAUSED = METRICS_BACKEND.gauge(
     "pipeshub_indexing_lanes_paused",
     "Lanes currently not being read because a key on them is at its cap",
@@ -126,6 +134,10 @@ def record_deferred(broker: str, reason: str) -> None:
 
 def record_lanes_paused(broker: str, count: int) -> None:
     LANES_PAUSED.set(broker, value=count)
+
+
+def record_record_waits(broker: str, count: int) -> None:
+    RECORD_WAITS.set(broker, value=count)
 
 
 def record_lane_assignment_fallback(reason: str) -> None:
