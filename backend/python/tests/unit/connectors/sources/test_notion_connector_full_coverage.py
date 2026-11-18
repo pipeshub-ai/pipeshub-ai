@@ -2695,9 +2695,10 @@ class TestCreateWorkspaceRecordGroup:
         assert filters == {"connectorId": "notion-conn-1", "groupType": "NOTION_WORKSPACE"}
 
     @pytest.mark.asyncio
-    async def test_a_stored_workspace_is_closed_when_the_current_one_is_unknown(self) -> None:
-        """After a restart the bot lookup can fail, leaving no workspace id; a workspace an
-        earlier version opened to the app must still be closed, and no new one is made."""
+    async def test_a_stored_workspace_is_closed_when_the_token_check_fails(self) -> None:
+        """After a restart no workspace id is known, and a lapsed OAuth token fails the sync
+        before Notion is read; a workspace an earlier version opened to the app must still
+        be closed, and no new one is made."""
         conn = _make_connector()
         conn.workspace_id = None
         conn._mock_tx.get_nodes_by_filters = AsyncMock(return_value=[
@@ -2705,7 +2706,11 @@ class TestCreateWorkspaceRecordGroup:
              "connectorId": "notion-conn-1", "connectorName": "NOTION", "groupType": "NOTION_WORKSPACE",
              "permissionModel": "RECORD_GROUP_LEVEL"},
         ])
-        await conn._create_workspace_record_group()
+        conn._get_fresh_datasource = AsyncMock()
+        conn._assert_required_capabilities = AsyncMock(side_effect=ConnectorInitError("no longer active"))
+        conn._notify_sync_failure = AsyncMock()
+        with pytest.raises(ConnectorInitError):
+            await conn.run_sync()
         conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
         [(group, permissions)] = conn.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert group.id == "rg-old"
