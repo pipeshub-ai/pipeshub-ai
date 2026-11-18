@@ -132,6 +132,45 @@ async def test_override_equals_the_oracle_on_the_sharepoint_corpus() -> None:
     assert pairs > 500 and overrides > 100, (pairs, overrides)
 
 
+async def test_notion_pages_are_stamped_override_and_read_by_exactly_their_own_readers() -> None:
+    """The graph the Notion connector writes (`NotionConnector._apply_page_access`, `_create_workspace_record_group`): the
+    workspace group inherits nothing and grants nobody; every page and data source inherits nothing and carries the
+    users whose own token read it; a file inherits its page. Override stamps each record with its own list (a file with
+    its page's), which is Notion's access; a Container stamp would admit through a group nobody reads."""
+    from .model import Node, Parent, WorldBuilder
+
+    b = WorldBuilder()
+    for u in ("u1", "u2", "u3"):
+        b.principal(u)
+        b.gate(u, "A")
+    b.node(Node("A", "app", app_type="NOTION"))
+    b.node(Node("ws", "group", connector="A", parents=(Parent("A"),), belongs=("A",)))
+    b.node(Node("top", "record", connector="A", parents=(Parent("ws"),), belongs=("ws",)))
+    b.node(Node("child", "record", connector="A", parents=(Parent("top"),), belongs=("ws",)))
+    b.node(Node("file", "record", connector="A", parents=(Parent("child"),), inherits=("child",), belongs=("ws",)))
+    b.node(Node("ds", "record", connector="A", parents=(Parent("top"),), belongs=("ws",)))
+    b.node(Node("row", "record", connector="A", parents=(Parent("ds"),), belongs=("ws",)))
+    b.node(Node("withheld", "record", connector="A", parents=(Parent("ws"),), belongs=("ws",)))
+    notion = {"top": {"u1", "u2"}, "child": {"u1"}, "file": {"u1"}, "ds": {"u2"}, "row": {"u2"}, "withheld": set()}
+    for rid, readers in notion.items():
+        for u in readers if rid != "file" else ():
+            b.grant(u, rid)
+    world = b.build()
+
+    projected = await project(world)
+    assert {rid: p.fields.stamp for rid, p in projected.items()} == dict.fromkeys(notion, Stamp.OVERRIDE), projected
+    assert projected["file"].fields.acl_scope[0] == "child"
+    layer, oracle = OracleScopeLayer(), OracleLayer()
+    for viewer in world.users():
+        scopes = await layer.viewer_scopes(world, viewer)
+        truth = oracle.explain(world, viewer, list(notion))
+        for rid, readers in notion.items():
+            assert truth[rid].admitted == (viewer in readers), (viewer, rid, truth[rid])
+            assert override_filter(world, scopes, rid, projected[rid].fields) == truth[rid].admitted, (viewer, rid)
+            if readers:
+                assert not reference_filter(replace_stamp(world, rid, "container"), scopes, rid), (viewer, rid)
+
+
 def replace_stamp(world, rid, stamp):  # noqa: ANN201
     return world.with_node(replace(world.node(rid), stamp=stamp))
 
