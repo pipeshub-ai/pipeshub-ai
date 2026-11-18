@@ -222,7 +222,7 @@ class TestNothingRunsOnARefusedFilter:
 class TestDialectIsPinned:
     async def test_every_search_and_aggregate_carries_dialect_2(self) -> None:
         schema = _info("metadata_orgId", "metadata_virtualRecordId")
-        svc, execute = _service(schema, [1], [1], schema, 1, [1, b"k"], [0])
+        svc, execute = _service(schema, [1], [1], schema, 1, [1, b"k"], [0], schema, 1, [1], [[1, [b"__key", b"col:k"]], 0])
         flt = FilterExpression(must=[
             FieldCondition(key="metadata.orgId", value=ORG),
             FieldCondition(key="metadata.virtualRecordId", value="v"),
@@ -230,11 +230,45 @@ class TestDialectIsPinned:
         await svc.count_points("col", flt)
         await svc.scroll("col", flt, limit=3)
         await svc.delete_points("col", flt)
+        assert await svc._keys_matching_filter("col", flt) == [b"col:k"]  # the key scan of a filtered payload write
+        assert _calls(execute, "FT.AGGREGATE")
         queries = _calls(execute, "FT.SEARCH") + _calls(execute, "FT.AGGREGATE")
-        assert len(queries) >= 3
+        assert len(queries) >= 5
         for args in queries:
             assert args[args.index("DIALECT") + 1] == "2", args
             assert args.index("DIALECT") == 3  # straight after the query, ahead of every option that has its own arguments
+
+
+class _Tasks(list):
+    def spawn(self, coro: object) -> asyncio.Task:
+        self.append(asyncio.ensure_future(coro))
+        return self[-1]
+
+
+@contextlib.asynccontextmanager
+async def _workers() -> object:
+    """Tasks spawned inside are cancelled and joined on every exit, so a failing test does not leave one waiting on an event."""
+    tasks = _Tasks()
+    try:
+        yield tasks
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _reached(event: asyncio.Event, *workers: asyncio.Task) -> None:
+    """Wait for ``event``. A worker that ends first fails the test at once with its own error; so does a wait past 5 s."""
+    waiter = asyncio.ensure_future(event.wait())
+    try:
+        done, _ = await asyncio.wait({waiter, *workers}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+    for worker in workers:
+        if worker in done and waiter not in done:
+            worker.result()
+            raise AssertionError("the worker ended before it reached the step the test waits for")
+    assert waiter in done, "timed out waiting for the worker"
 
 
 class _Server:
@@ -286,32 +320,27 @@ class _Server:
 
     def stall(
         self, svc: RedisVectorService, *, alter_waits_for: asyncio.Event | None = None, applied: asyncio.Event | None = None,
-        then_waits_for: asyncio.Event | None = None, then_fails: bool = False,
+        reply_waits_for: asyncio.Event | None = None, reply_lost: bool = False,
     ) -> asyncio.Event:
-        """Interleave ``svc``'s create_index with other processes. Its FT.ALTER waits for ``alter_waits_for``, then sets ``applied`` once
-        it added the field; the command it sends right after that (if any) waits for ``then_waits_for`` or fails. Returns an event set
-        when its FT.ALTER reaches the server."""
+        """Interleave ``svc``'s create_index with other processes. Its FT.ALTER waits for ``alter_waits_for``, adds the field and sets
+        ``applied``; its reply then waits for ``reply_waits_for``, or never arrives (a connection error) when ``reply_lost``. Returns an
+        event set when its FT.ALTER reaches the server."""
         reached = asyncio.Event()
-        just_altered = False
 
         async def execute(*args: object) -> object:
-            nonlocal just_altered
-            if args[0] == "FT.ALTER":
-                reached.set()
-                if alter_waits_for is not None:
-                    await alter_waits_for.wait()
-                reply = await self.execute(*args)
-                just_altered = True
-                if applied is not None:
-                    applied.set()
-                return reply
-            if just_altered:
-                just_altered = False
-                if then_fails:
-                    raise ConnectionError("connection lost after the alter")
-                if then_waits_for is not None:
-                    await then_waits_for.wait()
-            return await self.execute(*args)
+            if args[0] != "FT.ALTER":
+                return await self.execute(*args)
+            reached.set()
+            if alter_waits_for is not None:
+                await alter_waits_for.wait()
+            reply = await self.execute(*args)
+            if applied is not None:
+                applied.set()
+            if reply_lost:
+                raise ConnectionError("connection lost after the server applied the alter")
+            if reply_waits_for is not None:
+                await reply_waits_for.wait()
+            return reply
 
         svc.client.execute_command.side_effect = execute
         return reached
@@ -440,30 +469,32 @@ class TestBackfill:
             await a.delete_points("col", self._record_filter())
 
     async def test_a_duplicate_alter_answered_before_the_winning_alter_reports_back_keeps_the_field_waiting(self) -> None:
-        """Two processes ensure a field an older index lacks: a's ALTER is answered "duplicate" after b's started the scan, before b's call returned."""
+        """Two processes ensure a field an older index lacks: a's ALTER is answered "duplicate" after b's started the scan, while b still
+        waits for its own reply."""
         server = _Server("metadata_orgId")
         a, b, c = server.store(), server.store(), server.store()
-        b_applied, a_done = asyncio.Event(), asyncio.Event()
+        b_applied, b_reply = asyncio.Event(), asyncio.Event()
         a_at_alter = server.stall(a, alter_waits_for=b_applied)
-        server.stall(b, applied=b_applied, then_waits_for=a_done)
-        task_a = asyncio.create_task(a.create_index("col", "metadata.virtualRecordId", {"type": "keyword"}))
-        await a_at_alter.wait()
-        task_b = asyncio.create_task(b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"}))
-        await task_a
-        try:
+        server.stall(b, applied=b_applied, reply_waits_for=b_reply)
+        async with _workers() as tasks:
+            task_a = tasks.spawn(a.create_index("col", "metadata.virtualRecordId", {"type": "keyword"}))
+            await _reached(a_at_alter, task_a)
+            task_b = tasks.spawn(b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"}))
+            await asyncio.wait_for(task_a, 5)
+            assert not task_b.done(), "b's reply is still on its way"
             with pytest.raises(IndexBackfilling):
                 await c.delete_points("col", self._record_filter())
             assert not server.searched()
-        finally:
-            a_done.set()
-            await task_b
+            b_reply.set()
+            await asyncio.wait_for(task_b, 5)
 
-    async def test_a_failure_after_a_successful_alter_does_not_take_the_wait_away(self) -> None:
+    async def test_a_lost_reply_to_a_successful_alter_does_not_take_the_wait_away(self) -> None:
         server = _Server("metadata_orgId")
         a, b = server.store(), server.store()
-        server.stall(b, then_fails=True)
-        with contextlib.suppress(ConnectionError):
+        server.stall(b, reply_lost=True)
+        with pytest.raises(ConnectionError):
             await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
+        assert "metadata_virtualRecordId" in server.fields, "the server applied the alter"
         with pytest.raises(IndexBackfilling):
             await a.delete_points("col", self._record_filter())
         assert not server.searched()
@@ -472,21 +503,20 @@ class TestBackfill:
         """No age makes a field complete: an idle check while a's ALTER is in flight must not let a later delete skip a's scan."""
         server = _Server("metadata_orgId")
         a, c = server.store(), server.store()
-        release, a_applied, a_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        a_at_alter = server.stall(a, alter_waits_for=release, applied=a_applied, then_waits_for=a_done)
-        task = asyncio.create_task(a.create_index("col", "metadata.virtualRecordId", {"type": "keyword"}))
-        await a_at_alter.wait()
-        later = time.time() + 3600
-        monkeypatch.setattr(time, "time", lambda: later)
-        await c.delete_points("col", FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]))  # idle
-        release.set()
-        await a_applied.wait()
-        try:
+        release, a_applied, a_reply = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        a_at_alter = server.stall(a, alter_waits_for=release, applied=a_applied, reply_waits_for=a_reply)
+        async with _workers() as tasks:
+            task = tasks.spawn(a.create_index("col", "metadata.virtualRecordId", {"type": "keyword"}))
+            await _reached(a_at_alter, task)
+            later = time.time() + 3600
+            monkeypatch.setattr(time, "time", lambda: later)
+            await c.delete_points("col", FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]))  # idle
+            release.set()
+            await _reached(a_applied, task)
             with pytest.raises(IndexBackfilling):
                 await c.delete_points("col", self._record_filter())
-        finally:
-            a_done.set()
-            await task
+            a_reply.set()
+            await asyncio.wait_for(task, 5)
 
     async def test_a_restart_that_rebuilds_the_index_does_not_inherit_the_fields_seen_complete_before_it(self) -> None:
         server = _Server(*self.FIELDS)
