@@ -19,6 +19,9 @@ const TOKEN_HELP_URL: Record<string, string> = {
 const SIGN_IN_POPUP_FEATURES = 'width=600,height=700,scrollbars=yes,resizable=yes';
 const SIGN_IN_POPUP_POLL_MS = 1000;
 
+// Sent on window after a connect, so every button for that connector (one per reminder) shows Connected.
+const CONNECTED_EVENT = 'pipeshub:user-access-connected';
+
 /** Marks the token dialog so a host panel can keep itself open (and below it) while it shows. */
 export const CONNECT_DIALOG_ATTR = 'data-ph-connect-account-dialog';
 
@@ -151,14 +154,19 @@ export function ConnectAccountAction({
 
   useEffect(() => {
     void load();
-  }, [load]);
+    const onOther = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === connectorId) void load();
+    };
+    window.addEventListener(CONNECTED_EVENT, onOther);
+    return () => window.removeEventListener(CONNECTED_EVENT, onOther);
+  }, [load, connectorId]);
 
   const connected = useCallback(async () => {
     setTokenFor(null);
     setError(null);
-    await load();
+    window.dispatchEvent(new CustomEvent(CONNECTED_EVENT, { detail: connectorId }));
     onConnected?.();
-  }, [load, onConnected]);
+  }, [connectorId, onConnected]);
 
   // The connector OAuth callback page completes the sign-in and reports back here.
   useEffect(() => {

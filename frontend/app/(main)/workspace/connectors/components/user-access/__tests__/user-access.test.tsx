@@ -174,6 +174,29 @@ describe('ConnectAccountAction (the Connect button on a notification)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  it('turns every button for that connector into Connected (one per reminder)', async () => {
+    const tokenOnly = { ...notion, signInAvailable: false };
+    api.getMyUserAccessConnectors
+      .mockResolvedValueOnce([tokenOnly])
+      .mockResolvedValueOnce([tokenOnly])
+      .mockResolvedValue([{ ...tokenOnly, connected: true, connection: connection() }]);
+    api.connectUserAccess.mockResolvedValue(connection());
+    renderInTheme(
+      <>
+        <ConnectAccountAction connectorId="c-1" />
+        <ConnectAccountAction connectorId="c-1" />
+      </>
+    );
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Connect' })).toHaveLength(2));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Connect' })[0]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Personal access token'), { target: { value: 'secret' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+
+    await waitFor(() => expect(screen.getAllByText('Connected as dana@example.com')).toHaveLength(2));
+  });
+
   it('offers Reconnect when the connection stopped working', async () => {
     api.getMyUserAccessConnectors.mockResolvedValue([
       { ...notion, connected: true, connection: connection({ status: 'revoked', lastError: 'Token revoked' }) },
