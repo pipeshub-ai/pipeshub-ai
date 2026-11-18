@@ -3291,6 +3291,33 @@ class TestBrowseHolders:
         await connector.run_sync()
         assert CAROL in grants(db, "1001")
 
+    async def test_the_naming_pass_for_an_admitted_account_has_the_project_stubs_swept(self, jira, db, store, search) -> None:
+        """ENG has no levels; Carol, ENG-1's reporter, is linked, so only the naming pass reads ENG again. Its stubs may
+        name her too, so ENG is in the projects whose stubs the sweep revisits."""
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        sweep = connector._sweep_placeholder_records
+        connector._sweep_placeholder_records = AsyncMock(side_effect=sweep)
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+        assert "10000" in connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"]
+
     async def test_a_refused_naming_query_keeps_the_project_marked_until_the_whole_read_succeeds(
         self, jira, db, store, search,
     ) -> None:

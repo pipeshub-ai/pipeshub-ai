@@ -1367,6 +1367,51 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert ("USER", "frank-key") in readers(db, "2")
 
+    async def test_an_issue_given_up_on_that_still_fails_does_not_hold_a_level_pass(self, jira, db, store, jql_search) -> None:
+        """ENG-2 was given up on and cannot be built. A level change reads it again (it may grant otherwise now), but its
+        failure leaves it given up and does not hold the pass: the digests are saved and the next sync walks nothing."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]})
+        leveled = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(leveled)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[leveled])
+        store.values_for("project_ENG")["given_up_issues"] = json.dumps({"2": leveled["fields"]["updated"]})
+        real = connector._extract_issue_data_with_parent
+
+        async def broken(issue: dict[str, Any], users: dict[str, AppUser]) -> dict[str, Any]:
+            if issue.get("id") == "2":
+                raise RuntimeError("cannot be built")
+            return await real(issue, users)
+
+        connector._extract_issue_data_with_parent = broken
+        serve_scheme(jira, {SECRET: [ALICE, CAROL_BY_NAME]})
+        await sync(connector, jql_search, recent=[])
+        assert jql_search.plain_calls >= 1, "the level pass read it"
+        await sync(connector, jql_search, recent=[])
+        assert jql_search.plain_calls == 0, "and is not repeated"
+
+    async def test_a_given_up_issue_that_keeps_failing_ends_the_generation_walk_after_the_usual_attempts(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """ENG-2 was given up on and cannot be built. The walk for frank revives it with a fresh attempt budget; once it is
+        given up again, its failure no longer holds the walk, so the generation is covered and the walks stop."""
+        connector, _ = await self._given_up_eng2_then_frank_listed(jira, db, store, jql_search)
+        real = connector._extract_issue_data_with_parent
+
+        async def broken(issue: dict[str, Any], users: dict[str, AppUser]) -> dict[str, Any]:
+            if issue.get("id") == "2":
+                raise RuntimeError("cannot be built")
+            return await real(issue, users)
+
+        connector._extract_issue_data_with_parent = broken
+        for _ in range(8):
+            await sync(connector, jql_search, recent=[])
+            if jql_search.plain_calls == 0:
+                break
+        assert jql_search.plain_calls == 0, "the walks stopped"
+        assert store.values_for("project_ENG")["people_read"] == store.values_for("people_reread")["generation"]
+
     async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
         self, jira, db, store, jql_search,
     ) -> None:

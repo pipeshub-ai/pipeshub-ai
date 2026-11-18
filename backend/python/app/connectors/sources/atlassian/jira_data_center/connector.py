@@ -3878,7 +3878,8 @@ class JiraDataCenterConnector(BaseConnector):
             "updated_count": stats["updated_count"],
             "is_new_project": is_new_project,
             # Any second pass rewrote leveled issues, so their stubs are re-secured too.
-            "leveled_reread": reread is not None,
+            # The naming pass for admitted accounts rewrote issues too, and their stubs may name those accounts.
+            "leveled_reread": reread is not None or (owed and bool(security.browse_holders)),
         }
 
     async def _mark_levels_to_retry(self, project_key: str) -> None:
@@ -5061,6 +5062,12 @@ class JiraDataCenterConnector(BaseConnector):
         """Hold the checkpoint for an issue that failed to process, until it has failed too many runs."""
         issue_id = str(issue.get("id") or "") if isinstance(issue, dict) else ""
         issue_key = (issue.get("key") if isinstance(issue, dict) else None) or issue_id or "unknown"
+        updated_text = str((issue.get("fields") or {}).get("updated") or "") if isinstance(issue, dict) else ""
+        if issue_id and self._given_up_issues.get(issue_id) == updated_text:
+            # Given up on already and unchanged since: a pass that read it again for the project's access is not held
+            # by it, or that pass would repeat every sync.
+            self.logger.warning(f"Issue {issue_key}, given up on, still could not be processed; it stays given up: {error}")
+            return
         self._issue_build_failures += 1
         attempts = self._failed_issue_attempts_before.get(issue_id, 0) + 1
         if attempts >= MAX_FAILED_ISSUE_ATTEMPTS:
@@ -5475,6 +5482,9 @@ class JiraDataCenterConnector(BaseConnector):
             if not stored_only and isinstance(issue, dict) and self._is_given_up_issue(issue):
                 skipped_unchanged_count += 1
                 continue
+            if stored_only and self._retry_given_up and isinstance(issue, dict):
+                # The first walk for a generation revives it: a fresh attempt budget, its failures counted as usual.
+                self._given_up_issues.pop(str(issue.get("id") or ""), None)
             try:
                 issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
 
