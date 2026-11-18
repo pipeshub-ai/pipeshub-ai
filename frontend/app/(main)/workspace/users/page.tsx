@@ -5,7 +5,7 @@ import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore, UsersPageHeaderActions } from '@/config';
+import { useAuthStore, UsersPageHeaderActions, useUserRowExtras } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
@@ -73,6 +73,7 @@ function UsersPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAdmin = useUserStore(selectIsAdmin);
+  const rowExtras = useUserRowExtras();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   // Remove user confirmation state
@@ -984,6 +985,7 @@ function UsersPageContent() {
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
+          ...rowExtras.memberActions(user),
           isAdmin && {
             icon: 'manage_accounts',
             label: t('workspace.users.actions.changeRole'),
@@ -1022,6 +1024,7 @@ function UsersPageContent() {
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
+          ...rowExtras.memberActions(user),
           isAdmin && {
             icon: 'manage_accounts',
             label: t('workspace.users.actions.changeRole'),
@@ -1049,6 +1052,7 @@ function UsersPageContent() {
     [
       t,
       isAdmin,
+      rowExtras,
       addToast,
       navigateToProfilePanel,
       requestChangeRole,
@@ -1283,6 +1287,7 @@ function UsersPageContent() {
         confirmLoadingLabel={t('workspace.users.actions.unblocking', 'Unblocking…')}
         onConfirm={() => void handleConfirmUnblock()}
       />
+      {rowExtras.element}
     </Flex>
   );
 }
