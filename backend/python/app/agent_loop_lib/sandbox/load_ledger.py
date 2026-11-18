@@ -311,7 +311,10 @@ class LoadLedger:
                     tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
                 )
                 try:
-                    os.write(fd, data)
+                    written = os.write(fd, data)
+                    if written != len(data):
+                        # A short write (disk full): keep the last whole file.
+                        raise OSError(f"short write ({written} of {len(data)} bytes)")
                 finally:
                     os.close(fd)
                 os.replace(tmp, final)

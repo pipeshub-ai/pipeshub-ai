@@ -247,6 +247,20 @@ class TestFiles:
         assert not ledger.enabled
         assert sum("sandbox load ledger: disabled" in r.message for r in caplog.records) == 1
 
+    def test_a_short_write_keeps_the_last_whole_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        ledger, _ = make(tmp_path)
+        ledger.outcome("granted", 0.0, None)
+        assert ledger.path is not None
+        before = ledger.path.read_bytes()
+        real_write = os.write
+        monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, data[: len(data) // 2]))
+        ledger.outcome("refused", 3.0, HoldReason.SLOTS_FULL)
+        assert ledger.path.read_bytes() == before
+        assert ledger._dirty  # retried by the next flush
+        monkeypatch.setattr(os, "write", real_write)
+        assert ledger.flush()
+        assert sum(b["refused"] for b in json.loads(ledger.path.read_text())["minutes"].values()) == 1
+
     def test_close_writes_what_is_left(self, tmp_path: Path) -> None:
         ledger, _ = make(tmp_path)
         ledger._dirty = True  # as if a deferred flush had not run yet
