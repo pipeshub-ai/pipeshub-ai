@@ -240,6 +240,21 @@ REFRESH_HANDBACK_DELAY_S = 30.0
 MEMBERSHIP_SYNC_PENDING = "Access scope update pending: the vector store could not be updated; a background sync is queued"
 
 
+#: Added to the reason of a record whose Force reindex failed on every attempt: that run removes the record's earlier
+#: index before it indexes again, so the record may have no vectors until a reindex succeeds.
+FORCE_REINDEX_FAILED_NOTE = (
+    "This was a Force reindex, which removes the record's earlier index before it indexes again: "
+    "the record may not be searchable until a reindex succeeds."
+)
+
+
+def with_force_reindex_note(reason: str | None, payload: dict | None) -> str | None:
+    """``reason`` for a record, with the Force reindex note when the failed event was a user's Force reindex."""
+    if not paid_cache_run.refresh_requested(payload):
+        return reason
+    return f"{reason} {FORCE_REINDEX_FAILED_NOTE}" if reason else FORCE_REINDEX_FAILED_NOTE
+
+
 def requeue_updates(current: dict | None, *, store_only: bool) -> dict:
     """The fields that put a record back in line after a transient failure, from the record as it is stored: nothing for a
     record that already advanced past IN_PROGRESS. A retry stays in the run it is in; only a record from before the run fields
@@ -2902,6 +2917,7 @@ class RecordEventHandler(BaseEventService):
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception, record=record, source=source_name)
+                    user_reason = with_force_reindex_note(user_reason, payload)
                     # Chosen from the exception's type, not its text (see is_password_protected).
                     terminal_status = (
                         ProgressStatus.PASSWORD_PROTECTED
