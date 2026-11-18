@@ -713,6 +713,9 @@ class TestMovesAndDeletions:
         processor.get_records_in_record_group = AsyncMock(
             side_effect=lambda _c, space, *_a, **_k: [stored_record(p, space_id=int(space)) for p in stored.get(int(space), [])]
         )
+        processor.get_record_by_external_id = AsyncMock(side_effect=lambda _c, ext: next(
+            (stored_record(p, space_id=s) for s, pages in stored.items() for p in pages if f"page:{p}" == ext), None
+        ))
 
     @pytest.mark.asyncio
     async def test_page_moved_between_synced_spaces_is_resaved_under_the_new_space(
@@ -830,6 +833,94 @@ class TestMovesAndDeletions:
         await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
 
         processor.delete_record_by_external_id.assert_awaited_once_with("conn-1", "page:2")
+
+    @pytest.mark.asyncio
+    async def test_a_move_saved_before_its_batch_failed_keeps_the_moved_page(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The move into 13 was saved, then the batch raised. The page is now stored under 13,
+        # not 12, so the removal pass must not delete it; the next run writes it again even
+        # though it is older than 13's checkpoint.
+        stored: dict[int, list[int]] = {12: [2]}
+        self.wiki(connector, processor, {12: [], 13: [page_payload(2, space_id=13)]}, stored)
+        checkpoints = self.remembered(connector)
+        checkpoints["WEBPAGE/space_pages/13"] = {"last_modified": 5000}
+
+        def save_then_raise(_batch: list) -> None:
+            stored.clear()
+            stored[13] = [2]
+            raise RuntimeError("publish failed")
+
+        processor.on_new_records = AsyncMock(side_effect=save_then_raise)
+        connector.data_source.get_page = AsyncMock(return_value=response(page_payload(2, space_id=13)))
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        processor.delete_record_by_external_id.assert_not_awaited()
+
+        processor.on_new_records = AsyncMock()
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        assert [r.external_record_id for c in processor.on_new_records.await_args_list for r, _ in c.args[0]] == ["page:2"]
+
+    @pytest.mark.asyncio
+    async def test_a_page_missing_twice_that_moved_since_is_not_deleted(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Missing from 12 twice, but by the time the removal pass acts it is stored under 13.
+        self.wiki(connector, processor, {12: []}, {12: [2]})
+        checkpoints = self.remembered(connector)
+        checkpoints["removals/space/all"] = {"after": 0, "missing": [2]}
+        processor.get_record_by_external_id = AsyncMock(return_value=stored_record(2, space_id=13))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        processor.delete_record_by_external_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_whose_attachments_failed_is_written_again_below_the_checkpoint(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # New to 12 (moved in) but older than its checkpoint: once stored, only a note that its
+        # attachments are owed brings it back.
+        stored: dict[int, list[int]] = {12: []}
+        self.wiki(connector, processor, {12: [page_payload(2, last_modified=1000)]}, stored)
+        checkpoints = self.remembered(connector)
+        checkpoints["WEBPAGE/space_pages/12"] = {"last_modified": 5000}
+        connector.data_source.list_attachments = AsyncMock(side_effect=[
+            response(status=500), response([{"id": 88, "fileName": "a.pdf", "lastModified": 1000}]),
+        ])
+
+        await connector._sync_pages({12: {"id": 12}})
+        stored[12] = [2]
+        processor.on_new_records.reset_mock()
+        await connector._sync_pages({12: {"id": 12}})
+
+        written = [r.external_record_id for c in processor.on_new_records.await_args_list for r, _ in c.args[0]]
+        assert written == ["page:2", "attachment:88"]
+
+        # Owed no more: the run after skips it again.
+        processor.on_new_records.reset_mock()
+        await connector._sync_pages({12: {"id": 12}})
+        processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_listing_with_an_unidentified_row_removes_nothing(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # PageExcerptDTO.id may be null (spec): the row may be stored page 2, so two such
+        # listings are not two misses.
+        self.wiki(connector, processor, {12: [page_payload(1), {"title": "?", "homeSpace": 12, "lastModified": 1}]},
+                  {12: [1, 2]})
+        self.remembered(connector)
+        connector.data_source.get_page = AsyncMock(return_value=response(page_payload(2, space_id=12)))
+
+        await connector._sync_pages({12: {"id": 12}})
+        await connector._sync_pages({12: {"id": 12}})
+
+        connector.data_source.get_page.assert_not_awaited()
+        processor.delete_record_by_external_id.assert_not_awaited()
+        assert any("without an id" in failure for failure in connector._failures)
 
     @pytest.mark.asyncio
     async def test_a_looked_up_page_without_an_id_is_written_under_the_id_asked_for(
@@ -1222,7 +1313,7 @@ class TestHelpers:
             response(spring_page([page_payload(2)], last=True)),
         ])
 
-        pages = [page async for page in connector._fetch_pages(12)]
+        pages = [page async for page in connector._fetch_pages(12, PageListing())]
 
         assert [page["id"] for page in pages] == [1, 2]
         # The space is filtered by the server, not by us.
@@ -1239,14 +1330,14 @@ class TestHelpers:
         )
 
         with pytest.raises(DrupalWikiSyncError, match="pages of space 12.*not the last"):
-            [page async for page in connector._fetch_pages(12)]
+            [page async for page in connector._fetch_pages(12, PageListing())]
         assert connector.data_source.list_pages.await_count == 1
 
     @pytest.mark.asyncio
     async def test_an_empty_last_window_ends_the_listing(self, connector: DrupalWikiConnector) -> None:
         connector.data_source.list_pages = AsyncMock(return_value=response(spring_page([], last=True)))
 
-        assert [page async for page in connector._fetch_pages(12)] == []
+        assert [page async for page in connector._fetch_pages(12, PageListing())] == []
 
     @pytest.mark.asyncio
     async def test_page_listing_raises_on_error_status(self, connector: DrupalWikiConnector) -> None:
@@ -1259,7 +1350,7 @@ class TestHelpers:
             DrupalWikiSyncError,
             match=r"pages of space 12: Internal Server Error: Search index unavailable \(HTTP 500\)",
         ):
-            [page async for page in connector._fetch_pages(12)]
+            [page async for page in connector._fetch_pages(12, PageListing())]
 
     @pytest.mark.asyncio
     async def test_page_listing_keeps_shared_pages_and_drops_homeless_ones(
@@ -1272,10 +1363,13 @@ class TestHelpers:
             page_payload(2, space_id=12),
             {"id": 3, "title": "No home", "lastModified": 1000},
         ])))
+        listing = PageListing()
 
-        pages = [page async for page in connector._fetch_pages(12)]
+        pages = [page async for page in connector._fetch_pages(12, listing)]
 
         assert [page["id"] for page in pages] == [1, 2]
+        # Not skipped silently: the row may be a page of this space.
+        assert listing.unidentified == {12}
 
     @pytest.mark.asyncio
     async def test_attachment_listing_walks_until_a_short_array(
@@ -2805,6 +2899,48 @@ class TestSharedPages:
         assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([ORG_GRANT]))]
 
     @pytest.mark.asyncio
+    async def test_a_share_into_a_space_the_listing_could_not_identify_keeps_its_grant(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Space 17 came back as a row without an id: it may still share the page, so the grant
+        # the page holds stays. With a listing that named every space, 17 is gone and it goes.
+        had = {"spaces": [17], "grants": _grants_digest([ORG_GRANT])}
+        checkpoints = self.wiki(connector, processor, {12: [self.PAGE], 13: [], 14: [], 15: []},
+                                shares={"1": had}, stored_open=True)
+        connector._space_listing_complete = False
+        connector._spaces_named = {12, 13, 14, 15}
+
+        await connector._sync_pages(self.SPACES)
+
+        assert self.rewrites(processor) == []
+        assert self.memory(checkpoints) == {"1": had}
+
+        self.wiki(connector, processor, {12: [self.PAGE], 13: [], 14: [], 15: []}, shares={"1": had}, stored_open=True)
+        connector._space_listing_complete = True
+        await connector._sync_pages(self.SPACES)
+        assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
+
+    @pytest.mark.asyncio
+    async def test_a_page_whose_home_space_the_listing_could_not_identify_is_left_as_it_is(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Page 1 is stored under 18, which came back as a row without an id; its space pass
+        # did not run, so nothing decides its access this run.
+        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT])}
+        checkpoints = self.wiki(connector, processor, {12: [], 13: [], 14: [], 15: []}, shares={"1": had})
+        moved = stored_record(1, space_id=18)
+        moved.access_rule = AccessRule.OPEN
+        processor.get_records_in_record_group = AsyncMock(return_value=[])
+        processor.get_record_by_external_id = AsyncMock(side_effect=lambda _c, ext: moved if ext == "page:1" else None)
+        connector._space_listing_complete = False
+        connector._spaces_named = {12, 13, 14, 15}
+
+        await connector._sync_pages(self.SPACES)
+
+        assert self.rewrites(processor) == []
+        assert self.memory(checkpoints) == {"1": had}
+
+    @pytest.mark.asyncio
     async def test_a_remembered_share_never_adds_a_grant(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
@@ -2855,6 +2991,9 @@ class TestPeopleWhoLostAccess:
         kept, disabled, removed = (self.stored("A@example.com", "1"), self.stored("b@example.com", "2"),
                                    self.stored("c@example.com", "3"))
         processor.get_all_app_users = AsyncMock(return_value=[kept, disabled, removed])
+        connector.data_source.get_user = AsyncMock(side_effect=lambda user_id: {
+            2: response({"id": 2, "email": "b@example.com", "status": "DISABLED"}),
+        }.get(user_id, response(status=404)))
 
         await connector._sync_users()
         await connector._withdraw_people_without_access()
@@ -2906,6 +3045,28 @@ class TestPeopleWhoLostAccess:
             await connector._sync_users()
 
         assert connector._enabled_emails is None
+
+    @pytest.mark.asyncio
+    async def test_a_person_the_directory_skipped_is_checked_before_losing_access(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The directory pages by offset, so a removal between two windows can shift Bob out
+        # of both. His own record says he is enabled; Carol's lookup fails, so she stays too.
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([
+            {"id": 1, "email": "a@example.com", "status": "ENABLED"},
+        ])))
+        processor.get_all_app_users = AsyncMock(return_value=[
+            self.stored("b@example.com", "2"), self.stored("c@example.com", "3"),
+        ])
+        connector.data_source.get_user = AsyncMock(side_effect=lambda user_id: {
+            2: response({"id": 2, "email": "B@example.com", "status": "ENABLED"}),
+        }.get(user_id, response(status=500)))
+
+        await connector._sync_users()
+        await connector._withdraw_people_without_access()
+
+        processor.withdraw_app_user_access.assert_not_awaited()
+        assert any("user 3" in failure for failure in connector._failures)
 
     @pytest.mark.asyncio
     async def test_a_directory_with_nobody_enabled_withdraws_nobody(

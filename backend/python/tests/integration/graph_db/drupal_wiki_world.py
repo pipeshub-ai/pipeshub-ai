@@ -127,6 +127,11 @@ class FakeWiki:
     async def list_users(self, **_: object) -> _Response:
         return _Response({"content": list(self.users.values()), "last": True})
 
+    async def get_user(self, user_id: int) -> _Response:
+        if user_id not in self.users:
+            return _Response({"title": "Not Found", "status": 404}, status=404)
+        return _Response(self.users[user_id])
+
     async def list_groups(self, **_: object) -> _Response:
         return _Response({"content": [], "last": True})
 
