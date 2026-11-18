@@ -31,12 +31,12 @@ BEGIN
   RETURN NEW;
 END $fn$;
 
--- enable_nestloop is off: a transition table has no statistics (see kg_0004). Whoever writes the membership (the indexing service holds
--- the group rows already; a job may not), the groups' rows are taken FOR NO KEY UPDATE in key order before the points are rewritten:
+-- Whoever writes the membership (the indexing service holds the group rows already; a job may not), the groups' rows are taken
+-- FOR NO KEY UPDATE in key order before the points are rewritten:
 -- a point writer of one of these groups holds its row FOR SHARE, so this waits for it to commit and then rewrites its point too. A group
 -- with no row gets NULL keys (its points are searched through the membership rows): keys are only ever written under the row's lock.
 CREATE FUNCTION retrieval.group_members_keys() RETURNS trigger LANGUAGE plpgsql
-SET search_path = pg_catalog, retrieval, pg_temp SET enable_nestloop = off SET jit = off AS $fn$
+SET search_path = pg_catalog, retrieval, pg_temp AS $fn$
 DECLARE v_org text[]; v_coll smallint[]; v_key text[];
 BEGIN
   IF current_user = 'pipeshub_restore' THEN RETURN NULL; END IF;

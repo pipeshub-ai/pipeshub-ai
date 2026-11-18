@@ -874,13 +874,18 @@ def test_point_writers_and_membership_writers_running_at_once_leave_every_points
     stop, errors = threading.Event(), []
 
     def points() -> None:
-        with connect_as(cluster, name, "pipeshub_indexing_login") as c:
-            for _ in range(60):
-                with uow(c, "pipeshub_indexing", ORG_A):
-                    c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
-                              "VALUES (%s, 1, 1, gen_random_uuid(), 'g1', %s::ext.halfvec, 4)", (ORG_A, VEC))
-                    c.execute("SELECT pg_sleep(0.005)")                                   # hold the group row while the other side runs
-        stop.set()
+        try:
+            with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+                for _ in range(60):
+                    with uow(c, "pipeshub_indexing", ORG_A):
+                        c.execute("SET LOCAL lock_timeout = '20s'")                     # a wait that never ends fails the test instead of hanging it
+                        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                                  "VALUES (%s, 1, 1, gen_random_uuid(), 'g1', %s::ext.halfvec, 4)", (ORG_A, VEC))
+                        c.execute("SELECT pg_sleep(0.005)")                               # hold the group row while the other side runs
+        except psycopg.Error as e:
+            errors.append(e)
+        finally:
+            stop.set()
 
     def members() -> None:
         with connect_as(cluster, name, "pipeshub_jobs") as c:
@@ -889,17 +894,18 @@ def test_point_writers_and_membership_writers_running_at_once_leave_every_points
                 i += 1
                 try:
                     with uow(c, "pipeshub_jobs", ORG_A):
+                        c.execute("SET LOCAL lock_timeout = '20s'")
                         c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
                         c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 1, %s)", (ORG_A, f"c{i}"))
-                except psycopg.Error as e:                                                # a deadlock would be an error here
+                except psycopg.Error as e:                                                # a deadlock or a lock wait that ran out
                     errors.append(e)
 
-    threads = [threading.Thread(target=points), threading.Thread(target=members)]
+    threads = [threading.Thread(target=points, daemon=True), threading.Thread(target=members, daemon=True)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(120)
-    assert errors == []
+    assert not any(t.is_alive() for t in threads) and errors == []
     with cluster.admin(name) as c:
         want = c.execute("SELECT array_agg(kind || ':' || member_id ORDER BY kind, member_id) FROM retrieval.group_members "
                          "WHERE org_id = %s AND group_key = 'g1' AND kind IN (1, 2, 3)", (ORG_A,)).fetchone()[0]
@@ -922,3 +928,22 @@ def test_a_restored_point_is_searched_through_the_membership_rows_whatever_keys_
             c.execute("RESET ROLE")
             c.execute("DELETE FROM kernel.restore_window")
     assert keys_of(cluster, name, ORG_A) == {P1: None}
+
+
+def test_a_membership_change_rewrites_the_keys_of_its_groups_points_by_index_without_reading_the_orgs_other_points(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                  "SELECT %s, 1, 1, gen_random_uuid(), 'other' || g, %s::ext.halfvec, 4 FROM generate_series(1, 3000) g", (ORG_A, VEC))
+        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+    with cluster.admin(name) as c:
+        c.execute("ANALYZE retrieval.points")
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 2, 'rg1')", (ORG_A,))
+        seq = c.execute("SELECT coalesce(sum(pg_stat_get_xact_numscans(c.oid)), 0)::int FROM pg_class c "
+                        "WHERE c.relnamespace = 'retrieval'::regnamespace AND c.relkind = 'r' AND c.relname LIKE 'points%%'").fetchone()[0]
+    assert seq == 0                                                                    # no sequential scan of the points; their group index instead
+    assert keys_of(cluster, name, ORG_A)[P1] == ["1:c1", "2:rg1"]
