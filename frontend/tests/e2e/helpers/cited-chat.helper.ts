@@ -141,6 +141,22 @@ export async function scrollDocumentOf(locator: Locator, to: 'top' | 'bottom'): 
   }, to);
 }
 
+/** Waits until the document `locator` lives in stops scrolling: a smooth scroll still running would move it later. */
+export async function waitForScrollToSettle(locator: Locator): Promise<void> {
+  let last: number | null = null;
+  await expect
+    .poll(
+      async () => {
+        const top = await locator.evaluate((el) => el.ownerDocument.scrollingElement?.scrollTop ?? 0);
+        const settled = top === last;
+        last = top;
+        return settled;
+      },
+      { message: 'the document should stop scrolling', timeout: 15_000, intervals: [300] },
+    )
+    .toBe(true);
+}
+
 /**
  * A handle to the renderer's document node, to prove later that it was never replaced.
  * The first citation click opens a card whose Preview button opens the viewer; once the viewer is open, later

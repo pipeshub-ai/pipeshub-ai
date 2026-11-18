@@ -31,6 +31,7 @@ import {
   rendererNode,
   scrollDocumentOf,
   scrollViewer,
+  waitForScrollToSettle,
   visiblePdfPage,
   type Cite,
   type CitedRecord,
@@ -157,15 +158,19 @@ test.describe('Citation viewer cache', () => {
       { record: docx, claim: 'Docx claim', content: 'PARA-80', blockNum: [80] },
     ]);
     await jumpTo(page, 1);
-    // The docx preview draws its document inside a sandboxed frame, which scrolls on its own.
+    // The docx preview draws its document inside a sandboxed frame, which scrolls on its own. The first
+    // jump's smooth scroll (sent again when the frame loads) has to finish before scrolling away, or it
+    // would bring the paragraph back and the second click would not be what is tested.
     const para = previewFrame(page).getByText('PARA-80', { exact: false }).first();
     await expect(para).toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => isInView(para), { timeout: 15_000 }).toBe(true);
+    await waitForScrollToSettle(para);
     await scrollDocumentOf(para, 'top');
     await expect.poll(() => isInView(para), { timeout: 10_000 }).toBe(false);
-    const before = log.calls.length;
+    const before = log.requests.length;
     await jumpTo(page, 1);
     await expect.poll(() => isInView(para), { timeout: 15_000 }).toBe(true);
-    expect(log.calls.length, 'no new request for the same chip').toBe(before);
+    expect(log.requests.length, 'no new request for the same chip').toBe(before);
 
     await askCitedQuestion(page, [
       { record: sheet, claim: 'Sheet claim', content: 'ROW-250', blockNum: [250] },
@@ -175,10 +180,10 @@ test.describe('Citation viewer cache', () => {
     await expect(row).toBeVisible({ timeout: 60_000 });
     await scrollViewer(page, 'top');
     await expect.poll(() => isInView(row), { timeout: 10_000 }).toBe(false);
-    const beforeSheet = log.calls.length;
+    const beforeSheet = log.requests.length;
     await jumpTo(page, 1);
     await expect.poll(() => isInView(row), { timeout: 15_000 }).toBe(true);
-    expect(log.calls.length).toBe(beforeSheet);
+    expect(log.requests.length, 'no new request for the same chip').toBe(beforeSheet);
   });
 
   // ── Re-opens: validators ───────────────────────────────────────────────
