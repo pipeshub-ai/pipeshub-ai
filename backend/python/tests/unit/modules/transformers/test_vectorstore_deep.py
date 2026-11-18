@@ -823,6 +823,7 @@ class TestApply:
 
         mock_ctx = MagicMock()
         mock_ctx.record = mock_record
+        mock_ctx.reconciliation_context = None
 
         result = await vs.apply(mock_ctx)
         vs.index_documents.assert_awaited_once()
