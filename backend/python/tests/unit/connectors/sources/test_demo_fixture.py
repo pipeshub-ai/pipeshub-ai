@@ -256,3 +256,50 @@ def test_every_record_revision_changes_so_a_resync_reaches_it(fx: dict) -> None:
         if demo_connector._revision_of(body) == hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     ]
     assert not unchanged
+
+
+def _about_summary(fx: dict) -> dict:
+    """What the product's "About the demo" panel says is in the fixture."""
+    containers = {c["id"]: c for c in fx["containers"]}
+    labels = demo_connector._SYSTEM_LABEL
+    tools: dict[str, dict] = {}
+    for c in fx["containers"]:
+        tool = tools.setdefault(c["system"], {"name": labels[c["system"]], "places": 0, "records": 0})
+        tool["places"] += 1
+    for r in fx["records"]:
+        tools[containers[r["container"]]["system"]]["records"] += 1
+    groups = {g["id"]: g["name"] for g in fx["groups"]}
+    threads = {t["id"]: t["title"] for t in fx.get("threads", [])}
+    sign_in = [p for p in fx["people"] if p.get("login")]
+    restricted: dict[str, dict] = {}
+    for r in fx["records"]:
+        if not r.get("group"):
+            continue
+        entry = restricted.setdefault(r["group"], {
+            "group": groups[r["group"]],
+            "records": [],
+            "signInReaders": [p["name"] for p in sign_in if r["group"] in p["groups"]],
+        })
+        title = threads.get(r.get("thread"), r["title"])
+        if title not in entry["records"]:
+            entry["records"].append(title)
+    return {
+        "company": fx["company"],
+        "recordCount": len(fx["records"]),
+        "tools": list(tools.values()),
+        "people": [
+            {"name": p["name"], "title": p["title"], **({"email": p["email"]} if p.get("login") else {}), "signIn": bool(p.get("login"))}
+            for p in fx["people"]
+        ],
+        "restricted": list(restricted.values()),
+    }
+
+
+def test_the_about_panel_describes_the_fixture(fx: dict) -> None:
+    # The panel can't read the fixture, so it ships a summary; regenerate it
+    # with json.dumps(_about_summary(fx), indent=2, ensure_ascii=False) when this fails.
+    root = _repo_root()
+    if root is None:
+        pytest.skip("frontend sources are not in this checkout")
+    path = root / "frontend/app/(main)/workspace/connectors/demo-data/acme-corp-summary.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == _about_summary(fx)
