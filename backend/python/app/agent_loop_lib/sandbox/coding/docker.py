@@ -423,7 +423,8 @@ def _env_count(name: str, default: int) -> int:
 
 
 def _container_size_rw(client: Any, container_id: str, timeout: float | None = None) -> int | None:
-    """``SizeRw`` of a container (bytes in its writable layer)."""
+    """``SizeRw`` of a container (bytes in its writable layer), or None
+    when the daemon could not measure it (it reports -1 then)."""
     api = client.api
     kwargs: dict[str, Any] = {"params": {"size": 1}}
     if timeout is not None:
@@ -431,7 +432,7 @@ def _container_size_rw(client: Any, container_id: str, timeout: float | None = N
     res = api._get(api._url("/containers/{0}/json", container_id), **kwargs)
     data = api._result(res, True)
     size = data.get("SizeRw") if isinstance(data, dict) else None
-    return size if isinstance(size, int) and not isinstance(size, bool) else None
+    return size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None
 
 
 class _DiskWatch:

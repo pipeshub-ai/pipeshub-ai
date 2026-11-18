@@ -105,6 +105,20 @@ class TestTheWatchFailsClosed:
         assert killed.is_set()
         assert "could not check this run's disk use" in result.stderr
 
+    async def test_a_size_the_daemon_could_not_measure_is_a_failed_check(self, tmp_path) -> None:
+        # Docker reports SizeRw=-1 when its storage driver cannot measure the layer.
+        client, _c, killed = _client(lambda: {"SizeRw": -1})
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        with patch("docker.from_env", return_value=client):
+            result = await sandbox.execute(CodeRequest(code="print(1)", language="python", timeout=30))
+
+        assert killed.is_set()
+        assert "could not check this run's disk use" in result.stderr
+
+    def test_an_empty_writable_layer_is_a_good_reading(self) -> None:
+        client, _c, _killed = _client(lambda: {"SizeRw": 0})
+        assert docker_mod._container_size_rw(client, "c0ffee") == 0
+
     async def test_a_check_slower_than_the_timeout_stops_the_run_at_once(self, tmp_path) -> None:
         release = threading.Event()
 
