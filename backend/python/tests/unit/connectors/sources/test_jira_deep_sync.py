@@ -87,6 +87,9 @@ def _make_connector():
     connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
     # No issue security scheme: unsecured issues are unchanged
     connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    # The role list kept for security levels (roles_for_levels): nothing kept yet.
+    connector.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.issues_sync_point.update_sync_point = AsyncMock()
     return connector
 
 
