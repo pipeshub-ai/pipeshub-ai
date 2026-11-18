@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     AppGroups,
     CollectionNames,
     Connectors,
@@ -4488,15 +4489,18 @@ class JiraConnector(BaseConnector):
         )
         # A change of who the Browse holders name on each issue moves no issue's `updated`.
         stored_browse = (project_sync_data or {}).get("browse_holders") or ""
-        if security.browse_holders is None and not stored_browse:
-            security.browse_holders = []  # nothing was granted this way before, so nothing is lost
+        if security.browse_holders is None and not stored_browse and not is_new_project:
+            # Synced before the holders were tracked: nothing was granted this way, so nothing is lost. A project
+            # with no checkpoint (never synced, or cleared by a full resync) may have stored issues they grant.
+            security.browse_holders = []
         browse = security.browse_fingerprint()
         if not is_new_project and browse not in ("?", stored_browse):
             reread, changed_levels = "project", None
-        browse_to_save = browse if browse != "?" or stored_browse else stored_browse
-        if browse == "?" and stored_browse not in ("", "?"):
-            # Saved before the walk, as the level marker is: issues written meanwhile keep their
-            # stored grants, and only this marker makes the next sync that reads them re-read.
+        browse_to_save = browse
+        if browse == "?" and stored_browse != "?":
+            # Saved before the walk, as the level marker is: issues written meanwhile keep their stored grants, and
+            # only this marker makes the next sync that reads them re-read. On a project with no checkpoint too: an
+            # issue that fails to build still moves the cursor, and the next sync must not read the holders as none.
             await self._update_project_sync_checkpoint(project_key, browse_holders="?")
             stored_browse = "?"
         if levels_to_save.get("*") == "held":
@@ -5123,7 +5127,9 @@ class JiraConnector(BaseConnector):
             new_count = 0
             edge_rebuild_count = 0
             for record, record_permissions, content_changed in batch:
-                if record.version == 0:
+                # Version 0 is also an issue unchanged since its first sync (content_changed False), which has
+                # stored grants as much as any other: only a new issue or a promoted placeholder has none to keep.
+                if record.version == 0 and (content_changed or not self._keeps_stored_grants(record)):
                     to_upsert.append((record, record_permissions))
                     new_count += 1
                 elif content_changed or self._keeps_stored_grants(record):
@@ -5740,6 +5746,9 @@ class JiraConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
+                unchanged_stored_rule=None if is_issue_changed or existing_record is None else next(
+                    (r for r in AccessRule if r.value == getattr(existing_record.access_rule, "value",
+                                                                 existing_record.access_rule)), None),
             )
             permissions = self._directory_grants(permissions, user_by_account_id)
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
