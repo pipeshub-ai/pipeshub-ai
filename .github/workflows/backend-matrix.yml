@@ -51,10 +51,27 @@ on:
       - 'backend/python/app/connectors/core/base/data_processor/**'
       - 'backend/python/app/connectors/core/base/data_store/**'
       - 'backend/python/app/modules/transformers/**'
+      # The paid-result cache: its retention, erasure and isolation tests run against the real storage service.
+      - 'backend/python/app/services/paid_cache/**'
+      # The re-purge tests bind the org context the handlers run under.
+      - 'backend/python/app/core/org_context.py'
+      - 'backend/python/app/utils/is_truncated.py'
       # Knowledge-base push: its real-graph tests (graph_db/test_kb_push_*) drive the push service itself.
       - 'backend/python/app/connectors/sources/localKB/**'
       - 'backend/python/app/services/storage_documents.py'
       - 'backend/python/app/modules/indexing/record_republish.py'
+      # The record diagnostics writes: the run rule, the contract script, the exception the widening raises, and the writers it
+      # drives in the flows tests (tests/integration/graph_db/test_record_diagnostics_*).
+      - 'backend/python/app/modules/indexing/record_diagnostics.py'
+      - 'backend/python/app/modules/indexing/rate_limit_deferral.py'
+      - 'backend/python/app/scripts/record_diagnostics_contract.py'
+      - 'backend/python/app/exceptions/graph_db_exceptions.py'
+      - 'backend/python/app/services/messaging/kafka/handlers/entity.py'
+      - 'backend/python/app/events/events.py'
+      - 'backend/python/app/api/routes/chatbot.py'
+      - 'backend/python/app/modules/indexing/parse_now_marker.py'
+      - 'backend/python/app/telemetry/backend.py'
+      - 'backend/python/app/utils/time_conversion.py'
       # Entity search and named-entity linking: graph_db/test_permitted_entity_records_* reads through them.
       - 'backend/python/app/modules/retrieval/**'
       - 'backend/python/app/modules/named_entities/**'
@@ -68,6 +85,7 @@ on:
       - 'backend/python/app/modules/indexing/duplicate_reconcile.py'
       - 'backend/python/app/modules/indexing/named_entity_persist_retry.py'
       - 'backend/python/tests/integration/messaging/**'
+      - 'backend/python/tests/integration/paid_results/**'
       - 'backend/python/tests/integration/vector_db/**'
       - 'backend/python/tests/integration/kv/**'
       # Where real-graph tests live.
@@ -127,6 +145,7 @@ on:
       # Helpers outside tests/integration that the suites import.
       - 'backend/python/tests/conftest.py'
       - 'backend/python/tests/support/**'
+      - 'backend/python/tests/unit/attempt_start.py'
       - 'backend/python/tests/unit/agents/adapter/conftest.py'
       - 'backend/python/tests/unit/agents/adapter/support/scripted_transport.py'
       - 'backend/python/tests/unit/connectors/sources/localKB/push/bodies.py'
@@ -424,13 +443,13 @@ jobs:
         include:
           - backend: local
             storage_type: local
-            services: mongodb-storage-it
+            services: mongodb-storage-it redis-storage-it
           - backend: s3
             storage_type: s3
-            services: mongodb-storage-it minio-vhost-storage-it
+            services: mongodb-storage-it redis-storage-it minio-vhost-storage-it
           - backend: azure
             storage_type: azureBlob
-            services: mongodb-storage-it azurite-storage-it
+            services: mongodb-storage-it redis-storage-it azurite-storage-it
 
     env:
       SERVICES: ${{ matrix.services }}
@@ -559,6 +578,7 @@ jobs:
           ARTIFACTS_IT_STORAGE_URL: http://127.0.0.1:${{ env.STORAGE_PORT }}
           ARTIFACTS_IT_SCOPED_SECRET: ${{ env.SCOPED_SECRET }}
           ARTIFACTS_IT_STORAGE_TYPE: ${{ matrix.storage_type }}
+          PAID_RESULTS_IT_REDIS_URL: redis://127.0.0.1:19379/0
         run: |
           TESTS=$(cat "$RUNNER_TEMP/storage-discovered.txt")
           # shellcheck disable=SC2086

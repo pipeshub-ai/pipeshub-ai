@@ -57,7 +57,7 @@ from app.connectors.core.sync.run_context import (
 )
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError, is_graph_memory_refusal
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -88,6 +88,8 @@ from app.connectors.core.base.data_processor.record_links import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.code_graph import deleted_files
+from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
@@ -570,6 +572,9 @@ class DataSourceEntitiesProcessor:
         permanent error that would otherwise commit the block without its write."""
         if isinstance(error, SchemaValidationError):
             self._report_schema_rejection(error)
+            return True
+        if isinstance(error, RecordSchemaNarrowError):
+            # the provider aborted the transaction; its owner runs it again once the schema is wide
             return True
         provider = self.data_store_provider
         if (
@@ -2132,7 +2137,7 @@ class DataSourceEntitiesProcessor:
             )
 
     @staticmethod
-    def _stamp_queued_at(record: Record) -> None:
+    def _stamp_queued_at(record: Record, stored: Record | None = None, *, start: bool = False) -> None:
         """Mark a record put in line for indexing, before its event is published.
 
         The stranded-record sweep ages rows on this, not on updated_at, which
@@ -2141,12 +2146,21 @@ class DataSourceEntitiesProcessor:
         the publish, so a failed one still leaves an ageable marker; never on a
         write that publishes nothing, which would keep postponing the recovery of
         a record whose event was lost.
+
+        The record's run fields are stamped from the stored record it replaces (``stored``; None for a new one):
+        an open run is continued, otherwise a new one starts. ``start`` forces a start (a record brought back from
+        the trash).
         """
         if record.indexing_status in (
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         ):
-            record.queued_at = get_epoch_timestamp_in_ms()
+            now = get_epoch_timestamp_in_ms()
+            record.queued_at = now
+            stored_run = None if start or stored is None else getattr(stored, "_stored_run", None)
+            patch = run_reference(stored_run, WriteKind.QUEUE, now)
+            record.first_queued_at = patch.get(FIRST_QUEUED_AT)
+            record.indexing_attempts = patch.get(INDEXING_ATTEMPTS)
 
     @classmethod
     def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
@@ -3027,7 +3041,7 @@ class DataSourceEntitiesProcessor:
             if existing_record.is_placeholder and not record.is_placeholder:
                 record.is_placeholder = False
             if publishes_event and not keeps_stored_indexing:
-                self._stamp_queued_at(record)
+                self._stamp_queued_at(record, existing_record, start=restored_from_trash)
             if (
                 record.external_revision_id == existing_record.external_revision_id
                 and record.is_placeholder
@@ -3040,7 +3054,7 @@ class DataSourceEntitiesProcessor:
                 record.access_rule = existing_record.access_rule
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
-                self._stamp_queued_at(record)
+                self._stamp_queued_at(record, existing_record, start=True)
 
         parent_in_other_group = False
         parent_outside_group = False
@@ -3484,7 +3498,7 @@ class DataSourceEntitiesProcessor:
                 # An identical re-push that stores a new document keeps the stored revision, so the
                 # upload branch of _process_record carried the stored status (FAILED) over and stamped nothing.
                 processed.indexing_status = ProgressStatus.NOT_STARTED.value
-                self._stamp_queued_at(processed)
+                self._stamp_queued_at(processed, Record.from_arango_base_record(existing) if existing is not None else None)
                 await tx_store.batch_upsert_records([processed])
             elif expected is not None and not content_changed and existing is not None:
                 # A rename or version bump: indexing owns its state, which the upsert must not reset.
@@ -3881,7 +3895,7 @@ class DataSourceEntitiesProcessor:
                     if needs_reindex:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
-                        self._stamp_queued_at(new_record)
+                        self._stamp_queued_at(new_record, old_record)
                         records_to_reindex.append(new_record)
                         if not _is_publishable(new_record):
                             # Content changed *and* the group moved, but the

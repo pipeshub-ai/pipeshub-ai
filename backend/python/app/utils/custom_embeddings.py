@@ -37,6 +37,7 @@ from tenacity import (
 from typing_extensions import Self
 
 from app.utils.logger import create_logger
+from app.utils.threaded import to_thread_settled
 
 logger = create_logger("custom_embeddings")
 
@@ -54,9 +55,23 @@ def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any
     )
 
 
-def _check_response(response: dict) -> dict:
+class VoyageAPIError(RuntimeError):
+    """Voyage answered without embeddings. Keeps the HTTP status and the response (its headers carry ``Retry-After``), so
+    the caller that owns the retries can tell a throttle or an outage from a request's own fault."""
+
+    def __init__(self, message: str, *, status_code: int | None = None, response: Any = None) -> None:  # noqa: ANN401
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
+
+
+def _check_response(response: dict, http_response: Any = None) -> dict:  # noqa: ANN401
     if "data" not in response:
-        raise RuntimeError(f"Voyage API Error. Message: {json.dumps(response)}")
+        raise VoyageAPIError(
+            f"Voyage API Error. Message: {json.dumps(response)}",
+            status_code=getattr(http_response, "status_code", None),
+            response=http_response,
+        )
     return response
 
 
@@ -66,8 +81,23 @@ def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> 
 
     @retry_decorator
     def _embed_with_retry(**kwargs: dict[str, Any]) -> dict[str, Any]:
-        response = requests.post(**kwargs)
-        return _check_response(response.json())
+        # Imported here: the gateway's wire module is a layer above this one. A ``requests`` call has no hooks of its own, so
+        # it is admitted against the stage job's send allowance and counted in the wire scope of the attempt by hand.
+        from app.services.llm_gateway import wire
+
+        wire.admit_request()
+        wire.note_request_sent()
+        try:
+            response = requests.post(**kwargs)
+        except requests.exceptions.RequestException as exc:
+            wire.note_error(type(exc).__name__)
+            raise
+        wire.note_response(response.status_code, wire.parse_retry_after(response.headers))
+        try:
+            payload = response.json()
+        except ValueError:  # an outage page is not JSON: the status still says what it was
+            payload = {"error": (response.text or "")[:200]}
+        return _check_response(payload, response)
 
     return _embed_with_retry(**kwargs)
 
@@ -240,6 +270,14 @@ class VoyageEmbeddings(BaseModel, Embeddings):
         return self._get_embeddings(
             texts, batch_size=self.batch_size, input_type="document"
         )
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        """``embed_documents`` in a thread that keeps the caller's context (LangChain's default uses an executor that does
+        not), so the request is admitted and counted by the wire scope of the gateway attempt that made it."""
+        return await to_thread_settled(lambda: self.embed_documents(texts))
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return await to_thread_settled(lambda: self.embed_query(text))
 
     def embed_query(self, text: str) -> List[float]:
         """Call out to Voyage Embedding endpoint for embedding query text.
@@ -454,7 +492,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
             response = response.model_dump()
         return response["data"][0]["embedding"]
 
-    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of document texts using passage model asynchronously.
 
         Args:
@@ -475,7 +513,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
                 embeddings.extend([i["embedding"] for i in response["data"]])
         return embeddings
 
-    async def aembed_query(self, text: str) -> List[float]:
+    async def aembed_query(self, text: str) -> list[float]:
         """Asynchronous Embed query text using query model.
 
         Args:

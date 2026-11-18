@@ -29,8 +29,8 @@ from app.exceptions.non_retryable import NonRetryableError
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.user_errors import CONNECTOR_OFF
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -337,7 +337,7 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_found_and_soft_deleted(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-1"))
+        gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-1", user_id=None))
         gp.batch_upsert_nodes = AsyncMock()
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "alice@example.com"
@@ -808,6 +808,7 @@ class TestAppDisabledDrainsQueuedRecords:
             "createdAtTimestamp": 1000000,
         })
         gp.update_node = AsyncMock()
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.reset_indexing_status_for_connector = AsyncMock(
             side_effect=RuntimeError("graph unavailable")
         )
