@@ -99,29 +99,28 @@ def test_a_passed_deadline_reads_nothing_and_says_so() -> None:
     assert (matches, total, complete) == ([], 0, False)
 
 
-async def test_a_slow_pattern_does_not_stall_the_event_loop() -> None:
-    import asyncio
-    import time
+def test_a_slow_pattern_does_not_stall_the_event_loop() -> None:
+    """A slow line is searched with ``concurrent=True``, which lets the event loop's thread run while the search does.
+    Checked as the arguments each search got, not by the loop's longest gap, which a busy runner stretches. No
+    deadline: a runner pause could pass it before the first search (``MAX_LINE_TIMEOUTS`` still ends the scan)."""
+    from app.utils import grep_lines
 
     line = ",".join(f"v{j}" for j in range(60))
     blocks = [{"data": "\n".join([line] * 400)}]
-    pattern = regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE)
-    worst = 0.0
+    compiled = regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE)
+    searches: list[tuple[float | None, bool]] = []
 
-    async def ticker() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        for _ in range(40):
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
+    class Recording:
+        pattern = compiled.pattern
 
-    await asyncio.gather(
-        asyncio.to_thread(find_matches, blocks, pattern, context_lines=0, max_matches=5, deadline=time.monotonic() + 0.5),
-        ticker(),
-    )
-    assert worst < 0.1
+        def search(self, text: str, **kwargs: object) -> object:
+            searches.append((kwargs.get("timeout"), bool(kwargs.get("concurrent"))))  # type: ignore[arg-type]
+            return compiled.search(text, **kwargs)
+
+    find_matches(blocks, Recording(), context_lines=0, max_matches=5)  # type: ignore[arg-type]
+    slow = [concurrent for timeout, concurrent in searches if timeout is not None and timeout > grep_lines._QUICK_SECS]
+    assert slow, f"no slow line was searched: {searches}"
+    assert all(slow), f"a slow line was searched holding the GIL: {searches}"
 
 
 @pytest.mark.parametrize("python_pattern,literal", [
