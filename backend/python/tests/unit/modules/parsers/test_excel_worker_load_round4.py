@@ -15,6 +15,7 @@ from app.services.parsing.interface import ParseError
 from app.utils import user_errors
 from app.utils.indexing_helpers import generate_simple_row_text
 from tests.support.excel_workbooks import MAIN_NS, load, workbook_zip
+from tests.support.table_model import count_hashed_bytes, keyed_answer
 
 
 def _quiet(parser) -> None:
@@ -34,6 +35,11 @@ def _big_cell_workbook(chars: int) -> bytes:
     return workbook_zip(f"<sheetData>{rows}</sheetData>", extra={"xl/sharedStrings.xml": sst})
 
 
+def _keyed_for(messages: list) -> SimpleNamespace:
+    """A well-formed keyed answer for the rows in the prompt."""
+    return keyed_answer(messages, lambda _i, _row: "d")
+
+
 def test_prompts_carry_a_bounded_slice_of_a_huge_cell(monkeypatch) -> None:
     parser = load(_big_cell_workbook(2_000_000))
     _quiet(parser)
@@ -47,12 +53,12 @@ def test_prompts_carry_a_bounded_slice_of_a_huge_cell(monkeypatch) -> None:
         seen.append(sum(len(str(m.content)) for m in messages))
         return SimpleNamespace(content="summary")
 
-    async def rows(_llm: object, messages: list, **k: int) -> SimpleNamespace:
+    async def rows(_llm: object, messages: list, *_a: object, **_k: object) -> SimpleNamespace:
         seen.append(sum(len(str(m.content)) for m in messages))
-        return SimpleNamespace(descriptions=["d"] * k["expected_count"])
+        return _keyed_for(messages)
 
     monkeypatch.setattr(module, "invoke_with_structured_output_and_reflection", structured)
-    monkeypatch.setattr(module, "invoke_with_row_descriptions_and_reflection", rows)
+    monkeypatch.setattr("app.utils.table_enrichment.invoke_with_structured_output_and_reflection", rows)
     monkeypatch.setattr(parser, "_call_llm", call_llm)
     asyncio.run(parser.get_blocks_from_workbook(MagicMock()))
     assert len(seen) >= 3  # header detection, summary and row text were all built
@@ -68,7 +74,7 @@ def test_the_fallback_row_text_keeps_the_whole_cell(monkeypatch) -> None:
     async def none(*a: object, **k: object) -> None:
         return None
 
-    monkeypatch.setattr(module, "invoke_with_row_descriptions_and_reflection", none)
+    monkeypatch.setattr("app.utils.table_enrichment.invoke_with_structured_output_and_reflection", none)
     row = [{"header": "a", "value": "y" * 100_000}, {"header": "b", "value": 1}]
     texts = asyncio.run(parser.get_rows_text([row], "s"))
     assert texts == [generate_simple_row_text({"a": "y" * 100_000, "b": 1})]
@@ -95,7 +101,7 @@ def test_llm_row_texts_are_charged_as_each_batch_arrives(monkeypatch) -> None:
     async def summary(_table: object) -> str:
         return "s"
 
-    async def get_rows_text(batch: list, _summary: str) -> list[str]:
+    async def get_rows_text(batch: list, _summary: str, **_kwargs: object) -> list[str]:
         await asyncio.sleep(0)
         returned[0] += 1
         return ["z" * 100_000] * len(batch)
@@ -148,29 +154,31 @@ def _wide_rows(n_rows: int, n_cols: int) -> list[list[dict]]:
     return [[{"header": f"h{c}", "value": big + str(r)} for c in range(n_cols)] for r in range(n_rows)]
 
 
-def test_a_wide_row_text_prompt_is_refused_before_it_is_built() -> None:
+def test_a_wide_row_text_prompt_is_refused_before_it_is_built(monkeypatch) -> None:
     # 50 rows x 40 columns x 20 000 chars is 40 MB of prompt text, copied several times
     parser = load(_big_cell_workbook(10))
     _quiet(parser)
     parser.llm = MagicMock()
     parser._output.left = 20_000_000
     built = [0]
+    hashed = count_hashed_bytes(monkeypatch)
 
-    async def rows(_llm: object, messages: list, **k: int) -> SimpleNamespace:
+    async def rows(_llm: object, messages: list, *_a: object, **_k: object) -> SimpleNamespace:
         built[0] += 1
-        return SimpleNamespace(descriptions=["d"] * k["expected_count"])
+        return _keyed_for(messages)
 
-    import app.modules.parsers.excel.excel_parser as ep
+    import app.utils.table_enrichment as te
 
-    original = ep.invoke_with_row_descriptions_and_reflection
-    ep.invoke_with_row_descriptions_and_reflection = rows
+    original = te.invoke_with_structured_output_and_reflection
+    te.invoke_with_structured_output_and_reflection = rows
     try:
         with pytest.raises(ParseError) as raised:
             asyncio.run(parser.get_rows_text(_wide_rows(50, 40), "s"))
     finally:
-        ep.invoke_with_row_descriptions_and_reflection = original
+        te.invoke_with_structured_output_and_reflection = original
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
     assert built[0] == 0  # the LLM was never called: the prompt was not built
+    assert hashed[0] < 2_000_000, "the row keys must not serialise the 40 MB of cells before the guard refuses them"
 
 
 def test_a_wide_row_text_prompt_within_budget_is_charged_at_least_what_it_allocates(monkeypatch) -> None:
@@ -187,11 +195,11 @@ def test_a_wide_row_text_prompt_within_budget_is_charged_at_least_what_it_alloca
         real_charge(self, nbytes)
         lowest[0] = min(lowest[0], self.left)
 
-    async def rows(_llm: object, messages: list, **k: int) -> SimpleNamespace:
-        return SimpleNamespace(descriptions=["d"] * k["expected_count"])
+    async def rows(_llm: object, messages: list, *_a: object, **_k: object) -> SimpleNamespace:
+        return _keyed_for(messages)
 
     monkeypatch.setattr(module._OutputBudget, "charge", watch)
-    monkeypatch.setattr(module, "invoke_with_row_descriptions_and_reflection", rows)
+    monkeypatch.setattr("app.utils.table_enrichment.invoke_with_structured_output_and_reflection", rows)
     data = _wide_rows(50, 4)  # 4 MB of values
     tracemalloc.start(1)
     try:
@@ -201,4 +209,5 @@ def test_a_wide_row_text_prompt_within_budget_is_charged_at_least_what_it_alloca
     finally:
         tracemalloc.stop()
     charged = start - lowest[0]
-    assert peak - before <= charged + 100_000, f"allocated {(peak - before) / 1e6:.1f} MB, charged {charged / 1e6:.1f} MB"
+    # the slack covers the fixed cost of the keyed answer (parsed entries, alignment), not data-sized
+    assert peak - before <= charged + 250_000, f"allocated {(peak - before) / 1e6:.1f} MB, charged {charged / 1e6:.1f} MB"
