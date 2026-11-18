@@ -38,6 +38,7 @@ from tests.permissions.kh_worlds import (
     CHAINLINK,
     DECLPAG,
     KH_WORLDS,
+    LEVELS,
     OPENGRANT,
     OPENGRANTTEAM,
     PAGMEMBER,
@@ -507,6 +508,20 @@ async def test_linked_source_accounts_list_what_the_viewer_may_read(kh_layer, mo
         await kh_layer.release(chunk)
     assert not bad, f"{kh_layer.name}+{variant}\n{_describe(bad)}"
     assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} worlds were refused as not copied"
+
+
+async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(kh_layer) -> None:
+    """LEVELS (a Jira security level's group): as on Neo4j and ArangoDB, the group is never listed, every issue under it is listed once where it
+    is filed, and a granted record below it whose other parent the viewer cannot open is a chain-top of its own group."""
+    await kh_layer.preload([LEVELS])
+    with bind(OrgContext((await kh_layer._ns(LEVELS)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, LEVELS, "u", "P", "recordGroup") == {"E": True, "E2": True, "t1": True, "t2": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "u", "E", "record") == {"s1": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "y", "P", "recordGroup") == {"E": True, "E2": True, "o": False, "t1": False, "t2": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "w", "P", "recordGroup") == {"E": False, "t2": False}, kh_layer.name
+        assert "L" not in {r["id"] for r in (await listing(kh_layer, LEVELS, "u")).rows}, kh_layer.name
+    bad = _bad(await check(kh_layer, LEVELS, "levels"))
+    assert not bad, _describe(bad)
 
 
 async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_grant_and_nowhere_else(kh_layer: KhPgLayer) -> None:
