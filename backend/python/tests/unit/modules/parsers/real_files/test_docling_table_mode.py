@@ -13,6 +13,7 @@ from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import TableFormerMode
 
 from app.modules.parsers.pdf import docling_processor
+from app.utils import env_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -58,9 +59,16 @@ def test_accurate_reaches_the_converter(table_mode_of_converter: Callable[[str |
 
 
 def test_invalid_value_warns_and_uses_accurate(
-    table_mode_of_converter: Callable[[str | None], TableFormerMode], caplog: pytest.LogCaptureFixture
+    table_mode_of_converter: Callable[[str | None], TableFormerMode],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The warning is logged once per process and value; start from a clean record of it.
+    monkeypatch.setattr(env_config, "_warned_choices", set())
     with caplog.at_level(logging.WARNING):
         mode = table_mode_of_converter("turbo-invalid")
     assert mode is TableFormerMode.ACCURATE
-    assert any(ENV in r.getMessage() and "turbo-invalid" in r.getMessage() for r in caplog.records)
+    assert any(
+        r.levelno == logging.WARNING and ENV in r.getMessage() and "turbo-invalid" in r.getMessage()
+        for r in caplog.records
+    )

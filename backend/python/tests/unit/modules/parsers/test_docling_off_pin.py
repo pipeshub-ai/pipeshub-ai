@@ -45,8 +45,12 @@ PROCESSOR_ADDED = {
 #  - ``parse_document`` awaits ``ensure_docling()`` and calls the converter through a helper that
 #    runs in the worker thread: the off-path test below reverses exactly those edits and compares
 #    the body with main's;
-#  - the other entries are re-pinned to the hash they have now. Each differs from main only by
-#    the moved imports (``_get_converter``, ``_parse_document_in_worker``), by the lazily built
+#  - the table-structure mode is a behaviour change, not an import move: ``_get_table_mode`` (added)
+#    reads PDF_DOCLING_TABLE_MODE and ``_get_converter`` passes its result, so the default model is
+#    ACCURATE where main used FAST. ``test_docling_table_mode.py`` pins that behaviour;
+#  - the other entries are re-pinned to the hash they have now. Apart from the table mode above,
+#    each differs from main only by the moved imports (``_get_converter``,
+#    ``_parse_document_in_worker``), by the lazily built
 #    converter (``__init__`` no longer builds it) or by the type-only import block. The traces
 #    below still replay the behaviour of all of them.
 LAZY_IMPORT_IMPORTS = {
