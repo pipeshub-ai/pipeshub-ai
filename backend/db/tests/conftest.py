@@ -27,6 +27,22 @@ SURFACE_DIR = Path(__file__).parent
 UPDATE_SURFACE = os.environ.get("UPDATE_SURFACE") == "1"
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _the_shared_migrations_only(tmp_path_factory):
+    """These tests are about the shared migration modules (their surface text, epochs, downgrades and catalog), so the edition file in force
+    registers no extra module: ``PIPESHUB_EDITION_FILE`` points at an empty one unless the caller set it. A test that is about the shipped
+    edition file (what the build registers) deletes the variable; a test about a registered module sets it to its own file.
+    Session scoped, because module-scoped database fixtures migrate before any function-scoped fixture runs."""
+    if os.environ.get("PIPESHUB_EDITION_FILE"):
+        yield
+        return
+    edition = tmp_path_factory.getbasetemp() / "edition_shared_only.py"
+    edition.write_text("EXTRA_MIGRATION_LOCATIONS = []\nEXTRA_VETTED_SCHEMAS = []\n")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("PIPESHUB_EDITION_FILE", str(edition))
+        yield
+
+
 def _bins() -> list[str]:
     if os.environ.get("MIGRATE_TEST_PG_EXTERNAL"):
         return ["external"]

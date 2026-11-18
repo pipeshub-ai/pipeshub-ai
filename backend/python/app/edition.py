@@ -15,6 +15,11 @@ METRICS_CONSENT_DEFAULT = True
 # ones under ``backend/db/versions/``. Read by ``backend/db`` by file path: keep this module import-free.
 EXTRA_MIGRATION_LOCATIONS: list[str] = []
 
+# Schemas of the extra migration modules above that own SECURITY DEFINER functions. ``db.bootstrap_roles`` creates the vetted
+# owner role ``pipeshub_vetted_<schema>`` of each, so the module migrates after the ordinary role setup with no extra flag.
+# Keep ``deployment/docker-compose/postgres/extra-vetted-schemas`` (the Compose ``postgres`` profile's role script) in step.
+EXTRA_VETTED_SCHEMAS: list[str] = []
+
 
 def structured_logging_provider() -> object:
     """Logging provider override, or ``None`` for the default text logging.

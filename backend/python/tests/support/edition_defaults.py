@@ -8,6 +8,12 @@ FK_PARENT_FIELD = "fk_parent_record_ids"
 FK_CHILD_FIELD = "fk_child_record_ids"
 
 
+# The extra migration modules the shipped edition file registers (app/edition.py: EXTRA_MIGRATION_LOCATIONS, relative to backend/) and the
+# schemas among them that own SECURITY DEFINER functions (EXTRA_VETTED_SCHEMAS). The database tests compare them with the file.
+SHIPPED_MIGRATION_LOCATIONS: list[str] = []
+SHIPPED_VETTED_SCHEMAS: list[str] = []
+
+
 def postgres_sync_state() -> dict[str, object]:
     """What PostgreSQLConnector keeps for the sync in progress, which its __init__ sets."""
     from app.connectors.sources.postgres.connector import SyncOutcome
