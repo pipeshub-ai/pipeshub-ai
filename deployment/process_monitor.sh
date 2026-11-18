@@ -204,7 +204,7 @@ start_slackbot() {
 spawn_embedding() {
     log "Starting Embedding service..."
     cd /app/python
-    PIPESHUB_SERVICE=embedding python -m app.embedding_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=embedding exec python -m app.embedding_main) &
     EMBEDDING_PID=$!
     log "Embedding service started with PID: $EMBEDDING_PID"
 }
@@ -217,7 +217,7 @@ start_embedding() {
 start_docling() {
     log "Starting Docling service..."
     cd /app/python
-    PIPESHUB_SERVICE=docling python -m app.docling_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=docling exec python -m app.docling_main) &
     DOCLING_PID=$!
     log "Docling started with PID: $DOCLING_PID"
 }
@@ -225,13 +225,14 @@ start_docling() {
 # The per-service logins stay in this shell but are not inherited: a child gets only its own, as PG_CORE_URL.
 # All processes here share one user, so this limits what a bug in one service can reach; isolating a compromised
 # process from another's login needs separate containers, where each one is given only its own URL.
-export -n PG_CORE_QUERY_URL PG_CORE_INDEXING_URL PG_CORE_CONNECTORS_URL
+export -n PG_CORE_QUERY_URL PG_CORE_INDEXING_URL PG_CORE_CONNECTORS_URL PG_CORE_KV_URL
 # A process whose own login is set (PG_CORE_<SERVICE>_URL, e.g. PG_CORE_QUERY_URL) connects with it, as its own role,
 # with PG_<SERVICE>_POOL_MAX as its pool size when set. Chosen by the process, not the role: a process without its own
 # login keeps the shared PG_CORE_URL and role exactly as before. Call it in the subshell that execs the service.
+# embedding, docling, parsing and extraction only read their configuration: they take the key-value login (PG_CORE_KV_URL).
 use_own_pg_login() {
     local up url_var pool_var
-    # Names the process for its capacity plan (app/capacity); the other services set it on their start line.
+    # Names the process for its capacity plan (app/capacity); the services on the key-value login (kv) set their own on their start line.
     export PIPESHUB_SERVICE="$1"
     up=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
     url_var="PG_CORE_${up}_URL"
@@ -274,7 +275,7 @@ start_query() {
 spawn_parsing() {
     log "Starting Parsing service (port ${PARSING_PORT})..."
     cd /app/python
-    PIPESHUB_SERVICE=parsing PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=parsing PARSING_SERVICE_PORT=${PARSING_PORT} exec python -m app.parsing_main) &
     PARSING_PID=$!
     log "Parsing service started with PID: $PARSING_PID"
 }
@@ -287,7 +288,7 @@ start_parsing() {
 spawn_extraction() {
     log "Starting Extraction service (port ${EXTRACTION_PORT})..."
     cd /app/python
-    PIPESHUB_SERVICE=extraction EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} python -m app.extraction_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=extraction EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} exec python -m app.extraction_main) &
     EXTRACTION_PID=$!
     log "Extraction service started with PID: $EXTRACTION_PID"
 }
