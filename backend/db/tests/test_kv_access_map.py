@@ -54,9 +54,9 @@ READS = {
         "/services/secretKeys": ("app/api/middlewares/auth.py::isJwtTokenValid", "config_node_constants.SECRET_KEYS.value"),  # parsing and extraction routes; policy_store.py::IdentityPolicyStore.pseudonym_key (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value"),  # routes/parsing.py::_parse_file, routes/extraction.py::classify
         "/services/metricsCollection": ("app/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),  # embedding, docling (pusher bound at start)
-        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch", "/migrations/etcd_to_redis"),  # every ConfigurationService
+        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "get_key(migration_flag_key)"),  # every ConfigurationService
         # parsing and extraction bind the fleet breaker at start (fleet_redis.bind_service_fleet): created if absent, then read
-        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "INSTALL_SECRET_KEY"),
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "get_config(INSTALL_SECRET_KEY"),
         "/services/redis": ("app/config/configuration_service.py::ConfigurationService.get_redis_config", "config_node_constants.REDIS.value"),  # the same: fleet_redis.py::fleet_redis_config
     },
     "indexing": {
@@ -65,7 +65,7 @@ READS = {
         "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py::resolve_persisted_strategy_name", "get_config(STRATEGY_CONFIG_KEY"),
         "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py::read_entries_from_config", "list_keys_in_directory(MEMBERSHIP_DIRECTORY)"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py::_STORE", "ConnectorIntentStore(PENDING_DIRECTORY"),  # entity_index_rebuild.py::EntityIndexRebuilder._reconcile_entity_cleanup
-        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::backfill_class_units", "FLAG_PREFIX"),
+        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::backfill_class_units", "get_config(flag_key"),
         "/services/secretKeys": ("app/core/envelope.py::configure_from_config.load", "config_node_constants.SECRET_KEYS.value"),
         "/services/endpoints": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.ENDPOINTS.value"),
         "/services/storage": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.STORAGE.value"),
@@ -83,10 +83,10 @@ READS = {
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py::read_platform_feature_flag", "PLATFORM_SETTINGS_KEY"),  # pipeline stages
         "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py::RecordEventHandler._disabled_file_types", "get_config(file_types.FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/neo4j/neo4j_provider.py::Neo4jProvider._kh_listing_state_ready", "get_config(KH_LISTING_STATE_FLAG"),
-        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch", "/migrations/etcd_to_redis"),
+        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "get_key(migration_flag_key)"),
         _META: ("app/modules/record_metadata/schemas.py::MetadataSchemaRegistry._read", "self._get(schema_key("),  # sink_orchestrator.py::SinkOrchestrator._project_properties (indexing)
         "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py::spend_limits_source.read", "get_config(SPEND_GUARD_KEY"),  # the pause judge (pipeline/runtime.py::build_pipeline_runtime)
-        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "INSTALL_SECRET_KEY"),  # indexing_main.py::_bind_fleet_state, at start
+        "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "get_config(INSTALL_SECRET_KEY"),  # indexing_main.py::_bind_fleet_state, at start
         # the class admission's live numbers: indexing_main.py::lifespan attaches the store (attach_parse_admission_config)
         "/services/indexing/parseAdmission": ("app/modules/parse_engine/admission.py::LiveAdmissionConfig.refresh", "ADMISSION_CONFIG_KEY"),
     },

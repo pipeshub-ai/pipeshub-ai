@@ -77,7 +77,7 @@ _SAMPLE = (matrix.Connector("sample", "item-acl", matrix.OVERRIDE, "sample/conne
         "redefined"])
 def test_a_citation_holds_only_while_its_function_holds_the_anchor(tmp_path: Path, monkeypatch, source, failing) -> None:
     (tmp_path / "sample").mkdir()
-    (tmp_path / "sample" / "connector.py").write_text(source)
+    (tmp_path / "sample" / "connector.py").write_text(source, encoding="utf-8")
     monkeypatch.setitem(matrix.ANCHORS, "sample", "record.inherit_permissions = False")
     monkeypatch.setitem(matrix.ANCHORS, "sample_app", 'model="RECORD_LEVEL"')
     assert [p.split(":")[0] for p in matrix.evidence_problems(tmp_path, _SAMPLE)] == failing
