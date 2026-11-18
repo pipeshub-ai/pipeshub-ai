@@ -429,7 +429,7 @@ def _pair_cost(budget: MemberBudget) -> tuple[int, int, int, Counter[str]]:
     return work["call"], work["c_call"], work["opcode"], system
 
 
-def test_ledger_throughput(ledger: Path) -> None:
+def test_ledger_throughput(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A reserve+release pair, admission logic included, is two short ledger transactions whose cost does not grow
     with the processes attached: no scan of the process table, no extra lock round trip, no wait or sync.
 
@@ -439,15 +439,26 @@ def test_ledger_throughput(ledger: Path) -> None:
         one = open_budget(ledger, service="one")
         handles.callback(one.close)
         alone = _pair_cost(one)
-        for i in range(63):
+        for i in range(128):  # 129 attached fill three occupancy words, so per-word work differs from one process
             handles.callback(open_budget(ledger, service=f"p{i}").close)
-        assert one.snapshot()["processes"] == 64
+        assert one.snapshot()["processes"] == 129
         crowded = _pair_cost(one)
-        print(f"pair alone {alone}\npair with 64 attached {crowded}")
+        print(f"pair alone {alone}\npair with 129 attached {crowded}")
         assert crowded == alone, "a reserve+release pair costs more with more processes attached"
         system = crowded[3]
         assert system["fcntl.flock"] == 4, "one ledger lock and unlock per reserve and per release"
-        assert not (system["posix.open"] or system["_io.open"] or system["posix.fsync"] or system["time.sleep"]), system
+        synced = ("posix.open", "_io.open", "posix.fsync", "posix.fdatasync", "time.sleep")
+        assert not any(system[name] for name in synced), system
+
+        # One read of the whole slot table costs the same at any size: the reads must stay off it.
+        reads: list[tuple[int, int]] = []
+        real_pread = os.pread
+        monkeypatch.setattr(os, "pread", lambda fd, n, at: reads.append((at, n)) or real_pread(fd, n, at))
+        permit = one.try_reserve(Demand(Family.EMBED, 2, 0, "small"))
+        assert permit is not None
+        permit.release()
+        monkeypatch.undo()
+        assert reads and all(at + n <= mb.TABLE_OFFSET or at >= mb.CHANGE_OFFSET for at, n in reads), reads
 
 
 def test_no_sample_shows_more_than_c_held(ledger: Path) -> None:
