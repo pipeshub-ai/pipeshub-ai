@@ -67,16 +67,16 @@ READS = {
         "/services/arangodb": ("app/health/health.py:267", "ARANGODB"),
         "/services/kafka": ("app/services/messaging/utils.py:113", "KAFKA"),
         "/services/redis": ("app/config/configuration_service.py:577", "REDIS"),
-        "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py:379", "QDRANT"),
+        "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py:386", "QDRANT"),
         "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:160", "PGVECTOR"),
         "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py:324", "OPENSEARCH"),
-        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:303", "REDIS_VECTOR"),
+        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:313", "REDIS_VECTOR"),
         "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:462", "AI_MODELS"),
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),
         "/services/namedEntities": ("app/modules/named_entities/domain/config.py:70", "NAMED_ENTITIES"),
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py:21", "/services/platform/settings"),  # pipeline stages
-        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:299", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
+        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:300", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
         _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
