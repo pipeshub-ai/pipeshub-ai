@@ -114,6 +114,10 @@ class PgMessagingConsumer(IMessagingConsumer):
         self.priority_lane = priority_lane  # the consumer of the priority topic: its own handler cap and lease pool
         self.concurrency_manager = concurrency_manager  # cluster-wide cap on records indexing at once, across worker processes
         self._leases: set[tuple[str, str]] = set()
+        # A delivery's record lease -> the task driving it, and the record leases the manager reported lost: the driver is cancelled
+        # when its lease is not renewed, so a delivery whose lease lapsed stops writing (as on the other indexing consumers).
+        self._lease_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._lost_leases: set[tuple[str, str]] = set()
         self.logger = logger
         self.config = config
         self.indexing = indexing
@@ -342,10 +346,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await self.queue.extend(
                         self.config.group_id, held, self._visibility_s
                     )
-                if self._leases and self.concurrency_manager is not None:
-                    await self.concurrency_manager.renew_many(
-                        list(self._leases), self._visibility_s
-                    )
+                await self._renew_leases()
                 if self.config.ephemeral_group:
                     await self.queue.touch(self.config.group_id, self.config.topics)
                 if time.monotonic() - self._last_sweep > _SWEEP_EVERY_S:
@@ -535,6 +536,17 @@ class PgMessagingConsumer(IMessagingConsumer):
         finally:
             reset_context(token)
 
+    async def _renew_leases(self) -> None:
+        """Renew every held lease; a record lease the manager says is no longer ours cancels the delivery that holds it."""
+        if not self._leases or self.concurrency_manager is None:
+            return
+        renewed = await self.concurrency_manager.renew_many(list(self._leases), self._visibility_s)
+        for lease, ok in (renewed or {}).items():
+            task = self._lease_tasks.get(lease)
+            if not ok and task is not None:
+                self._lost_leases.add(lease)
+                task.cancel()
+
     async def _on_worker[T](self, make: "Callable[[], Coroutine[Any, Any, T]]") -> T:
         """Run a handler on the shared worker loop, as the other indexing consumers do: parsing that blocks that loop cannot then stall
         the claim heartbeat, which stays on this one. Cancelling the wait cancels the handler."""
@@ -564,8 +576,18 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await gen.aclose()
                 return complete
 
-            async with asyncio.timeout(timeout):
-                complete = await self._on_worker(drain)
+            try:
+                async with asyncio.timeout(timeout):
+                    complete = await self._on_worker(drain)
+            except asyncio.CancelledError:
+                if record_slot is not None and record_slot in self._lost_leases:
+                    # Our own cancel, sent because the record lease was not renewed: another delivery may own the record now.
+                    self._lost_leases.discard(record_slot)
+                    task = asyncio.current_task()
+                    if task is not None:
+                        _ = task.uncancel()
+                    raise RecordHeld(f"{record_slot[0]} was lost while the delivery ran; it is redone") from None
+                raise
             if not complete:
                 raise RuntimeError("handler ended without INDEXING_COMPLETE")
         finally:
@@ -573,6 +595,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             for held in (record_slot, slot):
                 if held is not None:
                     self._leases.discard(held)
+                    self._lease_tasks.pop(held, None)
                     with contextlib.suppress(Exception):
                         await self.concurrency_manager.release(*held)  # type: ignore[union-attr]
 
@@ -605,5 +628,8 @@ class PgMessagingConsumer(IMessagingConsumer):
         holder = f"{self.config.client_id}:{uuid.uuid4().hex}"
         if await self.concurrency_manager.try_acquire(pool, holder, 1, messaging_env.concurrency_lease_seconds):
             self._leases.add((pool, holder))
+            task = asyncio.current_task()
+            if task is not None:
+                self._lease_tasks[(pool, holder)] = task
             return pool, holder
         raise RecordHeld(f"{pool} is held by another delivery")
