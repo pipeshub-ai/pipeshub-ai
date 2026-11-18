@@ -21014,12 +21014,11 @@ components:
         - idToken
     GoogleCredentials:
       type: object
-      additionalProperties: false
       description: |
-        Google ID token wrapped in an object, as Google's sign-in button returns it. Only the
-        first token check reads `credential`; the second one (`authenticateWithGoogle`) is
-        handed the whole object, so by code reading a sign-in sent this way ends in `500`
-        even with a valid token. Send the bare token string instead.
+        Google ID token wrapped in an object: the `credential` field of Google's sign-in button
+        response. Signs in the same as sending the bare token string. Without a non-empty
+        string `credential` the sign-in answers `400`. The response's other fields, such as
+        `select_by`, may be sent as they are; they are ignored.
       properties:
         credential:
           type: string
@@ -29032,9 +29031,8 @@ paths:
 
         - `password`: `{ "credentials": { "password": "your-password" } }`
         - `otp`: `{ "credentials": { "otp": "123456" } }` (6-digit code, valid for 10 minutes)
-        - `google`: `{ "credentials": "google-id-token-string" }`. The object form
-          `{ "credentials": { "credential": "..." } }` passes the first token check, but by code
-          reading the second check is handed the whole object, so it ends in `500`
+        - `google`: `{ "credentials": "google-id-token-string" }` or
+          `{ "credentials": { "credential": "google-id-token-string" } }`
         - `microsoft`: `{ "credentials": { "idToken": "..." } }` (only `idToken` is read)
 
         SAML (`samlSso`), generic OAuth (`oauth`) and Azure AD (`azureAd`) sign-in were removed in 1.0;
@@ -29095,6 +29093,7 @@ paths:
             - `github`, which has no sign-in flow
             - Wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
             - Microsoft: no `idToken` (an `accessToken` alone is not read), or no client ID saved for it
+            - Google: `credentials` is an object without a non-empty string `credential`
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:

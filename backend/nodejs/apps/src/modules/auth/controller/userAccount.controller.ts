@@ -159,6 +159,8 @@ export const EMAIL_MISMATCH =
   "You signed in with a different account than the email you entered. Sign in with the matching account, or go back and enter that account's email.";
 export const PROVIDER_SHARED_NO_EMAIL =
   "Your sign-in provider didn't share an email address, so we couldn't sign you in. Ask your admin to allow the email permission for PipesHub.";
+export const GOOGLE_ID_TOKEN_MISSING =
+  "Sign-in with Google didn't include an ID token. Send the token as credentials, or as credentials.credential.";
 export const ADMIN_ONLY_SIGN_IN_SETTINGS =
   'Only workspace admins can view or change sign-in settings.';
 export const SIGN_IN_ACCOUNT_CHANGED =
@@ -173,6 +175,21 @@ export const PASSWORD_RESET_REQUESTED = {
 };
 export const SIGN_IN_CODE_REQUESTED =
   'If that email can sign in with a code, one is being sent. It works for 10 minutes. If nothing arrives, check your spam folder or try again later.';
+
+/** The Google ID token from either documented form of `credentials`: the token itself, or `{ credential }` as Google's button returns it. */
+export const googleIdTokenOf = (credentials: unknown): string => {
+  const idToken =
+    typeof credentials === 'string'
+      ? credentials
+      : (credentials as { credential?: unknown } | null)?.credential;
+  if (typeof idToken !== 'string' || idToken === '') {
+    throw authRefusal(
+      new BadRequestError(GOOGLE_ID_TOKEN_MISSING),
+      'sso_token_invalid',
+    );
+  }
+  return idToken;
+};
 
 let decoyHash: Promise<string> | undefined;
 
@@ -1804,7 +1821,11 @@ export class UserAccountController {
         await this.authenticateWithOtp(user, credentials.otp, req.ip!);
         break;
       case AuthMethodType.GOOGLE:
-        await this.authenticateWithGoogle(user, credentials, req.ip!);
+        await this.authenticateWithGoogle(
+          user,
+          googleIdTokenOf(credentials),
+          req.ip!,
+        );
         break;
       case AuthMethodType.MICROSOFT:
         await this.authenticateWithMicrosoft(user, credentials, req.ip!);
@@ -2000,7 +2021,7 @@ export class UserAccountController {
             const { clientId } = configManagerResponse.data;
             const ticket = await verifyGoogleIdToken(
               clientId,
-              String(credentials.credential || credentials),
+              googleIdTokenOf(credentials),
             );
             const payload = ticket.getPayload();
             if (!payload?.email)
