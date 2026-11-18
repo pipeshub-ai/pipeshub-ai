@@ -1178,7 +1178,7 @@ class TestWithdrawnAccounts:
         real = connector._extract_issue_data_with_parent
         failures = []
 
-        async def fail_once(issue, users):
+        async def fail_once(issue: dict[str, Any], users: dict[str, AppUser]) -> dict[str, Any]:
             if issue.get("id") == "2" and not failures:
                 failures.append(1)
                 raise RuntimeError("parent read failed")
