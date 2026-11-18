@@ -215,11 +215,12 @@ async def test_a_refresh_on_a_storage_without_the_cutoff_route_purges_without_a_
     assert store.paths(ORG, REC) == []
 
 
-async def test_a_refresh_on_a_storage_without_the_cutoff_route_is_handed_back_while_writes_are_on(
+async def test_a_refresh_on_a_storage_without_the_cutoff_route_fails_with_writes_on_and_keeps_the_vectors(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With writes on, a purge without a cutoff could remove what a delivery that took over stored: wait for the update."""
-    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+    """With writes on, a purge without a cutoff could remove what a delivery that took over stored, so the refresh
+    fails (retried, then terminal) before the vector store is touched, and nothing is purged."""
+    from app.services.paid_cache.cache import PurgeCutoffUnavailable
 
     async def no_route(org: str, rec: str) -> None:
         return None
@@ -227,12 +228,15 @@ async def test_a_refresh_on_a_storage_without_the_cutoff_route_is_handed_back_wh
     monkeypatch.setenv("PAID_CACHE_WRITE", "on")
     monkeypatch.setattr(store, "purge_cutoff", no_route)
     _seed(store)
+    handler = _handler()
+    bulk = handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings
 
-    with pytest.raises(RefreshPurgeHeld):
-        await _events(_handler(), EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True})
+    with pytest.raises(PurgeCutoffUnavailable):
+        await _events(handler, EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True})
 
-    assert store.paths(ORG, REC) != []                       # nothing purged; the delivery comes back later
+    assert store.paths(ORG, REC) != []                       # nothing purged
     assert "purge" not in store.ops
+    bulk.assert_not_awaited()                                # the record's embeddings are still there
 
 
 @pytest.mark.parametrize("payload", [{"forceReindex": True}, {"refreshPaidOutputs": "true"}, {"refreshPaidOutputs": False}, {}])

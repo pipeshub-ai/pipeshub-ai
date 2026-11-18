@@ -84,7 +84,7 @@ class MemoryResultStore:
             del self.files[k]
 
     async def purge_cutoff(self, org_id: str, record_id: str) -> int:
-        self._call("purge", org_id, record_id)
+        self._call("cutoff", org_id, record_id)
         return self.now_ms                                     # the store's own clock
 
     async def purge_org(self, org_id: str) -> None:

@@ -399,6 +399,22 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       }
     })
 
+    it('a touch of a revision never moves its write stamp backwards, however late it runs', async () => {
+      const org = fx.newId()
+      const base = Date.now() + 1_000_000_000_000
+      const set = (): NewDocument =>
+        mk(org, {
+          documentName: 'revision_r7',
+          artifactSet: { virtualRecordId: 'v7', rev: 'r7', root: `${org}/PipesHub/record-revisions/v7/r7` },
+        })
+      await repo.createArtifactSetOnce(set(), fence(base))
+      const later = await repo.createArtifactSetOnce(set(), fence(base + 1000))
+      expect(Number(later.updatedAt)).to.equal(base + 1000)
+      // A touch that was read at an earlier instant and lands now: the stamp a purge listed is not set back below.
+      const stale = await repo.createArtifactSetOnce(set(), fence(base))
+      expect(Number(stale.updatedAt)).to.equal(base + 1000)
+    })
+
     it('createArtifactSetOnce gives each stored write of a revision a row of its own, beside the revision\'s shared row', async () => {
       const org = fx.newId();
       const W1 = 'a'.repeat(32);
@@ -429,14 +445,15 @@ export function describeDocumentContract(fx: DocumentFixture): void {
     });
 
     describe('the delete fence of a content revision', () => {
-      const T0 = 1_000_000_000_000;
+      // Ahead of the real clock that stamps a first insert: a touch only moves a stamp forward.
+      const T0 = Date.now() + 1_000_000_000_000;
       const revision = async (org: string, rev = 'r1', at = T0): Promise<string> => {
         const input = mk(org, {
           documentName: `revision_${rev}`,
           artifactSet: { virtualRecordId: 'v1', rev, root: `${org}/PipesHub/record-revisions/v1/${rev}` },
         });
         await repo.createArtifactSetOnce(input, fence(at));
-        // The first call stamps the row with the real clock; a second one moves the stamp to `at`.
+        // The first call stamps the row with the real clock; a second one moves the stamp to `at`, which lies ahead of it.
         return (await repo.createArtifactSetOnce(input, fence(at)))._id;
       };
       const stamp = async (org: string, id: string): Promise<number | undefined> => (await repo.get(org, id))?.updatedAt;

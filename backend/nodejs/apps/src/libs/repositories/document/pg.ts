@@ -1126,7 +1126,8 @@ export class PgDocumentRepository implements DocumentRepository, Importable {
       const { rows } = await k.query<Row>(
         fill(
           `/* pipeshub:content.document_artifact_touch */ UPDATE content.documents
-          SET updated_at = $4, artifact_set = artifact_set - 'retiringAt'
+          SET updated_at = GREATEST($4::timestamptz, updated_at),
+            artifact_set = artifact_set - 'retiringAt'
           WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
             AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
           RETURNING @{COLS}`,

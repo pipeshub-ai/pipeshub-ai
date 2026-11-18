@@ -21,6 +21,9 @@ LOCK_TTL_MS = 120_000
 
 _RENEW_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end return 0"
 _OWNS_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return 1 end return 0"
+_MARK_IF_OWNED_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[2], '1', 'PX', ARGV[2]) return 1 end return 0"
+)
 _RELEASE_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
 
 
@@ -180,6 +183,9 @@ class LockBackend(Protocol):
     async def mark(self, name: str, ttl_ms: int) -> None:
         """Sets a marker that reads as set until it lapses."""
 
+    async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
+        """Sets the marker only while ``token`` still holds ``lock_name``, in one atomic step; False when it does not."""
+
     async def is_marked(self, name: str) -> bool:
         """Raises when unreachable: a caller that cannot tell must not assume the marker is absent."""
 
@@ -211,6 +217,11 @@ class RedisLocks:
 
     async def mark(self, name: str, ttl_ms: int) -> None:
         await self._client.set(self.key_of(name), "1", px=ttl_ms)
+
+    async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
+        return bool(await self._client.eval(  # type: ignore[misc]
+            _MARK_IF_OWNED_LUA, 2, self.key_of(lock_name), self.key_of(name), token, ttl_ms,
+        ))
 
     async def is_marked(self, name: str) -> bool:
         return bool(await self._client.exists(self.key_of(name)))
@@ -259,6 +270,14 @@ class InProcessLocks:
     async def mark(self, name: str, ttl_ms: int) -> None:
         with self._mutex:
             self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
+
+    async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
+        with self._mutex:
+            held = self._held.get(lock_name)
+            if held is None or held[0] != token or held[1] <= self._clock():
+                return False
+            self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
+            return True
 
     async def is_marked(self, name: str) -> bool:
         with self._mutex:

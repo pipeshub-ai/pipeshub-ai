@@ -15,6 +15,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -71,6 +72,17 @@ def enabled() -> bool:
 
 class RefreshPurgeInProgress(ConnectionError):
     """Another delivery of the same refresh is purging and has not finished: transient, the broker redelivers it."""
+
+
+_refresh_lease: ContextVar[Any] = ContextVar("paid_cache_refresh_lease", default=None)
+
+
+class PurgeCutoffUnavailable(ConnectionError):
+    """The storage service has no purge-cutoff route (an earlier release) while paid-result writes are on.
+
+    An ordinary failure, not a hand-back: the delivery is retried and ends as failed when the storage service is
+    still not updated, so the wait has an end that is visible.
+    """
 
 
 def writes_enabled() -> bool:
@@ -290,6 +302,25 @@ class PaidResultCache:
             return None
         return await self._store.purge_cutoff(org_id, record_id)
 
+    async def require_purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+        """The cutoff of a refresh purge. ``None`` only while paid-result writes are off (a purge without a cutoff
+        removes what a delivery that took over has stored, which cannot exist then); with writes on, a storage
+        service that cannot name one raises ``PurgeCutoffUnavailable``."""
+        cutoff = await self.purge_cutoff(org_id, record_id)
+        if cutoff is None and valid_record_id(record_id) and writes_enabled():
+            raise PurgeCutoffUnavailable("the storage service cannot yet give a purge cutoff; update it")
+        return cutoff
+
+    async def purge_for_refresh(self, org_id: str, record_id: str) -> None:
+        """The purge of a refresh, inside ``refresh_purge``: the cutoff is the store's clock, and the lease is checked
+        again after it, so a holder whose lease had already lapsed cannot take a cutoff that falls after a successor's
+        results (the successor stored nothing before this check, and what it stores later is past the cutoff)."""
+        cutoff = await self.require_purge_cutoff(org_id, record_id)
+        held = _refresh_lease.get()
+        if held is not None and (held.lost or not await held.still_owned()):
+            raise RefreshPurgeInProgress("the purge lease was lost before the delete; another delivery owns it")
+        await self.purge_record(org_id, record_id, before_ms=cutoff)
+
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         """Claims the refresh named ``event_id`` for its first request, atomically (``SET NX`` with a TTL on Redis).
 
@@ -344,15 +375,27 @@ class PaidResultCache:
         except Exception:
             self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
             must_purge = True
+        lease_token = _refresh_lease.set(held if must_purge else None)
         try:
             yield must_purge
             if must_purge and held is not None and backend is not None:
-                if held.lost or not await held.still_owned():
+                lost = held.lost
+                if not lost:
+                    # Ownership and the marker in one atomic step: a lease that lapses between a check and a write
+                    # could let a third delivery start writing while the successor's purge is still to come.
+                    mark_if_owned = getattr(backend, "mark_if_owned", None)
+                    if mark_if_owned is not None and held.token is not None:
+                        lost = not await mark_if_owned(name, DELETED_TTL_MS, name + ":lease", held.token)
+                    else:
+                        lost = not await held.still_owned()
+                        if not lost:
+                            await backend.mark(name, DELETED_TTL_MS)     # only after the purge returned
+                if lost:
                     # The lease was given up (past its deadline) or taken while the purge ran: another delivery has
                     # purged or is purging, so this one writes no marker and its caller opens no run.
                     raise RefreshPurgeInProgress(f"the purge lease of refresh {event_id} was lost; another delivery owns it")
-                await backend.mark(name, DELETED_TTL_MS)     # only after the purge returned
         finally:
+            _refresh_lease.reset(lease_token)
             if held is not None:
                 await _uninterrupted(held.stop_heartbeat())
                 await _uninterrupted(held.release())
@@ -754,6 +797,12 @@ class NullPaidResultCache:
         return None
 
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+        return None
+
+    async def require_purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+        return None
+
+    async def purge_for_refresh(self, org_id: str, record_id: str) -> None:
         return None
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:

@@ -50,6 +50,11 @@ class _ManifestStore(Protocol):
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
 
 
+#: The replicas' wall clocks may differ: a sibling that completed up to this long before this run started is still adopted
+#: (keeping a result listed only retains it for longer; dropping one would let a sweep delete what a run paid for).
+COMPLETION_CLOCK_SKEW_MS = 120_000
+
+
 class RunScope:
     def __init__(
         self, org_id: str, record_id: str, content_rev: str | None, writer: str, *, refresh: bool = False,
@@ -179,7 +184,10 @@ class RunScope:
             completed = body.get("completedMs")
             # A final manifest of an earlier, unrelated completion (another model, another settings) is not a sibling
             # of this run: its objects are no longer this revision's.
-            if not isinstance(completed, int) or isinstance(completed, bool) or completed < completed_since_ms:
+            if (
+                not isinstance(completed, int) or isinstance(completed, bool)
+                or completed < completed_since_ms - COMPLETION_CLOCK_SKEW_MS
+            ):
                 return
         previous = body.get("keys", []) if isinstance(body, dict) else []
         for key in previous if isinstance(previous, list) else []:
@@ -215,13 +223,15 @@ class RunScope:
                 self._opened = False
 
 
-#: One lock per manifest path in this process: two runs of one revision (an orphaned parse and its retry) read, merge
-#: and replace the same manifest, and a flush that lands between another's read and write must not be dropped.
-_PATH_LOCKS: "weakref.WeakValueDictionary[tuple[str, str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
+#: One lock per manifest path and event loop in this process: two runs of one revision (an orphaned parse and its retry)
+#: read, merge and replace the same manifest, and a flush that lands between another's read and write must not be dropped.
+#: An ``asyncio.Lock`` binds to the loop that first waits on it, so a loop never shares one with another loop; the
+#: cross-replica manifest guard is what excludes writers across loops and processes.
+_PATH_LOCKS: "weakref.WeakValueDictionary[tuple[int, str, str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
 
 
 def _path_lock(org_id: str, record_id: str, path: str) -> asyncio.Lock:
-    key = (org_id, record_id, path)
+    key = (id(asyncio.get_running_loop()), org_id, record_id, path)
     lock = _PATH_LOCKS.get(key)
     if lock is None:
         lock = _PATH_LOCKS[key] = asyncio.Lock()

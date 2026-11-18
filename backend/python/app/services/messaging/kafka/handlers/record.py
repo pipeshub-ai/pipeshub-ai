@@ -129,7 +129,6 @@ from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.cache import RefreshPurgeInProgress
-from app.services.paid_cache.cache import writes_enabled as paid_cache_writes_enabled
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
@@ -2235,6 +2234,13 @@ class RecordEventHandler(BaseEventService):
                 # The sink remembers this delivery when it writes COMPLETED, as a call of its own.
                 replay_set.begin_delivery(self._replay_ref(payload))
 
+            if not parse_now and paid_cache_run.refresh_requested(payload) and (payload.get("orgId") or (record or {}).get("orgId")):
+                # Before the vector store is touched: a refresh that cannot proceed (the storage service cannot name a
+                # purge cutoff) must not have removed the record's embeddings first. Raises ``PurgeCutoffUnavailable``.
+                await paid_cache_access.paid_cache_for(self.config_service, self.logger).require_purge_cutoff(
+                    payload.get("orgId") or (record or {}).get("orgId"), record_id,
+                )
+
             # Reconciliation: only an event that goes on to run touches the vector store.
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if parse_now:
@@ -2375,12 +2381,7 @@ class RecordEventHandler(BaseEventService):
                                 # Only what existed before this purge started goes, by the object store's own clock
                                 # (never this process's): a DELETE that lands after this delivery lost its lease leaves
                                 # what the delivery that took over has stored since.
-                                cutoff_ms = await paid_cache.purge_cutoff(refresh_org, record_id)
-                                if cutoff_ms is None and paid_cache_writes_enabled():
-                                    # A storage service of an earlier release cannot name a cutoff, and a purge without
-                                    # one could remove what a delivery that took over has stored: wait for the update.
-                                    raise RefreshPurgeInProgress("storage cannot yet give a purge cutoff")
-                                await paid_cache.purge_record(refresh_org, record_id, before_ms=cutoff_ms)
+                                await paid_cache.purge_for_refresh(refresh_org, record_id)
                     except RefreshPurgeInProgress as exc:
                         # Nothing has been written for this delivery: the bookkeeping below skips it, as for a
                         # record held for its connector's delete (no FAILED, no queued duplicate, no status rewrite).

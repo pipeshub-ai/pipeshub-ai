@@ -504,6 +504,42 @@ async def test_the_refresh_is_marked_purged_only_after_the_purge_returned() -> N
         assert redelivery is False
 
 
+async def test_a_holder_whose_lease_lapsed_before_its_cutoff_sends_no_delete() -> None:
+    """The lease is checked again after the cutoff and before the DELETE: a holder that lost it removes nothing."""
+    store, locks = MemoryResultStore(), InProcessLocks()
+    cache = PaidResultCache(store, locks)
+    store.files[(ORG, REC, "ocr_page/" + "a" * 64 + ".json")] = (b"{}", 1)
+    real_cutoff = store.purge_cutoff
+
+    async def slow_cutoff(org: str, rec: str) -> int:
+        cutoff = await real_cutoff(org, rec)
+        locks.expire_all()                                   # the lease lapses while the cutoff request is out
+        return cutoff
+
+    store.purge_cutoff = slow_cutoff  # type: ignore[method-assign]
+
+    with pytest.raises(cache_module.RefreshPurgeInProgress):
+        async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
+            assert must_purge is True
+            await cache.purge_for_refresh(ORG, REC)
+
+    assert "purge" not in store.ops                          # no DELETE was sent
+    assert store.paths(ORG, REC) != []
+
+
+async def test_the_marker_is_written_only_while_the_lease_is_still_held_in_one_atomic_step() -> None:
+    """A lease that lapses between the end of the purge and the marker leaves no marker."""
+    locks = InProcessLocks()
+    cache = PaidResultCache(MemoryResultStore(), locks)
+
+    with pytest.raises(cache_module.RefreshPurgeInProgress):
+        async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
+            assert must_purge is True
+            locks.expire_all()                               # lapses after the purge, before the marker
+    async with cache.refresh_purge(ORG, REC, "evt") as again:
+        assert again is True                                 # no marker: the redelivery purges
+
+
 async def test_a_purge_that_fails_leaves_no_marker_so_the_redelivery_purges() -> None:
     cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
     with pytest.raises(ConnectionError):
