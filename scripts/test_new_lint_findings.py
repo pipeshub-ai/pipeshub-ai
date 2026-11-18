@@ -44,6 +44,10 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
         self._git("checkout", "-q", "pr")
         (self.repo / "untracked.txt").write_text("keep\n", encoding="utf-8")
         self.status = self._git("status", "--porcelain", "--untracked-files=all")
+        self.hook_marker = Path(self._tmp.name) / "hook-ran"
+        hook = self.repo / ".git" / "hooks" / "post-checkout"
+        hook.write_text(f"#!/bin/sh\ntouch '{self.hook_marker}'\n", encoding="utf-8")
+        hook.chmod(0o755)
         bin_dir = Path(self._tmp.name) / "bin"
         bin_dir.mkdir()
         (bin_dir / "ruff").write_text(FAKE_RUFF, encoding="utf-8")
@@ -73,6 +77,7 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
     def _assert_checkout_unchanged(self) -> None:
         self.assertEqual(self._git("status", "--porcelain", "--untracked-files=all"), self.status)
         self.assertEqual((self.repo / A).read_text(encoding="utf-8"), 'logger.info("✅ one")\nlogger.info("❌ two")\n')
+        self.assertFalse(self.hook_marker.exists(), "a repository hook ran on the baseline worktree")
 
     def test_killed_during_the_baseline_lint(self) -> None:
         result = self._check("ruff", A, FAKE_RUFF_KILL="1")

@@ -107,7 +107,9 @@ def main() -> None:
     if on_main:
         with tempfile.TemporaryDirectory() as tmp:
             tree = os.path.join(os.path.realpath(tmp), "tree")
-            added = git("worktree", "add", "--detach", "--quiet", tree, "HEAD")
+            # No hook directory: a developer's post-checkout hook must not run on, or change, the baseline.
+            no_hooks = ("-c", "core.hooksPath=/dev/null")
+            added = git(*no_hooks, "worktree", "add", "--detach", "--quiet", tree, "HEAD")
             if added.returncode:
                 sys.exit(f"git worktree add failed: {added.stderr.decode().strip()}")
             try:
@@ -125,7 +127,7 @@ def main() -> None:
                                os.path.join(tree, CWD[tool], "node_modules"))
                 main_found = lint(tool, on_main, tree) if on_main else []
             finally:
-                git("worktree", "remove", "--force", tree)
+                git(*no_hooks, "worktree", "remove", "--force", tree)
 
     head_count = collections.Counter((f, r) for f, r, _ in head)
     main_count = collections.Counter((f, r) for f, r, _ in main_found)
