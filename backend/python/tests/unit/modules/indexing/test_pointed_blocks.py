@@ -182,3 +182,25 @@ async def test_a_change_to_a_text_model_drops_the_images_and_stops_embedding_the
     store = _model_store(db, False)
     await run(store, blob, container)
     assert _embedded(store) == [] and store.image_calls == 0, "an ordinary run does not heal a block that has no point"
+
+
+async def test_a_legacy_record_changed_in_part_records_the_points_it_moved(db) -> None:
+    """QA-S7e-33 (Z5): the unchanged blocks of a record from before content ids are moved, not embedded. The writer's output includes
+    the moved points: left out, they would be absent from the recorded set, and their later loss would never be healed."""
+    from tests.support.index_world import legacy_record, run
+
+    _, blob = await legacy_record(db, _text_only())
+    changed = _text_only(change=2)
+    await run(make_store(db), blob, changed)
+    stored = _block_ids(db)
+    assert "pointedBlocks" in blob.saved, "a record changed in part after a move is recorded"
+    assert stored == set(blob.saved["pointedBlocks"]) and len(stored) == 5
+
+
+def _text_only(change: int | None = None) -> BlocksContainer:
+    from app.models.blocks import Block, BlockType, DataFormat
+
+    return BlocksContainer(blocks=[
+        Block(index=i, type=BlockType.TEXT, format=DataFormat.TXT,
+              data=f"Paragraph {i} about revenue and costs in quarter {i}." + (" Changed in part." if i == change else ""))
+        for i in range(5)])
