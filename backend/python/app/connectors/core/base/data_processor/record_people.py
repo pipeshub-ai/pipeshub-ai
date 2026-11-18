@@ -36,7 +36,7 @@ from app.schema.node_validator import SchemaValidationError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from logging import Logger
 
     from app.models.entities import Record, User
@@ -97,6 +97,7 @@ class PeopleStore(Protocol):
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None: ...
     def is_transient_error(self, error: BaseException) -> bool: ...
 

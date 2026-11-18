@@ -699,9 +699,10 @@ class GraphTransactionStore(TransactionStore):
 
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         await self.graph_provider.replace_record_entity_relations(
-            record_id, to_collections, origin, edges, transaction=self.txn,
+            record_id, to_collections, origin, edges, transaction=self.txn, keep_edge_types=keep_edge_types,
         )
 
     async def delete_edges_by_relationship_types(
