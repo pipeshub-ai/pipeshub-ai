@@ -580,6 +580,7 @@ column oauth.apps.knowledge_limit type=jsonb notnull=false identity= generated= 
 column oauth.apps.logo_url type=text notnull=false identity= generated= default=-
 column oauth.apps.name type=text notnull=true identity= generated= default=-
 column oauth.apps.org_id type=text notnull=true identity= generated= default=-
+column oauth.apps.owner_format type=smallint notnull=false identity= generated= default=-
 column oauth.apps.privacy_policy_url type=text notnull=false identity= generated= default=-
 column oauth.apps.redirect_uris type=text[] notnull=true identity= generated= default='{}'::text[]
 column oauth.apps.refresh_token_lifetime type=integer notnull=true identity= generated= default=2592000
