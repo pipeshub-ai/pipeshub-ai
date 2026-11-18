@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from logging import Logger
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from neo4j import AsyncGraphDatabase, NotificationDisabledClassification, Query
+from neo4j import AsyncGraphDatabase, AsyncSession, NotificationDisabledClassification, Query
 from neo4j.exceptions import (
     ClientError,
     Neo4jError,
@@ -55,6 +55,10 @@ DEFAULT_REBUILD_COOLDOWN = 30.0
 # budget on purpose: a transaction is one graph write at the end of a record,
 # not the whole record.
 DEFAULT_TRANSACTION_TIMEOUT = 120.0
+# Inside the process monitor's 120 s start limit. A database that misses it is
+# left to fail on its first query, as it did before this wait existed.
+DATABASE_ONLINE_TIMEOUT = 60.0
+DATABASE_ONLINE_POLL_INTERVAL = 0.5
 # The driver's message when connection_acquisition_timeout elapses with every
 # pooled connection checked out. A ClientError, not ServiceUnavailable: the
 # server is fine, this process has too many queries in flight for its pool.
@@ -252,7 +256,7 @@ class Neo4jClient:
         self._explicit_transactions = bool(explicit_transactions)
         self._honour_explicit_requests = bool(honour_explicit_requests)
         self._transaction_timeout = float(transaction_timeout)
-        # Populated on the first successful connect. Rebuilding a driver must
+        # Set once a connect finds the database online. Rebuilding a driver must
         # not re-run SHOW/CREATE DATABASE against the system database: the
         # database has not gone anywhere, and a rebuild happens exactly when
         # the server is least able to answer.
@@ -363,8 +367,7 @@ class Neo4jClient:
             self.logger.info(f"Connected to {getattr(server_info, 'agent', 'Neo4j')}")  # a log line never fails the connect
 
             if not self._database_ensured:
-                await self._ensure_database_exists()
-                self._database_ensured = True
+                self._database_ensured = await self._ensure_database_exists()
 
             return True
 
@@ -390,36 +393,52 @@ class Neo4jClient:
             with self._drivers_lock:
                 self._drivers.pop(loop, None)
 
-    async def _ensure_database_exists(self) -> None:
-        """
-        Check if the database exists, and create it if it doesn't.
-        This method connects to the 'system' database to check and create databases.
+    async def _database_statuses(self, session: AsyncSession) -> list[str]:
+        """``currentStatus`` of the database on each server that hosts it; empty if it does not exist."""
+        result = await session.run(
+            "SHOW DATABASES WHERE name = $dbName",
+            {"dbName": self.database}
+        )
+        return [row.get("currentStatus") for row in await result.data()]
+
+    async def _ensure_database_exists(self) -> bool:
+        """Create the database if it is missing, then wait until it is online.
+
+        Returns False only when it was still not online at the deadline, so the
+        next connect checks again.
         """
         try:
-            # Connect to system database to check if our target database exists
             async with self.driver.session(database="system") as session:
-                # Query to check if database exists
-                result = await session.run(
-                    "SHOW DATABASES WHERE name = $dbName",
-                    {"dbName": self.database}
-                )
-                databases = await result.data()
-
-                if not databases:
-                    # Database doesn't exist, create it
+                statuses = await self._database_statuses(session)
+                if not statuses:
                     self.logger.info(f"Database '{self.database}' not found. Creating it...")
-                    # Without WAIT this returns before the database is online,
-                    # and the startup migrations query it straight after connect.
-                    created = await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS WAIT")
+                    created = await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
                     await created.consume()
-                    self.logger.info(f"Database '{self.database}' created successfully")
-                else:
-                    self.logger.info(f"Database '{self.database}' already exists")
+
+                # A new database is listed before it is online, and a query in
+                # between fails with DatabaseNotFound. The same goes for one that
+                # another service created a moment ago, so an existing one waits
+                # too. Polled rather than CREATE ... WAIT: WAIT can't cover that
+                # case, and how it reports a timeout differs between Cypher versions.
+                deadline = time.monotonic() + DATABASE_ONLINE_TIMEOUT
+                while "online" not in statuses:
+                    if time.monotonic() >= deadline:
+                        self.logger.warning(
+                            f"Database '{self.database}' is not online after "
+                            f"{DATABASE_ONLINE_TIMEOUT:.0f}s (status: {', '.join(map(str, statuses)) or 'not listed'})"
+                        )
+                        return False
+                    await asyncio.sleep(DATABASE_ONLINE_POLL_INTERVAL)
+                    statuses = await self._database_statuses(session)
+
+                self.logger.info(f"Database '{self.database}' is online")
+                return True
 
         except ClientError as e:
             # Expected on Community Edition (a single database, no SHOW/CREATE DATABASE)
             error_class.log_failure(self.logger, "db.schema.failed", e, level=logging.WARNING, backend="neo4j",
                                     op="ensure_database", reason="community_edition_possible")
+            return True
 
     async def _close_on_owning_loop(self, resource: Any, owner: Any, what: str) -> bool:
         """Close a loop-bound resource on the loop that created it.

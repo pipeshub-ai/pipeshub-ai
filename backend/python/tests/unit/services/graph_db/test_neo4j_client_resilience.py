@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from neo4j.exceptions import ServiceUnavailable
+from neo4j.exceptions import ClientError, ServiceUnavailable
 
 from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_LIVENESS_CHECK_TIMEOUT,
@@ -108,21 +108,113 @@ def ensure_db() -> Iterator[AsyncMock]:
         yield ensured
 
 
+class _SystemSession:
+    """The system-database session: SHOW DATABASES answers from a script of statuses."""
+
+    def __init__(self, statuses: list[list[str]], create_error: Exception | None = None) -> None:
+        self._statuses = statuses
+        self._create_error = create_error
+        self.created: list[MagicMock] = []
+        self.shows = 0
+
+    async def __aenter__(self) -> "_SystemSession":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def run(self, query, parameters=None) -> MagicMock:
+        if query.startswith("CREATE DATABASE"):
+            if self._create_error:
+                raise self._create_error
+            result = MagicMock(consume=AsyncMock())
+            result.query = query
+            self.created.append(result)
+            return result
+        self.shows += 1
+        # The last status repeats once the script runs out.
+        current = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
+        return MagicMock(data=AsyncMock(return_value=[{"currentStatus": s} for s in current]))
+
+
+def _ensure_client(session: _SystemSession) -> Neo4jClient:
+    client = _client()
+    client.driver = MagicMock(session=MagicMock(return_value=session))
+    return client
+
+
+@pytest.fixture
+def no_sleep() -> Iterator[AsyncMock]:
+    with patch("app.services.graph_db.neo4j.neo4j_client.asyncio.sleep", AsyncMock()) as slept:
+        yield slept
+
+
 class TestEnsureDatabase:
     @pytest.mark.asyncio
-    async def test_a_missing_database_is_waited_for(self) -> None:
-        show = MagicMock(data=AsyncMock(return_value=[]))
-        create = MagicMock(consume=AsyncMock())
-        session = MagicMock(run=AsyncMock(side_effect=[show, create]))
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=False)
-        client = _client()
-        client.driver = MagicMock(session=MagicMock(return_value=session))
+    async def test_a_missing_database_is_created_and_waited_for(self, no_sleep) -> None:
+        session = _SystemSession([[], ["starting"], ["starting"], ["online"]])
 
-        await client._ensure_database_exists()
+        assert await _ensure_client(session)._ensure_database_exists() is True
 
-        assert session.run.await_args_list[1].args[0] == "CREATE DATABASE `neo4j` IF NOT EXISTS WAIT"
-        create.consume.assert_awaited_once()
+        assert [c.query for c in session.created] == ["CREATE DATABASE `neo4j` IF NOT EXISTS"]
+        session.created[0].consume.assert_awaited_once()
+        assert session.shows == 4
+
+    @pytest.mark.asyncio
+    async def test_an_existing_database_still_starting_is_waited_for(self, no_sleep) -> None:
+        # Another service created it a moment ago: Neo4j 2025.11 lists it as "unknown" at first.
+        session = _SystemSession([["unknown"], ["online"]])
+
+        assert await _ensure_client(session)._ensure_database_exists() is True
+
+        assert session.created == []
+        assert session.shows == 2
+
+    @pytest.mark.asyncio
+    async def test_an_online_database_is_not_waited_for(self, no_sleep) -> None:
+        session = _SystemSession([["online"]])
+
+        assert await _ensure_client(session)._ensure_database_exists() is True
+
+        assert session.created == []
+        no_sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_online_server_is_enough_in_a_cluster(self, no_sleep) -> None:
+        session = _SystemSession([["starting", "online"]])
+
+        assert await _ensure_client(session)._ensure_database_exists() is True
+        no_sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_database_that_never_comes_online_is_reported_not_ready(self, no_sleep) -> None:
+        session = _SystemSession([["starting"]])
+        client = _ensure_client(session)
+
+        with patch("app.services.graph_db.neo4j.neo4j_client.DATABASE_ONLINE_TIMEOUT", 0.0):
+            assert await client._ensure_database_exists() is False
+
+        assert "not online" in client.logger.warning.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_an_edition_that_cannot_create_databases_is_not_retried(self, no_sleep) -> None:
+        session = _SystemSession([[]], create_error=ClientError("Unsupported administration command"))
+
+        assert await _ensure_client(session)._ensure_database_exists() is True
+
+    @pytest.mark.asyncio
+    async def test_connect_checks_again_while_the_database_is_not_online(self) -> None:
+        ensure = AsyncMock(side_effect=[False, True])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", side_effect=lambda *a, **kw: _driver([])), \
+                patch.object(Neo4jClient, "_ensure_database_exists", ensure):
+            client = _client()
+            await client.connect()
+            assert client._database_ensured is False
+            client.driver = None
+            await client.connect()
+
+        assert ensure.await_count == 2
+        assert client._database_ensured is True
 
 
 class TestReconnect:
