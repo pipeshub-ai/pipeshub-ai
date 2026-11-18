@@ -8608,7 +8608,9 @@ components:
                 limited to spaces, folders or files, the matches found so far: it can
                 grow from page to page and is final once `hasNext` is false.
                 Otherwise exact unless `totalCapped` is `true`. Never counts an item the
-                caller cannot read.
+                caller cannot read. Counted on the first page and carried by the cursor;
+                a page whose carried count is more than five minutes old counts again, so
+                an item the caller lost access to leaves the total within five minutes.
             totalCapped:
               type: boolean
               description: |

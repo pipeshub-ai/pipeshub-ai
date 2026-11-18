@@ -17,6 +17,7 @@ from rows the user has no access to.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -97,7 +98,7 @@ async def search_page(
     if cursor_token:
         cursor = decode(
             cursor_token, secret, expected_user_id=user_id, expected_org_id=org_id
-        )
+        ).with_fresh_counts()
         # The cursor decides sort and filters; only `include` comes from the
         # request. A page that honoured a conflicting sort would resume a
         # keyset from an order that no longer applies and silently skip rows.
@@ -137,15 +138,27 @@ async def search_page(
     # The total is counted once, on the first page, and then carried in the
     # cursor. A node belongs to one connector, so the counts sum to the total.
     reuse_total = cursor is not None and cursor.total is not None
+    # A carried total that aged out: the page's own query would count only the rows past its boundary, so the whole listing is counted again.
+    recount = cursor is not None and not reuse_total
     results = await _run(
         provider, targets,
         org_id=org_id, access=access, limit=limit,
         sort_field=sort_field, sort_dir=sort_dir, filters=filters,
         after=cursor.boundary.as_after() if cursor else None,
-        direction=direction, include_total=not reuse_total,
+        direction=direction, include_total=not reuse_total and not recount,
         max_concurrency=max_concurrency,
         user_key=user_key, grants_read=grants_read, max_depth=max_depth,
     )
+    counted = results
+    if recount:
+        counted = await _run(
+            provider, [app_id for app_id in connectors if app_id not in left_out],
+            org_id=org_id, access=access, limit=1,
+            sort_field=sort_field, sort_dir=sort_dir, filters=filters,
+            after=None, direction="next", include_total=True,
+            max_concurrency=max_concurrency,
+            user_key=user_key, grants_read=None if grants_read is None else {}, max_depth=max_depth,
+        )
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
     refused = {app_id for app_id, payload in zip(targets, results) if payload.get("notReady")}
@@ -198,12 +211,13 @@ async def search_page(
     }
 
     if reuse_total:
-        total, counts, total_capped = cursor.total, cursor.counts_by_type, cursor.total_capped
+        total, counts, total_capped, counted_at = cursor.total, cursor.counts_by_type, cursor.total_capped, cursor.counted_at_ms
     else:
-        total = sum(payload.get("total") or 0 for payload in results)
-        total_capped = any(payload.get("totalCapped") for payload in results)
+        counted_at = int(time.time() * 1000)
+        total = sum(payload.get("total") or 0 for payload in counted)
+        total_capped = any(payload.get("totalCapped") for payload in counted)
         counts_counter: Counter[str] = Counter()
-        for payload in results:
+        for payload in counted:
             counts_counter.update(payload.get("counts") or {})
         counts = dict(counts_counter)
 
@@ -237,6 +251,7 @@ async def search_page(
                 org_id=org_id,
                 limit_apps=limit_apps,
                 not_ready=sorted(left_out),
+                counted_at_ms=counted_at,
             ),
             secret,
         )
