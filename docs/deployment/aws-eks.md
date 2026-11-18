@@ -8,7 +8,7 @@ What you get:
 - Redis 7.4, one master and one replica. Redis Streams is the event bus. The same Redis holds the key-value store. Values in that store are encrypted with AES-256-GCM using `secret-key`
 - Qdrant, three nodes, each shard kept on two nodes
 - Neo4j Community, one node. Community cannot cluster. Backups are EBS snapshots
-- The app, two to four replicas, with code execution in a Docker sandbox on a separate node group
+- The app, two replicas, with code execution in a Docker sandbox on a separate node group
 
 The app pods do not share a disk. Set blob storage to S3 before anyone uploads a file. Files written to local disk exist only on the pod that wrote them.
 
@@ -652,7 +652,7 @@ MongoDB and Qdrant spread across zones. When you upgrade node groups, drain one 
 
 To grow a disk, edit the claim's storage request. The class allows expansion. Do not shrink a disk.
 
-The app scales from two to four pods. More pods do not fit on two app nodes. To go higher, add Karpenter or Cluster Autoscaler, then raise `autoscaling.maxReplicas`.
+The app runs two pods. Each requests about 6 CPU (2 for the app, 4 for the sandbox's Docker daemon), so one pod fits an `m7i.2xlarge` app node and the two app nodes hold two. To go higher, add app nodes (`eksctl scale nodegroup --cluster <cluster> --name app --nodes <n>`, at most its `maxSize`) or Karpenter or Cluster Autoscaler, then raise `autoscaling.maxReplicas`.
 
 ## 12. Troubleshooting
 

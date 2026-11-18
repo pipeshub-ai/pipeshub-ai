@@ -717,6 +717,26 @@ for e in errors:
 sys.exit(1 if errors else 0)
 PY
 
+# The EKS preset's most app pods fit the app node group as created: each pod's
+# summed CPU requests against an m7i.2xlarge's CPU left after kubelet reserve and
+# daemonsets (about 7.5 of 8).
+if [[ -f "$OUT/eks.yaml" ]] && python3 - "$OUT/eks.yaml" "$AWS_DIR/cluster.yaml" <<'PY'; then echo "ok eks: max app pods fit the app node group"; else failed=1; fi
+import sys, yaml
+def cpu(v):
+    v = str(v)
+    return float(v[:-1]) / 1000 if v.endswith("m") else float(v)
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+pod = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+per_pod = sum(cpu((c.get("resources") or {}).get("requests", {}).get("cpu", 0)) for c in pod["containers"])
+hpa = next(d for d in docs if d["kind"] == "HorizontalPodAutoscaler" and d["metadata"]["name"] == "ci-pipeshub-ai")
+app = next(g for g in yaml.safe_load(open(sys.argv[2]))["managedNodeGroups"] if g["name"] == "app")
+assert app["instanceType"] == "m7i.2xlarge", app["instanceType"]
+fit = int(7.5 // per_pod) * app["desiredCapacity"]
+if hpa["spec"]["maxReplicas"] > fit:
+    print(f"!! eks: maxReplicas {hpa['spec']['maxReplicas']} but {app['desiredCapacity']} app nodes hold {fit} pods of {per_pod:g} CPU")
+    sys.exit(1)
+PY
+
 if [[ "$failed" -ne 0 ]]; then
   echo "check_chart: FAILED" >&2
   exit 1
