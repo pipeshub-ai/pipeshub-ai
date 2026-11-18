@@ -423,9 +423,10 @@ functions:
       - {name: p_must_vrids, type: "text[]", nullable: true, max_items: 100000}
       - {name: p_leg, type: int, range: [1, 1000]}
     returns: "TABLE (point_sk bigint, score double precision)"
-    reads: [retrieval.postings, retrieval.points, retrieval.group_members, retrieval.point_tombstones, retrieval.collection_stats, retrieval.lexical_df_delta, retrieval.org_spaces]
+    reads: [retrieval.postings, retrieval.points, retrieval.group_members, retrieval.point_tombstones, retrieval.collection_stats, retrieval.lexical_df_delta, retrieval.org_spaces,
+            retrieval.lexical_df, retrieval.lexical_term_delta, retrieval.lexical_df_pending]
     body: |
-      DECLARE v_space smallint; v_n bigint; v_k int; v_sks bigint[]; v_scs double precision[]; v_total bigint;
+      DECLARE v_space smallint; v_n bigint; v_k int; v_sks bigint[]; v_scs double precision[]; v_total bigint; v_kept boolean;
       BEGIN
         IF cardinality(p_terms) < 1 OR cardinality(p_weights) <> cardinality(p_terms) THEN
           RAISE EXCEPTION 'search_sparse: invalid arguments' USING ERRCODE = '22023';
@@ -437,6 +438,10 @@ functions:
              + coalesce((SELECT sum(d.d) FROM retrieval.lexical_df_delta d
                           WHERE d.org_id = v_org AND d.collection_id = p_collection AND d.space_id = v_space AND d.term = -1), 0)
           INTO v_n;
+        -- a term's frequency is kept (retrieval_0005: folded + deltas, in this statement's snapshot) unless the collection's postings
+        -- predate it and recount has not run: then it is the number of the term's postings, counted
+        SELECT NOT EXISTS (SELECT 1 FROM retrieval.lexical_df_pending x
+                            WHERE x.org_id = v_org AND x.collection_id = p_collection AND x.space_id = v_space) INTO v_kept;
           -- check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass: the point must exist
           -- and carry no tombstone whatever the filter, and pass the membership arms when there are any (all four NULL: the whole org);
           -- if the best v_k are not enough and there are more, go again over all of them
@@ -446,8 +451,14 @@ functions:
                 FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
             idf AS MATERIALIZED (
               SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
-                FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
-                                            WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
+                FROM q CROSS JOIN LATERAL (SELECT CASE WHEN v_kept
+                  THEN coalesce((SELECT f.df FROM retrieval.lexical_df f
+                                  WHERE f.org_id = v_org AND f.collection_id = p_collection AND f.space_id = v_space AND f.term = q.term), 0)
+                     + coalesce((SELECT sum(t.d) FROM retrieval.lexical_term_delta t
+                                  WHERE t.org_id = v_org AND t.collection_id = p_collection AND t.space_id = v_space AND t.term = q.term), 0)
+                  ELSE (SELECT count(*) FROM retrieval.postings p
+                         WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) END AS c
+                  LIMIT 1) d        -- LIMIT keeps it from being pulled up: d.c is used three times below and is read once per term
                WHERE d.c > 0),
             agg AS (
               SELECT x.point_sk, sum(i.f * x.w) AS sc

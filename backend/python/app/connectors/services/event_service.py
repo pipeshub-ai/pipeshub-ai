@@ -49,6 +49,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
 )
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
+from app.connectors.services.reindex_force import forced_by_user
 from app.connectors.services.storage_release import (
     record_pending_storage_release,
     release_connector_storage,
@@ -1315,6 +1316,8 @@ class EventService:
         depth = payload.get("depth", 0)
         raw_status_filters = payload.get("statusFilters")
         user_key = payload.get("userKey")
+        # Only a literal true: a user's Force reindex (never a string, never a default).
+        force = payload.get("force") is True
         # Parent-scoped modes: optional filter; connector-wide mode: default FAILED,
         # except for KB connectors, where a KB-wide reindex means "reindex everything".
         status_filters: list[str] | None = None
@@ -1403,6 +1406,7 @@ class EventService:
                 user_key=user_key,
                 status_filters=status_filters,
                 stages=stages,
+                force=force,
             ),
         )
         if task is None:
@@ -1445,6 +1449,8 @@ class EventService:
         user_key: str | None,
         status_filters: list[str] | None,
         stages: list[str] | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         """Walk every matching record once and hand each batch to the connector.
 
@@ -1457,10 +1463,11 @@ class EventService:
         """
         scope_generation = await self._kh_scope_begin(connector_id)
         try:
-            await self._reindex_batches(
-                connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
-                user_key, status_filters, stages,
-            )
+            with forced_by_user(forced=force):
+                await self._reindex_batches(
+                    connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
+                    user_key, status_filters, stages,
+                )
         finally:
             await self._kh_scope_end(connector_id, scope_generation, stamp=True)
 

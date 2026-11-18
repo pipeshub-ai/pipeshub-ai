@@ -2540,6 +2540,24 @@ class TestAlreadyIndexed:
         assert record["indexingStatus"] == ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
+    async def test_a_force_reindex_that_fails_on_its_final_attempt_says_the_record_may_have_no_vectors(self) -> None:
+        """A forced run removes the earlier index first: its FAILED reason tells an admin the record may not be searchable."""
+        from app.services.messaging.kafka.handlers.record import (
+            FORCE_REINDEX_FAILED_NOTE,
+        )
+
+        handler = _make_handler()
+        record = self._record_that_indexes_then_fails(handler, ConnectionError("vector store down"), indexes=False)
+        payload = {**self._SIGNED_PAYLOAD, "forceReindex": True, "refreshPaidOutputs": True}
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+            with pytest.raises(ConnectionError):
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert record["indexingStatus"] == ProgressStatus.FAILED.value
+        assert FORCE_REINDEX_FAILED_NOTE in (record.get("reason") or "")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("connector", [{"_key": "conn-1", "isActive": False}, None], ids=["inactive", "removed"])
     async def test_a_cut_short_enrichment_on_a_stopped_connector_ends_and_releases_its_copies(
         self, connector

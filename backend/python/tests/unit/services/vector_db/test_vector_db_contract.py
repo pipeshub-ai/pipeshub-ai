@@ -153,8 +153,9 @@ class TestContainerPermissionFilterContract:
 
     @pytest.mark.asyncio
     async def test_none_is_still_no_condition(self, connected_service) -> None:
+        # A None on a non-identifying field is still skipped; on virtualRecordId/blockId it now raises (test_blank_filter_values.py).
         expr = await connected_service.filter_collection(
-            must={"orgId": "o1", "virtualRecordId": None}
+            must={"orgId": "o1", "origin": None}
         )
         assert [c.key for c in expr.must] == ["metadata.orgId"]
 

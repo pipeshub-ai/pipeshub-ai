@@ -3363,6 +3363,329 @@ async def test_members_only_a_non_member_who_joins_a_kept_group_gets_nothing(ws:
     assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws) and BOB in f1_people(ws)
 
 
+async def test_a_person_who_leaves_a_members_only_drive_loses_their_own_shares_on_the_next_run(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    del ws.world.drives["sd-1"]["members"][CAROL]  # the drive's change log names the member's removal, not its items
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0, "the drive is read again: who it keeps out changed"
+    assert CAROL not in f1_people(ws)
+
+
+async def test_a_person_who_leaves_a_members_only_drive_loses_their_share_when_only_a_reader_reads_it_again(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    ws.records.active_users.append(User(id="u-carol", email=CAROL, is_active=True))
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    # Carol leaves, and so does Alice, the only synced organizer: Bob, a reader, reads it again and sees an empty
+    # list, so the item keeps its stored grants.
+    for person in (ALICE, CAROL):
+        del ws.world.drives["sd-1"]["members"][person]
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0
+    assert CAROL not in f1_people(ws), "the drive keeps out non-members, whatever the item's list"
+    assert "f1" in ws.records.records, "the item stays for the drive's members"
+
+
+async def test_a_group_share_a_non_member_joins_goes_when_only_a_reader_reads_the_drive_again(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("kept@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "reader", "emailAddress": "kept@example.com"},
+    ])
+    await ws.sync()
+    assert "kept@example.com" in f1_people(ws)
+
+    # Alice, the only synced organizer, leaves: Bob, a reader, reads the drive again and sees an empty list.
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    join_group(ws, "kept@example.com", CAROL)
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0
+    assert "kept@example.com" not in f1_people(ws), "Carol, not a member, would reach it through the group"
+    assert CAROL not in f1_people(ws) and BOB in f1_people(ws)
+
+
+DEE = "dee@example.com"
+
+
+async def test_a_writer_group_split_on_a_relist_with_an_empty_list_keeps_its_passing_members_writers(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    # Dee, a drive member through eng, is in a writer group and a reader group, and is not the one relisting.
+    ws.world.add_group("eng@example.com", [BOB, DEE])
+    ws.world.add_group("kept@example.com", [BOB, DEE])
+    ws.world.add_group("readers@example.com", [DEE])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "kept@example.com"},
+        {"type": "group", "role": "reader", "emailAddress": "readers@example.com"},
+    ])
+    await ws.sync()
+    assert {("kept@example.com", "GROUP", "WRITE"), ("readers@example.com", "GROUP", "READ")} <= ws.grants("f1")
+
+    # Alice leaves, Carol, not a member, joins both groups, and the relist only ever sees an empty list: the drive
+    # does not let its writers share, so Bob, writing through a group, reads no sharing.
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    for group in ("kept@example.com", "readers@example.com"):
+        join_group(ws, group, CAROL)
+    ws.world.files["f1"].perm_access = "empty"
+    ws.world.files["f1"].meta["capabilities"] = {"canShare": False, "canListChildren": False}
+    await ws.sync()
+
+    assert not {"kept@example.com", "readers@example.com", CAROL} & f1_people(ws)
+    assert (BOB, "USER", "WRITE") in ws.grants("f1"), "Bob, a member, writes through the group as before"
+    assert {g for g in ws.grants("f1") if g[0] == DEE} == {(DEE, "USER", "WRITE")}, (
+        "Dee writes through one group and reads through the other: she stays a writer"
+    )
+
+    # Another reader-only relist: Bob's own grant from it is a read grant, which must not lower what the split gave.
+    ws.world.drives["sd-1"]["members"]["fay@example.com"] = "reader"
+    await ws.sync()
+
+    assert {g for g in ws.grants("f1") if g[0] in (BOB, DEE)} == {(BOB, "USER", "WRITE"), (DEE, "USER", "WRITE")}, (
+        "the fallback's read grant does not replace Bob's write grant"
+    )
+
+
+async def test_an_audience_grant_goes_when_a_drive_turns_members_only_and_only_a_reader_reads_it_again(
+    ws: Workspace,
+) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    assert "domain-members:example.com" in f1_people(ws)
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    await ws.sync()
+
+    assert "domain-members:example.com" not in f1_people(ws), "a members-only drive is read by its members alone"
+    assert "f1" in ws.records.records
+
+
+async def test_a_members_only_drive_its_last_synced_member_leaves_drops_their_stored_share(ws: Workspace) -> None:
+    ws.world.add_user("boss@example.com", suspended=True)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "boss@example.com": "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}])
+    await ws.sync()
+    assert ALICE in f1_people(ws)
+
+    # Alice, the only synced member, leaves: nobody synced lists the drive again.
+    del ws.world.drives["sd-1"]["members"][ALICE]
+    await ws.sync()
+
+    assert ALICE not in f1_people(ws), "her own share no longer opens a file of a drive she is not in"
+
+
+async def test_an_external_member_who_leaves_a_members_only_drive_loses_their_share_on_a_reader_only_relist(
+    ws: Workspace,
+) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader", PARTNER: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": PARTNER}])
+    await ws.sync()
+    assert PARTNER in f1_people(ws), "a person outside the account, stored by address"
+
+    for person in (ALICE, PARTNER):
+        del ws.world.drives["sd-1"]["members"][person]
+    await ws.sync()
+
+    assert PARTNER not in f1_people(ws)
+
+
+async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_the_next_run(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL not in f1_people(ws), "not a member: her share does not open it"
+
+    ws.world.drives["sd-1"]["members"][CAROL] = "reader"
+    await ws.sync()
+
+    assert CAROL in f1_people(ws)
+
+
+def _forget_the_member_list(ws: Workspace, drive_id: str) -> None:
+    """A members-only drive synced before its member list was remembered: the restrictions stored, no list."""
+    from app.connectors.sources.google.drive.team.connector import (
+        DRIVE_DIRECT_MEMBERS_MARK,
+        DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX,
+    )
+
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"))
+    stored = ws.sync_points.sync_points[key]
+    stored["group_hashes"] = [h for h in stored.get("group_hashes") or [] if not h.startswith(f"{DRIVE_DIRECT_MEMBERS_MARK}|")]
+
+
+async def test_a_members_only_drive_synced_before_its_member_list_was_kept_is_read_again_once(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    _forget_the_member_list(ws, "sd-1")
+    del ws.world.drives["sd-1"]["members"][CAROL]
+
+    await ws.sync()
+
+    assert CAROL not in f1_people(ws)
+
+
+async def test_a_member_group_leaving_a_members_only_drive_takes_its_peoples_own_shares_on_the_next_run(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    del ws.world.drives["sd-1"]["members"]["eng@example.com"]  # the group's people are unchanged
+    await ws.sync()
+
+    assert CAROL not in f1_people(ws), "a member only through the group no longer opens it"
+
+
+async def test_a_member_leaving_during_a_run_is_caught_by_the_next_run(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    ws.world.add_item("f2", "notes.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": CAROL}])
+    await ws.sync()
+    ws.world.rename("f2", "notes-v2.txt")  # read again this run, after the member list was checked
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern.endswith("/changes$"))
+    left: list[bool] = []
+
+    def changes(req: ApiRequest) -> object:
+        if req.query.get("driveId") == "sd-1" and not left:
+            left.append(True)
+            del ws.world.drives["sd-1"]["members"][CAROL]
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/changes", changes)
+    await ws.sync()
+    assert left
+    await ws.sync()
+
+    assert CAROL not in f1_people(ws), "the unchanged item is rewritten too"
+
+
+async def test_a_file_deleted_before_a_relist_drops_the_drive_token_is_still_removed(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    ws.world.add_item("f2", "old.txt", parent="sd-1")
+    await ws.sync()
+    assert "f2" in ws.records.records
+
+    # Deleted for good, then a member leaves: the relist drops the drive token that would have reported the delete.
+    ws.world.delete("f2")
+    del ws.world.drives["sd-1"]["members"][CAROL]
+    await ws.sync()
+
+    assert "f2" not in ws.records.records, "the relisted drive's unseen item is checked as removed"
+    assert "f1" in ws.records.records
+
+
+def _drive_point(ws: Workspace, email: str, drive_id: str) -> dict | None:
+    user_id = ws.world.users[email].user_id
+    return next((v for k, v in ws.sync_points.sync_points.items() if k.endswith(f"drives/{user_id}_{drive_id}")), None)
+
+
+async def test_a_second_relist_keeps_the_unseen_item_check_the_first_one_owes(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import DRIVE_RELISTED
+
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    assert (_drive_point(ws, ALICE, "sd-1") or {}).get("pageToken")
+
+    await ws.connector._read_drive_again("sd-1", reseed=False)
+    await ws.connector._read_drive_again("sd-1", reseed=False)  # before the first relist's listing completed
+
+    assert (_drive_point(ws, ALICE, "sd-1") or {}).get(DRIVE_RELISTED), "the check is still owed"
+
+
+async def test_an_undecided_unseen_item_after_a_relist_is_kept_to_check_again(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import _Settled
+
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+
+    async def undecided(*_: object, **__: object) -> object:
+        return _Settled.UNDECIDED  # a member group of the drive could not be read
+
+    connector._apply_shared_drive_removal = undecided
+    connector._sync_ledger.seen.clear()  # this run's listing did not see f1
+    await connector._check_unseen_after_relist("sd-1", alice, None)
+
+    _, parts = await connector._read_undecided(connector._undecided_key(alice, "sd-1"))
+    assert any(e.startswith("f1:") for part in parts for e in part), "parked with the undecided removals"
+
+
+async def test_an_unseen_item_whose_check_raises_undecided_after_a_relist_is_kept_to_check_again(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import _RemovalUndecided
+
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+
+    async def unanswered(*_: object, **__: object) -> object:
+        raise _RemovalUndecided("nobody of its audience answered")
+
+    connector._apply_shared_drive_removal = unanswered
+    connector._sync_ledger.seen.clear()  # this run's listing did not see f1
+    await connector._check_unseen_after_relist("sd-1", alice, None)  # the listing's token can be saved
+
+    _, parts = await connector._read_undecided(connector._undecided_key(alice, "sd-1"))
+    assert any(e.startswith("f1:") for part in parts for e in part), "parked with the undecided removals"
+
+
+async def test_a_dropped_checkpoint_keeps_the_unseen_item_check_a_relist_owes(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import DRIVE_RELISTED
+
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", CAROL: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    real_keep = connector._keep_failed_items
+
+    async def too_many(key: str, failed: set[str]) -> bool:  # too many failed items to keep by id: dropped
+        await connector.drive_delta_sync_point.delete_sync_point(key)
+        return False
+
+    connector._keep_failed_items = too_many
+    del ws.world.drives["sd-1"]["members"][CAROL]  # a relist drops the token
+    await ws.sync()
+    connector._keep_failed_items = real_keep
+
+    assert (_drive_point(ws, ALICE, "sd-1") or {}).get(DRIVE_RELISTED), "the check the relist owes is kept"
+
+
 async def relisted(ws: Workspace) -> bool:
     before = len(ws.http.requests)
     await ws.sync()

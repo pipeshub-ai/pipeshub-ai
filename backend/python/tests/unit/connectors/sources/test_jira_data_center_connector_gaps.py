@@ -261,7 +261,8 @@ class TestIssueDeletionGaps:
 
 class TestPermissionSchemeGaps:
     @pytest.mark.asyncio
-    async def test_permission_grants_non_list_normalized(self):
+    async def test_permission_grants_not_a_list_keep_the_stored_access(self):
+        """``permissions`` is an array in PermissionGrantsBean; anything else is a failed read, not "no grants"."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         sch = _ok_resp({"id": 1})
@@ -273,7 +274,7 @@ class TestPermissionSchemeGaps:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             perms = await conn._fetch_project_permission_scheme("PROJ", {})
 
-        assert perms == []
+        assert perms is None
         ds.get_permission_scheme_grants_v2.assert_awaited_once()
 
     @pytest.mark.asyncio
