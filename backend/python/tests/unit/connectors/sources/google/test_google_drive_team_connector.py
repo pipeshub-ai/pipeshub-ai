@@ -56,6 +56,7 @@ import io
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -5117,9 +5118,170 @@ class TestSweepPlaceholderRecords:
         assert backfilled_record.is_placeholder is False
 
     @pytest.mark.asyncio
-    async def test_unreadable_ancestor_is_resubmitted_as_a_stub(self):
-        """Re-submitting restores the record-group and parent edges a full sync drops,
-        without promoting the stub to a real record."""
+    async def test_an_unreadable_ancestor_found_by_external_id_is_not_rewritten(self) -> None:
+        """B is read and backfilled; its parent A, read back by external id (a plain Record in every graph store), can
+        not be read at the source. A is kept as stored, not written: a plain Record fails every store's file write,
+        which stopped the user's whole sync."""
+        conn = _make_connector()
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = True
+
+        async def files_get(fileId: str, **_: object) -> dict:
+            if fileId == "A":
+                raise _make_http_error(404)
+            return {"id": "B", "name": "Folder B", "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value, "parents": ["A"]}
+
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=files_get)
+        backfilled_b = MagicMock()
+        backfilled_b.parent_external_record_id = "A"
+        backfilled_b.parent_record_type = RecordType.FILE
+
+        async def _fake_generator(metadata: list, *args: object, **kwargs: object) -> AsyncIterator[tuple]:
+            for _ in metadata:
+                yield (backfilled_b, [], MagicMock())
+
+        conn._process_drive_items_generator = _fake_generator
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stub_a)
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        written = [r for call in conn.data_entities_processor.on_new_records.await_args_list for r, _ in call.args[0]]
+        assert written == [backfilled_b]
+        conn.data_entities_processor.note_kept_records.assert_any_call(conn.connector_id, ["rec-a"])
+
+    @pytest.mark.asyncio
+    async def test_the_walk_climbs_past_an_unreadable_stub_and_keeps_its_unreadable_parent(self) -> None:
+        """B and its parent A, both stubs, cannot be read. Both are noted kept, so a full sync's unlink leaves the
+        A -> B parent edge and A's own edges: a walk that stopped at B left A unseen and its edges were removed."""
+        conn = _make_connector()
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = True
+        stub_b.parent_record_type = None  # as the store returns a stub: it keeps the parent id, not its type
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        stub_a.parent_record_type = None
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert sorted(c.kwargs["fileId"] for c in ds.files_get.await_args_list) == ["A", "B"]
+        kept = [i for c in conn.data_entities_processor.note_kept_records.call_args_list for i in c.args[1]]
+        assert kept == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @staticmethod
+    def _b_under_a(*, b_is_placeholder: bool) -> tuple[MagicMock, MagicMock]:
+        """B under A, as the store returns them: the parent id kept, not its type."""
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = b_is_placeholder
+        stub_b.parent_record_type = None
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        stub_a.parent_record_type = None
+        return stub_b, stub_a
+
+    @staticmethod
+    def _kept(conn: MagicMock) -> list:
+        return [i for c in conn.data_entities_processor.note_kept_records.call_args_list for i in c.args[1]]
+
+    @pytest.mark.asyncio
+    async def test_a_real_ancestor_whose_fetch_fails_is_kept_and_its_parent_walked(self) -> None:
+        """A folder-filtered full sync walks real ancestors too. One that cannot be fetched is kept, and its parent A
+        is still reached and kept, so the unlink leaves A's edges."""
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=False)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b], rewrite_real_ancestors=True,
+        )
+
+        assert self._kept(conn) == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_ancestor_whose_permissions_cannot_be_read_is_kept_and_its_parent_walked(self) -> None:
+        """B is fetched but processing it fails (its permission read failed), so nothing is written for it. It is
+        kept, and the walk still reaches A through B's stored parent id."""
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=True)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+
+        async def files_get(fileId: str, **_: object) -> dict:
+            if fileId == "A":
+                raise _make_http_error(404)
+            return {"id": "B", "name": "Folder B", "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value, "parents": ["A"]}
+
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=files_get)
+
+        async def nothing_written(*args: object, **kwargs: object) -> AsyncIterator[tuple]:
+            return
+            yield
+
+        conn._process_drive_items_generator = nothing_written
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert self._kept(conn) == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_walk_the_safety_bound_stops_leaves_the_run_incomplete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The ancestors above where the bound stopped the walk were never reached, so nothing the run did not see
+        may be taken for gone: the run is incomplete, which holds the cleanup and the unlink."""
+        import app.connectors.sources.google.drive.team.connector as team
+
+        monkeypatch.setattr(team, "PLACEHOLDER_SWEEP_SAFETY_MAX", 0)
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=True)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert conn._sync_ledger.incomplete
+        assert "rec-a" in self._kept(conn), "the next ancestor, reached but not read, is kept too"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_ancestor_is_kept_as_a_stub(self):
+        """Noted kept, so a full sync's unlink leaves its record-group and parent edges; not rewritten, since a stub
+        read back by external id is a plain Record that no graph store writes as a file."""
         conn = _make_connector()
         stub = _make_existing_record(
             record_id="rec-b",
@@ -5142,8 +5304,8 @@ class TestSweepPlaceholderRecords:
             seeds=[stub],
         )
 
-        submitted = conn.data_entities_processor.on_new_records.await_args.args[0]
-        assert submitted == [(stub, [])]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+        conn.data_entities_processor.note_kept_records.assert_called_once_with(conn.connector_id, ["rec-b"])
         assert stub.is_placeholder is True
 
 
