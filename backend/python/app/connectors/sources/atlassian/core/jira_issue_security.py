@@ -434,25 +434,6 @@ def level_reads_alike(context: IssueSecurityContext, level_id: str) -> bool:
     return bool(holders) and all(holder.get("type") in _SAME_ON_EVERY_ISSUE for holder in holders)
 
 
-def subtask_files_under_parent(context: IssueSecurityContext | None, fields: dict[str, Any] | None) -> bool:
-    """Whether a sub-task is filed under its parent issue, whose readers it then also needs.
-
-    Jira copies the parent's level onto the sub-task, but a holder that names people on each issue
-    (reporter, assignee, a user or group field) grants the sub-task's own people, who need not read the
-    parent; a Browse holder of the project that names people works the same way. Such a sub-task hangs
-    off its project, where its own grants open it. A sub-task whose level cannot be applied is closed
-    wherever it is filed, so it stays under its parent until its level is read.
-    """
-    if context is None or not context.enforce or context.browse_holders is None:
-        return True
-    if context.browse_holders:
-        return False
-    present, level_id = read_security_level(fields)
-    if not present or level_id is None or not context.members_readable:
-        return True
-    return level_reads_alike(context, level_id)
-
-
 def _normalize_field_key(raw: str) -> str:
     text = raw.strip()
     if text.startswith("customfield_") or not text.isdigit():

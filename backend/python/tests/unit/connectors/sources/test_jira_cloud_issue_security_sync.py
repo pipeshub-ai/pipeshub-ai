@@ -1220,13 +1220,22 @@ class TestStoriesUnderTheirEpic:
         assert story.parent_external_record_id == "2001"
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_still_goes_under_its_parent(self) -> None:
+    async def test_a_sub_task_still_goes_under_a_parent_with_no_level(self) -> None:
+        """Read in the same page, so its level is not asked for again."""
         sub = _story()
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         c = _connector()
         c._get_fresh_datasource = AsyncMock()
-        assert (await _story_record(c, [sub])).parent_external_record_id == "2001"
+        assert (await _story_record(c, [_issue(None, key="PROJ-9", issue_id="2001"), sub])).parent_external_record_id == "2001"
         c._get_fresh_datasource.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_with_no_level_does_not_go_under_a_leveled_parent(self) -> None:
+        """Under it, the sub-task would need the parent's level members too, though Jira opens it to the project."""
+        sub = _story()
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        parent = _issue(LEVEL, key="PROJ-9", issue_id="2001")
+        assert (await _story_record(_connector(), [parent, sub])).parent_external_record_id is None
 
     @pytest.mark.asyncio
     async def test_a_malformed_issue_in_the_page_does_not_stop_the_others(self) -> None:
@@ -1286,7 +1295,9 @@ class TestEpicsReadAgainNextSync:
 class TestReindexFollowsTheCurrentIssueType:
     @staticmethod
     async def _reindexed(parent: dict) -> TicketRecord:
-        c = _reindex_connector(_issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000"), [])
+        # The one read: the parent's level, which it does not have.
+        c = _reindex_connector(_issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000"),
+                               [_resp(200, {"issues": [_issue(None, key="PROJ-1", issue_id="1001")]})])
         sub = _issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000")
         sub["fields"].update(issuetype={"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}, parent=parent)
         c._get_fresh_datasource.return_value.get_issue.return_value = _resp(200, sub)
@@ -1297,7 +1308,7 @@ class TestReindexFollowsTheCurrentIssueType:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("parent", [{"id": "1001", "key": "PROJ-1"}, {"id": "1001"}])
     async def test_a_story_that_became_a_sub_task_is_filed_under_its_parent(self, parent: dict) -> None:
-        """The stored copy had no parent (a story the sync did not file under it); a sub-task always follows its parent."""
+        """The stored copy had no parent (a story the sync did not file under it); a sub-task follows a parent with no level."""
         assert (await self._reindexed(parent)).parent_external_record_id == "1001"
 
 
@@ -1423,6 +1434,16 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
         record, _, _ = await _build(_connector(), sub, self._none(None))
         assert record.parent_external_record_id == "1001"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_sub_task_off_its_parent_stays_off_it_while_the_holders_are_unknown(self) -> None:
+        """A failed Browse read must not put it back under the parent, whose readers its own holders may lack."""
+        sub = _issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        stored = _stored_ticket(external_record_id="1002", parent_external_record_id=None)
+        record, _, _ = await _build(_connector(), sub, self._none(None), existing=stored)
+        assert record.parent_external_record_id is None
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()

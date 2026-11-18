@@ -1,5 +1,6 @@
 """Jira Data Center issue security: the parts of the connector that are not a whole sync."""
 
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +11,9 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
 )
+from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    NO_LEVEL_READ,
     JiraDataCenterConnector,
 )
 from app.connectors.sources.atlassian.jira_data_center_personal.connector import (
@@ -559,13 +562,53 @@ class TestLevelsJiraLeavesOut:
         assert leveled["fields"]["security"] == {"id": "7"}
 
     @pytest.mark.parametrize("failure", ["http", "raise"])
-    async def test_a_failed_check_leaves_the_key_missing_so_the_issue_stays_closed(self, failure) -> None:
+    async def test_a_failed_check_is_returned_unsettled_with_the_key_still_missing(self, failure) -> None:
         connector = _connector()
         connector._search_issues_with_retry = (
-            self._search(400, ["1"]) if failure == "http" else AsyncMock(side_effect=RuntimeError("down")))
+            self._search(503, ["1"]) if failure == "http" else AsyncMock(side_effect=RuntimeError("down")))
         issue = {"id": "1", "fields": {}}
-        await connector._null_levels_jira_left_out([issue])
+        assert await connector._null_levels_jira_left_out([issue]) == {"1"}
         assert "security" not in issue["fields"]
+
+    async def test_a_batch_rejected_for_a_deleted_id_is_split_until_that_id_is_alone(self) -> None:
+        """Jira answers 400 to ``id in (...)`` naming an id it no longer knows; the others are still settled."""
+        async def search(**kw):
+            ids = kw["jql"].split("(")[1].split(")")[0].split(", ")
+            if "3" in ids:
+                return MagicMock(status=400, json=MagicMock(return_value={}))
+            body = {"issues": [{"id": i} for i in ids]}
+            return MagicMock(status=200, json=MagicMock(return_value=body))
+
+        connector = _connector()
+        connector._search_issues_with_retry = AsyncMock(side_effect=search)
+        issues = [{"id": i, "fields": {}} for i in ("1", "2", "3", "4")]
+        assert await connector._null_levels_jira_left_out(issues) == set()
+        assert [("security" in i["fields"]) for i in issues] == [True, True, False, True]
+
+    async def test_a_failed_check_holds_the_page_rather_than_storing_its_issues_closed(self) -> None:
+        """Stored closed under Jira's timestamp, the next sync would skip them and they would stay closed."""
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        issue = _issue("1", "P-1")
+        del issue["fields"]["security"]
+        page = MagicMock(status=200, json=MagicMock(return_value={"issues": [issue], "total": 1}))
+        connector._search_issues_with_retry = AsyncMock(side_effect=[page, RuntimeError("down")])
+        connector._build_issue_records = AsyncMock()
+        connector.data_source = MagicMock()
+
+        with pytest.raises(JiraReadError):
+            async for _ in connector._fetch_issues_batched("P", "10", []):
+                pass
+        connector._build_issue_records.assert_not_awaited()
+
+    async def test_a_parent_whose_level_check_failed_holds_its_child(self) -> None:
+        connector = _connector()
+        parent = {"id": "5", "fields": {"project": {"id": "10"}}}
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
+        connector._search_issues_with_retry = AsyncMock(side_effect=RuntimeError("down"))
+        with pytest.raises(JiraReadError):
+            await connector._parent_level("5")
+        assert "5" not in connector._parent_levels
 
     async def test_nothing_is_asked_when_every_issue_carries_the_key(self) -> None:
         connector = _connector()
@@ -611,3 +654,69 @@ class TestSecuredSubtasks:
         assert record.parent_external_record_id is None
         assert record.access_rule == AccessRule.RESTRICTED
         assert "vansh@example.com" in {g.email for g in grants}
+
+    @staticmethod
+    async def _placed(parent_level: str | None) -> TicketRecord:
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        sub = _issue("2", "P-2")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        sub["fields"]["parent"] = {"id": "1", "key": "P-1"}
+        built = await connector._build_issue_records([_issue("1", "P-1", level=parent_level), sub], "10", [])
+        return next(r for r, _ in built if isinstance(r, TicketRecord) and r.external_record_id == "2")
+
+    async def test_a_sub_task_with_no_level_stays_under_a_parent_with_none(self) -> None:
+        assert (await self._placed(None)).parent_external_record_id == "1"
+
+    async def test_a_sub_task_with_no_level_does_not_go_under_a_leveled_parent(self) -> None:
+        """Under it, it would need the parent's level members too, though Jira opens it to the project."""
+        assert (await self._placed("7")).parent_external_record_id is None
+
+
+
+class TestStoredNoLevelIssuesHealOnce:
+    """Issues an earlier version stored closed for a missing ``security`` key are read again once."""
+
+    @staticmethod
+    async def _sync(checkpoint: dict, *, pass_fails: bool = False) -> tuple[AsyncMock, AsyncMock]:
+        connector = _connector()
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+                                       members_by_level={"7": [{"type": "group", "parameter": "admins"}]})
+        connector._load_issue_security = AsyncMock(return_value=context)
+        connector._get_project_sync_checkpoint = AsyncMock(return_value={
+            "last_sync_time": 100, "last_issue_updated": 200,
+            "security_levels": json.dumps(context.level_fingerprints(), sort_keys=True), **checkpoint})
+
+        async def no_changes(*_a, **_kw):
+            return
+            yield  # pragma: no cover - makes an async generator
+
+        async def reread(*_a, **_kw) -> None:
+            if pass_fails:
+                connector._issue_build_failures += 1
+
+        connector._fetch_issues_batched = no_changes
+        connector._reread_stored_issues = AsyncMock(side_effect=reread)
+        connector._update_project_sync_checkpoint = AsyncMock()
+        await connector._sync_project_issues(MagicMock(short_name="P", external_group_id="10"), [], None)
+        return connector._reread_stored_issues, connector._update_project_sync_checkpoint
+
+    @staticmethod
+    def _marked(update: AsyncMock) -> bool:
+        return any(c.kwargs.get("no_level_read") == NO_LEVEL_READ for c in update.await_args_list)
+
+    async def test_a_project_synced_before_reads_every_stored_issue_once_and_marks_it(self) -> None:
+        """Unchanged at source, they would never reach the incremental pass."""
+        reread, update = await self._sync({})
+        reread.assert_awaited_once()
+        assert reread.await_args.kwargs["every_issue"] is True
+        assert self._marked(update)
+
+    async def test_a_marked_project_is_not_read_again(self) -> None:
+        reread, _ = await self._sync({"no_level_read": NO_LEVEL_READ})
+        reread.assert_not_awaited()
+
+    async def test_a_failed_pass_is_not_marked_so_the_next_sync_repeats_it(self) -> None:
+        reread, update = await self._sync({}, pass_fails=True)
+        reread.assert_awaited_once()
+        assert not self._marked(update)
