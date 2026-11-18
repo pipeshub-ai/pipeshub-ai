@@ -420,6 +420,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # walking every wait.
         self._record_waiters: dict[str, _RecordWaiters] = {}
         self._record_wait_limit_logged_at = 0.0
+        # Lanes whose tracked ids were last checked against the pending list
+        # (__tracked_ids_may_be_stale), monotonic.
+        self._tracked_checked_at: dict[str, float] = {}
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
         # took it down is the only suspect in flight. Used on the worker loop.
@@ -1435,6 +1438,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 for key, wait in self._record_waits.items()
             )
 
+    async def __tracked_ids_may_be_stale(self, topic: str, now: float) -> bool:
+        """Whether this consumer's pending list on ``topic`` holds an entry it
+        does not track, checked against the actual ids (``__has_unheld_pending``,
+        paged and read-only). At most once per ownership refresh interval per
+        lane: a stale id lasts only until the next refresh forgets it."""
+        last = self._tracked_checked_at.get(topic, 0.0)
+        if now - last < self.__ownership_refresh_interval():
+            return False
+        self._tracked_checked_at[topic] = now
+        return await self.__has_unheld_pending(topic)
+
     def _tracked_ids_by_stream(self) -> dict[str, set[str]]:
         """In-flight entries and those still waiting, by stream, from one
         snapshot: taken apart, an entry moving between the two in between
@@ -2316,6 +2330,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             own, _others = self.__pending_by_owner(summary)
             if own - len(tracked.get(topic, ())) > 0:
                 unheld.add(topic)
+            elif own > 0 and await self.__tracked_ids_may_be_stale(topic, now):
+                # The counts say nothing is unheld, but an id tracked here may
+                # have left this consumer's pending list since (a peer claimed
+                # it, or it was acknowledged) before the refresh forgets it;
+                # subtracted anyway, it hides an entry that is unheld.
+                unheld.add(topic)
         if not unheld:
             return
 
@@ -2362,9 +2382,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         break
                 if await self.__recover_entry(topic, message_id, fields, owned=True):
                     taken += 1
-                if undo is not None and not self.__already_held(message_id, topic):
-                    # The room went unused (the entry was acknowledged, or
-                    # could not be taken): give the donor its place back.
+                if undo is not None and (topic, message_id) not in self._held_entries:
+                    # The room went unused (the entry was acknowledged, could
+                    # not be taken, or waits for its record again): give the
+                    # donor its place back. Not __already_held: a waiting
+                    # entry counts there without taking a place.
                     undo()
         if taken:
             self.logger.info(
@@ -2769,6 +2791,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         is recorded as confirmed, which is what ``__sweep_stale_buffered``
         judges risk by.
         """
+        metrics.refresh_record_waits("redis")
         in_flight = self._in_flight_by_stream()
         if self.redis is None or not (self._held_entries or in_flight or self._record_waits):
             return

@@ -15,8 +15,11 @@ import gc
 import json
 import logging
 import random
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -687,6 +690,7 @@ def gauge() -> Any:  # noqa: ANN401
     from app.telemetry.modules import scheduling_metrics
 
     scheduling_metrics._record_waits_by_owner.clear()
+    scheduling_metrics._record_waits_collected.clear()
     with patch("app.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", _RECORD_WAITS_SET):
         yield _RECORD_WAITS_SET
 
@@ -919,6 +923,8 @@ class TestReviewOfTheWaitsRoundTwo:
 
         del dropped
         gc.collect()
+        # What every consume pass does (in the ownership refresh).
+        scheduling_metrics.refresh_record_waits("redis")
 
         assert _gauge_values()[-1] == 1
 
@@ -965,36 +971,165 @@ class TestReviewOfTheWaitsRoundTwo:
         assert (LANE, other) in consumer._held_entries
 
 
+_COLLECTION_INSIDE_A_PUBLICATION = """
+import gc, threading
+from unittest.mock import patch
+from app.telemetry.modules import scheduling_metrics as m
+
+class Owner:
+    def __init__(self):
+        self.cycle = self  # freed only by a collection
+
+gc.disable()
+dropped = Owner()
+m.record_record_waits("test", dropped, 1)
+del dropped
+real_set = m.RECORD_WAITS.set
+
+def collecting_set(*args, **kwargs):
+    gc.collect()  # the dropped owner's finalizer runs here, mid-publication
+    return real_set(*args, **kwargs)
+
+kept = Owner()
+with patch.object(m.RECORD_WAITS, "set", collecting_set):
+    m.record_record_waits("test", kept, 2)
+    m.record_record_waits("test", kept, 3)
+m.refresh_record_waits("test")
+assert m._record_waits_by_owner["test"] == {id(kept): 3}, m._record_waits_by_owner
+print("ok")
+"""
+
+
 class TestTheGaugeUnderCollection:
     def test_a_collection_inside_a_publication_does_not_deadlock(self) -> None:
-        """A consumer dropped without a stop is forgotten by its finalizer,
-        which a collection can run anywhere, including inside a publication
-        on the same thread."""
+        """In its own process: a deadlock there must fail this test, not hang
+        the rest of the suite behind a lock its thread still holds."""
+        result = subprocess.run(
+            [sys.executable, "-c", _COLLECTION_INSIDE_A_PUBLICATION],
+            cwd=str(Path(__file__).resolve().parents[4]),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0 and result.stdout.strip().endswith("ok"), result.stderr[-2000:]
+
+    def test_a_finalizer_takes_no_lock_and_publishes_nothing(self) -> None:
+        """It runs on whatever thread a collection happens on, possibly one
+        inside the gauge's own lock: it only records the collection."""
 
         class Owner:
             def __init__(self) -> None:
-                self.cycle = self  # freed only by a collection
+                self.cycle = self
 
-        real_finalize = scheduling_metrics.weakref.finalize
+        acquired: list[str] = []
+
+        class SpyLock:
+            def __init__(self, real: Any) -> None:  # noqa: ANN401
+                self.real = real
+
+            def __enter__(self) -> None:
+                acquired.append(threading.current_thread().name)
+                self.real.acquire()
+
+            def __exit__(self, *_exc: object) -> None:
+                self.real.release()
+
+            def acquire(self, *args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+                acquired.append(threading.current_thread().name)
+                return self.real.acquire(*args, **kwargs)
+
+            def release(self) -> None:
+                self.real.release()
+
+        gc.disable()
+        try:
+            owner = Owner()
+            scheduling_metrics.record_record_waits("spy", owner, 1)
+            with patch.object(scheduling_metrics, "_record_waits_lock", SpyLock(scheduling_metrics._record_waits_lock)), \
+                    patch.object(scheduling_metrics.RECORD_WAITS, "set") as gauge_set:
+                del owner
+                gc.collect()
+                assert acquired == []
+                gauge_set.assert_not_called()
+                scheduling_metrics.refresh_record_waits("spy")
+                gauge_set.assert_called_with("spy", value=0)
+        finally:
+            gc.enable()
+
+    def test_a_total_computed_before_a_collection_is_corrected(self) -> None:
+        class Owner:
+            def __init__(self) -> None:
+                self.cycle = self
+
+        published: list[float] = []
+        real_set = scheduling_metrics.RECORD_WAITS.set
         gc.disable()
         try:
             dropped = Owner()
-            scheduling_metrics.record_record_waits("test", dropped, 1)
+            scheduling_metrics.record_record_waits("stale", dropped, 1)
             del dropped
-
-            def collecting(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-                handle = real_finalize(*args, **kwargs)
-                gc.collect()  # runs the dropped owner's finalizer, inside the lock
-                return handle
-
             kept = Owner()
-            with patch.object(scheduling_metrics.weakref, "finalize", collecting):
-                worker = threading.Thread(
-                    target=scheduling_metrics.record_record_waits, args=("test", kept, 2), daemon=True
-                )
-                worker.start()
-                worker.join(timeout=5)
-            assert not worker.is_alive(), "a finalizer run inside the publication deadlocked"
-            assert scheduling_metrics._record_waits_by_owner["test"] == {id(kept): 2}
+
+            def collecting_set(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+                gc.collect()  # after the total (with the dropped owner) is computed
+                published.append(kwargs["value"])
+                real_set(*args, **kwargs)
+
+            with patch.object(scheduling_metrics.RECORD_WAITS, "set", collecting_set):
+                scheduling_metrics.record_record_waits("stale", kept, 2)
+                scheduling_metrics.refresh_record_waits("stale")
+            assert published[-1] == 2
         finally:
             gc.enable()
+
+
+@pytest.mark.asyncio
+class TestReviewOfTheWaitsRoundThree:
+    async def test_a_wait_a_peer_took_meanwhile_does_not_hide_the_lanes_unheld_entry(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        await consumer.redis.xadd(LANE, _fields("r1"))
+        await consumer.redis.xadd(LANE, _fields("r9"))
+        waiting, other = [
+            i for _s, entries in await consumer.redis.xreadgroup(
+                GROUP, consumer.consumer_name, {LANE: ">"}, count=10
+            ) for i, _f in entries
+        ]
+        consumer._wait_for_record_lease("r1", LANE, waiting)
+        # A peer took the waiting entry; this consumer has not refreshed yet.
+        await consumer.redis.xclaim(LANE, GROUP, "peer", min_idle_time=0, message_ids=[waiting])
+
+        await harness.recover()
+
+        assert (LANE, other) in consumer._held_entries
+
+    async def test_a_donor_is_restored_when_the_waiter_it_made_room_for_waits_again(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        await consumer.redis.xadd(LANE, _fields("r1"))
+        (waiter,) = [
+            i for _s, entries in await consumer.redis.xreadgroup(
+                GROUP, consumer.consumer_name, {LANE: ">"}, count=10
+            ) for i, _f in entries
+        ]
+        consumer._wait_for_record_lease("r1", LANE, waiter)
+        _expire(consumer)
+        for i in range(BUFFER):
+            await consumer.redis.xadd(OTHER_LANE, _fields(f"b{i}", "conn-b"))
+        await harness.read_new(OTHER_LANE)
+        held = set(consumer._held_entries)
+        real_xrange = consumer.redis.xrange
+
+        async def sibling_takes_the_record(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            # Between the scan that found the due waiter and its offer.
+            consumer._claim_record("r1")
+            return await real_xrange(*args, **kwargs)
+
+        consumer.redis.xrange = sibling_takes_the_record  # type: ignore[method-assign]
+        await harness.recover()
+
+        assert set(consumer._held_entries) == held
+        assert consumer._scheduler.pending_count + len(consumer._deferred_entries) == BUFFER
