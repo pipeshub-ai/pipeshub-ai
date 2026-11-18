@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import EventTypes, MimeTypes
+from app.core import org_context
 from app.events.dedup import DedupDecision
 from app.events.events import EventProcessor
 from app.modules.indexing import replay_set
@@ -110,7 +111,8 @@ class _World:
         return {"eventType": event_type, "payload": payload}
 
     async def run(self, event: dict[str, Any]) -> list[IndexingEvent]:
-        return [item.event async for item in self.ep.on_event(event)]
+        with org_context.for_org("org-1", job="test"):  # the handler runs the event bound to the record's org
+            return [item.event async for item in self.ep.on_event(event)]
 
 
 @pytest.mark.asyncio

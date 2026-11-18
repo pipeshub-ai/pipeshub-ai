@@ -123,6 +123,7 @@ from app.services.parsing.interface import ParserProvider, UnsupportedFormatErro
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
+from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
     CollectionStrategy,
@@ -301,7 +302,11 @@ class EventProcessor:
             # unsearchable until a reindex reaches it. No point of its own, or nothing to ask: run in full, which embeds under
             # the index's current precision and epoch.
             pipeline = self._indexing_pipeline()
-            if pipeline is None or str(record.get("orgId") or "") not in await pipeline.orgs_holding_points(vrid):
+            try:
+                org_id = org_for_filter()
+            except OrgRequired:
+                return False
+            if pipeline is None or org_id not in await pipeline.orgs_holding_points(vrid):
                 return False
             await self.sync_vector_membership(vrid, log_failure=False)
             dispatched = await ingress.redrive_unchanged(vrid, rev, record)
