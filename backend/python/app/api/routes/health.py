@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import ipaddress
 import os
+import re
 import shutil
 import socket
 from collections.abc import AsyncIterator, Awaitable
@@ -44,6 +45,7 @@ from app.utils.aimodels import (
     openai_async_client_kwargs,
     require_public_endpoint,
 )
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.openai_hosts import (
     endpoint_path_problem,
     openai_wrong_host,
@@ -268,11 +270,85 @@ def _provider_display_name(provider: str | None) -> str:
     return (meta or {}).get("name") or provider or "the provider"
 
 
-# Failure messages are fixed text: exception and provider text go to the log only, never
-# into a response, where they could carry internals (hosts, request ids, stack frames).
+# Failure messages are fixed text. A hosted provider's own API answer is appended to them, filtered,
+# masked and capped (``_provider_reason``), because without it an admin cannot tell a quota from a
+# wrong key. Everything else -- PipesHub's exceptions, library errors, a self-hosted endpoint's
+# answer, which can carry a traceback or an internal host -- goes to the log only.
 EMBEDDING_UNAVAILABLE_MESSAGE = (
     "The embedding model couldn't start. Check it in Workspace > AI Models, then try again."
 )
+
+_PROVIDER_REASON_MAX_CHARS = 300
+_CREDENTIAL_NAME_PARTS = ("key", "secret", "token", "password", "credential")
+# Providers whose errors come from the vendor's own public API, keyed as `_normalize_provider_key` writes them.
+_HOSTED_PROVIDER_KEYS = frozenset(
+    {"openai", "azureopenai", "azureai", "anthropic", "gemini", "vertexai", "bedrock"}
+)
+# The SDKs those providers answer through; an exception from any other package is not their answer.
+_PROVIDER_SDK_PACKAGES = ("openai", "anthropic", "google", "botocore", "azure")
+_INTERNAL_TEXT = re.compile(
+    r"traceback|\bfile \"|\blocalhost\b|\.(?:internal|local|lan|svc|corp|intranet)\b"
+    r"|\b(?:10|127|192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d{1,3}){2,3}\b",
+    re.IGNORECASE,
+)
+
+
+def _from_provider_sdk(exc: BaseException) -> bool:
+    module = type(exc).__module__ or ""
+    return any(module == package or module.startswith(package + ".") for package in _PROVIDER_SDK_PACKAGES)
+
+
+def _provider_reason(e: BaseException, model_config: dict) -> str | None:
+    """A hosted provider's own words for a failed model call, safe to show the admin who configured it.
+
+    Taken from the first exception in the chain that the provider's SDK raised, and only for a hosted
+    provider. Text that reads as a traceback or names an internal host or private address is dropped;
+    URLs, account ids, known key shapes and every credential value in these settings are masked, and
+    the text is capped.
+    """
+    if _normalize_provider_key(model_config.get("provider")) not in _HOSTED_PROVIDER_KEYS:
+        return None
+    seen: set[int] = set()
+    current: BaseException | None = e
+    text = ""
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _from_provider_sdk(current):
+            text = " ".join(_extract_error_message(current).split())  # type: ignore[arg-type]
+            if text:
+                break
+        current = current.__cause__ or current.__context__
+    if not text or _INTERNAL_TEXT.search(text):
+        return None
+    configuration = model_config.get("configuration")
+    if isinstance(configuration, dict):
+        for name, value in configuration.items():
+            if (
+                isinstance(value, str) and len(value) >= 4
+                and any(part in str(name).lower() for part in _CREDENTIAL_NAME_PARTS)
+            ):
+                text = text.replace(value, "[REDACTED]")
+    text = redact_error_for_log(text, max_len=len(text))
+    if len(text) > _PROVIDER_REASON_MAX_CHARS:
+        text = text[: _PROVIDER_REASON_MAX_CHARS - 1].rstrip() + "…"
+    return text or None
+
+
+def _with_provider_reason(message: str, provider: str | None, reason: str | None) -> str:
+    if not reason:
+        return message
+    return f"{message} {_provider_display_name(provider)} said: \"{reason}\""
+
+
+def _http_exception_response(he: HTTPException) -> JSONResponse:
+    """An ``HTTPException`` raised inside a check, as the JSON body the Node API reads its reason from.
+
+    A plain-text ``detail`` is wrapped: sent bare, it is a JSON string with no ``message`` to read.
+    """
+    detail = he.detail
+    if not isinstance(detail, dict):
+        detail = {"status": "error", "message": str(detail)}
+    return JSONResponse(status_code=he.status_code, content=detail)
 
 
 def _model_setup_failed_message(kind: str, provider: str | None) -> str:
@@ -368,20 +444,23 @@ def _rejected_settings_message(
 async def _model_setup_failed_response(
     kind: str, model_config: dict, model: str, e: Exception,
 ) -> JSONResponse:
-    """What a failed model check returns: 400 when the settings are wrong, 500 otherwise.
+    """What a failed model check returns: 400 when the admin has to change something, 502 when the
+    provider failed, 500 otherwise.
 
-    A wrong key, model name or endpoint is the admin's to fix, so it must not
-    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim.
-    Only the classified code and fixed text are returned; callers log ``e``.
+    A wrong key, model name or endpoint, or an exhausted quota, is the admin's to fix, so it must not
+    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim. Every message ends with
+    the provider's own words (``_provider_reason``); callers log ``e`` in full.
     """
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
     if not isinstance(configuration, dict):
         configuration = {}
+    reason = _provider_reason(e, model_config)
+    name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
     code = provider_error_code(e)
     if code in _REJECTED_SETTINGS_CODES:
         return _config_error(
-            _rejected_settings_message(code, kind, model_config, model, e),
+            _with_provider_reason(_rejected_settings_message(code, kind, model_config, model, e), provider, reason),
             model_config, model, error_code=code,
         )
     if _looks_like_connectivity_error(e):
@@ -389,15 +468,42 @@ async def _model_setup_failed_response(
         if _llm_health_check_needs_outbound(provider or "", configuration) and not await _probe_outbound_connectivity():
             return _outbound_connectivity_error_response(provider or "", model)
         return _config_error(
-            f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
-            "Check the endpoint address and that PipesHub can connect to it, then try again.",
+            _with_provider_reason(
+                f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
+                "Check the endpoint address and that PipesHub can connect to it, then try again.",
+                provider, reason,
+            ),
             model_config, model, error_code="endpoint_unreachable",
+        )
+    if code == "rate_limit":
+        # OpenAI answers 429 for an exhausted quota as well as a rate limit, and the key is fine in both.
+        return _config_error(
+            _with_provider_reason(
+                f"{_provider_display_name(provider)} turned down the test call for {name} because of a "
+                "rate limit or an exhausted quota. Check the account's usage limits and billing, "
+                "or wait a minute, then try again.",
+                provider, reason,
+            ),
+            model_config, model, error_code="rate_limit",
+        )
+    if code == "server_error":
+        return JSONResponse(
+            status_code=502,
+            content={
+                "status": "error",
+                "message": _with_provider_reason(
+                    f"{_provider_display_name(provider)} had a problem answering the test call for {name}. "
+                    "This is usually temporary: try again in a few minutes.",
+                    provider, reason,
+                ),
+                "details": {"provider": provider, "model": model, "error_code": "provider_error"},
+            },
         )
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
-            "message": _model_setup_failed_message(kind, provider),
+            "message": _with_provider_reason(_model_setup_failed_message(kind, provider), provider, reason),
             "details": {"provider": provider, "model": model, "error_code": "model_check_failed"},
         },
     )
@@ -1535,7 +1641,7 @@ async def perform_llm_health_check(
         )
     except HTTPException as he:
         logger.error("LLM health check failed for %s model %s: %s", provider, model_string, he)
-        return JSONResponse(status_code=he.status_code, content=he.detail)
+        return _http_exception_response(he)
     except Exception as e:
         logger.error(
             "LLM health check failed for %s model %s (%s): %s",
@@ -1889,7 +1995,7 @@ async def perform_embedding_health_check(
                 return collection_error
         return checked
     except HTTPException as he:
-        return JSONResponse(status_code=he.status_code, content=he.detail)
+        return _http_exception_response(he)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
         return await _model_setup_failed_response(
