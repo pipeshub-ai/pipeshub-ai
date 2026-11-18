@@ -10,6 +10,8 @@ semantics of a SQL store play no part.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from contextlib import ExitStack
 from dataclasses import dataclass
 
@@ -19,10 +21,12 @@ from app.core.org_context import spawn_in_request
 from app.services.messaging.precision_flip import (
     CLEANUP_HINT,
     FenceMoved,
+    PinAbsent,
     PrecisionFlip,
     setting_for,
 )
 from app.services.vector_db.collection_epoch import (
+    DEBT_MAX_AGE_SECONDS,
     POINT_EPOCH,
     Fence,
     sweep_window_seconds,
@@ -58,19 +62,35 @@ class PrecisionDerivationTimeout(PrecisionUnreadable):
 
 
 # A write that was refused, or whose precision could not be confirmed (the pin or the epoch could not be read), is
-# not known to be right: the writer removes the points it wrote and the error is raised (a flip is handed back to the
-# queue as it is; an unreadable pin takes the ordinary retry path). ``FenceMoved`` is a
-# ``PrecisionFlip``; its points carry the retired epoch, which the removal matches.
+# not known to be right. Only a *definite* verdict (the pin holds the other precision, or the epoch moved) removes what
+# the batch wrote: every point of this batch's records at this precision and epoch is then invalid, whoever wrote it.
+# Anything else (an unreadable pin, a missing pin, a cancellation) removes nothing and leaves a debt entry that a later
+# drain settles by reading the pin and the epoch again. The error is raised either way (a flip is handed back to the
+# queue as it is; an unreadable pin takes the ordinary retry path).
 UNCONFIRMED_WRITE = (PrecisionFlip, PrecisionUnreadable)
 
 
-# A removal that runs because the task was cancelled gets this long, shielded from a second cancellation.
-CANCELLED_REMOVAL_TIMEOUT_SECONDS = 10.0
+def is_definite(exc: BaseException) -> bool:
+    """Whether *exc* says, for certain, that the points of the batch are of the wrong precision or of a moved epoch."""
+    return isinstance(exc, PrecisionFlip) and not isinstance(exc, PinAbsent)
 
 
-async def run_despite_cancellation(awaitable, timeout: float = CANCELLED_REMOVAL_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
+# What the pin and the epoch say about a written batch right now.
+DEFINITE, VALID, UNKNOWN = "definite", "valid", "unknown"
+# Re-confirmations of a pin that could not be read, and the waits before the attempts at a removal that failed.
+RECONFIRM_DELAYS: tuple[float, ...] = (0.2, 1.0)
+DELETE_DELAYS: tuple[float, ...] = (0.2, 1.0)
+# One removal attempt; one that outlives it is not repeated (it may still be applied), it becomes debt.
+DELETE_TIMEOUT_SECONDS = 10.0
+# A cancelled writer records its debt with a key-value write only, shielded and bounded; it deletes nothing.
+CANCELLED_NOTE_TIMEOUT_SECONDS = 2.0
+DEBT_IDS_PER_ENTRY = 200
+DRAIN_INTERVAL_SECONDS = 60.0
+
+
+async def run_despite_cancellation(awaitable, timeout: float = CANCELLED_NOTE_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
     """Await *awaitable* to its end within *timeout*, even though the calling task has been cancelled and may be cancelled again."""
-    await asyncio.wait_for(asyncio.shield(spawn_in_request(awaitable, name="unconfirmed-write-removal")), timeout)
+    await asyncio.wait_for(asyncio.shield(spawn_in_request(awaitable, name="unconfirmed-write-debt")), timeout)
 
 
 def _bound_org_or_none() -> str | None:
@@ -100,6 +120,7 @@ class PrecisionGuard:
         self._db = vector_db_service
         self._logger = logger
         self._swept_at: dict[tuple[str, str | None], float] = {}
+        self._drained_at: dict[tuple[str, str | None], float] = {}
 
     # -- facts about the points ------------------------------------------------------------------------------
 
@@ -254,6 +275,7 @@ class PrecisionGuard:
                 if last is not None and now - last < SWEEP_INTERVAL_SECONDS:
                     return
                 self._swept_at[(collection, scope)] = now
+            await self.drain_debt(collection, org)
             dead = await self._pins.epochs.dead(collection, scope)
             if not dead:
                 return
@@ -404,13 +426,166 @@ class PrecisionGuard:
             )
         except Exception as exc:
             raise PrecisionUnreadable(f"could not confirm the precision of '{collection}': {type(exc).__name__}") from exc
-        if moved or current is None:
+        if moved:
             raise FenceMoved(f"collection '{collection}' was reset while a batch was being written; it is embedded again")
+        if current is None:
+            raise PinAbsent(f"collection '{collection}' had no precision pin when a batch was written to it; it is embedded again")
         if current.precision != precision:
             raise PrecisionFlip(
                 f"collection '{collection}' holds {current.precision} vectors and a batch of {precision} was written to it; "
                 f"set {setting_for(current.precision)} and restart the embedding server, {CLEANUP_HINT}",
             )
+
+    async def verdict(self, collection: str, org: str | None, precision: str, fence: Fence) -> str:
+        """``DEFINITE`` (the points of this precision and epoch are invalid), ``VALID`` (the pin and the epoch are the batch's) or ``UNKNOWN``."""
+        try:
+            await self.confirm_after_write(collection, org, precision, fence)
+        except PrecisionUnreadable:
+            return UNKNOWN
+        except PinAbsent:
+            return UNKNOWN
+        except PrecisionFlip:
+            return DEFINITE
+        return VALID
+
+    async def settle_unconfirmed(
+        self, collection: str, org: str | None, precision: str, fence: Fence, extras: list[dict], exc: BaseException,
+    ) -> BaseException | None:
+        """What follows a written batch that did not confirm: None when it confirms after all, else the error to raise.
+
+        An unreadable pin is confirmed again (twice, after short waits). On a definite verdict the batch's records' points at this
+        precision and epoch are removed (each attempt reads the pin and the epoch again first, so a removal that is repeated, or
+        that comes late, only goes ahead while the verdict still stands). Otherwise nothing is removed and a debt entry is left.
+        """
+        try:
+            return await self._settle(collection, org, precision, fence, extras, exc)
+        except asyncio.CancelledError:
+            # Cancelled while confirming again or removing: what is not known to be settled is recorded (a key-value write, shielded and bounded).
+            for extra in extras:
+                try:
+                    await run_despite_cancellation(self.note_debt(collection, org, precision, fence, extra))
+                except BaseException:
+                    self._logger.error("Could not record the points of a cancelled batch in '%s' as debt", collection, exc_info=True)
+            raise
+
+    async def _settle(
+        self, collection: str, org: str | None, precision: str, fence: Fence, extras: list[dict], exc: BaseException,
+    ) -> BaseException | None:
+        if isinstance(exc, PrecisionUnreadable):
+            for delay in RECONFIRM_DELAYS:
+                await asyncio.sleep(delay)
+                try:
+                    await self.confirm_after_write(collection, org, precision, fence)
+                    return None
+                except UNCONFIRMED_WRITE as again:
+                    exc = again
+                    if not isinstance(again, PrecisionUnreadable):
+                        break
+        for extra in extras:
+            if is_definite(exc):
+                await self._remove_on_verdict(collection, org, precision, fence, extra)
+            else:
+                await self.note_debt(collection, org, precision, fence, extra)
+        return exc
+
+    async def _remove_on_verdict(self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict) -> None:
+        for wait in (0.0, *DELETE_DELAYS):
+            if wait:
+                await asyncio.sleep(wait)
+            verdict = await self.verdict(collection, org, precision, fence)
+            if verdict == VALID:
+                return  # the pin and the epoch are the batch's now: its points are right
+            if verdict == UNKNOWN:
+                await self.note_debt(collection, org, precision, fence, extra)
+                return
+            try:
+                await asyncio.wait_for(self.delete_written(collection, org, precision, fence, extra), DELETE_TIMEOUT_SECONDS)
+                return
+            except TimeoutError:
+                # It may still be applied, so it is not repeated; the drain settles it.
+                self._logger.warning("The removal of an unconfirmed batch from '%s' did not finish in time", collection)
+                await self.note_debt(collection, org, precision, fence, extra)
+                return
+            except OrgRequired:
+                self._logger.error("The points of a rejected batch in '%s' were not removed: no organisation", collection)
+                return
+            except Exception:
+                self._logger.warning("Could not remove the points of an unconfirmed batch from '%s'", collection, exc_info=True)
+        self._logger.error("Could not remove the points of an unconfirmed batch from '%s'; it is left as debt", collection)
+        await self.note_debt(collection, org, precision, fence, extra)
+
+    # -- debt: a removal that is not (yet) known to be right ------------------------------------------------------------
+
+    @staticmethod
+    def _entry_chunks(extra: dict) -> list[dict]:
+        longest = max(extra, key=lambda k: len(extra[k]) if isinstance(extra[k], list) else 0)
+        values = extra.get(longest)
+        if not isinstance(values, list) or len(values) <= DEBT_IDS_PER_ENTRY:
+            return [extra]
+        return [{**extra, longest: values[i:i + DEBT_IDS_PER_ENTRY]} for i in range(0, len(values), DEBT_IDS_PER_ENTRY)]
+
+    async def note_debt(self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict) -> None:
+        """Remember the points of a batch that could not be settled. The key is a function of what it names, so a retry adds nothing."""
+        debt_org = org or _bound_org_or_none()
+        if not debt_org:
+            self._logger.error("The points of an unconfirmed batch in '%s' were not recorded as debt: no organisation", collection)
+            return
+        try:
+            for chunk in self._entry_chunks(extra):
+                key = hashlib.sha256(
+                    json.dumps([debt_org, precision, fence.token, chunk], sort_keys=True).encode(),
+                ).hexdigest()[:32]
+                value = {"org": debt_org, "precision": precision, "epoch": fence.token, "extra": chunk}
+                await self._pins.epochs.note_debt(collection, self.scope(debt_org), key, value)
+        except Exception:
+            self._logger.error(
+                "Could not record the points of an unconfirmed batch in '%s'; a retry or the leak check removes them", collection,
+                exc_info=True,
+            )
+
+    async def drain_debt(self, collection: str, org: str | None, *, throttle: bool = False) -> None:
+        """Settle the debt of this organisation's unconfirmed batches: remove the points only on a definite verdict.
+
+        A collection that is gone, an entry past its age, or points the pin and epoch say are right, end an entry; a verdict that
+        cannot be read, a pin that is missing, or a removal that fails, keep it. Entries of another organisation are skipped. Never raises.
+        """
+        try:
+            scope = self.scope(org)
+            bound = org or _bound_org_or_none()
+            if not bound:
+                return
+            if throttle:
+                now = self._pins.epochs.now()
+                last = self._drained_at.get((collection, scope))
+                if last is not None and now - last < DRAIN_INTERVAL_SECONDS:
+                    return
+                self._drained_at[(collection, scope)] = now
+            entries = await self._pins.epochs.debts(collection, scope)
+            if not entries:
+                return
+            info = await self._db.get_collection_info(collection)
+            for path, entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("extra"), dict):
+                    await self._pins.epochs.drop_debt(path)
+                    continue
+                if entry.get("org") != bound:
+                    continue
+                if not info.exists:
+                    await self._pins.epochs.drop_debt(path)
+                    continue
+                if self._pins.epochs.now() - float(entry.get("at", 0)) / 1000.0 > DEBT_MAX_AGE_SECONDS:
+                    self._logger.warning("Dropping an old record of unconfirmed points in '%s'", collection)
+                    await self._pins.epochs.drop_debt(path)
+                    continue
+                precision, fence = str(entry.get("precision")), Fence(collection, str(entry.get("epoch")))
+                verdict = await self.verdict(collection, org, precision, fence)
+                if verdict == UNKNOWN:
+                    continue
+                if verdict == DEFINITE:
+                    await self.delete_written(collection, org, precision, fence, entry["extra"])
+                await self._pins.epochs.drop_debt(path)
+        except Exception:
+            self._logger.warning("could not settle the debt of unconfirmed batches of '%s'", collection, exc_info=True)
 
     async def count_of(self, collection: str, org: str | None, precision: str) -> int:
         """How many points carry this precision's tag in the index."""
@@ -419,10 +594,10 @@ class PrecisionGuard:
     async def delete_written(
         self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict | None = None,
     ) -> None:
-        """Remove what a rejected batch wrote: its precision, its epoch, and what *extra* pins (the record and the batch's own blocks, or
-        the entity ids); never a point of another precision or epoch.
+        """Remove the points at this precision and epoch that *extra* pins (the batch's records, or its entity ids).
 
-        The caller must hold what makes the points its own (the record writer its record lease, confirmed right before the call).
+        Only for a definite verdict (see ``is_definite``): every such point is then wrong, whoever wrote it, so no lease or lock is
+        needed. ``settle_unconfirmed`` and ``drain_debt`` read the verdict again right before each call.
 
         The delete always carries the writer's organisation: a shared store refuses a delete without one, and an
         organisation's own space needs it. Only the derivation of an index's precision is collection-wide.

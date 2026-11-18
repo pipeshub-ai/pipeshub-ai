@@ -92,6 +92,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.precision_guard import (
     UNCONFIRMED_WRITE,
     PrecisionGuard,
+    PrecisionUnreadable,
     run_despite_cancellation,
 )
 from app.services.vector_db.rebuild_state import (
@@ -1078,6 +1079,13 @@ class EntityVectorStore:
             self._precision_guard = guard
         return guard
 
+    async def _drain_debt(self, collection: str, org_id: str) -> None:
+        """Settle what an earlier unconfirmed batch of this organisation left owing; never delays or fails a write."""
+        try:
+            await self._guard().drain_debt(collection, org_id, throttle=True)
+        except Exception:
+            self.logger.warning("could not settle the debt of unconfirmed entity batches of '%s'", collection, exc_info=True)
+
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
         if not self._sparse_embedder:
             return [None] * len(texts)
@@ -1147,7 +1155,11 @@ class EntityVectorStore:
             for (collection, _org), group in by_collection.items()
             for start in range(0, len(group), batch_size)
         ]
+        drained: set[str] = set()
         for collection, start, batch in batches:
+            if collection not in drained and batch:
+                drained.add(collection)
+                await self._drain_debt(collection, batch[0].org_id)
             named = [e for e in batch if e.name.strip()]
             outcome.skipped += len(batch) - len(named)
             for entity in batch:
@@ -1166,6 +1178,10 @@ class EntityVectorStore:
                 self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
             except PrecisionFlip:
                 # Not a failed batch: the index holds the other precision, and the caller waits for that to end.
+                self._ready_collections.discard(collection)
+                raise
+            except PrecisionUnreadable:
+                # Not a failed write to count and move on from: nobody knows what the index holds, so the caller retries.
                 self._ready_collections.discard(collection)
                 raise
             except Exception as exc:
@@ -1326,48 +1342,47 @@ class EntityVectorStore:
         """The pin is read again after the write: a cleanup that released it, or a writer of the other precision that
         claimed it, between the check and the write would otherwise leave these points beside the other precision.
 
-        A pin of another precision than the batch's, or a pin that cannot be read, removes the points just written and raises
-        (a flip is handed back to the queue; an unreadable pin takes the ordinary retry path).
-        A cancellation removes them too (shielded, bounded) and goes on.
+        On a definite verdict (the pin holds another precision, or the epoch moved) the entity points this batch wrote at that
+        precision and epoch are removed and the error is raised (a flip is handed back to the queue). Any other outcome (a pin that
+        cannot be read or is missing, a cancellation) removes nothing and leaves a debt entry settled later by reading the pin and the
+        epoch again: an entity point is shared, so it is never removed on a guess. The error is raised either way.
         """
+        guard = self._guard()
         for precision in {w[0] for w in witnessed.values() if w is not None}:
+            extras = self._written_extras(org, precision, witnessed, written)
             try:
-                await self._guard().confirm_after_write(collection, org, precision, fence)
-            except UNCONFIRMED_WRITE:
-                await self._remove_written(org, precision, witnessed, written, fence)
-                raise
+                await guard.confirm_after_write(collection, org, precision, fence)
+            except UNCONFIRMED_WRITE as exc:
+                if not extras:
+                    raise
+                settled = await guard.settle_unconfirmed(collection, org, precision, fence, extras, exc)
+                if settled is None:
+                    continue
+                if settled is exc:
+                    raise
+                raise settled from exc
             except asyncio.CancelledError:
-                try:
-                    await run_despite_cancellation(self._remove_written(org, precision, witnessed, written, fence))
-                except BaseException:
-                    self.logger.error("Could not remove the %s entity points of a cancelled batch (org %s)", precision, org, exc_info=True)
+                for extra in extras:
+                    try:
+                        await run_despite_cancellation(guard.note_debt(collection, org, precision, fence, extra))
+                    except BaseException:
+                        self.logger.error("Could not record the %s entity points of a cancelled batch (org %s) as debt", precision, org, exc_info=True)
                 raise
 
-    async def _remove_written(
+    def _written_extras(
         self, org: str, precision: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
-        fence: Fence,
-    ) -> None:
-        """Remove the points this batch wrote at *precision*, and only those.
-
-        The filter carries the precision tag and the batch's epoch as well as the ids: another writer's points
-        for the same entities (another precision, or another epoch) are valid and must stay. A delete that fails is logged and does not replace the
-        ``PrecisionFlip`` the caller is about to raise: the record must be handed back, not counted as a failed write.
-        """
+    ) -> list[dict]:
+        """The filter terms that name the entity points this batch wrote at *precision*, one per entity type."""
         by_type: dict[str, list[str]] = {}
         for entity in written:
             point = witnessed.get(self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id))
             if point is not None and point[0] == precision:
                 by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
         if not by_type:
-            self.logger.error("The %s entity points of a rejected batch (org %s) were not removed: the batch names no entity", precision, org)
-        for entity_type, ids in by_type.items():
-            try:
-                await self.delete_entities(org, entity_type, ids, precision=precision, epoch=fence.token)
-            except Exception:
-                self.logger.error(
-                    "Could not remove the %s entity points of a rejected batch (org %s, type %s); the error is raised anyway",
-                    precision, org, entity_type, exc_info=True,
-                )
+            self.logger.error("The %s entity points of an unconfirmed batch (org %s) were not removed: the batch names no entity", precision, org)
+        return [
+            {"metadata.entityType": [entity_type], "metadata.entityId": sorted(ids)} for entity_type, ids in sorted(by_type.items())
+        ]
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,

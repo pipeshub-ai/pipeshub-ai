@@ -837,6 +837,9 @@ KV_MATRIX = [
     ("connectors", "/migrations/node_relation_v1", True, True), ("connectors", "state:lock:x:leader", True, True),
     ("connectors", "/services/vectordb/embedding_epoch/records/current", True, True),      # the cleanup moves the epoch (platform_0010)
     ("connectors", "/services/vectordb/embedding_epoch/records/tokens/r1/issuing", True, True),
+    ("connectors", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),  # debt of unconfirmed batches sits under the epoch prefix
+    ("indexing", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),
+    ("query", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),
     ("connectors", "/services/vectordb/embedding_pin/records", True, False),               # pins are written by indexing and query
     ("connectors", "/services/vectordb/embedding_epochx", True, False), ("connectors", "/services/vectordb/collection_manifest", True, False),
     ("connectors", "/services/vectordb/precision_verdict", True, False),

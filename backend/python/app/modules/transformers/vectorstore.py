@@ -102,7 +102,7 @@ from app.services.messaging.backpressure import get_default_backpressure_coordin
 from app.services.messaging.config import messaging_env
 from app.services.messaging.consumer_concurrency import RecordLeaseHeld
 from app.services.messaging.error_classifier import format_exception_chain
-from app.services.messaging.precision_flip import PrecisionFlip
+from app.services.messaging.precision_flip import FenceMoved, PrecisionFlip
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
@@ -1071,9 +1071,11 @@ class _PointLog:
     recorded set, changed in part): the set is then left unrecorded.
     """
 
-    __slots__ = ("wrote", "carried", "recordable")
+    __slots__ = ("wrote", "carried", "recordable", "tokens")
 
     def __init__(self) -> None:
+        # Every epoch token this run accepted a batch under, by collection (checked once more right before the record is marked indexed).
+        self.tokens: dict[str, set[str]] = {}
         self.wrote: set[str] = set()
         self.carried: set[str] = set()
         self.recordable = True
@@ -1085,7 +1087,18 @@ class _PointLog:
                 self.wrote.add(block_id)
 
 
+# ``ctx.settings`` key: the epoch tokens an ``apply`` wrote under, by collection.
+WRITTEN_UNDER = "writtenUnder"
+
 _POINTED: contextvars.ContextVar["_PointLog | None"] = contextvars.ContextVar("pointed_blocks", default=None)
+
+
+def _note_fence(fence: Fence) -> Fence:
+    """Remember the epoch a batch of this run is accepted under, and hand the fence back."""
+    log = _POINTED.get()
+    if log is not None:
+        log.tokens.setdefault(fence.collection, set()).add(fence.token)
+    return fence
 
 
 def _note_points(points: "Iterable[VectorPoint]") -> None:
@@ -1411,13 +1424,28 @@ class VectorStore(Transformer):
     async def apply(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
         async with self._vrid_lease(f"index:{record.id}", record.org_id, record.virtual_record_id):
-            token = _POINTED.set(_PointLog())
+            log = _PointLog()
+            token = _POINTED.set(log)
             try:
                 result = await self._apply_locked(ctx)
                 self._record_pointed_blocks(ctx)
                 return result
             finally:
+                # Carried out of this scope for the check that precedes the record's COMPLETED write (the sink runs it after this returns).
+                ctx.settings[WRITTEN_UNDER] = {c: sorted(t) for c, t in log.tokens.items()}
                 _POINTED.reset(token)
+
+    async def require_epochs_current(self, written_under: "dict[str, list[str]]") -> None:
+        """Raise ``FenceMoved`` unless every epoch the record's batches were accepted under is still current for its collection.
+
+        A reset after the last batch was confirmed drops the collection under a record that then completes; the record is
+        handed back instead and embedded again under the current epoch.
+        """
+        epochs = self._precision_guard()._pins.epochs
+        for collection, tokens in written_under.items():
+            current = await epochs.current(collection)
+            if any(token != current for token in tokens):
+                raise FenceMoved(f"collection '{collection}' was reset before the record was marked indexed; it is embedded again")
 
     def _record_pointed_blocks(self, ctx: TransformContext) -> None:
         """Write the ids of the blocks that have a point into the metadata saved with the record, so a later verification expects exactly
@@ -1902,10 +1930,16 @@ class VectorStore(Transformer):
             org_scope = for_org(org_id, job="index_record_summary") if org_id else contextlib.nullcontext()
         with org_scope:
             tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+            # Written outside ``apply``, so it collects the epochs it wrote under itself and is checked once it is written.
+            own = _PointLog()
+            handle = _POINTED.set(own)
             try:
                 await self._process_document_chunks([summary_doc], record_id, collection_name)
             finally:
+                _POINTED.reset(handle)
                 reset_membership_context(tokens)
+            if own.tokens:
+                await self.require_epochs_current({c: sorted(t) for c, t in own.tokens.items()})
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
             await self._resync_membership_after_write(virtual_record_id, record_id)
             await self._check_for_leaks(collection_name, org_id, virtual_record_id)
@@ -2846,6 +2880,7 @@ class VectorStore(Transformer):
         guard = self._precision_guard()
         if fence is None:
             fence = await guard.capture(collection_name)
+        _note_fence(fence)
 
         with stage(
             "embed.dense",
@@ -2915,6 +2950,7 @@ class VectorStore(Transformer):
         # One epoch for every batch of the call: the ids of its points are derived from it.
         if fence is None:
             fence = await self._precision_guard().capture(collection_name)
+        _note_fence(fence)
         use_local_sequential = self._is_local_cpu_embedding()
         max_documents, max_chars = (
             (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
@@ -3033,7 +3069,7 @@ class VectorStore(Transformer):
         remove points: they fail the attempt, and the next one converges.
         """
         # The epoch this record is written under, once: the ids it wants and the ids its batches write are the same ones.
-        fence = await self._precision_guard().capture(collection_name)
+        fence = _note_fence(await self._precision_guard().capture(collection_name))
         point_ids = [deterministic_point_id(d.metadata, d.page_content, fence) for d in documents]
         digest = digest_of(point_ids)
         key = self._embed_key()
@@ -3226,59 +3262,40 @@ class VectorStore(Transformer):
     async def _confirm_batch(
         self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: list[Document],
     ) -> None:
-        """After the write: the epoch and the pin are still the batch's, else the batch's own points go and the error is raised.
+        """After the write: the epoch and the pin are still the batch's, else the error is raised.
 
-        What is removed is what this batch wrote: its blocks of this record, at this precision, under this epoch, in the writer's
-        organisation. Other blocks of the record (confirmed earlier), and another writer's points (another epoch or precision), are never
-        matched, and nothing is removed once the record's lease is no longer this run's: the run that holds it now owns those points.
-        A cancellation removes them too (shielded, bounded), then goes on.
+        On a definite verdict (the pin holds the other precision, or the epoch moved) the points of this batch's records at this
+        precision and epoch, in the writer's organisation, are removed first: they are invalid whoever wrote them. Any other outcome
+        (a pin that cannot be read or is missing, a cancellation) removes nothing and leaves a debt entry that is settled later by
+        reading the pin and the epoch again; a pin that was unreadable is confirmed again before that.
         """
         org = _bound_org()
+        record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
+        extras = [{"virtualRecordId": record_ids}] if record_ids else []
         try:
             await guard.confirm_after_write(collection_name, org, precision, fence)
-        except UNCONFIRMED_WRITE:
-            await self._remove_unconfirmed(guard, collection_name, org, precision, fence, documents)
-            raise
-        except asyncio.CancelledError:
-            try:
-                await run_despite_cancellation(
-                    self._remove_unconfirmed(guard, collection_name, org, precision, fence, documents))
-            except BaseException:
-                self.logger.error("Could not remove the points of a cancelled batch from '%s'", collection_name, exc_info=True)
-            raise
-
-    async def _remove_unconfirmed(
-        self, guard: PrecisionGuard, collection_name: str, org: str | None, precision: str, fence: Fence, documents: list[Document],
-    ) -> None:
-        record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
-        block_ids = sorted({d.metadata.get("blockId") for d in documents if d.metadata.get("blockId")})
-        if not record_ids or not block_ids or any(
-            not d.metadata.get("virtualRecordId") or not d.metadata.get("blockId") for d in documents
-        ):
-            self.logger.error(
-                "The points of an unconfirmed batch in '%s' were not all removed: %d of its %d documents name no record or block",
-                collection_name,
-                sum(1 for d in documents if not d.metadata.get("virtualRecordId") or not d.metadata.get("blockId")), len(documents),
-            )
-            if not record_ids or not block_ids:
+        except UNCONFIRMED_WRITE as exc:
+            if not extras:
+                self.logger.error(
+                    "The points of an unconfirmed batch in '%s' were not removed: its %d documents name no record",
+                    collection_name, len(documents),
+                )
+                raise
+            settled = await guard.settle_unconfirmed(collection_name, org, precision, fence, extras, exc)
+            if settled is None:
                 return
-        try:
-            await _require_lease("the removal of an unconfirmed batch")
-        except LeaseLost:
-            self.logger.warning(
-                "The lease on the record was lost before its unconfirmed batch in '%s' could be removed; the run that holds it now, "
-                "the sweep of retired epochs and the leak check at the end of a record deal with those points", collection_name,
-            )
-            return
-        try:
-            await guard.delete_written(
-                collection_name, org, precision, fence, {"virtualRecordId": record_ids, "blockId": block_ids},
-            )
-        except Exception:
-            self.logger.error(
-                "Could not remove the points of an unconfirmed batch from '%s'; the error is raised anyway",
-                collection_name, exc_info=True,
-            )
+            if settled is exc:
+                raise
+            raise settled from exc
+        except asyncio.CancelledError:
+            if extras:
+                try:
+                    await run_despite_cancellation(guard.note_debt(collection_name, org, precision, fence, extras[0]))
+                except BaseException:
+                    self.logger.error(
+                        "Could not record the points of a cancelled batch in '%s' as debt", collection_name, exc_info=True,
+                    )
+            raise
 
     async def _check_for_leaks(self, collection_name: str, org_id: str | None, virtual_record_id: str) -> None:
         """End of a record: no point of the record may carry the other precision's tag.

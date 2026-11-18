@@ -58,3 +58,11 @@ class FenceMoved(PrecisionFlip):
     Nothing the batch wrote is kept. The record goes back like any flip, and the retry embeds again against the
     index as it is now; there is no setting to change, so the message carries no hint.
     """
+
+
+class PinAbsent(PrecisionFlip):
+    """The index had no pin when a written batch was confirmed, and its epoch had not moved.
+
+    The record goes back like any flip. Unlike a pin of the other precision or a moved epoch, this does not say the batch is
+    wrong: a pin released and made again from the points that exist can cover exactly those points. Nothing is removed on it.
+    """

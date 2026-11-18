@@ -34,6 +34,8 @@ _ORDER = (ISSUING, LIVE, RETIRED)
 # the clock skew between processes and the requeue.
 SWEEP_MARGIN_SECONDS = 300.0
 KEPT_RETIRED_TOKENS = 16
+# A record of points a writer could not settle is kept this long; after a reset it is dropped with the collection's other epoch keys.
+DEBT_MAX_AGE_SECONDS = 7 * 86400.0
 POINT_EPOCH = "embedEpoch"
 # A token made by a reset starts with this: its points get ids of their own (``Fence.point_id``). A token made when
 # the collection had none (the first, or after the epoch keys were lost) does not, so existing points keep their ids.
@@ -101,6 +103,9 @@ class CollectionEpochs:
 
     def _swept_prefix(self, collection: str, scope: str | None) -> str:
         return f"{self._base(collection)}/swept/{scope or '-'}/"
+
+    def _debt_prefix(self, collection: str, scope: str | None) -> str:
+        return f"{self._base(collection)}/debt/{scope or '-'}/"
 
     def _pin_key(self, collection: str, scope: str | None) -> str:
         return f"{self._base(collection)}/pin/{scope or '-'}"
@@ -197,6 +202,7 @@ class CollectionEpochs:
         for token in sorted(ticket.seen):
             if token != current:
                 await self._create(self._state_key(ticket.collection, token, RETIRED), {"retired_at": now})
+        await self._purge_debt(ticket.collection)
         await self._prune(ticket.collection)
 
     async def _prune(self, collection: str) -> None:
@@ -221,6 +227,30 @@ class CollectionEpochs:
                 await self._config.delete_config(self._state_key(collection, token, state))
         for key in scoped:
             await self._config.delete_config(key)
+
+    # -- debt: points of a batch that could not be confirmed or removed ----------------------------------------------
+
+    async def note_debt(self, collection: str, scope: str | None, key: str, value: dict) -> None:
+        """Record it (create-if-absent: the same batch noted twice is one entry). Raises when the store cannot say."""
+        await self._create(f"{self._debt_prefix(collection, scope)}{key}", {**value, "at": int(self._clock() * 1000)})
+
+    async def debts(self, collection: str, scope: str | None) -> list[tuple[str, dict | None]]:
+        prefix = self._debt_prefix(collection, scope)
+        out: list[tuple[str, dict | None]] = []
+        for path in sorted(await self._config.list_keys_in_directory(prefix) or []):
+            if path.startswith(prefix) and "/" not in path[len(prefix):]:
+                raw = await self._read(path)
+                out.append((path, raw if isinstance(raw, dict) else None))
+        return out
+
+    async def drop_debt(self, path: str) -> None:
+        await self._config.delete_config(path)
+
+    async def _purge_debt(self, collection: str) -> None:
+        """After a drop the points are gone, so what was owed on them is too (every scope of the collection)."""
+        prefix = f"{self._base(collection)}/debt/"
+        for path in await self._config.list_keys_in_directory(prefix) or []:
+            await self._config.delete_config(path)
 
     # -- what the guard asks ---------------------------------------------------------------------------------
 

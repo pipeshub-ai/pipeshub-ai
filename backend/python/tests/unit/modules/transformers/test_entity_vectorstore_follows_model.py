@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import fakeredis.aioredis
 import pytest
 
+from app.services.vector_db.precision_guard import PrecisionUnreadable
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
@@ -368,9 +369,9 @@ class TestReplicas:
         await leader.upsert_entities_batch([_topic()], merge_membership=False)
 
         with patch.object(config_b.store, "get_key", side_effect=RuntimeError("kv store timed out")):
-            outcome = await other.upsert_entities_batch([_topic()], merge_membership=False)
+            with pytest.raises(PrecisionUnreadable):  # nobody knows what the index holds: raised for a retry, not counted
+                await other.upsert_entities_batch([_topic()], merge_membership=False)
 
-        assert (outcome.written, outcome.failed) == (0, 1)
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
 
 
@@ -638,9 +639,9 @@ class TestConfigReads:
         with patch.object(config.store, "get_key", side_effect=RuntimeError("kv store down")):
             assert await store.embedding_fingerprint() == SMALL_FP
             await store.search_entities("pricing", ORG, set(), {"c1"})
-            outcome = await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
+            with pytest.raises(PrecisionUnreadable):
+                await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
 
-        assert (outcome.written, outcome.failed) == (0, 1)
         assert db.deletions == 0
         assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
         await store.upsert_entities_batch([_topic("t2")], merge_membership=False)

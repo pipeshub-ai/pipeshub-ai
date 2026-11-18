@@ -130,6 +130,10 @@ def _model_gave_nothing(extraction: NamedEntityExtraction) -> bool:
     return extraction.stats.accepted == 0 and extraction.termination_reason in _MODEL_GAVE_UP
 
 
+class EntityIndexWriteFailed(Exception):
+    """Some entity points of the record were not written to the vector index."""
+
+
 async def persist_named_entities(
     ctx: TransformContext,
     extraction: NamedEntityExtraction,
@@ -184,7 +188,12 @@ async def persist_named_entities(
         resolved = await resolver.resolve(record.org_id, entities)
         embeddable = await writer.write(record.org_id, record.id, resolved, retry_due=retry_due)
         if entity_vector_store and embeddable:
-            await entity_vector_store.upsert_entities_batch(embeddable)
+            from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
+
+            written = await entity_vector_store.upsert_entities_batch(embeddable)
+            if isinstance(written, EntityWriteOutcome) and written.failed:
+                # Entities that did not reach the index are not a finished write: the caller retries it.
+                raise EntityIndexWriteFailed(f"{written.failed} of {len(embeddable)} entity points were not written")
     except PersistRetrySupersededError:
         outcome = result = "superseded"
     except PrecisionFlip:
