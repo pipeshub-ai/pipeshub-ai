@@ -100,3 +100,5 @@ async def test_the_record_that_was_named_is_still_deletable(seeded) -> None:
             break
         await asyncio.sleep(0.1)
     assert await _total(svc, name) == 2
+    by_record = [await svc.count_points(name, await svc.filter_collection(must={"orgId": ORG, "virtualRecordId": vr})) for vr in ("vr-0", "vr-1")]
+    assert by_record == [0, 2]
