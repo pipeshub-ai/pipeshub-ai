@@ -39,7 +39,11 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt, work_key
+from app.services.messaging.consumer_concurrency import (
+    RequeueWithoutAttempt,
+    backstop_give_up_reason,
+    work_key,
+)
 from app.services.messaging.disposition import describe_message, notify_abandoned
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
@@ -407,6 +411,12 @@ class PgMessagingConsumer(IMessagingConsumer):
             if self.stage_admission is not None and e.pauses_consumer:
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
+                if e.give_up_label:
+                    # A hand-back that names itself (a same-bytes update whose skip cannot finish) is given up on here,
+                    # with the reason the other brokers use, so what handles an abandoned message can tell it apart.
+                    self._handbacks.pop(key, None)
+                    await self._abandon(d, await self._parse_for_sink(d), backstop_give_up_reason(e, n, _handback_limit()))
+                    return
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
                 await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
                 return
