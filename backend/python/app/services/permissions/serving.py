@@ -21,6 +21,7 @@ from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
 from .errors import ViewerScopesUnavailable
 from .metrics import SCOPES_UNAVAILABLE, SERVING_PLAN
+from .mode import AclFilterMode
 from .scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
 
 if TYPE_CHECKING:
@@ -50,8 +51,10 @@ def stamp_filter(scopes: ViewerScopes, served: frozenset[str], *, defer: bool) -
 
 
 class ServingPlanner:
-    def __init__(self, scopes: ViewerScopeService, currency: StampCurrency, budget_seconds: float = PLAN_BUDGET_SECONDS) -> None:
-        self._scopes, self._currency, self._budget = scopes, currency, budget_seconds
+    def __init__(self, scopes: ViewerScopeService, currency: StampCurrency, budget_seconds: float = PLAN_BUDGET_SECONDS,
+                 default: AclFilterMode = AclFilterMode.SCOPES) -> None:
+        """``default``: the deployment's mode, which a connector whose own mode is `inherit` takes."""
+        self._scopes, self._currency, self._budget, self._default = scopes, currency, budget_seconds, default
 
     async def plan(self, org_id: str, user_key: str) -> ScopeFilter | None:
         """The filter to search with, or None for the legacy request. Never raises. Runs inside the organisation."""
@@ -80,7 +83,7 @@ class ServingPlanner:
             return None, False, "miss"
         if len(scopes.readable_groups) + len(scopes.readable_scopes) + len(scopes.unreadable_restricted) > MAX_SERVED_TERMS:
             return None, False, "broad"
-        served, exact = await self._currency.read(scopes.gated_apps)
+        served, exact = await self._currency.read(scopes.gated_apps, default=self._default)
         if not served:
             return None, False, "no_served"
         flt = stamp_filter(scopes, served, defer=True)

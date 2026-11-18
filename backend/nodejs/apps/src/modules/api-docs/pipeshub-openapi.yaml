@@ -2653,6 +2653,31 @@ components:
           description: Null when the admin asking cannot read the container.
         restricted:
           type: boolean
+    ConnectorPermissionFilterBlocker:
+      type: string
+      description: |
+        Why this deployment cannot search any connector with its stored permissions: `serving_off`
+        (`ACL_FILTER_MODE` is `legacy`, so no stored permissions are written) or `store_unsupported`
+        (the vector store cannot filter by them).
+      enum: [serving_off, store_unsupported]
+    ConnectorPermissionFilter:
+      type: object
+      required: [mode, effective, blockers]
+      properties:
+        mode:
+          type: string
+          description: The connector's own choice. A stored value that is not a mode reads as `legacy`.
+          enum: [inherit, legacy, scopes]
+        effective:
+          type: string
+          description: |
+            What the connector's next search uses: `scopes` only while its mode resolves to `scopes`, nothing
+            blocks it, and its stored permissions are served now (see `serving.served`); otherwise `legacy`.
+          enum: [legacy, scopes]
+        blockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorPermissionFilterBlocker'
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -56009,7 +56034,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [asOf, state, reachWithinMinutes, serving, lastPermissionSync, pending, coverage, attention, warnings]
+                required: [asOf, state, reachWithinMinutes, serving, lastPermissionSync, pending, coverage, attention, warnings, filter]
                 properties:
                   asOf:
                     type: string
@@ -56099,6 +56124,8 @@ paths:
                           type: object
                           nullable: true
                           additionalProperties: true
+                  filter:
+                    $ref: '#/components/schemas/ConnectorPermissionFilter'
         '401':
           description: Missing or invalid credentials
           content:
@@ -56128,6 +56155,113 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The connector service could not be reached. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/permissions/filter:
+    patch:
+      tags:
+        - Connector Instances
+      summary: Choose how search checks a connector's permissions
+      description: |
+        Sets the connector's own permission filter mode. `scopes` lets search read the
+        connector's stored permissions (faster, and it returns as many results for people
+        with narrow access as for anyone else), once they are complete and up to date; until
+        then, and whenever they are not, search uses the classic check. `legacy` always uses the
+        classic check. `inherit` (the default) follows the deployment's `ACL_FILTER_MODE`.
+        Every result is still checked against the source's permissions after it is found, in
+        every mode, so no mode shows anyone more than the classic check does.
+
+        `scopes` is refused with `409` when this deployment cannot read stored permissions at
+        all (see `blockers`). `legacy` and `inherit` are always accepted.
+
+        <b>Who can call it:</b> the same callers as `GET /connectors/{connectorId}/permissions/status`;
+        anyone else gets <code>404</code>.
+      operationId: setConnectorPermissionFilter
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID (`_key` of the instance).
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [inherit, legacy, scopes]
+      responses:
+        '200':
+          description: The mode was stored; what the connector's next search uses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorPermissionFilter'
+        '400':
+          description: |
+            The connector instance ID does not match the pattern, or the body is not `{ "mode": ... }` with one of
+            the three modes (`VALIDATION_ERROR`). An ID with an encoded path separator or a dot segment is refused
+            before that, by the path guard, with `HTTP_BAD_REQUEST`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth client's token lacks the `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No connector instance of the caller's organization has this ID, the caller
+            is not an org admin, the connector is another user's personal connector, or
+            the caller is a connected app whose knowledge limit does not name this connector whole.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: '`scopes` cannot be used on this deployment. Nothing was stored.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, blockers]
+                properties:
+                  error:
+                    type: string
+                    enum: [not_switchable]
+                  blockers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorPermissionFilterBlocker'
         '500':
           description: Internal server error.
           content:

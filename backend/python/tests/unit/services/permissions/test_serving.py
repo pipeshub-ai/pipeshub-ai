@@ -9,12 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.permissions.currency import (
+    MODE_KEY,
     StampCurrency,
     app_is_exact,
     app_is_served,
 )
 from app.services.permissions.errors import ViewerScopesUnavailable
-from app.services.permissions.mode import ENV_ACL_FILTER_MODE
+from app.services.permissions.mode import ENV_ACL_FILTER_MODE, AclFilterMode
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     set_resolved_generation,
@@ -62,14 +63,41 @@ def planner(docs: dict[str, dict], held: ViewerScopes | Exception | None = None)
 
 async def test_the_default_mode_builds_no_planner(monkeypatch: pytest.MonkeyPatch) -> None:
     g = MagicMock()
-    for raw in (None, "", "off", "legacy", "shadow", "typo"):
+    for raw in (None, "", "off", "legacy", "typo"):
         monkeypatch.delenv(ENV_ACL_FILTER_MODE, raising=False)
         if raw is not None:
             monkeypatch.setenv(ENV_ACL_FILTER_MODE, raw)
         assert build_serving_planner(g) is None, raw
     g.permission_hierarchy_view.assert_not_called()
-    monkeypatch.setenv(ENV_ACL_FILTER_MODE, "scopes")
-    assert build_serving_planner(g) is not None
+    for raw in ("shadow", "scopes"):      # under shadow only a connector an admin switched to `scopes` is served
+        monkeypatch.setenv(ENV_ACL_FILTER_MODE, raw)
+        assert build_serving_planner(g)._default is AclFilterMode(raw)
+
+
+def _with_mode(doc: dict, mode: object) -> dict:
+    return {**doc, MODE_KEY: mode} if mode is not None else doc
+
+
+@pytest.mark.parametrize(("default", "c1", "c2", "served"), [
+    (AclFilterMode.SCOPES, None, None, {"c1", "c2"}),                 # every connector inherits the deployment's `scopes`
+    (AclFilterMode.SCOPES, "legacy", "inherit", {"c2"}),             # an admin's rollback takes c1 out on the next search
+    (AclFilterMode.SCOPES, "LEGACY ", "typo", set()),       # a value that is not a mode reads as legacy, never as on
+    (AclFilterMode.SHADOW, None, None, set()),                        # shadow: nobody served unless switched
+    (AclFilterMode.SHADOW, "scopes", "inherit", {"c1"}),             # an admin opted c1 in
+    (AclFilterMode.SHADOW, "scopes", "Scopes", {"c1", "c2"}),
+])
+async def test_a_connector_is_served_only_when_its_own_mode_resolves_to_scopes(default: AclFilterMode, c1: object, c2: object, served: set) -> None:
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    docs = {"c1": _with_mode(current(**{K["exact"]: True}), c1), "c2": _with_mode(current(**{K["exact"]: True}), c2)}
+    flt, exact = await ServingPlanner(svc, StampCurrency(graph(docs)), default=default).plan_exact(ORG, USER)
+    assert (flt.current if flt else set()) == served
+    assert exact is (served == {"c1", "c2"}), "a connector read by the legacy filter makes the plan over-fetch"
+
+
+async def test_the_shadow_comparison_reads_the_stamps_whatever_a_connector_s_mode() -> None:
+    docs = {"c1": _with_mode(current(), "legacy"), "c2": current()}
+    assert await StampCurrency(graph(docs)).served({"c1", "c2"}) == {"c1", "c2"}
 
 
 @pytest.mark.parametrize(("name", "over"), [
