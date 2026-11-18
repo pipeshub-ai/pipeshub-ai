@@ -447,15 +447,22 @@ class BaseConnector(ABC):
             SyncSpec,
             get_dispatcher,
         )
+        from app.core.org_context import (
+            MissingOrgContext,
+            SystemContextNotAllowed,
+            current,
+        )
 
         dispatcher = get_dispatcher()
         if dispatcher is None:
             self.logger.warning(f"No sync dispatcher configured; cannot request a sync of {self.connector_id}")
             return
-        org_id = self.data_entities_processor.org_id or (
-            (await self.data_store_provider.graph_provider.get_document(self.connector_id, CollectionNames.APPS.value) or {})
-            .get("orgId")
-        )
+        org_id = self.data_entities_processor.org_id
+        if not org_id:
+            try:
+                org_id = current().org_id
+            except (MissingOrgContext, SystemContextNotAllowed):
+                org_id = None
         if not org_id:
             # The start handler refuses an event without an org, and its redelivery would hold the partition.
             self.logger.error(f"No org for connector {self.connector_id}; its sync request is left to the next sync")

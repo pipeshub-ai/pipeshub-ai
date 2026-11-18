@@ -121,13 +121,14 @@ async def test_a_request_runs_in_the_callers_org_context(monkeypatch: pytest.Mon
     assert seen == ["o1"]
 
 
-async def test_a_connector_whose_processor_has_no_org_asks_with_the_org_its_app_document_names(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_connector_whose_processor_has_no_org_asks_with_the_callers_org(monkeypatch: pytest.MonkeyPatch) -> None:
     dispatcher = SimpleNamespace(submit=AsyncMock(return_value=SubmitResult.ACCEPTED))
     monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", dispatcher)
     connector = _connector(DropboxConnector, None)
     connector.data_entities_processor.org_id = None
-    connector.data_store_provider.graph_provider.get_document = AsyncMock(return_value={"orgId": "o9"})
-    await connector.request_sync()
+    with for_org("o9", job="test"):
+        task = connector.request_sync()
+    await task
     (spec,), _ = dispatcher.submit.call_args
     assert spec.org_id == "o9"
 
@@ -138,8 +139,7 @@ async def test_a_request_with_no_org_anywhere_is_kept_for_the_next_sync_not_publ
     monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", dispatcher)
     connector = _connector(DropboxConnector, None)
     connector.data_entities_processor.org_id = None
-    connector.data_store_provider.graph_provider.get_document = AsyncMock(return_value={})
-    await connector.request_sync()
+    await connector.request_sync()  # no org context bound either
     dispatcher.submit.assert_not_awaited()
     connector.data_store_provider.graph_provider.update_node.assert_awaited_once_with(
         "c1", CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
