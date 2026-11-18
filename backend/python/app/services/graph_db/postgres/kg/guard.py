@@ -15,6 +15,7 @@ import os
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg.registry import (
+    EXTRA_WRITERS,
     WRITERS,
     UnclassifiedProviderWrite,
 )
@@ -37,7 +38,7 @@ def strict() -> bool:
 def check(tx: Tx, sql: str) -> None:
     """Called before a statement that writes graph.nodes or graph.edges."""
     stack = current_writer.get()
-    if any(n in WRITERS for n in stack):
+    if any(n in WRITERS or n in EXTRA_WRITERS for n in stack):
         return
     label = stack[0] if stack else "<outside the provider>"
     if strict():
