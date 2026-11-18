@@ -84,17 +84,20 @@ export class CrawlingWorkerService {
       });
       return;
     }
-    if (!(await getOrgRepository().isActive(orgId))) {
-      this.logger.warn(
-        'Skipping crawling job: org does not exist or is not active',
-        {
-          jobId: job.id,
-          orgId,
-        },
-      );
-      return;
-    }
-    return forOrg(orgId, 'crawl', () => this.processJobInContext(job));
+    // inside the org's context: the PostgreSQL store reads an org only as that org
+    return forOrg(orgId, 'crawl', async () => {
+      if (!(await getOrgRepository().isActive(orgId))) {
+        this.logger.warn(
+          'Skipping crawling job: org does not exist or is not active',
+          {
+            jobId: job.id,
+            orgId,
+          },
+        );
+        return;
+      }
+      return this.processJobInContext(job);
+    });
   }
 
   private async processJobInContext(job: Job<CrawlingJobData>): Promise<void> {

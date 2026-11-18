@@ -36,6 +36,13 @@ on:
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
+      # The shared drivers of the record diagnostics tests that run on every store (their PostgreSQL files are in postgres/).
+      - 'backend/python/tests/integration/graph_db/record_diagnostics_*.py'
+      - 'backend/python/app/modules/indexing/record_diagnostics.py'
+      - 'backend/python/app/modules/indexing/rate_limit_deferral.py'
+      - 'backend/python/app/scripts/record_diagnostics_contract.py'
+      - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
+      - 'backend/python/app/services/messaging/kafka/handlers/entity.py'
       - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'

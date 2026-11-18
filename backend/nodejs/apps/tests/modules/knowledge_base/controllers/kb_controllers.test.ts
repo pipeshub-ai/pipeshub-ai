@@ -3328,6 +3328,22 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
+    it('should relay the connector-gone detail of a 404 and keep the generic message for a missing record', async () => {
+      const gone = 'The connector for this record no longer exists or was deleted. The record cannot be streamed.'
+      const stub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+      stub.onFirstCall().resolves({ statusCode: 404, data: { detail: gone } })
+      stub.onSecondCall().resolves({ statusCode: 404, data: { detail: 'Record not found' } })
+
+      const handler = getRecordById(createMockAppConfig())
+      const first = createMockNext()
+      await handler(createMockRequest({ params: { recordId: 'r1' } }), createMockResponse(), first)
+      const second = createMockNext()
+      await handler(createMockRequest({ params: { recordId: 'r2' } }), createMockResponse(), second)
+
+      expect(first.firstCall.args[0].message).to.equal(gone)
+      expect(second.firstCall.args[0].message).to.equal('Record r2 not found')
+    })
+
     it('should call next when reindexRecord connector returns non-200', async () => {
       const handler = reindexRecord(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
