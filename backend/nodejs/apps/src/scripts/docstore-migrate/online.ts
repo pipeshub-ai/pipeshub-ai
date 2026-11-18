@@ -762,6 +762,11 @@ export async function cutover(
       () => rt.jobs((_t, k) => raiseCountersToSlugs(k)),
       (raised) => ({ raised }),
     );
+    if (
+      overBudget() ||
+      (o.failAt === 'over-after-F6' && process.env.MIGRATE_TEST_HOOKS === '1')
+    )
+      return await abort('F6', 'the freeze budget was used up');
 
     // F6: the outbox rows travel with their state through the same stream (published rows are not copied, publishing becomes pending)
     steps.push({

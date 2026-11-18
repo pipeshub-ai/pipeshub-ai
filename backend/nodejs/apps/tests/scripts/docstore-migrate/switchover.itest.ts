@@ -351,6 +351,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await store()).to.include({ backend: 'postgres', readonly: false });
       });
 
+      it('a freeze budget used up by the slug counters aborts before the final verify and gives MongoDB back', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'over-after-F6' });
+        expect(r, r.message).to.include({ ok: false, stage: 'F6', aborted: true });
+        expect(r.message).to.contain('the freeze budget was used up');
+        expect(r.steps.map((x) => x.step)).to.include('F6 slug counters');
+        expect(r.steps.some((x) => x.step.startsWith('F7')), 'no verify after the budget is gone').to.equal(false);
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
       it('aborts a failed cut and gives MongoDB back to the application', async () => {
         await onlineStart(w.rt, { dryRun: false, log });
         const r = await cut({ failAt: 'F7' });
