@@ -2243,7 +2243,8 @@ class TestIssueGrantsNameListedAccountsOnly:
     def _pass(c: JiraConnector, stored: str | None = None) -> tuple[list, list]:
         saved: list = []
         naming: list = []
-        c._update_project_sync_checkpoint = AsyncMock(side_effect=lambda _k, **kw: saved.append(kw["people_reread"]))
+        c._update_project_sync_checkpoint = AsyncMock(
+            side_effect=lambda _k, **kw: saved.append(kw["people_reread"]) if "people_reread" in kw else None)
 
         async def fetch(*_a: object, naming: str | None = None, **_kw: object) -> AsyncIterator:
             naming_seen.append(naming)
@@ -2260,12 +2261,113 @@ class TestIssueGrantsNameListedAccountsOnly:
         c = _connector()
         saved, naming = self._pass(c)
         c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
         ctx = self._ctx(levels={"10102": [{"type": "user", "parameter": "acc-1"}], "10103": [{"type": "group", "value": "g"}],
                                 "10104": [{"type": "groupCustomField", "parameter": "customfield_10050"}]})
         ctx.custom_field_ids = ["customfield_10050"]
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, {"people_reread": '["acc-0"]'}, covered=False)
         assert saved == ['["acc-0", "acc-1"]', "[]"]  # saved before the pass, cleared after it
         assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") OR level in (10102)']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("queued", [[], ["acc-1"]], ids=["queue_empty", "accounts_queued"])
+    @pytest.mark.parametrize("failed", [False, True], ids=["read", "an_issue_failed"])
+    async def test_a_project_that_missed_an_emptied_queue_reads_every_stored_issue_again(self, failed: bool, queued: list) -> None:
+        """It covered generation 1; the queue was emptied at 2 while it was missing from the project list, so the
+        accounts it missed are no longer named: every stored issue is read again. It is due its generation only
+        after a pass in which no issue failed (and the sweep, which saves it)."""
+        c = _connector()
+        self._pass(c)
+        c._newly_listed_account_ids = queued  # queued since base: they do not name what it missed before
+        c._people_generation, c._people_base = 3, 2
+
+        async def reread(*_a: object, **_kw: object) -> None:
+            c._issue_build_failures += int(failed)
+
+        c._reread_leveled_issues = AsyncMock(side_effect=reread)
+        c._reread_issues_naming = AsyncMock()
+        assert await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": 1}, covered=False)
+        assert c._reread_leveled_issues.await_args.kwargs == {"every_issue": True}
+        c._reread_issues_naming.assert_not_awaited()
+        assert c._people_read_due == ([] if failed else ["PROJ"])
+
+    @pytest.mark.asyncio
+    async def test_a_project_that_covered_the_emptied_queue_reads_only_the_issues_naming_the_queued_accounts(self) -> None:
+        """It covered generation 2, where the queue was emptied: the queue names every account it missed since."""
+        c = _connector()
+        self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation, c._people_base = 3, 2
+        c._reread_leveled_issues = AsyncMock()
+        c._reread_issues_naming = AsyncMock()
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": 2}, covered=False)
+        c._reread_leveled_issues.assert_not_awaited()
+        assert c._reread_issues_naming.await_args.args[4] == ["acc-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_project_that_covered_the_current_generation_reads_nothing_for_the_queue(self) -> None:
+        """Another project failed, so the queue stays; this one took it last sync and its sweep ran."""
+        c = _connector()
+        self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 3
+        c._reread_issues_naming = AsyncMock()
+        assert not await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": 3}, covered=False)
+        c._reread_issues_naming.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_queue_and_its_base_stay_while_a_listed_project_still_owes_its_pass(self) -> None:
+        """An issue failed in PROJ's targeted pass, so PROJ keeps the accounts and its generation. Emptying the queue
+        (moving base past PROJ) would turn its next pass into a read of every stored issue."""
+        c = _connector()
+        self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation, c._people_base = 3, 2
+
+        async def failing(*_a: object, **_kw: object) -> None:
+            c._issue_build_failures += 1
+
+        c._reread_issues_naming = AsyncMock(side_effect=failing)
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": 2}, covered=False)
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        await c._people_to_reread_handed_on({"failed_project_keys": []}, swept=True)
+        c.issues_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("swept", [True, False])
+    async def test_a_project_saves_its_generation_only_once_the_stub_sweep_ran(self, swept: bool) -> None:
+        """Its stubs may name the account too; a skipped sweep leaves it owed, so the next sync passes and sweeps again."""
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._update_project_sync_checkpoint = AsyncMock()
+        c._people_generation, c._people_read_due = 3, ["PROJ"]
+        await c._people_to_reread_handed_on({"failed_project_keys": []}, swept=swept)
+        saved = [kw.get("people_read") for _a, kw in c._update_project_sync_checkpoint.await_args_list]
+        assert saved == ([3] if swept else [])
+
+    @pytest.mark.asyncio
+    async def test_a_project_that_failed_after_its_pass_does_not_save_its_generation(self) -> None:
+        """PROJ's people pass went through, then a later step of PROJ failed: it was not reported as re-read, so the sweep
+        may have skipped its stubs. It keeps its older generation; OPS, which finished, saves its own."""
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._update_project_sync_checkpoint = AsyncMock()
+        c._people_generation, c._people_read_due = 3, ["PROJ", "OPS"]
+        await c._people_to_reread_handed_on({"failed_project_keys": ["PROJ"]}, swept=True)
+        assert [(a[0], kw.get("people_read")) for a, kw in c._update_project_sync_checkpoint.await_args_list] == [("OPS", 3)]
+
+    @pytest.mark.asyncio
+    async def test_an_account_admitted_again_while_still_queued_is_a_new_generation(self) -> None:
+        c = _connector()
+        store: dict = {"people_reread": {"accounts": '["acc-1"]', "generation": 4, "base": 3}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        await c._note_people_to_reread({"acc-1"})
+        assert (c._people_generation, c._people_base) == (5, 3) and store["people_reread"]["generation"] == 5
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("why", ["user_field", "unquotable_id", "query_refused"])
@@ -2275,6 +2377,7 @@ class TestIssueGrantsNameListedAccountsOnly:
         c = _connector()
         saved, naming = self._pass(c)
         c._newly_listed_account_ids = ['bad"id'] if why == "unquotable_id" else ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
         holders = [{"type": "reporter"}, {"type": "userCustomField", "parameter": "customfield_10040"}] \
             if why == "user_field" else None
         ctx = self._ctx(holders=holders)
@@ -2308,6 +2411,7 @@ class TestIssueGrantsNameListedAccountsOnly:
         c = _connector()
         saved, _ = self._pass(c)
         c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
 
         async def fail(*_a: object, **_kw: object) -> None:
             c._issue_build_failures += 1
@@ -2320,6 +2424,7 @@ class TestIssueGrantsNameListedAccountsOnly:
         c = _connector()
         saved, naming = self._pass(c)
         c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
         ctx = self._ctx()
         ctx.browse_holders = None
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, None, covered=False)
@@ -2331,6 +2436,7 @@ class TestIssueGrantsNameListedAccountsOnly:
         c = _connector()
         saved, naming = self._pass(c)
         c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(holders=holders), {"people_reread": '["acc-0"]'},
                                          covered=covered)
         assert naming == [] and saved == ["[]"]
@@ -2360,6 +2466,7 @@ class TestIssueGrantsNameListedAccountsOnly:
         c.issues_sync_point = MagicMock()
         c.issues_sync_point.update_sync_point = AsyncMock()
         c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
         c._skipped_project_keys = skipped
         c._unresolved_selected_keys = unresolved
         await c._people_to_reread_handed_on({"failed_project_keys": failed}, swept=swept)
@@ -2371,6 +2478,7 @@ class TestIssueGrantsNameListedAccountsOnly:
         backfilled stub in a project reported as read again."""
         c = _connector()
         c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation = 1  # the sync that queued them
         c._reread_issues_naming = AsyncMock()
         _, _, _, result = await TestMemberChangeRereadsOnlyTheAffectedLevels._sync(
             self, stored_levels=_present().level_fingerprints(), connector=c)
