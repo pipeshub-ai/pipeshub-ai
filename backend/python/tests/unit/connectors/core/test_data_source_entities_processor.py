@@ -240,9 +240,14 @@ class TestPlaceholdersAreRestricted:
         proc, tx_store = _make_processor(), _make_tx_store()
         proc.org_id = "org-1"
         calls: list[tuple] = []
-        tx_store.get_edge = AsyncMock(return_value={"_key": "e"} if open_already else None)
+        edges = {("org-1", "conn-1")} if open_already else set()
         tx_store.remove_user_access_to_connector = AsyncMock(side_effect=lambda c, u: calls.append(("drop", u)))
-        tx_store.ensure_team_app_edge = AsyncMock(side_effect=lambda c, o: calls.append(("open", o)))
+
+        async def ensure_team_app_edge(connector_id: str, org_id: str) -> None:
+            calls.append(("open", org_id))
+            edges.add((org_id, connector_id))
+
+        tx_store.ensure_team_app_edge = AsyncMock(side_effect=ensure_team_app_edge)
 
         async def get_users(org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list:
             users = [SimpleNamespace(id="linked"), SimpleNamespace(id="stale")]
@@ -256,6 +261,7 @@ class TestPlaceholdersAreRestricted:
 
         tx_store.get_users.assert_awaited_once_with("org-1", active=False, raise_on_error=True)
         assert calls == [("drop", "stale"), ("drop", "deactivated"), ("open", "org-1")]
+        assert edges == {("org-1", "conn-1")}
 
     @pytest.mark.asyncio
     async def test_a_failed_user_read_leaves_the_org_team_out(self) -> None:

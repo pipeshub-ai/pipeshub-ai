@@ -1490,7 +1490,7 @@ class TestFetchUsersPhases:
 
         connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
             {"accountId": "u2", "accountType": "atlassian", "active": True}]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
