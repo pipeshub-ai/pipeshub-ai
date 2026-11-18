@@ -387,10 +387,10 @@ compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "env.template documents PIPESHUB_ENABLE_DCR" "$envtmpl" "PIPESHUB_ENABLE_DCR"
 check "env.template documents PIPESHUB_ENABLE_DEVICE_GRANT" "$envtmpl" "PIPESHUB_ENABLE_DEVICE_GRANT"
 check "env.template names pipeshub_device_client_id" "$envtmpl" "pipeshub_device_client_id"
-if grep -qE '^PIPESHUB_ENABLE_DCR=true' "$COMPOSE_DIR/env.template"; then
-  fail "env.template must not enable DCR by default"
+if grep -qE '^PIPESHUB_ENABLE_DCR=false' "$COMPOSE_DIR/env.template"; then
+  fail "env.template must not disable DCR by default"
 else
-  pass "env.template does not enable DCR by default"
+  pass "env.template does not disable DCR by default"
 fi
 if grep -qE '^PIPESHUB_ENABLE_DEVICE_GRANT=false' "$COMPOSE_DIR/env.template"; then
   fail "env.template must not disable device grant by default"
