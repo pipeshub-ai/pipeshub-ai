@@ -61,6 +61,7 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _merge_regions,
     _merge_row_tables,
     _merge_small_text_regions,
+    _merge_table_currency_columns,
     _overlap_ratio,
     _page_hyperlinks,
     _prefer_model_pictures,
@@ -3297,6 +3298,42 @@ class TestCoveragePush95Phase2:
     def test_columns_holding_figures_are_kept(self) -> None:
         grid = [["", "2022", "2021"], ["Cash", "$ 4,835", "$ 2,535"], ["Goodwill", "$", "289"]]
         assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_figure_beside_a_placeholder_keeps_the_columns_apart(self) -> None:
+        grid = [["", "2022", ""], ["Cash", "$ 4,835", "\u2014"], ["Goodwill", "$", "289"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_two_periods_are_not_joined_over_one_figure(self) -> None:
+        grid = [["", "2015", "2016"], ["Net", "$", "79,268"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_year_like_figure_beside_a_sign_is_a_figure(self) -> None:
+        assert _merge_currency_columns([["", "2022", ""], ["Net", "$", "2000"]]) == [
+            ["", "2022"], ["Net", "$ 2000"],
+        ]
+
+    def test_decimal_comma_figures_join_their_sign(self) -> None:
+        assert _merge_currency_columns([["", "2022", ""], ["Umsatz", "\u20ac", "1.234,56"]]) == [
+            ["", "2022"], ["Umsatz", "\u20ac 1.234,56"],
+        ]
+
+    def test_a_merged_tables_extra_text_survives(self) -> None:
+        grid = [["", "2015", ""], ["Net", "$", "79,268"]]
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 1, 1),
+            text="In USD millions\n" + _grid_to_text(grid), table_grid=grid,
+        )
+        _merge_table_currency_columns(region)
+        assert region.table_grid == [["", "2015"], ["Net", "$ 79,268"]]
+        assert region.text == "In USD millions\n" + _grid_to_text(region.table_grid)
+
+    def test_a_table_left_unchanged_keeps_its_text(self) -> None:
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 1, 1),
+            text="USD\nCash | 4,835", table_grid=[["Cash", "4,835"]],
+        )
+        _merge_table_currency_columns(region)
+        assert region.text == "USD\nCash | 4,835"
 
 
 class TestCoveragePush95Phase3:

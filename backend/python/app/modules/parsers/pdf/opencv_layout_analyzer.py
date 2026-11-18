@@ -1711,8 +1711,7 @@ def extract_layout_regions(
     # columns this removes would otherwise count.
     for region in ordered:
         if region.type == LayoutRegionType.TABLE and region.table_grid:
-            region.table_grid = _merge_currency_columns(region.table_grid)
-            region.text = _grid_to_text(region.table_grid)
+            _merge_table_currency_columns(region)
     return _inject_hyperlinks_into_regions(ordered, page, all_words)
 
 
@@ -3721,12 +3720,13 @@ def _trim_empty_rows_cols(grid):
 
 
 _CURRENCY_SIGNS = "$€£¥"
-_AMOUNT_RE = re.compile(r"\(?[-−]?[\d,]*\d(?:\.\d+)?\)?%?")
-_YEAR_RE = re.compile(r"(?:19|20)\d\d")
+# 1,234.56 and 1.234,56 alike; "31," (a date) is not a figure.
+_AMOUNT_RE = re.compile(r"\(?[-\u2212]?\d(?:[\d.,]*\d)?\)?%?")
+_YEAR_RE = re.compile(r"\b(?:19|20)\d\d\b")
 
 
-def _is_amount(token: str) -> bool:
-    return bool(_AMOUNT_RE.fullmatch(token)) and not _YEAR_RE.fullmatch(token)
+def _is_amount(token: str, *, year_ok: bool = False) -> bool:
+    return bool(_AMOUNT_RE.fullmatch(token)) and (year_ok or not _YEAR_RE.fullmatch(token))
 
 
 def _merge_currency_columns(grid: list[list[str | None]]) -> list[list[str | None]]:
@@ -3739,27 +3739,45 @@ def _merge_currency_columns(grid: list[list[str | None]]) -> list[list[str | Non
     def text(cell: str | None) -> str:
         return str(cell).strip() if cell is not None else ""
 
-    def holds_amount(cell: str | None) -> bool:
-        return any(_is_amount(t) for t in text(cell).split())
+    def holds_amount(cell: str | None, *, year_ok: bool = False) -> bool:
+        return any(_is_amount(t, year_ok=year_ok) for t in text(cell).split())
+
+    def years(cell: str | None) -> set[str]:
+        return set(_YEAR_RE.findall(text(cell)))
 
     ci = 0
     while ci < (len(grid[0]) if grid else 0) - 1:
-        col = [text(r[ci]) for r in grid]
-        signs = sum(1 for c in col if c in _CURRENCY_SIGNS and c)
-        # In the rows that hold figures the sign's cell holds no figure of its
-        # own; header rows ("52 Weeks Ended August 29, 2021") are free.
-        sign_only = all(
-            not holds_amount(c.strip(_CURRENCY_SIGNS + " \n"))
-            for c, r in zip(col, grid)
-            if holds_amount(r[ci + 1])
+        signs = [text(r[ci]) for r in grid]
+        bare = [len(c) == 1 and c in _CURRENCY_SIGNS for c in signs]
+        # Beside a bare sign, "2000" is a figure, not a year.
+        figures = any(holds_amount(r[ci + 1], year_ok=b) for r, b in zip(grid, bare))
+        blocked = any(
+            # A figure of the column's own; header cells name a period, so
+            # "52 Weeks Ended August 29, 2021" does not count.
+            (holds_amount(c.strip(_CURRENCY_SIGNS + " \n")) and not years(c))
+            # Two periods would end up over one figure.
+            or (years(c) and years(r[ci + 1]) and years(c) != years(r[ci + 1]))
+            for c, r in zip(signs, grid)
         )
-        if signs and sign_only and any(holds_amount(r[ci + 1]) for r in grid):
+        if any(bare) and figures and not blocked:
             for r in grid:
                 parts = [text(r[ci]), text(r[ci + 1])]
                 r[ci:ci + 2] = [" ".join(p for p in parts if p) or r[ci + 1]]
             continue
         ci += 1
     return grid
+
+
+def _merge_table_currency_columns(region: LayoutRegion) -> None:
+    before = _grid_to_text(region.table_grid)
+    region.table_grid = _merge_currency_columns(region.table_grid)
+    after = _grid_to_text(region.table_grid)
+    if after == before:
+        return
+    # A table merged with a neighbour keeps that neighbour's text beside its grid.
+    region.text = (
+        region.text.replace(before, after) if region.text and before in region.text else after
+    )
 
 
 def _is_plausible_table(
