@@ -51,7 +51,7 @@ from app.core.org_context import spawn_detached
 from app.edition import check_runtime_settings
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import env_positive_int
+from app.utils.env_utils import bind_host, bind_port, env_positive_int
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1572,13 +1572,12 @@ async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
 
 
 def run(
-    host: str = "0.0.0.0",
+    host: str | None = None,
     port: int | None = None,
     reload: bool = False,
 ) -> None:
-    resolved_port = port or int(
-        os.getenv("EMBEDDING_SERVER_PORT", str(EMBEDDING_SERVER_PORT))
-    )
+    host = host or bind_host()
+    resolved_port = port if port is not None else bind_port(EMBEDDING_SERVER_PORT, "EMBEDDING_SERVER_PORT")
     uvicorn.run(
         "app.embedding_main:app",
         host=host,
