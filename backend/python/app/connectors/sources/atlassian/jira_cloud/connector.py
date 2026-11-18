@@ -610,6 +610,8 @@ class JiraConnector(BaseConnector):
         # the issue pass has read them; and the public project keys of a gate this sync kept open.
         self._org_gate_to_open: tuple[set[str], list[str], int] | None = None
         self._org_gate_open_keys: set[str] = set()
+        # When a gate kept without an answer this sync reaches its day: settled after the issue pass, it closes then.
+        self._org_gate_kept_until = 0
         # Keys of the projects this sync covers; None outside run_sync (a reindex keeps what is stored).
         self._synced_project_keys: set[str] | None = None
         # True when the bulk user list was refused on its first page: the account cannot
@@ -2942,6 +2944,7 @@ class JiraConnector(BaseConnector):
             return
         self._org_gate_to_open = None
         self._org_gate_open_keys = set()
+        self._org_gate_kept_until = 0
         # A selected project left out (its key not looked up, not found, or not built) keeps its stored grants unasked.
         written_in_full = (written_in_full and not self._unresolved_selected_keys and not self._skipped_project_keys
                            and not self._missing_selected_keys)
@@ -2966,15 +2969,15 @@ class JiraConnector(BaseConnector):
         fresh = bool(confirmed_at) and now - confirmed_at < ANONYMOUS_GATE_MAX_AGE_MS
         if all(a is True for a in answers):
             # The live edge, not the saved time, says the gate is open: a withdrawal whose state write failed leaves the time.
-            open_now = await self.data_entities_processor.org_team_app_edge_exists(self.connector_id)
-            if fresh and open_now:
+            if fresh and await self.data_entities_processor.org_team_app_edge_exists(self.connector_id):
                 if await self._open_org_gate(now, ids):
                     self._org_gate_open_keys = keys
                 else:
                     await self._save_org_gate(0, [])
                 return
-            if open_now:
-                # Its confirmation turned a day old while the checks ran: closed until a clean issue pass reopens it.
+            if confirmed_at and not fresh:
+                # Its confirmation turned a day old while the checks ran: closed, with no read that could fail first,
+                # until a clean issue pass reopens it.
                 await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
                 await self._save_org_gate(0, [])
             # A closed gate opens after the issue pass: a stored issue that gained a level since its last sync
@@ -2987,6 +2990,7 @@ class JiraConnector(BaseConnector):
             # A search with no answer is not proof either way: an open gate stays open, a closed one closed.
             self.logger.warning("Could not tell whether every public Jira project is public; org access kept as is")
             self._org_gate_open_keys = keys
+            self._org_gate_kept_until = confirmed_at + ANONYMOUS_GATE_MAX_AGE_MS
             return
         await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
         if confirmed_at:
@@ -3016,6 +3020,10 @@ class JiraConnector(BaseConnector):
                                 ", ".join(sorted(self._org_gate_open_keys & unread_project_keys)))
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             await self._save_org_gate(0, [])
+        elif self._org_gate_kept_until and get_epoch_timestamp_in_ms() >= self._org_gate_kept_until:
+            # Kept without an answer just before its day ended, and the issue pass ran past it.
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+            await self._save_org_gate(0, [], notice=True)
 
     async def _open_org_gate(self, confirmed_at: int, project_ids: list[str]) -> bool:
         """Open the edge and save its confirmation; False when the org has no All team (nothing is saved). Any failure or
@@ -5361,9 +5369,12 @@ class JiraConnector(BaseConnector):
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
             # Determine if there are more pages
-            has_more = isinstance(new_page_token, str) and bool(new_page_token) and new_page_token not in seen_page_tokens
-            if not has_more and issues_batch_response.get("isLast") is not True and (
-                    issues_batch_response.get("isLast") is False or new_page_token in seen_page_tokens):
+            is_last = issues_batch_response.get("isLast") is True
+            token_ok = isinstance(new_page_token, str) and bool(new_page_token)
+            has_more = not is_last and token_ok and new_page_token not in seen_page_tokens
+            if not has_more and not is_last and (
+                    issues_batch_response.get("isLast") is False or (token_ok and new_page_token in seen_page_tokens)
+                    or (not token_ok and new_page_token not in (None, ""))):
                 # Jira said there is more (or repeated a token): stopping here leaves later issues with their old access.
                 self.logger.warning("Jira gave no new page token for %s past a page that is not the last; the pass is "
                                     "repeated next sync", project_key)

@@ -2493,6 +2493,32 @@ class TestAnonymousBrowseReachesEveryone:
         assert c.edge is False
 
     @pytest.mark.asyncio
+    async def test_a_stale_confirmation_closes_the_edge_without_reading_it(self) -> None:
+        """A failed edge read must not stop the withdrawal of a gate whose confirmation is a day old."""
+        c = self._gated(confirmed_hours_ago=25)
+        c.data_entities_processor.org_team_app_edge_exists = AsyncMock(side_effect=ConnectionError("store down"))
+        with contextlib.suppress(ConnectionError):
+            await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        assert c.edge is False
+
+    @pytest.mark.asyncio
+    async def test_a_gate_kept_without_an_answer_closes_if_its_day_ends_during_the_issue_pass(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        c = self._gated(readable=None, confirmed_hours_ago=1)
+        confirmed_at = c.stored[ANONYMOUS_GATE_KEY]["confirmed_at"]
+        clock = [confirmed_at + module.ANONYMOUS_GATE_MAX_AGE_MS - 1]
+        monkeypatch.setattr(module, "get_epoch_timestamp_in_ms", lambda: clock[0])
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        assert c.edge is True
+        clock[0] += 2
+        await c._settle_org_gate(set())
+        assert c.edge is False
+        c.notify_and_wait.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_no_public_project_closes_the_gate(self) -> None:
         c = self._gated()
         await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=True)

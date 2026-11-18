@@ -514,8 +514,11 @@ class TestFetchIssuesBatched:
         ([{"issues": [], "isLast": False}], 0, False),
         ([{"issues": ["I"], "isLast": False}], 1, False),
         ([{"issues": ["I"], "nextPageToken": "t1"}, {"issues": ["I"], "isLast": False, "nextPageToken": "t1"}], 2, False),
+        ([{"issues": ["I"], "isLast": True, "nextPageToken": "t9"}], 1, True),
+        ([{"issues": ["I"], "nextPageToken": ["not", "a", "token"]}], 1, False),
     ], ids=["empty_page_then_issues", "repeated_token", "last_page", "not_last_without_a_token",
-            "issues_not_last_without_a_token", "issues_with_a_repeated_token"])
+            "issues_not_last_without_a_token", "issues_with_a_repeated_token", "issues_last_page_with_a_token",
+            "issues_with_a_malformed_token"])
     async def test_an_empty_page_that_is_not_the_last_is_followed(self, pages: list, built: int, complete: bool) -> None:
         """Enhanced search can answer an empty page with a nextPageToken before a page with issues: stopping there would
         leave the later issues with their old access and report the pass done."""
