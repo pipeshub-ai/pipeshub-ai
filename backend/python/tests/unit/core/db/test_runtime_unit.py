@@ -400,22 +400,35 @@ def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
         assert NOT_RESOLVABLE in rules(unmodelled), unmodelled
 
 
-def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
-    import time
+class _CountingText(str):
+    """Text that counts the characters the scan touches: each one indexed, each one a slice copies, and each one a
+    ``find`` passes over. Counted, not timed, so a busy runner cannot change the answer."""
 
-    def seconds(unit: str, n: int) -> float:
-        text = unit * n + "x"
-        best = float("inf")
-        for _ in range(3):                                                      # the best of three runs: a scheduling pause hits one, not all
-            start = time.perf_counter()
-            assert not sql_lint._starts_sql(text)
-            best = min(best, time.perf_counter() - start)
-        return best
+    touched = 0
+
+    def __getitem__(self, key: object) -> str:
+        part = _CountingText(str.__getitem__(self, key))  # type: ignore[index]  # a copy keeps counting
+        _CountingText.touched += len(part)
+        return part
+
+    def find(self, sub: str, start: int | None = None, end: int | None = None) -> int:  # type: ignore[override]
+        found = str.find(self, sub, start, end)
+        begin = 0 if start is None else start
+        _CountingText.touched += (found if found >= 0 else len(self)) - begin + len(sub)
+        return found
+
+
+def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
+    def touched(unit: str, n: int) -> int:
+        _CountingText.touched = 0
+        assert not sql_lint._starts_sql(_CountingText(unit * n + "x"))
+        return _CountingText.touched
 
     for unit in ("-- ", "/* ", "--", "/**/ ", "/**/\n"):
-        big = seconds(unit, 200_000)
-        assert big < 5                                                          # quadratic copying would take minutes
-        assert big < 12 * max(seconds(unit, 50_000), 0.05)                      # 4x the input, far less than 16x the time
+        small, big = touched(unit, 50_000), touched(unit, 200_000)
+        # 4x the input touches about 4x the characters; copying the rest of the text, or scanning it again, at each
+        # comment would touch about 16x (quadratic copying took minutes on the timed version of this test).
+        assert big <= 5 * small, (unit, small, big)
     assert sql_lint._starts_sql("-- a\n/* b */ -- c\n  SET x = 1") and not sql_lint._starts_sql("/* open SET x")
 
 

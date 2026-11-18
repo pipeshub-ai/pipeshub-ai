@@ -27,15 +27,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
+import math
 import os
 import random
 import threading
 import time
 import types
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
+from app.capacity.budget_policy import Family
+from app.capacity.classes import BIG_CLASSES, CostClass
+from app.modules.parse_engine import pools as class_pools
+from app.modules.parse_engine import wiring
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import (
     DistributedLeaseSet,
@@ -76,6 +83,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from app.modules.indexing.record_progress import RecordProgress
+    from app.modules.parse_engine.cost import CostEstimate
     from app.services.distributed.interface import (
         IDistributedLeaseManager,
         IRetryTracker,
@@ -221,6 +229,12 @@ _SLOT = {
 _SUM = 8
 
 
+def _backlog_tier(level: "ParseTier | CostClass") -> ParseTier:
+    """Under ``PARSE_ADMISSION=classes`` a heavy-format record's dispatch level is its cost class; the backlog counts
+    those records in the heavy tier's slots."""
+    return ParseTier.HEAVY if isinstance(level, CostClass) else level
+
+
 class AdmissionBacklog:
     """Live counts of records waiting at each admission stage, per tier, and of waiters per lease pool.
 
@@ -248,6 +262,7 @@ class AdmissionBacklog:
                 logging.getLogger(__name__).exception("admission backlog observer failed; its errors are ignored")
 
     def add(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        tier = _backlog_tier(tier)
         with self._lock:
             self._totals[_SLOT[tier, phase]] += 1
             if pool is not None:
@@ -256,6 +271,7 @@ class AdmissionBacklog:
             self._observed("entered", tier, phase, message)
 
     def remove(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        tier = _backlog_tier(tier)
         with self._lock:
             self._totals[_SLOT[tier, phase]] -= 1
             if pool is not None:
@@ -732,6 +748,9 @@ def effective_index_tier(
     the result down, or re-resolve locally.
     """
     resolved = tier if tier is not None else ParseTier.HEAVY
+    if isinstance(resolved, CostClass):
+        # PARSE_ADMISSION=classes: a cost class is a heavy-format record's level, and routes to the heavy pool.
+        return ParseTier.HEAVY
     governor = host.governor
     if (
         resolved is ParseTier.LIGHT
@@ -755,6 +774,14 @@ def dispatch_tier(host: ConcurrencyHost, message: "StreamMessage | None") -> Par
     if message is None:
         return effective_index_tier(host, ParseTier.HEAVY)
     payload = message.payload
+    if wiring.classes_enabled():
+        level = wiring.level_for(
+            str(payload.get("extension") or ""), str(payload.get("mimeType") or ""), _payload_size(payload)
+        )
+        if is_light := level is ParseTier.LIGHT:
+            level = effective_index_tier(host, ParseTier.LIGHT)
+        # A light-format record on a host with no light budget joins the heavy pool as a small one.
+        return CostClass.SMALL if is_light and level is ParseTier.HEAVY else level
     return effective_index_tier(
         host,
         classify(
@@ -762,6 +789,12 @@ def dispatch_tier(host: ConcurrencyHost, message: "StreamMessage | None") -> Par
             str(payload.get("mimeType") or ""),
         ),
     )
+
+
+def _payload_size(payload: "Mapping[str, object]") -> int | None:
+    """The size a record event carries, when it does (most say nothing: the size is learned at download)."""
+    raw = payload.get("sizeInBytes")
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else None
 
 
 def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
@@ -982,10 +1015,11 @@ class GateWaiters:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._counts: dict[ParseTier, int] = dict.fromkeys(ParseTier, 0)
+        # Keyed by tier; under PARSE_ADMISSION=classes also by cost class (added on first use).
+        self._counts: defaultdict[ParseTier | CostClass, int] = defaultdict(int, dict.fromkeys(ParseTier, 0))
         # Of the counted tasks, those already admitted through the gate that stay counted until they end (the
         # priority lane counts records in flight). Read only to tell them from tasks that are still waiting.
-        self._retained: dict[ParseTier, int] = dict.fromkeys(ParseTier, 0)
+        self._retained: defaultdict[ParseTier | CostClass, int] = defaultdict(int, dict.fromkeys(ParseTier, 0))
 
     def add(self, tier: ParseTier) -> None:
         with self._lock:
@@ -995,13 +1029,13 @@ class GateWaiters:
         with self._lock:
             self._counts[tier] -= 1
 
-    def count(self, tier: ParseTier | None = None) -> int:
+    def count(self, tier: ParseTier | CostClass | None = None) -> int:
         with self._lock:
             if tier is None:
                 return sum(self._counts.values())
             return self._counts[tier]
 
-    def snapshot(self) -> dict[ParseTier, int]:
+    def snapshot(self) -> dict[ParseTier | CostClass, int]:
         with self._lock:
             return dict(self._counts)
 
@@ -1231,9 +1265,9 @@ class DispatchBudget:
 
     total_ceiling: int
     total_waiters: int
-    tiers: "Mapping[ParseTier, TierBudget]"
+    tiers: "Mapping[ParseTier | CostClass, TierBudget]"
 
-    def allows(self, tier: ParseTier) -> bool:
+    def allows(self, tier: ParseTier | CostClass) -> bool:
         budget = self.tiers.get(tier)
         return (
             budget is not None
@@ -1290,8 +1324,10 @@ def _tier_ceiling(
     floored so a braked pool still refills its gate from the queue.
     """
     if (lane := _lane(host)) is not None:
-        return lane.tier_limit(tier)
+        return lane.tier_limit(wiring.as_tier(tier))
     governor = host.governor
+    if isinstance(tier, CostClass):
+        return _class_ceiling(governor, tier, total_ceiling)
     if (
         governor is None
         or tier not in _READ_AHEAD_BOUNDED_TIERS
@@ -1301,6 +1337,20 @@ def _tier_ceiling(
     derived = governor.limit(index_pool(tier)) * _PENDING_TASKS_PER_INDEX_SLOT
     floor = min(_MIN_PENDING_PER_TIER, total_ceiling)
     return max(floor, min(total_ceiling, derived))
+
+
+def _class_ceiling(governor: "ResourceGovernor | None", cls: CostClass, total_ceiling: int) -> int:
+    """How many tasks of a cost class may queue for the heavy index gate (``PARSE_ADMISSION=classes``).
+
+    Small work takes the total: it turns over in seconds and is what read-ahead is for. Big work parks for
+    minutes, so it is held to its own share of the pool's limit, never the read-ahead small work needs.
+    """
+    if governor is None or cls not in BIG_CLASSES:
+        return total_ceiling
+    numbers = wiring.current_numbers()
+    share = numbers.large_cap if cls is CostClass.LARGE else min(numbers.large_cap, numbers.huge_cap)
+    derived = max(1, math.ceil(governor.limit(Pool.INDEX_HEAVY) * share)) * _PENDING_TASKS_PER_INDEX_SLOT
+    return max(min(_MIN_PENDING_PER_TIER, total_ceiling), min(total_ceiling, derived))
 
 
 def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBudget:
@@ -1314,7 +1364,7 @@ def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBu
     total_ceiling = pending_task_ceiling(host)
     waiters = host.gate_waiters.snapshot()
     governor = host.governor
-    present = [
+    present: list[ParseTier | CostClass] = [
         tier
         for tier in ParseTier
         if not (
@@ -1323,9 +1373,12 @@ def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBu
             and governor.ceilings.index_light == 0
         )
     ]
+    if wiring.classes_enabled():
+        # Heavy-format work is dispatched by cost class, so one class never takes the read-ahead of another.
+        present = [t for t in present if t is not ParseTier.HEAVY] + list(CostClass)
     tiers = {
         tier: TierBudget(
-            waiters=waiters[tier],
+            waiters=waiters.get(tier, 0),
             ceiling=(
                 total_ceiling
                 if not tiered
@@ -1366,7 +1419,10 @@ def _priority_kwargs(host: ConcurrencyHost) -> dict[str, bool]:
 
 
 async def acquire_index_slot(
-    host: ConcurrencyHost, tier: ParseTier | None
+    host: ConcurrencyHost,
+    tier: "ParseTier | CostClass | None",
+    *,
+    ctx: "wiring.ClassContext | None" = None,
 ) -> "Admission":
     """Acquire an active-pipeline permit for *tier*, routing heavy vs. light
     through the governor when one is configured, else falling back to the
@@ -1382,16 +1438,35 @@ async def acquire_index_slot(
     governor = host.governor
     if governor is not None:
         gate = governor.gate(index_pool(resolved_tier))
+        # PARSE_ADMISSION=classes: the class gate orders the waiters first (small ahead of large), the governor's
+        # gate behind it keeps the limit, the brakes and the statistics.
+        ordered = await wiring.order_index(governor, tier, ctx) if isinstance(tier, CostClass) else None
         # Checked, not discarded: acquire() returns False on timeout rather
         # than raising, so ignoring it would build an admission for a permit
         # the gate never issued and release it later, freeing someone else's.
         # No timeout is passed here, so False is unreachable today — the point
         # is that adding one can't silently corrupt the gate's accounting.
-        if not await gate.acquire(**_priority_kwargs(host)):
+        try:
+            granted = await gate.acquire(**_priority_kwargs(host))
+        except BaseException:
+            if ordered is not None:
+                ordered.release()
+            raise
+        if not granted:
+            if ordered is not None:
+                ordered.release()
             raise RuntimeError(
                 f"Index admission denied for pool {index_pool(resolved_tier).value}"
             )
         admitted_at = time.monotonic()
+        if ordered is not None:
+            admission = Admission(
+                tier=resolved_tier,
+                _release=lambda: (gate.release(held_seconds=time.monotonic() - admitted_at), ordered.release()),
+            )
+            # Not a dataclass field: the class gate's permit, so the index permit can move to its class in place.
+            admission.ordered = ordered  # type: ignore[attr-defined]
+            return admission
         # The hold is reported with the release so the governor can judge the
         # pool's typical record by its median rather than its mean, which a
         # few very large records would drag up (policy._track_hold_time).
@@ -1435,6 +1510,19 @@ def release_admission(admission: "Admission | None") -> bool:
     admission.released = True
     admission._release()
     return True
+
+
+def reclass_index_slot(
+    admission: "Admission | None", ctx: "wiring.ClassContext | None", size_bytes: int | None
+) -> CostClass | None:
+    """Move a record's index permit to the class its size now says, in place; never a requeue.
+
+    A no-op without ``PARSE_ADMISSION=classes`` (the permit has no class gate behind it).
+    """
+    ordered = getattr(admission, "ordered", None)
+    if admission is None or admission.released or ordered is None:
+        return None
+    return wiring.reclass(ordered, ctx, size_bytes)
 
 
 class RequeueWithoutAttempt(Exception):
@@ -1506,6 +1594,21 @@ class ParseAdmissionTimeout(RequeueWithoutAttempt):
         super().__init__(f"no {pool} parse slot within {waited:.0f}s")
         self.pool = pool
         self.waited = waited
+
+
+class BigAdmissionTimeout(ParseAdmissionTimeout):
+    """A large or huge record's wait for its turn ran out (``PARSE_ADMISSION=classes``).
+
+    Nothing is wrong with the record and the whole stage is not paused: it goes back to the broker, uncounted
+    toward the delivery backstop, and carries ``parseEnqueuedAtMs`` so its aging starts from its first wait.
+    """
+
+    counts_toward_backstop = False
+    pauses_consumer = False
+
+    def __init__(self, pool: str, waited: float, *, parse_enqueued_at_ms: int | None = None) -> None:
+        super().__init__(pool, waited)
+        self.parse_enqueued_at_ms = parse_enqueued_at_ms
 
 
 class MemoryAdmissionTimeout(ParseAdmissionTimeout):
@@ -1630,6 +1733,7 @@ async def reserve_record_memory(
     downloaded: bool = False,
     current: "Admission | None" = None,
     kind: ParseKind | None = None,
+    ctx: "wiring.ClassContext | None" = None,
 ) -> "Admission | None":
     """Reserve what a record too big for the governor's count limits is
     expected to hold, until it finishes; ``None`` when it needs no reservation
@@ -1650,6 +1754,8 @@ async def reserve_record_memory(
     governor = host.governor
     if governor is None:
         return current
+    level = tier if isinstance(tier, CostClass) else None
+    tier = wiring.as_tier(tier)
     cost = kind_reservation_cost(
         tier if tier is not None else ParseTier.HEAVY, size_bytes, kind, governor.heavy_working_set
     )
@@ -1659,7 +1765,15 @@ async def reserve_record_memory(
     if not cost:
         return None
     budget = governor.memory_budget
-    if not await budget.reserve(cost, timeout, held=(size_bytes or 0) if downloaded else 0):
+    if ctx is not None:
+        level = wiring.class_of(ctx, size_bytes)
+    held_bytes = (size_bytes or 0) if downloaded else 0
+    if wiring.classes_enabled():
+        # A small record's reservation (<= 1 GiB) is served ahead of the big ones queued for memory.
+        reserved = await budget.reserve(cost, timeout, held=held_bytes, ahead=wiring.memory_goes_ahead(level, cost))
+    else:
+        reserved = await budget.reserve(cost, timeout, held=held_bytes)
+    if not reserved:
         raise MemoryAdmissionTimeout("record_memory", timeout or 0.0)
     return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 
@@ -1668,6 +1782,9 @@ async def acquire_download_slot(
     host: ConcurrencyHost,
     tier: ParseTier | None,
     timeout: float | None = None,
+    *,
+    ctx: "wiring.ClassContext | None" = None,
+    size_bytes: int | None = None,
 ) -> "Admission | None":
     """Take a place among the heavy records allowed to hold downloaded content
     without a parse permit; ``None`` when the record needs none (a light
@@ -1682,10 +1799,51 @@ async def acquire_download_slot(
     # backlog's first-come places would put it behind records waiting minutes for a parse slot.
     if governor is None or _lane(host) is not None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
         return None
-    ahead = governor.download_ahead
+    # PARSE_ADMISSION=classes: places per class, so a small record's download is not held behind big ones.
+    level = wiring.class_of(ctx, size_bytes) if ctx is not None else None
+    ahead = wiring.download_ahead(level) if level is not None else governor.download_ahead
     if not await ahead.acquire(timeout):
         raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
-    return Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    admission = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    admission.download_class = level  # type: ignore[attr-defined]
+    return admission
+
+
+async def reclass_download_slot(
+    admission: "Admission | None", ctx: "wiring.ClassContext | None", size_bytes: int | None, timeout: float | None
+) -> "Admission | None":
+    """Move a record's download place to the class its inspection now says. Returns the admission to hold from here on.
+
+    A small PDF that inspection turns into a huge one keeps holding a place of the small pool while it waits for its
+    parse slot, which blocks the next small PDF's download. A free place of the new pool is taken without waiting and the
+    old one given back; when none is free the old place is given back first and the record queues for the new one (never
+    waiting while holding the old). If none comes free in *timeout*, ``ParseAdmissionTimeout`` is raised.
+    A no-op without ``PARSE_ADMISSION=classes`` or when the class did not change."""
+    if admission is None or admission.released or ctx is None:
+        return admission
+    old = getattr(admission, "download_class", None)
+    new = wiring.class_of(ctx, size_bytes)
+    if old is None or new is old:
+        return admission
+    ahead = wiring.download_ahead(new)
+    if ahead is wiring.download_ahead(old):
+        admission.download_class = new  # type: ignore[attr-defined]  # large and huge share the big pool: the place is right
+        return admission
+    if await ahead.try_acquire():
+        # A place of the new pool is free now: take it, then give the old one back.
+        moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+        moved.download_class = new  # type: ignore[attr-defined]
+        release_admission(admission)
+        return moved
+    # None is free. Never wait while holding the old place: two records crossing between full pools would wait on each
+    # other. Give it back, then queue for the new one through the ordinary path (its content is in hand, so the excess
+    # is bounded by the records moving).
+    release_admission(admission)
+    if not await ahead.acquire(timeout):
+        raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
+    moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    moved.download_class = new  # type: ignore[attr-defined]
+    return moved
 
 
 async def acquire_parsing_slot(
@@ -1695,6 +1853,9 @@ async def acquire_parsing_slot(
     timeout: float | None = None,
     kind: ParseKind | None = None,
     reserved_bytes: int = 0,
+    *,
+    ctx: "wiring.ClassContext | None" = None,
+    spaced: bool = True,
 ) -> "Admission":
     """Acquire a parsing permit, routing heavy vs. light through the
     governor when one is configured, else falling back to the single legacy
@@ -1716,19 +1877,33 @@ async def acquire_parsing_slot(
         # The parse runs in the parsing service, so this process's CPUs do not bound it: the
         # configured concurrency does. Memory reserved for the record and the download gates
         # were taken before this call and still apply.
+        if ctx is not None:
+            # PARSE_ADMISSION=classes: the remote places are ordered by class (small first, large keeps its share
+            # and ages up, the priority lane ahead). EVERY remote parse takes its one place here (a light format as
+            # small work), so the configured concurrency is held once: the FIFO pool below is not entered.
+            est = wiring.estimate_for(ctx.extension, ctx.mime_type, size_bytes, **ctx.facts())
+            return await _acquire_remote_by_class(host, tier, est, ctx, remote, timeout)
         slots = remote_parse_slots(remote)
         if not await slots.acquire(timeout, priority=_lane(host) is not None):
             raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
         return Admission(tier=tier, cost=1, _release=slots.release)
 
     governor = host.governor
+    if ctx is not None and governor is not None and (tier is None or tier is ParseTier.HEAVY):
+        est = wiring.estimate_for(ctx.extension, ctx.mime_type, size_bytes, **ctx.facts())
+        if est is not None:
+            return await _acquire_parsing_slot_by_class(
+                host, governor, est, ctx, size_bytes, timeout, kind, reserved_bytes
+            )
     if governor is not None:
         resolved_tier = tier if tier is not None else ParseTier.HEAVY
         cost = parse_cost(resolved_tier, size_bytes)
         pool = gate_pool(resolved_tier)
         gate = governor.gate(pool)
         started = time.monotonic()
-        if not await gate.acquire(cost=cost, timeout=timeout, **_priority_kwargs(host)):
+        # Only the class path passes spaced=False (a small CPU parse skips the start-rate limiter).
+        unspaced = {} if spaced else {"spaced": False}
+        if not await gate.acquire(cost=cost, timeout=timeout, **_priority_kwargs(host), **unspaced):
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
         # Braked here: the parsing and Docling services, when they share this memory,
         # admit the parse without braking it again.
@@ -1795,6 +1970,133 @@ async def acquire_parsing_slot(
 
 
 
+async def _acquire_remote_by_class(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    est: "CostEstimate | None",
+    ctx: "wiring.ClassContext",
+    remote: int,
+    timeout: float | None,
+) -> "Admission":
+    """A remote parse's place, ordered by class over ``PARSING_SERVICE_CONCURRENCY`` places. A record with no heavy-format
+    estimate (a light format) is small work."""
+    from app.modules.parse_engine.budget_port import AdmissionTimeout
+    from app.modules.parse_engine.class_gate import GateRequest
+
+    await wiring.refresh_numbers()
+    gate = wiring.remote_gate(remote)
+    if est is not None:
+        request = wiring.request_for(ctx, est, family=Family.PARSE, cpu=1, tokens=1)
+    else:
+        request = GateRequest(
+            cls=CostClass.SMALL, family=Family.PARSE, cpu=1, tokens=1, org=ctx.org, priority=ctx.priority,
+            first_seen_s=ctx.first_seen_s(),
+        )
+    request = dataclasses.replace(request, mem_bytes=0, priority=request.priority or _lane(host) is not None)
+    started = time.monotonic()
+    cls = est.cls if est is not None else CostClass.SMALL
+    big = cls in BIG_CLASSES
+    if big:
+        bound = wiring.big_wait_seconds()
+        timeout = bound if timeout is None else min(timeout, bound)
+    try:
+        ticket = await gate.acquire(request, deadline_s=timeout, cancel=wiring.NEVER)
+    except AdmissionTimeout:
+        waited = time.monotonic() - started
+        if big:
+            raise BigAdmissionTimeout(
+                "remote_parsing", waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
+            ) from None
+        raise ParseAdmissionTimeout("remote_parsing", waited) from None
+    class_pools.set_class(cls, est.est_seconds if est is not None else None)  # the embedding request reads it
+    return Admission(tier=tier, cost=1, _release=ticket.release)
+
+
+async def _acquire_parsing_slot_by_class(
+    host: ConcurrencyHost,
+    governor: "ResourceGovernor",
+    est: "CostEstimate",
+    ctx: "wiring.ClassContext",
+    size_bytes: int | None,
+    timeout: float | None,
+    kind: ParseKind | None,
+    reserved_bytes: int,
+) -> "Admission":
+    """The parse permit of a heavy-format record under ``PARSE_ADMISSION=classes``.
+
+    * A small PDF that Docling converts queues for a Docling permit and takes no CPU parse slot: it never
+      waits behind a large layout parse, and the Docling service reserves the conversion itself.
+    * Every other parse is a CPU step. The class gate orders it (small ahead of large, org round-robin in big)
+      and, with the member budget on, reserves its token once; the governor's gate, the shared heavy slots
+      and the memory excess behind it are the legacy ones. The parse pool adopts the permit through
+      ``class_pools.parse_scope``, so the step is reserved exactly once.
+    """
+    from app.capacity.runtime import member_budget
+    from app.modules.parse_engine.budget_port import AdmissionTimeout
+    from app.modules.parse_engine.class_gate import route_gate
+
+    await wiring.refresh_numbers()
+    budget = member_budget()
+    cpu_gate = wiring.parse_gate(governor, budget)
+    gate = route_gate(est, cpu_gate, wiring.docling_gate(governor))
+    cost = 1 if est.needs_docling_permit else parse_cost(ParseTier.HEAVY, size_bytes)  # in the pool's own unit
+    request = wiring.request_for(
+        ctx, est, family=None if est.needs_docling_permit else Family.PARSE, cpu=cost, tokens=1
+    )
+    request = dataclasses.replace(request, mem_bytes=0)  # memory is admitted by the record reservation (the governor's budget)
+    started = time.monotonic()
+    big = est.cls in BIG_CLASSES
+    if big:
+        # A big record waits at most PARSE_BIG_WAIT_SECONDS for its turn (at the class gate and the governor's gate
+        # together), then goes back to the broker uncounted and keeps its first-wait time.
+        bound = wiring.big_wait_seconds()
+        timeout = bound if timeout is None else min(timeout, bound)
+
+    def _handed_back(pool: str) -> ParseAdmissionTimeout:
+        waited = time.monotonic() - started
+        if big:
+            return BigAdmissionTimeout(
+                pool, waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
+            )
+        return ParseAdmissionTimeout(pool, waited)
+
+    try:
+        ticket = await gate.acquire(request, deadline_s=timeout, cancel=wiring.NEVER)
+    except AdmissionTimeout:
+        raise _handed_back(gate.name) from None
+    inner: Admission | None = None
+    if not est.needs_docling_permit:
+        try:
+            # What is left of the wait goes to the governor's own gate behind the class gate.
+            inner = await acquire_parsing_slot(
+                host, ParseTier.HEAVY, size_bytes,
+                None if timeout is None else max(0.0, timeout - (time.monotonic() - started)),
+                kind, reserved_bytes,
+                # A small parse is light: the heavy start-rate limiter exists to space memory-heavy starts.
+                spaced=est.cls is not CostClass.SMALL,
+            )
+        except ParseAdmissionTimeout as exc:
+            ticket.release()
+            if big:
+                raise _handed_back(exc.pool) from None
+            raise
+        except BaseException:
+            ticket.release()
+            raise
+    class_pools.set_class(est.cls, est.est_seconds)  # downstream (the embedding request) reads it; it ends with the task
+    undo = class_pools.enter_permit(ticket if not est.needs_docling_permit else None)
+
+    def _release() -> None:
+        undo()
+        if inner is not None:
+            release_admission(inner)
+        ticket.release()
+
+    admission = Admission(tier=ParseTier.HEAVY, cost=1, _release=_release)
+    admission.ordered = ticket  # type: ignore[attr-defined]
+    return admission
+
+
 def report_memory_incident_if_applicable(
     host: ConcurrencyHost, message_id: str, error: BaseException
 ) -> None:
@@ -1812,6 +2114,23 @@ def report_memory_incident_if_applicable(
     if host.governor is None or not isinstance(error, MemoryError):
         return
     host.governor.report_memory_incident(f"MemoryError processing {message_id}")
+
+
+def class_context(host: ConcurrencyHost, payload: "Mapping[str, Any] | None") -> "wiring.ClassContext | None":
+    """The class context of a record event under ``PARSE_ADMISSION=classes``; ``None`` (the legacy path) otherwise."""
+    return wiring.class_context(payload, priority=_lane(host) is not None)
+
+
+def class_kwargs(ctx: "wiring.ClassContext | None", **extra: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Keyword arguments of the admission calls that only the class path takes: none when classes are off."""
+    return {} if ctx is None else {"ctx": ctx, **extra}
+
+
+def first_admission_kwargs(error: BaseException) -> dict[str, int]:
+    """``parse_enqueued_at_ms`` for the requeue of a big record that waited out its turn; nothing for any other
+    hand-back, so their requeue is unchanged."""
+    at = getattr(error, "parse_enqueued_at_ms", None) if isinstance(error, BigAdmissionTimeout) else None
+    return {"parse_enqueued_at_ms": at} if at else {}
 
 
 def record_parse_kind(payload: "dict[str, Any] | None") -> ParseKind:

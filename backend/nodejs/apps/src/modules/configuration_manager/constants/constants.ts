@@ -224,6 +224,14 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     advanced: true,
   },
   {
+    key: 'ENABLE_RECORD_PREVIEW_CACHE',
+    label: 'Reuse Record Previews in the Browser',
+    description:
+      "Keep a previewed record's content in the browser tab's memory (never on disk) so jumping between citations of one record, or reopening it, does not stream the file again. Access is checked on every open and nothing outlives the session. Disable to fetch the content again on every open.",
+    defaultEnabled: true,
+    advanced: true,
+  },
+  {
     key: 'ENABLE_KH_SCOPE_LISTING',
     label: 'All Records Cache',
     description:

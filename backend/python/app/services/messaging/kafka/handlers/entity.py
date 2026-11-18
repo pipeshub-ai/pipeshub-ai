@@ -36,6 +36,8 @@ from app.containers.connector import (
 from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
 from app.exceptions.non_retryable import NonRetryableError
+from app.modules.indexing.record_diagnostics import WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_republish import record_event
 from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
@@ -45,6 +47,8 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.paid_cache import access as paid_cache_access
+from app.services.paid_cache.repurge import schedule_org_repurge
 from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
@@ -325,6 +329,17 @@ class EntityEventService(BaseEventService):
             await self._remove_mcp_data("org", payload["orgId"])
             await self._remove_personal_toolsets("org", payload["orgId"])
             await self._remove_api_toolset_data(payload["orgId"])
+            # Erasure: every stored model output of the org. A storage failure raises, so the event is redelivered.
+            await paid_cache_access.paid_cache_for(self.app_container.config_service(), self.logger).purge_org(org_id)
+            # Redis can lose the marker while a parse that outlived the org is still running: one durable delayed
+            # purge for the org removes whatever such a write left. A publish failure raises (redelivery).
+            producer = self.app_container.messaging_producer
+            if producer is None:
+                # Nothing to publish with: the purge above already ran and the org is soft-deleted, so the event
+                # completes. Redelivering cannot create a producer. Never log the payload.
+                self.logger.warning("Org deleted, but no messaging producer is configured: the delayed paid-result re-purge was not scheduled")
+            else:
+                await schedule_org_repurge(producer, org_id)
             return True
 
         except SchemaValidationError:
@@ -667,18 +682,26 @@ class EntityEventService(BaseEventService):
         try:
             self.logger.debug("Processing user deleted event for user %s", payload.get("userId"))
             org_id = payload["orgId"]
-            # The user of the event's org with this address, never a group, a person or another org's user. raise_on_error: a
-            # failed read must not read as "no such user".
-            existing_user = await self.graph_provider.get_user_by_email(payload["email"], raise_on_error=True, org_id=org_id)
-            if existing_user is None:
-                self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
+            user_id = payload.get("userId")
+            # The user the event names, by its userId first: the address may belong to a user added since (another userId, and
+            # events of two users are not ordered). Then a user of the event's org with this address, never a group, a person,
+            # another org's user or one that carries another userId. raise_on_error: a failed read must not read as "no such user".
+            by_user_id = await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True) if user_id else None
+            if by_user_id:      # a userId is one account, of one org (as userAdded resolves it)
+                existing_user_id, email = by_user_id.get("id") or by_user_id.get("_key"), by_user_id.get("email") or payload["email"]
+            else:
+                existing_user = await self.graph_provider.get_user_by_email(payload["email"], raise_on_error=True, org_id=org_id)
+                if existing_user is not None and user_id and existing_user.user_id not in (None, "", user_id):
+                    existing_user = None
+                existing_user_id, email = (existing_user.id if existing_user else None), payload["email"]
+            if not existing_user_id:
+                self.logger.error("No graph user is the deleted user (user %s)", user_id)
                 return False
-            existing_user_id = existing_user.id
 
             user_data = {
                 "id": existing_user_id,
                 "orgId": org_id,
-                "email": payload["email"],
+                "email": email,
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -1068,6 +1091,8 @@ class EntityEventService(BaseEventService):
             "queuedAtTimestamp": now,
             "processingStartedAt": None,
             "reason": None,
+            # a record parked while its connector was off has no open run: this starts one
+            **run_reference(record, WriteKind.QUEUE, now),
         }
         # Stale recovery parks these too when it parks an in-flight record.
         for status_field in ("parsingStatus", "extractionStatus"):

@@ -201,6 +201,7 @@ describe('UserController', () => {
     } as unknown as ReturnType<typeof UserDisplayPicture.find>);
     sinon.stub(UserGroups, 'find').returns({
       select: sinon.stub().returns({
+        sort: sinon.stub().returnsThis(),
         lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
       }),
     } as unknown as ReturnType<typeof UserGroups.find>);
@@ -632,6 +633,7 @@ describe('UserController', () => {
 
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().returns({
+          sort: sinon.stub().returnsThis(),
           lean: sinon.stub().returns({
             exec: sinon.stub().resolves([
               {
@@ -706,6 +708,7 @@ describe('UserController', () => {
 
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().returns({
+          sort: sinon.stub().returnsThis(),
           lean: sinon.stub().returns({
             exec: sinon.stub().resolves([
               {

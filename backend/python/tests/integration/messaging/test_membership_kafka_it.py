@@ -74,6 +74,8 @@ async def test_kafka_membership_reports_an_untagged_member_of_a_stable_group(kaf
             return AIOKafkaAdminClient(bootstrap_servers=kafka_available)
 
         assert await membership.kafka_untagged(admin, [group]) == [OLD_POD]
+        # Several groups on one coordinator, as the indexing service checks them (a stage group nobody has joined included).
+        assert await membership.kafka_untagged(admin, [f"{group}-never-joined", group]) == [OLD_POD]
 
         async def check(groups: dict[str, list[str]]) -> list[str]:
             return await membership.kafka_untagged(admin, sorted(groups))
@@ -84,14 +86,18 @@ async def test_kafka_membership_reports_an_untagged_member_of_a_stable_group(kaf
             entries.append(entry)
 
         now = 1_700_000_000_000
-        publisher = membership.MembershipPublisher(
-            logging.getLogger("it"), check, put, holder="it", now_ms=lambda: now, groups=lambda: {group: [topic]},
-        )
+        # As the indexing service does before its consumers start: the publisher checks the declared groups and
+        # publishes nothing without them. Groups other tests' consumers registered in this process are not this test's.
+        membership.reset_registered_groups()
+        membership.expect_groups({group: [topic]})
+        publisher = membership.MembershipPublisher(logging.getLogger("it"), check, put, holder="it", now_ms=lambda: now)
         assert await publisher.publish_once() is not None
         assert entries[0]["untagged"] == [OLD_POD]
+        assert entries[0]["groupsChecked"] == entries[0]["groupsExpected"] == [group]
         verdict = membership.evaluate(entries, now)
         assert (verdict.ok, verdict.untagged, verdict.reason) == (False, (OLD_POD,), "untagged")
     finally:
+        membership.reset_registered_groups()
         for task in polling:
             task.cancel()
         await asyncio.gather(*polling, return_exceptions=True)

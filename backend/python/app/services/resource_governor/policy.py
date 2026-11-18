@@ -465,6 +465,8 @@ def resolve_ceilings(
     worker_count: int = 1,
     *,
     reserve_embedding_cpus: bool = False,
+    cells: int = 1,
+    profile: str = "legacy",
 ) -> Ceilings:
     """Resolve operator ceilings once at startup.
 
@@ -512,7 +514,17 @@ def resolve_ceilings(
     ``worker_count > 1`` returns one worker process's share
     (``split_ceilings``), since each runs its own governor against the same
     cgroup.
+
+    ``profile="auto"`` (``PIPESHUB_CAPACITY_PROFILE=auto``) resolves the caps from the CPU count and
+    the number of ``cells`` instead (``app.capacity.ceilings``); ``legacy`` is the chain below.
     """
+    if profile == "auto":
+        from app.capacity.ceilings import auto_ceilings
+
+        fleet = auto_ceilings(
+            snap.cpu_quota, env_parse, env_index, cells=cells, reserve_embedding_cpus=reserve_embedding_cpus
+        )
+        return split_ceilings(Ceilings(*fleet.as_tuple()), worker_count)
     cpus = ceiling_cpus(snap.cpu_quota)
     reservation = min(EMBEDDING_CPU_RESERVATION, cpus * EMBEDDING_CPU_RESERVATION_MAX_FRACTION)
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
