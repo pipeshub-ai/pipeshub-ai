@@ -70,7 +70,7 @@ READS = {
         "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py:386", "QDRANT"),
         "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:160", "PGVECTOR"),
         "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py:324", "OPENSEARCH"),
-        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:313", "REDIS_VECTOR"),
+        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:372", "REDIS_VECTOR"),
         "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:462", "AI_MODELS"),
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),
         "/services/namedEntities": ("app/modules/named_entities/domain/config.py:70", "NAMED_ENTITIES"),
