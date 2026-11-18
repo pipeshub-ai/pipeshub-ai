@@ -19,5 +19,5 @@ INDEXED_FIELDS = frozenset({
 def with_schema(svc: RedisVectorService, fields: frozenset[str] = INDEXED_FIELDS) -> RedisVectorService:
     """Answer the provider's schema lookup from ``fields`` instead of an FT.INFO the mock cannot serve."""
     svc._indexed_fields = AsyncMock(return_value=fields)  # type: ignore[method-assign]
-    svc._require_settled = AsyncMock()  # type: ignore[method-assign]
+    svc._require_settled = AsyncMock(return_value=False)  # type: ignore[method-assign]  # settled, no wait
     return svc

@@ -224,7 +224,7 @@ class TestNothingRunsOnARefusedFilter:
 class TestDialectIsPinned:
     async def test_every_search_and_aggregate_carries_dialect_2(self) -> None:
         schema = _info("metadata_orgId", "metadata_virtualRecordId")
-        svc, execute = _service(schema, [1], [1], schema, 1, [1, b"k"], [0], schema, 1, [1], [[1, [b"__key", b"col:k"]], 0])
+        svc, execute = _service(schema, [1], [1], schema, 1, [1, b"k"], [0], schema, 1, schema, 1, [1], [[1, [b"__key", b"col:k"]], 0])
         flt = FilterExpression(must=[
             FieldCondition(key="metadata.orgId", value=ORG),
             FieldCondition(key="metadata.virtualRecordId", value="v"),
@@ -553,6 +553,52 @@ class TestBackfill:
         with pytest.raises(IndexBackfilling):
             await svc.delete_points("col", self._record_filter())
         assert not server.searched()
+
+    @staticmethod
+    def _recreated_mid_walk(server: _Server, svc: RedisVectorService, pages: list[list[bytes]]) -> None:
+        """The collection is re-created while the walk runs, over hashes an asynchronous FT.DROPINDEX DD had not removed: from the
+        second query on, the index scans (and its record of complete fields is gone) until a few checks later. Each FT.SEARCH /
+        FT.AGGREGATE answers the next page of keys from ``pages``."""
+        real = server.execute
+        queries = 0
+
+        async def execute(*args: object) -> object:
+            nonlocal queries
+            if args[0] not in ("FT.SEARCH", "FT.AGGREGATE"):
+                return await real(*args)
+            server.calls.append(args)
+            queries += 1
+            if queries == 2:
+                server.scan_polls, server.sets = 3, {}
+            keys = pages.pop(0) if pages else []
+            if args[0] == "FT.AGGREGATE":
+                return [[len(keys), *[[b"__key", k] for k in keys]], 0]
+            return [len(keys), *keys]
+
+        svc.client.execute_command.side_effect = execute
+
+    async def test_a_scan_that_starts_during_a_delete_is_waited_out_and_its_matches_deleted(self, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "30")
+        server = _Server(*self.FIELDS)
+        svc = server.store()
+        # page 1, then the re-created index has not reached the rest (empty page), then after its scan the rest shows up
+        self._recreated_mid_walk(server, svc, [[b"col:a"], [], [b"col:b"], []])
+        await svc.delete_points("col", self._record_filter())
+        deleted = [k for c in svc.client.delete.await_args_list for k in c.args]
+        assert deleted == [b"col:a", b"col:b"]
+
+    async def test_a_scan_that_starts_during_a_payload_write_is_waited_out_and_its_matches_written(self, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "30")
+        server = _Server(*self.FIELDS)
+        svc = server.store()
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(side_effect=lambda: [1] * len(pipeline.execute_command.call_args_list))
+        svc.client.pipeline = MagicMock(return_value=pipeline)
+        # count, keys (the scan starts here: the index reached only "a"), then after the scan: count, keys
+        self._recreated_mid_walk(server, svc, [[b"col:a"], [b"col:a"], [b"col:a", b"col:b"], [b"col:a", b"col:b"]])
+        await svc.set_payload("col", {"metadata.x": "1"}, self._record_filter())
+        written = {c.args[1] for c in pipeline.execute_command.call_args_list}
+        assert written == {b"col:a", b"col:b"}
 
     async def test_fields_created_with_the_index_wait_while_it_reads_the_documents_already_stored(self) -> None:
         """FT.CREATE over hashes already under the prefix scans them too: no field of the index is complete until it ends."""

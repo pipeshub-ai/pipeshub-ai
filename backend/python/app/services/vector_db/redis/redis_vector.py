@@ -791,12 +791,16 @@ class RedisVectorService(IVectorDBService):
             (key.replace(".", "_"), limit) for key, limit in raw_count_limits
         ]
 
-        if count_limits:
-            total_deleted = await self._delete_filtered(
-                collection_name, idx, query, count_limits
-            )
-        else:
-            total_deleted = await self._delete_all_matching(collection_name, idx, query)
+        total_deleted = 0
+        while True:
+            if count_limits:
+                total_deleted += await self._delete_filtered(collection_name, idx, query, count_limits)
+            else:
+                total_deleted += await self._delete_all_matching(collection_name, idx, query)
+            # A scan that started during the walk (the collection re-created over hashes an asynchronous FT.DROPINDEX DD had not
+            # removed yet) can hold matches the pages did not see: once it ends, walk again.
+            if not await self._require_settled(idx, query):
+                break
 
         logger.info(
             f"Deleted {total_deleted} points from Redis collection '{collection_name}'"
@@ -1091,8 +1095,13 @@ class RedisVectorService(IVectorDBService):
 
         Redis HSET is inherently a merge, so overwrite and set share one body.
         """
-        keys = await self._keys_matching_filter(collection_name, filter_expr)
-        await self._hset_keys(collection_name, payload, keys)
+        idx, query = self._index_name(collection_name), filter_expression_to_redis_query(filter_expr)
+        while True:
+            keys = await self._keys_matching_filter(collection_name, filter_expr)
+            await self._hset_keys(collection_name, payload, keys)
+            # As in delete_points: a scan that started meanwhile can hold matches the key scan did not see.
+            if not await self._require_settled(idx, query):
+                break
 
     async def _hset_keys(self, collection_name: str, payload: dict, keys: list[str]) -> None:
         """Per-command results are checked for the same reason upsert_points
@@ -1793,7 +1802,7 @@ class RedisVectorService(IVectorDBService):
         raw = await self.client.execute_command("EVAL", _COMPLETE_FIELDS, "1", self._complete_key(idx))  # type: ignore
         return frozenset(m.decode() if isinstance(m, bytes) else str(m) for m in raw or ())
 
-    async def _require_settled(self, idx: str, query: str) -> None:
+    async def _require_settled(self, idx: str, query: str) -> bool:
         """Hold a delete or payload write until the fields its filter names are fully indexed (:class:`IndexBackfilling` after the bound).
 
         ``FT.CREATE`` over stored hashes and an ``FT.ALTER`` that adds a field return at once and index the stored documents in the
@@ -1803,20 +1812,23 @@ class RedisVectorService(IVectorDBService):
         Proof, not a record of work in flight: no interleaving of processes, lost reply or clock can make a field being filled look
         complete. A write that names only complete fields runs during a scan; one that names any other field waits inside this call,
         polling ``FT.INFO``, for at most ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed delivery), then raises.
+        Returns whether it waited: the scan it waited for may have indexed matches the caller has not seen yet.
         """
         named = query_fields(query)
         deadline = time.monotonic() + _backfill_wait_seconds()
+        waited = False
         while True:
             read = await self._read_index(idx)
             if read is None:
-                return
+                return waited
             # The script reads FT.INFO again: an index re-created in between is busy there, and its answer decides.
             if not read[2] and await self._note_complete_fields(idx):
-                return
+                return waited
             if named <= await self._complete_fields(idx):
-                return
+                return waited
             if time.monotonic() >= deadline:
                 raise IndexBackfilling(idx, read[1])
+            waited = True
             await asyncio.sleep(_BACKFILL_POLL_SECONDS)
 
     async def _require_indexed(self, idx: str, *queries: str) -> None:
