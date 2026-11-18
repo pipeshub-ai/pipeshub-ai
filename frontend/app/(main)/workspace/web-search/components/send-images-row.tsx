@@ -4,10 +4,10 @@ import React, { useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch, TextField, Callout } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { MAX_IMAGES_PER_PAGE } from '../types';
 
 export const MIN_IMAGES = 1;
-// The most images the server reads from one page (`MAX_IMAGES_PER_PAGE`); a larger stored count is read as this.
-export const MAX_IMAGES = 50;
+export const MAX_IMAGES = MAX_IMAGES_PER_PAGE;
 
 interface SendImagesRowProps {
   enabled: boolean;

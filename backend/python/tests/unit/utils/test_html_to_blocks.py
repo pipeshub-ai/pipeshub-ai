@@ -492,6 +492,22 @@ class TestHtmlToBlocks:
         blocks = html_to_blocks(html, base_url="https://example.com", use_trafilatura=False)
         assert [b.url for b in blocks if isinstance(b, ImageBlock)] == ["https://example.com/chart.png"]
 
+    @pytest.mark.parametrize(
+        ("srcset", "expected"),
+        [
+            ("/resize/w_800,h_600/chart.png 2x", "/resize/w_800,h_600/chart.png"),
+            ("/a.png 1x, /b.png 2x", "/a.png"),
+            ("/a.png, /b.png 2x", "/a.png"),
+            ("/a.png", "/a.png"),
+        ],
+        ids=["comma inside the url", "descriptors", "no descriptor before a comma", "url alone"],
+    )
+    def test_a_srcset_candidate_keeps_the_commas_of_its_url(self, srcset: str, expected: str) -> None:
+        html = f'<html><body><p>Text <img src="/fallback.png" srcset="{srcset}"></p><img srcset="{srcset}"></body></html>'
+        blocks = html_to_blocks(html, base_url="https://example.com", use_trafilatura=False)
+        urls = [b.url for b in blocks if isinstance(b, ImageBlock)]
+        assert set(urls) == {f"https://example.com{expected}"}
+
     def test_an_empty_srcset_falls_back_to_src(self) -> None:
         html = '<html><body><p>Text <img src="/a.png" srcset="  "></p></body></html>'
         blocks = html_to_blocks(html, base_url="https://example.com", use_trafilatura=False)

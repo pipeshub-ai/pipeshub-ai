@@ -24,6 +24,9 @@ export interface ConfiguredWebSearchProvider {
   isDefault: boolean;
 }
 
+/** The most images the server reads from one page (`MAX_IMAGES_PER_PAGE`). */
+export const MAX_IMAGES_PER_PAGE = 50;
+
 export interface WebSearchSettings {
   includeImages: boolean;
   maxImages: number;

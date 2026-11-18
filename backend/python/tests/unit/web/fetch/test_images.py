@@ -133,6 +133,34 @@ def test_image_media_type(content: bytes, expected: str | None) -> None:
     assert image_media_type(content) == expected
 
 
+def test_an_image_that_would_decode_to_too_many_pixels_is_refused_before_decoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A small, highly compressible file can decode to hundreds of MB: the size is read from the
+    header and the pixels are never decoded."""
+    from app.web.fetch import images
+
+    out = io.BytesIO()
+    Image.new("L", (300, 300)).save(out, format="PNG")
+    monkeypatch.setattr(images, "MAX_IMAGE_PIXELS", 300 * 300 - 1)
+    loaded: list[bool] = []
+    monkeypatch.setattr(Image.Image, "load", lambda self: loaded.append(True))
+
+    assert decodes(out.getvalue()) is False
+    assert loaded == []
+
+
+async def test_a_slow_check_is_bounded_by_the_images_deadline(fake_web: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from app.web.errors import TimedOut
+    from app.web.fetch import images
+
+    fake_web.add(f"{SITE}/slow.png", _image(PNG))
+    monkeypatch.setattr(images, "decodes", lambda content: time.sleep(2) or True)
+
+    with pytest.raises(TimedOut):
+        await fetch_image_data_uri(f"{SITE}/slow.png", Deadline.after(0.5))
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [(PNG, True), (JPEG, True), (WEBP, True), (PNG[:40], False), (b"\x89PNG\r\n\x1a\n" + b"\0" * 64, False), (b"", False)],

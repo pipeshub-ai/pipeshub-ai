@@ -215,11 +215,11 @@ def _img_source(img: Tag) -> str:
     One rule for images on their own and images inside a block, which used to read only
     ``src`` and so lost an image given by ``srcset`` alone."""
     src = (img.get("src") or "").strip()
-    srcset = (img.get("srcset") or "").strip()
-    if srcset:
-        first = srcset.split(",")[0].split()
-        src = (first[0] if first else "") or src
-    return src
+    # A candidate's URL runs to the first whitespace and may itself hold commas
+    # ("/resize/w_800,h_600/chart.png 2x"); only commas ending it separate candidates.
+    tokens = (img.get("srcset") or "").split()
+    first = tokens[0].rstrip(",") if tokens else ""
+    return first or src
 
 
 def _walk_images_only(node: Tag, base_url: str, blocks: list[Block]) -> None:

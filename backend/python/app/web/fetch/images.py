@@ -13,12 +13,15 @@ from PIL import Image
 from app.utils.image_utils import supported_mime_types
 from app.utils.url_redaction import redact_url
 from app.web.deadline import Deadline
-from app.web.errors import UnsupportedContent
+from app.web.errors import TimedOut, UnsupportedContent
 from app.web.fetch.http import check_page_status, fetch_public
 from app.web.ports import HopCheck
 
 # Larger images cost the model as much as a page of text and are rarely the point of one.
 MAX_IMAGE_MB = 5
+# Decoded size, which MAX_IMAGE_MB does not bound: a small, highly compressible file can decode
+# to hundreds of MB. Models are sent at most ~1.6k px a side, so a larger image buys nothing.
+MAX_IMAGE_PIXELS = 4096 * 4096
 
 # The bytes decide, not the header: a server that answers an image URL with an HTML error
 # page often still labels it image/*.
@@ -33,6 +36,10 @@ def decodes(content: bytes) -> bool:
     corrupt body passes it, and a provider refuses the whole request over one such image."""
     try:
         with Image.open(io.BytesIO(content)) as image:
+            # Read from the header: Image.open decodes no pixels until load().
+            width, height = image.size
+            if width * height > MAX_IMAGE_PIXELS:
+                return False
             image.load()
     except Exception:  # Pillow raises many types (OSError, SyntaxError, DecompressionBombError, ...)
         return False
@@ -57,6 +64,10 @@ async def fetch_image_data_uri(url: str, deadline: Deadline, *, allow_hop: HopCh
     media_type = image_media_type(body.content or b"")
     if media_type is None or media_type not in supported_mime_types:
         raise UnsupportedContent(f"{redact_url(url)} is not a PNG, JPEG or WebP image")
-    if not await asyncio.to_thread(decodes, body.content):
-        raise UnsupportedContent(f"{redact_url(url)} is a damaged image")
+    try:
+        decoded = await asyncio.wait_for(asyncio.to_thread(decodes, body.content), timeout=deadline.remaining())
+    except TimeoutError as e:
+        raise TimedOut(f"{redact_url(url)} could not be checked in time") from e
+    if not decoded:
+        raise UnsupportedContent(f"{redact_url(url)} is a damaged or oversized image")
     return f"data:{media_type};base64,{base64.b64encode(body.content).decode('ascii')}"

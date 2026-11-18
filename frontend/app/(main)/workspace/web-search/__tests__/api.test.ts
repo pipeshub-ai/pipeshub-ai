@@ -1,11 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const client = vi.hoisted(() => ({ put: vi.fn() }));
+const client = vi.hoisted(() => ({ put: vi.fn(), get: vi.fn() }));
 vi.mock('@/lib/api/axios-instance', () => ({ apiClient: client }));
 
 import { WebSearchApi } from '../api';
 
-beforeEach(() => client.put.mockReset());
+beforeEach(() => {
+  client.put.mockReset();
+  client.get.mockReset();
+});
+
+describe('WebSearchApi.getConfig — image settings', () => {
+  it.each([
+    [{ includeImages: true, maxImages: 7 }, { includeImages: true, maxImages: 7 }],
+    // Stored up to 500, but no more than 50 are read from a page: the editor shows what applies.
+    [{ includeImages: true, maxImages: 500 }, { includeImages: true, maxImages: 50 }],
+    [{ includeImages: true, maxImages: 51 }, { includeImages: true, maxImages: 50 }],
+    [{ includeImages: true, maxImages: 501 }, { includeImages: true, maxImages: 3 }],
+    [{ includeImages: 'yes', maxImages: 'many' }, { includeImages: false, maxImages: 3 }],
+    [undefined, { includeImages: false, maxImages: 3 }],
+  ])('%j reads as %j', async (stored, expected) => {
+    client.get.mockResolvedValue({ data: { status: 'success', providers: [], settings: stored } });
+
+    expect((await WebSearchApi.getConfig()).settings).toEqual(expected);
+  });
+});
 
 describe('WebSearchApi.setDefaultProvider', () => {
   it('hands back the warning when DuckDuckGo was saved while it refused the test search', async () => {
