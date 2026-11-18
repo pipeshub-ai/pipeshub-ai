@@ -409,11 +409,16 @@ class TestBackfill:
         await _alter_settled(redis_service, collection)
         assert await _count(redis_service, collection, virtualRecordId=TARGET) == 3
 
+    @pytest.mark.redis_restart
     @pytest.mark.skipif(not os.environ.get("REDIS_VECTOR_RESTART_CONTAINER"), reason="needs a Redis container with appendonly yes that the test may restart")
     async def test_after_a_restart_that_rebuilds_the_index_a_delete_waits_for_the_rebuild(self, redis_service, collection, monkeypatch) -> None:
         """With AOF the restart replays FT.CREATE after the hashes, so the index reads them again in the background while the server answers.
 
-        Opt-in: REDIS_VECTOR_RESTART_CONTAINER names the docker container behind REDIS_VECTOR_PORT, started with --appendonly yes.
+        Run by hand (CI deselects the redis_restart marker; its Redis has no persistence):
+          docker run -d --name redis-restart-it -p 127.0.0.1:6398:6379 redis:8.4.8 redis-server --appendonly yes
+          REDIS_VECTOR_PORT=6398 REDIS_VECTOR_RESTART_CONTAINER=redis-restart-it \
+            pytest tests/integration/vector_db/test_redis_unindexed_filter.py -m redis_restart --timeout=600
+          docker rm -f -v redis-restart-it
         """
         from app.services.vector_db.models import CollectionConfig, DistanceMetric
         from app.services.vector_db.redis.errors import IndexBackfilling
