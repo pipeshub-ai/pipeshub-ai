@@ -7,6 +7,7 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops import entity_discovery, entity_filters
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    INCOMPLETE_NOTE,
     execute_search_entities,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
@@ -19,6 +20,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
+    EntitySearchHits,
     EntitySearchTimedOut,
 )
 from app.modules.retrieval.selection_scope import SelectionScope
@@ -190,6 +192,49 @@ class TestGuards:
         message = json.loads(text)["message"]
         assert ok is False
         assert "timed out" in message and "No accessible entities matched" not in message
+
+
+class TestResultsTheDeadlineCutShort:
+    """The agent must not read a match missing from a cut-short search as one
+    the user cannot reach, nor see anything the access check did not confirm."""
+
+    @pytest.mark.asyncio
+    async def test_cut_short_results_are_listed_and_flagged(self, patched) -> None:
+        patched[1].return_value = EntitySearchHits([_hit("t1", "topic", records=[_row("r1")])], incomplete=True)
+        ok, text = await execute_search_entities(_state(), "legal")
+        payload = json.loads(text)
+        assert ok is True
+        assert [r["entityId"] for r in payload["results"]] == ["t1"]
+        assert payload["incomplete"] is True and payload["incompleteNote"] == INCOMPLETE_NOTE
+
+    @pytest.mark.asyncio
+    async def test_no_confirmed_match_in_a_cut_short_search_is_not_a_plain_no_match(self, patched) -> None:
+        patched[1].return_value = EntitySearchHits([], incomplete=True)
+        ok, text = await execute_search_entities(_state(), "legal")
+        payload = json.loads(text)
+        assert ok is True and payload["results"] == []
+        assert payload["incomplete"] is True and "may be missing" in payload["incompleteNote"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hits", [EntitySearchHits([_hit("t1", "topic")]), [_hit("t1", "topic")], []])
+    async def test_a_finished_search_carries_no_flag(self, patched, hits) -> None:
+        patched[1].return_value = hits
+        payload = json.loads((await execute_search_entities(_state(), "legal"))[1])
+        assert "incomplete" not in payload and "incompleteNote" not in payload
+
+    @pytest.mark.asyncio
+    async def test_each_query_of_a_batch_keeps_its_own_flag(self, patched) -> None:
+        async def _search(store, graph, context, query, **kwargs) -> EntitySearchHits:
+            return EntitySearchHits([_hit(query, "topic")], incomplete=query == "slow")
+
+        patched[1].side_effect = _search
+        ok, text = await execute_search_entities(
+            _state(), None, queries=["slow", "fast"], entity_search_offered=True,
+        )
+        by_query = {q["query"]: q for q in json.loads(text)["queries"]}
+        assert ok is True
+        assert by_query["slow"]["incomplete"] is True
+        assert "incomplete" not in by_query["fast"]
 
 
 class TestSearch:

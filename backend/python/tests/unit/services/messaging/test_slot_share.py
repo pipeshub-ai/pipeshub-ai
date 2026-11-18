@@ -159,6 +159,81 @@ class TestCaps:
         assert plan.cap_for(("org", "github", "light")) == 24
 
 
+class TestPreAdmissionWaiting:
+    """A dispatched record that is not yet admitted at the gate marks its
+    connector as waiting, even with nothing buffered in the scheduler."""
+
+    A = ("org", "slow", "heavy")
+    B = ("org", "busy", "heavy")
+
+    def test_a_dispatched_record_not_yet_admitted_caps_the_other_connector(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", self.A, HEAVY)
+        # Only B has a backlog.
+        plan = share.plan([self.B], _pool_of, _limits(heavy=7))
+        assert plan.cap_for(self.B) == 4  # ceil(7 / 2)
+        assert plan.cap_for(self.A) == 4
+
+    def test_no_cap_once_the_record_is_admitted_and_finished(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", self.A, HEAVY)
+        share.admitted("a1")
+        # Holding a slot is not waiting for one.
+        assert share.plan([self.B], _pool_of, _limits(heavy=7)).cap_for(self.B) is None
+        share.finished("a1")
+        assert share.plan([self.B], _pool_of, _limits(heavy=7)).cap_for(self.B) is None
+
+    def test_one_unadmitted_record_among_admitted_ones_is_enough(self) -> None:
+        share = SlotShare(entity_depth=2)
+        for i in range(3):
+            share.started(f"a{i}", self.A, HEAVY)
+        share.admitted("a0")
+        share.admitted("a1")
+        assert share.plan([self.B], _pool_of, _limits(heavy=7)).cap_for(self.B) == 4
+        share.admitted("a2")
+        assert share.plan([self.B], _pool_of, _limits(heavy=7)).cap_for(self.B) is None
+
+    def test_a_record_that_ends_without_admission_stops_counting(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", self.A, HEAVY)
+        share.finished("a1")
+        assert share.unadmitted(self.A[:2], HEAVY) == 0
+        assert share.plan([self.B], _pool_of, _limits(heavy=7)).cap_for(self.B) is None
+
+    def test_waiting_is_per_pool(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", ("org", "slow", "light"), LIGHT)
+        backlog = [("org", "busy", "heavy")]
+        plan = share.plan(backlog, _pool_of, _limits())
+        assert plan.cap_for(("org", "busy", "heavy")) is None
+
+    def test_a_connector_alone_is_still_uncapped(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", self.A, HEAVY)
+        plan = share.plan([self.A], _pool_of, _limits(heavy=7))
+        assert plan.cap_for(self.A) is None
+
+    def test_admitted_is_idempotent_and_ignores_unknown_tokens(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", self.A, HEAVY)
+        share.started("a2", self.A, HEAVY)
+        share.admitted("never-started")
+        share.admitted("a1")
+        share.admitted("a1")
+        # a2 is still waiting, and a1's repeat did not take its count.
+        assert share.unadmitted(self.A[:2], HEAVY) == 1
+        assert share.in_flight(self.A[:2], HEAVY) == 2
+        share.finished("a1")
+        share.admitted("a1")
+        assert share.unadmitted(self.A[:2], HEAVY) == 1
+
+    def test_admitted_does_not_release_the_in_flight_count(self) -> None:
+        share = SlotShare(entity_depth=2)
+        share.started("a1", self.A, HEAVY)
+        share.admitted("a1")
+        assert share.in_flight(self.A[:2], HEAVY) == 1
+
+
 class TestSchedulerHooks:
     def test_backlogged_keys_lists_only_non_empty_leaves(self) -> None:
         scheduler: DRRScheduler[str] = DRRScheduler(_config())

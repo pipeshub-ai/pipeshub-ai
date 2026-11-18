@@ -1860,6 +1860,73 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer._commit_offset.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("label", "repairs_queued"), [("same-bytes", 1), (None, 0)])
+    async def test_a_give_up_queues_one_membership_repair_only_for_a_same_bytes_hand_back(
+        self, governor_consumer, label, repairs_queued
+    ) -> None:
+        from app.modules.indexing.connector_off_events import SameBytesSkipPending
+        from tests.support.give_up_sink import (
+            completed_record_sink,
+            repairs,
+            update_message_value,
+        )
+
+        error = SameBytesSkipPending("r1: skip") if label else concurrency.RequeueWithoutAttempt("wait")
+        sink = completed_record_sink()
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=10)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+        governor_consumer.disposition_sink = sink
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise error
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+            env.redis_max_deliveries = 10
+            env.record_processing_timeout = 5.0
+            result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(
+                _make_message(value=update_message_value())
+            )
+
+        assert result is False
+        governor_consumer._requeue_message.assert_not_awaited()
+        assert len(repairs(sink)) == repairs_queued
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_pause_hand_back_is_logged_below_warning(self, governor_consumer, caplog) -> None:
+        """A job that wakes again into the same outage says so once at WARNING (its first pause); every later wake is
+        routine, or 1000 paused jobs would write 1000 warnings per wake cycle."""
+
+        class DependencyPaused(concurrency.RequeueWithoutAttempt):
+            counts_toward_backstop = False
+
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+        levels = iter([logging.WARNING, logging.DEBUG])
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise DependencyPaused("provider down", delay_s=42.0, log_level=next(levels))
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        caplog.set_level(logging.DEBUG, logger=governor_consumer.logger.name)
+        for _ in range(2):
+            assert await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(
+                _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
+            ) is False
+        handed_back = [r.levelno for r in caplog.records if "handed back without counting an attempt" in r.getMessage()]
+        assert handed_back == [logging.WARNING, logging.DEBUG]
+
+    @pytest.mark.asyncio
     async def test_time_spent_waiting_for_a_parse_slot_does_not_count_against_the_record(
         self, governor_consumer, monkeypatch
     ) -> None:

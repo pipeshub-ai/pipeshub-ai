@@ -55,7 +55,8 @@ class TestLinkAuthenticatorToSourceUser:
 
         await proc.link_authenticator_to_source_user(CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA)
 
-        (stub,), = tx.batch_upsert_app_users.await_args.args
+        (stub,), org = tx.batch_upsert_app_users.await_args.args
+        assert org == "org-1", "the stub is created in the connector's org"
         assert stub.email == "darshan@pipeshub.com"
         assert stub.source_user_id == "acct-123"
         assert stub.connector_id == CONNECTOR

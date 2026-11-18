@@ -284,11 +284,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self.gate_waiters = concurrency.GateWaiters()
+        # Read-only counts of records waiting at each admission stage (see consumer_concurrency).
+        from app import edition_services
+
+        self.admission_backlog = edition_services.admission_backlog()
+        self._suspects_waiting = 0
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
         # took it down is the only suspect in flight. Used on the worker loop.
         self._suspects = asyncio.Lock()
         self._backpressure_logged = False
+        # Reads are paused because no record could be admitted (not a downstream service asking for a pause).
+        self._admission_paused = False
         self._partition_lock = threading.Lock()
         self._in_flight_partitions: set[TopicPartition] = set()
         self._deferred_partition_offsets: dict[TopicPartition, int] = {}
@@ -658,6 +665,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Dispatch admission state for the health endpoint."""
         return self._dispatch_budget().as_dict()
 
+    def read_paused_for_admission(self) -> bool:
+        """Whether reads are paused because no record could be admitted (not a downstream pause)."""
+        return self._admission_paused
+
+    def admission_explain(self) -> dict[str, Any]:
+        """Why this consumer is or is not admitting records (see consumer_concurrency)."""
+        return concurrency.admission_explain(self)
+
     def _slot_pool_of(self, key: FairnessKey) -> str:
         return concurrency.slot_pool_of_key(
             self, key, tier_level=self.fair_scheduler_config.tier_level
@@ -669,10 +684,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
-        Only connectors whose next record could be dispatched now count as
-        waiting (``can_dispatch`` is the dispatch phase's own check). One
-        whose head is waiting out a retry backoff cannot take a slot, so it
-        must not shrink anyone else's share."""
+        A connector counts as waiting in two cases. Its next buffered record
+        could be dispatched now (``can_dispatch`` is the dispatch phase's own
+        check): one whose head is waiting out a retry backoff cannot take a
+        slot, so it must not shrink anyone else's share. Or it has a
+        dispatched record that has not reached the gate yet (``started`` but
+        not ``admitted``, counted by ``SlotShare.plan``): that record holds
+        no earlier place in the gate's arrival order, so without counting it
+        another connector would get no cap and fill the gate ahead of it."""
         scheduler = self._scheduler
         slot_share = self._slot_share
         if scheduler is None or slot_share is None:
@@ -926,6 +945,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             not_paused = assigned - self.consumer.paused()
             if not_paused:
                 self.consumer.pause(*not_paused)
+            self._admission_paused = bool(budget.blocked or saturated or scheduler_full)
             if not self._backpressure_logged:
                 if downstream_paused:
                     self.logger.warning(
@@ -971,6 +991,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             resumable = paused - in_flight_partitions - set(self._lane_paused)
             if resumable:
                 self.consumer.resume(*resumable)
+            self._admission_paused = False
             if self._backpressure_logged:
                 self.logger.info("Backpressure cleared: %s", budget.describe())
                 self._backpressure_logged = False
@@ -2210,7 +2231,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         # Submit coroutine to worker thread's event loop and track the future
         waiter_token = concurrency.GateWaiterToken(
-            self, concurrency.dispatch_tier(self, parsed_message)
+            self,
+            concurrency.dispatch_tier(self, parsed_message),
+            parsed_message,
         )
         processing_coro = self.__process_message_wrapper(
             message, waiter_token, parsed_message, in_flight
@@ -2221,7 +2244,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Counted against the connector's share from dispatch until the
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
-            # arrival order.
+            # arrival order. Until it is admitted it also marks the connector
+            # as waiting, since it may be held up before the gate.
             slot_share.started(slot_token, slot_key, self._slot_pool_of(slot_key))
         try:
             future = asyncio.run_coroutine_threadsafe(
@@ -2393,6 +2417,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         stable_message_id: str,
         retry_count: int = 1,
         delay_s: float | None = None,
+        parse_enqueued_at_ms: int | None = None,
     ) -> None:
         """Re-publish a failed message to the same topic for retry.
         
@@ -2422,6 +2447,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             payload["_retry_tracking_id"] = stable_message_id
             backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff_seconds
+            if parse_enqueued_at_ms:
+                # PARSE_ADMISSION=classes: when it first queued, kept across hand-backs so aging survives them.
+                payload.setdefault("parseEnqueuedAtMs", parse_enqueued_at_ms)
 
             # The handler's context is reset by now, and the send runs on the
             # main loop under its own: re-bind the message's so the retry
@@ -2721,6 +2749,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
+        class_ctx = concurrency.class_context(self, parsed_message.payload)  # None unless PARSE_ADMISSION=classes
         index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
         success = False
         # Set where an exit is neither a success nor a failure; the
@@ -2749,15 +2778,25 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # one; one that will be given up on below does not need it.
             unfinished = await concurrency.unfinished_attempts(self, record_lock_id)
             if 0 < unfinished < concurrency.MAX_UNFINISHED_ATTEMPTS:
-                await self._suspects.acquire()
+                self._suspects_waiting += 1
+                try:
+                    await self._suspects.acquire()
+                finally:
+                    self._suspects_waiting -= 1
                 suspect_held = True
 
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
-            index_admission = await concurrency.acquire_index_slot(self, index_tier)
+            index_admission = await concurrency.at_gate(
+                waiter_token, concurrency.acquire_index_slot(self, index_tier, **concurrency.class_kwargs(class_ctx))
+            )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
+            if self._slot_share is not None:
+                self._slot_share.admitted(
+                    (message.topic, message.partition, message.offset)
+                )
             if waiter_token is not None:
                 waiter_token.admit()
 
@@ -2766,11 +2805,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 # recovery reads this lease as proof of active processing, so
                 # a task still queued on the gate must not own one.
                 with timing.stage("lease.index"):
-                    index_lease_held = await self._acquire_distributed_slot(
-                        index_lease_pool,
-                        lease_owner,
-                        concurrency.index_ceiling(self, index_tier),
-                        leases=distributed_leases,
+                    index_lease_held = await concurrency.in_phase(
+                        self,
+                        concurrency.PHASE_LEASE,
+                        index_tier,
+                        parsed_message,
+                        self._acquire_distributed_slot(
+                            index_lease_pool,
+                            lease_owner,
+                            concurrency.index_ceiling(self, index_tier),
+                            leases=distributed_leases,
+                        ),
+                        pool=index_lease_pool,
                     )
                 if not index_lease_held:
                     # Capacity leases only give up when self.running flips,
@@ -2804,7 +2850,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
 
             parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
-            stamp_delivery_id(parsed_message.payload, stable_message_id)
+            stamp_delivery_id(parsed_message.payload, stable_message_id, parsed_message.org_ctx)
 
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.
@@ -2840,7 +2886,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 begin_progress(progress)
 
                 async def consume_handler_events() -> None:
-                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool, class_ctx
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
@@ -2861,8 +2907,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         # Place first: a record waiting for memory
                                         # must not hold what a place holder needs,
                                         # nor the reverse (one cycle, both time out).
-                                        download_admission = await concurrency.acquire_download_slot(
-                                            self, index_tier, timeout=wait.remaining(),
+                                        download_admission = await concurrency.in_phase(
+                                            self,
+                                            concurrency.PHASE_DOWNLOAD,
+                                            index_tier,
+                                            parsed_message,
+                                            concurrency.acquire_download_slot(
+                                                self, index_tier, timeout=wait.remaining(),
+                                                **concurrency.class_kwargs(
+                                                    class_ctx, size_bytes=event.data.size_bytes if event.data else None
+                                                ),
+                                            ),
                                         )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self,
@@ -2870,6 +2925,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
                                             kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -2877,8 +2933,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                 ):
                                     parse_tier = event.data.tier if event.data else None
                                     timeline.mark(timing.PARSE_REQUESTED)
-                                    if self.governor is not None:
-                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier, self)
+                                    parse_lease_pool = concurrency.admission_parse_lease_pool(self, parse_tier)
                                     # Node-local gate first, cluster lease
                                     # second. The gate is an asyncio Event and
                                     # costs nothing to queue on, so it absorbs
@@ -2892,18 +2947,34 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         self, budget, message_id
                                     ) as wait:
                                         size_bytes = event.data.size_bytes if event.data else None
+                                        # The size and what the inspection found are known now: the index permit
+                                        # moves to its class in place.
+                                        if class_ctx is not None and event.data is not None:
+                                            class_ctx = class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)
+                                        concurrency.reclass_index_slot(index_admission, class_ctx, size_bytes)
+                                        download_admission = await concurrency.reclass_download_slot(
+                                            download_admission, class_ctx, size_bytes, wait.remaining()
+                                        )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
                                             current=memory_admission, kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
-                                        parsing_admission = await concurrency.acquire_parsing_slot(
+                                        parsing_admission = await concurrency.in_phase(
                                             self,
+                                            concurrency.PHASE_PARSE,
                                             parse_tier,
-                                            size_bytes,
-                                            timeout=wait.remaining(),
-                                            kind=record_kind,
-                                            reserved_bytes=memory_admission.cost if memory_admission else 0,
+                                            parsed_message,
+                                            concurrency.acquire_parsing_slot(
+                                                self,
+                                                parse_tier,
+                                                size_bytes,
+                                                timeout=wait.remaining(),
+                                                kind=record_kind,
+                                                reserved_bytes=memory_admission.cost if memory_admission else 0,
+                                                **concurrency.class_kwargs(class_ctx),
+                                            ),
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit
@@ -2911,12 +2982,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         parsing_held = True
                                         lease_held = (
                                             self.concurrency_manager is None
-                                            or await self._acquire_distributed_slot(
-                                                parse_lease_pool,
-                                                lease_owner,
-                                                concurrency.parse_ceiling(self, parse_tier),
-                                                deadline_seconds=wait.remaining(),
-                                                leases=distributed_leases,
+                                            or await concurrency.in_phase(
+                                                self,
+                                                concurrency.PHASE_LEASE,
+                                                parse_tier,
+                                                parsed_message,
+                                                self._acquire_distributed_slot(
+                                                    parse_lease_pool,
+                                                    lease_owner,
+                                                    concurrency.parse_ceiling(self, parse_tier),
+                                                    deadline_seconds=wait.remaining(),
+                                                    leases=distributed_leases,
+                                                ),
+                                                pool=parse_lease_pool,
                                             )
                                         )
                                         if not lease_held and self.running:
@@ -3063,8 +3141,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # whose dependency is paused): hand the message back with no attempt
             # counted, so it cannot be dead-lettered for waiting.
             outcome = "requeued"
-            self.logger.warning(
-                "%s handed back without counting an attempt: %s", message_id, e,
+            self.logger.log(
+                e.log_level, "%s handed back without counting an attempt: %s", message_id, e,
             )
             if parsed_message is not None:
                 if not e.counts_toward_backstop:
@@ -3079,14 +3157,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                     if backstop_tripped:
                         await give_up(
-                            f"handed back {cycles} times without being admitted "
-                            f"(backstop {messaging_env.redis_max_deliveries})",
+                            concurrency.backstop_give_up_reason(e, cycles, messaging_env.redis_max_deliveries),
                             cycles,
                         )
                         return False
                 try:
                     await self._requeue_message(
-                        topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
+                        topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s,
+                        **concurrency.first_admission_kwargs(e),
                     )
                 except Exception as requeue_error:
                     self.logger.error(

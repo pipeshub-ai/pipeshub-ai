@@ -76,7 +76,12 @@ _STATUS_FIELDS = frozenset({
     "hasIndexedCopy",
     "extractionDeferred",
     "reason",
+    "indexingNote",
     "retryNotBefore",
+    # The run fields: a store-only run is not an attempt and ends no run.
+    "firstQueuedAt",
+    "indexingAttempts",
+    "failedAt",
     # The embedding resume marker too: a store-only run must not end a pending retry's resume.
 }) | frozenset(EMBED_FIELDS)
 

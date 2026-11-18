@@ -49,7 +49,8 @@ class TestNeo4jCompareAndSet:
 
         await provider.compare_and_set_indexing_status(["r1"], QUEUED, FAILED)
 
-        assert "queuedAtTimestamp" not in provider.client.execute_query.await_args.args[0]
+        # the queue clock is read (the run rule captures it) but not written by a swap that is not into QUEUED
+        assert "n.queuedAtTimestamp = $now" not in provider.client.execute_query.await_args.args[0]
 
 
 class TestArangoCompareAndSet:
@@ -72,5 +73,7 @@ class TestArangoCompareAndSet:
         await provider.compare_and_set_indexing_status(["r1"], QUEUED, FAILED)
 
         query, bind_vars = provider.http_client.execute_aql.await_args.args[:2]
-        assert "@now" not in query
-        assert "now" not in bind_vars
+        # the run fragment reads @now, so it is bound; every bound variable is used, and the clock is not written
+        assert "queuedAtTimestamp: @now" not in query
+        for name in bind_vars:
+            assert name.startswith("@") or f"@{name}" in query, name

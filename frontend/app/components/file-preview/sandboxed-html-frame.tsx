@@ -17,6 +17,7 @@ interface SandboxedHtmlFrameProps {
   dark: boolean;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
   baseCss?: string;
 }
@@ -27,6 +28,7 @@ export function SandboxedHtmlFrame({
   dark,
   citations,
   activeCitationId,
+  citationClickVersion,
   onHighlightClick,
   baseCss,
 }: SandboxedHtmlFrameProps) {
@@ -66,7 +68,7 @@ export function SandboxedHtmlFrame({
   useEffect(() => {
     activeRef.current = activeCitationId;
     postActive();
-  }, [activeCitationId, postActive]);
+  }, [activeCitationId, citationClickVersion, postActive]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {

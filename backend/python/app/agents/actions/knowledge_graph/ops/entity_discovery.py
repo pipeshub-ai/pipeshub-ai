@@ -33,6 +33,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
+    EntitySearchHits,
     EntitySearchTimedOut,
     search_entities_for_user,
 )
@@ -61,6 +62,22 @@ MAX_QUERIES = 5
 
 
 _ENTITY_KIND_NAMES: frozenset[str] = frozenset(kind.value for kind in EntityKind)
+
+
+# Told to the agent with results the deadline cut short, so that a match
+# missing from them is not read as one the user cannot reach.
+INCOMPLETE_NOTE = (
+    "Time ran out before every match could be checked against your access, so an entity "
+    "you can reach may be missing. Every result listed is one you can access. "
+    "Search again for the rest, or use knowledgegraph__search."
+)
+
+
+def _mark_incomplete(payload: dict[str, Any], hits: list[EntityHit]) -> None:
+    # Only ``EntitySearchHits`` reports a cut-short search; any other list is complete.
+    if isinstance(hits, EntitySearchHits) and hits.incomplete:
+        payload["incomplete"] = True
+        payload["incompleteNote"] = INCOMPLETE_NOTE
 
 
 def _error(message: str, *, retryable: bool = False) -> str:
@@ -179,6 +196,7 @@ async def execute_search_entities(
             payload["ignoredEntityTypes"] = ignored
         if kind_notes:
             payload["kindNotes"] = kind_notes
+        _mark_incomplete(payload, hits)
         return True, json.dumps(payload)
 
     remember_entities(
@@ -208,6 +226,7 @@ async def execute_search_entities(
         payload["ignoredEntityTypes"] = ignored
     if kind_notes:
         payload["kindNotes"] = kind_notes
+    _mark_incomplete(payload, hits)
     return True, json.dumps(payload)
 
 

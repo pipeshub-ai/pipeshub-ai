@@ -5,10 +5,11 @@ const BASE_URL = '/api/v1/knowledgeBase';
 
 /** The page shows its own messages, so these calls never raise the global error toast. */
 export const TrashApi = {
-  async list(kbId: string, page: number, limit: number): Promise<TrashListResponse> {
+  /** With a cursor (the page before's `nextCursor`) the page starts after that page; `page` is only sent back. */
+  async list(kbId: string, page: number, limit: number, cursor?: string | null): Promise<TrashListResponse> {
     const { data } = await apiClient.get<TrashListResponse>(
       `${BASE_URL}/${encodeURIComponent(kbId)}/trash`,
-      { params: { page, limit }, suppressErrorToast: true },
+      { params: cursor ? { page, limit, cursor } : { page, limit }, suppressErrorToast: true },
     );
     return data;
   },

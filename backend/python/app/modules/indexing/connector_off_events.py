@@ -24,6 +24,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.modules.indexing import replay_set
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.connector_off import ConnectorOffResult
@@ -75,6 +76,28 @@ class RecordHeldForDelete(RequeueWithoutAttempt):
     pauses_consumer = False
 
 
+# How long a same-bytes update whose skip could not finish waits before it is delivered again.
+SAME_BYTES_SKIP_RETRY_DELAY_S = 30.0
+
+
+# Names a give-up on a same-bytes update in the reason the consumer abandons it with.
+SAME_BYTES_GIVE_UP_LABEL = "same-bytes update could not apply its membership sync"
+
+
+class SameBytesSkipPending(RequeueWithoutAttempt):
+    """An update of the bytes a record is already indexed from could not finish its cheap work (the membership
+    sync, the stage re-dispatch, the stage-state read): handed back with the record left exactly as it is, still
+    COMPLETED, and no paid re-index. The hand-backs count toward the delivery backstop, which ends them: a message
+    handed back that many times is given up on with a reason naming the count, so a store that stays down is
+    neither a silent loop nor a re-parse of an indexed record."""
+
+    counts_toward_backstop = True
+    pauses_consumer = False
+    give_up_label = SAME_BYTES_GIVE_UP_LABEL
+    # Logged once, at WARNING, by the code that raised it; not a fault for the handler to log again.
+    expected_outcome = True
+
+
 class ReadTimeOutcome(Enum):
     PASS = "pass"
     # The handler acknowledges without writing anything.
@@ -100,8 +123,10 @@ def connector_gated_event(event_type: str, payload: Mapping[str, Any]) -> bool:
 
 
 def clears_embeddings_first(event_type: str, payload: Mapping[str, Any]) -> bool:
-    """Whether the handler deletes the record's embeddings before anything
-    else: an update or reindex of a type that is not reconciled block by block."""
+    """Whether an update or reindex is of a type that is not reconciled block by block: its re-parse
+    replaces the whole record under a new vrid. The handler no longer takes the old points out first
+    (they go with the old vrid once the record has moved); the read-time filter still leaves these
+    events to the handler."""
     if payload.get("vectorDbOnly") or event_type not in (
         EventTypes.UPDATE_RECORD.value,
         EventTypes.REINDEX_RECORD.value,
@@ -132,6 +157,57 @@ def already_indexed(event_type: str, payload: Mapping[str, Any], record: Mapping
         and not enrichment_cut_short(record)
         and event_type in (EventTypes.NEW_RECORD.value, EventTypes.REINDEX_RECORD.value)
         and record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+    )
+
+
+_REPLAYABLE_EVENTS = frozenset({
+    EventTypes.NEW_RECORD.value,
+    EventTypes.UPDATE_RECORD.value,
+    EventTypes.REINDEX_RECORD.value,
+})
+
+
+def replay_candidate(event_type: str, payload: Mapping[str, Any], record: Mapping[str, Any]) -> bool:
+    """Whether the replay set is worth asking about: the record is indexed, enrichment was not cut short,
+    the event is not a vector-store rebuild, and it carries an envelope event id, the identity the set knows."""
+    return (
+        replay_set.enabled()
+        and event_type in _REPLAYABLE_EVENTS
+        and not payload.get("vectorDbOnly")
+        and not enrichment_cut_short(record)
+        and record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and bool(payload.get(replay_set.EVENT_ID_KEY))
+    )
+
+
+def replayed_delivery(
+    event_type: str,
+    payload: Mapping[str, Any],
+    record: Mapping[str, Any],
+    entries: Mapping[str, replay_set.StoredDelivery] | None,
+) -> bool:
+    """An exact replay of an event that completed this record, which needs no work.
+
+    ``entries`` is what the replay set holds for the record (``replay_set.read_entries``). The replay is
+    exact when the set holds the event's envelope event id, the delivery id the replay carries (if any) is
+    the stored one, and the stored flags cover the replay's: a forced replay needs a forced completion, and
+    a replay naming ``stages`` needs the same stage set. A delivery id alone never makes a replay: after a
+    broker offset reset it can repeat for a different event. The record must also still show a remembered
+    completion that the event does not postdate (``replay_set.not_older_than_the_record``): an older event
+    that ran again since may have indexed older bytes. An optimisation only (the set may be empty, evicted
+    or unreachable).
+    """
+    if not entries or not replay_candidate(event_type, payload, record):
+        return False
+    event_id = str(payload.get(replay_set.EVENT_ID_KEY))
+    stored = entries.get(event_id)
+    if stored is None:
+        return False
+    delivery_id = payload.get(replay_set.DELIVERY_ID_KEY)
+    if delivery_id and stored.delivery_id != str(delivery_id):
+        return False
+    return replay_set.covers(stored.flags, replay_set.flags_of(payload)) and replay_set.not_older_than_the_record(
+        event_id, entries, record.get("lastIndexTimestamp")
     )
 
 
@@ -172,6 +248,9 @@ def read_time_outcome(
     left to the normal path: a delivery elsewhere may hold its lease, and only
     the handler takes that lease before writing. So is one whose status
     another event of the same record may still depend on (see below).
+
+    An exact replay of a delivery that completed the record (``replayed_delivery``) is the handler's: the
+    record is COMPLETED, a status that releases queued copies, so it is passed below like any such event.
     """
     if not connector_gated_event(event_type, payload):
         return ReadTimeOutcome.PASS

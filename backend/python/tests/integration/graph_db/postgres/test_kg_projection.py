@@ -131,7 +131,7 @@ async def test_the_stats_count_what_was_written_and_a_repeat_writes_no_differenc
     p, org = prov(pg_db), new_org()
     await load_world(p, org)
     first = await run(p, org, await everything(p, org))
-    assert first.records == 6 and first.links == 2 and first.grants == 3 and first.closure == 3 and first.apps == {"app1"} | set()
+    assert first.records == 6 and first.links == 4 and first.grants == 3 and first.closure == 3 and first.apps == {"app1"} | set()
     again = await run(p, org, await everything(p, org))
     assert (again.links, again.grants, again.closure, again.records_deleted) == (0, 0, 0, 0)
     gone = await delete_edge(p, org, ("users", "u1"), ("records", "f1"), "permission", type="USER")

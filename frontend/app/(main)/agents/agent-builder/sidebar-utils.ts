@@ -130,3 +130,20 @@ export function createToolGroupDragData(
     ),
   };
 }
+
+/**
+ * What the palette offers a service agent: anyone in the organization runs it on one identity, so
+ * no personal connector, and collections only once it is bound to a service account. The server
+ * refuses the same sources when the agent is saved.
+ */
+export function serviceAgentKnowledgeOptions<K>(
+  connectors: Connector[],
+  knowledgeBases: K[],
+  { isServiceAccount, bound }: { isServiceAccount: boolean; bound: boolean }
+): { connectors: Connector[]; knowledgeBases: K[] } {
+  if (!isServiceAccount) return { connectors, knowledgeBases };
+  return {
+    connectors: connectors.filter((c) => c.scope !== 'personal'),
+    knowledgeBases: bound ? knowledgeBases : [],
+  };
+}

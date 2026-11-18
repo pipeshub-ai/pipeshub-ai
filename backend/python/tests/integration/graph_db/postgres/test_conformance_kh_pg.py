@@ -1,6 +1,7 @@
 """The Knowledge Hub layer (``tests/permissions/kh_layer.py``) on the PostgreSQL provider: the rows, totals, counts, facets and arrows of every golden, adversarial and generated world
-against the access oracle, with the world's connectors served from kg ("current") and with kg not trusted for them ("not current": the listing's access is then the live walk's).
-The two states must answer the same rows and arrows; the totals are exact in both for the worlds of these sizes."""
+against the access oracle, with the world's connectors served from kg ("current"), with kg not trusted for them ("not current": the listing's access is then the live walk's), and
+copied by kg but neither stamped, verified nor promoted ("copied": what a new connector is until the bootstrap promotes it; the structure is kg's, the access the walk's).
+The states must answer the same rows and arrows; the totals are exact in all of them for the worlds of these sizes."""
 from __future__ import annotations
 
 import logging
@@ -14,6 +15,10 @@ import pytest
 from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
+from app.services.graph_db.postgres import kh_browse
+from app.services.graph_db.postgres.kg import backfill as bf
+from app.services.graph_db.postgres.kg import counts as kg_counts
+from app.services.graph_db.postgres.kg.drainer import drain_org
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.kh_layer import (
@@ -23,6 +28,7 @@ from tests.permissions.kh_layer import (
     browse_pages,
     check_world,
     children_of,
+    cursor_in_the_clear,
     listing,
 )
 from tests.permissions.kh_layer import _Config as _KhConfig
@@ -30,13 +36,18 @@ from tests.permissions.kh_worlds import (
     APPCHAIN,
     CHAIN,
     CHAINLINK,
+    DECLPAG,
     KH_WORLDS,
     OPENGRANT,
     OPENGRANTTEAM,
+    PAGMEMBER,
+    PAGSEED,
+    PAGSTORY,
     STUBHELD,
     STUBREACH,
     STUBTOP,
     UNPLACED,
+    WIDE,
 )
 from tests.permissions.scenario import load_all
 
@@ -84,14 +95,34 @@ async def _decorate_names(org: str) -> None:
         await con.close()
 
 
-class KhPgLayer(KgLayer):
-    """``KgLayer`` whose worlds are listed through the product's own listing; ``not_current`` takes kg off every connector of the world after it was copied and verified."""
+async def _copy(db, org: str) -> None:
+    """What the bootstrap does first for each connector of the org: the log drained, the principals and the connector copied. No stamps, no verify, no promotion. A world with a value the
+    projection refuses is left uncopied (``flip`` does the same)."""
+    async def apps(tx) -> list[str]:
+        return [r["id"] for r in await tx.fetch("SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' ORDER BY id", org)]
+    with bind(OrgContext(org, None, "job", "job:test", "t")):
+        ids = await db.run(apps)
+    try:
+        await drain_org(db, org)
+        await bf.backfill_scope(db, org, None)
+        for a in ids:
+            await bf.backfill_scope(db, org, a)
+    except asyncpg.exceptions.InvalidParameterValueError:
+        pass
 
-    def __init__(self, provider, db, *, not_current: bool) -> None:
+
+class KhPgLayer(KgLayer):
+    """``KgLayer`` whose worlds are listed through the product's own listing; ``not_current`` takes kg off every connector of the world after it was copied and verified; ``copied``
+    only copies them."""
+
+    def __init__(self, provider, db, *, not_current: bool, copied: bool = False) -> None:
         super().__init__(provider, db)
         self.not_current = not_current
+        self.copied = copied
         self.not_ready = 0
-        self.name = f"postgres-kg-{'walk' if not_current else 'kg'}"
+        self.hide_first_app = False
+        self.copies: dict = {}      # world -> (connectors promoted, connectors) of its own copy
+        self.name = f"postgres-kg-{'copied' if copied else 'walk' if not_current else 'kg'}"
 
     async def preload(self, worlds) -> None:
         new = [w for w in dict.fromkeys(worlds) if w not in self._prefix]
@@ -99,8 +130,15 @@ class KhPgLayer(KgLayer):
         for w in new:
             org = _hex(Namespace(self._prefix[w]).org)
             await _decorate_names(org)
+            if self.hide_first_app:      # in the graph, before the copy: as a project's own collection is written
+                await _admin("""UPDATE graph.nodes SET doc = doc || '{"isHidden": true}' WHERE org_id = $1 AND coll = 'apps'
+                    AND id = (SELECT min(id) FROM graph.nodes WHERE org_id = $1 AND coll = 'apps')""", org)
+            if self.copied:
+                await _copy(self._db, org)
+                continue
             done, total = await flip(self._db, org)
             self.promoted.update(promoted=done, connectors=total)
+            self.copies[w] = (done, total)
         if self.not_current:
             for w in new:
                 await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", _hex(Namespace(self._prefix[w]).org))
@@ -110,16 +148,17 @@ class KhPgLayer(KgLayer):
         return _Ns(self._prefix[world])
 
 
-@pytest.fixture(params=[False, True], ids=["current", "not_current"])
+@pytest.fixture(params=["current", "not_current"])
 async def kh_layer(request, pg_provider, pg_db) -> AsyncIterator[KhPgLayer]:
-    lay = KhPgLayer(pg_provider, pg_db, not_current=request.param)
+    lay = KhPgLayer(pg_provider, pg_db, not_current=request.param == "not_current", copied=request.param == "copied")
     yield lay
     await lay.release(list(lay._prefix))
 
 
 # `gap`: the shapes the flatten listing leaves out on purpose (kh_layer.declared_gap). The browse is held to the oracle in full: a folder it does not open or leaves nodes out of (`browse_gap`),
 # a row it lists that the oracle does not admit (`browse_extra`) and an arrow that is not on exactly when opening the row lists something (`arrow`) fail, as on Neo4j and ArangoDB.
-GAPS = {"gap"}
+# `unlisted` (a node the viewer may open that no browse of the whole tree lists) is reported, as there.
+GAPS = {"gap", "unlisted"}
 
 
 async def check(layer: KhPgLayer, world, scenario: str) -> list[KhFinding]:
@@ -145,6 +184,7 @@ def _bad(found: list[KhFinding]) -> list[KhFinding]:
     return [f for f in found if f.kind not in GAPS]
 
 
+@pytest.mark.parametrize("kh_layer", ["current", "not_current", "copied"], indirect=True)
 async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_layer) -> None:
     worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
     bad: list[KhFinding] = []
@@ -159,9 +199,31 @@ async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_la
     assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} worlds were refused as not copied"
 
 
+async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_viewer_may_read(pg_provider, pg_db, monkeypatch) -> None:
+    """With the counters read (PG_KG_COUNTERS=1) an unfiltered total of a connector kg serves comes from kg.counts: every total, count and facet is still the oracle's."""
+    monkeypatch.setenv("PG_KG_COUNTERS", "1")
+    layer = KhPgLayer(pg_provider, pg_db, not_current=False)
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[KhFinding] = []
+    seeded = 0
+    try:
+        for start in range(0, len(worlds), CHUNK):
+            chunk = worlds[start:start + CHUNK]
+            await layer.preload(chunk)
+            for world in chunk:
+                seeded += await kg_counts.run(pg_db, _hex(Namespace(layer._prefix[world]).org))
+            for offset, world in enumerate(chunk):
+                bad += _bad(await check(layer, world, f"golden-{start + offset}"))
+            await layer.release(chunk)
+    finally:
+        await layer.release(list(layer._prefix))
+    assert seeded, "no connector was counted whole: the counters were never read"
+    assert not bad, f"{layer.name} with counters\n{_describe(bad)}"
+
+
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
 async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, monkeypatch) -> None:
-    # The typed graph takes the three access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
+    # The typed graph takes the four access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
     # copied and the listing refuses it). The worlds are generated without it, so that every adversarial shape is listed.
     from tests.permissions.gen import adversarial
     monkeypatch.setattr(adversarial, "RULES", [r for r in adversarial.RULES if r != "INHERITED"])
@@ -179,6 +241,54 @@ async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: st
         assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} {kind} worlds were refused as not copied"
 
 
+async def _root_rows(layer: KhPgLayer, world, viewer: str) -> list[str] | None:
+    """Every page of the service's All Records (``get_nodes`` with no parent, flattened), by cursor; None when a page fails."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+
+    ns = await layer._ns(world)
+    service = KnowledgeHubService(logging.getLogger("kh-root"), layer._provider, _Config())
+    rows: list[str] = []
+    cursor = None
+    for _ in range(200):
+        page = await service.get_nodes(user_id=ns.id(viewer), org_id=ns.org, flattened=True, limit=BIG_PAGE, sort_by="name", sort_order="asc", cursor=cursor)
+        if not page.success:
+            return None
+        rows += [ns.local(i.id) for i in page.items]
+        if not (cursor := page.pagination.nextCursor):
+            return rows
+    raise AssertionError("the root listing did not end")
+
+
+async def test_the_root_listing_is_the_flat_listing_of_every_app_but_the_hidden_one(kh_layer) -> None:
+    """The root listing (All Records) against the provider's flat listing of the same Apps, every viewer of the golden and KH worlds, with each world's first App hidden:
+    the same rows in the same order, and none of the hidden App's."""
+    kh_layer.hide_first_app = True
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[str] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await kh_layer.preload(chunk)
+        for world in chunk:
+            ns = await kh_layer._ns(world)
+            apps = sorted(ns.id(n.id) for n in world.nodes if n.kind == "app")
+            if not apps:
+                continue
+            with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+                for viewer in world.users():
+                    try:
+                        want = [r["id"] for r in (await listing(kh_layer, world, viewer, {"connector_ids": apps[1:]})).rows] if apps[1:] else []
+                    except KnowledgeHubListingNotReady:
+                        continue
+                    got = await _root_rows(kh_layer, world, viewer)
+                    if got != want:
+                        bad.append(f"{viewer}: root {got} flat {want}")
+        await kh_layer.release(chunk)
+    assert not bad, f"{kh_layer.name}\n" + "\n".join(bad[:20])
+
+
 async def test_a_stub_is_listed_under_a_declaration_exactly_when_opening_it_lists_something(kh_layer) -> None:
     """STUBREACH: the stub's listing and arrow read the reach a browse of the stub starts with, never the declaration's (what opening the declaration and then the stub shows must agree)."""
     await kh_layer.preload([STUBREACH])
@@ -193,7 +303,7 @@ async def test_a_stub_is_listed_under_a_declaration_exactly_when_opening_it_list
 
 
 async def test_a_connector_with_no_copy_is_refused_not_listed_as_empty(pg_provider, pg_db) -> None:
-    """The listing of a connector the typed graph has never copied raises the refusal the service answers with a 503 (retry in a moment)."""
+    """The listing of a connector the typed graph has never copied raises the refusal the service answers as an empty page marked ``preparing`` (ask again in a moment)."""
     from app.connectors.sources.localKB.handlers.kh_search import search_page
     lay = KhPgLayer(pg_provider, pg_db, not_current=False)
     world = KH_WORLDS[0]
@@ -218,6 +328,24 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
             assert {ns.local(n) for n in found.node_ids} == {"k", "go"}, kh_layer.name
             assert {r["id"] for r in (await listing(kh_layer, world, "u")).rows} == {"k", "go", "d"}, kh_layer.name
         assert not _bad(await check(kh_layer, world, "opengrant")), kh_layer.name
+
+
+async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_not_open(kh_layer, monkeypatch) -> None:
+    """WIDE read a window at a time with no time to read past the first: a page of f holds fewer than a page of readable children, so it ends at the
+    last child it looked at, which is most likely one the viewer may not open, and the next page resumes there. The cursor carries that position
+    sealed: a client reading it finds no name or id of a child it may not open, and the pages still list all forty readable children once."""
+    monkeypatch.setattr(kh_browse, "UNDECIDED_MAX", -1)      # the children are read a window at a time, as for a connector kg does not serve
+    monkeypatch.setattr(kh_browse, "BUDGET_S", -1.0)
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    denied = [f"k{i:03d}" for i in range(10, 200)]
+    await kh_layer.preload([WIDE])
+    ns, cursors = await kh_layer._ns(WIDE), []
+    with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+        items, _, _ = await browse_pages(kh_layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
+    listed = [ns.local(i.id) for i in items]
+    assert sorted(listed) == readable, kh_layer.name      # the order is the store's (these names sort by their stored keys), each row once
+    assert cursors, kh_layer.name
+    assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
 
 
 async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:
@@ -359,3 +487,40 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) 
         assert await children_of(kh_layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}, kh_layer.name
     bad = _bad(await check(kh_layer, UNPLACED, "unplaced"))
     assert not bad, _describe(bad)
+
+
+async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_grant_and_nowhere_else(kh_layer: KhPgLayer) -> None:
+    """PAGSEED: dave reads the issue i1 only by his own grant, and the PARENT_AND_GRANT comment c1 (granted to his group), the file f1 in it and the reply c5
+    granted to him, by the access check and by browsing i1; never without the record's own grant or under a parent he cannot read. PAGSTORY: a RESTRICTED story
+    under an epic read the same way stays closed. DECLPAG: under a member of a declared group it stays closed, as an OPEN child there does. PAGMEMBER: under
+    a member that is also read below a seed it is read, as an OPEN child there is. The worlds are copied into kg and served from it ("current"), or answered by the walk ("not_current")."""
+    expected = {
+        (PAGSEED, "dave"): {"i1", "c1", "f1", "c5"},
+        (PAGSEED, "alice"): {"P", "i1", "i2", "c1", "f1", "c3", "s1"},
+        (PAGSEED, "bob"): {"P", "i1", "i2", "c2"},
+        (PAGSEED, "carol"): {"i2"},
+        (PAGSTORY, "dave"): {"epic"},
+        (DECLPAG, "u"): {"d", "k"},
+        (PAGMEMBER, "u"): {"S", "M", "C", "O"},
+    }
+    asked = {PAGSEED: ["P", "i1", "i2", "c1", "c2", "c3", "c4", "c5", "f1", "s1"], PAGSTORY: ["P", "epic", "story", "sub", "plain", "note"], DECLPAG: ["d", "k", "c"], PAGMEMBER: ["S", "M", "C", "O"]}
+    worlds = [PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
+    await kh_layer.preload(worlds)
+    for world in worlds:      # no world is refused by the copy
+        done, total = kh_layer.copies[world]
+        assert total > 0 and done == total, (kh_layer.name, worlds.index(world), done, total)
+    for (world, who), want in expected.items():
+        ns = await kh_layer._ns(world)
+        with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+            found = await kh_layer._provider.check_access(ns.id(who), ns.org, node_ids=[ns.id(n) for n in asked[world]])
+        assert {ns.local(n) for n in found.node_ids - found.placeholder_ids} == want, (kh_layer.name, who)
+    with bind(OrgContext((await kh_layer._ns(PAGSEED)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, PAGSEED, "dave", "i1", "record") == {"c1": True}, kh_layer.name
+        assert await children_of(kh_layer, PAGSEED, "dave", "c1", "record") == {"f1": False, "c5": False}, kh_layer.name
+    with bind(OrgContext((await kh_layer._ns(PAGSTORY)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, PAGSTORY, "dave", "epic", "record") == {}, kh_layer.name
+    bad = []
+    for i, world in enumerate(worlds):
+        with bind(OrgContext((await kh_layer._ns(world)).org, None, "job", "job:test", "t")):      # not ``check``: a world the copy refuses fails here
+            bad += _bad(await check_world(kh_layer, world, f"pag-{i}", browse_apps=True))
+    assert not bad, f"{kh_layer.name}\n{_describe(bad)}"

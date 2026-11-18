@@ -555,9 +555,26 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: [
+          'x-session-token',
+          'content-disposition',
+          'etag',
+          'accept-ranges',
+          'content-range',
+          'content-length',
+        ],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-session-token',
+          'x-request-id',
+          'client-name',
+          'x-record-content-open',
+          'if-none-match',
+          'range',
+          'if-range',
+        ]
       }),
     );
 

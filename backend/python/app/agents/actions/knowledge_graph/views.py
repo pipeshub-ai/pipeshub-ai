@@ -38,6 +38,7 @@ _MAX_RESPONSE_BYTES = 25_000
 # so both paths offer the model the same number of records to read at once.
 _MAX_READ_HINT_IDS = 8
 _TRUNCATION_LINE = "... (output truncated — use page= to continue)"
+PREPARING = "This source is still being prepared, so nothing can be listed yet. Try again in a moment."
 # Kept out of the system prompt: only a turn that lists records needs it. A real
 # id from the listing as the example is what gets a small model to cite at all.
 CITE_NOTE = (
@@ -252,16 +253,18 @@ def render_navigation_view_with_ids(
     if cited_rows:
         lines.append("\n" + CITE_NOTE.format(ref=cited_rows[0]))
     if view.rows:
-        if pag:
-            shown_start = (pag.page - 1) * pag.limit + 1
+        shown_start = (pag.start_index or ((pag.page - 1) * pag.limit + 1 if pag.page else None)) if pag else None
+        if shown_start:
             shown_end = shown_start + len(view.rows) - 1
-            total_label = f" of {pag.total}" if pag.total > 0 else ""
+            total_label = f" of {'at least ' if pag.total_capped else ''}{pag.total}" if pag.total > 0 else ""
             lines.append(f"\nChildren {shown_start}-{shown_end}{total_label}:")
         else:
             lines.append("\nChildren:")
         for row in view.rows:
             owners.append((len(lines), row.id))
             lines.append(_row_line(row, shortener, cite=cite_refs.get(row.id)))
+    elif view.preparing:
+        lines.append(f"\n({PREPARING})")
     elif view.current:
         lines.append("\n(no children)")
     else:
@@ -308,11 +311,13 @@ def render_navigation_view_with_ids(
         hints.append(
             f'navigate(node_id="{_short(parent.id, shortener)}") to see siblings'
         )
-    if pag and pag.has_next and view.current:
-        hints.append(
-            f'navigate(node_id="{_short(view.current.id, shortener)}", page={pag.page + 1}) for more'
-        )
-    if pag and pag.has_prev and view.current and page > 2:
+    if pag and pag.has_next and (pag.next_cursor or pag.page):
+        # The cursor resumes where this page ended, at any depth; page numbers stop at 50.
+        at = f'node_id="{_short(view.current.id, shortener)}", ' if view.current else ""
+        more = f'cursor="{pag.next_cursor}"' if pag.next_cursor else f"page={pag.page + 1}"
+        hints.append(f"navigate({at}{more}) for more")
+    # Only a numbered page can name the one before it: a page reached by cursor has no number and no cursor back.
+    if pag and pag.has_prev and view.current and pag.page and pag.page > 2:
         hints.append(
             f'navigate(node_id="{_short(view.current.id, shortener)}", page={pag.page - 1}) to go back'
         )

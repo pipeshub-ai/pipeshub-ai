@@ -95,6 +95,9 @@ user_schema = {
             # survive one. Absent means not disabled, so a node that predates
             # this field, or a person, reads as usable.
             "isDisabled": {"type": "boolean"},
+            # The user's default knowledge base. Claimed here, in one conditional write, before the knowledge base is
+            # written, so two writers of one user's default agree on its key and a key is never used twice.
+            "defaultKnowledgeBaseId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -377,11 +380,24 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # Record processing diagnostics (internal; never returned by the API):
+            # when the record first went in line for the current run, when its
+            # last run failed, how many attempts it has had, and the PDF page count.
+            "firstQueuedAt": {"type": ["number", "null"]},
+            "failedAt": {"type": ["number", "null"]},
+            "indexingAttempts": {"type": ["integer", "null"], "minimum": 0},
+            "pageCount": {"type": ["integer", "null"], "minimum": 1},
             # A record whose source rate-limited its content fetch: when it may
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).
             "retryNotBefore": {"type": ["number", "null"]},
             "rateLimitedSince": {"type": ["number", "null"]},
+            # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
+            # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).
+            "deferredUntilMs": {"type": ["number", "null"]},
+            # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
+            # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
+            "rateLimitedSinceMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
@@ -392,6 +408,8 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # How the record was indexed, e.g. that only part of a large text file is (not a failure).
+            "indexingNote": {"type": ["string", "null"]},
             # Credentials redacted from the content before indexing (S-2).
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
@@ -483,11 +501,24 @@ record_schema = {
     "message": "Document does not match the record schema.",
 }
 
+# Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
+# collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+RECORD_SCHEMA_GENERATION = 2
+record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
+
 
 # Pipeline stage state: one document per (virtual record, content revision, stage).
 # ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
 STAGE_TIERS = ["heavy", "light"]
 STAGE_PRIORITIES = ["interactive", "bulk"]
+#
+# Forward-compatible (expand-then-contract): a later release may add a field, or a status, tier or
+# priority value, and a pod still on this schema must accept the row. So unknown properties are
+# allowed and ``status``, ``tier`` and ``priority`` are plain strings; ``StageState`` keeps the closed
+# sets in code. Required fields and the types of the declared ones are still checked. Record nodes
+# (``record_schema``) stay strict. Once a later release has written a new field or value, rolling back
+# past the release that carries this schema is unsupported for the stage collections.
 stage_state_schema = {
     "rule": {
         "type": "object",
@@ -496,12 +527,12 @@ stage_state_schema = {
             "virtualRecordId": {"type": "string"},
             "rev": {"type": "string"},
             "stage": {"type": "string"},
-            "status": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
+            "status": {"type": "string"},
             "stageVersion": {"type": "integer", "minimum": 1},
             "recordIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "connectorId": {"type": "string"},
-            "tier": {"type": "string", "enum": STAGE_TIERS},
-            "priority": {"type": "string", "enum": STAGE_PRIORITIES},
+            "tier": {"type": "string"},
+            "priority": {"type": "string"},
             "trigger": {"type": "string"},
             "force": {"type": "boolean"},
             "mimeType": {"type": ["string", "null"]},
@@ -539,7 +570,7 @@ stage_state_schema = {
             "hasImages",
             "updatedAtMs",
         ],
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "level": "strict",
     "message": "Document does not match the stage state schema.",

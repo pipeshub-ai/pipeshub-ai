@@ -18,6 +18,8 @@ from app.modules.indexing.connector_off_events import (
     GraphConnectorOffFilter,
     ReadTimeOutcome,
     RecordHeldForDelete,
+    SameBytesSkipPending,
+    clears_embeddings_first,
     connector_off_updates,
     connector_state,
     read_time_outcome,
@@ -581,42 +583,32 @@ def test_a_live_connector_with_another_status_is_still_active() -> None:
     assert connector_state({"_key": "conn-on", "isActive": True, "status": "SYNCING"}) is ConnectorState.ACTIVE
 
 
-async def test_a_delete_that_begins_while_embeddings_are_deleted_still_holds_the_event() -> None:
-    """The read before the embedding delete only decides whether to hold there; the connector
-    check reads the app again, so a delete marked meanwhile is seen before the record is written."""
+async def test_an_update_of_a_connector_being_deleted_is_held_and_takes_nothing_out_of_the_vector_store() -> None:
     graph = FakeConnectorGraph()
     graph.add_connector("conn-off", active=True)
     graph.add_record("r1", "conn-off")
+    graph.apps["conn-off"]["status"] = "DELETING"
     handler, event_processor = _handler(graph)
-
-    async def delete_marked_meanwhile(*_a: object, **_kw: object) -> None:
-        graph.apps["conn-off"]["status"] = "DELETING"
-
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = delete_marked_meanwhile
 
     with pytest.raises(RecordHeldForDelete):
         _ = [e async for e in handler.process_event(UPDATE, dict(_payload(**_CLEARS_EMBEDDINGS_FIRST)))]
 
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once()
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
     assert _writes(graph) == {}
 
 
-async def test_a_connector_turned_off_while_embeddings_are_deleted_is_skipped_as_off() -> None:
+async def test_an_update_of_a_turned_off_connector_is_skipped_as_off_and_keeps_its_points() -> None:
     graph = FakeConnectorGraph()
-    graph.add_connector("conn-off", active=True)
+    graph.add_connector("conn-off", active=False)
     graph.add_record("r1", "conn-off")
     handler, event_processor = _handler(graph)
-
-    async def turned_off_meanwhile(*_a: object, **_kw: object) -> None:
-        graph.set_active("conn-off", False)
-
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = turned_off_meanwhile
 
     events = [e.event async for e in handler.process_event(UPDATE, dict(_payload(**_CLEARS_EMBEDDINGS_FIRST)))]
 
     assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
     assert graph.records["r1"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
     assert graph.records["r1"]["reason"] == CONNECTOR_OFF
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 async def test_a_stage_rerun_of_a_connector_being_deleted_is_held_before_its_states_are_touched() -> None:
@@ -669,23 +661,26 @@ async def test_a_vector_rebuild_of_a_turned_off_connector_still_runs(monkeypatch
 
 
 @pytest.mark.parametrize(("flip", "held"), [("DELETING", True), ("off", False)])
-async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_are_deleted(flip: str, held: bool) -> None:
+async def test_an_already_indexed_reindex_sees_a_delete_marked_before_the_guard(flip: str, held: bool) -> None:
     """A non-forced reindex of an indexed record returns early, and the finally block then releases
-    its queued copies; a delete marked during the embedding delete holds it first. A connector turned
-    off meanwhile keeps the early return, as before."""
+    its queued copies; a delete marked after the first check (here, while the stage runtime is asked
+    whether its hand-off was lost) holds it first. A connector turned off meanwhile keeps the early
+    return, as before. Nothing is taken out of the vector store on the way."""
     graph = FakeConnectorGraph()
     graph.add_connector("conn-off", active=True)
     graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value,
                      extractionStatus=ProgressStatus.COMPLETED.value)
     handler, event_processor = _handler(graph)
 
-    async def flipped_meanwhile(*_a: object, **_kw: object) -> None:
+    async def flipped_meanwhile(*_a: object, **_kw: object) -> bool:
         if flip == "DELETING":
             graph.apps["conn-off"]["status"] = "DELETING"
         else:
             graph.set_active("conn-off", False)
+        return False
 
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = flipped_meanwhile
+    event_processor.stage_ingress = MagicMock()
+    event_processor.stage_ingress.handoff_lost = AsyncMock(side_effect=flipped_meanwhile)
     payload = dict(_payload(**_CLEARS_EMBEDDINGS_FIRST))
 
     if held:
@@ -696,3 +691,105 @@ async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_
         events = [e.event async for e in handler.process_event(REINDEX, payload)]
         assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
         assert graph.calls["update_queued_duplicates_status"] == 1
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", [ConnectorState.OFF, ConnectorState.REMOVED])
+def test_read_time_filter_passes_an_update_of_a_completed_record(state: ConnectorState) -> None:
+    """The read-time filter leaves an update of a COMPLETED record to the handler, which is where an exact
+    replay of the delivery that completed it is acknowledged (and its queued copies released). A reconciled
+    type, so the status branch decides and not the delete-embeddings-first shortcut; the same record in a
+    status that releases nothing is settled, which shows that branch is the one reached."""
+    record = {
+        "id": "r1", "connectorId": "conn-off", "origin": "CONNECTOR", "indexingStatus": ProgressStatus.COMPLETED.value,
+        "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+    payload = {
+        "recordId": "r1", "connectorId": "conn-off", "mimeType": "application/pdf", "extension": "pdf",
+        "_delivery_id": "t-0-1", "_event_id": "evt-1",
+    }
+    assert not clears_embeddings_first(UPDATE, payload)
+
+    assert read_time_outcome(UPDATE, payload, record, lambda _connector: state) is ReadTimeOutcome.PASS
+    failed = {**record, "indexingStatus": ProgressStatus.FAILED.value}
+    assert read_time_outcome(UPDATE, payload, failed, lambda _connector: state) is not ReadTimeOutcome.PASS
+
+
+def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_flags() -> None:
+    from app.modules.indexing.connector_off_events import (
+        replay_candidate,
+        replayed_delivery,
+    )
+    from app.modules.indexing.replay_set import StoredDelivery
+
+    done = {
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+        "lastIndexTimestamp": 1,
+    }
+    payload = {"_event_id": "evt-1", "_delivery_id": "t-0-1"}
+    stored = {"evt-1": StoredDelivery(flags="", delivery_id="t-0-1", completed_at_ms=1)}
+
+    assert replayed_delivery(UPDATE, payload, done, stored)
+    assert not replayed_delivery(UPDATE, payload, done, None)
+    assert not replayed_delivery(UPDATE, payload, done, {})
+    assert not replayed_delivery(UPDATE, {"_delivery_id": "t-0-1"}, done, stored), "a delivery id alone is no identity"
+    assert not replayed_delivery(UPDATE, {**payload, "_delivery_id": "t-9-9"}, done, stored), "another delivery"
+    assert replayed_delivery(UPDATE, {"_event_id": "evt-1"}, done, stored)
+    assert not replayed_delivery(UPDATE, payload, {**done, "indexingStatus": "IN_PROGRESS"}, stored)
+    assert not replayed_delivery(UPDATE, payload, {**done, "extractionStatus": "IN_PROGRESS"}, stored)
+    assert not replayed_delivery(UPDATE, {**payload, "vectorDbOnly": True}, done, stored)
+    assert not replayed_delivery(UPDATE, {**payload, "forceReindex": True}, done, stored), "asks for more"
+    assert replayed_delivery(
+        UPDATE, {**payload, "forceReindex": True}, done,
+        {"evt-1": StoredDelivery(flags="F", delivery_id="t-0-1", completed_at_ms=1)},
+    )
+    assert not replayed_delivery(UPDATE, payload, {**done, "lastIndexTimestamp": 2}, stored), (
+        "a completion the set does not know came after it"
+    )
+    assert not replay_candidate("deleteRecord", payload, done)
+
+
+async def test_a_same_bytes_update_handed_back_writes_no_status_even_on_its_last_delivery() -> None:
+    """The record is indexed and stays so: the handler books no failure for a skip that could not finish, which the
+    consumer's delivery backstop ends instead."""
+    from app.modules.indexing.connector_off_events import SameBytesSkipPending
+
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value, extractionStatus="QUEUED")
+    handler, event_processor = _handler(graph)
+    event_processor.on_event = MagicMock(side_effect=SameBytesSkipPending("r1: sync failed", delay_s=1))
+
+    payload = dict(_payload(mimeType="application/pdf", extension="pdf", signedUrl="https://example.com/r1.pdf"))
+    with (
+        patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"%PDF-1.4"),
+        pytest.raises(SameBytesSkipPending),
+    ):
+        _ = [e async for e in handler.process_event(UPDATE, payload)]
+
+    event_processor.on_event.assert_called_once()
+    assert _writes(graph) == {}
+    assert graph.records["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+    assert graph.records["r1"]["extractionStatus"] == "QUEUED"
+
+
+async def test_a_same_bytes_hand_back_on_the_connector_stream_path_writes_no_status() -> None:
+    """The bytes came over the connector stream (no signed url): the hand-back is not wrapped into a failure, so the
+    last delivery leaves the record COMPLETED."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value, extractionStatus="QUEUED")
+    handler, event_processor = _handler(graph)
+    handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://connectors"}})
+    event_processor.on_event = MagicMock(side_effect=SameBytesSkipPending("r1: sync failed", delay_s=1))
+
+    with (
+        patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"),
+        patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF-1.4"}),
+        pytest.raises(SameBytesSkipPending),
+    ):
+        _ = [e async for e in handler.process_event(UPDATE, dict(_payload(mimeType="application/pdf", extension="pdf")))]
+
+    event_processor.on_event.assert_called_once()
+    assert _writes(graph) == {}
+    assert graph.records["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value
