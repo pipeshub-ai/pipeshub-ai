@@ -119,3 +119,28 @@ async def test_a_request_runs_in_the_callers_org_context(monkeypatch: pytest.Mon
     assert task in connector_service._SYNC_REQUESTS
     await task
     assert seen == ["o1"]
+
+
+async def test_a_connector_whose_processor_has_no_org_asks_with_the_org_its_app_document_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    dispatcher = SimpleNamespace(submit=AsyncMock(return_value=SubmitResult.ACCEPTED))
+    monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", dispatcher)
+    connector = _connector(DropboxConnector, None)
+    connector.data_entities_processor.org_id = None
+    connector.data_store_provider.graph_provider.get_document = AsyncMock(return_value={"orgId": "o9"})
+    await connector.request_sync()
+    (spec,), _ = dispatcher.submit.call_args
+    assert spec.org_id == "o9"
+
+
+async def test_a_request_with_no_org_anywhere_is_kept_for_the_next_sync_not_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The start handler refuses an event without an org, and the broker would deliver it again and again."""
+    dispatcher = SimpleNamespace(submit=AsyncMock(return_value=SubmitResult.ACCEPTED))
+    monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", dispatcher)
+    connector = _connector(DropboxConnector, None)
+    connector.data_entities_processor.org_id = None
+    connector.data_store_provider.graph_provider.get_document = AsyncMock(return_value={})
+    await connector.request_sync()
+    dispatcher.submit.assert_not_awaited()
+    connector.data_store_provider.graph_provider.update_node.assert_awaited_once_with(
+        "c1", CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
+    )

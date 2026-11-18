@@ -452,11 +452,18 @@ class BaseConnector(ABC):
         if dispatcher is None:
             self.logger.warning(f"No sync dispatcher configured; cannot request a sync of {self.connector_id}")
             return
-        spec = SyncSpec(
-            connector_id=self.connector_id,
-            connector_name=self.connector_name.value,
-            org_id=self.data_entities_processor.org_id or "",
+        org_id = self.data_entities_processor.org_id or (
+            (await self.data_store_provider.graph_provider.get_document(self.connector_id, CollectionNames.APPS.value) or {})
+            .get("orgId")
         )
+        if not org_id:
+            # The start handler refuses an event without an org, and its redelivery would hold the partition.
+            self.logger.error(f"No org for connector {self.connector_id}; its sync request is left to the next sync")
+            await self.data_store_provider.graph_provider.update_node(
+                self.connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
+            )
+            return
+        spec = SyncSpec(connector_id=self.connector_id, connector_name=self.connector_name.value, org_id=org_id)
         result = await dispatcher.submit(spec)
         if result is SubmitResult.DECLINED_RUNNING:
             # The running sync may have read the source before this change; its finalizer re-issues the request.
