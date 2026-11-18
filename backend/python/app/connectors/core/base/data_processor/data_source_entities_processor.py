@@ -7551,6 +7551,47 @@ class DataSourceEntitiesProcessor:
         else:
             self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
 
+    async def remove_user_grants_from_records(
+        self, record_ids: list[str], user_emails: set[str], connector_id: str, *, batch: int = 500
+    ) -> int:
+        """Delete the permission edges these users hold on these records themselves (not grants through groups or
+        anything a record inherits), a batch of records at a time: each record's incoming edges are read, and the
+        users' edges among them deleted in one write. Returns how many went. A failed read raises, so nothing is
+        left unremoved unreported."""
+        if not record_ids or not user_emails:
+            return 0
+        users = CollectionNames.USERS.value
+        removed = 0
+        # Dropped even when a later batch raises: on Neo4j without explicit transactions an earlier batch's deletes
+        # have already committed, and a retry finds nothing left to report.
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            user_ids: set[str] = set()
+            for email in sorted(user_emails):
+                user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
+                if user is not None and user.id:
+                    user_ids.add(user.id)
+            if not user_ids:
+                return 0
+            for start in range(0, len(record_ids), batch):
+                edges: list[dict] = []
+                for record_id in record_ids[start:start + batch]:
+                    for edge in await tx_store.get_edges_to_node(
+                        f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value,
+                        raise_on_error=True,
+                    ) or []:
+                        # Arango returns `_from`; Neo4j and PostgreSQL return from_collection and from_id.
+                        collection, _, key = (edge.get("_from") or "").partition("/")
+                        if edge.get("from_collection"):
+                            collection, key = edge["from_collection"], edge.get("from_id")
+                        if collection == users and key in user_ids:
+                            edges.append({
+                                "from_id": key, "from_collection": users,
+                                "to_id": record_id, "to_collection": CollectionNames.RECORDS.value,
+                            })
+                if edges:
+                    removed += await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) or 0
+        return removed
+
     async def get_app_creator_user(self, connector_id: str) -> User | None:
         """
         Fetch the creator user for a connector/app by connectorId.

@@ -106,6 +106,10 @@ export type ConnectorType =
   | 'trello'
   | 'cloudflare'
   | 'egnyte'
+  | 'intercom'
+  | 'granola'
+  | 'fireflies'
+  | 'fathom'
   | 'lucid'
   // Generic / Fallback
   | 'web'
@@ -217,6 +221,11 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'trello': { svg: svg('trello'), fallback: 'view_kanban' },
   'cloudflare': { svg: svg('cloudflare'), fallback: 'cloud' },
   'egnyte': { svg: svg('egnyte'), fallback: 'folder_shared', needDarkModeInvert: true },
+  'intercom': { svg: svg('intercom'), fallback: 'support_agent', needDarkModeInvert: true },
+  'granola': { svg: svg('granola'), fallback: 'sticky_note_2' },
+  // Fireflies publishes its logomark as a PNG only
+  'fireflies': { svg: `${CONNECTOR_ICONS_BASE_PATH}/fireflies.png`, fallback: 'graphic_eq' },
+  'fathom': { svg: svg('fathom'), fallback: 'videocam' },
   'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
@@ -230,7 +239,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
  * More specific patterns come first to prevent false matches.
  * Patterns are matched via .includes() against normalized input.
  */
-const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
+const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   // Chat groups of API actions (`api_action:<instanceId>`).
   ['api-action:', 'api'],
   // Google suite — specific first (google-cloud-storage before google-cloud)
@@ -291,6 +300,11 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['trello', 'trello'],
   ['cloudflare', 'cloudflare'],
   ['egnyte', 'egnyte'],
+  // Whole-word only (third item), so `fathom` doesn't match inside "Unfathomable Drive".
+  ['intercom', 'intercom', true],
+  ['granola', 'granola', true],
+  ['fireflies', 'fireflies', true],
+  ['fathom', 'fathom', true],
   ['lucid', 'lucid'],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
@@ -321,8 +335,9 @@ export function resolveConnectorType(input: string): ConnectorType {
   if (normalized in CONNECTOR_ICONS) return normalized as ConnectorType;
 
   // Fuzzy match
-  for (const [pattern, type] of FUZZY_MATCH_RULES) {
-    if (normalized.includes(pattern)) return type;
+  const words = normalized.split(/[^a-z0-9]+/);
+  for (const [pattern, type, wholeWord] of FUZZY_MATCH_RULES) {
+    if (wholeWord ? words.includes(pattern) : normalized.includes(pattern)) return type;
   }
 
   return 'generic';
