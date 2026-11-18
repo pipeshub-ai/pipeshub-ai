@@ -88,8 +88,8 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     }
   });
 
-  it('hides them all once the org turns SHOW_ENTERPRISE_PROMPTS off', () => {
-    flagsState = { flags: { SHOW_ENTERPRISE_PROMPTS: false } };
+  it('hides them from people who are not admins', () => {
+    userState = { profile: { isAdmin: false } };
     renderSidebar();
 
     expect(screen.queryByText(en.workspace.sidebar.sections.security)).toBeNull();
@@ -97,10 +97,12 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     for (const { label } of LOCKED) expect(screen.queryByText(label)).toBeNull();
   });
 
-  it('hides them from people who are not admins', () => {
-    userState = { profile: { isAdmin: false } };
+  it('keeps showing them to an admin whatever the platform flags say', () => {
+    flagsState = { flags: { ENABLE_MCP: false, ENABLE_ACTIONS: false, ENABLE_SKILLS: false } };
     renderSidebar();
 
-    for (const { label } of LOCKED) expect(screen.queryByText(label)).toBeNull();
+    for (const { label } of LOCKED) {
+      expect(screen.getByRole('link', { name: new RegExp(`^(\\S+ )?${label}$`) })).toBeTruthy();
+    }
   });
 });

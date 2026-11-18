@@ -27,7 +27,7 @@ afterEach(() => {
   showEnterprise = true;
 });
 
-describe('when Enterprise prompts are off (not an admin, or turned off in Labs)', () => {
+describe('for someone who is not an admin', () => {
   it('renders neither the badge nor the notice', () => {
     showEnterprise = false;
     const { container } = render(
