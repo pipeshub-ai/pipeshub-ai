@@ -1302,8 +1302,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         client = self.http_client
         if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
             guard = client.record_guard
-            # The guard's locked recheck decides, so a start that read a lower generation and paused cannot write after a newer
-            # image installed its own; an unreadable live schema is not written over (this attempt of the start fails).
+            # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
+            # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
+            # later checks and writes repair it. An unreadable live schema is not written over (this attempt of the start fails).
             try:
                 await guard.ensure_wide("startup")
             except Exception as error:
