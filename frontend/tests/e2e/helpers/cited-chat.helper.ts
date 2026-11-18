@@ -152,6 +152,18 @@ export async function waitForPreviewFrameLoad(page: Page): Promise<void> {
   await frame.waitForLoadState('load');
 }
 
+/**
+ * Asserts the element stays out of view for `ms`. A scroll that brings it back on its own before the next click
+ * fails here, so that click is the only thing a later "back in view" check can credit.
+ */
+export async function expectStaysOutOfView(locator: Locator, ms = 1_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    expect(await isInView(locator), 'the element came back into view on its own').toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
 /** Waits until the document `locator` lives in stops scrolling: a smooth scroll still running would move it later. */
 export async function waitForScrollToSettle(locator: Locator): Promise<void> {
   let last: number | null = null;

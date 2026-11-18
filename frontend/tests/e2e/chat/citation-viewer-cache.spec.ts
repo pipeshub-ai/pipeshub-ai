@@ -31,6 +31,7 @@ import {
   rendererNode,
   scrollDocumentOf,
   scrollViewer,
+  expectStaysOutOfView,
   waitForPreviewFrameLoad,
   waitForScrollToSettle,
   visiblePdfPage,
@@ -169,6 +170,8 @@ test.describe('Citation viewer cache', () => {
     await waitForScrollToSettle(para);
     await scrollDocumentOf(para, 'top');
     await expect.poll(() => isInView(para), { timeout: 10_000 }).toBe(false);
+    // Nothing is sent to the frame after its load until the next click; a late scroll fails the test here.
+    await expectStaysOutOfView(para);
     const before = log.requests.length;
     await jumpTo(page, 1);
     await expect.poll(() => isInView(para), { timeout: 15_000 }).toBe(true);
