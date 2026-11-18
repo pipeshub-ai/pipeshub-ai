@@ -47,6 +47,24 @@ def test_epoch_lint_rejects_bad_id_and_file_prefix(branch):
     assert "is not identity_NNNN" in msgs and "file prefix does not match" in msgs
 
 
+def test_expected_heads_read_from_the_files(branch):
+    _rev(branch, "identity", 4, 3)
+    assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 3)}, {"identity_0004"})
+
+
+def test_expected_heads_refuse_a_second_head(branch):
+    _rev(branch, "identity", 4, 3, name="this_pr")
+    (branch / "0005_other_pr.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
+    with pytest.raises(ValueError, match="2 heads"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_expected_heads_refuse_a_head_whose_id_is_not_its_files_epoch(branch):
+    (branch / "0004_wrong.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
+    with pytest.raises(ValueError, match="is not epoch 4"):
+        epoch_lint.expected_heads([branch])
+
+
 def test_shipped_branches_pass_both_lints():
     assert epoch_lint.main([]) == 0
     assert lint.main([]) == 0
