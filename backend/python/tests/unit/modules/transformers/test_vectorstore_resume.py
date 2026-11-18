@@ -243,6 +243,26 @@ class TestResume:
         assert len(chain.embedder.batches) == _batches(len(wanted))  # only the batch in flight at the cut is lost
         assert chain.embedder.cut_calls == 1
 
+    async def test_the_points_a_resumed_run_keeps_are_recorded_as_written(self) -> None:
+        # Kills: a resumed embed that notes only the points it embeds again. The points the cut run left are this revision's points
+        # too; left out of the recorded set (``pointedBlocks``) they would never be expected, so their later loss would not be healed.
+        from app.modules.transformers import vectorstore as vs_mod
+
+        chain = await Chain().start()
+        with pytest.raises(Cut):
+            await chain.attempt(cut_after=3)
+        kept = {p.payload["metadata"]["blockId"] for p in chain.db.collections[COLL].values()}
+        assert kept, "the cut run left points"
+        log = vs_mod._PointLog()
+        token = vs_mod._POINTED.set(log)
+        try:
+            await chain.attempt()
+        finally:
+            vs_mod._POINTED.reset(token)
+        stored = {p.payload["metadata"]["blockId"] for p in chain.db.collections[COLL].values()}
+        assert kept <= log.wrote, "points kept from the interrupted run are not recorded"
+        assert stored <= log.wrote
+
     async def test_without_the_stored_blocks_a_retry_cannot_reuse_what_was_written(self) -> None:
         # Kills: a resume that parses again. Block ids are random per parse, so no point id matches.
         chain = await Chain().start()

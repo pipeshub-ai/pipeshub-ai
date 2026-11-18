@@ -71,8 +71,29 @@ export interface MembershipVerdict {
 }
 
 /**
+ * An entry proves only the groups it checked: one that does not name the groups it was configured
+ * to expect (an older writer), or checked fewer, proves nothing about the others.
+ */
+function provesEveryExpectedGroup(value: {
+  groupsExpected?: unknown;
+  groupsChecked?: unknown;
+}): boolean {
+  const { groupsExpected: expected, groupsChecked: checked } = value;
+  if (
+    !Array.isArray(expected) ||
+    expected.length === 0 ||
+    !Array.isArray(checked)
+  )
+    return false;
+  const seen = new Set(checked.map(String));
+  return expected.every((group) => seen.has(String(group)));
+}
+
+/**
  * The union over fresh entries: untagged if any fresh entry lists an untagged member, stale
- * when none is fresh. An ex-leader's clean entry cannot hide the new leader's finding.
+ * when no fresh entry checked every group it expected, or when a group some fresh entry expects
+ * was checked by none (a new leader expects a group an ex-leader's entry did not). An
+ * ex-leader's clean entry cannot hide the new leader's finding.
  */
 export function evaluateMembership(
   entries: unknown[],
@@ -80,19 +101,34 @@ export function evaluateMembership(
   staleMs: number = MEMBERSHIP_STALE_MS,
 ): MembershipVerdict {
   const untagged = new Set<string>();
-  let fresh = 0;
+  const expected = new Set<string>();
+  const checked = new Set<string>();
+  let proven = 0;
   for (const entry of entries) {
-    const value = entry as { checkedAt?: unknown; untagged?: unknown } | null;
+    const value = entry as {
+      checkedAt?: unknown;
+      untagged?: unknown;
+      groupsExpected?: unknown;
+      groupsChecked?: unknown;
+    } | null;
     if (!value || typeof value.checkedAt !== 'number') continue;
     if (now - value.checkedAt > staleMs) continue;
-    fresh += 1;
+    if (provesEveryExpectedGroup(value)) proven += 1;
     if (Array.isArray(value.untagged)) {
       for (const name of value.untagged) untagged.add(String(name));
     }
+    if (Array.isArray(value.groupsExpected)) {
+      for (const group of value.groupsExpected) expected.add(String(group));
+    }
+    if (Array.isArray(value.groupsChecked)) {
+      for (const group of value.groupsChecked) checked.add(String(group));
+    }
   }
-  if (fresh === 0) return { ok: false, untagged: [], reason: 'stale' };
   if (untagged.size > 0)
     return { ok: false, untagged: [...untagged], reason: 'untagged' };
+  const unchecked = [...expected].some((group) => !checked.has(group));
+  if (proven === 0 || unchecked)
+    return { ok: false, untagged: [], reason: 'stale' };
   return { ok: true, untagged: [] };
 }
 

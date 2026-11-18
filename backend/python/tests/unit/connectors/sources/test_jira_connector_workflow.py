@@ -74,6 +74,7 @@ def _make_mock_deps():
     mock_tx_store.get_record_by_issue_key = AsyncMock(return_value=None)
     mock_tx_store.get_records_by_parent = AsyncMock(return_value=[])
     mock_tx_store.delete_records_and_relations = AsyncMock()
+    mock_tx_store.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
 
     class FakeTxContext:
         async def __aenter__(self):
@@ -214,7 +215,9 @@ class TestJiraFetchUsers:
         ]
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(data=page1))
+        empty = _make_mock_response()
+        empty.json = MagicMock(return_value=[])  # only an empty page ends the list
+        mock_ds.get_all_users = AsyncMock(side_effect=[_make_mock_response(data=page1), empty])
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await connector._fetch_users()
@@ -352,6 +355,7 @@ class TestPermissionScheme:
     async def test_fetch_permission_scheme_all_types(self):
         connector, *_ = _make_connector()
         connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
+        connector._licensed_account_ids = {"a1"}  # a licensed account the cut-short read did not show
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
@@ -584,6 +588,7 @@ class TestJiraFullSync:
                 full_name="Alice", is_active=True
             )]
             connector._fetch_users = AsyncMock(return_value=users)
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)  # all licensed
             connector._sync_user_groups = AsyncMock(return_value={})
 
             rg = RecordGroup(

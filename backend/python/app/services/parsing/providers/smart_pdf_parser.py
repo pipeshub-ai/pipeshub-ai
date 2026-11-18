@@ -89,6 +89,14 @@ def _detect_needs_ocr(content: bytes) -> tuple[bool, int | None]:
         return False, None
 
 
+def _with_page_count(result: ParseResult, page_count: int | None) -> ParseResult:
+    """The page count of the bytes parsed, pdfplumber's ``len(pdf.pages)`` (the one counter every path uses), in the
+    result's metadata. Absent when pdfplumber could not open the file."""
+    if page_count:
+        result.metadata = {**(result.metadata or {}), "page_count": page_count}
+    return result
+
+
 def _has_text(result: ParseResult) -> bool:
     """Whether a parse found any text, in built blocks or in a Docling document.
 
@@ -161,6 +169,17 @@ class SmartPDFParser:
         # Full-document pdfplumber scan is synchronous CPU work; keep it off
         # the event loop so one large PDF can't stall every other request.
         needs_ocr, page_count = await asyncio.to_thread(_detect_needs_ocr, content)
+        return _with_page_count(await self._parse_pages(page_count, content, record_name, config, needs_ocr=needs_ocr), page_count)
+
+    async def _parse_pages(
+        self,
+        page_count: int | None,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None,
+        *,
+        needs_ocr: bool,
+    ) -> ParseResult:
         if needs_ocr:
             logger.info(
                 "SmartPDFParser: '%s' appears scanned, using OCR provider",

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 PARSING_MAX_CONCURRENT_ENV = "PARSING_MAX_CONCURRENT"
 
@@ -66,6 +67,38 @@ class ParseLoad:
 _load = ParseLoad()
 
 
+class StuckConversions:
+    """Parses whose conversion thread still runs after the parse ended: their gate permit is held until it returns.
+
+    Read at scrape time, so the age grows between scrapes and a conversion that never returns is visible.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._since: dict[int, float] = {}
+
+    def add(self, token: int, since: float) -> None:
+        with self._lock:
+            self._since[token] = since
+
+    def remove(self, token: int) -> None:
+        with self._lock:
+            self._since.pop(token, None)
+
+    def snapshot(self, now: float | None = None) -> tuple[int, float]:
+        """(how many, the oldest one's age in seconds)."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            return len(self._since), max((now - at for at in self._since.values()), default=0.0)
+
+
+_stuck = StuckConversions()
+
+
+def stuck_conversions() -> StuckConversions:
+    return _stuck
+
+
 def parse_load() -> ParseLoad:
     return _load
 
@@ -79,6 +112,7 @@ def capacity(default: int | None = None) -> int:
 def render_metrics(load: ParseLoad | None = None, default_capacity: int | None = None) -> str:
     """Prometheus text exposition (version 0.0.4) of the load counters."""
     snap = (load or _load).snapshot()
+    stuck_count, stuck_oldest = _stuck.snapshot()
     lines = [
         "# HELP pipeshub_parsing_in_flight Parse requests in the service now, waiting for a slot or parsing.",
         "# TYPE pipeshub_parsing_in_flight gauge",
@@ -92,5 +126,11 @@ def render_metrics(load: ParseLoad | None = None, default_capacity: int | None =
         "# HELP pipeshub_parsing_requests_total Parse requests admitted into the route.",
         "# TYPE pipeshub_parsing_requests_total counter",
         f"pipeshub_parsing_requests_total {snap['requests_total']}",
+        "# HELP pipeshub_parse_stuck_conversions Parses whose conversion threads still run after the parse ended; their permit is held.",
+        "# TYPE pipeshub_parse_stuck_conversions gauge",
+        f"pipeshub_parse_stuck_conversions {stuck_count}",
+        "# HELP pipeshub_parse_stuck_oldest_seconds Age of the oldest conversion held after its parse ended.",
+        "# TYPE pipeshub_parse_stuck_oldest_seconds gauge",
+        f"pipeshub_parse_stuck_oldest_seconds {int(stuck_oldest)}",
     ]
     return "\n".join(lines) + "\n"
