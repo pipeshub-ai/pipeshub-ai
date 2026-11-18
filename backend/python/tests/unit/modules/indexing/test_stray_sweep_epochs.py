@@ -11,7 +11,15 @@ from app.modules.indexing.stray_sweep import sweep_stray_points
 from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.vector_db.models import CollectionConfig, VectorPoint
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
-from tests.support.index_world import COLL, ORG, VRID, context_of, make_store, parse, record_of
+from tests.support.index_world import (
+    COLL,
+    ORG,
+    VRID,
+    context_of,
+    make_store,
+    parse,
+    record_of,
+)
 
 OTHER_ORG = "f" * 24
 NEW_EPOCH = "r" + "ab" * 15

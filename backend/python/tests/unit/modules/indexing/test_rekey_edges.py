@@ -593,7 +593,11 @@ async def test_moved_points_keep_the_epoch_salt_of_their_id_and_their_tags(db) -
     """A point written after a reset is salted by its own epoch: moved to a content id it keeps that salt, so a batch of another
     epoch that writes the same content cannot replace it. Its epoch token and precision tag are carried over unchanged."""
     from app.modules.transformers.vectorstore import deterministic_point_id
-    from app.services.vector_db.collection_epoch import POINT_EPOCH, RESET_TOKEN_PREFIX, Fence
+    from app.services.vector_db.collection_epoch import (
+        POINT_EPOCH,
+        RESET_TOKEN_PREFIX,
+        Fence,
+    )
 
     token = RESET_TOKEN_PREFIX + "cd" * 15
     paras = _paragraphs(6)
