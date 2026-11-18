@@ -1325,7 +1325,7 @@ func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
 func platform.kv_admin_or_credential(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=a3405d373ef3d98de71d39c5dca22bad ext=-
-func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=aaefa7ab82010ca34a595e0cc7eec67e ext=-
+func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=caa4106c01dfac53a96a758004cc9009 ext=-
 func platform.kv_outside(text,text,timestamp with time zone) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, pg_temp body=da3fbdc19817fc5f91e2cb37c013aba4 ext=-
 func retrieval.collection_create(text,boolean,boolean,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=6881aa406340bf1c4dcee0d6fc6c7b25 ext=-
 func retrieval.collection_get(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=14c63d7ec9cef2ed8b66e1241e62fd0d ext=-
@@ -1341,6 +1341,7 @@ func retrieval.org_space_name(text) owner=pipeshub_vetted_retrieval secdef=true 
 func retrieval.org_space_named_by() owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=a88c56b36a816e8b8dea17f0a111210f ext=-
 func retrieval.org_space_replace_empty(text,integer,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=1dfeb2fbdd5d12c80f3daf9de061cc5b ext=-
 func retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=b21c064b3613c01c9c82a1bc020d84d7 ext=-
+func retrieval.vrid_held_elsewhere(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5fe07c5cf707ea14417034c8fe0d83e3 ext=-
 func retrieval.vrid_orgs(text[]) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=053b81fdd72b9c2dc3be4dde01323756 ext=-
 funcacl graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) pipeshub_indexing EXECUTE
@@ -1519,6 +1520,7 @@ funcacl retrieval.org_space_name(text) pipeshub_indexing EXECUTE
 funcacl retrieval.org_space_named_by() pipeshub_app EXECUTE
 funcacl retrieval.org_space_replace_empty(text,integer,text) pipeshub_indexing EXECUTE
 funcacl retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) pipeshub_app EXECUTE
+funcacl retrieval.vrid_held_elsewhere(text) pipeshub_indexing EXECUTE
 funcacl retrieval.vrid_orgs(text[]) pipeshub_indexing EXECUTE
 index content.documents_artifact_set on content.documents unique=true exclusion=false valid=true def=66b66cb22ee4b83b8ce15ce05c5b6ef2
 index content.documents_by_connector on content.documents unique=false exclusion=false valid=true def=758d149d5d885f2d089e87f7a5cb02f0

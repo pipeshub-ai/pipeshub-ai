@@ -206,6 +206,15 @@ def vector_to_bytes(vector: List[float], dtype: str = "FLOAT32") -> bytes:
     return struct.pack(f"<{len(vector)}{code}", *vector)
 
 
+def bytes_to_vector(blob: bytes, dtype: str = "FLOAT32") -> list[float]:
+    """The inverse of ``vector_to_bytes``."""
+    code = _DTYPE_STRUCT_CODE.get(dtype.upper())
+    if code is None:
+        raise ValueError(f"Unsupported Redis vector dtype {dtype!r}; expected one of {sorted(_DTYPE_STRUCT_CODE)}")
+    width = struct.calcsize(code)
+    return list(struct.unpack(f"<{len(blob) // width}{code}", blob))
+
+
 def vector_point_to_hash_fields(point: VectorPoint, dtype: str = "FLOAT16") -> Dict[str, Any]:
     """Convert a VectorPoint to a flat dict of HSET fields.
 

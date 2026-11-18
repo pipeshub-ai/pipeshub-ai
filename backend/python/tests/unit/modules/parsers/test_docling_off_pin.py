@@ -89,7 +89,12 @@ def test_off_pin_covers_whole_module_except_allowlist() -> None:
     assert modified - imports(modified) <= PROCESSOR_MODIFIED, sorted(modified)
     assert top_names(added - LAZY_IMPORT_ADDED) <= PROCESSOR_ADDED, sorted(top_names(added - LAZY_IMPORT_ADDED) - PROCESSOR_ADDED)
     modified, added = changed(SERVICE)
-    assert imports(modified) <= {"import:from app.modules.parsers.pdf.docling_processor import DoclingProcessor"}
+    assert imports(modified) <= {
+        "import:from app.modules.parsers.pdf.docling_processor import DoclingProcessor",
+        # the optional X-Parse-Class header (PIPESHUB_CAPACITY_PROFILE=auto only; absent, the route is as before)
+        "import:from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile",
+        "import:from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile",  # the line it replaced
+    }
     assert modified - imports(modified) - {SERVICE_INITIALIZE[0]} <= SERVICE_MODIFIED, sorted(modified)
     assert top_names(added) == SERVICE_ADDED
 

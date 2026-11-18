@@ -144,7 +144,7 @@ tags:
         It's shown exactly once, at creation.
 
       **Expiry and scopes**
-      - `expiryDays`: `30` (default), `90`, `365`, or `never`.
+      - `expiryDays`: `7`, `30` (default), `90`, or `365`.
       - Scopes default to the org's full configured `MCP_SCOPES` set if none
         are requested; `GET /personal-access-tokens/scopes` lists what's
         available.
@@ -625,6 +625,14 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-fA-F]{24}$'
+    PaidResultRecordId:
+      name: recordId
+      in: path
+      required: true
+      description: The record the cached results belong to.
+      schema:
+        type: string
+        pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
     ApiToolsetInstanceId:
       name: instanceId
       in: path
@@ -1108,6 +1116,14 @@ components:
           minimum: 0
           description: Number of documents removed.
     # ==================== COMMON SCHEMAS ====================
+    PaidResultPath:
+      type: string
+      description: |
+        A file of the paid-result cache, relative to the record's folder: `{kind}/{sha256}.json` with
+        `kind` one of `ocr_page`, `image_description`, `table_summary`, `table_rows`, `excel_headers`,
+        `classify`, `entities`; or a retention manifest `manifests/{contentRev}/{writer}.json` (an
+        unfinished run's is `{writer}.open.json`).
+      pattern: '^(?:(?:ocr_page|image_description|table_summary|table_rows|excel_headers|classify|entities)/[0-9a-f]{64}\.json|manifests/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_-]{1,64}(?:\.open)?\.json)$'
     ArtifactFilePath:
       type: string
       description: |
@@ -4056,18 +4072,13 @@ components:
           example: ["kb:read", "semantic:write"]
           maxItems: 100
         expiryDays:
-          oneOf:
-            - type: integer
-              enum: [30, 90, 365]
-            - type: string
-              enum: ["never"]
+          type: integer
+          enum: [7, 30, 90, 365]
           description: |
-            Token lifetime. Defaults to `30` if omitted — a token minted
-            without an explicit choice shouldn't default to the longest
-            lifetime. `"never"` is stored as a ~100-year expiry (the
-            underlying schema field is required and TTL-indexed, so there's
-            no literal null option). Any other value, including `null` and the
-            string `"30"`, is a `400` validation error.
+            Token lifetime in days. Defaults to `30` if omitted. Any other
+            value, including `"never"`, `null` and the string `"30"`, is a
+            `400` validation error. Tokens created earlier keep the
+            expiry they were issued with.
           default: 30
           example: 30
         knowledgeLimit:
@@ -18687,7 +18698,8 @@ components:
             Unique feature flag key. Current keys: ENABLE_MCP, ENABLE_API_TOOLSETS, ENABLE_ACTIONS,
             ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_CHAT_COMPARE, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
             ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
-            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
+            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_RECORD_PREVIEW_CACHE,
+            ENABLE_KH_SCOPE_LISTING.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
           example: "ENABLE_MCP"
         label:
@@ -24957,6 +24969,16 @@ components:
         message:
           type: string
           description: Set when nothing matched.
+        incomplete:
+          type: boolean
+          description: >-
+            Present (true) when the search ran out of time before every match could be checked against
+            the caller's access, so an entity the caller can reach may be missing. Every listed result
+            was checked; search again for the rest. Absent when the search finished. A search that
+            checked nothing at all fails with 503 instead.
+        incompleteNote:
+          type: string
+          description: Set with `incomplete`; says what it means for the results.
         results:
           type: array
           items:
@@ -28539,7 +28561,7 @@ paths:
           description: |
             Invalid request: a `VALIDATION_ERROR` from the body validator (missing,
             empty or over-long `name`, `scopes` not a non-empty list, `expiryDays`
-            other than 30, 90, 365 or "never", a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
+            other than 7, 30, 90 or 365, a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
             the org's configured `MCP_SCOPES` (refused by the service, code
             `OAUTH_INVALID_SCOPE`).
 
@@ -38137,6 +38159,468 @@ paths:
                 type: string
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/presign:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get URLs to store and read cached model outputs of one record (service-to-service)
+      description: |
+        The paid-result cache keeps the output of a paid model call (a page's OCR text, an image
+        description, a table summary) as one small JSON file per result, under the record's folder
+        in the organisation's storage. This returns one signed URL per file. A `put` URL stores the
+        file only if nothing is stored there yet (`If-None-Match: *`, sent as one of the returned
+        headers): a second writer of the same result is answered `412` (or `409` on S3 during a race)
+        and the first writer's file is kept. The organisation comes from the storage token only.
+        URLs expire after 15 minutes.
+      operationId: internalPresignPaidResults
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - recordId
+                - files
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                recordId:
+                  type: string
+                  pattern: '^(?!org$)[A-Za-z0-9_-]{1,128}$'
+                  description: The record the results belong to. `org` is not a record id.
+                files:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once per mode.
+                  items:
+                    type: object
+                    required:
+                      - path
+                      - mode
+                    properties:
+                      path:
+                        $ref: '#/components/schemas/PaidResultPath'
+                      mode:
+                        type: string
+                        enum:
+                          - put
+                          - get
+                          - replace
+                          - refresh
+                        description: |
+                          `put` stores only if nothing is stored yet, `get` reads, `replace` stores over a
+                          writer's own retention manifest (manifest paths only), and `refresh` stores over one
+                          result object (result paths only: a refresh run's, or one found unreadable).
+      responses:
+        '200':
+          description: One URL per requested file.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - recordId
+                  - expiresInSeconds
+                  - files
+                properties:
+                  recordId:
+                    type: string
+                  expiresInSeconds:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - path
+                        - mode
+                        - method
+                        - url
+                        - headers
+                      properties:
+                        path:
+                          type: string
+                        mode:
+                          type: string
+                          enum:
+                            - put
+                            - get
+                            - replace
+                            - refresh
+                        method:
+                          type: string
+                          enum:
+                            - PUT
+                            - GET
+                        url:
+                          type: string
+                        headers:
+                          type: object
+                          additionalProperties:
+                            type: string
+                          description: Headers to send with the URL, including `If-None-Match` on a `put`.
+        '400':
+          description: >-
+            The body is not valid (`VALIDATION_ERROR`): `Not a record id`, `Not a file the paid-result cache can hold`, a path given twice, no files or more than 1000.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The body names a different organisation than the storage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/org:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove every cached model output of the token's organisation (service-to-service)
+      description: |
+        Removes the organisation's whole `paid-results` folder. Safe to repeat: nothing stored is
+        a success. Other storage of the organisation is not touched.
+      operationId: internalPurgeOrgPaidResults
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: The folder is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - purged
+                properties:
+                  purged:
+                    type: boolean
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/{recordId}:
+    parameters:
+      - $ref: '#/components/parameters/PaidResultRecordId'
+    get:
+      tags:
+        - Internal Storage
+      summary: List a record's cached model outputs (service-to-service)
+      description: |
+        One page, in key order, of the files under the record's folder, at most 1000. `prefix`
+        narrows it to one kind (`ocr_page/`) or to the manifests (`manifests/` or
+        `manifests/{rev}/`). `after` is the `next` cursor of the previous page. The organisation
+        comes from the storage token only.
+      operationId: internalListPaidResults
+      security:
+        - scopedToken: []
+      parameters:
+        - name: prefix
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: orgId
+          in: query
+          required: false
+          description: Optional. If sent, it must be the storage token's organisation.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - objects
+                properties:
+                  objects:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - path
+                        - size
+                        - lastModifiedMs
+                      properties:
+                        path:
+                          type: string
+                          description: Relative to the record's folder.
+                        size:
+                          type: integer
+                        lastModifiedMs:
+                          type: integer
+                          description: When storage last wrote the file, in epoch milliseconds.
+                  next:
+                    type: string
+                    description: Present when more files follow; pass it as `after`.
+        '400':
+          description: The record id, `prefix` or another query value is not valid (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: >-
+            `orgId` names a different organisation than the storage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove every cached model output of one record (service-to-service)
+      description: |
+        Removes the record's whole folder, manifests included. Safe to repeat: nothing stored
+        is a success.
+      operationId: internalPurgeRecordPaidResults
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: The folder is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - purged
+                properties:
+                  purged:
+                    type: boolean
+        '400':
+          description: The record id is not valid (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/{recordId}/delete:
+    parameters:
+      - $ref: '#/components/parameters/PaidResultRecordId'
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove named cached model outputs of one record (service-to-service)
+      description: |
+        Removes up to 1000 files of the record's folder in one call. A file that is already gone
+        is counted as removed.
+      operationId: internalDeletePaidResults
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - paths
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                paths:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items:
+                    $ref: '#/components/schemas/PaidResultPath'
+      responses:
+        '200':
+          description: The files are gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - deleted
+                properties:
+                  deleted:
+                    type: integer
+        '400':
+          description: >-
+            The body is not valid (`VALIDATION_ERROR`): a path that is not a cache file, a path given twice, no paths or more than 1000.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The body names a different organisation than the storage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/{recordId}/files/{path}:
+    parameters:
+      - $ref: '#/components/parameters/PaidResultRecordId'
+      - name: path
+        in: path
+        required: true
+        description: The file inside the record's folder; may contain `/`.
+        schema:
+          $ref: '#/components/schemas/PaidResultPath'
+    put:
+      tags:
+        - Internal Storage
+      summary: Store one cached model output on local storage (service-to-service)
+      description: |
+        The local-storage counterpart of a signed `put` URL, as returned by presign. Stores the
+        file only if nothing is stored at the path: a second write is answered `412` and the
+        first file is kept. With `replace=1` (a manifest) or `refresh=1` (a result object), the URLs the
+        `replace` and `refresh` presign modes return, it stores over the file instead. Only answered when storage is local.
+      operationId: internalPutPaidResultFile
+      security:
+        - scopedToken: []
+      parameters:
+        - name: replace
+          in: query
+          required: false
+          description: Store over an existing manifest (`manifests/...` paths only). Cannot be combined with `refresh`.
+          schema:
+            type: string
+            enum:
+              - '1'
+        - name: refresh
+          in: query
+          required: false
+          description: Store over an existing result object (a cache kind's `<kind>/<digest>.json` path only). Cannot be combined with `replace`; any other path is answered `400`.
+          schema:
+            type: string
+            enum:
+              - '1'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: The file was stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - path
+                  - size
+                properties:
+                  path:
+                    type: string
+                  size:
+                    type: integer
+        '400':
+          description: The record id or path is not valid, the body was not sent as bytes, or storage is not local.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '412':
+          description: A file is already stored at this path. It was left as it was.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The file could not be saved. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+    get:
+      tags:
+        - Internal Storage
+      summary: Read one cached model output on local storage (service-to-service)
+      description: The local-storage counterpart of a signed `get` URL. Only answered when storage is local.
+      operationId: internalGetPaidResultFile
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: The file's bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: The record id or path is not valid, or storage is not local.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such file in the caller's organisation (`File not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/{documentId}/download:
     get:
       tags:
@@ -39666,6 +40150,11 @@ paths:
 
         A record that does not exist, one the caller has no access to and one that is in the
         trash all answer `404` with the same message, so a record's existence is not revealed.
+
+        **Opening content.** A request that carries the header `X-Record-Content-Open: 1` is
+        the first call of a content open. For a record from a connected source it also refuses
+        what the content route would refuse: `404` when the connector no longer exists and
+        `409` when it is disabled. Without the header the answer is unchanged.
       operationId: getRecordById
       x-pipeshub-sdk: true
       security:
@@ -40374,6 +40863,27 @@ paths:
         itself (`400`, `401`, scope `403`, malformed body `500`) use `ErrorResponse`.
 
         **Request:** unknown query parameters are ignored.
+
+        **Caching and ranges.** A request without `If-None-Match` and without the header
+        `X-Record-Content-Open: 1` is answered as it always was, whatever other headers it
+        carries (a bare `Range` or `If-Range` is ignored and the whole file is sent). A request that carries
+        `If-None-Match` or that header gets `Cache-Control: private, no-store`, and for a file
+        stored in the platform's own storage an `ETag` that changes when the stored file changes
+        (a converted PDF has a weak `ETag`). A client may send that value back in
+        `If-None-Match`; if the file is unchanged and the caller may read it, the answer is `304`
+        with no body. Every refusal is evaluated first, so a caller without access gets the
+        refusal even with a valid `If-None-Match`, and a refusal never carries an `ETag`.
+        Content from a connected source and artifact content carry no `ETag` and never answer
+        `304`.
+
+        The original bytes of a stored file can be read in parts, on a request that also carries
+        `If-None-Match` or `X-Record-Content-Open: 1`: a request with one range,
+        `Range: bytes=a-b` or `bytes=a-`, of at most 8 MiB is answered `206` with `Content-Range`,
+        and `Accept-Ranges: bytes` says so. A range that starts at or after the end of the file is
+        answered `416` with `Content-Range: bytes */<length>`. Any other `Range` (a suffix, several
+        ranges, a larger span, a malformed value) is ignored and the whole file is sent. A request
+        with `If-Range` is answered with a range only while the value is the current strong
+        `ETag`; otherwise the whole file is sent. A converted PDF is never answered in parts.
       operationId: streamRecordBuffer
       x-pipeshub-sdk: true
       security:

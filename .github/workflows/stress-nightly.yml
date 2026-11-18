@@ -1,0 +1,55 @@
+name: stress-nightly
+
+# Nightly: the unit-tier tests marked `stress` (load tests and wall-clock performance bounds that need a quiet host and
+# are not reliable on a shared per-PR runner). `tests/conftest.py` skips them unless RUN_STRESS_TESTS=1 or `-m stress`.
+# A schedule or a manual run only: it never blocks a pull request.
+
+on:
+  schedule:
+    - cron: '15 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the stress tests
+        working-directory: backend/python
+        env:
+          RUN_STRESS_TESTS: '1'
+          # No external call at collection: LiteLLM would otherwise fetch its model price map.
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+        run: |
+          pytest tests/unit -m stress -p no:cacheprovider --timeout=600 -v --junitxml="$RUNNER_TEMP/stress.xml"
+
+      - name: Fail if no stress test ran
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/stress.xml" --min-tests 1

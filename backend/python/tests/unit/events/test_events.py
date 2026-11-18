@@ -35,6 +35,7 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.parsing.interface import ParseErrorCode, UnsupportedFormatError
 from app.utils.user_errors import to_user_reason, unsupported_file_type
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,6 +54,7 @@ def _make_event_processor():
     processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     config_service = MagicMock()
 
     ep = EventProcessor(logger, processor, graph_provider, config_service)
@@ -300,6 +302,7 @@ class TestMarkRecordStatusEdgeCases:
 
         ep, _, _, gp = _make_event_processor()
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         doc = {"_key": "k8"}
 
         with pytest.raises(IndexingError):
@@ -544,6 +547,7 @@ def _make_multi_collection_event_processor():
     processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     config_service = MagicMock()
 
     ep = EventProcessor(
@@ -854,6 +858,7 @@ class TestOnEventEdgeCases:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
@@ -2855,6 +2860,7 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
     async def test_failed_md5_write_raises(self):
         ep, _, _, gp = _make_event_processor()
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         doc = {"_key": "r1", "recordType": "FILE", "sizeInBytes": 10}
 
         with pytest.raises(IndexingError, match="md5Checksum"):
@@ -2877,6 +2883,8 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
             return "virtualRecordId" not in fields
 
         gp.update_node = AsyncMock(side_effect=_fail_the_identity_write)
+
+        gp.write_attempt_start = attempt_start_via(gp)
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
@@ -3073,6 +3081,7 @@ def _record_attach(ep, gp, finds):
     gp.find_duplicate_records = AsyncMock(side_effect=_find)
     gp.copy_document_relationships = AsyncMock(side_effect=_edges)
     gp.update_node = AsyncMock(side_effect=_update)
+    gp.write_attempt_start = attempt_start_via(gp)
     gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
     return steps, fields_of, patch.object(ep, "sync_vector_membership", side_effect=_sync)
 
@@ -3155,6 +3164,8 @@ class TestProcessedTwinAttachOrdering:
 
         gp.update_node = AsyncMock(side_effect=_update)
 
+        gp.write_attempt_start = attempt_start_via(gp)
+
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
             with pytest.raises(RuntimeError, match="connection reset"):
                 await ep._check_duplicate_by_md5(b"x", _copy(virtualRecordId="vr-own"))
@@ -3193,6 +3204,8 @@ class TestProcessedTwinAttachOrdering:
 
         gp.update_node = AsyncMock(side_effect=_update)
 
+        gp.write_attempt_start = attempt_start_via(gp)
+
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
             with pytest.raises(IndexingError, match="duplicate record fields"):
                 await ep._check_duplicate_by_md5(b"x", _copy())
@@ -3214,6 +3227,8 @@ class TestProcessedTwinAttachOrdering:
             return True
 
         gp.update_node = AsyncMock(side_effect=_update)
+
+        gp.write_attempt_start = attempt_start_via(gp)
 
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match="connection reset"):
@@ -3509,10 +3524,10 @@ class TestDedupHookBeforeReusedStatus:
         calls: list[str] = []
         real_update = ep.update_record_fields
 
-        async def _update(doc: dict, fields: dict) -> bool:
+        async def _update(doc: dict, fields: dict, **kw: object) -> bool:
             if "indexingStatus" in fields:
                 calls.append("status")
-            return await real_update(doc, fields)
+            return await real_update(doc, fields, **kw)
 
         async def _hook() -> None:
             calls.append("hook")

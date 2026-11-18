@@ -1288,9 +1288,9 @@ class TestRedisFailuresAreLoud:
 class TestRedisScrollCeilingAndFanOut:
     @pytest.mark.asyncio
     async def test_scroll_returns_the_page_that_reaches_the_ceiling(self, service, mock_redis_client) -> None:
-        """Every point inside the window comes back, with a cursor; the call
-        for the offset past it is refused rather than answered with
-        next_offset=None, which the caller would read as the last page."""
+        """Every point inside the window comes back, with a cursor; the call for the offset past it goes to FT.AGGREGATE (FT.SEARCH
+        cannot go there), and if that cannot continue the scroll it is refused rather than answered with next_offset=None, which the
+        caller would read as the last page."""
         page = []
         for i in range(100):
             page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
@@ -1300,10 +1300,11 @@ class TestRedisScrollCeilingAndFanOut:
         assert len(result.points) == 100
         assert result.next_offset == "10050"
 
-        mock_redis_client.execute_command.reset_mock()
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError("no aggregate"))
         with pytest.raises(ScrollWindowExceededError, match="ceiling"):
             await service.scroll("records", FilterExpression(), limit=100, offset=result.next_offset)
-        mock_redis_client.execute_command.assert_not_awaited()
+        first = mock_redis_client.execute_command.await_args_list[0].args
+        assert first[0] == "FT.AGGREGATE" and "WITHCURSOR" in first and "LIMIT" not in first  # a cursor, not an offset past the cap
 
     @pytest.mark.asyncio
     async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client) -> None:

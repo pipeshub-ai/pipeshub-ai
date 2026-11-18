@@ -2452,6 +2452,29 @@ class TestMigrateGroupPermissionsToUser:
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_failed_grant_read_is_not_an_empty_group(self) -> None:
+        """The providers answer a failed read with [] unless asked to raise; that must not report every grant moved."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        mock_user = MagicMock()
+        mock_user.id = "u1"
+        tx_store.get_user_by_email.return_value = mock_user
+
+        async def read(*, from_node_id: str, edge_collection: str, raise_on_error: bool = False) -> list[dict]:
+            if raise_on_error:
+                raise ConnectionError("graph read failed")
+            return []
+        tx_store.get_edges_from_node = AsyncMock(side_effect=read)
+
+        with pytest.raises(ConnectionError):
+            await proc.migrate_group_permissions_to_user("g1", "user@test.com", "conn-1", tx_store)
+        tx_store.batch_create_edges.assert_not_awaited()
+        tx_store.get_user_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        tx_store.get_edges_from_node.assert_awaited_once_with(
+            from_node_id=f"{CollectionNames.GROUPS.value}/g1", edge_collection=CollectionNames.PERMISSION.value, raise_on_error=True,
+        )
+
+    @pytest.mark.asyncio
     async def test_creates_new_permission_edges(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
