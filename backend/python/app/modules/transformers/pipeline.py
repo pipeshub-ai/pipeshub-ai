@@ -70,7 +70,26 @@ class IndexingPipeline:
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
             prev_vrid = ctx.prev_virtual_record_id
 
-            if prev_vrid and prev_vrid == record.virtual_record_id:
+            from app.services.paid_cache.run import current_run
+
+            scope = current_run()
+            if prev_vrid and prev_vrid == record.virtual_record_id and scope is not None and scope.refresh:
+                # A user's Force reindex (a refresh run) re-embeds every block: no diff keeps an unchanged block's
+                # point, and no re-key moves one. The record's old points go first, as on a first reconciliation pass.
+                logger.info(
+                    f"📊 Forced reindex of {record.virtual_record_id}: purging its vectors and indexing all blocks"
+                )
+                try:
+                    await sink_orchestrator.vector_store.purge_record_vectors(
+                        record.org_id, record.virtual_record_id, record
+                    )
+                except VirtualRecordBusy:
+                    raise  # the virtual record's lease is busy or lost: the delivery is handed back, not indexed over old points
+                except Exception as e:
+                    # Not purged: an unchanged block would be indexed twice, so the failure is the delivery's.
+                    logger.warning(f"⚠️ Failed to purge vectors for a forced reindex of {record.virtual_record_id}: {e}")
+                    raise
+            elif prev_vrid and prev_vrid == record.virtual_record_id:
                 # 1:1 case: same vrid, do diff-based reconciliation
                 old_metadata_dict = await sink_orchestrator.blob_storage.get_reconciliation_metadata(
                     record.virtual_record_id, record.org_id

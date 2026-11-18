@@ -434,7 +434,15 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     setIsReindexing(true);
     setIsForceReindexOpen(false);
     try {
-      await toast.promise(KnowledgeBaseApi.reindexItem(recordId), {
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: 'record',
+        indexingStatus: recordDetails?.record?.indexingStatus,
+        hasChildren: false,
+        connector: recordDetails?.record?.connectorName,
+      });
+      // The Force reindex action of an indexed file re-parses and re-indexes it: nothing stored is reused.
+      const force = requiresForceReindexConfirmation(reindexNode);
+      await toast.promise(force ? KnowledgeBaseApi.reindexItem(recordId, 0, undefined, true) : KnowledgeBaseApi.reindexItem(recordId), {
         loading: t('recordView.reindexLoading'),
         success: t('recordView.reindexSuccess'),
         error: t('recordView.reindexError'),

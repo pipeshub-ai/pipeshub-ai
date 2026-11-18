@@ -8055,11 +8055,18 @@ components:
     ReindexRecordRequestBody:
       type: object
       description: |
-        Optional body for single-record reindex. Only `depth` and `statusFilters` are read;
-        any other field is dropped by the validator before the handler runs (there is no
-        `force` option: the handler always sends `force: false`). No body, an empty object
-        or an empty `statusFilters` list mean depth `0` and no status filter.
+        Optional body for single-record reindex. Only `depth`, `statusFilters` and `force` are read;
+        any other field is dropped by the validator before the handler runs. No body, an empty object
+        or an empty `statusFilters` list mean depth `0`, no status filter and no force.
       properties:
+        force:
+          type: boolean
+          default: false
+          description: |
+            `true` is a Force reindex: the record is parsed and indexed again from scratch, and no
+            stored result (parse, OCR, image and table descriptions, classification, entities, embeddings)
+            is reused, so every model call is paid for again. Only the literal `true` forces; a plain
+            reindex reuses what is stored.
         depth:
           type: integer
           minimum: -1
@@ -42165,8 +42172,9 @@ paths:
         For a connector record, read access to the record is enough. A record of a disabled
         connector is refused with `409`, a record in the trash with `400`.
 
-        **Request:** only `depth` and `statusFilters` are read; other body fields (`force`
-        included) and any query parameter are ignored. The body is optional.
+        **Request:** only `depth`, `statusFilters` and `force` are read; other body fields and any
+        query parameter are ignored. The body is optional. `force: true` re-parses and re-indexes the
+        record without reusing any stored result.
       operationId: reindexRecord
       x-pipeshub-sdk: true
       security:
