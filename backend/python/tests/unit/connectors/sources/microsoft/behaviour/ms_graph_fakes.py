@@ -234,7 +234,7 @@ class FakeCheckpointStore:
         async with self.transaction() as tx_store:
             return await func(tx_store, *args, **kwargs)
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict[str, Any]]:
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> list[dict[str, Any]]:
         if edge_collection == "inheritPermissions" and from_node_id in self.inheriting:
             return [{"_from": from_node_id}]
         return []

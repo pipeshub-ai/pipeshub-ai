@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,8 @@ from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
+    apply_issue_access,
+    plan_level_reread,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
@@ -310,6 +312,85 @@ class TestParentKeyLookup:
             return_value=MagicMock(status=200, json=MagicMock(return_value={"id": "8"})))))
         assert await connector._resolve_issue_id_from_key_or_id(issue_id=None, issue_key="P-8", context="x") == "8"
         assert connector._issue_id_to_key_cache["8"] == "P-8"
+
+
+class _KeptSyncPoints:
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}
+
+    async def read_sync_point(self, key: str) -> dict:
+        return dict(self.points.get(key, {}))
+
+    async def update_sync_point(self, key: str, data: dict) -> None:
+        self.points[key] = dict(data)
+
+
+HOUR_MS = 60 * 60 * 1000
+
+
+async def _roles_at(points: _KeptSyncPoints, now_ms: int, *, roles: dict | None) -> JiraDataCenterConnector:
+    connector = _connector()
+    connector.issues_sync_point = points
+    connector.notify = AsyncMock()
+    connector._app_roles_forbidden, connector._app_roles_mapping = roles is None, roles or {}
+    with patch("app.connectors.sources.atlassian.jira_data_center.connector.get_epoch_timestamp_in_ms",
+               return_value=now_ms):
+        await connector._read_level_roles()
+    return connector
+
+
+class TestRolesKeptForLevels:
+    """applicationrole answers 403 to an account that is not an administrator: the last role list read is applied for
+    a bounded time, so a level's other holders still follow Jira on the issues' copies."""
+    ROLES = {"jira-software": [{"groupId": "g-1"}]}
+    LEVEL = [{"type": "applicationRole", "parameter": "jira-software"},
+             {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
+
+    @staticmethod
+    def _copy(connector: JiraDataCenterConnector, members: list, stored: dict) -> tuple[tuple, list[str]]:
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": members})
+        plan = plan_level_reread(security, stored, is_new_project=False, app_roles_mapping=connector._level_roles)
+        grants, _ = apply_issue_access(_ticket(), {"security": {"id": "1"}}, is_subtask=False, project_key="P",
+                                       context=security, app_roles_mapping=connector._level_roles)
+        return plan[:2], sorted(g.external_id for g in grants)
+
+    def _stored(self) -> dict:
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": self.LEVEL})
+        return security.level_fingerprints(self.ROLES)
+
+    @pytest.mark.asyncio
+    async def test_a_holder_removed_while_the_roles_are_refused_is_removed_and_the_roles_groups_stay(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, HOUR_MS, roles=None)
+        plan, grants = self._copy(connector, self.LEVEL[:2], self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-1", "g-2"])
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_the_roles_groups_are_dropped(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        plan, grants = self._copy(connector, self.LEVEL, self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-2", "g-3"])
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_role_group_change_during_the_refusal_does_not_outlast_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        assert (await _roles_at(points, 23 * HOUR_MS, roles=None))._level_roles == self.ROLES
+        assert (await _roles_at(points, 25 * HOUR_MS, roles=None))._level_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_an_unread_role_list_drops_the_roles_groups(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        connector._app_roles_forbidden, connector._app_roles_unread = False, True
+        await connector._read_level_roles()
+        plan, grants = self._copy(connector, self.LEVEL[:2], self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-2"])
 
 
 class TestIssuesNamingNewAccounts:
