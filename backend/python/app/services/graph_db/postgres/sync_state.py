@@ -8,6 +8,12 @@ from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.core.org_context import MissingOrgContext, current_org_id
+from app.modules.indexing.record_diagnostics import (
+    WriteKind,
+    reference,
+    sql_patch,
+    with_run_patch,
+)
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -158,13 +164,14 @@ class SyncStateMixin(PgBase):
             return
         _VALIDATOR.validate_node_update(CollectionNames.RECORDS.value, {"indexingStatus": status, **({"reason": reason} if reason is not None else {})})
         try:
-            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
-                SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END
+            run = sql_patch("n.doc", WriteKind.STATUS_VAR, now="$8::bigint", status="$3::text")
+            await self._q(lambda tx: tx.execute(with_run_patch("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
+                SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END || {RUN_PATCH}
                 WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'connectorId' = $2
                   AND (cardinality($4::text[]) = 0 OR NOT coalesce(n.doc->>'indexingStatus', '') = ANY($4::text[]))
                   AND ($5::text[] IS NULL OR n.doc->>'indexingStatus' = ANY($5::text[]))
-                  AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""",
-                                                 org, connector_id, status, excluded, included or None, _vis(visibility), reason), transaction, write=True)
+                  AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""", run),
+                                                 org, connector_id, status, excluded, included or None, _vis(visibility), reason, get_epoch_timestamp_in_ms()), transaction, write=True)
         except Exception:
             self.logger.error("❌ Failed to reset indexing status for connector %s", connector_id)
             raise
@@ -191,7 +198,8 @@ class SyncStateMixin(PgBase):
                 return 0
             now = get_epoch_timestamp_in_ms()
             updates = [{"id": r["id"], "indexingStatus": new_indexing_status, **indexed_copy_fields(new_indexing_status), "lastIndexTimestamp": now,
-                        "isDirty": False, "virtualRecordId": virtual_record_id, "extractionStatus": extraction_status, **({"reason": reason} if reason else {})}
+                        "isDirty": False, "virtualRecordId": virtual_record_id, "extractionStatus": extraction_status, **({"reason": reason} if reason else {}),
+                        **reference({}, WriteKind.STATUS_VAR, now, status=new_indexing_status)}
                        for r in rows]
             if new_indexing_status in _RECONCILED_STATUSES:     # in the same batch as the promotion, so a crash cannot leave copies with nothing to trigger their taxonomy
                 updates.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,

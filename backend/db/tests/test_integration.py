@@ -70,9 +70,9 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
 HEADS = {"kernel": (18, 11), "platform": (8, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (5, 0),
-         "graph": (13, 0), "kg": (17, 17), "retrieval": (4, 0)}
+         "graph": (13, 0), "kg": (17, 17), "retrieval": (6, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0008", "identity_0005", "content_0003", "oauth_0004", "platform_data_0005", "kg_0017", "retrieval_0004", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0008", "identity_0005", "content_0003", "oauth_0004", "platform_data_0005", "kg_0017", "retrieval_0006", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):

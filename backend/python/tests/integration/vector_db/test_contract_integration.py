@@ -28,6 +28,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 VISIBILITY_TIMEOUT = 45.0
 
 
+def _unit(vector: list[float]) -> list[float]:
+    """A vector scaled to length 1: Qdrant stores cosine vectors normalised, so the direction is what must come back."""
+    norm = sum(x * x for x in vector) ** 0.5 or 1.0
+    return [x / norm for x in vector]
+
+
 async def _is(read, expected) -> bool:
     return await read() == expected
 
@@ -84,6 +90,102 @@ class _VectorDBContractTests:
             await wait_for(lambda: points_count_is(len(points)), timeout=VISIBILITY_TIMEOUT)
             await vector_service.delete_points(col, flt)
             await wait_for(lambda: points_count_is(0), timeout=VISIBILITY_TIMEOUT)
+        finally:
+            await vector_service.delete_collection(col)
+
+    async def test_the_stray_sweep_removes_only_unreferenced_blocks_and_is_idempotent(self, vector_service) -> None:
+        """The sweep goes through the provider interface alone: scroll the record, delete by block id."""
+        from app.modules.indexing.stray_sweep import sweep_stray_points
+
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_sweep")
+        org = "org-sweep"
+        blocks = {"keep-1": 2, "keep-2": 1, "stray-1": 2, "stray-2": 1}
+        points = [
+            VectorPoint(
+                id=point_id(f"sweep-{block}-{n}"), dense_vector=make_dense([1.0, float(n)]),
+                payload={"page_content": f"{block} {n}",
+                         "metadata": {"orgId": org, "virtualRecordId": "r-sweep", "blockId": block}},
+            )
+            for block, count in blocks.items() for n in range(count)
+        ]
+        other_org = VectorPoint(
+            id=point_id("sweep-other-org"), dense_vector=make_dense([1.0]),
+            payload={"page_content": "x", "metadata": {"orgId": "org-other", "virtualRecordId": "r-sweep",
+                                                         "blockId": "stray-1"}},
+        )
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            # the registry indexes these fields on every collection it creates
+            for field in ("metadata.blockId", "metadata.virtualRecordId"):
+                await vector_service.create_index(col, field, {"type": "keyword"})
+            await vector_service.upsert_points(col, [*points, other_org])
+
+            async def count_is(n: int) -> bool:
+                return (await vector_service.get_collection_info(col)).points_count == n
+
+            await wait_for(lambda: count_is(len(points) + 1), timeout=VISIBILITY_TIMEOUT)
+            await vector_service.make_searchable(col)
+            result = await sweep_stray_points(vector_service, col, org_id=org, virtual_record_id="r-sweep",
+                                              keep_block_ids={"keep-1", "keep-2"})
+            assert result.stray_blocks == 2
+            await wait_for(lambda: count_is(3 + 1), timeout=VISIBILITY_TIMEOUT)  # 3 kept + the other org's
+            await vector_service.make_searchable(col)
+            again = await sweep_stray_points(vector_service, col, org_id=org, virtual_record_id="r-sweep",
+                                             keep_block_ids={"keep-1", "keep-2"})
+            assert again.stray_blocks == 0 and await count_is(4)
+        finally:
+            await vector_service.delete_collection(col)
+
+    async def test_scroll_with_vectors_returns_the_stored_vectors_and_payload(self, vector_service) -> None:
+        """A point read back whole can be written under another id with no new embedding."""
+        from app.services.vector_db.models import SparseVector
+
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_vec")
+        org = "org-vec"
+        sparse = SparseVector(indices=[3, 9], values=[0.5, 0.25])
+        points = [
+            VectorPoint(
+                id=point_id(f"vec-{n}"), dense_vector=make_dense([1.0, float(n), 0.5]),
+                sparse_vector=sparse if provider == "qdrant" else None,
+                payload={"page_content": f"text {n}", "metadata": {"orgId": org, "virtualRecordId": "r-vec", "blockId": f"b{n}"}},
+            )
+            for n in range(3)
+        ]
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            for field in ("metadata.blockId", "metadata.virtualRecordId"):
+                await vector_service.create_index(col, field, {"type": "keyword"})
+            await vector_service.upsert_points(col, points)
+            flt = await vector_service.filter_collection(must={"orgId": org, "virtualRecordId": "r-vec"})
+
+            async def count_is(n: int) -> bool:
+                return (await vector_service.get_collection_info(col)).points_count == n
+
+            await wait_for(lambda: count_is(3), timeout=VISIBILITY_TIMEOUT)
+            await vector_service.make_searchable(col)
+            seen: dict[str, VectorPoint] = {}
+            offset = None
+            while True:
+                page = await vector_service.scroll_with_vectors(col, flt, 2, offset)
+                seen.update({p.id: p for p in page.points})
+                if not page.next_offset:
+                    break
+                offset = page.next_offset
+            assert set(seen) == {p.id for p in points}
+            for original in points:
+                got = seen[original.id]
+                assert got.payload["page_content"] == original.payload["page_content"]
+                assert got.payload["metadata"]["blockId"] == original.payload["metadata"]["blockId"]
+                assert _unit(got.dense_vector) == pytest.approx(_unit(original.dense_vector), abs=1e-2)
+                if provider == "qdrant":
+                    assert got.sparse_vector.indices == sparse.indices
+            # and it can be written again under another id: the move the migration makes
+            moved = [VectorPoint(id=point_id(f"moved-{p.id}"), dense_vector=p.dense_vector, sparse_vector=p.sparse_vector,
+                                 payload=p.payload) for p in seen.values()]
+            await vector_service.upsert_points(col, moved)
+            await wait_for(lambda: count_is(6), timeout=VISIBILITY_TIMEOUT)
         finally:
             await vector_service.delete_collection(col)
 

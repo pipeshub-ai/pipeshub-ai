@@ -18,6 +18,7 @@ import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future
 from concurrent.futures import wait as futures_wait
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -359,6 +360,14 @@ class TestProcessMessageWrapperExtended:
 # Fix 6: retry backoff delay applied before semaphore acquisition
 # ===================================================================
 
+_NOW = 1_000_000.0
+
+
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp not-before from a frozen clock: read twice on the wall clock, a stalled runner pushed it past the window."""
+    monkeypatch.setattr("app.services.messaging.kafka.consumer.indexing_consumer.time", SimpleNamespace(time=lambda: _NOW))
+
+
 class TestRetryDelayBeforeSemaphore:
     """A re-queued message is stamped with a not-before timestamp, and the
     consumer waits it out before acquiring the parsing semaphore — so the
@@ -371,21 +380,20 @@ class TestRetryDelayBeforeSemaphore:
         assert _compute_retry_backoff_seconds(10) == pytest.approx(300.0)
 
     @pytest.mark.asyncio
-    async def test_requeue_message_stamps_not_before(self, logger, plain_config):
+    async def test_requeue_message_stamps_not_before(self, logger, plain_config, monkeypatch):
         """_requeue_message stamps an absolute _retry_not_before sized by retry_count."""
         consumer = IndexingKafkaConsumer(logger, plain_config)
         consumer.producer = AsyncMock()
 
         message = StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
-        before = time.time()
+        _freeze_clock(monkeypatch)
 
         await consumer._requeue_message("record-events", message, "stable-id", retry_count=2)
 
         consumer.producer.send_event.assert_awaited_once()
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
         assert sent_payload["_retry_tracking_id"] == "stable-id"
-        # retry_count=2 -> ~60s backoff
-        assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
+        assert sent_payload["_retry_not_before"] == _NOW + 60.0  # retry_count=2: a 60 s backoff
 
     @pytest.mark.asyncio
     async def test_requeue_message_keeps_request_id_and_org(self, logger, plain_config) -> None:
@@ -404,10 +412,10 @@ class TestRetryDelayBeforeSemaphore:
         assert seen == [RequestContext(root_id="root-1", org_id="org-1")]
 
     @pytest.mark.asyncio
-    async def test_requeue_message_holds_for_a_given_delay(self, logger, plain_config) -> None:
+    async def test_requeue_message_holds_for_a_given_delay(self, logger, plain_config, monkeypatch) -> None:
         consumer = IndexingKafkaConsumer(logger, plain_config)
         consumer.producer = AsyncMock()
-        before = time.time()
+        _freeze_clock(monkeypatch)
 
         await consumer._requeue_message(
             "pipeline.classify", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
@@ -415,7 +423,7 @@ class TestRetryDelayBeforeSemaphore:
         )
 
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
-        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+        assert sent_payload["_retry_not_before"] == _NOW + 90.0
 
     @pytest.mark.asyncio
     async def test_requeue_failure_does_not_commit_original(
@@ -1858,6 +1866,44 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer.retry_manager.clear_deliveries.assert_awaited_once()
         governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
         governor_consumer._commit_offset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("label", "repairs_queued"), [("same-bytes", 1), (None, 0)])
+    async def test_a_give_up_queues_one_membership_repair_only_for_a_same_bytes_hand_back(
+        self, governor_consumer, label, repairs_queued
+    ) -> None:
+        from app.modules.indexing.connector_off_events import SameBytesSkipPending
+        from tests.support.give_up_sink import (
+            completed_record_sink,
+            repairs,
+            update_message_value,
+        )
+
+        error = SameBytesSkipPending("r1: skip") if label else concurrency.RequeueWithoutAttempt("wait")
+        sink = completed_record_sink()
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=10)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+        governor_consumer.disposition_sink = sink
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise error
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+            env.redis_max_deliveries = 10
+            env.record_processing_timeout = 5.0
+            result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(
+                _make_message(value=update_message_value())
+            )
+
+        assert result is False
+        governor_consumer._requeue_message.assert_not_awaited()
+        assert len(repairs(sink)) == repairs_queued
 
     @pytest.mark.asyncio
     async def test_a_repeated_pause_hand_back_is_logged_below_warning(self, governor_consumer, caplog) -> None:

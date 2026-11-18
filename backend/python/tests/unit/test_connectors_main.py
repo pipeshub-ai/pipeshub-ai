@@ -938,8 +938,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -951,17 +949,15 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock) as mock_shutdown,
             patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 assert mock_app.container is mock_container
                 assert mock_app.state.connector_registry is mock_registry
 
             mock_shutdown.assert_awaited_once()
+            mock_toolset_registry.auto_discover_toolsets.assert_called_once()
 
     async def test_startup_non_arangodb_skips_migration(self):
         """Non-arangodb data store skips arango service and migration."""
@@ -979,8 +975,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -992,11 +986,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 assert mock_app.container is mock_container
@@ -1091,8 +1082,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1104,11 +1093,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 pass  # Startup succeeded despite init failure
@@ -1129,8 +1115,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1142,11 +1126,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=RuntimeError("kafka fail")),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 await mock_container.post_startup_task
@@ -1167,8 +1148,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1177,11 +1156,8 @@ class TestLifespan:
             patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
             patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock, side_effect=RuntimeError("producer fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             with pytest.raises(RuntimeError, match="producer fail"):
                 async with lifespan(mock_app):
@@ -1203,8 +1179,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1216,11 +1190,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 pass  # Should not raise
@@ -1241,8 +1212,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1254,11 +1223,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 pass  # Should not raise on shutdown error

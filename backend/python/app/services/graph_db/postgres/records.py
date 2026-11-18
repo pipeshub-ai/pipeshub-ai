@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
 from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import Record
+from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
@@ -310,6 +311,22 @@ class RecordsMixin(PgBase):
                                         "relationshipType": relation_type, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
                                       CollectionNames.NODE_RELATIONS.value, transaction)
 
+    async def write_attempt_start(self, record_id: str, fields: dict[str, Any], now: int | None = None, transaction: str | None = None) -> bool:
+        """See ``IGraphDBProvider.write_attempt_start``: one UPDATE, the run rule read from the stored document."""
+        org = current_org_id()
+        upd = {k: v for k, v in fields.items() if k not in ("_key", "_id", "id")}
+        _VALIDATOR.validate_node_update(_RECORDS, upd)
+        rev = upd.get("contentRev")
+        run = sql_patch("doc", WriteKind.ATTEMPT_START, now="$4::bigint", rev="$5::text" if rev is not None else None)
+        args: list[Any] = [org, record_id, _j(upd), now if now is not None else get_epoch_timestamp_in_ms()]
+        if rev is not None:
+            args.append(rev)
+        row = await self._q(lambda tx: tx.fetchval(with_run_patch(
+            """/* pipeshub:graph.write_attempt_start */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb)
+            FROM jsonb_each(doc || {RUN_PATCH} || $3::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+            WHERE org_id = $1 AND coll = 'records' AND id = $2 RETURNING 1) SELECT count(*) FROM u""", run), *args), transaction, write=True)
+        return bool(row)
+
     async def compare_and_set_indexing_status(self, record_ids: list[str], expected: str, new_status: str, transaction: str | None = None) -> list[str]:
         """Set ``indexingStatus`` on each id that still holds ``expected``; returns the ids set. One statement: the update re-checks the status of a
         row it waited for, so a status another writer committed meanwhile is read, not overwritten."""
@@ -319,12 +336,13 @@ class RecordsMixin(PgBase):
             return []
         extra = {"queuedAtTimestamp": get_epoch_timestamp_in_ms()} if new_status == ProgressStatus.QUEUED.value else {}
         _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": new_status, **extra})
+        run = sql_patch("doc", WriteKind.STATUS_VAR, now="$6::bigint", status="$4::text")
         # A database error raises (Neo4j logs it and returns []): the Kafka handler reads [] as "the record moved on" and discards the message, which
         # would drop the final FAILED marking and leave the record in its old status; raising lets the consumer retry.
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
-            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
-            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
-                                              org, ids, expected, new_status, _j(extra)), transaction, write=True)
+        rows = await self._q(lambda tx: tx.fetch(with_run_patch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
+            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb || {RUN_PATCH}
+            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""", run),
+                                              org, ids, expected, new_status, _j(extra), get_epoch_timestamp_in_ms()), transaction, write=True)
         return [r["id"] for r in rows]
 
     async def list_unsupported_page(self, org_id: str, connector_id: str, after_key: str | None, limit: int) -> list[dict[str, Any]]:
@@ -353,11 +371,12 @@ class RecordsMixin(PgBase):
         if to_status == ProgressStatus.QUEUED.value:
             extra["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
         _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": to_status, **{k: v for k, v in extra.items() if v is not None}})
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.transition_unsupported */ UPDATE graph.nodes
-            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
+        run = sql_patch("doc", WriteKind.STATUS_VAR, now="$6::bigint", status="$4::text")
+        rows = await self._q(lambda tx: tx.fetch(with_run_patch("""/* pipeshub:graph.transition_unsupported */ UPDATE graph.nodes
+            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb || {RUN_PATCH}
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3
-              AND coalesce(doc->>'isDeleted', '') <> 'true' RETURNING id""",
-                                                 org, ids, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, to_status, _j(extra)), None, write=True)
+              AND coalesce(doc->>'isDeleted', '') <> 'true' RETURNING id""", run),
+                                                 org, ids, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, to_status, _j(extra), get_epoch_timestamp_in_ms()), None, write=True)
         return [r["id"] for r in rows]
 
     async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
@@ -369,11 +388,12 @@ class RecordsMixin(PgBase):
             return
         _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": status})
         try:
-            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.update_indexing_status_for_record_ids */ UPDATE graph.nodes
-                SET doc = doc || jsonb_build_object('indexingStatus', $3::text)
+            run = sql_patch("doc", WriteKind.STATUS_VAR, now="$4::bigint", status="$3::text")
+            await self._q(lambda tx: tx.execute(with_run_patch("""/* pipeshub:graph.update_indexing_status_for_record_ids */ UPDATE graph.nodes
+                SET doc = doc || jsonb_build_object('indexingStatus', $3::text) || {RUN_PATCH}
                 WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
-                  AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""",
-                                                 org, ids, status), None, write=True)
+                  AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
+                                                 org, ids, status, get_epoch_timestamp_in_ms()), None, write=True)
         except Exception as e:
             self.logger.error("Failed to update records to %s: %s", status, e)
 

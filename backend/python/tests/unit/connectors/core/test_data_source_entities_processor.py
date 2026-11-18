@@ -230,6 +230,53 @@ class TestPlaceholdersAreRestricted:
             assert order == ["link"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("open_already", [True, False])
+    async def test_the_org_team_is_let_in_only_after_unlinked_users_lose_their_grants(self, open_already: bool) -> None:
+        """Every call removes the grants left on users the connector does not link, the gate open or not, in one
+        statement that checks the link (a user linked meanwhile keeps theirs), then lets the All team through and says
+        whether the edge is there."""
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+        calls: list[tuple] = []
+        edges = {("org-1", "conn-1")} if open_already else set()
+        tx_store.remove_unlinked_user_access_to_connector = AsyncMock(side_effect=lambda c: calls.append(("drop", c)))
+
+        async def ensure_team_app_edge(connector_id: str, org_id: str) -> None:
+            calls.append(("open", org_id))
+            edges.add((org_id, connector_id))
+
+        tx_store.ensure_team_app_edge = AsyncMock(side_effect=ensure_team_app_edge)
+        tx_store.get_edge = AsyncMock(side_effect=lambda f, fc, t, tc, c, **k: {"_key": "e"} if ("org-1", t) in edges else None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        assert await proc.open_app_to_org_team("conn-1") is True
+        assert calls == [("drop", "conn-1"), ("open", "org-1")]
+        assert edges == {("org-1", "conn-1")}
+
+    @pytest.mark.asyncio
+    async def test_an_org_without_its_all_team_is_not_reported_open(self) -> None:
+        """The store writes no edge when the All team is missing, without an error: the caller must not save a
+        confirmation for a gate that is not open."""
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+        tx_store.remove_unlinked_user_access_to_connector = AsyncMock(return_value=0)
+        tx_store.ensure_team_app_edge = AsyncMock()
+        tx_store.get_edge = AsyncMock(return_value=None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        assert await proc.open_app_to_org_team("conn-1") is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cleanup_leaves_the_org_team_out(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+        tx_store.remove_unlinked_user_access_to_connector = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        tx_store.ensure_team_app_edge = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        with pytest.raises(ConnectionError):
+            await proc.open_app_to_org_team("conn-1")
+        tx_store.ensure_team_app_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
         # Without explicit transactions the first delete has already committed.
         from app.config.constants.arangodb import Connectors
@@ -3837,7 +3884,7 @@ class TestGetUsers:
         result = await proc.get_all_active_users()
 
         assert result == mock_users
-        tx_store.get_users.assert_awaited_once_with("org-1", active=True)
+        tx_store.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_get_all_app_users(self):

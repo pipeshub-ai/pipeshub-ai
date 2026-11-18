@@ -284,7 +284,7 @@ class TestAuthenticatedAs:
             await processor.link_authenticator_to_source_user(
                 app, seeded_graph["creator_uid"], new_email, new_source_id, Connectors.GITLAB)
 
-            stub = await graph_provider.get_user_by_email(new_email)
+            stub = await graph_provider.get_user_by_email(new_email, org_id=org)
             assert stub is not None, "a source account with no PipesHub login gets an inactive stub"
             assert stub.is_active is False
             assert stub.user_id == new_source_id, "the stub carries the source id, not the email"
@@ -298,7 +298,7 @@ class TestAuthenticatedAs:
             assert app not in await _links_of(graph_provider, seeded_graph["creator"])
         finally:
             await graph_provider.remove_authenticated_as(app)
-            stub = await graph_provider.get_user_by_email(new_email)
+            stub = await graph_provider.get_user_by_email(new_email, org_id=org)
             if stub:
                 # batch_upsert_app_users also wires the stub to the org and the app
                 users, apps = CollectionNames.USERS.value, CollectionNames.APPS.value
