@@ -161,7 +161,16 @@ describe("start --detach, cannot run", () => {
   test("a background launcher that cannot be started is reported, not thrown", async () => {
     const d = mkdtempSync(join(root, "data-")), events: Record<string, unknown>[] = [];
     assert.equal(await startDetached({ dataDir: d, bundle: root }, (e) => events.push(e), [], [join(d, "no-such-node")]), 1);
-    assert.equal(events.at(-1)?.event, "error");
+    assert.equal(events.at(-1)?.code, "start_failed");
+    assert.match(String(events.at(-1)?.message), /ENOENT/);
+  });
+  test("the background launcher's own error is read from its bytes, after an earlier non-ASCII line", async () => {
+    const d = mkdtempSync(join(root, "data-")), events: Record<string, unknown>[] = [];
+    mkdirSync(join(d, "logs"));
+    writeFileSync(join(d, "logs", "launcher.log"), "/home/José\n");
+    const child = `console.log(JSON.stringify({ event: "error", code: "port_in_use", message: "taken" }))`;
+    assert.equal(await startDetached({ dataDir: d, bundle: root }, (e) => events.push(e), [], [process.execPath, "-e", child]), 1);
+    assert.equal(events.at(-1)?.code, "port_in_use");
   });
 });
 
@@ -607,6 +616,35 @@ describe("launcher", () => {
     rmSync(join(d, "launcher.json"), { recursive: true });
     const w = launch(b, d, "start"); await w.until("ready");   // the lock was released
     await cli(b, d, "stop"); await w.exited;
+  });
+
+  test("a ports.json that is not a map: a new folder gets new ports; an existing database is not given a new web port", async () => {
+    const b = fakeBundle(), d = join(root, "data portsnull");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "ports.json"), "null");
+    const a = launch(b, d, "start"); await a.until("ready");
+    await cli(b, d, "stop"); await a.exited;
+    rmSync(join(d, "ports.json"));
+    const w = launch(b, d, "start");
+    assert.equal(await w.exited, 1);
+    assert.match(w.events.find((e) => e.event === "error")?.message ?? "", /ports\.json has no web port/);
+  });
+
+  test("leftovers this start could not end stay on record after it stops", async () => {
+    const b = fakeBundle(), d = join(root, "data keepleftover");
+    // a group whose only member is a zombie nobody reaps: it answers kill(-pgid, 0) after SIGKILL, so it cannot be proven gone
+    const holder = spawn("python3", ["-c", "import os, time\npid = os.fork()\nif pid == 0:\n    os.setpgid(0, 0); os._exit(0)\nprint(pid, flush=True); time.sleep(30)"], { stdio: ["ignore", "pipe", "ignore"] });
+    live.push(holder);
+    const zpid = Number(await new Promise<string>((r) => holder.stdout!.once("data", (c) => r(String(c)))));
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "launcher.json"), JSON.stringify({ pid: spawnSync("true").pid, phase: "ready", services: { query: zpid }, ports: {} }));
+    const l = launch(b, d, "start");
+    const code = await l.exited;
+    holder.kill("SIGKILL");
+    assert.equal(code, 1);
+    assert.match(l.events.find((e) => e.event === "error")?.message ?? "", /still running after SIGKILL/);
+    const kept = existsSync(join(d, "launcher.json")) ? JSON.parse(readFileSync(join(d, "launcher.json"), "utf8")) : undefined;
+    assert.equal(kept?.leftover?.services?.query, zpid, "the record of the group it could not end was deleted");
   });
 
   test("a dead launcher whose lock is still held a moment: stop waits for it and ends the leftovers", async () => {
