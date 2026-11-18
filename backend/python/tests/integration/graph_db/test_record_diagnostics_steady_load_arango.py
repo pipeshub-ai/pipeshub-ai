@@ -59,6 +59,49 @@ async def env():  # noqa: ANN201
     await p.disconnect()
 
 
+async def write_within(write, recovery_s: float) -> int:
+    """Run ``write`` again while it is refused transiently, until it has landed, all within ``recovery_s``. Each awaited write is bounded by what
+    is left of the deadline, so a write that is slow and then succeeds (or never answers) fails as well as one that keeps being refused.
+    Returns the number of attempts."""
+    deadline = time.monotonic() + recovery_s
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            async with asyncio.timeout(max(deadline - time.monotonic(), 0)):
+                await write()
+            return attempts
+        except RecordSchemaNarrowError:
+            assert time.monotonic() < deadline, f"not recovered within {recovery_s:.0f}s ({attempts} attempts)"
+            await asyncio.sleep(0.5)
+        except TimeoutError:
+            raise AssertionError(f"not recovered within {recovery_s:.1f}s: a write was still running at the deadline ({attempts} attempts)") from None
+
+
+async def test_the_recovery_deadline_also_bounds_a_write_that_succeeds_late() -> None:
+    """The deadline covers a write that succeeds after it (a slow success), not only refused ones: it fails the test."""
+    async def slow_success() -> None:
+        await asyncio.sleep(1.0)
+
+    async def quick_success() -> None:
+        return None
+
+    assert await write_within(quick_success, 0.3) == 1
+    with pytest.raises(AssertionError, match="not recovered"):
+        await write_within(slow_success, 0.3)
+    refused = 0
+
+    async def refused_then_slow() -> None:
+        nonlocal refused
+        refused += 1
+        if refused == 1:
+            raise RecordSchemaNarrowError("narrow")
+        await asyncio.sleep(1.0)
+
+    with pytest.raises(AssertionError, match="not recovered"):
+        await write_within(refused_then_slow, 0.8)
+
+
 @pytest.mark.parametrize(("savers", "hold_max"), [(4, 0.4), (6, 7.0)], ids=["short-transactions", "one-always-open"])
 async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> None:
     p, s = env
@@ -109,15 +152,7 @@ async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> N
     # (the next tries are refused without a new widening until the lease or the pending change ends) and the retries between them all
     # count against one deadline, after which the schema must be wide and the write landed.
     recovery_s = RECOVERY_S + hold_max
-    attempts = 0
-    while True:  # the write's owner runs it again when it is refused transiently
-        attempts += 1
-        try:
-            await p.update_node(tainted, RECORDS, {"indexingStatus": "QUEUED"})
-            break
-        except RecordSchemaNarrowError:
-            assert time.monotonic() - trigger_started < recovery_s, f"not recovered within {recovery_s:.0f}s ({attempts} attempts)"
-            await asyncio.sleep(0.5)
+    attempts = await write_within(lambda: p.update_node(tainted, RECORDS, {"indexingStatus": "QUEUED"}), recovery_s)
     widened_after = time.monotonic() - trigger_started
     await asyncio.sleep(10)
     stop.set()
@@ -128,7 +163,7 @@ async def test_rewiden_under_steady_load(env, savers: int, hold_max: float) -> N
     p99 = window[int(len(window) * 0.99) - 1]
     total = _counter("pipeshub_record_schema_rewiden_total") - before_total
     contended = _counter("pipeshub_record_schema_rewiden_contended_total") - before_contended
-    print(f"seed={seed} savers={savers} hold_max={hold_max}s: trigger write landed after {widened_after:.2f}s; plain writes in window {len(window)}, "
+    print(f"seed={seed} savers={savers} hold_max={hold_max}s: trigger write landed after {widened_after:.2f}s ({attempts} attempts); plain writes in window {len(window)}, "
           f"max wait {window[-1]:.2f}s, p99 {p99:.3f}s (bound {STALL_BOUND_S}s); saves ok={saves['ok']} refused={saves['refused']} "
           f"other={len(saves['other'])} first_refusal={saves['first_refusal']}; rewiden_total +{total:g}, contended +{contended:g}")
     assert (await s.doc(tainted))["indexingStatus"] == "QUEUED"
