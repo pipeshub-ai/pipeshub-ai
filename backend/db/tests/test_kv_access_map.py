@@ -317,6 +317,7 @@ def matrix(cluster):
         a.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
 
 
+@pytest.mark.postgres
 @pytest.mark.parametrize("role", sorted(READS))
 def test_the_role_can_read_every_key_it_reads(matrix, role):
     """Under-grant, against the matrix: every READS entry is readable in enforce (a prefix through a key under it)."""
@@ -324,6 +325,7 @@ def test_the_role_can_read_every_key_it_reads(matrix, role):
     assert [e for e, k in probe.items() if not matrix(role, k)] == []
 
 
+@pytest.mark.postgres
 @pytest.mark.parametrize("role", sorted(READS))
 def test_the_role_can_read_nothing_else(matrix, role):
     """Over-grant: on every key the code names, the keys under it and made-up ones, the matrix grants exactly what READS lists."""
@@ -338,6 +340,7 @@ def test_the_role_can_read_nothing_else(matrix, role):
     assert wrong == [], f"pipeshub_{role}: the matrix and READS disagree on (key, matrix grants): {wrong}"
 
 
+@pytest.mark.postgres
 @pytest.mark.parametrize("role", ["connectors", "query"])
 def test_connectors_and_query_read_every_reachable_key_but_the_node_api_own(matrix, role):
     refused = [(probe, where) for key, where in sorted(_reachable(role).items()) for probe in sorted({key, key.rstrip("/") + "/x"})
