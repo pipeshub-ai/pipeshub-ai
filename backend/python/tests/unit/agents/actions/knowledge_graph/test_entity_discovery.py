@@ -10,7 +10,6 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     INCOMPLETE_NOTE,
     execute_search_entities,
 )
-from app.modules.retrieval.title_hits import TITLE_SEARCH_TOP_K
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     ENTITY_INDEX_CACHE_KEY,
@@ -25,6 +24,7 @@ from app.modules.retrieval.entity_permissions import (
     EntitySearchTimedOut,
 )
 from app.modules.retrieval.selection_scope import SelectionScope
+from app.modules.retrieval.title_hits import TITLE_SEARCH_TOP_K
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
